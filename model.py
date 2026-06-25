@@ -1,10 +1,14 @@
 import numpy as np
 
+# ==========================================
+# 1. VEHICLE DYNAMICS MODEL
+# ==========================================
 def get_8state_discrete_model(v_x, dt):
     """
     Computes 8-state discrete-time tracking matrices incorporating actuator lag.
+    States: [e_y, e_y_dot, e_psi, e_psi_dot, e_v, e_a, delta_act, a_act]
     """
-    v_x = max(0.5, v_x)
+    v_x = max(0.5, v_x) # Prevent division by zero
     
     m, Iz, lf, lr = 1600.0, 2500.0, 1.2, 1.4
     Cf, Cr = 80000.0, 85000.0
