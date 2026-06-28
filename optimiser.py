@@ -1,45 +1,76 @@
+"""
+High-Performance Parameterized MPC Optimizer with Slack Variables (v2)
+File Name: optimiser.py
+"""
 import cvxpy as cp
 import numpy as np
 
-# ==========================================
-# 2. MPC OPTIMIZER SETUP
-# ==========================================
-def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max):
+# Global problem cache to persist the compiled model across simulation steps
+_mpc_cache = None
+
+def init_parameterized_mpc(nx, nu, N, Q, R, u_min, u_max):
     """
-    Constructs and solves the LQR/Tracking cost optimization problem over horizon N.
-    Returns the optimal control input for the first time step.
+    Compiles the optimization structure once using cvxpy Parameters.
     """
-    nx = 8 # Number of states
-    nu = 2 # Number of inputs
+    # Dynamic system parameters
+    A_param = cp.Parameter((nx, nx))
+    B_param = cp.Parameter((nx, nu))
+    x0_param = cp.Parameter(nx)
     
-    # CVXPY Variables representing future states and inputs
+    # Optimization Decision Variables
     x = cp.Variable((nx, N + 1))
     u = cp.Variable((nu, N))
+    slack = cp.Variable(N)  # Slack variable to handle transient lateral errors safely
     
     cost = 0
-    constraints = [x[:, 0] == x0] # Initial state constraint
+    constraints = [x[:, 0] == x0_param]
     
-    # Build cost function and constraints over the finite horizon
+    # Large penalty weight for violating tracking boundaries
+    W_slack = 10000.0
+    
     for k in range(N):
-        # LQR Cost: J = x^T Q x + u^T R u
-        cost += cp.quad_form(x[:, k], Q) + cp.quad_form(u[:, k], R)
+        # Base LQR Cost + Soft Constraint Penalty
+        cost += cp.quad_form(x[:, k], Q) + cp.quad_form(u[:, k], R) + W_slack * cp.square(slack[k])
         
-        # Subject to Bound Dynamics: x(k+1) = A x(k) + B u(k)
-        constraints += [x[:, k+1] == Ad @ x[:, k] + Bd @ u[:, k]]
+        # State transitions mapped using parameters
+        constraints += [x[:, k+1] == A_param @ x[:, k] + B_param @ u[:, k]]
         
-        # Actuator Constraints
+        # Actuator saturation boundaries
         constraints += [u[:, k] >= u_min, u[:, k] <= u_max]
         
-    # Terminal Cost: Penelizes error at the final prediction step N
+        # Soft-bound on lateral deviation to absorb sharp corner spikes
+        constraints += [x[0, k] <= 3.5 + slack[k], x[0, k] >= -3.5 - slack[k]]
+        
+    # Terminal step cost
     cost += cp.quad_form(x[:, N], Q)
     
-    # Configure and execute solver
     prob = cp.Problem(cp.Minimize(cost), constraints)
-    prob.solve(solver=cp.OSQP, warm_start=True)
     
-    # Fallback safety if the solver fails to find a feasible path
-    if prob.status != cp.OPTIMAL:
-        print("Warning: Solver failed. Outputting zero control.")
+    return {
+        'prob': prob, 'A': A_param, 'B': B_param, 'x0': x0_param, 'u': u
+    }
+
+def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max):
+    """
+    Executes the parameterized MPC solver using warm starts.
+    """
+    global _mpc_cache
+    nx, nu = 8, 2
+    
+    # Lazy compilation optimization step
+    if _mpc_cache is None or _mpc_cache['u'].shape[1] != N:
+        _mpc_cache = init_parameterized_mpc(nx, nu, N, Q, R, u_min, u_max)
+        
+    # Inject current matrices directly into problem variables without rebuilding
+    _mpc_cache['A'].value = Ad
+    _mpc_cache['B'].value = Bd
+    _mpc_cache['x0'].value = x0
+    
+    # Solve leveraging OSQP's warm start capabilities
+    _mpc_cache['prob'].solve(solver=cp.OSQP, warm_start=True, eps_abs=1e-3, eps_rel=1e-3)
+    
+    if _mpc_cache['prob'].status not in [cp.OPTIMAL, cp.OPTIMAL_INACCURATE]:
+        print(f"Warning: Solver failed with status {_mpc_cache['prob'].status}. Yielding zero control.")
         return np.zeros(nu)
         
-    return u[:, 0].value # Return only the first optimal control action
+    return _mpc_cache['u'][:, 0].value

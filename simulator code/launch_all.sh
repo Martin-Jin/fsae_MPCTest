@@ -48,7 +48,7 @@ fi
 if [ -d "/mnt/c/Users/Martin/Downloads/fsds-v2.2.0-windows" ]; then
     echo "[1/3] Spinning up Windows Simulator within its home directory..."
     cmd.exe /c "cd /d C:\Users\Martin\Downloads\fsds-v2.2.0-windows && FSDS.exe -windowed -ResX=1280 -ResY=720" &
-    sleep 5
+    sleep 2
 else
     echo "⚠️ Warning: Windows Simulator folder path not found!"
 fi
@@ -62,7 +62,7 @@ docker exec "$CONTAINER_NAME" bash -c "
     ros2 launch fsds_ros2_bridge fsds_ros2_bridge.launch.py
 " &
 BRIDGE_PID=$!
-sleep 3
+sleep 2
 
 # 4. Launch Planning Stack in the foreground
 echo "[3/3] Launching Autonomous Stack (Perception, Planner, Control)..."
