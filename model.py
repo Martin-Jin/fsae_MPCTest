@@ -12,7 +12,7 @@ def get_8state_discrete_model(v_x, dt):
     
     m, Iz, lf, lr = 1600.0, 2500.0, 1.2, 1.4
     Cf, Cr = 80000.0, 85000.0
-    tau_delta, tau_a = 0.15, 0.20     
+    tau_delta, tau_a = 0.30, 0.20     
     
     A_c = np.zeros((8, 8))
     A_c[0, 1] = 1.0
