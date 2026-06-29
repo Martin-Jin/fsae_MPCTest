@@ -63,10 +63,10 @@ class ControlNode(Node):
         self._cone_brake_duration: float = 0.0   # seconds currently braking
 
         # ── MPC controller ─────────────────────────────────────────────
-        # N=20 gives 1 s of preview at 50 ms per step.
-        # The parameterised QP is compiled on the first compute() call so
-        # there is no startup latency on this constructor.
-        self._mpc = MPCController(dt=0.05, N=20)
+        # N=25 gives 1.25 s of preview at 50 ms per step — sufficient at 7 m/s
+        # (covers ~8.75 m, spanning 1–2 cone pairs ahead).  Larger N increases
+        # QP solve time without benefit when speed is capped at 7 m/s.
+        self._mpc = MPCController(dt=0.05, N=25)
 
         # ── 20 Hz control timer ────────────────────────────────────────
         self.create_timer(0.05, self._control_loop)

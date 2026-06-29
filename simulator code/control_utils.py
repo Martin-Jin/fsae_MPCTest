@@ -74,64 +74,85 @@ class MPCController:
         Parameters
         ----------
         dt : Control period (s) — must match the ROS 2 timer period.
-        N  : Prediction horizon (steps).  N=20 gives 1 s of preview at 20 Hz.
-             Keep N <= 25 for reliable real-time operation.
+        N  : Prediction horizon (steps).  N=20 gives 1.0 s of preview at 20 Hz.
+             Keep N <= 20 for reliable real-time operation.
         """
         self.dt = dt
         self.N  = N
 
-        # ── Vehicle geometry & dynamics (FSDS Formula Student car) ─────
-        self.lf  = 0.9      # CoM -> front axle (m)
-        self.lr  = 0.7      # CoM -> rear  axle (m)   wheelbase ~1.6 m
-        self.m   = 280.0    # Vehicle mass (kg)
-        self.Iz  = 140.0    # Yaw moment of inertia (kg m^2)
-        self.Cf  = 34000.0  # Front cornering stiffness (N/rad)
-        self.Cr  = 38000.0  # Rear  cornering stiffness (N/rad)
+        # ── Vehicle geometry & dynamics (matched to FSDS TechnionCar) ─────
+        # Source: https://fs-driverless.github.io/Formula-Student-Driverless-Simulator/v2.2.0/vehicle_model/
+        #   Mass: 255 kg, Length: 180 cm, CoG height: 25 cm above ground
+        #
+        # Cornering stiffness: PhysX uses a Pacejka-like tyre model tuned for
+        # a lightweight FS car on slicks.  Road-car values (30000-80000 N/rad)
+        # massively overestimate lateral force, making the linearised model
+        # predict much sharper response than PhysX actually delivers — causing
+        # the MPC to under-command then overcorrect.  FS slick tyres on a 255 kg
+        # car produce peak lateral ~3 kN, giving effective stiffness ~15000 N/rad.
+        #
+        # tau_delta = 0.20 s: PhysX applies steering gradually through its own
+        # internal filter — a longer lag better matches observed sim behaviour.
+        self.lf  = 0.9       # CoM -> front axle (m)  (wheelbase 1.5 m)
+        self.lr  = 0.6       # CoM -> rear  axle (m)
+        self.m   = 255.0     # Vehicle mass (kg)  [FSDS spec]
+        self.Iz  = 110.0     # Yaw inertia (kg m^2)  [255 kg * 0.43^2 ≈ 110]
+        self.Cf  = 15000.0   # Front cornering stiffness (N/rad)  [FS slick estimate]
+        self.Cr  = 17000.0   # Rear  cornering stiffness (N/rad)  [slightly stiffer rear]
 
         # First-order actuator time constants (s)
-        self.tau_delta = 0.12   # Steering — FSDS actuators are responsive
-        self.tau_a     = 0.10   # Throttle/brake
+        self.tau_delta = 0.1   # Steering — PhysX applies a gradual filter
+        self.tau_a     = 0.1   # Throttle/brake
 
         self.nx = 8
         self.nu = 2
 
         # ── Cost weight matrices ───────────────────────────────────────
         # State order: [e_y, e_yd, e_psi, e_psi_d, e_v, e_a, delta_act, a_act]
+        #
+        # Design intent: heading alignment (e_psi, e_psi_d) must dominate over
+        # lateral offset (e_y).  The car can tolerate being 0.3 m off-centre;
+        # it cannot tolerate pointing 20° across the track.
         self.Q = np.diag([
-            35.0,   # e_y       — lateral error
-             1.0,   # e_yd      — lateral velocity
-            20.0,   # e_psi     — heading error
-             2.0,   # e_psi_d   — heading rate
-            25.0,   # e_v       — speed error
+            750.0,   # e_y       — lateral error     (low: don't panic over offset)
+             10.0,   # e_yd      — lateral velocity   (damp drift)
+            200.0,   # e_psi     — heading error      (high: alignment is priority)
+             4100.0,   # e_psi_d   — heading rate       (damp yaw spin)
+             50.0,   # e_v       — speed error        (low: MPC handles speed gently)
              0.1,   # e_a       — acceleration error
              0.1,   # delta_act — actuator steer (regularisation)
              0.1,   # a_act     — actuator accel (regularisation)
         ])
-        self.Q_terminal = 3.5 * self.Q   # heavier terminal cost for implicit stability
+        self.Q_terminal = 1 * self.Q
 
         # Absolute control-effort weights
         self.R = np.diag([
-            30.0,   # delta_cmd
-             2.0,   # a_cmd
+            9000.0,   # delta_cmd — large steer is expensive
+             300.0,   # a_cmd     — moderate accel cost
         ])
 
         # Slew-rate penalty weights (change per time-step)
         self.R_rate = np.diag([
-            120.0,  # d(delta_cmd) — suppresses left-right oscillation
-              5.0,  # d(a_cmd)
+            1350.0,  # d(delta_cmd) — hard limit on steering reversal
+              50.0,  # d(a_cmd)     — smooth throttle/brake transitions
         ])
 
         # ── Hard actuator limits ───────────────────────────────────────
-        self.u_min  = np.array([-MAX_STEER_RAD, -7.0])   # [rad, m/s^2]
-        self.u_max  = np.array([ MAX_STEER_RAD,  2.2])
+        self.u_min  = np.array([-MAX_STEER_RAD, -5.0])   # [rad, m/s^2]
+        self.u_max  = np.array([ MAX_STEER_RAD,  2.0])
 
         # Per-step rate limits (symmetric)
-        self.du_max = np.array([math.radians(8.0), 0.8])  # [rad, m/s^2]
+        # 4°/step @ 20 Hz = 80°/s max slew — prevents single-tick direction reversal
+        self.du_max = np.array([math.radians(4.0), 0.6])  # [rad/step, m/s^2/step]
 
         # ── Continuity memory ─────────────────────────────────────────
         self._delta_act: float      = 0.0
         self._a_act:     float      = 0.0
         self._u_prev:    np.ndarray = np.zeros(self.nu)
+        # Low-pass filtered desired speed — smooths out planner speed target
+        # changes (which jump every ~1 s as new cones are mapped) so the MPC
+        # sees a gradually changing reference rather than step inputs.
+        self._v_des_filtered: float = 0.0
 
         # ── Parameterised QP (built lazily on first call) ──────────────
         self._qp: dict | None = None   # populated by _build_qp()
@@ -165,6 +186,7 @@ class MPCController:
         cost        = 0.0
         constraints = [x[:, 0] == x0_p]
 
+        # 2. REPLACE the k loop with direct numpy matrix references
         for k in range(N):
             cost += cp.quad_form(x[:, k], self.Q)
             cost += cp.quad_form(u[:, k], self.R)
@@ -174,9 +196,6 @@ class MPCController:
             ]
             constraints += [u[:, k] >= self.u_min, u[:, k] <= self.u_max]
 
-            # Rate constraint: reference the PARAMETER at k=0, variable otherwise.
-            # This is critical — using a numpy array directly here would cause a
-            # silent type error in the CVXPY expression tree.
             u_prev_k = uprev_p if k == 0 else u[:, k - 1]
             du = u[:, k] - u_prev_k
             cost        += cp.quad_form(du, self.R_rate)
@@ -187,13 +206,15 @@ class MPCController:
         prob = cp.Problem(cp.Minimize(cost), constraints)
 
         self._qp = {
-            'prob':  prob,
-            'Ad':    Ad_p,
-            'Bd':    Bd_p,
-            'dd':    dd_p,
-            'x0':    x0_p,
-            'uprev': uprev_p,
-            'u':     u,
+            'prob':   prob,
+            'Ad':     Ad_p,
+            'Bd':     Bd_p,
+            'dd':     dd_p,
+            'x0':     x0_p,
+            'uprev':  uprev_p,
+            # Weight parameters have been removed since they are now
+            # safely baked directly into the problem graph.
+            'u':      u,
         }
 
     # ------------------------------------------------------------------
@@ -244,12 +265,8 @@ class MPCController:
         A_c[3, 6] =  (2*Cf * lf)                  /  Iz
 
         # Longitudinal integrator chain.
-        # IMPORTANT: sign is +1.0 — the acceleration error (e_a) drives speed
-        # recovery (e_v), so a positive a_act increases e_v toward zero.
-        # The previous value of -1.0 was a sign error that caused the
-        # longitudinal channel to fight the speed controller.
-        A_c[4, 5] = 1.0    # e_v_dot = e_a
-        A_c[5, 7] = 1.0    # e_a_dot = a_act
+        A_c[4, 7] = 1.0    # e_v_dot = a_act 
+        A_c[5, 7] = 0.0    # Deactivate the unused intermediate state
 
         # First-order actuator lag
         A_c[6, 6] = -1.0 / td
@@ -317,8 +334,9 @@ class MPCController:
         base_dists = np.linalg.norm(path - fa, axis=1)
         base_idx   = int(np.argmin(base_dists))
 
-        # Dynamic look-ahead: sqrt(speed) scaling keeps corners tight at low speed
-        look_ahead_dist = max(1.2, math.sqrt(max(0.1, car_speed)) * 0.5)
+        # Dynamic look-ahead: speed-proportional with a firm minimum.
+        # Longer look-ahead → MPC plans a smooth arc, not a reactive snap.
+        look_ahead_dist = float(np.clip(car_speed * 0.3, 1.25, 5))
 
         # Walk forward along the path until accumulated arc >= look_ahead_dist.
         # idx is updated inside the body so it correctly lands on the segment
@@ -406,11 +424,11 @@ class MPCController:
             self._build_qp()
 
         qp = self._qp
-        qp['Ad'].value    = Ad
-        qp['Bd'].value    = Bd
-        qp['dd'].value    = dd
-        qp['x0'].value    = x0
-        qp['uprev'].value = self._u_prev.copy()
+        qp['Ad'].value     = Ad
+        qp['Bd'].value     = Bd
+        qp['dd'].value     = dd
+        qp['x0'].value     = x0
+        qp['uprev'].value  = self._u_prev.copy()
 
         qp['prob'].solve(
             solver=cp.OSQP,
@@ -464,6 +482,16 @@ class MPCController:
         if len(path) < 2:
             return 0.0, 0.0, 0.5    # gentle brake if no path
 
+        # Low-pass filter the desired speed to avoid step-input changes from
+        # the planner updating every cone-map cycle (~1 Hz).
+        # α=0.08 → time constant ≈ 0.6 s at 20 Hz — smooths jerky targets
+        # while still following genuine speed reductions within ~1 s.
+        alpha = 0.08
+        if self._v_des_filtered == 0.0:
+            self._v_des_filtered = desired_speed   # initialise on first call
+        self._v_des_filtered += alpha * (desired_speed - self._v_des_filtered)
+        desired_speed = self._v_des_filtered
+
         # Step 1: extract 8-state error vector and local curvature
         x0, kappa = self._error_state(
             path, car_pos, car_yaw, car_speed, car_yaw_rate, desired_speed,
@@ -491,22 +519,18 @@ class MPCController:
         steering = float(np.clip(-delta_cmd / MAX_STEER_RAD, -1.0, 1.0))
 
         # Throttle / brake from MPC acceleration command.
-        # A hard overspeed guard bypasses the MPC longitudinal channel when the
-        # car is already above the target — the MPC may lag one step on sudden
-        # deceleration requests, and this prevents it from applying throttle
-        # while simultaneously being asked to brake by the planner.
-        if car_speed > desired_speed + 0.5:
-            # Proportional brake override: 0.35 gain -> full brake at ~2.9 m/s over
-            throttle = 0.0
-            brake    = float(np.clip((car_speed - desired_speed) * 0.35, 0.0, 0.85))
-        elif a_cmd >= 0.0:
-            # MPC wants to accelerate: scale 0-2.2 m/s^2 -> 0-1 throttle
-            throttle = float(np.clip(a_cmd / 3.0, 0.0, 1.0))
+        # if car_speed > desired_speed + 1.25:
+        #     throttle = 0.0
+        #     brake    = float(np.clip((car_speed - desired_speed - 1.25) * 0.2, 0.0, 0.55))
+        if a_cmd >= 0.0:
+            # Cap at 0.50 throttle — prevents the MPC from flooring it every
+            # low-speed step (u_max=2.0 → 2.0/4.0=0.50 max).
+            throttle = float(np.clip(a_cmd / 4.0, 0.0, 0.50))
             brake    = 0.0
         else:
-            # MPC wants to decelerate: scale 0--7 m/s^2 -> 0-1 brake
+            # Gentle deceleration — cap at 0.50 to avoid wheel-lock in PhysX
             throttle = 0.0
-            brake    = float(np.clip(-a_cmd / 5.0, 0.0, 0.85))
+            brake    = float(np.clip(-a_cmd / 8.0, 0.0, 0.50))
 
         return steering, throttle, brake
 
@@ -518,9 +542,10 @@ class MPCController:
         previous warm-start solution would be a poor initial guess.
         The compiled CVXPY problem is retained so no recompilation is triggered.
         """
-        self._delta_act = 0.0
-        self._a_act     = 0.0
-        self._u_prev    = np.zeros(self.nu)
+        self._delta_act      = 0.0
+        self._a_act          = 0.0
+        self._u_prev         = np.zeros(self.nu)
+        self._v_des_filtered = 0.0   # re-initialise on next compute() call
         # Neutralise the u_prev parameter so the warm-start doesn't inherit
         # a stale actuator history after a discontinuity.
         if self._qp is not None:
