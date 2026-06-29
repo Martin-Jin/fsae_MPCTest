@@ -68,14 +68,14 @@ class MPCController:
     def __init__(
         self,
         dt: float = 0.05,
-        N:  int   = 20,
+        N:  int   = 25,
     ) -> None:
         """
         Parameters
         ----------
         dt : Control period (s) — must match the ROS 2 timer period.
-        N  : Prediction horizon (steps).  N=20 gives 1.0 s of preview at 20 Hz.
-             Keep N <= 20 for reliable real-time operation.
+        N  : Prediction horizon (steps).  N=25 gives 1.25 s of preview at 20 Hz.
+             Keep N <= 25 for reliable real-time operation.
         """
         self.dt = dt
         self.N  = N
@@ -101,40 +101,36 @@ class MPCController:
         self.Cr  = 17000.0   # Rear  cornering stiffness (N/rad)  [slightly stiffer rear]
 
         # First-order actuator time constants (s)
-        self.tau_delta = 0.1   # Steering — PhysX applies a gradual filter
-        self.tau_a     = 0.1   # Throttle/brake
+        self.tau_delta = 0.05   # Steering — PhysX applies a gradual filter
+        self.tau_a     = 0.05  # Throttle/brake
 
         self.nx = 8
         self.nu = 2
 
         # ── Cost weight matrices ───────────────────────────────────────
         # State order: [e_y, e_yd, e_psi, e_psi_d, e_v, e_a, delta_act, a_act]
-        #
-        # Design intent: heading alignment (e_psi, e_psi_d) must dominate over
-        # lateral offset (e_y).  The car can tolerate being 0.3 m off-centre;
-        # it cannot tolerate pointing 20° across the track.
         self.Q = np.diag([
-            750.0,   # e_y       — lateral error     (low: don't panic over offset)
-             10.0,   # e_yd      — lateral velocity   (damp drift)
-            200.0,   # e_psi     — heading error      (high: alignment is priority)
-             4100.0,   # e_psi_d   — heading rate       (damp yaw spin)
-             50.0,   # e_v       — speed error        (low: MPC handles speed gently)
-             0.1,   # e_a       — acceleration error
-             0.1,   # delta_act — actuator steer (regularisation)
-             0.1,   # a_act     — actuator accel (regularisation)
+            400.0,   # e_y       — lateral error     
+            5.0,   # e_yd      — lateral velocity   
+            10.0,   # e_psi     — heading error     
+            6000.0,   # e_psi_d   — heading rate      
+            2.0,   # e_v       — speed error       
+            0.01,   # e_a       — acceleration error
+            0.01,   # delta_act — actuator steer (regularisation)
+            0.01,   # a_act     — actuator accel (regularisation)
         ])
         self.Q_terminal = 1 * self.Q
 
         # Absolute control-effort weights
         self.R = np.diag([
-            9000.0,   # delta_cmd — large steer is expensive
-             300.0,   # a_cmd     — moderate accel cost
+            800.0,   # delta_cmd
+            25.0,   # a_cmd   
         ])
 
         # Slew-rate penalty weights (change per time-step)
         self.R_rate = np.diag([
-            1350.0,  # d(delta_cmd) — hard limit on steering reversal
-              50.0,  # d(a_cmd)     — smooth throttle/brake transitions
+            10.0,  # d(delta_cmd)
+            5.0,  # d(a_cmd)
         ])
 
         # ── Hard actuator limits ───────────────────────────────────────
@@ -336,7 +332,7 @@ class MPCController:
 
         # Dynamic look-ahead: speed-proportional with a firm minimum.
         # Longer look-ahead → MPC plans a smooth arc, not a reactive snap.
-        look_ahead_dist = float(np.clip(car_speed * 0.3, 1.25, 5))
+        look_ahead_dist = float(np.clip(car_speed * 0.25, 1.25, 15 * 0.25))
 
         # Walk forward along the path until accumulated arc >= look_ahead_dist.
         # idx is updated inside the body so it correctly lands on the segment
