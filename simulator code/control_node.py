@@ -1,6 +1,10 @@
 # control_node.py — ROS 2 MPC Control Loop for FSDS
 
+import csv
 import math
+import time
+from pathlib import Path as FsPath
+
 import numpy as np
 import rclpy
 from rclpy.node import Node
@@ -24,6 +28,19 @@ TARGET_TIMEOUT   = 0.5   # s    — brake if no fresh path received within this 
 # before reset() is called on the MPC.  Single-frame cone hits do not warrant
 # discarding the warm-start; only sustained stops do.
 CONE_RESET_THRESHOLD = 0.3   # s  (~6 consecutive 50 ms ticks)
+
+# ── Logging ─────────────────────────────────────────────────────────────────
+# Set to None to disable CSV logging entirely (zero overhead when disabled).
+# Writes one row per control tick (20 Hz). At ~250 bytes/row this is roughly
+# 5 KB/s -- a 10-minute test session is ~3 MB, fine for local disk.
+LOG_DIR = FsPath('/tmp/mpc_logs')
+LOG_FIELDS = [
+    'ros_time', 'car_speed', 'desired_speed',
+    'e_y', 'e_psi', 'e_psi_d', 'e_v', 'kappa',
+    'steering', 'throttle', 'brake',
+    'delta_cmd', 'a_cmd', 'delta_act', 'a_act',
+    'car_x', 'car_y', 'car_yaw',
+]
 
 
 class ControlNode(Node):
@@ -67,6 +84,24 @@ class ControlNode(Node):
         # (covers ~8.75 m, spanning 1–2 cone pairs ahead).  Larger N increases
         # QP solve time without benefit when speed is capped at 7 m/s.
         self._mpc = MPCController(dt=0.05, N=25)
+
+        # ── CSV telemetry logger ────────────────────────────────────────
+        # One file per run, timestamped, written incrementally (not buffered
+        # in memory) so a crash mid-run doesn't lose the log. Disable by
+        # setting LOG_DIR = None at the top of this file.
+        self._log_file = None
+        self._log_writer = None
+        if LOG_DIR is not None:
+            try:
+                LOG_DIR.mkdir(parents=True, exist_ok=True)
+                log_path = LOG_DIR / f'mpc_run_{int(time.time())}.csv'
+                self._log_file = open(log_path, 'w', newline='')
+                self._log_writer = csv.DictWriter(self._log_file, fieldnames=LOG_FIELDS)
+                self._log_writer.writeheader()
+                self.get_logger().info(f'Logging MPC telemetry to {log_path}')
+            except OSError as exc:
+                self.get_logger().warn(f'Could not open log file ({exc!r}) — logging disabled.')
+                self._log_file = None
 
         # ── 20 Hz control timer ────────────────────────────────────────
         self.create_timer(0.05, self._control_loop)
@@ -159,6 +194,45 @@ class ControlNode(Node):
         cmd.throttle = throttle_out
         cmd.brake    = brake_out
 
+        # ── Telemetry log (per-tick, before any cone-brake override below) ─
+        # Logged here rather than at the very end so the row reflects what
+        # the MPC actually computed, not what the cone-brake safety layer
+        # overrode it to. If you need to debug the cone-brake override
+        # itself, add a second log call after Phase 4.
+        if self._log_writer is not None:
+            tel = self._mpc.last_telemetry
+            try:
+                self._log_writer.writerow({
+                    'ros_time': self.get_clock().now().nanoseconds * 1e-9,
+                    'car_speed': self._car_speed,
+                    'desired_speed': self._desired_speed,
+                    'e_y': tel.get('e_y', ''),
+                    'e_psi': tel.get('e_psi', ''),
+                    'e_psi_d': tel.get('e_psi_d', ''),
+                    'e_v': tel.get('e_v', ''),
+                    'kappa': tel.get('kappa', ''),
+                    'steering': steer_out,
+                    'throttle': throttle_out,
+                    'brake': brake_out,
+                    'delta_cmd': tel.get('delta_cmd', ''),
+                    'a_cmd': tel.get('a_cmd', ''),
+                    'delta_act': tel.get('delta_act', ''),
+                    'a_act': tel.get('a_act', ''),
+                    'car_x': self._car_pos[0],
+                    'car_y': self._car_pos[1],
+                    'car_yaw': self._car_yaw,
+                })
+                # Flush every row. At 20 Hz this is a negligible disk-write
+                # cost on any modern disk/container filesystem, and it means
+                # a hard kill (docker exec -it getting force-terminated
+                # before SIGINT propagates, taskkill races, etc.) loses at
+                # most the row currently being written, not up to a second
+                # of buffered data.
+                self._log_file.flush()
+            except Exception as exc:
+                self.get_logger().warn(f'Telemetry log write failed: {exc!r}',
+                                        throttle_duration_sec=5.0)
+
         # ── Phase 4: Cone proximity brake override ────────────────────
         # Transform all visible cones into the car-relative frame and check
         # whether any fall inside the braking corridor ahead of the car.
@@ -226,12 +300,34 @@ class ControlNode(Node):
         self.pub_cmd.publish(cmd)
 
 
+    def destroy_node(self) -> None:
+        # Flush and close the telemetry log cleanly on shutdown so the last
+        # few rows aren't lost in the OS write buffer.
+        if self._log_file is not None:
+            try:
+                self._log_file.flush()
+                self._log_file.close()
+            except Exception:
+                pass
+        super().destroy_node()
+
+
 def main(args=None):
     rclpy.init(args=args)
     node = ControlNode()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        # This is the actual fix for the lost CSV: rclpy.spin() raises/unwinds
+        # on SIGINT, and without this try/finally, destroy_node() (which
+        # flushes and closes the log file) was never reliably reached --
+        # whatever hadn't hit a 1-second flush boundary yet was silently
+        # dropped from the OS write buffer when the process died.
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

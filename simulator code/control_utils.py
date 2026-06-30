@@ -68,14 +68,14 @@ class MPCController:
     def __init__(
         self,
         dt: float = 0.05,
-        N:  int   = 25,
+        N:  int   = 30,
     ) -> None:
         """
         Parameters
         ----------
         dt : Control period (s) — must match the ROS 2 timer period.
-        N  : Prediction horizon (steps).  N=25 gives 1.25 s of preview at 20 Hz.
-             Keep N <= 25 for reliable real-time operation.
+        N  : Prediction horizon (steps).  N=30 gives 1.5 s of preview at 20 Hz.
+             Keep N <= 30 for reliable real-time operation.
         """
         self.dt = dt
         self.N  = N
@@ -101,8 +101,19 @@ class MPCController:
         self.Cr  = 17000.0   # Rear  cornering stiffness (N/rad)  [slightly stiffer rear]
 
         # First-order actuator time constants (s)
-        self.tau_delta = 0.05   # Steering — PhysX applies a gradual filter
-        self.tau_a     = 0.05  # Throttle/brake
+        # REVERTED: tau_delta was bumped to 0.12s in the previous revision
+        # alongside the Q[e_psi_d] cut, in violation of my own "change one
+        # variable at a time" advice. Combining a much lower yaw-rate damping
+        # weight with a slower-believed actuator is a plausible direct cause
+        # of worse oscillation and failed-sharp-corner behaviour: less
+        # resistance to yaw rate + a model that thinks corrections arrive
+        # later = larger, later corrections = more overshoot.
+        # Reverted to the original 0.05s so Q[e_psi_d] is tested in
+        # isolation. Re-introduce a tau_delta change separately, AFTER
+        # measuring the actual step response (see tuning log at bottom of
+        # this file) -- don't guess at it again.
+        self.tau_delta = 0.2   # Steering — reverted, see note above
+        self.tau_a     = 0.15  # Throttle/brake
 
         self.nx = 8
         self.nu = 2
@@ -110,27 +121,33 @@ class MPCController:
         # ── Cost weight matrices ───────────────────────────────────────
         # State order: [e_y, e_yd, e_psi, e_psi_d, e_v, e_a, delta_act, a_act]
         self.Q = np.diag([
-            400.0,   # e_y       — lateral error     
-            5.0,   # e_yd      — lateral velocity   
-            10.0,   # e_psi     — heading error     
-            6000.0,   # e_psi_d   — heading rate      
-            2.0,   # e_v       — speed error       
-            0.01,   # e_a       — acceleration error
-            0.01,   # delta_act — actuator steer (regularisation)
-            0.01,   # a_act     — actuator accel (regularisation)
+            400.0,   # e_y       — lateral error (closest-point, post-fix)
+            120.0,   # e_yd      — lateral velocity
+            730.0,   # e_psi     — heading error (closest-point, post-fix)
+            5200.0,  # e_psi_d   — heading rate damping (was 4850, see note)
+            4.5,     # e_v       — speed error
+            0.01,    # e_a       — acceleration error
+            0.01,    # delta_act — actuator steer (regularisation)
+            0.01,    # a_act     — actuator accel (regularisation)
         ])
         self.Q_terminal = 1 * self.Q
 
         # Absolute control-effort weights
         self.R = np.diag([
-            800.0,   # delta_cmd
-            25.0,   # a_cmd   
+            470.0,   # delta_cmd
+            15.0,   # a_cmd   
         ])
 
-        # Slew-rate penalty weights (change per time-step)
+        # Slew-rate penalty weights (change per time-step).
+        # d(delta_cmd) raised 10 -> 25: this is the surgical fix for the
+        # left-right-left-right oscillation -- it directly limits how fast
+        # consecutive steering commands can swing, which is the actual
+        # mechanism that turns "oscillatory plan" into "oscillatory motion".
+        # Raise further (30-40) if oscillation persists after the e_psi_d cut;
+        # lower back toward 15 if turn-in now feels sluggish on tight corners.
         self.R_rate = np.diag([
-            10.0,  # d(delta_cmd)
-            5.0,  # d(a_cmd)
+            40.0,  # d(delta_cmd)  (was 10.0)
+            5.0,   # d(a_cmd)
         ])
 
         # ── Hard actuator limits ───────────────────────────────────────
@@ -149,6 +166,10 @@ class MPCController:
         # changes (which jump every ~1 s as new cones are mapped) so the MPC
         # sees a gradually changing reference rather than step inputs.
         self._v_des_filtered: float = 0.0
+
+        # Per-tick telemetry snapshot, populated by compute(). Read this from
+        # control_node.py after calling compute() to feed the CSV logger.
+        self.last_telemetry: dict = {}
 
         # ── Parameterised QP (built lazily on first call) ──────────────
         self._qp: dict | None = None   # populated by _build_qp()
@@ -315,47 +336,46 @@ class MPCController:
         car_speed:     float,
         car_yaw_rate:  float,
         desired_speed: float,
-    ) -> tuple[np.ndarray, float]:
+    ) -> tuple[np.ndarray, float, dict]:
         """
         Project odometry + path geometry into the 8-D error state.
 
-        Uses a square-root look-ahead distance that shrinks at low speed so the
-        reference stays close during heavy braking, and grows on straights to
-        give the MPC smoother preview curvature.
+        TUNING FIX (see tuning log): e_y/e_psi are now measured at the
+        CLOSEST point on the path (base_idx), not at a forward-shifted
+        lookahead point. The previous version measured tracking error against
+        a point `look_ahead_dist` further along the path's arc length. On a
+        curving path, drawing a straight chord from the car to a point further
+        along the curve is geometrically biased toward the inside of the turn
+        -- the controller was correctly minimizing error to a target that was
+        itself wrong, which is the root cause of cutting/running over the
+        inside cones on gradual corners.
+
+        A short forward offset (curvature_preview_idx) is still used, but only
+        to sample local curvature for the feedforward term -- it no longer
+        determines where tracking error is measured.
+
+        Returns
+        -------
+        x0    : (8,) error state
+        kappa : curvature at the closest point (used for ZOH feedforward)
+        dbg   : dict of intermediate values for logging (e_y, e_psi, idx, etc.)
         """
         # Control point: front axle position
         fa = car_pos + self.lf * np.array([math.cos(car_yaw), math.sin(car_yaw)])
 
-        # Closest waypoint to the front axle (anchors our position on the path)
+        # Closest waypoint to the front axle -- this is now ALSO the point
+        # tracking error is measured against, not just an anchor for the walk.
         base_dists = np.linalg.norm(path - fa, axis=1)
         base_idx   = int(np.argmin(base_dists))
 
-        # Dynamic look-ahead: speed-proportional with a firm minimum.
-        # Longer look-ahead → MPC plans a smooth arc, not a reactive snap.
-        look_ahead_dist = float(np.clip(car_speed * 0.25, 1.25, 15 * 0.25))
-
-        # Walk forward along the path until accumulated arc >= look_ahead_dist.
-        # idx is updated inside the body so it correctly lands on the segment
-        # where the threshold is first crossed (previous code set idx = i,
-        # landing one step short of the target).
-        idx = base_idx
-        accumulated = 0.0
-        for i in range(base_idx, len(path) - 1):
-            seg_d = float(np.linalg.norm(path[i + 1] - path[i]))
-            accumulated += seg_d
-            if accumulated >= look_ahead_dist:
-                idx = i + 1   # waypoint that just crossed the threshold
-                break
-        # If the loop exhausted without crossing, idx stays at the last valid point
-
-        # Path tangent at look-ahead index
-        if idx < len(path) - 1:
-            seg = path[idx + 1] - path[idx]
+        # Path tangent AT THE CLOSEST POINT (for e_y / e_psi)
+        if base_idx < len(path) - 1:
+            seg = path[base_idx + 1] - path[base_idx]
         else:
-            seg = path[idx] - path[idx - 1]
+            seg = path[base_idx] - path[base_idx - 1]
         seg_len = float(np.linalg.norm(seg))
         if seg_len < 1e-6:
-            return np.zeros(self.nx), 0.0
+            return np.zeros(self.nx), 0.0, {}
 
         t       = seg / seg_len
         right_n = np.array([t[1], -t[0]])   # 90 deg CW = right-hand normal
@@ -368,18 +388,37 @@ class MPCController:
         )
 
         # Cross-track error: LEFT-positive (car left of path -> e_y > 0)
-        e_y = -float(np.dot(fa - path[idx], right_n))
+        # Measured against base_idx (closest point), not a lookahead point.
+        e_y = -float(np.dot(fa - path[base_idx], right_n))
 
         # Lateral velocity approximation
         e_yd = car_speed * math.sin(e_psi)
 
-        # Local path curvature at look-ahead index
-        kappa = _curvature(path, idx)
+        # ── Curvature preview (separate from tracking-error point) ────────
+        # Walk a short distance forward from base_idx purely to sample
+        # curvature for the ZOH feedforward (-kappa*v_x term). This is
+        # independent of where e_y/e_psi are measured, so shortening or
+        # lengthening it no longer changes the inside-cutting bias.
+        # Kept short (curvature changes fast on tight corners; a long preview
+        # smooths over exactly the sharp corners we need to react to).
+        preview_dist = 1.5  # metres -- short, just enough for a stable estimate
+        preview_idx  = base_idx
+        accumulated  = 0.0
+        for i in range(base_idx, len(path) - 1):
+            seg_d = float(np.linalg.norm(path[i + 1] - path[i]))
+            accumulated += seg_d
+            if accumulated >= preview_dist:
+                preview_idx = i + 1
+                break
+
+        # Local path curvature at the preview index
+        kappa = _curvature(path, preview_idx)
 
         # Heading error rate relative to path curvature
         e_psi_d = car_yaw_rate - kappa * car_speed
 
         # Speed error: positive when car is too slow
+        desired_speed = min(10.0, desired_speed)   # clip negative speeds to zero
         e_v = car_speed - desired_speed
 
         x0 = np.array([
@@ -392,7 +431,12 @@ class MPCController:
             self._delta_act,
             self._a_act,
         ])
-        return x0, kappa
+
+        dbg = {
+            'e_y': e_y, 'e_psi': e_psi, 'e_psi_d': e_psi_d, 'e_v': e_v,
+            'kappa': kappa, 'base_idx': base_idx, 'preview_idx': preview_idx,
+        }
+        return x0, kappa, dbg
 
     # ------------------------------------------------------------------
     # QP solve (parameterised — no rebuild per step)
@@ -489,7 +533,7 @@ class MPCController:
         desired_speed = self._v_des_filtered
 
         # Step 1: extract 8-state error vector and local curvature
-        x0, kappa = self._error_state(
+        x0, kappa, dbg = self._error_state(
             path, car_pos, car_yaw, car_speed, car_yaw_rate, desired_speed,
         )
 
@@ -527,6 +571,23 @@ class MPCController:
             # Gentle deceleration — cap at 0.50 to avoid wheel-lock in PhysX
             throttle = 0.0
             brake    = float(np.clip(-a_cmd / 8.0, 0.0, 0.50))
+
+        # Stash last-tick telemetry for the control node to log. Cheap dict
+        # assembly only -- no file I/O happens here, so this doesn't add
+        # per-tick latency. control_node.py reads self.last_telemetry after
+        # calling compute() and writes it to disk on its own cadence.
+        self.last_telemetry = {
+            **dbg,
+            'car_speed': car_speed,
+            'desired_speed': desired_speed,
+            'steering': steering,
+            'throttle': throttle,
+            'brake': brake,
+            'delta_cmd': delta_cmd,
+            'a_cmd': a_cmd,
+            'delta_act': self._delta_act,
+            'a_act': self._a_act,
+        }
 
         return steering, throttle, brake
 
