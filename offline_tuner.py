@@ -69,10 +69,85 @@ _init_context: dict = {}
 _model_cache = {}
 
 def get_cached_model(vx, dt):
-    key = np.round(vx, 2)
+    # Bin speed to 0.1 m/s. The 8-state ZOH model (a matrix exponential per
+    # speed) varies smoothly with vx, so 0.1 m/s bins are indistinguishable
+    # from finer keys for control purposes while cutting the number of expm
+    # builds ~10x over a full tuning run.
+    key = np.round(vx, 1)
     if key not in _model_cache:
         _model_cache[key] = get_8state_discrete_model(key, dt)
     return _model_cache[key]
+
+
+# ==========================================
+# ADAPTIVE MPC GAIN HELPERS
+# ==========================================
+# NOTE: These must be defined *before* run_headless_rollout uses them.
+# When the tuner runs under the default "fork" start method, worker
+# processes are forked at Pool() creation time, so any function defined
+# below the __main__ block would be missing from the child namespace and
+# every rollout would raise NameError. Keep them up here.
+def curvature_estimate(state):
+    """Simple yaw-rate / speed curvature proxy from the plant state vector.
+    state: [X, Y, psi, vx, vy, r, delta_act, a_act]
+    """
+    vx = max(state[3], 0.5)
+    r = state[5]
+    return abs(r / vx)
+
+
+def adaptive_R_rate(kappa, R_rate_base):
+    """
+    Curvature-dependent steering jerk softening.
+
+    In tight corners we allow smoother (less penalized) steering transitions
+    so the controller can unwind quickly without fighting the rate penalty.
+    """
+    R = np.array(R_rate_base, copy=True)
+
+    # Steering: soften in high curvature (scale → 0 as kappa → large)
+    scale = max(
+    0.35,
+    1/(1+3*kappa))
+    R[0, 0] *= scale
+
+    # Accel/brake: keep full baseline penalty in all conditions
+    # R[1, 1] unchanged
+
+    return R
+
+
+def adaptive_R_scaling(vx, R_base):
+    """
+    Speed-dependent steering cost shaping with a saturating scale.
+
+    CHANGE: Replaced the old linear scale (1 + 0.25*vx) with a saturating
+    (Michaelis-Menten) function:
+        steer_scale = 1 + (A * vx) / (vx_half + vx)
+    where A=1.5 and vx_half=6.0, giving:
+        vx=0  → scale=1.0x  (baseline)
+        vx=6  → scale=1.75x (50% of asymptote)
+        vx=10 → scale=~2.0x (approaching asymptote at 2.5x)
+
+    The old linear formula gave 3.5x at 10 m/s, which over-penalized
+    steering corrections at the top of the speed profile and caused
+    the controller to under-respond to heading errors at high speed.
+
+    Accel scale remains a mild linear function of vx (unchanged).
+    """
+    vx = max(vx, 0.5)
+
+    A = 1.5  # asymptotic gain above baseline
+    vx_half = 6.0  # speed at which scale = 1 + A/2
+    steer_scale = 1.0 + (A * vx) / (vx_half + vx)
+
+    accel_scale = 1.0 + 0.05 * vx
+
+    R_scaled = np.array(R_base, copy=True)
+    R_scaled[0, 0] *= steer_scale
+    R_scaled[1, 1] *= accel_scale
+
+    return R_scaled
 
 
 # ==========================================
@@ -630,10 +705,18 @@ def run_headless_rollout(
     # ----------------------------
     # The Instability Penalty
     # ----------------------------
-    # Destroy the fitness score of any candidate that breaks the solver math.
-    # 5.0 is an aggressive penalty; a single inaccurate tick ruins the candidate.
+    # Penalise candidates whose QP repeatedly returns OPTIMAL_INACCURATE.
+    #
+    # This must ALWAYS make the score worse (higher). The score can be
+    # negative here because the completion/time bonuses are subtracted, so a
+    # plain multiplicative factor (score *= factor) would *reward* instability
+    # whenever score < 0 (multiplying a negative number by >1 makes it more
+    # negative = better). Applying the factor away from zero — multiply when
+    # positive, divide when negative — keeps the penalty monotonically
+    # worsening regardless of sign while preserving the original magnitude.
     if inaccurate_count > 0:
-        score *= 1 + min(5, inaccurate_count)*0.1
+        factor = 1 + min(5, inaccurate_count) * 0.1
+        score = score * factor if score > 0 else score / factor
 
     return score
 
@@ -682,17 +765,27 @@ def evaluate_candidate(vec):
         (0.15,0.05),
     ]
 
+    # run_headless_rollout is deterministic for a given (vec, path, ey0, epsi0),
+    # yet validation_suite intentionally lists some paths twice to up-weight
+    # them. Cache per unique (path, ic) so the duplicates re-use the result and
+    # weight the aggregate without re-running an identical rollout. This removes
+    # ~25% of the QP solves in a candidate evaluation with zero effect on the
+    # score.
+    rollout_cache = {}
     scores = []
 
     for path_name in validation_suite:
         for ey0, epsi0 in initial_conditions:
-
-            score = run_headless_rollout(
-                vec,
-                path_name=path_name,
-                ey0=ey0,
-                epsi0=epsi0,
-            )
+            key = (path_name, ey0, epsi0)
+            score = rollout_cache.get(key)
+            if score is None:
+                score = run_headless_rollout(
+                    vec,
+                    path_name=path_name,
+                    ey0=ey0,
+                    epsi0=epsi0,
+                )
+                rollout_cache[key] = score
 
             scores.append(score)
 
@@ -814,69 +907,3 @@ if __name__ == "__main__":
     print("R_diag      =", np.diag(best_R).tolist())
     print("R_rate_diag =", np.diag(best_R_rate).tolist())
     print("=" * 50)
-
-
-# ==========================================
-# ADAPTIVE MPC GAIN HELPERS
-# ==========================================
-def curvature_estimate(state):
-    """Simple yaw-rate / speed curvature proxy from the plant state vector.
-    state: [X, Y, psi, vx, vy, r, delta_act, a_act]
-    """
-    vx = max(state[3], 0.5)
-    r = state[5]
-    return abs(r / vx)
-
-
-def adaptive_R_rate(kappa, R_rate_base):
-    """
-    Curvature-dependent steering jerk softening.
-
-    In tight corners we allow smoother (less penalized) steering transitions
-    so the controller can unwind quickly without fighting the rate penalty.
-    """
-    R = np.array(R_rate_base, copy=True)
-
-    # Steering: soften in high curvature (scale → 0 as kappa → large)
-    scale = max(
-    0.35,
-    1/(1+3*kappa))
-    R[0, 0] *= scale
-
-    # Accel/brake: keep full baseline penalty in all conditions
-    # R[1, 1] unchanged
-
-    return R
-
-
-def adaptive_R_scaling(vx, R_base):
-    """
-    Speed-dependent steering cost shaping with a saturating scale.
-
-    CHANGE: Replaced the old linear scale (1 + 0.25*vx) with a saturating
-    (Michaelis-Menten) function:
-        steer_scale = 1 + (A * vx) / (vx_half + vx)
-    where A=1.5 and vx_half=6.0, giving:
-        vx=0  → scale=1.0x  (baseline)
-        vx=6  → scale=1.75x (50% of asymptote)
-        vx=10 → scale=~2.0x (approaching asymptote at 2.5x)
-
-    The old linear formula gave 3.5x at 10 m/s, which over-penalized
-    steering corrections at the top of the speed profile and caused
-    the controller to under-respond to heading errors at high speed.
-
-    Accel scale remains a mild linear function of vx (unchanged).
-    """
-    vx = max(vx, 0.5)
-
-    A = 1.5  # asymptotic gain above baseline
-    vx_half = 6.0  # speed at which scale = 1 + A/2
-    steer_scale = 1.0 + (A * vx) / (vx_half + vx)
-
-    accel_scale = 1.0 + 0.05 * vx
-
-    R_scaled = np.array(R_base, copy=True)
-    R_scaled[0, 0] *= steer_scale
-    R_scaled[1, 1] *= accel_scale
-
-    return R_scaled
