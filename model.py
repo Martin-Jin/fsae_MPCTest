@@ -34,8 +34,8 @@ def get_8state_discrete_model(v_x, dt):
     lr  = 0.6       # CoM -> rear  axle (m)
     m   = 255.0     # Vehicle mass (kg)  [FSDS spec]
     Iz  = 110.0     # Yaw inertia (kg m^2)  [255 kg * 0.43^2 ≈ 110]
-    Cf  = 15000.0   # Front cornering stiffness (N/rad)  [FS slick estimate]
-    Cr  = 17000.0   # Rear  cornering stiffness (N/rad)  [slightly stiffer rear]
+    Cf  = 13500.0   # Front cornering stiffness (N/rad)  [FS slick estimate]
+    Cr  = 14500.0   # Rear  cornering stiffness (N/rad)  [slightly stiffer rear]
     tau_delta, tau_a = 0.30, 0.20     
     
     A_c = np.zeros((8, 8))

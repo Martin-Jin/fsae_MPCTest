@@ -30,8 +30,8 @@ class VehicleParams:
 
         # TUNED PACEJKA COEFFS: Aligned to Cf=15000, Cr=17000 in model.py
         self.mu = 1.6          # True racing slick peak friction
-        self.B_f, self.C_f, self.D_f = 13.5, 1.4, 1.0
-        self.B_r, self.C_r, self.D_r = 10.0, 1.4, 1.0
+        self.B_f, self.C_f, self.D_f = 13.5, 1.4, 0.9
+        self.B_r, self.C_r, self.D_r = 10.0, 1.4, 0.95
 
         # Aero configurations
         self.rho = 1.225
@@ -42,8 +42,8 @@ class VehicleParams:
         self.Crr = 12.0
 
         # Actuator lag
-        self.tau_delta = 0.30
-        self.tau_a = 0.20
+        self.tau_delta = 0.40
+        self.tau_a = 0.25
         self.g = 9.81
 
     @property

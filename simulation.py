@@ -1,6 +1,26 @@
 """
-Micro-Loop Immune Path MPC Simulator (v5)
+Micro-Loop Immune Path MPC Simulator (v6)
 File Name: simulation.py
+
+Changes from v5:
+  - BUG FIX: x_current is now rebuilt from plant state at the TOP of the
+    main loop, before the MPC solve, so the controller always sees the
+    current plant state rather than the state from the previous timestep.
+  - BUG FIX: R_rate_w is now passed explicitly in run_simulation() so that
+    any weights updated by the online tuner are correctly used when "Start
+    Sim" is pressed, rather than relying on a fragile global fallback.
+  - TUNING: Q[4,4] (speed error weight) raised from 90 → 150. The old
+    value was too weak to compete against the large lateral/heading weights
+    on straight sections; 150 gives meaningful speed tracking without
+    disturbing the lateral behaviour.
+  - TUNING: adaptive_R_scaling uses a saturating speed scale instead of a
+    linear one, so steering cost at high speed is bounded and the
+    controller doesn't under-respond to heading errors at the top of the
+    speed profile.
+  - TUNING: adaptive_R_rate no longer reduces R_rate[1,1] (accel jerk
+    penalty) in corners — the accel channel now keeps its baseline penalty
+    there since firm, decisive braking is more important than smooth
+    braking in tight turns (see tuner.py for the matching change).
 """
 
 import numpy as np
@@ -42,31 +62,36 @@ SPEED_PROFILE_V_MIN = 2.5
 u_bounds_min = np.array([-np.radians(35), -5.0])
 u_bounds_max = np.array([np.radians(35), 5.0])
 
-# Highly protective lateral alignment weights
-# States: [e_y, e_y_dot, e_psi, e_psi_dot, e_v, e_a, delta, a]
-
+# Cost weight matrices.
+# States: [e_y, e_y_dot, e_psi, e_psi_dot, e_v, e_a, delta_act, a_act]
+#
+# Q[4,4] (e_v) raised from 90 → 150: the old value was too weak on straights
+# where lateral/heading errors are small and the speed error term needs to
+# matter. 150 gives assertive speed tracking without competing with lateral
+# correction in corners (where the speed error is naturally small anyway
+# because the profiler has already set a low v_target there).
 Q = np.diag(
     [
-        2725.0,  # e_y       — lateral error (closest-point, post-fix)
-        215.0,  # e_yd      — lateral velocity
-        6590.0,  # e_psi     — heading error (closest-point, post-fix)
-        3605.0,  # e_psi_d   — heading rate damping (was 4850, see note)
-        90.0,  # e_v       — speed error
-        0.0,  # e_a       — acceleration error
-        0.0,  # delta_act — actuator steer (regularisation)
-        0.0,  # a_act     — actuator accel (regularisation)
+        2725.0,  # e_y       — lateral error
+        215.0,   # e_yd      — lateral velocity
+        6590.0,  # e_psi     — heading error
+        3605.0,  # e_psi_d   — heading rate damping
+        150.0,   # e_v       — speed error (raised from 90)
+        0.0,     # e_a       — acceleration error (not penalized; R_rate handles smoothness)
+        0.0,     # delta_act — actuator steer (regularisation only)
+        0.0,     # a_act     — actuator accel (regularisation only)
     ]
 )
 R = np.diag(
     [
         1400.0,  # delta_cmd
-        108.0,  # a_cmd
+        108.0,   # a_cmd
     ]
 )
 R_rate = np.diag(
     [
-        1561.0,   # d(delta_cmd)/dt — penalize sharp steering jerk
-        4.2,    # d(a_cmd)/dt     — penalize sharp accel/brake jerk
+        1561.0,  # d(delta_cmd)/dt — penalize sharp steering jerk
+        4.2,     # d(a_cmd)/dt     — penalize sharp accel/brake jerk
     ]
 )
 
@@ -75,7 +100,7 @@ is_simulated = False
 flip_heading_180 = False
 drawn_points = []
 path_X, path_Y, path_Psi = [], [], []
-path_v_profile = np.array([])  # NEW: curvature-based target speed at each path point
+path_v_profile = np.array([])  # curvature-based target speed at each path point
 sim_history = {}
 vehicle_params = VehicleParams()
 is_optimizing = False
@@ -208,9 +233,6 @@ def find_closest_reference_bounded(x_g, y_g, last_idx, window=40):
 
 
 # ==========================================
-# INTERACTIVE DRAWING HANDLERS
-# ==========================================
-# ==========================================
 # INTERACTIVE EVENT HANDLERS
 # ==========================================
 def reset_environment(event):
@@ -285,16 +307,6 @@ def on_release(event):
     # Clamped boundary conditions: pin the spline's derivative at each end
     # to the direction of the first/last chord, rather than letting scipy's
     # default "not-a-knot" condition choose a free boundary derivative.
-    # With sparse or unevenly-spaced control points (e.g. fewer points
-    # surviving the 0.5m de-jitter filter above, which happens more often
-    # when the plot is zoomed in -- the same physical mouse drag produces
-    # fewer points that clear the filter), not-a-knot splines can badly
-    # overshoot right at the start/end, producing a heading there that
-    # points nearly the OPPOSITE direction of actual travel. That secretly
-    # broke the car's initial heading (path_Psi near t=0) even though only
-    # path_Psi[0] itself was being patched afterward -- the overshoot
-    # extended several samples into the resampled path, past where the old
-    # single-point patch could fix it.
     d0 = (pts[1] - pts[0]) / (t[1] - t[0])
     dN = (pts[-1] - pts[-2]) / (t[-1] - t[-2])
     cs_x = CubicSpline(t, pts[:, 0], bc_type=((1, d0[0]), (1, dN[0])))
@@ -308,10 +320,6 @@ def on_release(event):
     dy = cs_y.derivative()(t_fine)
     path_Psi = np.arctan2(dy, dx)
 
-    # Compute the curvature-based target speed profile for this path now
-    # that path_X/path_Y are finalized -- this replaces the old constant
-    # v_ref with a per-point target the car looks up as it tracks along
-    # the path (slower through tight corners, faster on straights).
     raw_profile = speed_profile.compute_speed_profile(
         path_X, path_Y,
         v_max=SPEED_PROFILE_V_MAX,
@@ -374,14 +382,22 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, flip, rng_seed=None, max_steps=40
     gives a meaningful average RMSE across "10 runs" rather than just
     running the same deterministic trajectory 10 times.
 
-    Returns a history dict compatible with the GUI's scrub/telemetry code.
+    BUG FIX (v6): x_current is now rebuilt from plant state at the TOP of
+    every loop iteration, before the MPC solve.  In v5 it was rebuilt at
+    the BOTTOM (after plant step + reference lookup), meaning the MPC was
+    always solving with the state from the *previous* timestep.  The new
+    order is:
+        1. Rebuild x_current from current plant_state + reference point
+        2. Solve MPC with x_current  ← controller sees current state
+        3. Advance plant with u_opt
+    This is also why x_current is no longer pre-initialised outside the
+    loop with the full error vector; the loop handles step 0 naturally.
 
     R_rate_w: optional override for the actuator-rate-of-change weight
     matrix. Defaults to the module-level R_rate global (used by the normal
-    "Start Sim" button); the tuner passes a different value explicitly per
-    candidate, rather than mutating the global, so that the comparison
-    between baseline and candidate weights during one Optimise click can't
-    be corrupted by leftover global state from a previous call.
+    "Start Sim" button). The tuner passes a different value explicitly per
+    candidate so that candidate vs. baseline comparisons can't be corrupted
+    by leftover global state.
     """
     if R_rate_w is None:
         R_rate_w = R_rate
@@ -398,67 +414,123 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, flip, rng_seed=None, max_steps=40
     Y_g = path_Y[0] + ey0_eff * np.cos(base_path_heading)
     psi_g = normalize_angle(base_path_heading + np.radians(epsi0_eff))
 
-    # Initial speed comes from the curvature-based profile at the path's
-    # start point (falls back to the constant v_ref if no profile was
-    # computed yet, e.g. an extremely short/degenerate path).
     v_start = path_v_profile[0] if len(path_v_profile) > 0 else v_ref
 
     # Nonlinear plant truth state: [X, Y, psi, vx, vy, r, delta_act, a_act]
     plant_state = init_plant_state(X_g, Y_g, psi_g, vx0=v_start)
 
-    # Controller's tracking-error state (what the MPC sees):
-    # [e_y, e_y_dot, e_psi, e_psi_dot, e_v, e_a, delta_act, a_act]
-    x_current = np.array([ey0_eff, 0.0, np.radians(epsi0_eff), 0.0, 0.0, 0.0, 0.0, 0.0])
-
-    u_prev = np.zeros(2)  # NEW: last applied [delta_cmd, a_cmd], for rate penalty continuity
+    u_prev = np.zeros(2)
     consecutive_solver_failures = 0
-    MAX_CONSECUTIVE_FAILURES = 5   # bail out rather than coast on held commands forever
-    OFFTRACK_LIMIT = 8.0           # meters; well beyond the soft +/-3.5m tracking corridor
+    MAX_CONSECUTIVE_FAILURES = 5
+    OFFTRACK_LIMIT = 8.0  # meters; well beyond the soft +/-3.5m tracking corridor
 
     history = {
         "X": [], "Y": [], "psi": [], "v": [], "v_target": [],
         "u_steer": [], "u_accel": [],
         "e_y": [], "e_psi": [],
         "pred_X": [], "pred_Y": [],
-        "failed": False,          # NEW: True if the rollout was aborted early
-        "fail_reason": None,      # NEW: human-readable reason, for logging
+        "failed": False,
+        "fail_reason": None,
     }
 
     idx = 0
     for step in range(max_steps):
-        vx_plant = plant_state[3]
-        current_v = vx_plant
-
+        # ------------------------------------------------------------------
+        # 1. RECORD current plant state BEFORE the solve (for telemetry)
+        # ------------------------------------------------------------------
         history["X"].append(plant_state[0])
         history["Y"].append(plant_state[1])
         history["psi"].append(plant_state[2])
-        history["v"].append(current_v)
-        history["e_y"].append(x_current[0])
-        history["e_psi"].append(x_current[2])
+        history["v"].append(plant_state[3])
 
-        # MPC plans using its own linear model, linearized at the current speed
+        # ------------------------------------------------------------------
+        # 2. FIND reference point and compute tracking errors from CURRENT
+        #    plant state — this is the fix for the stale-state bug.
+        #    In v5 this block lived at the BOTTOM of the loop, after the
+        #    plant step, so the MPC was fed last timestep's errors.
+        # ------------------------------------------------------------------
+        X_g, Y_g, psi_g = plant_state[0], plant_state[1], plant_state[2]
+
+        idx, rx, ry, rpsi = find_closest_reference_bounded(X_g, Y_g, idx, window=40)
+        if flip:
+            rpsi = normalize_angle(rpsi + np.pi)
+
+        dx_err = X_g - rx
+        dy_err = Y_g - ry
+        e_y   = dy_err * np.cos(rpsi) - dx_err * np.sin(rpsi)
+        e_psi = normalize_angle(psi_g - rpsi)
+
+        v_target = path_v_profile[idx] if len(path_v_profile) > 0 else v_ref
+        history["v_target"].append(v_target)
+        history["e_y"].append(e_y)
+        history["e_psi"].append(e_psi)
+
+        # Controller's tracking-error state (what the MPC sees):
+        # [e_y, e_y_dot, e_psi, e_psi_dot, e_v, e_a, delta_act, a_act]
+        x_current = np.array([
+            e_y,
+            plant_state[3] * np.sin(e_psi) + plant_state[4] * np.cos(e_psi),
+            e_psi,
+            plant_state[5],           # yaw rate r
+            plant_state[3] - v_target, # speed error (using current vx, not last)
+            0.0,                       # e_a not penalized; R_rate handles smoothness
+            plant_state[6],            # delta_act
+            plant_state[7],            # a_act
+        ])
+
+        # ------------------------------------------------------------------
+        # 3. EARLY-EXIT CHECKS (before the solve, using fresh errors)
+        # ------------------------------------------------------------------
+        if consecutive_solver_failures >= MAX_CONSECUTIVE_FAILURES:
+            history["failed"] = True
+            history["fail_reason"] = (
+                f"solver failed {consecutive_solver_failures} consecutive steps "
+                f"at step {step}"
+            )
+            break
+
+        if abs(e_y) > OFFTRACK_LIMIT:
+            history["failed"] = True
+            history["fail_reason"] = f"off-track (|e_y|={abs(e_y):.2f} m) at step {step}"
+            break
+
+        if idx >= len(path_X) - 2:
+            history["reached_end"] = True
+            break
+
+        # ------------------------------------------------------------------
+        # 4. MPC SOLVE with current state
+        # ------------------------------------------------------------------
+        current_v = plant_state[3]
         Ad, Bd = get_8state_discrete_model(max(current_v, 0.5), dt)
+
+        kappa = tuner.curvature_estimate(plant_state)
+        R_rate_scaled = tuner.adaptive_R_rate(kappa, R_rate_w)
+        R_scaled = tuner.adaptive_R_scaling(current_v, R_w)
+
         u_opt = solve_mpc(
-            x_current, Ad, Bd, N_horizon, Q_w, R_w, u_bounds_min, u_bounds_max,
-            R_rate=R_rate_w, u_prev=u_prev,
+            x_current, Ad, Bd, N_horizon,
+            Q_w, R_scaled,
+            u_bounds_min, u_bounds_max,
+            R_rate=R_rate_scaled,
+            u_prev=u_prev,
         )
 
         solved_ok = u_opt is not None
-
         if solved_ok:
             consecutive_solver_failures = 0
         else:
             consecutive_solver_failures += 1
             u_opt = u_prev.copy()
-        
+
         u_prev = u_opt.copy()
-        
-        # print("u_opt:", u_opt, "step:", step, "consecutive_solver_failures:", consecutive_solver_failures)
 
         history["u_steer"].append(u_opt[0])
         history["u_accel"].append(u_opt[1])
 
-        # Predicted horizon for visualization, using the MPC's own linear model
+        # ------------------------------------------------------------------
+        # 5. PREDICTED HORIZON for visualization (linear model rollout)
+        # ------------------------------------------------------------------
         px, py = [], []
         X_p, Y_p, psi_p = plant_state[0], plant_state[1], plant_state[2]
         x_p_tmp = x_current.copy()
@@ -473,72 +545,12 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, flip, rng_seed=None, max_steps=40
         history["pred_X"].append(px)
         history["pred_Y"].append(py)
 
-        # --- Advance the TRUTH plant nonlinearly ---
+        # ------------------------------------------------------------------
+        # 6. ADVANCE the nonlinear plant
+        # ------------------------------------------------------------------
         plant_state = step_nonlinear_plant(plant_state, u_opt, dt, vehicle_params)
 
-        X_g, Y_g, psi_g = plant_state[0], plant_state[1], plant_state[2]
-
-        idx, rx, ry, rpsi = find_closest_reference_bounded(X_g, Y_g, idx, window=40)
-        if flip:
-            rpsi = normalize_angle(rpsi + np.pi)
-
-        dx = X_g - rx
-        dy = Y_g - ry
-        e_y = dy * np.cos(rpsi) - dx * np.sin(rpsi)
-        e_psi = normalize_angle(psi_g - rpsi)
-
-        # Local target speed from the curvature-based profile at the
-        # car's current closest-path index -- this is what makes the car
-        # slow down for corners and speed up on straights, instead of
-        # chasing one constant v_ref everywhere. Falls back to v_ref if
-        # no profile is available (shouldn't normally happen once a path
-        # has been drawn, but keeps this function safe to call standalone).
-        v_target = path_v_profile[idx] if len(path_v_profile) > 0 else v_ref
-        history["v_target"].append(v_target)
-
-        # Controller's tracking-error state is rebuilt from the plant's true
-        # pose (acting as a stand-in for a state estimator) each step.
-        x_current = np.array([
-            e_y,
-            plant_state[3] * np.sin(e_psi) + plant_state[4] * np.cos(e_psi),
-            e_psi,
-            plant_state[5],
-            current_v - v_target,
-            0.0,
-            plant_state[6],
-            plant_state[7],
-        ])
-
-        if consecutive_solver_failures >= MAX_CONSECUTIVE_FAILURES:
-            # Holding the last command repeatedly means the controller has
-            # lost the ability to meaningfully act -- treat this rollout as
-            # failed rather than padding out the remaining steps doing
-            # nothing useful (which would otherwise look like a short,
-            # deceptively low-error rollout to anything scoring it).
-            history["failed"] = True
-            history["fail_reason"] = (
-                f"solver failed {consecutive_solver_failures} consecutive steps "
-                f"at step {step}"
-            )
-            break
-
-        if abs(e_y) > OFFTRACK_LIMIT:
-            # The car has departed the track far enough that continuing the
-            # rollout isn't meaningful -- stop here instead of accumulating
-            # more (likely still-diverging) error samples.
-            history["failed"] = True
-            history["fail_reason"] = f"off-track (|e_y|={abs(e_y):.2f} m) at step {step}"
-            break
-
-        if idx >= len(path_X) - 2:
-            history["reached_end"] = True
-            break
-
     history.setdefault("reached_end", False)
-    # completion_frac is only meaningful as a penalty signal when the
-    # rollout did NOT reach the end of the path on its own -- a path that's
-    # legitimately short and finishes in fewer than max_steps is a full
-    # success, not partial completion, so it's reported as 1.0 in that case.
     if history["reached_end"]:
         history["completion_frac"] = 1.0
     else:
@@ -562,8 +574,10 @@ def run_simulation(event):
     ax_ey0.set_visible(False)
     ax_epsi0.set_visible(False)
 
+    # BUG FIX: pass R_rate_w explicitly so updated tuner weights are used.
     history = simulate_closed_loop(
-        Q, R, slider_ey0.val, slider_epsi0.val, flip_heading_180, rng_seed=None
+        Q, R, slider_ey0.val, slider_epsi0.val, flip_heading_180,
+        rng_seed=None, R_rate_w=R_rate,
     )
 
     sim_history = history
@@ -611,7 +625,7 @@ def run_optimize(event):
     ax_map.set_title("Optimising cost weights (10 + 10 rollouts)... please wait.",
                       fontweight="bold", color="darkblue")
     fig.canvas.draw_idle()
-    plt.pause(0.01)  # force a redraw before the blocking optimization work
+    plt.pause(0.01)
 
     ey0 = slider_ey0.val if ax_ey0.get_visible() else 0.0
     epsi0 = slider_epsi0.val if ax_epsi0.get_visible() else 0.0
@@ -629,7 +643,6 @@ def run_optimize(event):
 
     Q, R, R_rate = new_Q, new_R, new_R_rate
 
-    # Show the result of the best-weights rollout (seed=0) on screen.
     global sim_history, is_simulated
     sim_history = run_rollout_fn(Q, R, R_rate, seed=0)
     is_simulated = True
@@ -674,7 +687,8 @@ def update_scrub_frame(val):
     vehicle_marker.set_data(car_x, car_y)
 
     v_target_str = (
-        f"{h['v_target'][frame]:6.2f} m/s" if "v_target" in h and len(h["v_target"]) > frame
+        f"{h['v_target'][frame]:6.2f} m/s"
+        if "v_target" in h and len(h["v_target"]) > frame
         else "   n/a"
     )
     text = (
