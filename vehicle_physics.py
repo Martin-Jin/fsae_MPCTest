@@ -96,7 +96,9 @@ IDX_FY_FL    = 18
 IDX_FY_FR    = 19
 IDX_FY_RL    = 20
 IDX_FY_RR    = 21
-N_STATES     = 22
+IDX_OMEGA_FL = 22
+IDX_OMEGA_FR = 23
+N_STATES     = 24
 
 
 # ─────────────────────────────────────────────────────────────
@@ -128,9 +130,11 @@ class VehicleParams:
         # ── Wheel + drivetrain rotational inertia ────────────────────
         # Wheel: hollow cylinder ~0.9 kg·m²
         # Motor/gearbox inertia referred to wheel ~0.05 kg·m²
-        self.I_wheel      = 0.9    # per rear wheel (kg·m²)
-        self.I_drivetrain = 0.05   # per rear wheel (kg·m²)
-        self.I_w_eff      = self.I_wheel + self.I_drivetrain
+        self.I_wheel      = 0.9    # per wheel (kg·m²)
+        self.I_drivetrain = 0.05   # per rear driven wheel (kg·m²)
+        self.I_w_eff_r    = self.I_wheel + self.I_drivetrain
+        self.I_w_eff_f    = self.I_wheel  # Front wheels lack drivetrain mass
+        self.brake_bias   = 0.60   # 60% front braking distributio
 
         # ── Suspension ──────────────────────────────────────────────
         # FS typical effective wheel-rate: front 25 N/mm, rear 30 N/mm
@@ -323,6 +327,8 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
         a_act     = s[IDX_A_ACT]
         omega_RL  = s[IDX_OMEGA_RL]
         omega_RR  = s[IDX_OMEGA_RR]
+        omega_FL  = s[IDX_OMEGA_FL]
+        omega_FR  = s[IDX_OMEGA_FR]
         # Suspension deviation from equilibrium
         z_FL = s[IDX_Z_FL];  z_FR = s[IDX_Z_FR]
         z_RL = s[IDX_Z_RL];  z_RR = s[IDX_Z_RR]
@@ -449,8 +455,42 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
             v_ref = max(max(r_om, abs(vx_w)), 0.01)
             return (r_om - abs(vx_w)) / v_ref
 
+        kappa_FL = _kappa(omega_FL, vx_FL)
+        kappa_FR = _kappa(omega_FR, vx_FR)
         kappa_RL = _kappa(omega_RL, vx_RL)
         kappa_RR = _kappa(omega_RR, vx_RR)
+
+        # ── 10. Torque vectoring & Longitudinal Force Distribution ─────
+        delta_Fx_tv = (tv_gain * r / p.tr) if abs(tv_gain) > 1e-6 else 0.0
+        Fx_req_total = p.m * a_act
+        
+        if a_act > 0:
+            # Acceleration: RWD only
+            Fx_FL_req, Fx_FR_req = 0.0, 0.0
+            Fx_RL_req = 0.5 * Fx_req_total - delta_Fx_tv
+            Fx_RR_req = 0.5 * Fx_req_total + delta_Fx_tv
+        else:
+            # Braking: Distributed by brake bias
+            Fx_FL_req = 0.5 * Fx_req_total * p.brake_bias
+            Fx_FR_req = 0.5 * Fx_req_total * p.brake_bias
+            Fx_RL_req = 0.5 * Fx_req_total * (1.0 - p.brake_bias) - delta_Fx_tv
+            Fx_RR_req = 0.5 * Fx_req_total * (1.0 - p.brake_bias) + delta_Fx_tv
+
+        # ── 11. Pacejka longitudinal force ────────────────────────
+        Fmax_FL, Fmax_FR = mu_FL * Fz_FL, mu_FR * Fz_FR
+        Fmax_RL, Fmax_RR = mu_RL * Fz_RL, mu_RR * Fz_RR
+
+        # Note: Using rear Bx, Cx, Dx, Ex for front assuming identical slick compounds
+        Fx_FL_pac = pacejka_longitudinal_mf94(kappa_FL, Fz_FL, mu_FL, p.Bx_r, p.Cx_r, p.Dx_r, p.Ex_r)
+        Fx_FR_pac = pacejka_longitudinal_mf94(kappa_FR, Fz_FR, mu_FR, p.Bx_r, p.Cx_r, p.Dx_r, p.Ex_r)
+        Fx_RL_pac = pacejka_longitudinal_mf94(kappa_RL, Fz_RL, mu_RL, p.Bx_r, p.Cx_r, p.Dx_r, p.Ex_r)
+        Fx_RR_pac = pacejka_longitudinal_mf94(kappa_RR, Fz_RR, mu_RR, p.Bx_r, p.Cx_r, p.Dx_r, p.Ex_r)
+
+        # Commanded force saturated by friction ceiling and Pacejka curve
+        Fx_FL = float(np.clip(Fx_FL_req, -min(Fmax_FL, abs(Fx_FL_pac) + 1.0), min(Fmax_FL, abs(Fx_FL_pac) + 1.0)))
+        Fx_FR = float(np.clip(Fx_FR_req, -min(Fmax_FR, abs(Fx_FR_pac) + 1.0), min(Fmax_FR, abs(Fx_FR_pac) + 1.0)))
+        Fx_RL = float(np.clip(Fx_RL_req, -min(Fmax_RL, abs(Fx_RL_pac) + 1.0), min(Fmax_RL, abs(Fx_RL_pac) + 1.0)))
+        Fx_RR = float(np.clip(Fx_RR_req, -min(Fmax_RR, abs(Fx_RR_pac) + 1.0), min(Fmax_RR, abs(Fx_RR_pac) + 1.0)))
 
         # ── 10. Torque vectoring ─────────────────────────────────────────
         # ΔT proportional to yaw rate → ΔFx at each rear wheel
@@ -480,8 +520,10 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
         # T_input = Fx_req * r_eff  (commanded torque; Fx_req sets target slip)
         T_in_RL = Fx_RL_req * p.r_eff
         T_in_RR = Fx_RR_req * p.r_eff
-        domega_RL = (T_in_RL - Fx_RL * p.r_eff) / p.I_w_eff
-        domega_RR = (T_in_RR - Fx_RR * p.r_eff) / p.I_w_eff
+        domega_FL = (Fx_FL_req * p.r_eff - Fx_FL * p.r_eff) / p.I_w_eff_f
+        domega_FR = (Fx_FR_req * p.r_eff - Fx_FR * p.r_eff) / p.I_w_eff_f
+        domega_RL = (Fx_RL_req * p.r_eff - Fx_RL * p.r_eff) / p.I_w_eff_r
+        domega_RR = (Fx_RR_req * p.r_eff - Fx_RR * p.r_eff) / p.I_w_eff_r
 
         # ── 13. MF94 lateral steady-state ───────────────────────────────
         Fy_FL_ss = pacejka_lateral_mf94(
@@ -511,11 +553,10 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
 
         # ── 15. Friction ellipse coupling (Fx + Fy ≤ mu*Fz) ────────────
         # Front: free-rolling, no Fx commanded → full Fmax available for Fy
-        Fmax_FL = mu_FL * Fz_FL
-        Fmax_FR = mu_FR * Fz_FR
-        Fx_FL = 0.0;  Fx_FR = 0.0
-        Fy_FL = float(np.clip(Fy_FL_rlx_new, -Fmax_FL, Fmax_FL))
-        Fy_FR = float(np.clip(Fy_FR_rlx_new, -Fmax_FR, Fmax_FR))
+        ell_FL = max(0.0, 1.0 - (Fx_FL / max(Fmax_FL, 1.0))**2)
+        ell_FR = max(0.0, 1.0 - (Fx_FR / max(Fmax_FR, 1.0))**2)
+        Fy_FL  = float(np.clip(Fy_FL_rlx_new * np.sqrt(ell_FL), -Fmax_FL, Fmax_FL))
+        Fy_FR  = float(np.clip(Fy_FR_rlx_new * np.sqrt(ell_FR), -Fmax_FR, Fmax_FR))
 
         # Rear: friction ellipse reduces available lateral force when Fx is present
         ell_RL = max(0.0, 1.0 - (Fx_RL / max(Fmax_RL, 1.0))**2)
@@ -561,6 +602,8 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
 
         omega_RL_new = max(0.0, omega_RL + domega_RL * h)
         omega_RR_new = max(0.0, omega_RR + domega_RR * h)
+        omega_FL_new = max(0.0, omega_FL + domega_FL * h)
+        omega_FR_new = max(0.0, omega_FR + domega_FR * h)
 
         def _integrate_susp(z, dz, Fz_road, Fz_spring, F_damp, F_arb_signed, k, c):
             """
@@ -623,6 +666,8 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
         s_new[IDX_A_ACT]    = a_new
         s_new[IDX_OMEGA_RL] = omega_RL_new
         s_new[IDX_OMEGA_RR] = omega_RR_new
+        s_new[IDX_OMEGA_FL] = omega_FL_new
+        s_new[IDX_OMEGA_FR] = omega_FR_new
         s_new[IDX_Z_FL]     = z_FL_new
         s_new[IDX_Z_FR]     = z_FR_new
         s_new[IDX_Z_RL]     = z_RL_new
@@ -664,6 +709,8 @@ def init_plant_state(X0, Y0, psi0, vx0=10.0):
     # Wheel angular velocity: rolling without slip at vx0
     s[IDX_OMEGA_RL] = vx0 / p.r_eff
     s[IDX_OMEGA_RR] = vx0 / p.r_eff
+    s[IDX_OMEGA_FL] = vx0 / p.r_eff
+    s[IDX_OMEGA_FR] = vx0 / p.r_eff
 
     # Suspension deviation from equilibrium = 0 for all corners.
     # z_eq is computed at vx0, so suspension is centred in its travel
