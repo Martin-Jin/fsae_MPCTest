@@ -14,23 +14,6 @@ Sign convention (FSDS ENU — x forward, y left):
   δ    > 0 → steer left   (front wheels deflect to port)
   FSDS steering > 0 → steer RIGHT (FSDS sign is opposite to δ)
 
-Key design decisions
---------------------
-  • Zero-order hold (matrix-exponential) discretisation for accuracy on the
-    fast actuator states (τ ≈ 0.15–0.20 s).
-  • Parameterised CVXPY problem — compiled once at first call, then only the
-    parameter values (Ad, Bd, dd, x0, u_prev) are updated each step.
-    This eliminates the ~5-20 ms problem-build overhead that would otherwise
-    occur every 50 ms control tick.
-  • Path curvature feedforward — adds −κ·v_x to heading-error dynamics so
-    the linearised model has a zero-error equilibrium on curved paths.
-  • Input-rate constraints — penalises and hard-bounds Δu per step.
-  • Heavier terminal cost — implicit Lyapunov stability weight.
-  • Combined longitudinal control — MPC outputs a_cmd as well as δ_cmd.
-  • Adaptive R / R_rate scaling — steering cost saturates with speed;
-    R_rate steering term softens in corners while accel stays firm.
-  • Graceful solver fallback — tries Clarabel before holding previous steer.
-
 Dependencies: numpy, scipy, cvxpy (with OSQP + Clarabel backends).
 """
 
@@ -173,22 +156,7 @@ class MPCController:
 
         # ── Cost weight matrices ───────────────────────────────────────
         # State order: [e_y, e_yd, e_psi, e_psi_d, e_v, e_a, delta_act, a_act]
-        #
-        # These match simulation.py exactly so weights tuned offline (offline_tuner.py)
-        # or by the online hill-climber (tuner.py) transfer without rescaling.
-        #
-        # Q[4,4] raised from 90 → 150: the old value was too weak on straights
-        # where lateral/heading errors are small and the speed term needs to matter.
-        self.Q = np.diag([
-            1738.0,  # e_y       — lateral error
-            426.0,   # e_yd      — lateral velocity
-            5718.0,  # e_psi     — heading error
-            2006.0,  # e_psi_d   — heading rate damping
-            165.0,   # e_v       — speed error  (raised from 90)
-            0.0,     # e_a       — acceleration error (not penalised; R_rate handles smoothness)
-            0.0,     # delta_act — actuator steer (regularisation only)
-            0.0,     # a_act     — actuator accel (regularisation only)
-        ])
+        self.Q = np.diag([19347.614114318592, 79.1758752760412, 22044.6986504243, 548.4099320936072, 581.5936906438126, 0.0, 0.0, 0.0])
 
         # Terminal cost: 3x running cost for implicit Lyapunov stability.
         # The multiplier is larger than 1x (steady-state Riccati) to give the
@@ -198,18 +166,14 @@ class MPCController:
 
         # Absolute control-effort weights
         self.R = np.diag([
-            689.2,  # delta_cmd
-            126.5,   # a_cmd
+            481.7431423309136,  # delta_cmd
+            13.50543141896676,   # a_cmd
         ])
 
         # Slew-rate penalty weights (change per time-step).
-        # Steering rate: directly limits how fast consecutive steering commands
-        # can swing, which is the primary mechanism controlling oscillation.
-        # Raise toward 2000-2500 if left-right hunting persists; lower toward
-        # 1000 if turn-in on tight corners feels sluggish.
         self.R_rate = np.diag([
-            1076.0,  # d(delta_cmd)/dt — penalize sharp steering jerk
-            60.0,     # d(a_cmd)/dt     — penalize sharp accel/brake jerk
+            2340.8668740631647,  # d(delta_cmd)/dt — penalize sharp steering jerk
+            7.379835591908707,     # d(a_cmd)/dt     — penalize sharp accel/brake jerk
         ])
 
         # ── Hard actuator limits ───────────────────────────────────────
@@ -297,7 +261,7 @@ class MPCController:
                 du_rest <=  self.du_max[:, None],
             ]
 
-# ── Cost (vectorised) ──────────────────────────────────────────
+        # ── Cost (vectorised) ──────────────────────────────────────────
         # Running state cost: sum_{k=0}^{N-1} x[:,k]^T Q x[:,k]
         sqrtQ = np.diag(np.sqrt(np.diag(self.Q)))
         cost  = cp.sum_squares(sqrtQ @ x[:, :N])
@@ -519,6 +483,7 @@ class MPCController:
         e_psi_d = car_yaw_rate - kappa * car_speed
 
         # Speed error: positive when car is too fast (sign matches simulation.py)
+        desired_speed = max(10, desired_speed)
         e_v = car_speed - desired_speed
 
         x0 = np.array([

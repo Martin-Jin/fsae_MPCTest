@@ -1,26 +1,6 @@
 """
 Micro-Loop Immune Path MPC Simulator (v6)
 File Name: simulation.py
-
-Changes from v5:
-  - BUG FIX: x_current is now rebuilt from plant state at the TOP of the
-    main loop, before the MPC solve, so the controller always sees the
-    current plant state rather than the state from the previous timestep.
-  - BUG FIX: R_rate_w is now passed explicitly in run_simulation() so that
-    any weights updated by the online tuner are correctly used when "Start
-    Sim" is pressed, rather than relying on a fragile global fallback.
-  - TUNING: Q[4,4] (speed error weight) raised from 90 → 150. The old
-    value was too weak to compete against the large lateral/heading weights
-    on straight sections; 150 gives meaningful speed tracking without
-    disturbing the lateral behaviour.
-  - TUNING: adaptive_R_scaling uses a saturating speed scale instead of a
-    linear one, so steering cost at high speed is bounded and the
-    controller doesn't under-respond to heading errors at the top of the
-    speed profile.
-  - TUNING: adaptive_R_rate no longer reduces R_rate[1,1] (accel jerk
-    penalty) in corners — the accel channel now keeps its baseline penalty
-    there since firm, decisive braking is more important than smooth
-    braking in tight turns (see tuner.py for the matching change).
 """
 
 import numpy as np
@@ -30,8 +10,9 @@ from scipy.interpolate import CubicSpline
 from model import get_8state_discrete_model
 from optimiser import solve_mpc
 from vehicle_physics import VehicleParams, step_nonlinear_plant, init_plant_state
-import tuner
+import performance_stats
 import speed_profile
+from offline_tuner import curvature_estimate, adaptive_R_rate, adaptive_R_scaling
 
 # ==========================================
 # SETUP AND CONFIGURATION
@@ -71,28 +52,13 @@ u_bounds_max = np.array([np.radians(35), 5.0])
 # correction in corners (where the speed error is naturally small anyway
 # because the profiler has already set a low v_target there).
 Q = np.diag(
-    [
-        2725.0,  # e_y       — lateral error
-        215.0,   # e_yd      — lateral velocity
-        6590.0,  # e_psi     — heading error
-        3605.0,  # e_psi_d   — heading rate damping
-        150.0,   # e_v       — speed error (raised from 90)
-        0.0,     # e_a       — acceleration error (not penalized; R_rate handles smoothness)
-        0.0,     # delta_act — actuator steer (regularisation only)
-        0.0,     # a_act     — actuator accel (regularisation only)
-    ]
+    [669.7320546229485, 38.98747288066656, 1247.9929146654895, 72.00226306885786, 44.18749700337984, 0.0, 0.0, 0.0]
 )
 R = np.diag(
-    [
-        1400.0,  # delta_cmd
-        108.0,   # a_cmd
-    ]
+    [42.73504824590047, 3.0166628936483875]
 )
 R_rate = np.diag(
-    [
-        1561.0,  # d(delta_cmd)/dt — penalize sharp steering jerk
-        4.2,     # d(a_cmd)/dt     — penalize sharp accel/brake jerk
-    ]
+    [45.22626090681843, 0.9368120619766566]
 )
 
 is_drawing = False
@@ -103,7 +69,7 @@ path_X, path_Y, path_Psi = [], [], []
 path_v_profile = np.array([])  # curvature-based target speed at each path point
 sim_history = {}
 vehicle_params = VehicleParams()
-is_optimizing = False
+
 
 # ==========================================
 # INTERACTIVE GUI LAYOUT
@@ -192,7 +158,7 @@ btn_reset = Button(
     ax_btn_reset, "Reset Environment", color="tomato", hovercolor="crimson"
 )
 btn_optimize = Button(
-    ax_btn_optimize, "Optimise Weights (x10)", color="lightblue", hovercolor="deepskyblue"
+    ax_btn_optimize, "Show Metrics", color="lightblue", hovercolor="deepskyblue"
 )
 
 
@@ -381,23 +347,6 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, flip, rng_seed=None, max_steps=40
     repeated rollouts (used by the optimizer) aren't all identical -- which
     gives a meaningful average RMSE across "10 runs" rather than just
     running the same deterministic trajectory 10 times.
-
-    BUG FIX (v6): x_current is now rebuilt from plant state at the TOP of
-    every loop iteration, before the MPC solve.  In v5 it was rebuilt at
-    the BOTTOM (after plant step + reference lookup), meaning the MPC was
-    always solving with the state from the *previous* timestep.  The new
-    order is:
-        1. Rebuild x_current from current plant_state + reference point
-        2. Solve MPC with x_current  ← controller sees current state
-        3. Advance plant with u_opt
-    This is also why x_current is no longer pre-initialised outside the
-    loop with the full error vector; the loop handles step 0 naturally.
-
-    R_rate_w: optional override for the actuator-rate-of-change weight
-    matrix. Defaults to the module-level R_rate global (used by the normal
-    "Start Sim" button). The tuner passes a different value explicitly per
-    candidate so that candidate vs. baseline comparisons can't be corrupted
-    by leftover global state.
     """
     if R_rate_w is None:
         R_rate_w = R_rate
@@ -504,9 +453,9 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, flip, rng_seed=None, max_steps=40
         current_v = plant_state[3]
         Ad, Bd = get_8state_discrete_model(max(current_v, 0.5), dt)
 
-        kappa = tuner.curvature_estimate(plant_state)
-        R_rate_scaled = tuner.adaptive_R_rate(kappa, R_rate_w)
-        R_scaled = tuner.adaptive_R_scaling(current_v, R_w)
+        kappa = curvature_estimate(plant_state)
+        R_rate_scaled = adaptive_R_rate(kappa, R_rate_w)
+        R_scaled = adaptive_R_scaling(current_v, R_w)
 
         u_opt = solve_mpc(
             x_current, Ad, Bd, N_horizon,
@@ -564,9 +513,6 @@ def run_simulation(event):
         ax_map.set_title("ERROR: Draw a path first!", color="red", fontweight="bold")
         fig.canvas.draw_idle()
         return
-    if is_optimizing:
-        return
-
     is_simulated = True
     btn_start.set_active(False)
     btn_flip.set_active(False)
@@ -599,74 +545,41 @@ btn_start.on_clicked(run_simulation)
 
 
 # ==========================================
-# AUTO-TUNER (OPTIMISE BUTTON)
+# PERFORMANCE METRICS (SHOW METRICS BUTTON)
 # ==========================================
 def run_optimize(event):
     """
-    Runs 10 closed-loop rollouts on the currently drawn path with the
-    current Q/R/R_rate weights, then 10 more with a perturbed candidate,
-    and keeps whichever set of weights produced lower tracking RMSE.
-    Pressing the button again continues the search from whatever weights
-    are currently applied.
+    Scores the most recently completed simulation and prints a full
+    performance breakdown to the console. No rollouts are re-run and no
+    weights are modified — weight tuning is done exclusively via
+    offline_tuner.py.
+
+    The composite score and all sub-terms are computed with the identical
+    formula used by offline_tuner.run_headless_rollout, so live scores are
+    directly comparable to offline tuning results.
+
+    Requires a simulation to have been run first ("Start Sim").
     """
-    global Q, R, R_rate, is_optimizing
-    if len(path_X) == 0:
-        ax_map.set_title("ERROR: Draw a path first!", color="red", fontweight="bold")
+    if not is_simulated or not sim_history:
+        ax_map.set_title(
+            "Run a simulation first (Start Sim), then Show Metrics.",
+            fontweight="bold", color="darkorange",
+        )
         fig.canvas.draw_idle()
         return
-    if is_optimizing:
-        return
 
-    is_optimizing = True
-    btn_start.set_active(False)
-    btn_flip.set_active(False)
-    btn_reset.set_active(False)
-    btn_optimize.set_active(False)
-    ax_map.set_title("Optimising cost weights (10 + 10 rollouts)... please wait.",
-                      fontweight="bold", color="darkblue")
-    fig.canvas.draw_idle()
-    plt.pause(0.01)
+    print("=" * 58)
+    metrics = performance_stats.report_performance_metrics(sim_history, log_fn=print)
 
-    ey0 = slider_ey0.val if ax_ey0.get_visible() else 0.0
-    epsi0 = slider_epsi0.val if ax_epsi0.get_visible() else 0.0
-
-    def run_rollout_fn(Q_w, R_w, R_rate_w, seed):
-        return simulate_closed_loop(
-            Q_w, R_w, ey0, epsi0, flip_heading_180, rng_seed=seed, R_rate_w=R_rate_w
-        )
-
-    print("=" * 60)
-    new_Q, new_R, new_R_rate, info = tuner.optimize_weights(
-        Q, R, R_rate, run_rollout_fn, num_runs=10, rng_seed=None, log_fn=print
-    )
-    print("=" * 60)
-
-    Q, R, R_rate = new_Q, new_R, new_R_rate
-
-    global sim_history, is_simulated
-    sim_history = run_rollout_fn(Q, R, R_rate, seed=0)
-    is_simulated = True
-    ax_ey0.set_visible(False)
-    ax_epsi0.set_visible(False)
-    ax_scrub.set_visible(True)
-    slider_scrub.valmax = len(sim_history["X"]) - 1
-    slider_scrub.ax.set_xlim(0, len(sim_history["X"]) - 1)
-    slider_scrub.on_changed(update_scrub_frame)
-    update_scrub_frame(0)
-
-    status = "IMPROVED" if info["accepted"] else "UNCHANGED (no improvement found)"
     ax_map.set_title(
-        f"Optimise complete: {status}. Best RMSE = {info['best_rmse']:.3f} m "
-        f"(see console for full weight log).",
+        f"Metrics: composite={metrics['composite_score']:.4f}  "
+        f"lat={metrics['lateral_rmse_m']:.3f} m  "
+        f"hdg={metrics['heading_rmse_deg']:.2f}°  "
+        f"completion={metrics['completion_pct']:.0f}%  "
+        f"(see console)",
         fontweight="bold",
-        color="darkgreen" if info["accepted"] else "darkorange",
+        color="darkgreen" if not metrics["failed"] else "crimson",
     )
-
-    is_optimizing = False
-    btn_start.set_active(True)
-    btn_flip.set_active(True)
-    btn_reset.set_active(True)
-    btn_optimize.set_active(True)
     fig.canvas.draw_idle()
 
 

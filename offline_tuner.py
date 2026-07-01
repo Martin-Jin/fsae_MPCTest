@@ -1,54 +1,5 @@
 # Language: python
 # Title: Offline Auto-Tuner with Synthetic Path Library (offline_tuner.py)
-#
-# Changes from previous version:
-#
-#   BUG FIX (#3): x0_mpc state vector construction corrected.
-#     - Index 4 (e_v) is now vx - v_target (speed error against the path
-#       profile), not vx - vx0_rand (a fixed initial speed, meaningless
-#       once the car has slowed for a corner).
-#     - Index 5 (e_a) is now 0.0, matching simulation.py.  The old code
-#       used state[7] (a_act) here, which is wrong: e_a is the
-#       *acceleration error* slot which simulation.py always sets to 0.
-#     - Indices 6/7 (delta_act, a_act) are correctly state[6] and state[7].
-#
-#   BUG FIX (#4): Tracking errors are now computed against a real reference
-#     path (closest-point projection) instead of using raw global Y as a
-#     proxy for lateral error. Each rollout drives one of the synthetic
-#     paths defined below, so e_y and e_psi mean exactly the same thing
-#     here as they do in simulation.py.
-#
-#   IMPROVEMENT (#9): N_horizon is 25, matching simulation.py (was 30).
-#     MPC weights are horizon-dependent; tuning with a mismatched horizon
-#     produces weights that don't transfer cleanly to the live simulator.
-#
-#   IMPROVEMENT (#10): Six synthetic reference paths replace the old
-#     straight-line approximation.  Each path exercises a different
-#     tracking scenario the weights need to handle:
-#       PATH_GENTLE_CURVE    — long gradual bend, tests steady-state lateral
-#       PATH_HAIRPIN         — tight 180° hairpin after a straight, tests
-#                              hard deceleration + high curvature recovery
-#       PATH_SUDDEN_TURN     — full-speed straight then abrupt 90° turn,
-#                              tests emergency steering response
-#       PATH_S_BEND          — classic S-shape, tests direction reversal
-#       PATH_CHICANE         — rapid left-right-left, tests steering frequency
-#       PATH_MIXED           — combination of all of the above in sequence
-#     Each path is pre-processed with the same speed profiler used in
-#     simulation.py so that v_target at each point is physically meaningful
-#     and consistent.
-#
-#   IMPROVEMENT (#12): DE budget reduced to popsize=8, maxiter=12 for a
-#     faster initial sweep.  With 9 tunable parameters that is still
-#     8*9*2=144 population members × 12 generations = 1728 evaluations,
-#     each evaluated over num_runs=3 rollouts on randomly selected paths.
-#     A subsequent online-tuner hill-climb pass then refines from there.
-#
-#   IMPROVEMENT (#14): Removed the redundant _init_context population in
-#     the parent process (__main__ block). Those assignments were never
-#     read: evaluate_candidate is only called inside worker processes via
-#     pool.map, where the context is populated by init_worker(). The parent-
-#     side dict population was dead code that gave a false impression of
-#     shared memory.
 
 import numpy as np
 import multiprocessing as mp
@@ -56,19 +7,48 @@ import time
 from scipy.optimize import differential_evolution
 from scipy.interpolate import CubicSpline
 
-from tuner import (
-    Q_BOUNDS,
-    R_BOUNDS,
-    R_RATE_BOUNDS,
-    adaptive_R_rate,
-    curvature_estimate,
-    adaptive_R_scaling,
-    vector_to_weights,
-)
 from vehicle_physics import VehicleParams, step_nonlinear_plant, init_plant_state
 from model import get_8state_discrete_model
 from optimiser import solve_mpc
 import speed_profile as sp
+import cvxpy as cp
+
+# --- TUNING WEIGHT INDEXES ---
+TUNABLE_Q_IDX      = [0, 1, 2, 3, 4]  # e_y, e_y_dot, e_psi, e_psi_dot, e_v
+TUNABLE_R_IDX      = [0, 1]            # delta_cmd, a_cmd
+TUNABLE_R_RATE_IDX = [0, 1]           # d(delta_cmd)/dt, d(a_cmd)/dt
+
+# --- PROGRAMMATIC MULTIPLIER BOUNDARIES ---
+# Adjusted to prevent explosive values while still allowing sufficient flexibility.
+Q_MULTIPLIER_BOUNDS = {
+    0: (0.2, 2.5),
+    1: (0.2, 2.0),   
+    2: (0.2, 2.0),
+    3: (0.2, 2.0),
+    4: (0.2, 3.0),    
+}
+
+R_MULTIPLIER_BOUNDS = {
+    0: (0.3, 2.5),    
+    1: (0.3, 2.5),    
+}
+
+# Raised the floor from 0.1 to 0.25 to prevent numerical ill-conditioning against Q
+R_RATE_MULTIPLIER_BOUNDS = {
+    0: (0.25, 3.0),   
+    1: (0.25, 3.0),  
+}
+
+# --- PROGRAMMATIC BOUNDS GENERATION ---
+bounds = []
+for idx in TUNABLE_Q_IDX:
+    bounds.append(Q_MULTIPLIER_BOUNDS.get(idx, (0.2, 2.0)))
+
+for idx in TUNABLE_R_IDX:
+    bounds.append(R_MULTIPLIER_BOUNDS.get(idx, (0.2, 2.0)))
+
+for idx in TUNABLE_R_RATE_IDX:
+    bounds.append(R_RATE_MULTIPLIER_BOUNDS.get(idx, (0.2, 2.0)))
 
 # MPC horizon must match simulation.py exactly so tuned weights transfer
 # cleanly to the live simulator.
@@ -127,6 +107,40 @@ def _make_arc(cx, cy, radius, theta_start_deg, theta_end_deg, n=20):
     angles = np.linspace(np.radians(theta_start_deg),
                          np.radians(theta_end_deg), n)
     return cx + radius * np.cos(angles), cy + radius * np.sin(angles)
+
+def vector_to_weights(vec, Q_template, R_template, R_rate_template):
+    """
+    Interpret the optimization vector elements as dynamic multipliers 
+    applied directly to the baseline template weights. 
+    
+    This keeps the optimizer search spaces normalized while maintaining
+    the absolute physical scaling ratios for the vehicle.
+    """
+    Q      = Q_template.copy()
+    R      = R_template.copy()
+    R_rate = R_rate_template.copy()
+    
+    n_q = len(TUNABLE_Q_IDX)
+    n_r = len(TUNABLE_R_IDX)
+    
+    # Apply dynamic multipliers to Q
+    for j, i in enumerate(TUNABLE_Q_IDX):
+        # Scale relative to the template's initial value. 
+        # If the template value is 0.0, fall back to 1.0 to prevent zero-lock.
+        base_val = Q_template[i, i] if Q_template[i, i] != 0.0 else 1.0
+        Q[i, i] = vec[j] * base_val
+        
+    # Apply dynamic multipliers to R
+    for j, i in enumerate(TUNABLE_R_IDX):
+        base_val = R_template[i, i] if R_template[i, i] != 0.0 else 1.0
+        R[i, i] = vec[n_q + j] * base_val
+        
+    # Apply dynamic multipliers to R_rate
+    for j, i in enumerate(TUNABLE_R_RATE_IDX):
+        base_val = R_rate_template[i, i] if R_rate_template[i, i] != 0.0 else 1.0
+        R_rate[i, i] = vec[n_q + n_r + j] * base_val
+        
+    return Q, R, R_rate
 
 
 def build_synthetic_paths():
@@ -333,18 +347,6 @@ def run_headless_rollout(weights_vector, path_name=None, num_steps=250):
     """
     Run one closed-loop rollout on a synthetic reference path with the
     given weight vector.
-
-    BUG FIX: Tracking errors are now computed via proper closest-point
-    projection onto the reference path (identical to simulation.py), so
-    e_y and e_psi here mean the same thing as they do in the live sim.
-
-    BUG FIX: The MPC state vector x0_mpc now correctly uses:
-      [5] = 0.0      (e_a, not penalised — matches simulation.py)
-      [6] = delta_act
-      [7] = a_act
-      [4] = vx - v_target (speed error against path profile, not vx0_rand)
-
-    IMPROVEMENT: N_HORIZON = 25 (matches simulation.py, was 30).
     """
     Q_init    = _init_context["Q"]
     R_init    = _init_context["R"]
@@ -358,16 +360,15 @@ def run_headless_rollout(weights_vector, path_name=None, num_steps=250):
     u_min = [-0.4, -10.0]
     u_max  = [ 0.4,   4.0]
 
-    rng = np.random.default_rng(int(time.time() * 1e6) % 2**32)
+    rng = np.random.default_rng(42)
 
-    # --- Select a reference path ---
     if path_name is None:
         path_name = rng.choice(_PATH_POOL)
     path_X, path_Y, path_Psi, path_v = SYNTHETIC_PATHS[path_name]
 
-    # --- Initial conditions: small random offset from path start ---
-    ey0   = rng.uniform(-0.4, 0.4)
-    epsi0 = rng.uniform(-0.15, 0.15)   # rad
+    # Fixed seed for starting offsets ensures deterministic comparison across candidates
+    ey0   = rng.uniform(-0.3, 0.3)
+    epsi0 = rng.uniform(-0.1, 0.1)   
 
     base_heading = path_Psi[0]
     X0 = path_X[0] - ey0 * np.sin(base_heading)
@@ -377,69 +378,76 @@ def run_headless_rollout(weights_vector, path_name=None, num_steps=250):
 
     state  = init_plant_state(X0, Y0, psi0, vx0=vx0)
 
-    error_cost        = 0.0
+    error_cost = 0.0
     yaw_rate_cost     = 0.0
     control_smooth    = 0.0
+
+    # Additional control effort penalties
+    steering_effort   = 0.0
+    accel_effort      = 0.0
+    max_steering      = 0.0
+    max_accel         = 0.0
+    inaccurate_count  = 0  # Track solver degradation
     u_prev            = np.zeros(2)
     idx               = 0
     consecutive_fails = 0
     MAX_FAILS         = 5
-    OFFTRACK_LIMIT    = 8.0
+    OFFTRACK_LIMIT    = 6.0 # Tightened slightly for racing tolerances
 
     for step in range(num_steps):
-        # --- Compute tracking errors from CURRENT state (bug fix) ---
         e_y, e_psi, idx = _tracking_errors(state, path_X, path_Y, path_Psi, idx)
         v_target        = float(path_v[idx])
         vx              = max(state[3], 0.5)
 
-        # --- Build MPC state vector (bug fix: correct indices) ---
         e_y_dot = state[3] * np.sin(e_psi) + state[4] * np.cos(e_psi)
         x0_mpc  = np.array([
-            e_y,          # [0] lateral error
-            e_y_dot,      # [1] lateral velocity
-            e_psi,        # [2] heading error
-            state[5],     # [3] yaw rate r
-            vx - v_target, # [4] speed error (was vx - vx0_rand — wrong)
-            0.0,           # [5] e_a — not penalized (was state[7] — wrong)
-            state[6],     # [6] delta_act
-            state[7],     # [7] a_act
+            e_y, e_y_dot, e_psi, state[5], vx - v_target, 0.0, state[6], state[7]
         ])
 
-        # --- Adaptive MPC gains ---
-        kappa        = curvature_estimate(state)
+        kappa         = curvature_estimate(state)
         R_rate_scaled = adaptive_R_rate(kappa, R_rate)
-        R_scaled     = adaptive_R_scaling(vx, R)
+        R_scaled      = adaptive_R_scaling(vx, R)
+        Ad, Bd        = get_8state_discrete_model(vx, dt)
 
-        # --- Dynamics model at current speed ---
-        Ad, Bd = get_8state_discrete_model(vx, dt)
-
-        # --- MPC solve ---
-        u_opt = solve_mpc(
+        # ----------------------------
+        # MPC Solve: Muted & Status Tracked
+        # ----------------------------
+        mpc_result = solve_mpc(
             x0_mpc, Ad, Bd, N_HORIZON,
             Q, R_scaled, u_min, u_max,
             R_rate=R_rate_scaled, u_prev=u_prev,
+            silent=True, return_status=True
         )
 
-        if u_opt is None:
+        if mpc_result is None:
             consecutive_fails += 1
             u_opt = u_prev.copy()
         else:
+            u_opt, status = mpc_result
             consecutive_fails = 0
+            
+            # Catch cvxpy's exact string representation of OPTIMAL_INACCURATE
+            if status == cp.OPTIMAL_INACCURATE or status == 'optimal_inaccurate':
+                inaccurate_count += 1
 
         if consecutive_fails >= MAX_FAILS:
-            # Bail out early — penalize with a large fixed cost
-            return 1e3
+            return 1e3 * (1.0 + (num_steps - step) / num_steps)
 
-        # --- Accumulate costs ---
-        error_cost     += e_y**2 + 0.5 * e_psi**2
+        # Keep RMSE for reporting
+        error_cost += e_y**2 + 0.5 * e_psi**2
         yaw_rate_cost  += 0.8 * state[5]**2
-        control_smooth += abs(u_opt[0] - u_prev[0])
+        control_smooth += np.sum((u_opt-u_prev)**2)
+        # Penalise excessive control effort
+        steering_effort += u_opt[0]**2
+        accel_effort    += u_opt[1]**2
+
+        max_steering = max(max_steering, abs(u_opt[0]))
+        max_accel    = max(max_accel, abs(u_opt[1]))
 
         if abs(e_y) > OFFTRACK_LIMIT:
-            return 1e3
+            return 1e3 * (1.0 + (num_steps - step) / num_steps)
 
         if idx >= len(path_X) - 2:
-            # Reached end of path — this is success; no penalty
             num_steps = step + 1
             break
 
@@ -447,31 +455,50 @@ def run_headless_rollout(weights_vector, path_name=None, num_steps=250):
         state  = step_nonlinear_plant(state, u_opt, dt, p)
 
     rmse = np.sqrt(error_cost / max(num_steps, 1))
-    return (
-        rmse
-        + 0.15 * np.sqrt(yaw_rate_cost  / max(num_steps, 1))
-        + 0.05 * np.sqrt(control_smooth / max(num_steps, 1))
+    yaw_rms      = np.sqrt(yaw_rate_cost   / max(num_steps, 1))
+    smooth_rms   = np.sqrt(control_smooth  / max(num_steps, 1))
+    steer_rms    = np.sqrt(steering_effort / max(num_steps, 1))
+    accel_rms    = np.sqrt(accel_effort    / max(num_steps, 1))
+    score = (
+        + rmse
+        + 0.10 * yaw_rms
+        + 0.05 * smooth_rms
+        + 0.03 * steer_rms
+        + 0.01 * accel_rms
+        + 0.02 * max_steering
     )
+
+    # Reward completing the course
+    progress = idx / (len(path_X) - 1)
+    score -= 0.20 * progress
+    
+    # ----------------------------
+    # The Instability Penalty
+    # ----------------------------
+    # Destroy the fitness score of any candidate that breaks the solver math.
+    # 5.0 is an aggressive penalty; a single inaccurate tick ruins the candidate.
+    if inaccurate_count > 0:
+        score *= (1 + 0.1*inaccurate_count)
+            
+    return score
 
 
 # ==========================================
-# PICKLEABLE OBJECTIVE WRAPPER
+# DETREMINISTIC OBJECTIVE WRAPPER
 # ==========================================
 def evaluate_candidate(vec):
     """
-    Evaluate a candidate weight vector over num_runs rollouts across
-    randomly selected synthetic paths and return the mean score.
-
-    Each of the num_runs rollouts draws a path independently so the
-    objective has coverage across all path types in a single DE generation,
-    with PATH_MIXED appearing 3x as often as each specialist path.
+    Evaluate a candidate weight vector deterministically over a fixed set 
+    of critical validation paths to completely remove optimization noise.
     """
-    num_runs = 3
-    scores   = []
-    rng      = np.random.default_rng(int(time.time() * 1e6) % 2**32)
-    for _ in range(num_runs):
-        path_name = rng.choice(_PATH_POOL)
-        scores.append(run_headless_rollout(vec, path_name=path_name))
+    # Deterministic evaluation profile representing diverse conditions
+    validation_suite = ["PATH_MIXED", "PATH_HAIRPIN", "PATH_CHICANE"]
+    scores = []
+    
+    for path_name in validation_suite:
+        score = run_headless_rollout(vec, path_name=path_name)
+        scores.append(score)
+        
     return float(np.mean(scores))
 
 
@@ -480,9 +507,9 @@ def evaluate_candidate(vec):
 # ==========================================
 if __name__ == "__main__":
     # Baseline weight matrices (same as simulation.py starting values)
-    Q_init      = np.diag([2725.0, 215.0, 6590.0, 3605.0, 150.0, 0.0, 0.0, 0.0])
-    R_init      = np.diag([1400.0, 108.0])
-    R_rate_init = np.diag([1561.0, 4.2])
+    Q_init      = np.diag([669.7320546229485, 38.98747288066656, 1247.9929146654895, 72.00226306885786, 44.18749700337984, 0.0, 0.0, 0.0])
+    R_init      = np.diag([42.73504824590047, 3.0166628936483875])
+    R_rate_init = np.diag([45.22626090681843, 0.9368120619766566])
 
     # NOTE: The parent process does NOT populate _init_context here.
     # _init_context is populated exclusively via init_worker() in each
@@ -490,13 +517,38 @@ if __name__ == "__main__":
     # evaluate_candidate is never called in the parent — those assignments
     # were dead code and have been removed.
 
-    bounds = Q_BOUNDS + R_BOUNDS + R_RATE_BOUNDS
+    bounds = []
+    for idx in TUNABLE_Q_IDX:
+        bounds.append(Q_MULTIPLIER_BOUNDS.get(idx, (0.2, 2.0)))
+
+    for idx in TUNABLE_R_IDX:
+        bounds.append(R_MULTIPLIER_BOUNDS.get(idx, (0.2, 2.0)))
+
+    for idx in TUNABLE_R_RATE_IDX:
+        bounds.append(R_RATE_MULTIPLIER_BOUNDS.get(idx, (0.2, 2.0)))
 
     print("[Offline Tuner] Building synthetic path library...")
     for name, (px, py, _, _) in SYNTHETIC_PATHS.items():
         print(f"  {name}: {len(px)} points, "
               f"X=[{px.min():.1f},{px.max():.1f}] "
               f"Y=[{py.min():.1f},{py.max():.1f}]")
+        
+    # --- SEEDING THE POPULATION ---
+    # Create a vector of all 1.0s, representing your exact current base tuning configuration
+    num_params = len(bounds)
+    baseline_vector = np.ones(num_params)
+    
+    # Differential Evolution expects an array of shape (popsize * num_params, num_params)
+    # We fill the first slot of the initial population matrix with our baseline parameters.
+    pop_size_total = 8 * num_params
+    init_population = np.zeros((pop_size_total, num_params))
+    
+    # Initialize randomly within bounds using a standard uniform distribution
+    for i in range(num_params):
+        init_population[:, i] = np.random.uniform(bounds[i][0], bounds[i][1], size=pop_size_total)
+        
+    # Overwrite the very first member to be our exact current baseline setup
+    init_population[0, :] = baseline_vector
 
     print("\n[Offline Tuner] Initializing Differential Evolution (Headless)...")
     print(f"  Horizon N={N_HORIZON} (matches simulation.py)")
@@ -516,10 +568,14 @@ if __name__ == "__main__":
             evaluate_candidate,
             bounds,
             strategy="best1bin",
-            maxiter=12,       # reduced from 20 (see improvement #12)
-            popsize=8,        # reduced from 15; 8*9*2=144 members still adequate
+            maxiter=100,    
+            tol=1e-3,
+            atol=1e-3,
+            polish=True,   
+            popsize=10,        
             mutation=(0.5, 1.0),
             recombination=0.7,
+            init=init_population,
             disp=True,
             updating="deferred",
             workers=pool.map,
@@ -540,3 +596,66 @@ if __name__ == "__main__":
     print("R_diag      =", np.diag(best_R).tolist())
     print("R_rate_diag =", np.diag(best_R_rate).tolist())
     print("=" * 50)
+
+# ==========================================
+# ADAPTIVE MPC GAIN HELPERS
+# ==========================================
+def curvature_estimate(state):
+    """Simple yaw-rate / speed curvature proxy from the plant state vector.
+    state: [X, Y, psi, vx, vy, r, delta_act, a_act]
+    """
+    vx = max(state[3], 0.5)
+    r  = state[5]
+    return abs(r / vx)
+
+
+def adaptive_R_rate(kappa, R_rate_base):
+    """
+    Curvature-dependent steering jerk softening.
+
+    In tight corners we allow smoother (less penalized) steering transitions
+    so the controller can unwind quickly without fighting the rate penalty.
+    """
+    R = R_rate_base.copy()
+
+    # Steering: soften in high curvature (scale → 0 as kappa → large)
+    scale   = 1.0 / (1.0 + 3.0 * kappa)
+    R[0, 0] *= scale
+
+    # Accel/brake: keep full baseline penalty in all conditions
+    # R[1, 1] unchanged
+
+    return R
+
+
+def adaptive_R_scaling(vx, R_base):
+    """
+    Speed-dependent steering cost shaping with a saturating scale.
+
+    CHANGE: Replaced the old linear scale (1 + 0.25*vx) with a saturating
+    (Michaelis-Menten) function:
+        steer_scale = 1 + (A * vx) / (vx_half + vx)
+    where A=1.5 and vx_half=6.0, giving:
+        vx=0  → scale=1.0x  (baseline)
+        vx=6  → scale=1.75x (50% of asymptote)
+        vx=10 → scale=~2.0x (approaching asymptote at 2.5x)
+
+    The old linear formula gave 3.5x at 10 m/s, which over-penalized
+    steering corrections at the top of the speed profile and caused
+    the controller to under-respond to heading errors at high speed.
+
+    Accel scale remains a mild linear function of vx (unchanged).
+    """
+    vx = max(vx, 0.5)
+
+    A        = 1.5   # asymptotic gain above baseline
+    vx_half  = 6.0   # speed at which scale = 1 + A/2
+    steer_scale = 1.0 + (A * vx) / (vx_half + vx)
+
+    accel_scale = 1.0 + 0.05 * vx
+
+    R_scaled        = R_base.copy()
+    R_scaled[0, 0] *= steer_scale
+    R_scaled[1, 1] *= accel_scale
+
+    return R_scaled

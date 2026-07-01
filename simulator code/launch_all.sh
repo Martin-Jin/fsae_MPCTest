@@ -5,6 +5,7 @@
 # --- CONFIGURATION ---
 CONTAINER_NAME="fsds_ros2_bridge"
 WINDOWS_SIM_PATH="/mnt/c/Users/Martin/Downloads/fsds-v2.2.0-windows/FSDS.exe"
+CONTAINER_ROS2_DIR="/root/Formula-Student-Driverless-Simulator/ros2"
 
 cleanup() {
     echo ""
@@ -24,6 +25,19 @@ cleanup() {
     taskkill.exe /F /T /IM "FSOnline.exe" 2>/dev/null
     taskkill.exe /F /T /IM "Blocks.exe" 2>/dev/null
     
+    # 3. Clean up core dump files generated inside the Docker container's ROS 2 directory
+    # Checks if the container is still running before attempting to clear files
+    if [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null)" = "true" ]; then
+        echo "⏳ Waiting 3 seconds for OS to finish writing core dumps..."
+        sleep 3
+        
+        echo "🧹 Sweeping up any generated core dump files inside the container..."
+        docker exec "$CONTAINER_NAME" bash -c "find $CONTAINER_ROS2_DIR -maxdepth 1 -type f -name 'core.[0-9]*' -delete" 2>/dev/null
+        echo "✅ Core dumps cleared."
+    else
+        echo "⚠️ Container wasn't running; skipped core dump purge."
+    fi
+
     exit 0
 }
 
@@ -57,7 +71,7 @@ fi
 echo "[2/3] Initializing fsds_ros2_bridge inside container..."
 docker exec "$CONTAINER_NAME" bash -c "
     source /opt/ros/jazzy/setup.bash && \
-    cd /root/Formula-Student-Driverless-Simulator/ros2 && \
+    cd $CONTAINER_ROS2_DIR && \
     source install/local_setup.bash && \
     ros2 launch fsds_ros2_bridge fsds_ros2_bridge.launch.py
 " &
@@ -68,7 +82,7 @@ sleep 2
 echo "[3/3] Launching Autonomous Stack (Perception, Planner, Control)..."
 docker exec -it "$CONTAINER_NAME" bash -c "
     source /opt/ros/jazzy/setup.bash && \
-    cd /root/Formula-Student-Driverless-Simulator/ros2 && \
+    cd $CONTAINER_ROS2_DIR && \
     source install/local_setup.bash && \
     ros2 launch fsae_planning launch_planning.py
 "

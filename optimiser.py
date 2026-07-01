@@ -1,17 +1,5 @@
 # Language: python
 # Title: Vectorized optimiser.py
-#
-# Changes:
-#   BUG FIX: Removed the duplicate assignment of u_sol that appeared after
-#     the None/finite validity check (copy-paste remnant from an earlier
-#     refactor). The value is now assigned exactly once, after the check.
-#   IMPROVEMENT: When OSQP returns OPTIMAL_INACCURATE the code now logs a
-#     warning rather than silently accepting it, making it easier to spot
-#     when the QP is operating near the edge of feasibility (e.g. during
-#     tuning runs at aggressive weights or near track limits). The accepted
-#     behavior is unchanged -- inaccurate solutions are still used rather
-#     than discarding a usable control action at 20 Hz -- but the log gives
-#     visibility into how often this fallback is actually triggered.
 
 import cvxpy as cp
 import numpy as np
@@ -77,7 +65,7 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max):
     }
 
 
-def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max, R_rate=None, u_prev=None):
+def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max, R_rate=None, u_prev=None, silent=False, return_status=False):
     """
     Executes the parameterized MPC solver using OSQP with Clarabel fallback.
 
@@ -142,13 +130,13 @@ def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max, R_rate=None, u_prev=None):
         _mpc_cache['prob'].solve(
             solver=cp.OSQP,
             warm_start=True,
-            eps_abs=1e-3,
-            eps_rel=1e-3,
+            eps_abs=1e-5,
+            eps_rel=1e-5,
             max_iter=8000,
         )
         status = _mpc_cache['prob'].status
 
-        if status == cp.OPTIMAL_INACCURATE:
+        if status == cp.OPTIMAL_INACCURATE and not silent:
             # Warn but continue — the solution is usable at 20 Hz even if
             # the QP stopped before reaching full convergence tolerances.
             print(f"[MPC] Warning: OSQP returned OPTIMAL_INACCURATE "
@@ -160,7 +148,8 @@ def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max, R_rate=None, u_prev=None):
             status = _mpc_cache['prob'].status
 
     except cp.error.SolverError as e:
-        print(f"[MPC] Warning: Solver error: {e}")
+        if not silent:
+            print(f"[MPC] Warning: Solver error: {e}")
         return None
 
     if status not in (cp.OPTIMAL, cp.OPTIMAL_INACCURATE):
@@ -170,5 +159,9 @@ def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max, R_rate=None, u_prev=None):
 
     if u_sol is None or not np.all(np.isfinite(u_sol)):
         return None
+
+    # Return the status tuple if requested (used strictly by offline tuner)
+    if return_status:
+        return u_sol, status
 
     return u_sol
