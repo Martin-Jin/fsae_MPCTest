@@ -492,34 +492,9 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
         Fx_RL = float(np.clip(Fx_RL_req, -min(Fmax_RL, abs(Fx_RL_pac) + 1.0), min(Fmax_RL, abs(Fx_RL_pac) + 1.0)))
         Fx_RR = float(np.clip(Fx_RR_req, -min(Fmax_RR, abs(Fx_RR_pac) + 1.0), min(Fmax_RR, abs(Fx_RR_pac) + 1.0)))
 
-        # ── 10. Torque vectoring ─────────────────────────────────────────
-        # ΔT proportional to yaw rate → ΔFx at each rear wheel
-        delta_Fx_tv = (tv_gain * r / p.tr) if abs(tv_gain) > 1e-6 else 0.0
-
-        Fx_req_total = p.m * a_act
-        Fx_RL_req    = 0.5 * Fx_req_total - delta_Fx_tv
-        Fx_RR_req    = 0.5 * Fx_req_total + delta_Fx_tv
-
-        # ── 11. Pacejka longitudinal force (rear) ────────────────────────
-        Fmax_RL = mu_RL * Fz_RL
-        Fmax_RR = mu_RR * Fz_RR
-
-        Fx_RL_pac = pacejka_longitudinal_mf94(
-            kappa_RL, Fz_RL, mu_RL, p.Bx_r, p.Cx_r, p.Dx_r, p.Ex_r)
-        Fx_RR_pac = pacejka_longitudinal_mf94(
-            kappa_RR, Fz_RR, mu_RR, p.Bx_r, p.Cx_r, p.Dx_r, p.Ex_r)
-
-        # Commanded force saturated by both friction ceiling and Pacejka slip curve
-        Fx_RL = float(np.clip(Fx_RL_req, -min(Fmax_RL, abs(Fx_RL_pac) + 1.0),
-                                           min(Fmax_RL, abs(Fx_RL_pac) + 1.0)))
-        Fx_RR = float(np.clip(Fx_RR_req, -min(Fmax_RR, abs(Fx_RR_pac) + 1.0),
-                                           min(Fmax_RR, abs(Fx_RR_pac) + 1.0)))
-
         # ── 12. Wheel spin dynamics ──────────────────────────────────────
         # I_w * dω/dt = T_input - Fx * r_eff
         # T_input = Fx_req * r_eff  (commanded torque; Fx_req sets target slip)
-        T_in_RL = Fx_RL_req * p.r_eff
-        T_in_RR = Fx_RR_req * p.r_eff
         domega_FL = (Fx_FL_req * p.r_eff - Fx_FL * p.r_eff) / p.I_w_eff_f
         domega_FR = (Fx_FR_req * p.r_eff - Fx_FR * p.r_eff) / p.I_w_eff_f
         domega_RL = (Fx_RL_req * p.r_eff - Fx_RL * p.r_eff) / p.I_w_eff_r
