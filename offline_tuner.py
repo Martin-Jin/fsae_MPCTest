@@ -1,9 +1,11 @@
 # Language: python
 # Title: Offline Auto-Tuner with Synthetic Path Library (offline_tuner.py)
 
+import os
 import numpy as np
 import multiprocessing as mp
 import time
+from collections import Counter
 from scipy.interpolate import CubicSpline
 
 from vehicle_physics import VehicleParams, step_nonlinear_plant, init_plant_state
@@ -54,6 +56,23 @@ for idx in TUNABLE_R_RATE_IDX:
 # MPC horizon must match simulation.py exactly so tuned weights transfer
 # cleanly to the live simulator.
 N_HORIZON = 25
+
+# --- GRADED DNF (did-not-finish) PENALTY ---
+# Added to a failed rollout's score, scaled by the fraction of the path NOT
+# covered. Sized large enough that finishing is clearly preferred, while the
+# (1 - progress) slope still guides CMA-ES toward candidates that get further.
+DNF_PENALTY = 10.0
+# Extra penalty on how far past the off-track limit the car was when it failed.
+DNF_OFFTRACK_WEIGHT = 1.0
+
+# --- SOLVER SETTINGS FOR HEADLESS ROLLOUTS ---
+# The tuner runs millions of QP solves, so it trades a little precision for
+# speed vs. the live simulator's defaults: a looser tolerance and a lower
+# iteration ceiling let hard/ill-conditioned QPs bail out sooner instead of
+# grinding to max_iter. The live sim (simulation.py) omits these args and keeps
+# solve_mpc's tighter defaults.
+ROLLOUT_EPS = 1e-4
+ROLLOUT_MAX_ITER = 4000
 
 # Speed profile parameters — identical to simulation.py's constants so the
 # headless rollouts see the same v_target distribution as the live sim.
@@ -555,6 +574,14 @@ def run_headless_rollout(
     cumulative_distance = 0.0
     last_idx = idx
 
+    # DNF (did-not-finish) bookkeeping. Instead of returning a flat 1e3 the
+    # moment a rollout goes wrong, we flag it, break, and fold a *graded*
+    # penalty into the final score (see scoring block). A flat cliff makes the
+    # CMA-ES landscape a plateau with no gradient toward "get further along the
+    # path"; a progress-scaled penalty gives the optimiser a slope to descend.
+    dnf = False
+    offtrack_excess = 0.0
+
     MAX_FAILS = 5
     OFFTRACK_LIMIT = 6.0  # Tightened slightly for racing tolerances
 
@@ -600,6 +627,12 @@ def run_headless_rollout(
             u_prev=u_prev,
             silent=True,
             return_status=True,
+            eps_abs=ROLLOUT_EPS,
+            eps_rel=ROLLOUT_EPS,
+            max_iter=ROLLOUT_MAX_ITER,
+            # Cold-start the first solve so this rollout is independent of any
+            # solver state left by a previous rollout (keeps scoring order-free).
+            warm_start=(step != 0),
         )
 
         if mpc_result is None:
@@ -615,11 +648,15 @@ def run_headless_rollout(
                 inaccurate_count += 1
 
         if consecutive_fails >= MAX_FAILS:
-            return 1e3
-        
+            dnf = True
+            num_steps = step + 1
+            break
+
         if step > 60 and cumulative_distance < 3.0:
-            return 1e3
-        
+            dnf = True
+            num_steps = step + 1
+            break
+
         current_sign = np.sign(u_opt[0])
 
         if current_sign != 0:
@@ -652,8 +689,10 @@ def run_headless_rollout(
         max_accel = max(max_accel, abs(u_opt[1]))
 
         if abs(e_y) > OFFTRACK_LIMIT:
-            violation = abs(e_y) - OFFTRACK_LIMIT
-            return 1e3 + 500 * violation**2
+            offtrack_excess = abs(e_y) - OFFTRACK_LIMIT
+            dnf = True
+            num_steps = step + 1
+            break
 
         if idx >= len(path_X) - 2:
             num_steps = step + 1
@@ -694,13 +733,31 @@ def run_headless_rollout(
     target_speed_mean = np.mean(path_v)
     expected_time = PATH_LENGTHS[path_name] / max(target_speed_mean, 1.0)
 
-    sim_time = step * dt
-    time_bonus = max(0.0, 1.0 - (sim_time / expected_time))
+    # Only reward finishing quickly if the car actually finished — otherwise a
+    # DNF that fails early would earn a large "fast" time bonus for failing.
+    if dnf:
+        time_bonus = 0.0
+    else:
+        sim_time = step * dt
+        time_bonus = max(0.0, 1.0 - (sim_time / expected_time))
 
     score -= (
         0.50 * completion_bonus
         + 0.10 * time_bonus
     )
+
+    # ----------------------------
+    # Graded DNF penalty
+    # ----------------------------
+    # A rollout that failed (solver gave up, got stuck, or left the track) is
+    # penalised in proportion to how little of the path it covered, plus how
+    # far off-track it ended up. Because the term scales with (1 - progress),
+    # a candidate that fails at 90% of the path scores far better than one that
+    # fails at 10%, giving CMA-ES a continuous gradient toward completion
+    # instead of the old flat 1e3 plateau.
+    if dnf:
+        score += DNF_PENALTY * (1.0 - progress)
+        score += DNF_OFFTRACK_WEIGHT * offtrack_excess**2
 
     # ----------------------------
     # The Instability Penalty
@@ -722,80 +779,84 @@ def run_headless_rollout(
 
 
 # ==========================================
-# DETREMINISTIC OBJECTIVE WRAPPER
+# DETERMINISTIC OBJECTIVE WRAPPER
 # ==========================================
+# Deterministic evaluation profile representing diverse conditions. Paths listed
+# more than once are intentionally up-weighted (e.g. PATH_MIXED is the primary
+# scoring path). run_headless_rollout is deterministic in (vec, path, ey0,
+# epsi0), so instead of re-simulating duplicated entries we collapse the suite
+# to unique (path, ic) tasks with integer weights and reproduce the original
+# mean exactly via a weighted average.
+VALIDATION_SUITE = [
+    "PATH_MIXED",
+    "PATH_MIXED",
+    "PATH_MICRO_SLALOM",
+    "PATH_MICRO_SLALOM",
+    "PATH_DOUBLE_70",
+    "PATH_DOUBLE_70",
+    "PATH_TIGHTENING",
+    "PATH_TIGHTENING",
+    "PATH_HAIRPIN",
+    "PATH_CHICANE",
+    "PATH_OFFSET_CHICANE",
+    "PATH_SPIRAL",
+    "PATH_FIGURE8",
+    "PATH_GENTLE_CURVE",
+    "PATH_SUDDEN_TURN",
+    "PATH_S_BEND",
+]
+
+INITIAL_CONDITIONS = [
+    (0.00, 0.00),
+    (0.15, 0.05),
+]
+
+# Optional reduced suite for fast smoke/dev runs (TUNER_QUICK=1).
+QUICK_SUITE = ["PATH_MIXED", "PATH_HAIRPIN", "PATH_MICRO_SLALOM"]
+
+
+def _build_task_table(suite, ics):
+    """Collapse (suite x ics) into unique (path, ey0, epsi0) tasks + weights."""
+    counts = Counter((p, ey0, epsi0) for p in suite for (ey0, epsi0) in ics)
+    tasks = list(counts.keys())
+    weights = np.array([counts[t] for t in tasks], dtype=float)
+    return tasks, weights
+
+
+if os.environ.get("TUNER_QUICK") == "1":
+    EVAL_TASKS, EVAL_WEIGHTS = _build_task_table(QUICK_SUITE, INITIAL_CONDITIONS)
+else:
+    EVAL_TASKS, EVAL_WEIGHTS = _build_task_table(VALIDATION_SUITE, INITIAL_CONDITIONS)
+
+
+def _aggregate_task_scores(task_scores):
+    """Combine per-task scores into a single fitness (weighted mean + worst).
+
+    Matches the original 0.7*mean + 0.3*worst objective; the weighted mean
+    reproduces the duplicate-entry up-weighting of VALIDATION_SUITE.
+    """
+    s = np.asarray(task_scores, dtype=float)
+    weighted_mean = float(np.sum(EVAL_WEIGHTS * s) / np.sum(EVAL_WEIGHTS))
+    worst = float(np.max(s))
+    return 0.7 * weighted_mean + 0.3 * worst
+
+
+def _score_task(args):
+    """Worker entry point: run a single rollout for one (vec, path, ic) task."""
+    vec, path_name, ey0, epsi0 = args
+    return run_headless_rollout(vec, path_name=path_name, ey0=ey0, epsi0=epsi0)
+
+
 def evaluate_candidate(vec):
     """
-    Evaluate a candidate weight vector deterministically over a fixed set
-    of critical validation paths to completely remove optimization noise.
+    Evaluate a candidate weight vector deterministically over the unique
+    validation tasks. Serial fallback used when not flattening across a pool.
     """
-    # Deterministic evaluation profile representing diverse conditions
-    validation_suite = [
-        "PATH_MIXED",
-        "PATH_MIXED",
-
-        "PATH_MICRO_SLALOM",
-        "PATH_MICRO_SLALOM",
-
-        "PATH_DOUBLE_70",
-        "PATH_DOUBLE_70",
-
-        "PATH_TIGHTENING",
-        "PATH_TIGHTENING",
-
-        "PATH_HAIRPIN",
-
-        "PATH_CHICANE",
-
-        "PATH_OFFSET_CHICANE",
-
-        "PATH_SPIRAL",
-
-        "PATH_FIGURE8",
-
-        "PATH_GENTLE_CURVE",
-
-        "PATH_SUDDEN_TURN",
-
-        "PATH_S_BEND",
+    scores = [
+        run_headless_rollout(vec, path_name=p, ey0=ey0, epsi0=epsi0)
+        for (p, ey0, epsi0) in EVAL_TASKS
     ]
-
-    initial_conditions = [
-        (0.00,0.00),
-        (0.15,0.05),
-    ]
-
-    # run_headless_rollout is deterministic for a given (vec, path, ey0, epsi0),
-    # yet validation_suite intentionally lists some paths twice to up-weight
-    # them. Cache per unique (path, ic) so the duplicates re-use the result and
-    # weight the aggregate without re-running an identical rollout. This removes
-    # ~25% of the QP solves in a candidate evaluation with zero effect on the
-    # score.
-    rollout_cache = {}
-    scores = []
-
-    for path_name in validation_suite:
-        for ey0, epsi0 in initial_conditions:
-            key = (path_name, ey0, epsi0)
-            score = rollout_cache.get(key)
-            if score is None:
-                score = run_headless_rollout(
-                    vec,
-                    path_name=path_name,
-                    ey0=ey0,
-                    epsi0=epsi0,
-                )
-                rollout_cache[key] = score
-
-            scores.append(score)
-
-    mean_score = np.mean(scores)
-    worst_score = np.max(scores)
-
-    return float(
-        0.7 * mean_score +
-        0.3 * worst_score
-    )
+    return float(_aggregate_task_scores(scores))
 
 
 # ==========================================
@@ -829,9 +890,20 @@ if __name__ == "__main__":
 
     sigma0 = 0.35  # good default for multiplier tuning
 
+    # Runtime knobs (env-overridable) so a full sweep and a quick smoke test
+    # share one entry point:
+    #   TUNER_POPSIZE   — CMA-ES population size (default: CMA's heuristic)
+    #   TUNER_MAX_GEN   — generation cap (default 20)
+    #   TUNER_QUICK=1   — use the reduced QUICK_SUITE (see EVAL_TASKS above)
+    default_popsize = 4 + int(3 * np.log(len(x0)))
+    popsize = int(os.environ.get("TUNER_POPSIZE", default_popsize))
+    max_gen = int(os.environ.get("TUNER_MAX_GEN", 20))
+
     print("\n[Offline Tuner] Initializing CMA-ES...")
     print(f"  Parameters: {num_params}")
     print(f"  Initial sigma: {sigma0}")
+    print(f"  Population: {popsize} | max generations: {max_gen}")
+    print(f"  Eval tasks/candidate: {len(EVAL_TASKS)}")
 
     num_cores = max(1, mp.cpu_count() // 2)
     print(f"[Offline Tuner] Using {num_cores} workers")
@@ -852,7 +924,7 @@ if __name__ == "__main__":
             sigma0,
             {
                 "bounds": [lower, upper],
-                "popsize": 4 + int(3 * np.log(len(x0))),
+                "popsize": popsize,
                 "seed": 42,
                 "verb_disp": True,
                 "CMA_active": True,
@@ -861,6 +933,7 @@ if __name__ == "__main__":
 
         start_time = time.time()
         generation = 0
+        n_tasks = len(EVAL_TASKS)
 
         while not es.stop():
 
@@ -869,7 +942,20 @@ if __name__ == "__main__":
             # -----------------------------
             # PARALLEL EVALUATION
             # -----------------------------
-            scores = pool.map(evaluate_candidate, solutions)
+            # Flatten to (candidate x task) work units so all workers stay busy
+            # even when popsize < num_cores. Each candidate's tasks form a
+            # contiguous block in the flat result list, then are aggregated.
+            flat_tasks = [
+                (vec, p, ey0, epsi0)
+                for vec in solutions
+                for (p, ey0, epsi0) in EVAL_TASKS
+            ]
+            flat_scores = pool.map(_score_task, flat_tasks)
+
+            scores = [
+                _aggregate_task_scores(flat_scores[i * n_tasks:(i + 1) * n_tasks])
+                for i in range(len(solutions))
+            ]
 
             es.tell(solutions, scores)
 
@@ -883,7 +969,7 @@ if __name__ == "__main__":
             generation += 1
 
             # optional safety stop
-            if generation > 20:
+            if generation >= max_gen:
                 print("[CMA-ES] Max generations reached.")
                 break
 

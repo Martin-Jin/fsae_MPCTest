@@ -65,9 +65,22 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max):
     }
 
 
-def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max, R_rate=None, u_prev=None, silent=False, return_status=False):
+def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max, R_rate=None, u_prev=None,
+              silent=False, return_status=False,
+              eps_abs=1e-5, eps_rel=1e-5, max_iter=8000, warm_start=True):
     """
     Executes the parameterized MPC solver using OSQP with Clarabel fallback.
+
+    eps_abs / eps_rel / max_iter tune the OSQP stopping criteria. They default
+    to the tight, live-simulator settings; the offline tuner passes looser
+    values so its many rollouts run faster (see offline_tuner.ROLLOUT_EPS).
+
+    warm_start: reuse the previous solve's solution as the initial guess. This
+    is what makes the receding-horizon solves fast in the live sim. The offline
+    tuner passes warm_start=False on the FIRST step of each rollout so that a
+    rollout never inherits solver state left behind by a previous, unrelated
+    rollout — that carryover made the "deterministic" objective depend on
+    evaluation order.
 
     Solver status handling:
       OPTIMAL            — accepted silently.
@@ -129,10 +142,10 @@ def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max, R_rate=None, u_prev=None, silen
     try:
         _mpc_cache['prob'].solve(
             solver=cp.OSQP,
-            warm_start=True,
-            eps_abs=1e-5,
-            eps_rel=1e-5,
-            max_iter=8000,
+            warm_start=warm_start,
+            eps_abs=eps_abs,
+            eps_rel=eps_rel,
+            max_iter=max_iter,
         )
         status = _mpc_cache['prob'].status
 
