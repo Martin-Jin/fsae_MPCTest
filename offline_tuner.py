@@ -11,6 +11,7 @@ from optimiser import solve_mpc
 import speed_profile as sp
 import cvxpy as cp
 import cma
+from sim_track import place_cones, SimPerception, SimPlanner
 
 
 # --- TUNING WEIGHT INDEXES ---
@@ -182,7 +183,8 @@ def _resample_path(waypoints_x, waypoints_y, n_points=MAX_EVALS):
         path_X, path_Y
     )
     path_v = sp.smooth_profile(raw_v, window=9)
-    return path_X, path_Y, path_Psi, path_v
+    blue_all, yellow_all = place_cones(path_X, path_Y)
+    return path_X, path_Y, path_Psi, path_v, blue_all, yellow_all
 
 
 def _make_arc(cx, cy, radius, theta_start_deg, theta_end_deg, n=20):
@@ -352,7 +354,7 @@ def build_synthetic_paths():
 SYNTHETIC_PATHS = build_synthetic_paths()
 PATH_LENGTHS = {
     name: np.sum(np.hypot(np.diff(x), np.diff(y)))
-    for name, (x, y, _, _) in SYNTHETIC_PATHS.items()
+    for name, (x, y, _, _, _, _) in SYNTHETIC_PATHS.items()
 }
 PATH_NAMES = list(SYNTHETIC_PATHS.keys())
 
@@ -432,7 +434,11 @@ def run_headless_rollout(
     if path_name is None:
         raise ValueError("path_name must be provided")
 
-    path_X, path_Y, path_Psi, path_v = SYNTHETIC_PATHS[path_name]
+    path_X, path_Y, path_Psi, path_v, blue_all, yellow_all = SYNTHETIC_PATHS[path_name]
+    perception = SimPerception(blue_all, yellow_all)
+    planner    = SimPlanner(v_max=18.0, v_min=2.5)
+    _b0, _y0   = perception.visible_cones(float(path_X[0]), float(path_Y[0]), float(path_Psi[0]))
+    planner.update(_b0, _y0, np.array([path_X[0], path_Y[0]]), float(path_Psi[0]))
 
     base_heading = path_Psi[0]
     X0 = path_X[0] - ey0 * np.sin(base_heading)
@@ -474,12 +480,36 @@ def run_headless_rollout(
     path_seg_dist = np.hypot(np.diff(path_X), np.diff(path_Y))
 
     for step in range(num_steps):
-        e_y, e_psi, idx = _tracking_errors(state, path_X, path_Y, path_Psi, idx)
-        if idx > last_idx:
-            cumulative_distance += np.sum(path_seg_dist[last_idx:idx])
+        car_pos_np = np.array([state[0], state[1]])
+        b_vis, y_vis = perception.visible_cones(state[0], state[1], state[2])
+        planner.update(b_vis, y_vis, car_pos_np, state[2])
 
-        last_idx = idx
-        v_target = float(path_v[idx])
+        cl = planner.centreline
+        if cl is not None and len(cl) >= 2:
+            dists = np.linalg.norm(cl - car_pos_np, axis=1)
+            cl_idx = int(np.argmin(dists))
+            seg = cl[cl_idx + 1] - cl[cl_idx] if cl_idx < len(cl) - 1 else cl[cl_idx] - cl[cl_idx - 1]
+            seg_len = float(np.linalg.norm(seg))
+            if seg_len > 1e-6:
+                t_hat   = seg / seg_len
+                right_n = np.array([t_hat[1], -t_hat[0]])
+                rpsi    = math.atan2(t_hat[1], t_hat[0])
+                e_y     = -float(np.dot(car_pos_np - cl[cl_idx], right_n))
+                e_psi   = _normalize_angle(state[2] - rpsi)
+            else:
+                e_y, e_psi, _ = _tracking_errors(state, path_X, path_Y, path_Psi, idx)
+        else:
+            e_y, e_psi, idx_new = _tracking_errors(state, path_X, path_Y, path_Psi, idx)
+            idx = idx_new
+
+        # Progress tracking still uses original path for consistent scoring
+        _, _, idx_ref = _tracking_errors(state, path_X, path_Y, path_Psi, idx)
+        if idx_ref > last_idx:
+            cumulative_distance += np.sum(path_seg_dist[last_idx:idx_ref])
+        last_idx = idx_ref
+
+        _, v_target = planner.get_target(car_pos_np, state[2])
+        v_target = float(v_target)
         vx = max(state[3], 0.5)
 
         e_y_dot = state[3] * np.sin(e_psi) + state[4] * np.cos(e_psi)
@@ -704,7 +734,7 @@ if __name__ == "__main__":
     R_rate_init = R_rate
 
     print("[Offline Tuner] Building synthetic path library...")
-    for name, (px, py, _, _) in SYNTHETIC_PATHS.items():
+    for name, (px, py, _, _, _, _) in SYNTHETIC_PATHS.items():
         print(
             f"  {name}: {len(px)} points "
             f"X=[{px.min():.1f},{px.max():.1f}] "
