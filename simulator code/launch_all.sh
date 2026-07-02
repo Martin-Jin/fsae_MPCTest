@@ -28,9 +28,6 @@ cleanup() {
     # 3. Clean up core dump files generated inside the Docker container's ROS 2 directory
     # Checks if the container is still running before attempting to clear files
     if [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null)" = "true" ]; then
-        echo "⏳ Waiting 3 seconds for OS to finish writing core dumps..."
-        sleep 3
-        
         echo "🧹 Sweeping up any generated core dump files inside the container..."
         docker exec "$CONTAINER_NAME" bash -c "find $CONTAINER_ROS2_DIR -maxdepth 1 -type f -name 'core.[0-9]*' -delete" 2>/dev/null
         echo "✅ Core dumps cleared."
