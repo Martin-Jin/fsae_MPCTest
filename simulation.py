@@ -21,44 +21,21 @@ dt = 0.05
 N_horizon = 25
 v_ref = 7.0  # fallback constant speed, used only if no path speed profile is available yet
 
-# Speed-profiler planning limits (see speed_profile.py for full rationale).
-# Kept here, not buried in speed_profile.py's defaults, so they're easy to
-# find/tune alongside the rest of the simulation's physical parameters.
-#
-# NOTE on these specific values: mu=1.1 (~70% of the tire model's peak
-# mu=1.6) initially seemed like a reasonable safety margin in isolation,
-# but testing the full closed loop showed it was still too aggressive --
-# the MPC's internal linear model (model.py, fixed Cf/Cr cornering
-# stiffness) doesn't capture the nonlinear/load-sensitive grip falloff of
-# the dual-track plant at speed, so the car would enter corners faster
-# than it could actually track, run >3.5m off the soft lateral-error
-# corridor, and push the QP into numerically-infeasible territory. mu=0.6
-# (~37% of peak) leaves enough margin for that model mismatch in practice.
-SPEED_PROFILE_V_MAX = 16.0
-SPEED_PROFILE_MU = 0.6
-SPEED_PROFILE_A_ACCEL_MAX = 2.5
-SPEED_PROFILE_A_BRAKE_MAX = 4.0
-SPEED_PROFILE_V_MIN = 2.5
-
-u_bounds_min = np.array([-np.radians(35), -5.0])
-u_bounds_max = np.array([np.radians(35), 5.0])
-
 # Cost weight matrices.
 # States: [e_y, e_y_dot, e_psi, e_psi_dot, e_v, e_a, delta_act, a_act]
-#
-# Q[4,4] (e_v) raised from 90 → 150: the old value was too weak on straights
-# where lateral/heading errors are small and the speed error term needs to
-# matter. 150 gives assertive speed tracking without competing with lateral
-# correction in corners (where the speed error is naturally small anyway
-# because the profiler has already set a low v_target there).
+# For tuning copy and paste purposes
+Q_diag      = [45.33434239854876, 16.27752760612609, 45.489555566489095, 13.158321107722282, 10.961280881221775, 0.0, 0.0, 0.0]
+R_diag      = [5.200593285673304, 2.763294060691742]
+R_rate_diag = [0.6401357752583415, 15.178559401234637]
+
 Q = np.diag(
-    [2.9524291991385176, 7.8228842301596035, 5.473825086371393, 9.393638783113252, 0.10003555980843215, 0.0, 0.0, 0.0]
+    Q_diag
 )
 R = np.diag(
-    [5.323327968156872, 5.000400671732122]
+    R_diag
 )
 R_rate = np.diag(
-    [1.6467313942773856, 6.936300688235383]
+    R_rate_diag
 )
 
 is_drawing = False
@@ -68,7 +45,11 @@ drawn_points = []
 path_X, path_Y, path_Psi = [], [], []
 path_v_profile = np.array([])  # curvature-based target speed at each path point
 sim_history = {}
+
 vehicle_params = VehicleParams()
+u_bounds_min = [-vehicle_params.max_steer, vehicle_params.max_accel_brake]
+u_bounds_max = [vehicle_params.max_steer, vehicle_params.max_accel]
+
 current_test_path_idx = -1  # Tracks the loaded synthetic path
 
 
@@ -317,12 +298,7 @@ def on_release(event):
     path_Psi = np.arctan2(dy, dx)
 
     raw_profile = speed_profile.compute_speed_profile(
-        path_X, path_Y,
-        v_max=SPEED_PROFILE_V_MAX,
-        mu=SPEED_PROFILE_MU,
-        a_accel_max=SPEED_PROFILE_A_ACCEL_MAX,
-        a_brake_max=SPEED_PROFILE_A_BRAKE_MAX,
-        v_min=SPEED_PROFILE_V_MIN,
+        path_X, path_Y
     )
     path_v_profile = speed_profile.smooth_profile(raw_profile, window=9)
 

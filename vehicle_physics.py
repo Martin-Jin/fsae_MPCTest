@@ -119,6 +119,9 @@ class VehicleParams:
         self.tf    = 1.25      # front track width (m)
         self.tr    = 1.20      # rear  track width (m)
         self.h_cg  = 0.30      # CoG height (m)
+        self.max_steer = np.radians(35.0)  # max steering angle (rad)
+        self.max_accel  = 5.0       # max longitudinal acceleration (m/s²)
+        self.max_accel_brake = -9.0      # max longitudinal braking (m/s²)
 
         # ── Unsprung mass ────────────────────────────────────────────
         # ~3.5 kg wheel + ~1.5 kg upright per corner, FS typical

@@ -52,10 +52,10 @@ def compute_path_curvature(path_X, path_Y):
 def compute_speed_profile(
     path_X, path_Y,
     v_max=18.0,
-    mu=1.1,
+    mu=0.6,
     g=9.81,
-    a_accel_max=10.0,
-    a_brake_max=10.0,
+    a_accel_max=5.0,
+    a_brake_max=-5.0,
     v_min=2.5,
 ):
     """
@@ -107,20 +107,20 @@ def compute_speed_profile(
     v_corner = np.sqrt(mu * g / kappa_abs)
     v_profile = np.clip(v_corner, v_min, v_max)
 
-    # # --- Step 2: forward pass (acceleration limit) ---
-    # # Can't speed up faster along the path than a_accel_max allows, even if
-    # # the corner limit ahead would otherwise permit it.
-    # for i in range(1, n):
-    #     v_allowed = np.sqrt(v_profile[i - 1] ** 2 + 2 * a_accel_max * ds[i - 1])
-    #     v_profile[i] = min(v_profile[i], v_allowed)
+    # --- Step 2: forward pass (acceleration limit) ---
+    # Can't speed up faster along the path than a_accel_max allows, even if
+    # the corner limit ahead would otherwise permit it.
+    for i in range(1, n):
+        v_allowed = np.sqrt(v_profile[i - 1] ** 2 + 2 * a_accel_max * ds[i - 1])
+        v_profile[i] = min(v_profile[i], v_allowed)
 
-    # # --- Step 3: backward pass (braking limit) ---
-    # # Must already be slow enough, looking backward from each point, to
-    # # decelerate down to it in time -- i.e. braking has to start before
-    # # the corner, not at the corner entry.
-    # for i in range(n - 2, -1, -1):
-    #     v_allowed = np.sqrt(v_profile[i + 1] ** 2 + 2 * a_brake_max * ds[i])
-    #     v_profile[i] = min(v_profile[i], v_allowed)
+    # --- Step 3: backward pass (braking limit) ---
+    # Must already be slow enough, looking backward from each point, to
+    # decelerate down to it in time -- i.e. braking has to start before
+    # the corner, not at the corner entry.
+    for i in range(n - 2, -1, -1):
+        v_allowed = np.sqrt(v_profile[i + 1] ** 2 + 2 * a_brake_max * ds[i])
+        v_profile[i] = min(v_profile[i], v_allowed)
 
     return np.clip(v_profile, v_min, v_max)
 

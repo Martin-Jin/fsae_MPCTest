@@ -67,17 +67,10 @@ DNF_OFFTRACK_WEIGHT = 1.0
 ROLLOUT_EPS = 1e-4
 ROLLOUT_MAX_ITER = 5000
 
-# Speed profile parameters — identical to simulation.py's constants.
-SP_V_MAX = 16.0
-SP_MU = 0.6
-SP_A_ACCEL_MAX = 2.5
-SP_A_BRAKE_MAX = 4.0
-SP_V_MIN = 2.5
-
 # --- Graceful shutdown flag ---
 _stop_requested = False
 # Max number of true evaluations (rollouts) to allow before stopping. Can be overridden by env var TUNER_MAX_EVALS.
-MAX_EVALS = 1500
+MAX_EVALS = 1000
 
 # ==========================================
 # SCORING WEIGHTS
@@ -102,14 +95,14 @@ MAX_EVALS = 1500
 # smooth_rms (Δu) and jerk_rms (Δ²u) are also correlated but measure different
 # timescales of roughness so both are retained with reduced individual weights.
 SCORE_WEIGHTS = np.array([
-    0.38,  # 0  rmse                (increased — primary tracking signal)
+    0.40,  # 0  rmse                (increased — primary tracking signal)
     0.06,  # 1  yaw_rms
-    0.09,  # 2  smooth_rms
-    0.03,  # 3  steer_rms
-    0.02,  # 4  accel_rms
-    0.02,  # 5  max_steering
+    0.07,  # 2  smooth_rms
+    0.04,  # 3  steer_rms
+    0.03,  # 4  accel_rms
+    0.03,  # 5  max_steering
     0.09,  # 6  steering_sat_ratio
-    0.13,  # 7  jerk_rms
+    0.10,  # 7  jerk_rms
     0.03,  # 8  max_yaw_rate
     0.02,  # 9  steering_reversals
     0.13,  # 10 peak_lateral_error
@@ -186,10 +179,7 @@ def _resample_path(waypoints_x, waypoints_y, n_points=MAX_EVALS):
     path_Psi = np.arctan2(dy, dx)
 
     raw_v = sp.compute_speed_profile(
-        path_X, path_Y,
-        v_max=SP_V_MAX, mu=SP_MU,
-        a_accel_max=SP_A_ACCEL_MAX, a_brake_max=SP_A_BRAKE_MAX,
-        v_min=SP_V_MIN,
+        path_X, path_Y
     )
     path_v = sp.smooth_profile(raw_v, window=9)
     return path_X, path_Y, path_Psi, path_v
@@ -436,8 +426,8 @@ def run_headless_rollout(
     p = _init_context["vehicle_params"]
     dt = 0.05
 
-    u_min = [-0.4, -10.0]
-    u_max = [0.4, 4.0]
+    u_min = np.array([-p.max_steer, p.a_brake_max])
+    u_max = np.array([p.max_steer, p.a_accel_max])
 
     if path_name is None:
         raise ValueError("path_name must be provided")
@@ -704,9 +694,9 @@ def parallel_evaluate_candidate(vec):
 # ==========================================
 # MAIN EXECUTION
 # ==========================================
-Q = np.diag([1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0])
-R = np.diag([1.0, 1.0])
-R_rate = np.diag([1.0, 1.0])
+Q = np.diag([5.0, 5.0, 5.0, 5.0, 5.0, 0.0, 0.0, 0.0])
+R = np.diag([5.0, 5.0])
+R_rate = np.diag([5.0, 5.0])
 
 if __name__ == "__main__":
     Q_init = Q
