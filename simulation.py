@@ -87,7 +87,9 @@ ax_info.axis("off")
 (pred_line,) = ax_map.plot(
     [], [], "c-o", label="MPC Horizon Prediction", markersize=3, alpha=0.8
 )
-(vehicle_marker,) = ax_map.plot([], [], "g-", linewidth=2.5, label="Vehicle")
+(vehicle_marker,) = ax_map.plot([], [], "g-", linewidth=2.0, label="Vehicle")
+(blue_cones_line,) = ax_map.plot([], [], color='blue', marker='o', linestyle='None', markersize=4, label="Blue Cones")
+(yellow_cones_line,) = ax_map.plot([], [], color='gold', marker='o', linestyle='None', markersize=4, label="Yellow Cones")
 
 ax_map.set_xlim(0, 100)
 ax_map.set_ylim(0, 60)
@@ -201,6 +203,9 @@ def reset_environment(event):
     vehicle_marker.set_data([], [])
     telemetry_text.set_text("")
 
+    blue_cones_line.set_data([], [])
+    yellow_cones_line.set_data([], [])
+
     # Reset camera to default bounds
     ax_map.set_xlim(0, 100)
     ax_map.set_ylim(0, 60)
@@ -225,6 +230,7 @@ def load_test_path(event):
     """Cycles through the offline_tuner testing suites and fits the camera view."""
     global path_X, path_Y, path_Psi, path_v_profile, flip_heading_180, current_test_path_idx
     global _blue_cones_all, _yellow_cones_all
+
     if is_simulated:
         return
 
@@ -233,11 +239,16 @@ def load_test_path(event):
     path_name = PATH_NAMES[current_test_path_idx]
 
     # Unpack pre-computed geometry and optimal speed profile
-    path_X, path_Y, path_Psi, path_v_profile,_ , _ = SYNTHETIC_PATHS[path_name]
+    path_X, path_Y, path_Psi, path_v_profile, _, _ = SYNTHETIC_PATHS[path_name]
     flip_heading_180 = False
 
     # Generate cones AFTER path variables are populated
     _blue_cones_all, _yellow_cones_all = place_cones(path_X, path_Y)
+
+    # Render cones
+    if len(_blue_cones_all) > 0:
+        blue_cones_line.set_data(_blue_cones_all[:, 0], _blue_cones_all[:, 1])
+        yellow_cones_line.set_data(_yellow_cones_all[:, 0], _yellow_cones_all[:, 1])
 
     path_line.set_data(path_X, path_Y)
     
@@ -318,6 +329,11 @@ def on_release(event):
     global _blue_cones_all, _yellow_cones_all
     flip_heading_180 = False
     _blue_cones_all, _yellow_cones_all = place_cones(path_X, path_Y)
+    
+    if len(_blue_cones_all) > 0:
+        blue_cones_line.set_data(_blue_cones_all[:, 0], _blue_cones_all[:, 1])
+        yellow_cones_line.set_data(_yellow_cones_all[:, 0], _yellow_cones_all[:, 1])
+        
     path_line.set_data(path_X, path_Y)
 
     car_x, car_y = get_car_triangle(path_X[0], path_Y[0], path_Psi[0])
