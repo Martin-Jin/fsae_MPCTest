@@ -8,7 +8,7 @@ This includes an implementation of a control node that is combined with the fsae
 to run the MPC controller in the fsds simulator, which simulates the car using unreal engine 4.
 
 The 2D simulator simulates perception and planning for an autonomous vehicle, rather than just using a predefined path. 
-This is implemented by placing cones to define the borders of a provided path in `sim_track` with the help of some cone functions from the fsae_planning repo.
+This is implemented by placing cones to define the borders of a provided path in `sim_track` with the help of some cone functions (in the `planning` folder) from the fsae_planning repo. 
 
 fsds simulator repo: https://github.com/FS-Driverless/Formula-Student-Driverless-Simulator (current implementation uses commit 59f03fa, and the V2.20 release)
 fsae planning repo: https://github.com/UOA-FSAE/fsae_planning (current implementation uses commit 28dcd4d)
@@ -119,6 +119,7 @@ optimiser.py            │  optimiser.py       (shared)
 ---
 
 ## Module Reference
+Note this only for the main simulator files, the shared planning code in the `planning` folder is not included. Refer to the fsae_planning repo for more details.
 
 ### `simulation.py`
 **Purpose:** Interactive GUI simulator. Draw a path, configure initial errors, run
