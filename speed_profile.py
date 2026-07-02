@@ -51,11 +51,11 @@ def compute_path_curvature(path_X, path_Y):
 
 def compute_speed_profile(
     path_X, path_Y,
-    v_max=16.0,
+    v_max=18.0,
     mu=1.1,
     g=9.81,
-    a_accel_max=3.5,
-    a_brake_max=4.5,
+    a_accel_max=10.0,
+    a_brake_max=10.0,
     v_min=2.5,
 ):
     """
@@ -64,7 +64,7 @@ def compute_speed_profile(
     v_max:        absolute top speed cap (straight-line limited, e.g. by
                    powertrain), m/s. Set well below the plant's theoretical
                    max so the MPC always has headroom to correct -- the
-                   project's previous fixed v_ref was 7.0 m/s, so 14 m/s
+                   project's previous fixed v_ref was 7.0 m/s, so 18 m/s
                    gives meaningfully faster straights without asking the
                    8-state linear MPC model to operate far outside the
                    speed range it was effectively tuned/tested at.
@@ -107,20 +107,20 @@ def compute_speed_profile(
     v_corner = np.sqrt(mu * g / kappa_abs)
     v_profile = np.clip(v_corner, v_min, v_max)
 
-    # --- Step 2: forward pass (acceleration limit) ---
-    # Can't speed up faster along the path than a_accel_max allows, even if
-    # the corner limit ahead would otherwise permit it.
-    for i in range(1, n):
-        v_allowed = np.sqrt(v_profile[i - 1] ** 2 + 2 * a_accel_max * ds[i - 1])
-        v_profile[i] = min(v_profile[i], v_allowed)
+    # # --- Step 2: forward pass (acceleration limit) ---
+    # # Can't speed up faster along the path than a_accel_max allows, even if
+    # # the corner limit ahead would otherwise permit it.
+    # for i in range(1, n):
+    #     v_allowed = np.sqrt(v_profile[i - 1] ** 2 + 2 * a_accel_max * ds[i - 1])
+    #     v_profile[i] = min(v_profile[i], v_allowed)
 
-    # --- Step 3: backward pass (braking limit) ---
-    # Must already be slow enough, looking backward from each point, to
-    # decelerate down to it in time -- i.e. braking has to start before
-    # the corner, not at the corner entry.
-    for i in range(n - 2, -1, -1):
-        v_allowed = np.sqrt(v_profile[i + 1] ** 2 + 2 * a_brake_max * ds[i])
-        v_profile[i] = min(v_profile[i], v_allowed)
+    # # --- Step 3: backward pass (braking limit) ---
+    # # Must already be slow enough, looking backward from each point, to
+    # # decelerate down to it in time -- i.e. braking has to start before
+    # # the corner, not at the corner entry.
+    # for i in range(n - 2, -1, -1):
+    #     v_allowed = np.sqrt(v_profile[i + 1] ** 2 + 2 * a_brake_max * ds[i])
+    #     v_profile[i] = min(v_profile[i], v_allowed)
 
     return np.clip(v_profile, v_min, v_max)
 

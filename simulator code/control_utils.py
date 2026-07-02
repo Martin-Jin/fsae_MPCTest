@@ -1,4 +1,3 @@
-# Language: python
 # Title: control_utils.py
 
 """
@@ -37,6 +36,7 @@ MAX_STEER_RAD: float = math.radians(35.0)
 def _adaptive_R_scaling(vx: float, R_base: np.ndarray) -> np.ndarray:
     """
     Speed-dependent steering cost with a saturating (Michaelis-Menten) scale.
+    Dynamically scales the cost of control actions based on current velocity.
 
     steer_scale = 1 + (1.5 * vx) / (6.0 + vx)
         vx=0  → 1.0x  (baseline)
@@ -55,6 +55,8 @@ def _adaptive_R_scaling(vx: float, R_base: np.ndarray) -> np.ndarray:
 def _adaptive_R_rate(kappa: float, R_rate_base: np.ndarray) -> np.ndarray:
     """
     Curvature-dependent steering-jerk softening.
+    Reduces the penalty on steering slew rates in sharp corners to prevent
+    understeering due to excessive damping.
     """
     scale = max(0.35, 1.0 / (1.0 + 3.0 * abs(kappa)))
     R = R_rate_base.copy()
@@ -66,7 +68,7 @@ def _adaptive_R_rate(kappa: float, R_rate_base: np.ndarray) -> np.ndarray:
 def _curvature(path: np.ndarray, idx: int) -> float:
     """
     Estimate signed path curvature (1/m) at waypoint idx via finite-difference
-    of the heading angle.  Positive = left-hand turn.  Returns 0 at boundaries.
+    of the heading angle. Positive = left-hand turn. Returns 0 at boundaries.
     """
     if idx <= 0 or idx >= len(path) - 1:
         return 0.0
@@ -87,21 +89,22 @@ class MPCController:
     """
     Linear time-varying MPC for combined lateral and longitudinal path tracking.
     """
-
     # ------------------------------------------------------------------
     # Construction
     # ------------------------------------------------------------------
 
     def __init__(
         self,
-        dt: float = 0.05,
-        N:  int   = 25,
+        dt: float = 0.05, 
+        N:  int   = 25, 
     ) -> None:
         """
-        Parameters
-        ----------
-        dt : Control period (s) — must match the ROS 2 timer period.
-        N  : Prediction horizon (steps).  N=25 gives 1.25 s preview at 20 Hz.
+        Initializes the MPC controller with physical vehicle parameters,
+        cost weight matrices, and hardware limits.
+
+        Parameters:
+        dt: Control period (s) — must match the ROS 2 timer period.
+        N:  Prediction horizon (steps). N=25 gives 1.25 s preview at 20 Hz.
         """
         self.dt = dt
         self.N  = N
@@ -111,8 +114,8 @@ class MPCController:
         self.lr = 0.6    # CoM -> rear  axle (m)
         self.m  = 255.0  # Vehicle mass (kg)
         self.Iz = 110.0  # Yaw inertia (kg m^2)
-        self.Cf = 13500.0  # Front cornering stiffness (N/rad)
-        self.Cr = 14500.0  # Rear  cornering stiffness (N/rad)
+        self.Cf = 11500.0  # Front cornering stiffness (N/rad)
+        self.Cr = 12500.0  # Rear  cornering stiffness (N/rad)
 
         # First-order actuator time constants (s)
         self.tau_delta = 0.30  # Steering lag
@@ -123,25 +126,16 @@ class MPCController:
 
         # ── Cost weight matrices (Matched to simulation.py tuner defaults) ───
         # State order: [e_y, e_yd, e_psi, e_psi_d, e_v, e_a, delta_act, a_act]
-        self.Q = np.diag([
-            669.7320546229485, 
-            38.98747288066656, 
-            1247.9929146654895, 
-            72.00226306885786, 
-            44.18749700337984, 
-            0.0, 
-            0.0, 
-            0.0
-        ])
+        self.Q = np.diag([8.247279094155836, 2.4345466923305796, 8.912025910491465, 9.893825098540066, 2.8304420088442726, 0.0, 0.0, 0.0])
 
         # Terminal cost: 3x running cost for implicit Lyapunov stability.
         self.Q_terminal = 3.0 * self.Q
 
         # Absolute control-effort weights
-        self.R = np.diag([42.73504824590047, 3.0166628936483875])
+        self.R = np.diag([7.875185624500629, 9.293196369118442])
 
         # Slew-rate penalty weights (change per time-step).
-        self.R_rate = np.diag([45.22626090681843, 0.9368120619766566])
+        self.R_rate = np.diag([3.410427327934923, 3.8252835800842835])
 
         # ── Hard actuator limits ───────────────────────────────────────
         self.u_min = np.array([-MAX_STEER_RAD, -5.0])  # [rad, m/s^2]
@@ -167,6 +161,11 @@ class MPCController:
     # ------------------------------------------------------------------
 
     def _build_qp(self) -> None:
+        """
+        Constructs the CVXPY problem using parameters. 
+        This is built only once to avoid overhead; during runtime, only the 
+        parameter values (matrices, initial state) are updated before calling solve().
+        """
         nx, nu, N = self.nx, self.nu, self.N
 
         Ad_p    = cp.Parameter((nx, nx), name="Ad")
@@ -238,7 +237,15 @@ class MPCController:
         v_x:   float,
         kappa: float,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        
+        """
+        Discretizes the continuous-time linear vehicle model for the current timestep
+        using the Matrix Exponential (ZOH - Zero Order Hold).
+
+        Returns:
+            Ad: Discrete state transition matrix (8x8)
+            Bd: Discrete input matrix (8x2)
+            dd: Discrete disturbance vector (8x1) due to path curvature
+        """
         v_x = max(0.5, abs(v_x))
         m, Iz, lf, lr = self.m, self.Iz, self.lf, self.lr
         Cf, Cr        = self.Cf, self.Cr
@@ -296,48 +303,85 @@ class MPCController:
         car_yaw_rate:  float,
         desired_speed: float,
     ) -> tuple[np.ndarray, float, dict]:
-        
+        """
+        Calculates the lateral and longitudinal tracking error state of the vehicle 
+        relative to the planned trajectory. Projects the front axle position onto the path.
+
+        Returns:
+            x0: Initial state vector for the QP [e_y, e_yd, e_psi, e_psi_d, e_v, e_a, δ_act, a_act]
+            kappa: Approximated path curvature at a preview distance
+            dbg: Dictionary containing telemetry data for logging
+        """
+        # Project the rear/center coordinate to the front axle by shifting 'lf' meters along the yaw vector [cos(yaw), sin(yaw)]
         fa = car_pos + self.lf * np.array([math.cos(car_yaw), math.sin(car_yaw)])
+
+        # Compute the L2 norm (Euclidean distance) from the front axle to every individual waypoint coordinate along the path array
         base_dists = np.linalg.norm(path - fa, axis=1)
+
+        # Find the index of the minimum scalar value in the distance array to identify the closest waypoint
         base_idx   = int(np.argmin(base_dists))
 
+        # If not at the terminal waypoint, compute the forward displacement vector for the current path segment
         if base_idx < len(path) - 1:
             seg = path[base_idx + 1] - path[base_idx]
+        # If at the last waypoint, backward extrapolate the segment vector using the preceding waypoint
         else:
             seg = path[base_idx]     - path[base_idx - 1]
-        
+
+        # Calculate the Euclidean scalar length (L2 norm) of the 2D segment vector
         seg_len = float(np.linalg.norm(seg))
+
+        # Zero-division safety guard check to prevent numeric instabilities on overlapping path waypoints
         if seg_len < 1e-6:
             return np.zeros(self.nx), 0.0, {}
 
+        # Normalize the segment vector to construct a unit tangent vector 't' pointing along the path track direction
         t       = seg / seg_len
+
+        # Create a perpendicular unit normal vector rotated 90 degrees clockwise (pointing to the right of the track direction)
         right_n = np.array([t[1], -t[0]])
 
+        # Extract the orientation angle of the path segment relative to the global grid using the four-quadrant inverse tangent
         path_yaw = math.atan2(t[1], t[0])
+
+        # Compute heading error by wrapping the angular delta inside sin and cos to bound the output cleanly within [-pi, pi]
         e_psi    = math.atan2(
             math.sin(car_yaw - path_yaw),
             math.cos(car_yaw - path_yaw),
         )
 
+        # Project the tracking offset vector onto the right normal vector via dot product; invert sign so left of track yields e_y > 0
         e_y  = -float(np.dot(fa - path[base_idx], right_n))
+
+        # Derive lateral velocity error by resolving the vehicle's forward speed vector along the heading error direction
         e_yd = car_speed * math.sin(e_psi)
 
-        preview_dist = 1.5
+        # Define the forward look-ahead distance in meters for tracking upcoming track curvature
+        preview_dist = 1.0
         preview_idx  = base_idx
         accumulated  = 0.0
+
+        # Integrate segment lengths forward along the path to find the target look-ahead waypoint index
         for i in range(base_idx, len(path) - 1):
+            # Determine the Euclidean length of the upcoming segment
             seg_d = float(np.linalg.norm(path[i + 1] - path[i]))
+            # Add to the accumulated arc length
             accumulated += seg_d
+            # Stop searching once the accumulated preview window threshold has been surpassed
             if accumulated >= preview_dist:
                 preview_idx = i + 1
                 break
 
+        # Compute local path curvature (kappa = d_psi / d_s) via numerical differentiation at the preview index
         kappa = _curvature(path, preview_idx)
+
+        # Compute heading rate error by subtracting the structural path rotation rate (kappa * speed) from actual yaw rate
         e_psi_d = car_yaw_rate - kappa * car_speed
 
-        desired_speed = max(10, desired_speed)
+        # Calculate longitudinal tracking velocity error by finding the simple difference against the filtered target speed
         e_v = car_speed - desired_speed
 
+        # Pack the calculated errors and actuator states directly into the final 8-dimensional initial condition state vector x0
         x0 = np.array([
             e_y,
             e_yd,
@@ -349,6 +393,15 @@ class MPCController:
             self._a_act,
         ])
 
+
+        # print(f"\n[MPC LIVE ERRORS]\n"
+        #     f"  e_y     (Lateral Dev) : {e_y:7.3f} m\n"
+        #     f"  e_yd    (Lat Velocity): {e_yd:7.3f} m/s\n"
+        #     f"  e_psi   (Heading Err) : {math.degrees(e_psi):7.2f} deg\n"
+        #     f"  e_psi_d (Yaw Rate Err): {math.degrees(e_psi_d):7.2f} deg/s\n"
+        #     f"  e_v     (Speed Delta) : {e_v:7.3f} m/s", flush=True)
+        
+        # Map metrics to descriptive keys within a dictionary structure for downstream ROS2 debugging logs and telemetry tracking
         dbg = {
             "e_y":        e_y,
             "e_psi":      e_psi,
@@ -373,7 +426,13 @@ class MPCController:
         R_scaled:      np.ndarray,
         R_rate_scaled: np.ndarray,
     ) -> np.ndarray:
-        
+        """
+        Injects the current matrices into the parameterised CVXPY problem and solves it.
+        Defaults to OSQP, and falls back to Clarabel if numerical issues arise.
+
+        Returns:
+            Optimal control sequence vector (only returns the immediate next step [δ_cmd, a_cmd])
+        """
         if self._qp is None:
             self._build_qp()
 
@@ -436,7 +495,14 @@ class MPCController:
         desired_speed: float,
         car_yaw_rate:  float = 0.0,
     ) -> tuple[float, float, float]:
-        
+        """
+        High-level function to trigger the MPC pipeline. Given vehicle state and 
+        desired path, extracts error, discretizes the model, solves the QP, and 
+        maps physical limits to normalized outputs.
+
+        Returns:
+            Tuple of [steering (-1 to 1), throttle (0 to 1), brake (0 to 1)]
+        """
         if len(path) < 2:
             return 0.0, 0.0, 0.5   
 
@@ -489,6 +555,11 @@ class MPCController:
         return steering, throttle, brake
 
     def reset(self) -> None:
+        """
+        Clears the controller's internal state history, forcing the QP solver
+        to discard its warm start and actuator lag tracking. Useful after 
+        large disruptions like path loss or emergency stops.
+        """
         self._delta_act       = 0.0
         self._a_act           = 0.0
         self._u_prev          = np.zeros(self.nu)
