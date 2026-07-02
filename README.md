@@ -2,8 +2,16 @@
 
 A high-fidelity 2D closed-loop simulator and offline weight tuner for a Formula Student
 autonomous vehicle. The system pairs a nonlinear 22-state vehicle plant with a linear
-time-varying MPC controller, mirrors the real ROS 2 pipeline in pure Python, and
-provides CMA-ES based automated weight optimisation.
+time-varying MPC controller, and provides CMA-ES based automated weight optimisation.
+
+This includes an implementation of a control node that is combined with the fsae_planning repo (just replaces the cooresponding controller node file in the repo) 
+to run the MPC controller in the fsds simulator, which simulates the car using unreal engine 4.
+
+The 2D simulator simulates perception and planning for an autonomous vehicle, rather than just using a predefined path. 
+This is implemented by placing cones to define the borders of a provided path in `sim_track` with the help of some cone functions from the fsae_planning repo.
+
+fsds simulator repo: https://github.com/FS-Driverless/Formula-Student-Driverless-Simulator (current implementation uses commit 59f03fa, and the V2.20 release)
+fsae planning repo: https://github.com/UOA-FSAE/fsae_planning (current implementation uses commit 28dcd4d)
 
 ---
 
@@ -90,7 +98,8 @@ USER INPUT (draw path / load synthetic path)
                     └──────────────────────────────────────┘
 ```
 
-### ROS 2 vs Simulator Mapping
+### ROS 2 vs FSDS Simulator Mapping
+How each component matches the ros2 equilvalent in the planning node from fsae_planning used for the fsds simulator.
 
 ```
 ROS 2 Node              │  Simulator Equivalent
@@ -252,66 +261,6 @@ scan_end=14.0  m     short-path cap reference length
 
 ---
 
-### `boundary.py`
-**Purpose:** Two planners that build a centreline from raw cone arrays.
-
-**`build_path_walls(blue, yellow, car_pos, car_yaw, ...) → (centreline, blue_segs, yellow_segs, midpoints)`**
-Active planner. Connects same-colour cones into wall meshes, generates candidate
-midpoints, chains them with a greedy walk penalising wall-segment crossings
-(`_WALL_CROSS_PENALTY = 5000`). Falls back to `build_local_path` if fewer than
-2 midpoints.
-
-**`build_path_trace(blue, yellow, car_pos, car_yaw, ...) → centreline`**
-Reference/fallback planner (ft-fsd inspired). Sorts boundaries via same-colour
-adjacency graph, matches pairs with an oriented ellipse gate.
-
-**Dependencies:** `cone_sorting`, `path_utils`, `numpy`.
-
----
-
-### `path_utils.py`
-**Purpose:** Centreline computation, spline smoothing, lookahead waypoint, curvature
-speed estimate, and direction check.
-
-**Functions:**
-- `compute_centreline(pairs) → (N,2)` — midpoints of (left, right) cone pairs
-- `smooth_centreline(waypoints, n_out, smooth) → (N,2)` — chord-length parametric cubic spline
-- `build_local_path(blue, yellow, car_pos, car_yaw, ...) → (N,2) or None` — NN-sort fallback
-- `get_lookahead_waypoint(waypoints, car_pos, car_yaw, lookahead_dist) → (2,) or None`
-- `compute_desired_speed(waypoints, v_max, v_min, a_lat_max, ...) → float`
-- `check_direction(car_pos, car_yaw, blue, yellow) → bool`
-
-**Dependencies:** `cone_sorting`, `scipy.interpolate`, `numpy`.
-
----
-
-### `cone_sorting.py`
-**Purpose:** Low-level cone array utilities.
-
-**Functions:**
-- `separate_cones_by_color(track_msg) → (blue, yellow)` — ROS 2 Track message parser
-- `sort_cones_nn(cones, start) → (N,2)` — greedy nearest-neighbour ordering
-- `pair_cones_nn(left, right, max_dist) → list[(l,r)]` — NN pairing within `MAX_PAIR_DIST=7 m`
-- `filter_cones_forward(cones, car_pos, car_yaw, min_ahead, max_ahead, max_lateral) → (N,2)`
-
-**Dependencies:** `fs_msgs` (ROS 2, for `separate_cones_by_color` only), `numpy`.
-
----
-
-### `cone_map.py`
-**Purpose:** Persistent cone accumulator. Merges repeated observations of the same
-cone (running average within `MERGE_DIST=0.8 m`) rather than duplicating them.
-Cones never removed—map grows monotonically so historical walls are preserved.
-
-**Class:** `ConeMap`
-- `update(blue_obs, yellow_obs)` — merge new detections
-- `reset()` — clear map
-- `.blue`, `.yellow` properties — full accumulated arrays
-
-**Dependencies:** `numpy`.
-
----
-
 ### `sim_track.py`  *(new, after upgrade)*
 **Purpose:** Provides the simulator equivalents of `perception_node.py` and
 `planner_node.py`. Shares all the real planning code; only the ROS 2 message
@@ -348,17 +297,6 @@ etc. directly from `offline_tuner` — single source of truth.
 `steering_reversals`, `peak_lateral_error_m`, `completion_pct`, `failed`, `n_steps`.
 
 **Dependencies:** `offline_tuner` (for weights), `numpy`.
-
----
-
-### `viz_utils.py`
-**Purpose:** Non-blocking matplotlib overhead ego-view for ROS 2 planner node.
-Plot frame: `+x` right-of-car, `+y` ahead. Blue cones appear left, yellow right.
-
-**Class:** `Visualizer`
-- `update(car_pos, car_yaw, blue_cones, yellow_cones, centreline, blue_segs, yellow_segs, midpoints)`
-
-**Dependencies:** `matplotlib`, `numpy`.
 
 ---
 
@@ -714,9 +652,9 @@ evaluation at the cost of specialisation.
 ---
 
 ## ROS 2 Integration (fsds)
-To use the controller in the (https://github.com/FS-Driverless/Formula-Student-Driverless-Simulator), we need the fsae_planning repo (https://github.com/UOA-FSAE/fsae_planning).
+To use the controller in the fsds simulator, we first need the fsae_planning repo.
 Simply paste the contents of the `control_node.py` and `control_utils.py` into the matching files in track_utils of the planning package. 
-The simulator was created with commit hash 28dcd4d of the planning node.
+(Assuming you already have the fsds repo cloned and set up. If not, you can refer to the windows set up below.)
 
 **Topic map for the control node:**
 For reference, here is how the control node recives data and controls the car.
@@ -740,7 +678,7 @@ For reference, here is how the control node recives data and controls the car.
 ```
 
 **Launching nodes with fsds on windows:**
-To run the fsds simulator on windows, use wsl and clone the repo according to the instructions in documentation listed on the repo read me.
+To run the fsds simulator on windows, use wsl and clone the repo according to the instructions in documentation listed on the read me.
 However, download the simulator release (exe file) on windows, not on WSL for better performance.
 Note when cloning you may need to skip the larger files, otherwise it may not let you clone. 
 You can run: `GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/FS-Driverless/Formula-Student-Driverless-Simulator.git --recurse-submodules`
@@ -782,7 +720,7 @@ docker run -it \
 cd /root/Formula-Student-Driverless-Simulator/ros2
 colcon build --packages-select fsae_planning --symlink-install
 ```
-This should install all dependencies needed and then build the node.
+This should install all dependencies needed, then build the node.
 
 ---
 
