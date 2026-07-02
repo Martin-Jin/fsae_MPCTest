@@ -124,18 +124,23 @@ class MPCController:
         self.nx = 8
         self.nu = 2
 
+        # For tuning copy and paste purposes
+        Q_diag      = [45.33434239854876, 16.27752760612609, 45.489555566489095, 13.158321107722282, 49.961280881221775, 0.0, 0.0, 0.0]
+        R_diag      = [5.200593285673304, 7.763294060691742]
+        R_rate_diag = [0.6401357752583415, 15.178559401234637]
+
         # ── Cost weight matrices (Matched to simulation.py tuner defaults) ───
         # State order: [e_y, e_yd, e_psi, e_psi_d, e_v, e_a, delta_act, a_act]
-        self.Q = np.diag([8.247279094155836, 2.4345466923305796, 8.912025910491465, 9.893825098540066, 2.8304420088442726, 0.0, 0.0, 0.0])
+        self.Q = np.diag(Q_diag)
 
         # Terminal cost: 3x running cost for implicit Lyapunov stability.
         self.Q_terminal = 3.0 * self.Q
 
         # Absolute control-effort weights
-        self.R = np.diag([7.875185624500629, 9.293196369118442])
+        self.R = np.diag(R_diag)
 
         # Slew-rate penalty weights (change per time-step).
-        self.R_rate = np.diag([3.410427327934923, 3.8252835800842835])
+        self.R_rate = np.diag(R_rate_diag)
 
         # ── Hard actuator limits ───────────────────────────────────────
         self.u_min = np.array([-MAX_STEER_RAD, -5.0])  # [rad, m/s^2]
