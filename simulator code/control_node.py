@@ -1,3 +1,5 @@
+# Title: control_node.py
+
 # control_node.py — ROS 2 MPC Control Loop for FSDS
 
 import csv
@@ -20,12 +22,12 @@ from fsae_planning.cone_sorting import separate_cones_by_color
 # ── Tuneable constants ─────────────────────────────────────────────────────────
 
 V_FALLBACK       = 2.0   # m/s  — desired speed used until planner publishes one
-CONE_BRAKE_DIST  = 1.5   # m    — forward corridor depth for cone proximity brake
+CONE_BRAKE_DIST  = 2.0   # m    — forward corridor depth for cone proximity brake
 CONE_BRAKE_WIDTH = 0.18  # m    — lateral half-width of braking corridor (36 cm total)
 TARGET_TIMEOUT   = 0.5   # s    — brake if no fresh path received within this window
 
 # Minimum duration (s) the cone proximity brake must be active continuously
-# before reset() is called on the MPC.  Single-frame cone hits do not warrant
+# before reset() is called on the MPC. Single-frame cone hits do not warrant
 # discarding the warm-start; only sustained stops do.
 CONE_RESET_THRESHOLD = 0.3   # s  (~6 consecutive 50 ms ticks)
 
@@ -33,7 +35,7 @@ CONE_RESET_THRESHOLD = 0.3   # s  (~6 consecutive 50 ms ticks)
 # Set to None to disable CSV logging entirely (zero overhead when disabled).
 # Writes one row per control tick (20 Hz). At ~250 bytes/row this is roughly
 # 5 KB/s -- a 10-minute test session is ~3 MB, fine for local disk.
-LOG_DIR = FsPath('/tmp/mpc_logs')
+LOG_DIR = None #FsPath('/tmp/mpc_logs')
 LOG_FIELDS = [
     'ros_time', 'car_speed', 'desired_speed',
     'e_y', 'e_psi', 'e_psi_d', 'e_v', 'kappa',
@@ -42,9 +44,17 @@ LOG_FIELDS = [
     'car_x', 'car_y', 'car_yaw',
 ]
 
-
 class ControlNode(Node):
+    """
+    ROS 2 Node responsible for handling sensor data, maintaining vehicle state,
+    and running the MPC control loop at a fixed frequency.
+    """
+    
     def __init__(self):
+        """
+        Initializes the ControlNode, setting up ROS 2 subscriptions, publishers,
+        internal state variables, the MPC controller instance, and the telemetry logger.
+        """
         super().__init__('controller')
 
         sensor_qos = QoSProfile(
@@ -81,14 +91,13 @@ class ControlNode(Node):
 
         # ── MPC controller ─────────────────────────────────────────────
         # N=25 gives 1.25 s of preview at 50 ms per step — sufficient at 7 m/s
-        # (covers ~8.75 m, spanning 1–2 cone pairs ahead).  Larger N increases
+        # (covers ~8.75 m, spanning 1–2 cone pairs ahead). Larger N increases
         # QP solve time without benefit when speed is capped at 7 m/s.
         self._mpc = MPCController(dt=0.05, N=25)
 
         # ── CSV telemetry logger ────────────────────────────────────────
-        # One file per run, timestamped, written incrementally (not buffered
-        # in memory) so a crash mid-run doesn't lose the log. Disable by
-        # setting LOG_DIR = None at the top of this file.
+        # One file per run, timestamped, written incrementally so a crash mid-run 
+        # doesn't lose the log. Disable by setting LOG_DIR = None at the top.
         self._log_file = None
         self._log_writer = None
         if LOG_DIR is not None:
@@ -112,11 +121,19 @@ class ControlNode(Node):
     # ------------------------------------------------------------------
 
     def _go_cb(self, msg: GoSignal) -> None:
+        """
+        Callback for the 'Go' signal. 
+        Unlocks the vehicle to begin following the path.
+        """
         if not self._go_received:
             self._go_received = True
             self.get_logger().info('GO signal received. Launching control loop.')
 
     def _path_cb(self, msg: Path) -> None:
+        """
+        Callback for the planned trajectory path.
+        Converts the incoming Path poses into a 2D numpy array [x, y].
+        """
         self._path_pts = np.array(
             [[ps.pose.position.x, ps.pose.position.y] for ps in msg.poses],
             dtype=np.float64,
@@ -124,9 +141,16 @@ class ControlNode(Node):
         self._path_stamp = self.get_clock().now()
 
     def _speed_cb(self, msg: Float32) -> None:
+        """
+        Callback for the desired target speed published by the planner.
+        """
         self._desired_speed = float(msg.data)
 
     def _odom_cb(self, msg: Odometry) -> None:
+        """
+        Callback for vehicle odometry.
+        Extracts position (x, y), speed, yaw rate, and calculates yaw from the quaternion.
+        """
         p = msg.pose.pose.position
         self._car_pos = np.array([p.x, p.y])
 
@@ -141,6 +165,10 @@ class ControlNode(Node):
         self._car_yaw = math.atan2(siny_cosp, cosy_cosp)
 
     def _track_cb(self, msg: Track) -> None:
+        """
+        Callback for track cone detections.
+        Separates the incoming cone map into blue and yellow arrays for the safety brake.
+        """
         self._blue_cones, self._yellow_cones = separate_cones_by_color(msg)
 
     # ------------------------------------------------------------------
@@ -148,6 +176,11 @@ class ControlNode(Node):
     # ------------------------------------------------------------------
 
     def _control_loop(self) -> None:
+        """
+        Main execution loop running at 20 Hz.
+        Handles startup waiting, emergency braking for stale paths, executing the 
+        MPC optimization step, applying the safety cone-brake, and publishing commands.
+        """
         cmd = ControlCommand()
 
         # ── Phase 1: Hold at start line until GO signal ────────────────
@@ -195,10 +228,6 @@ class ControlNode(Node):
         cmd.brake    = brake_out
 
         # ── Telemetry log (per-tick, before any cone-brake override below) ─
-        # Logged here rather than at the very end so the row reflects what
-        # the MPC actually computed, not what the cone-brake safety layer
-        # overrode it to. If you need to debug the cone-brake override
-        # itself, add a second log call after Phase 4.
         if self._log_writer is not None:
             tel = self._mpc.last_telemetry
             try:
@@ -222,12 +251,7 @@ class ControlNode(Node):
                     'car_y': self._car_pos[1],
                     'car_yaw': self._car_yaw,
                 })
-                # Flush every row. At 20 Hz this is a negligible disk-write
-                # cost on any modern disk/container filesystem, and it means
-                # a hard kill (docker exec -it getting force-terminated
-                # before SIGINT propagates, taskkill races, etc.) loses at
-                # most the row currently being written, not up to a second
-                # of buffered data.
+                # Flush every row to ensure data is saved in case of a crash.
                 self._log_file.flush()
             except Exception as exc:
                 self.get_logger().warn(f'Telemetry log write failed: {exc!r}',
@@ -263,7 +287,7 @@ class ControlNode(Node):
         if too_close:
             cmd.throttle = 0.0
             cmd.brake    = 1.0
-            self._cone_brake_duration += self.dt if hasattr(self, 'dt') else 0.05
+            self._cone_brake_duration += 0.05
 
             # Only reset warm-start after a sustained stop — brief single-frame
             # detections should not throw away OSQP continuity.
@@ -282,8 +306,6 @@ class ControlNode(Node):
         # ── Phase 5: Timestamp and publish ────────────────────────────
         cmd.header.stamp = self.get_clock().now().to_msg()
 
-        # Per-tick telemetry at DEBUG level — does not flood the INFO log
-        # buffer at 20 Hz, but is visible when --log-level debug is set.
         self.get_logger().debug(
             f'MPC thr={cmd.throttle:.2f} brk={cmd.brake:.2f} '
             f'steer={cmd.steering:.3f} | '
@@ -301,8 +323,10 @@ class ControlNode(Node):
 
 
     def destroy_node(self) -> None:
-        # Flush and close the telemetry log cleanly on shutdown so the last
-        # few rows aren't lost in the OS write buffer.
+        """
+        Cleanup hook to cleanly close the telemetry logging file 
+        before the node shuts down.
+        """
         if self._log_file is not None:
             try:
                 self._log_file.flush()
@@ -313,6 +337,9 @@ class ControlNode(Node):
 
 
 def main(args=None):
+    """
+    Entry point for the control node executable.
+    """
     rclpy.init(args=args)
     node = ControlNode()
     try:
@@ -320,11 +347,6 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        # This is the actual fix for the lost CSV: rclpy.spin() raises/unwinds
-        # on SIGINT, and without this try/finally, destroy_node() (which
-        # flushes and closes the log file) was never reliably reached --
-        # whatever hadn't hit a 1-second flush boundary yet was silently
-        # dropped from the OS write buffer when the process died.
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

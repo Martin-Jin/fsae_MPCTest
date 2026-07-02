@@ -12,7 +12,7 @@ from optimiser import solve_mpc
 from vehicle_physics import VehicleParams, step_nonlinear_plant, init_plant_state
 import performance_stats
 import speed_profile
-from offline_tuner import curvature_estimate, adaptive_R_rate, adaptive_R_scaling
+from offline_tuner import curvature_estimate, adaptive_R_rate, adaptive_R_scaling, SYNTHETIC_PATHS, PATH_NAMES
 
 # ==========================================
 # SETUP AND CONFIGURATION
@@ -52,13 +52,13 @@ u_bounds_max = np.array([np.radians(35), 5.0])
 # correction in corners (where the speed error is naturally small anyway
 # because the profiler has already set a low v_target there).
 Q = np.diag(
-    [134.95942241300168, 27.327221404865437, 386.4336744636786, 142.63293158273837, 10.812997524426207, 0.0, 0.0, 0.0]
+    [2.9524291991385176, 7.8228842301596035, 5.473825086371393, 9.393638783113252, 0.10003555980843215, 0.0, 0.0, 0.0]
 )
 R = np.diag(
-    [90.99289213029606, 1.476665745034168]
+    [5.323327968156872, 5.000400671732122]
 )
 R_rate = np.diag(
-    [110.57544991998951, 0.24691490065604801]
+    [1.6467313942773856, 6.936300688235383]
 )
 
 is_drawing = False
@@ -69,6 +69,7 @@ path_X, path_Y, path_Psi = [], [], []
 path_v_profile = np.array([])  # curvature-based target speed at each path point
 sim_history = {}
 vehicle_params = VehicleParams()
+current_test_path_idx = -1  # Tracks the loaded synthetic path
 
 
 # ==========================================
@@ -76,10 +77,10 @@ vehicle_params = VehicleParams()
 # ==========================================
 fig = plt.figure(figsize=(15, 9.2))
 gs = fig.add_gridspec(
-    5,
+    6,  # Increased from 5 to 6 rows to fit the new button
     2,
     width_ratios=[3.8, 1.2],
-    height_ratios=[12, 1, 1, 1, 1],
+    height_ratios=[12, 1, 1, 1, 1, 1],
     left=0.06,
     right=0.94,
     top=0.94,
@@ -92,7 +93,7 @@ ax_map = fig.add_subplot(gs[0, 0])
 ax_info = fig.add_subplot(gs[0, 1])
 ax_info.axis("off")
 
-(path_line,) = ax_map.plot([], [], "r--", label="Drawn Target Path", linewidth=2)
+(path_line,) = ax_map.plot([], [], "r--", label="Target Path", linewidth=2)
 (trail_line,) = ax_map.plot([], [], "b-", label="Actual Vehicle Trail", alpha=0.6)
 (pred_line,) = ax_map.plot(
     [], [], "c-o", label="MPC Horizon Prediction", markersize=3, alpha=0.8
@@ -118,36 +119,29 @@ telemetry_text = ax_info.text(
 
 ax_ey0 = fig.add_subplot(gs[1, 0])
 ax_epsi0 = fig.add_subplot(gs[2, 0])
-ax_scrub = fig.add_subplot(gs[3:5, 0])
+ax_scrub = fig.add_subplot(gs[3:6, 0])  # Spans the remaining 3 rows
 
 slider_ey0 = Slider(
-    ax_ey0,
-    "Initial Lat Error",
-    -4.0,
-    4.0,
-    valinit=0.0,
-    valfmt="%0.1f m",
-    color="orange",
+    ax_ey0, "Initial Lat Error", -4.0, 4.0, valinit=0.0, valfmt="%0.1f m", color="orange"
 )
 slider_epsi0 = Slider(
-    ax_epsi0,
-    "Initial Yaw Error",
-    -30.0,
-    30.0,
-    valinit=0.0,
-    valfmt="%0.1f°",
-    color="orange",
+    ax_epsi0, "Initial Yaw Error", -30.0, 30.0, valinit=0.0, valfmt="%0.1f°", color="orange"
 )
 slider_scrub = Slider(
     ax_scrub, "Time", 0, 1, valinit=0, valfmt="%d", color="teal"
 )
 ax_scrub.set_visible(False)
 
-ax_btn_start = fig.add_subplot(gs[1, 1])
-ax_btn_flip = fig.add_subplot(gs[2, 1])
-ax_btn_reset = fig.add_subplot(gs[3, 1])
-ax_btn_optimize = fig.add_subplot(gs[4, 1])
+# Button stack
+ax_btn_load = fig.add_subplot(gs[1, 1])
+ax_btn_start = fig.add_subplot(gs[2, 1])
+ax_btn_flip = fig.add_subplot(gs[3, 1])
+ax_btn_reset = fig.add_subplot(gs[4, 1])
+ax_btn_optimize = fig.add_subplot(gs[5, 1])
 
+btn_load = Button(
+    ax_btn_load, "Load Test Path", color="thistle", hovercolor="plum"
+)
 btn_start = Button(
     ax_btn_start, "Start Sim", color="lightgreen", hovercolor="limegreen"
 )
@@ -202,13 +196,14 @@ def find_closest_reference_bounded(x_g, y_g, last_idx, window=40):
 # INTERACTIVE EVENT HANDLERS
 # ==========================================
 def reset_environment(event):
-    global is_simulated, flip_heading_180, drawn_points, path_X, path_Y, path_Psi, path_v_profile, sim_history
+    global is_simulated, flip_heading_180, drawn_points, path_X, path_Y, path_Psi, path_v_profile, sim_history, current_test_path_idx
     is_simulated = False
     flip_heading_180 = False
     drawn_points = []
     path_X, path_Y, path_Psi = [], [], []
     path_v_profile = np.array([])
     sim_history = {}
+    current_test_path_idx = -1  # Reset test path cycle
 
     path_line.set_data([], [])
     trail_line.set_data([], [])
@@ -216,18 +211,53 @@ def reset_environment(event):
     vehicle_marker.set_data([], [])
     telemetry_text.set_text("")
 
+    # Reset camera to default bounds
+    ax_map.set_xlim(0, 100)
+    ax_map.set_ylim(0, 60)
+
     ax_ey0.set_visible(True)
     ax_epsi0.set_visible(True)
     ax_scrub.set_visible(False)
 
+    btn_load.set_active(True)
     btn_start.set_active(True)
     btn_flip.set_active(True)
     btn_optimize.set_active(True)
     slider_ey0.set_val(0.0)
     slider_epsi0.set_val(0.0)
     ax_map.set_title(
-        "Environment Reset. Draw a new path.", fontweight="bold", color="black"
+        "Environment Reset. Draw a new path or Load Test Path.", fontweight="bold", color="black"
     )
+    fig.canvas.draw_idle()
+
+
+def load_test_path(event):
+    """Cycles through the offline_tuner testing suites and fits the camera view."""
+    global path_X, path_Y, path_Psi, path_v_profile, flip_heading_180, current_test_path_idx
+    if is_simulated:
+        return
+
+    # Cycle to the next path
+    current_test_path_idx = (current_test_path_idx + 1) % len(PATH_NAMES)
+    path_name = PATH_NAMES[current_test_path_idx]
+
+    # Unpack pre-computed geometry and optimal speed profile
+    path_X, path_Y, path_Psi, path_v_profile = SYNTHETIC_PATHS[path_name]
+    flip_heading_180 = False
+
+    path_line.set_data(path_X, path_Y)
+    
+    # Position the vehicle at the start
+    car_x, car_y = get_car_triangle(path_X[0], path_Y[0], path_Psi[0])
+    vehicle_marker.set_data(car_x, car_y)
+    
+    ax_map.set_title(f"Loaded: {path_name} | Click 'Start Sim'", fontweight="bold", color="blue")
+    
+    # Robustly frame the camera around the new path (crucial for things like S-Bends and Hairpins)
+    margin = 15.0
+    ax_map.set_xlim(np.min(path_X) - margin, np.max(path_X) + margin)
+    ax_map.set_ylim(np.min(path_Y) - margin, np.max(path_Y) + margin)
+    
     fig.canvas.draw_idle()
 
 
@@ -324,6 +354,7 @@ def toggle_heading_flip(event):
 fig.canvas.mpl_connect("button_press_event", on_press)
 fig.canvas.mpl_connect("motion_notify_event", on_motion)
 fig.canvas.mpl_connect("button_release_event", on_release)
+btn_load.on_clicked(load_test_path)
 btn_flip.on_clicked(toggle_heading_flip)
 btn_reset.on_clicked(reset_environment)
 
