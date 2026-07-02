@@ -57,6 +57,8 @@ def compute_speed_profile(
     a_accel_max=5.0,
     a_brake_max=-5.0,
     v_min=2.5,
+    safety=1.0,
+    scan_end=14.0,
 ):
     """
     Computes a per-point target speed profile along the path.
@@ -88,6 +90,17 @@ def compute_speed_profile(
                    actuator bound.
     v_min:         floor speed, so tight/noisy curvature spikes (e.g. from
                    path-drawing jitter) can't drive the target to a stop.
+    safety:        multiplicative factor applied to the curvature-derived
+                   corner speed at every point (default 1.0 = no change).
+                   Set below 1.0 to compensate for spline smoothing
+                   underestimating true curvature at corners — mirrors the
+                   `safety` argument in path_utils.compute_desired_speed.
+                   Typical value: 0.85–0.95 on tightly-splined paths.
+    scan_end:      total arc-length (m) of path considered the "full visible
+                   horizon".  When the path is shorter than this, v_max is
+                   scaled down proportionally (less visible path → less
+                   confidence to accelerate) — mirrors the short-path cap
+                   in path_utils.compute_desired_speed.
 
     Returns: v_profile, np.array same length as path_X (m/s at each point).
     """
@@ -101,28 +114,37 @@ def compute_speed_profile(
     ds = np.hypot(np.diff(path_X), np.diff(path_Y))
     ds = np.append(ds, ds[-1] if len(ds) > 0 else 1.0)  # pad to length n
 
+    # --- Short-path cap: scale v_max down when we can't see far enough ---
+    # Mirrors path_utils.compute_desired_speed: if the visible path is shorter
+    # than scan_end we don't have enough look-ahead confidence to use full v_max.
+    total_arc = float(ds[:-1].sum())  # total path length (excluding pad element)
+    v_max_eff = max(v_min, v_max * min(1.0, total_arc / scan_end))
+
     # --- Step 1: curvature-limited corner speed at every point ---
     kappa = compute_path_curvature(path_X, path_Y)
     kappa_abs = np.maximum(np.abs(kappa), 1e-6)
-    v_corner = np.sqrt(mu * g / kappa_abs)
-    v_profile = np.clip(v_corner, v_min, v_max)
+    # Apply safety multiplier here so it scales the corner speed before the
+    # forward/backward passes propagate it — the same place the ROS2 planner
+    # applies it (on the curvature-derived speed, not the final profile).
+    v_corner = safety * np.sqrt(mu * g / kappa_abs)
+    v_profile = np.clip(v_corner, v_min, v_max_eff)
 
     # --- Step 2: forward pass (acceleration limit) ---
     # Can't speed up faster along the path than a_accel_max allows, even if
     # the corner limit ahead would otherwise permit it.
     for i in range(1, n):
         v_allowed = np.sqrt(v_profile[i - 1] ** 2 + 2 * a_accel_max * ds[i - 1])
-        v_profile[i] = min(v_profile[i], v_allowed)
+        v_profile[i] = min(v_profile[i], min(v_allowed, v_max_eff))
 
     # --- Step 3: backward pass (braking limit) ---
     # Must already be slow enough, looking backward from each point, to
     # decelerate down to it in time -- i.e. braking has to start before
     # the corner, not at the corner entry.
     for i in range(n - 2, -1, -1):
-        v_allowed = np.sqrt(v_profile[i + 1] ** 2 + 2 * a_brake_max * ds[i])
-        v_profile[i] = min(v_profile[i], v_allowed)
+        radicand = v_profile[i + 1] ** 2 + 2 * a_brake_max * ds[i]
+        v_profile[i] = min(v_profile[i], np.sqrt(np.maximum(radicand, 0.0)))
 
-    return np.clip(v_profile, v_min, v_max)
+    return np.clip(v_profile, v_min, v_max_eff)
 
 
 def smooth_profile(v_profile, window=9):
