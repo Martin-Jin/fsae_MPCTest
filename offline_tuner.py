@@ -426,8 +426,8 @@ def run_headless_rollout(
     p = _init_context["vehicle_params"]
     dt = 0.05
 
-    u_min = np.array([-p.max_steer, p.a_brake_max])
-    u_max = np.array([p.max_steer, p.a_accel_max])
+    u_min = np.array([-p.max_steer, p.max_accel_brake])
+    u_max = np.array([p.max_steer, p.max_accel])
 
     if path_name is None:
         raise ValueError("path_name must be provided")
