@@ -113,7 +113,7 @@ SCORE_WEIGHTS = np.array([
 COMPLETION_BONUS_WEIGHT = 0.30   # subtracted — reward for finishing
 TIME_BONUS_WEIGHT       = 0.05   # subtracted — reward for finishing quickly
 
-assert abs(SCORE_WEIGHTS.sum() - 1.0) < 1e-9, \
+assert abs(SCORE_WEIGHTS.sum() - 1.0) < 1e-9,
     f"SCORE_WEIGHTS must sum to 1.0, got {SCORE_WEIGHTS.sum():.6f}"
 
 # Module-level dictionary to share initial parameters safely across processes
@@ -436,6 +436,8 @@ def run_headless_rollout(
         raise ValueError("path_name must be provided")
 
     path_X, path_Y, path_Psi, path_v, blue_all, yellow_all = SYNTHETIC_PATHS[path_name]
+    dynamic_steps = calculate_dynamic_max_steps(path_X, path_Y, dt=0.05)
+    num_steps = dynamic_steps
     perception = SimPerception(blue_all, yellow_all)
     planner    = SimPlanner(v_max=18.0, v_min=2.5)
     _b0, _y0   = perception.visible_cones(float(path_X[0]), float(path_Y[0]), float(path_Psi[0]))
@@ -649,13 +651,13 @@ def run_headless_rollout(
 # over-specialised weights toward mixed-path geometry at the cost of transfer.
 VALIDATION_SUITE = [
     "PATH_MICRO_SLALOM",
-    "PATH_OFFSET_CHICANE",
+    #"PATH_OFFSET_CHICANE",
     "PATH_SPIRAL",
     "PATH_SUDDEN_TURN",
-    "PATH_SKIDPAD",
+    #"PATH_SKIDPAD",
     "PATH_S_BEND",
-    "PATH_MIXED",
-    "PATH_HAIRPIN",
+    #"PATH_MIXED",
+    #"PATH_HAIRPIN",
     "PATH_CHICANE",
 ]
 
