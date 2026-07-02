@@ -13,6 +13,8 @@ from vehicle_physics import VehicleParams, step_nonlinear_plant, init_plant_stat
 import performance_stats
 import speed_profile
 from offline_tuner import curvature_estimate, adaptive_R_rate, adaptive_R_scaling, SYNTHETIC_PATHS, PATH_NAMES
+from sim_track import place_cones, SimPerception, SimPlanner
+import math
 
 # ==========================================
 # SETUP AND CONFIGURATION
@@ -38,6 +40,9 @@ R_rate = np.diag(
     R_rate_diag
 )
 
+V_MAX = 20.0
+V_MIN = 1.5
+
 is_drawing = False
 is_simulated = False
 flip_heading_180 = False
@@ -45,6 +50,8 @@ drawn_points = []
 path_X, path_Y, path_Psi = [], [], []
 path_v_profile = np.array([])  # curvature-based target speed at each path point
 sim_history = {}
+_blue_cones_all   = np.empty((0, 2))
+_yellow_cones_all = np.empty((0, 2))
 
 vehicle_params = VehicleParams()
 u_bounds_min = [-vehicle_params.max_steer, vehicle_params.max_accel_brake]
@@ -178,6 +185,7 @@ def find_closest_reference_bounded(x_g, y_g, last_idx, window=40):
 # ==========================================
 def reset_environment(event):
     global is_simulated, flip_heading_180, drawn_points, path_X, path_Y, path_Psi, path_v_profile, sim_history, current_test_path_idx
+
     is_simulated = False
     flip_heading_180 = False
     drawn_points = []
@@ -215,6 +223,8 @@ def reset_environment(event):
 def load_test_path(event):
     """Cycles through the offline_tuner testing suites and fits the camera view."""
     global path_X, path_Y, path_Psi, path_v_profile, flip_heading_180, current_test_path_idx
+    global _blue_cones_all, _yellow_cones_all
+    _blue_cones_all, _yellow_cones_all = place_cones(path_X, path_Y)
     if is_simulated:
         return
 
@@ -302,7 +312,9 @@ def on_release(event):
     )
     path_v_profile = speed_profile.smooth_profile(raw_profile, window=9)
 
+    global _blue_cones_all, _yellow_cones_all
     flip_heading_180 = False
+    _blue_cones_all, _yellow_cones_all = place_cones(path_X, path_Y)
     path_line.set_data(path_X, path_Y)
 
     car_x, car_y = get_car_triangle(path_X[0], path_Y[0], path_Psi[0])
@@ -374,6 +386,12 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, flip, rng_seed=None, max_steps=40
 
     # Nonlinear plant truth state: [X, Y, psi, vx, vy, r, delta_act, a_act]
     plant_state = init_plant_state(X_g, Y_g, psi_g, vx0=v_start)
+    perception = SimPerception(_blue_cones_all, _yellow_cones_all)
+    planner    = SimPlanner(v_max=V_MAX if 'V_MAX' in dir() else 20.0,
+                            v_min=V_MIN if 'V_MIN' in dir() else 1.5)
+    # Warm up planner with initial position so first step has a path
+    _b0, _y0 = perception.visible_cones(X_g, Y_g, psi_g)
+    planner.update(_b0, _y0, np.array([X_g, Y_g]), psi_g)
 
     u_prev = np.zeros(2)
     consecutive_solver_failures = 0
@@ -407,16 +425,36 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, flip, rng_seed=None, max_steps=40
         # ------------------------------------------------------------------
         X_g, Y_g, psi_g = plant_state[0], plant_state[1], plant_state[2]
 
-        idx, rx, ry, rpsi = find_closest_reference_bounded(X_g, Y_g, idx, window=40)
-        if flip:
-            rpsi = normalize_angle(rpsi + np.pi)
+        car_pos_np = np.array([X_g, Y_g])
+        b_vis, y_vis = perception.visible_cones(X_g, Y_g, psi_g)
+        planner.update(b_vis, y_vis, car_pos_np, psi_g)
 
-        dx_err = X_g - rx
-        dy_err = Y_g - ry
-        e_y   = dy_err * np.cos(rpsi) - dx_err * np.sin(rpsi)
+        cl = planner.centreline
+        if cl is not None and len(cl) >= 2:
+            dists = np.linalg.norm(cl - car_pos_np, axis=1)
+            cl_idx = int(np.argmin(dists))
+            if cl_idx < len(cl) - 1:
+                seg = cl[cl_idx + 1] - cl[cl_idx]
+            else:
+                seg = cl[cl_idx] - cl[cl_idx - 1]
+            seg_len = float(np.linalg.norm(seg))
+            if seg_len > 1e-6:
+                t_hat = seg / seg_len
+                right_n = np.array([t_hat[1], -t_hat[0]])
+                rpsi = math.atan2(t_hat[1], t_hat[0])
+                e_y  = -float(np.dot(car_pos_np - cl[cl_idx], right_n))
+            else:
+                rpsi = psi_g; e_y = 0.0
+        else:
+            # Fallback to drawn path while planner warms up
+            idx, rx, ry, rpsi = find_closest_reference_bounded(X_g, Y_g, idx, window=40)
+            if flip:
+                rpsi = normalize_angle(rpsi + np.pi)
+            dx_err = X_g - rx; dy_err = Y_g - ry
+            e_y = dy_err * np.cos(rpsi) - dx_err * np.sin(rpsi)
+
         e_psi = normalize_angle(psi_g - rpsi)
-
-        v_target = path_v_profile[idx] if len(path_v_profile) > 0 else v_ref
+        _, v_target = planner.get_target(car_pos_np, psi_g)
         history["v_target"].append(v_target)
         history["e_y"].append(e_y)
         history["e_psi"].append(e_psi)
