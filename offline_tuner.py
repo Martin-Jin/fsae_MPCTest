@@ -11,7 +11,8 @@ from optimiser import solve_mpc
 import speed_profile as sp
 import cvxpy as cp
 import cma
-from sim_track import place_cones, SimPerception, SimPlanner
+from sim_track import place_cones, SimPerception, SimPlanner, calculate_dynamic_max_steps
+import math
 
 
 # --- TUNING WEIGHT INDEXES ---
