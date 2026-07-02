@@ -1,3 +1,6 @@
+# Language: python
+# Title: control_utils.py
+
 """
 control_utils.py — MPC path-tracking controller for FSDS.
 
@@ -23,8 +26,8 @@ import cvxpy as cp
 import numpy as np
 from scipy.linalg import expm
 
-# FSDS: maximum physical steering deflection per ros-bridge.md
-MAX_STEER_RAD: float = math.radians(25.0)
+# FSDS: maximum physical steering deflection aligned with simulation.py bounds
+MAX_STEER_RAD: float = math.radians(35.0)
 
 
 # ---------------------------------------------------------------------------
@@ -39,11 +42,6 @@ def _adaptive_R_scaling(vx: float, R_base: np.ndarray) -> np.ndarray:
         vx=0  → 1.0x  (baseline)
         vx=6  → 1.75x (halfway to asymptote)
         vx=10 → ~2.0x (approaching 2.5x asymptote)
-
-    The old linear 1+0.25*vx gave 3.5x at 10 m/s, over-penalising steering
-    corrections at exactly the speeds where heading errors are hardest to recover.
-
-    Accel scale stays mild and linear (unchanged from prior version).
     """
     vx = max(vx, 0.5)
     steer_scale = 1.0 + (1.5 * vx) / (6.0 + vx)
@@ -57,13 +55,8 @@ def _adaptive_R_scaling(vx: float, R_base: np.ndarray) -> np.ndarray:
 def _adaptive_R_rate(kappa: float, R_rate_base: np.ndarray) -> np.ndarray:
     """
     Curvature-dependent steering-jerk softening.
-
-    In tight corners the steering rate penalty is reduced so the controller can
-    unwind quickly without fighting the slew limiter. The accel/brake jerk penalty
-    is deliberately NOT reduced in corners — firm braking timing is most important
-    exactly when the vehicle is most load-sensitive.
     """
-    scale = 1.0 / (1.0 + 3.0 * abs(kappa))
+    scale = max(0.35, 1.0 / (1.0 + 3.0 * abs(kappa)))
     R = R_rate_base.copy()
     R[0, 0] *= scale
     # R[1, 1] unchanged
@@ -93,21 +86,6 @@ def _curvature(path: np.ndarray, idx: int) -> float:
 class MPCController:
     """
     Linear time-varying MPC for combined lateral and longitudinal path tracking.
-
-    The model is re-linearised every control step around the current speed v_x
-    (LTV / gain-scheduled MPC).  The QP is compiled once into a parameterised
-    CVXPY problem; subsequent solves only inject new matrix values, keeping
-    solve time well under 10 ms with OSQP warm-starting.
-
-    Tuning quick-reference
-    ----------------------
-    Q[0,0]  (e_y weight)     up → tighter lateral tracking, may oscillate more.
-    Q[2,2]  (e_psi weight)   up → faster heading correction.
-    Q[3,3]  (e_psi_d weight) up → heavier yaw-rate damping, reduces sway.
-    Q[4,4]  (e_v weight)     up → tighter speed tracking.
-    R[0,0]  (delta effort)   up → smoother steering, more cross-track error.
-    R_rate  (du penalty)     up → smoother commands, slower response.
-    N       (horizon steps)  up → better preview, slightly slower QP solve.
     """
 
     # ------------------------------------------------------------------
@@ -124,28 +102,17 @@ class MPCController:
         ----------
         dt : Control period (s) — must match the ROS 2 timer period.
         N  : Prediction horizon (steps).  N=25 gives 1.25 s preview at 20 Hz.
-             Matches simulation.py so offline-tuned weights transfer cleanly.
-             (Previous default was 30; see model-mismatch note in control_node.py.)
         """
         self.dt = dt
         self.N  = N
 
-        # ── Vehicle geometry & dynamics (matched to FSDS TechnionCar) ─────
-        # Source: https://fs-driverless.github.io/Formula-Student-Driverless-Simulator/v2.2.0/vehicle_model/
-        #   Mass: 255 kg, Length: 180 cm, CoG height: 25 cm above ground
-        #
-        # Cornering stiffness: PhysX uses a Pacejka-like tyre model tuned for
-        # a lightweight FS car on slicks. FS slick tyres on a 255 kg car
-        # produce peak lateral ~3 kN → effective stiffness ~15000 N/rad.
-        #
-        # tau_delta = 0.20 s: PhysX applies steering gradually through its own
-        # internal filter — a longer lag better matches observed sim behaviour.
-        self.lf = 0.9    # CoM -> front axle (m)  (wheelbase 1.5 m)
+        # ── Vehicle geometry & dynamics (Matched to model.py) ─────
+        self.lf = 0.9    # CoM -> front axle (m)
         self.lr = 0.6    # CoM -> rear  axle (m)
-        self.m  = 255.0  # Vehicle mass (kg)  [FSDS spec]
-        self.Iz = 110.0  # Yaw inertia (kg m^2)  [255 kg * 0.43^2 ≈ 110]
-        self.Cf = 13500.0  # Front cornering stiffness (N/rad)  [FS slick estimate]
-        self.Cr = 14500.0  # Rear  cornering stiffness (N/rad)  [slightly stiffer rear]
+        self.m  = 255.0  # Vehicle mass (kg)
+        self.Iz = 110.0  # Yaw inertia (kg m^2)
+        self.Cf = 13500.0  # Front cornering stiffness (N/rad)
+        self.Cr = 14500.0  # Rear  cornering stiffness (N/rad)
 
         # First-order actuator time constants (s)
         self.tau_delta = 0.30  # Steering lag
@@ -154,38 +121,33 @@ class MPCController:
         self.nx = 8
         self.nu = 2
 
-        # ── Cost weight matrices ───────────────────────────────────────
+        # ── Cost weight matrices (Matched to simulation.py tuner defaults) ───
         # State order: [e_y, e_yd, e_psi, e_psi_d, e_v, e_a, delta_act, a_act]
-        self.Q = np.diag([19347.614114318592, 79.1758752760412, 22044.6986504243, 548.4099320936072, 581.5936906438126, 0.0, 0.0, 0.0])
+        self.Q = np.diag([
+            669.7320546229485, 
+            38.98747288066656, 
+            1247.9929146654895, 
+            72.00226306885786, 
+            44.18749700337984, 
+            0.0, 
+            0.0, 
+            0.0
+        ])
 
         # Terminal cost: 3x running cost for implicit Lyapunov stability.
-        # The multiplier is larger than 1x (steady-state Riccati) to give the
-        # horizon a strong incentive to converge the state to near-zero by step N,
-        # without paying the computational cost of solving a DARE every tick.
         self.Q_terminal = 3.0 * self.Q
 
         # Absolute control-effort weights
-        self.R = np.diag([
-            481.7431423309136,  # delta_cmd
-            13.50543141896676,   # a_cmd
-        ])
+        self.R = np.diag([42.73504824590047, 3.0166628936483875])
 
         # Slew-rate penalty weights (change per time-step).
-        self.R_rate = np.diag([
-            2340.8668740631647,  # d(delta_cmd)/dt — penalize sharp steering jerk
-            7.379835591908707,     # d(a_cmd)/dt     — penalize sharp accel/brake jerk
-        ])
+        self.R_rate = np.diag([45.22626090681843, 0.9368120619766566])
 
         # ── Hard actuator limits ───────────────────────────────────────
-        # u_max[1] raised from 2.0 → 5.0 to match simulation.py u_bounds_max.
-        # The old 2.0 cap prevented the MPC from commanding full acceleration
-        # authority and made the a_cmd → throttle normalisation asymmetric.
         self.u_min = np.array([-MAX_STEER_RAD, -5.0])  # [rad, m/s^2]
         self.u_max = np.array([ MAX_STEER_RAD,  5.0])
 
         # Per-step rate limits (symmetric)
-        # 4°/step @ 20 Hz = 80°/s max slew — prevents single-tick direction reversal.
-        # 0.6 m/s² per step = 12 m/s³ jerk — comfortable for FSDS PhysX.
         self.du_max = np.array([math.radians(4.0), 0.6])  # [rad/step, m/s^2/step]
 
         # ── Continuity memory ─────────────────────────────────────────
@@ -194,7 +156,7 @@ class MPCController:
         self._u_prev:         np.ndarray = np.zeros(self.nu)
         self._v_des_filtered: float      = 0.0
 
-        # Per-tick telemetry snapshot — populated by compute(), read by control_node.py.
+        # Per-tick telemetry snapshot
         self.last_telemetry: dict = {}
 
         # ── Parameterised QP (built lazily on first call) ──────────────
@@ -205,22 +167,8 @@ class MPCController:
     # ------------------------------------------------------------------
 
     def _build_qp(self) -> None:
-        """
-        Compile the finite-horizon QP into a parameterised CVXPY problem.
-
-        Called exactly once (lazy init on first compute() call).  All
-        subsequent solves only update cp.Parameter values; the symbolic graph
-        is never rebuilt.  This removes the dominant latency of the original
-        per-step problem-construction approach (~5-20 ms saved per tick).
-
-        IMPROVEMENT: Uses a vectorised formulation (matrix operations over the
-        full horizon) instead of a Python for-loop over N steps.  This reduces
-        the CVXPY expression-graph size and cuts first-call compilation time,
-        particularly for large N.
-        """
         nx, nu, N = self.nx, self.nu, self.N
 
-        # ── CVXPY Parameters (data injected each step, no recompilation) ─
         Ad_p    = cp.Parameter((nx, nx), name="Ad")
         Bd_p    = cp.Parameter((nx, nu), name="Bd")
         dd_p    = cp.Parameter(nx,       name="dd")
@@ -229,54 +177,41 @@ class MPCController:
         sqrtR_param = cp.Parameter((self.nu, self.nu), name="sqrtR")
         sqrtRr_param = cp.Parameter((self.nu, self.nu), name="sqrtRr")
 
-        # ── Decision variables ─────────────────────────────────────────
-        x = cp.Variable((nx, N + 1))   # states  x[:,0..N]
-        u = cp.Variable((nu, N))       # inputs  u[:,0..N-1]
+        x = cp.Variable((nx, N + 1))
+        u = cp.Variable((nu, N))
 
-        # ── Dynamics constraints (vectorised over all steps) ───────────
-        # x[:,k+1] = Ad @ x[:,k] + Bd @ u[:,k] + dd  for k=0..N-1
         constraints = [x[:, 0] == x0_p]
         constraints += [
             x[:, 1:] == Ad_p @ x[:, :-1] + Bd_p @ u + dd_p[:, None]
         ]
 
-        # ── Input box constraints ──────────────────────────────────────
         constraints += [
             u >= self.u_min[:, None],
             u <= self.u_max[:, None],
         ]
 
-        # ── Rate constraints ───────────────────────────────────────────
-        # Step 0: rate vs previous applied input (u_prev parameter)
         du0 = u[:, 0] - uprev_p
         constraints += [
             du0 >= -self.du_max,
             du0 <=  self.du_max,
         ]
-        # Steps 1..N-1: rate vs previous step
+        
         if N > 1:
-            du_rest = cp.diff(u, axis=1)          # shape (nu, N-1)
+            du_rest = cp.diff(u, axis=1)
             constraints += [
                 du_rest >= -self.du_max[:, None],
                 du_rest <=  self.du_max[:, None],
             ]
 
-        # ── Cost (vectorised) ──────────────────────────────────────────
-        # Running state cost: sum_{k=0}^{N-1} x[:,k]^T Q x[:,k]
         sqrtQ = np.diag(np.sqrt(np.diag(self.Q)))
         cost  = cp.sum_squares(sqrtQ @ x[:, :N])
 
-        # Terminal state cost: x[:,N]^T Q_terminal x[:,N]
         sqrtQ_T = np.diag(np.sqrt(np.diag(self.Q_terminal)))
         cost  += cp.sum_squares(sqrtQ_T @ x[:, N])
 
-        # Running input cost: sum_{k=0}^{N-1} u[:,k]^T R u[:,k]
         cost  += cp.sum_squares(sqrtR_param @ u)
-
-        # Rate cost step 0
         cost  += cp.sum_squares(sqrtRr_param @ du0)
 
-        # Rate cost steps 1..N-1
         if N > 1:
             cost += cp.sum_squares(sqrtRr_param @ du_rest)
 
@@ -303,44 +238,13 @@ class MPCController:
         v_x:   float,
         kappa: float,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Zero-order-hold discretisation of the linearised bicycle + actuator model.
-
-        Parameters
-        ----------
-        v_x   : Longitudinal speed (m/s), clipped to >= 0.5 m/s for numerical
-                stability of the lateral tyre-force terms.
-        kappa : Local path curvature (1/m), positive = left-hand turn.
-                Enters as a constant disturbance on the heading-error derivative
-                so that steady-state cornering produces zero heading error.
-
-        Returns
-        -------
-        Ad : (8, 8)  Discrete-time state matrix
-        Bd : (8, 2)  Discrete-time input matrix
-        dd : (8,)    Discrete-time curvature disturbance vector
-
-        Longitudinal state chain (matches simulation.py model.py exactly):
-          e_v_dot = e_a          (A_c[4, 5] = 1.0)
-          e_a_dot = a_act        (A_c[5, 7] = 1.0)
-          a_act_dot = -a_act/τ_a + a_cmd/τ_a  (first-order lag)
-
-        This two-integrator chain (e_v → e_a → a_act) means speed error takes
-        two steps to observe the effect of a_cmd through both integrators, which
-        produces smoother speed tracking than a direct e_v → a_act connection.
-        The previous version had A_c[4, 7] = 1.0 (direct), which is inconsistent
-        with simulation.py; unifying to the two-integrator form ensures that
-        weights tuned in simulation transfer cleanly here.
-        """
+        
         v_x = max(0.5, abs(v_x))
         m, Iz, lf, lr = self.m, self.Iz, self.lf, self.lr
         Cf, Cr        = self.Cf, self.Cr
         td, ta, dt    = self.tau_delta, self.tau_a, self.dt
 
-        # ── Continuous A_c (8x8) ───────────────────────────────────────
         A_c = np.zeros((self.nx, self.nx))
-
-        # Lateral / yaw dynamics (Rajamani bicycle model)
         A_c[0, 1] = 1.0
         A_c[1, 1] = -(2 * Cf + 2 * Cr) / (m * v_x)
         A_c[1, 2] = (2 * Cf + 2 * Cr) / m
@@ -352,38 +256,19 @@ class MPCController:
         A_c[3, 3] = -(2 * Cf * lf**2 + 2 * Cr * lr**2) / (Iz * v_x)
         A_c[3, 6] = (2 * Cf * lf) / Iz
 
-        # Longitudinal two-integrator chain: e_v -> e_a -> a_act
-        # BUG FIX: was A_c[4, 7] = 1.0 (direct e_v → a_act, bypassing e_a).
-        # Now matches simulation.py model.py exactly.
-        A_c[4, 5] = 1.0   # e_v_dot  = e_a
-        A_c[5, 7] = 1.0   # e_a_dot  = a_act
+        A_c[4, 5] = 1.0   
+        A_c[5, 7] = 1.0   
 
-        # First-order actuator lag
-        A_c[6, 6] = -1.0 / td   # delta_act
-        A_c[7, 7] = -1.0 / ta   # a_act
+        A_c[6, 6] = -1.0 / td   
+        A_c[7, 7] = -1.0 / ta   
 
-        # ── Continuous B_c (8x2) ───────────────────────────────────────
         B_c = np.zeros((self.nx, self.nu))
-        B_c[6, 0] = 1.0 / td  # delta_cmd drives delta_act
-        B_c[7, 1] = 1.0 / ta  # a_cmd drives a_act
+        B_c[6, 0] = 1.0 / td  
+        B_c[7, 1] = 1.0 / ta  
 
-        # ── Curvature feedforward disturbance ─────────────────────────
-        # Continuous heading-error dynamics:
-        #   ė_ψ = e_ψd - κ·v_x
-        # Without this term the model assumes a straight reference, giving a
-        # persistent heading error on corners. Absorbed into a constant
-        # disturbance d_c and discretised with A_c and B_c via ZOH.
         d_c = np.zeros(self.nx)
         d_c[2] = -kappa * v_x
 
-        # ── ZOH via augmented matrix exponential ──────────────────────
-        # Augmented system (nx + nu + 1):
-        #
-        #   d/dt [x]   [A_c  B_c  d_c] [x]
-        #        [u] = [ 0    0    0  ] [u]
-        #        [1]   [ 0    0    0  ] [1]
-        #
-        # expm(M*dt) gives the exact ZOH: x(k+1) = Ad x(k) + Bd u(k) + dd
         n_aug = self.nx + self.nu + 1
         M     = np.zeros((n_aug, n_aug))
         M[: self.nx, : self.nx]                   = A_c
@@ -411,63 +296,33 @@ class MPCController:
         car_yaw_rate:  float,
         desired_speed: float,
     ) -> tuple[np.ndarray, float, dict]:
-        """
-        Project odometry + path geometry into the 8-D error state.
-
-        Tracking error is measured at the CLOSEST point on the path to the
-        front axle (not a lookahead point). A separate short forward walk
-        (preview_dist = 1.5 m) is used only to sample curvature for the ZOH
-        feedforward term, so the feedforward and the tracking error origin are
-        decoupled — changing preview_dist no longer biases tracking error.
-
-        Sign convention for e_psi (CORRECTED AND DOCUMENTED):
-          path_yaw = atan2(tangent_y, tangent_x)
-          e_psi    = atan2(sin(yaw_car - path_yaw), cos(yaw_car - path_yaw))
-          e_psi > 0 → vehicle is pointing MORE LEFT than the path
-                      (vehicle has over-rotated CCW relative to the path tangent)
-          Corrective action: δ > 0 (steer left) pushes the front axle left,
-          generating a rightward yaw moment — reducing positive e_psi. ✓
-
-        Returns
-        -------
-        x0    : (8,) error state
-        kappa : curvature at the preview index (for ZOH feedforward)
-        dbg   : dict of intermediate values for the telemetry log
-        """
-        # Control point: front axle position
+        
         fa = car_pos + self.lf * np.array([math.cos(car_yaw), math.sin(car_yaw)])
-
-        # Closest waypoint to the front axle
         base_dists = np.linalg.norm(path - fa, axis=1)
         base_idx   = int(np.argmin(base_dists))
 
-        # Path tangent at the closest point
         if base_idx < len(path) - 1:
             seg = path[base_idx + 1] - path[base_idx]
         else:
             seg = path[base_idx]     - path[base_idx - 1]
+        
         seg_len = float(np.linalg.norm(seg))
         if seg_len < 1e-6:
             return np.zeros(self.nx), 0.0, {}
 
         t       = seg / seg_len
-        right_n = np.array([t[1], -t[0]])   # 90° CW = right-hand normal
+        right_n = np.array([t[1], -t[0]])
 
-        # Heading error (see sign convention above)
         path_yaw = math.atan2(t[1], t[0])
         e_psi    = math.atan2(
             math.sin(car_yaw - path_yaw),
             math.cos(car_yaw - path_yaw),
         )
 
-        # Cross-track error: LEFT-positive (car left of path → e_y > 0)
         e_y  = -float(np.dot(fa - path[base_idx], right_n))
-
-        # Lateral velocity approximation from small-angle kinematics
         e_yd = car_speed * math.sin(e_psi)
 
-        # ── Curvature preview (separate from tracking-error point) ────────
-        preview_dist = 1.5   # metres — short for stable curvature estimate
+        preview_dist = 1.5
         preview_idx  = base_idx
         accumulated  = 0.0
         for i in range(base_idx, len(path) - 1):
@@ -478,11 +333,8 @@ class MPCController:
                 break
 
         kappa = _curvature(path, preview_idx)
-
-        # Heading error rate relative to path curvature
         e_psi_d = car_yaw_rate - kappa * car_speed
 
-        # Speed error: positive when car is too fast (sign matches simulation.py)
         desired_speed = max(10, desired_speed)
         e_v = car_speed - desired_speed
 
@@ -492,7 +344,7 @@ class MPCController:
             e_psi,
             e_psi_d,
             e_v,
-            0.0,             # e_a: initialised to zero each step
+            0.0,             
             self._delta_act,
             self._a_act,
         ])
@@ -521,28 +373,7 @@ class MPCController:
         R_scaled:      np.ndarray,
         R_rate_scaled: np.ndarray,
     ) -> np.ndarray:
-        """
-        Inject current data into the pre-compiled CVXPY problem and solve.
-
-        IMPROVEMENT: Clarabel fallback added. When OSQP returns an outright
-        failure (not just OPTIMAL_INACCURATE), Clarabel is tried before
-        falling back to hold-steer. OPTIMAL_INACCURATE is accepted (the
-        solution is usable at 20 Hz) but logged as a warning once so the
-        operator can see when the QP is near the edge of feasibility.
-
-        NOTE: R_scaled and R_rate_scaled are applied by rebuilding sqrtR /
-        sqrtRr from the scaled matrices before injecting them into the static
-        cost. Because the QP is parameterised with baked-in sqrt weight
-        matrices, adaptive scaling requires either (a) weight cp.Parameters
-        (adds overhead) or (b) a light re-inject of the sqrt coefficient
-        matrices into the fixed cost terms. We use option (b): the sqrtR and
-        sqrtRr matrices in the cost are replaced by re-extracting them from
-        R_scaled / R_rate_scaled and updating the _qp["sqrtR"] / _qp["sqrtRr"]
-        cp.Parameter values. See _build_qp for the matching cp.Parameter setup.
-
-        Returns the first optimal control action u[:,0].
-        Falls back to (last_steer, 0.0) on solver failure.
-        """
+        
         if self._qp is None:
             self._build_qp()
 
@@ -553,29 +384,25 @@ class MPCController:
         qp["x0"].value    = x0
         qp["uprev"].value = self._u_prev.copy()
 
-        # Inject adaptive sqrt weight matrices
         sqrtR  = np.diag(np.sqrt(np.clip(np.diag(R_scaled),      1e-6, 1e6)))
         sqrtRr = np.diag(np.sqrt(np.clip(np.diag(R_rate_scaled),  1e-6, 1e6)))
         qp["sqrtR"].value  = sqrtR
         qp["sqrtRr"].value = sqrtRr
 
-        # ── Primary solve: OSQP ───────────────────────────────────────
+        # ── Primary solve: OSQP (Matched to live sim tolerances) ──────
         qp["prob"].solve(
             solver=cp.OSQP,
             verbose=False,
             warm_start=True,
-            eps_abs=1e-3,
-            eps_rel=1e-3,
-            max_iter=4000,
+            eps_abs=1e-5,
+            eps_rel=1e-5,
+            max_iter=8000,
         )
 
         status = qp["prob"].status
         u_val  = qp["u"][:, 0].value
 
         if status == cp.OPTIMAL_INACCURATE and u_val is not None:
-            # Log once per occurrence — at 20 Hz this would otherwise flood
-            # the ROS log. throttle_duration_sec is set in the calling node;
-            # here we just print so the module stays ROS-agnostic.
             print("[MPC] Warning: OSQP OPTIMAL_INACCURATE — "
                   "solution used but weights/feasibility should be checked.")
             return u_val.copy()
@@ -594,7 +421,6 @@ class MPCController:
         except cp.error.SolverError as exc:
             print(f"[MPC] Warning: Clarabel also failed: {exc!r}")
 
-        # ── Final fallback: hold last steer, zero acceleration ────────
         return np.array([self._u_prev[0], 0.0])
 
     # ------------------------------------------------------------------
@@ -610,73 +436,36 @@ class MPCController:
         desired_speed: float,
         car_yaw_rate:  float = 0.0,
     ) -> tuple[float, float, float]:
-        """
-        Compute FSDS control commands via MPC.
-
-        Parameters
-        ----------
-        path          : (N_wp, 2) planned waypoints in map frame (>= 2 points)
-        car_pos       : (2,)  vehicle position in map frame
-        car_yaw       : Vehicle heading (rad)
-        car_speed     : Longitudinal speed (m/s)
-        desired_speed : Reference speed (m/s)
-        car_yaw_rate  : Yaw rate (rad/s), positive = CCW / left turn
-
-        Returns
-        -------
-        steering : float in [-1, 1]   positive = steer RIGHT (FSDS convention)
-        throttle : float in  [0, 1]
-        brake    : float in  [0, 1]
-        """
+        
         if len(path) < 2:
-            return 0.0, 0.0, 0.5   # gentle brake if no path
+            return 0.0, 0.0, 0.5   
 
-        # Low-pass filter the desired speed to avoid step-input changes from
-        # the planner updating every cone-map cycle (~1 Hz).
-        # α=0.08 → time constant ≈ 0.6 s at 20 Hz — smooths jerky targets
-        # while still following genuine speed reductions within ~1 s.
         alpha = 0.08
         if self._v_des_filtered == 0.0:
-            self._v_des_filtered = desired_speed   # initialise on first call
+            self._v_des_filtered = desired_speed
         self._v_des_filtered += alpha * (desired_speed - self._v_des_filtered)
         desired_speed = self._v_des_filtered
 
-        # Step 1: extract 8-state error vector and local curvature
         x0, kappa, dbg = self._error_state(
             path, car_pos, car_yaw, car_speed, car_yaw_rate, desired_speed,
         )
 
-        # Step 2: linearise + ZOH-discretise model at current speed
         Ad, Bd, dd = self._discrete_model(max(car_speed, 1.0), kappa)
 
-        # Step 3: compute adaptive gain matrices
         R_scaled      = _adaptive_R_scaling(car_speed, self.R)
         R_rate_scaled = _adaptive_R_rate(kappa, self.R_rate)
 
-        # Step 4: solve parameterised MPC QP (no problem rebuild)
         u_opt = self._solve_qp(x0, Ad, Bd, dd, R_scaled, R_rate_scaled)
 
-        # Step 5: propagate internal actuator states for next step (Euler)
         self._delta_act += (self.dt / self.tau_delta) * (u_opt[0] - self._delta_act)
         self._a_act     += (self.dt / self.tau_a)     * (u_opt[1] - self._a_act)
         self._u_prev     = u_opt.copy()
 
-        # Step 6: convert to FSDS commands
         delta_cmd = float(np.clip(u_opt[0], -MAX_STEER_RAD, MAX_STEER_RAD))
         a_cmd     = float(u_opt[1])
 
-        # FSDS steering sign convention:
-        #   Bicycle model: delta > 0 = steer LEFT
-        #   FSDS bridge:   steering > 0 = steer RIGHT
-        # Therefore negate when normalising.
         steering = float(np.clip(-delta_cmd / MAX_STEER_RAD, -1.0, 1.0))
 
-        # Throttle / brake from MPC acceleration command.
-        # Throttle: normalised against u_max[1] = 5.0 m/s², capped at 0.85
-        # to avoid flooring the throttle (FSDS PhysX responds non-linearly
-        # near full throttle; keeping headroom avoids overshoot on short straights).
-        # Brake: normalised against 8.0 m/s² deceleration capacity, capped at 0.50
-        # to avoid wheel-lock in PhysX.
         if a_cmd >= 0.0:
             throttle = float(np.clip(a_cmd / 5.0, 0.0, 0.85))
             brake    = 0.0
@@ -684,7 +473,6 @@ class MPCController:
             throttle = 0.0
             brake    = float(np.clip(-a_cmd / 8.0, 0.0, 0.50))
 
-        # Stash telemetry for the control node to log.
         self.last_telemetry = {
             **dbg,
             "car_speed":    car_speed,
@@ -701,13 +489,6 @@ class MPCController:
         return steering, throttle, brake
 
     def reset(self) -> None:
-        """
-        Reset all internal continuity state.
-
-        Call after hard stops, teleportation, or long braking phases where the
-        previous warm-start solution would be a poor initial guess.
-        The compiled CVXPY problem is retained so no recompilation is triggered.
-        """
         self._delta_act       = 0.0
         self._a_act           = 0.0
         self._u_prev          = np.zeros(self.nu)

@@ -24,34 +24,34 @@ TUNABLE_R_RATE_IDX = [0, 1]  # d(delta_cmd)/dt, d(a_cmd)/dt
 # --- PROGRAMMATIC MULTIPLIER BOUNDARIES ---
 # Adjusted to prevent explosive values while still allowing sufficient flexibility.
 Q_MULTIPLIER_BOUNDS = {
-    0: (0.2, 2.5),
-    1: (0.2, 2.0),
-    2: (0.2, 2.0),
-    3: (0.2, 2.0),
-    4: (0.2, 3.0),
+    0: (0.1, 400.0),
+    1: (0.1, 200.0),
+    2: (0.1, 350.0),
+    3: (0.1, 600.0),
+    4: (0.1, 200.0),
 }
 
 R_MULTIPLIER_BOUNDS = {
-    0: (0.3, 2.5),
-    1: (0.3, 2.5),
+    0: (0.1, 100.0),
+    1: (0.1, 100.0),
 }
 
 # Raised the floor from 0.1 to 0.25 to prevent numerical ill-conditioning against Q
 R_RATE_MULTIPLIER_BOUNDS = {
-    0: (0.25, 3.0),
-    1: (0.25, 3.0),
+    0: (0.1, 100.0),
+    1: (0.1, 50.0),
 }
 
 # --- PROGRAMMATIC BOUNDS GENERATION ---
 bounds = []
 for idx in TUNABLE_Q_IDX:
-    bounds.append(Q_MULTIPLIER_BOUNDS.get(idx, (0.2, 2.0)))
+    bounds.append(Q_MULTIPLIER_BOUNDS.get(idx))
 
 for idx in TUNABLE_R_IDX:
-    bounds.append(R_MULTIPLIER_BOUNDS.get(idx, (0.2, 2.0)))
+    bounds.append(R_MULTIPLIER_BOUNDS.get(idx))
 
 for idx in TUNABLE_R_RATE_IDX:
-    bounds.append(R_RATE_MULTIPLIER_BOUNDS.get(idx, (0.2, 2.0)))
+    bounds.append(R_RATE_MULTIPLIER_BOUNDS.get(idx))
 
 # MPC horizon must match simulation.py exactly so tuned weights transfer
 # cleanly to the live simulator.
@@ -72,15 +72,52 @@ DNF_OFFTRACK_WEIGHT = 1.0
 # grinding to max_iter. The live sim (simulation.py) omits these args and keeps
 # solve_mpc's tighter defaults.
 ROLLOUT_EPS = 1e-4
-ROLLOUT_MAX_ITER = 4000
+ROLLOUT_MAX_ITER = 5000
 
 # Speed profile parameters — identical to simulation.py's constants so the
 # headless rollouts see the same v_target distribution as the live sim.
-SP_V_MAX = 10.0
+SP_V_MAX = 16.0
 SP_MU = 0.6
 SP_A_ACCEL_MAX = 2.5
 SP_A_BRAKE_MAX = 4.0
 SP_V_MIN = 2.5
+
+# ==========================================
+# SCORING WEIGHTS
+# ==========================================
+# One array, one place to edit. Indices map to metrics in this order:
+#   0: rmse               — primary lateral tracking error (RMS)
+#   1: yaw_rms            — yaw rate stability
+#   2: smooth_rms         — control smoothness (delta-u RMS)
+#   3: steer_rms          — steering effort (RMS)
+#   4: accel_rms          — acceleration effort (RMS)
+#   5: max_steering       — peak steering command
+#   6: steering_sat_ratio — fraction of steps at steering saturation
+#   7: jerk_rms           — control jerk (second derivative of u)
+#   8: max_yaw_rate       — peak yaw rate
+#   9: steering_reversals — count of steering direction changes
+#  10: peak_lateral_error — worst single-step lateral error
+#
+# Positive weights sum to 1.0. Completion/time bonuses are subtracted separately.
+SCORE_WEIGHTS = np.array([
+    0.35,  # 0  rmse
+    0.10,  # 1  yaw_rms
+    0.08,  # 2  smooth_rms
+    0.03,  # 3  steer_rms
+    0.01,  # 4  accel_rms
+    0.02,  # 5  max_steering
+    0.12,  # 6  steering_sat_ratio
+    0.09,  # 7  jerk_rms
+    0.03,  # 8  max_yaw_rate
+    0.02,  # 9  steering_reversals
+    0.15,  # 10 peak_lateral_error
+], dtype=float)
+
+COMPLETION_BONUS_WEIGHT = 0.40   # subtracted — reward for finishing
+TIME_BONUS_WEIGHT       = 0.05   # subtracted — reward for finishing quickly
+
+assert abs(SCORE_WEIGHTS.sum() - 1.0) < 1e-9, \
+    f"SCORE_WEIGHTS must sum to 1.0, got {SCORE_WEIGHTS.sum():.6f}"
 
 # Module-level dictionary to share initial parameters safely across processes
 _init_context: dict = {}
@@ -475,8 +512,9 @@ def _find_closest(path_X, path_Y, x, y, last_idx, window=40):
     else:
         start = max(0, last_idx - 5)
         end = min(n, last_idx + window)
-    dists = np.hypot(path_X[start:end] - x, path_Y[start:end] - y)
-    local = int(np.argmin(dists))
+    dx = path_X[start:end] - x
+    dy = path_Y[start:end] - y
+    local = int(np.argmin(dx * dx + dy * dy))  # squared dist, no sqrt needed
     return start + local
 
 
@@ -502,13 +540,24 @@ def _tracking_errors(plant_state, path_X, path_Y, path_Psi, last_idx):
 def init_worker(Q_init, R_init, R_rate_init):
     """
     Runs immediately when a new worker process is spawned.
-    Populates the global memory context for that child process.
+    Populates the global memory context for that child process and
+    pre-warms the model cache across the expected speed range so
+    there is zero model-build latency during rollouts.
     """
     np.random.seed()
-    global _init_context
+    global _init_context, _model_cache
     _init_context["Q"] = Q_init
     _init_context["R"] = R_init
     _init_context["R_rate"] = R_rate_init
+    _init_context["vehicle_params"] = VehicleParams()
+
+    # Pre-warm: build all ZOH models for vx in [2.5, 16.0] at 0.1 m/s bins.
+    # Cost is paid once at worker startup rather than on the critical path.
+    dt = 0.05
+    for vx in np.arange(2.5, 16.1, 0.1):
+        key = np.round(vx, 1)
+        if key not in _model_cache:
+            _model_cache[key] = get_8state_discrete_model(key, dt)
 
 
 # ==========================================
@@ -531,7 +580,7 @@ def run_headless_rollout(
 
     Q, R, R_rate = vector_to_weights(weights_vector, Q_init, R_init, R_rate_init)
 
-    p = VehicleParams()
+    p = _init_context["vehicle_params"]
     dt = 0.05
 
     u_min = [-0.4, -10.0]
@@ -583,7 +632,7 @@ def run_headless_rollout(
     offtrack_excess = 0.0
 
     MAX_FAILS = 5
-    OFFTRACK_LIMIT = 6.0  # Tightened slightly for racing tolerances
+    OFFTRACK_LIMIT = 3.0  # Tightened slightly for racing tolerances
 
     # Precompute reference segment distances (path arc-length per index step)
     path_seg_dist = np.hypot(
@@ -701,78 +750,51 @@ def run_headless_rollout(
         u_prev = u_opt.copy()
         state = step_nonlinear_plant(state, u_opt, dt, p)
 
-    rmse = np.sqrt(error_cost / max(num_steps, 1))
-    yaw_rms = np.sqrt(yaw_rate_cost / max(num_steps, 1))
-    smooth_rms = np.sqrt(control_smooth / max(num_steps, 1))
-    steer_rms = np.sqrt(steering_effort / max(num_steps, 1))
-    accel_rms = np.sqrt(accel_effort / max(num_steps, 1))
-    jerk_rms = np.sqrt(jerk_cost / max(num_steps,1))
-    steering_sat_ratio = steering_saturation / max(num_steps,1)
+    rmse               = np.sqrt(error_cost    / max(num_steps, 1))
+    yaw_rms            = np.sqrt(yaw_rate_cost / max(num_steps, 1))
+    smooth_rms         = np.sqrt(control_smooth / max(num_steps, 1))
+    steer_rms          = np.sqrt(steering_effort / max(num_steps, 1))
+    accel_rms          = np.sqrt(accel_effort  / max(num_steps, 1))
+    jerk_rms           = np.sqrt(jerk_cost     / max(num_steps, 1))
+    steering_sat_ratio = steering_saturation   / max(num_steps, 1)
 
-    score = (
-        + rmse
-        + 0.10 * yaw_rms
-        + 0.05 * smooth_rms
-        + 0.03 * steer_rms
-        + 0.01 * accel_rms
-        + 0.02 * max_steering
-        + 0.20 * steering_sat_ratio
-        + 0.05 * jerk_rms
-        + 0.03 * max_yaw_rate
-        + 0.009 * steering_reversals
-        + 0.08 * peak_lateral_error
-    )
+    metrics = np.array([
+        rmse,
+        yaw_rms,
+        smooth_rms,
+        steer_rms,
+        accel_rms,
+        max_steering,
+        steering_sat_ratio,
+        jerk_rms,
+        max_yaw_rate,
+        float(steering_reversals),
+        peak_lateral_error,
+    ])
+
+    score = float(SCORE_WEIGHTS @ metrics)
 
     # Reward completing the course
     progress = cumulative_distance / PATH_LENGTHS[path_name]
     progress = np.clip(progress, 0.0, 1.0)
 
-    # Reward completion efficiency
-    completion_bonus = progress
-
     target_speed_mean = np.mean(path_v)
     expected_time = PATH_LENGTHS[path_name] / max(target_speed_mean, 1.0)
-
-    # Only reward finishing quickly if the car actually finished — otherwise a
-    # DNF that fails early would earn a large "fast" time bonus for failing.
+ 
     if dnf:
         time_bonus = 0.0
     else:
         sim_time = step * dt
         time_bonus = max(0.0, 1.0 - (sim_time / expected_time))
 
-    score -= (
-        0.50 * completion_bonus
-        + 0.10 * time_bonus
-    )
+    score -= COMPLETION_BONUS_WEIGHT * progress + TIME_BONUS_WEIGHT * time_bonus
 
-    # ----------------------------
-    # Graded DNF penalty
-    # ----------------------------
-    # A rollout that failed (solver gave up, got stuck, or left the track) is
-    # penalised in proportion to how little of the path it covered, plus how
-    # far off-track it ended up. Because the term scales with (1 - progress),
-    # a candidate that fails at 90% of the path scores far better than one that
-    # fails at 10%, giving CMA-ES a continuous gradient toward completion
-    # instead of the old flat 1e3 plateau.
     if dnf:
         score += DNF_PENALTY * (1.0 - progress)
-        score += DNF_OFFTRACK_WEIGHT * offtrack_excess**2
+        score += DNF_OFFTRACK_WEIGHT * offtrack_excess ** 2
 
-    # ----------------------------
-    # The Instability Penalty
-    # ----------------------------
-    # Penalise candidates whose QP repeatedly returns OPTIMAL_INACCURATE.
-    #
-    # This must ALWAYS make the score worse (higher). The score can be
-    # negative here because the completion/time bonuses are subtracted, so a
-    # plain multiplicative factor (score *= factor) would *reward* instability
-    # whenever score < 0 (multiplying a negative number by >1 makes it more
-    # negative = better). Applying the factor away from zero — multiply when
-    # positive, divide when negative — keeps the penalty monotonically
-    # worsening regardless of sign while preserving the original magnitude.
     if inaccurate_count > 0:
-        factor = 1 + min(5, inaccurate_count) * 0.1
+        factor = 1.0 + min(5, inaccurate_count) * 0.1
         score = score * factor if score > 0 else score / factor
 
     return score
@@ -811,10 +833,6 @@ INITIAL_CONDITIONS = [
     (0.15, 0.05),
 ]
 
-# Optional reduced suite for fast smoke/dev runs (TUNER_QUICK=1).
-QUICK_SUITE = ["PATH_MIXED", "PATH_HAIRPIN", "PATH_MICRO_SLALOM"]
-
-
 def _build_task_table(suite, ics):
     """Collapse (suite x ics) into unique (path, ey0, epsi0) tasks + weights."""
     counts = Counter((p, ey0, epsi0) for p in suite for (ey0, epsi0) in ics)
@@ -822,9 +840,11 @@ def _build_task_table(suite, ics):
     weights = np.array([counts[t] for t in tasks], dtype=float)
     return tasks, weights
 
+QUICK_SUITE = ["PATH_MIXED", "PATH_HAIRPIN", "PATH_MICRO_SLALOM"]
 
 if os.environ.get("TUNER_QUICK") == "1":
     EVAL_TASKS, EVAL_WEIGHTS = _build_task_table(QUICK_SUITE, INITIAL_CONDITIONS)
+    print("[Offline Tuner] QUICK mode: using reduced validation suite.")
 else:
     EVAL_TASKS, EVAL_WEIGHTS = _build_task_table(VALIDATION_SUITE, INITIAL_CONDITIONS)
 
@@ -862,20 +882,20 @@ def evaluate_candidate(vec):
 # ==========================================
 # MAIN EXECUTION
 # ==========================================
-if __name__ == "__main__":
-    Q_init = np.diag([
-        669.7320546229485,
-        38.98747288066656,
-        1247.9929146654895,
-        72.00226306885786,
-        44.18749700337984,
-        0.0,
-        0.0,
-        0.0,
-    ])
+Q = np.diag(
+    [10.0, 10.0, 10.0, 10.0, 10.0, 0.0, 0.0, 0.0]
+)
+R = np.diag(
+    [10.0, 5.0]
+)
+R_rate = np.diag(
+    [10.0, 1]
+)
 
-    R_init = np.diag([42.73504824590047, 3.0166628936483875])
-    R_rate_init = np.diag([45.22626090681843, 0.9368120619766566])
+if __name__ == "__main__":
+    Q_init = Q
+    R_init = R
+    R_rate_init = R_rate
 
     print("[Offline Tuner] Building synthetic path library...")
     for name, (px, py, _, _) in SYNTHETIC_PATHS.items():
@@ -888,7 +908,7 @@ if __name__ == "__main__":
     num_params = len(bounds)
     x0 = np.ones(num_params)
 
-    sigma0 = 0.35  # good default for multiplier tuning
+    sigma0 = 1.0 # good default for multiplier tuning
 
     # Runtime knobs (env-overridable) so a full sweep and a quick smoke test
     # share one entry point:
@@ -897,7 +917,7 @@ if __name__ == "__main__":
     #   TUNER_QUICK=1   — use the reduced QUICK_SUITE (see EVAL_TASKS above)
     default_popsize = 4 + int(3 * np.log(len(x0)))
     popsize = int(os.environ.get("TUNER_POPSIZE", default_popsize))
-    max_gen = int(os.environ.get("TUNER_MAX_GEN", 20))
+    max_gen = int(os.environ.get("TUNER_MAX_GEN", 10))
 
     print("\n[Offline Tuner] Initializing CMA-ES...")
     print(f"  Parameters: {num_params}")
@@ -905,7 +925,7 @@ if __name__ == "__main__":
     print(f"  Population: {popsize} | max generations: {max_gen}")
     print(f"  Eval tasks/candidate: {len(EVAL_TASKS)}")
 
-    num_cores = max(1, mp.cpu_count() // 2)
+    num_cores = max(1, mp.cpu_count() - 1)
     print(f"[Offline Tuner] Using {num_cores} workers")
 
     with mp.Pool(
@@ -919,21 +939,33 @@ if __name__ == "__main__":
         # -----------------------------
         lower = np.array([b[0] for b in bounds])
         upper = np.array([b[1] for b in bounds])
+        param_ranges = upper - lower
+        # Set per-parameter initial step size to ~30% of each bound's width.
+        # This explores more aggressively early than a flat sigma=0.35, while
+        # still respecting the tighter R_rate floor (0.25) vs the wider Q range.
+        cma_stds = 0.3 * param_ranges
+
         es = cma.CMAEvolutionStrategy(
             x0,
-            sigma0,
+            sigma0, 
             {
                 "bounds": [lower, upper],
+                "CMA_stds": cma_stds,
                 "popsize": popsize,
                 "seed": 42,
-                "verb_disp": True,
+                "verb_disp": False,   # you print your own per-generation line
+                "verb_log": 0,        # no file I/O
+                "verbose": -9,        # suppress internal output
                 "CMA_active": True,
+                "tolstagnation": 0,   # disable: weight tuning landscapes plateau legitimately
+                "tolconditioncov": 1e14,  # prevent alleviate_conditioning from perturbing CMA_stds
             },
         )
 
         start_time = time.time()
         generation = 0
         n_tasks = len(EVAL_TASKS)
+        running_best = float('inf')
 
         while not es.stop():
 
@@ -950,7 +982,8 @@ if __name__ == "__main__":
                 for vec in solutions
                 for (p, ey0, epsi0) in EVAL_TASKS
             ]
-            flat_scores = pool.map(_score_task, flat_tasks)
+            chunksize = max(1, len(flat_tasks) // (num_cores * 4))
+            flat_scores = pool.map(_score_task, flat_tasks, chunksize=chunksize)
 
             scores = [
                 _aggregate_task_scores(flat_scores[i * n_tasks:(i + 1) * n_tasks])
@@ -962,9 +995,9 @@ if __name__ == "__main__":
             # -----------------------------
             # EARLY TERMINATION LOGIC
             # -----------------------------
-            best = min(scores)
-
-            print(f"[CMA-ES] Gen {generation} | best score: {best:.4f}")
+            gen_best = min(scores)
+            running_best = min(running_best, gen_best)
+            print(f"[CMA-ES] Gen {generation} | gen_best: {gen_best:.4f} | overall_best: {running_best:.4f} | sigma: {es.sigma:.4e}")
 
             generation += 1
 
@@ -977,10 +1010,27 @@ if __name__ == "__main__":
 
     end_time = time.time()
 
+    # After the pool closes, populate context in the main process for evaluate_candidate
+    _init_context["Q"] = Q_init
+    _init_context["R"] = R_init
+    _init_context["R_rate"] = R_rate_init
+    _init_context["vehicle_params"] = VehicleParams()
+
+    # Also pre-warm the model cache in the main process
+    dt = 0.05
+    for vx in np.arange(2.5, 16.1, 0.1):
+        key = np.round(vx, 1)
+        if key not in _model_cache:
+            _model_cache[key] = get_8state_discrete_model(key, dt)
+
     best_vec = result.xbest
+    mean_vec = result.xfavorite
+    score_best = evaluate_candidate(best_vec)
+    score_mean = evaluate_candidate(mean_vec)
+    final_vec = best_vec if score_best < score_mean else mean_vec
 
     best_Q, best_R, best_R_rate = vector_to_weights(
-        best_vec, Q_init, R_init, R_rate_init
+        final_vec, Q_init, R_init, R_rate_init
     )
 
     print("\n" + "=" * 50)

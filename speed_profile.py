@@ -51,7 +51,7 @@ def compute_path_curvature(path_X, path_Y):
 
 def compute_speed_profile(
     path_X, path_Y,
-    v_max=14.0,
+    v_max=16.0,
     mu=1.1,
     g=9.81,
     a_accel_max=3.5,

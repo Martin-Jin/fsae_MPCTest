@@ -34,7 +34,7 @@ v_ref = 7.0  # fallback constant speed, used only if no path speed profile is av
 # than it could actually track, run >3.5m off the soft lateral-error
 # corridor, and push the QP into numerically-infeasible territory. mu=0.6
 # (~37% of peak) leaves enough margin for that model mismatch in practice.
-SPEED_PROFILE_V_MAX = 10.0
+SPEED_PROFILE_V_MAX = 16.0
 SPEED_PROFILE_MU = 0.6
 SPEED_PROFILE_A_ACCEL_MAX = 2.5
 SPEED_PROFILE_A_BRAKE_MAX = 4.0
@@ -52,13 +52,13 @@ u_bounds_max = np.array([np.radians(35), 5.0])
 # correction in corners (where the speed error is naturally small anyway
 # because the profiler has already set a low v_target there).
 Q = np.diag(
-    [669.7320546229485, 38.98747288066656, 1247.9929146654895, 72.00226306885786, 44.18749700337984, 0.0, 0.0, 0.0]
+    [134.95942241300168, 27.327221404865437, 386.4336744636786, 142.63293158273837, 10.812997524426207, 0.0, 0.0, 0.0]
 )
 R = np.diag(
-    [42.73504824590047, 3.0166628936483875]
+    [90.99289213029606, 1.476665745034168]
 )
 R_rate = np.diag(
-    [45.22626090681843, 0.9368120619766566]
+    [110.57544991998951, 0.24691490065604801]
 )
 
 is_drawing = False
