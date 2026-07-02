@@ -16,7 +16,7 @@ provides CMA-ES based automated weight optimisation.
 5. [Running the Simulator](#running-the-simulator)
 6. [Running the Offline Tuner](#running-the-offline-tuner)
 7. [Tuning Guide](#tuning-guide)
-8. [ROS 2 Integration (fsds)](#ros-2-integration-(fsds))
+8. [ROS 2 Integration (fsds)](#ros-2-integration-fsds)
 9. [Dependencies](#dependencies)
 
 ---
