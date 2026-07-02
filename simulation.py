@@ -15,6 +15,7 @@ import speed_profile
 from offline_tuner import curvature_estimate, adaptive_R_rate, adaptive_R_scaling, SYNTHETIC_PATHS, PATH_NAMES
 from sim_track import place_cones, SimPerception, SimPlanner
 import math
+from sim_track import place_cones, SimPerception, SimPlanner, calculate_dynamic_max_steps
 
 # ==========================================
 # SETUP AND CONFIGURATION
@@ -26,9 +27,9 @@ v_ref = 7.0  # fallback constant speed, used only if no path speed profile is av
 # Cost weight matrices.
 # States: [e_y, e_y_dot, e_psi, e_psi_dot, e_v, e_a, delta_act, a_act]
 # For tuning copy and paste purposes
-Q_diag      = [45.33434239854876, 16.27752760612609, 45.489555566489095, 13.158321107722282, 10.961280881221775, 0.0, 0.0, 0.0]
-R_diag      = [5.200593285673304, 2.763294060691742]
-R_rate_diag = [0.6401357752583415, 15.178559401234637]
+Q_diag      = [2.352541219349554, 36.725202427797036, 32.30321832371175, 1.3863729751951293, 1.3751656204787062, 0.0, 0.0, 0.0]
+R_diag      = [39.536241476500976, 49.74547536739016]
+R_rate_diag = [41.63349744497637, 8.650011625973125]
 
 Q = np.diag(
     Q_diag
@@ -224,7 +225,6 @@ def load_test_path(event):
     """Cycles through the offline_tuner testing suites and fits the camera view."""
     global path_X, path_Y, path_Psi, path_v_profile, flip_heading_180, current_test_path_idx
     global _blue_cones_all, _yellow_cones_all
-    _blue_cones_all, _yellow_cones_all = place_cones(path_X, path_Y)
     if is_simulated:
         return
 
@@ -233,8 +233,11 @@ def load_test_path(event):
     path_name = PATH_NAMES[current_test_path_idx]
 
     # Unpack pre-computed geometry and optimal speed profile
-    path_X, path_Y, path_Psi, path_v_profile = SYNTHETIC_PATHS[path_name]
+    path_X, path_Y, path_Psi, path_v_profile,_ , _ = SYNTHETIC_PATHS[path_name]
     flip_heading_180 = False
+
+    # Generate cones AFTER path variables are populated
+    _blue_cones_all, _yellow_cones_all = place_cones(path_X, path_Y)
 
     path_line.set_data(path_X, path_Y)
     
@@ -244,7 +247,7 @@ def load_test_path(event):
     
     ax_map.set_title(f"Loaded: {path_name} | Click 'Start Sim'", fontweight="bold", color="blue")
     
-    # Robustly frame the camera around the new path (crucial for things like S-Bends and Hairpins)
+    # Robustly frame the camera around the new path
     margin = 15.0
     ax_map.set_xlim(np.min(path_X) - margin, np.max(path_X) + margin)
     ax_map.set_ylim(np.min(path_Y) - margin, np.max(path_Y) + margin)
@@ -523,15 +526,15 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, flip, rng_seed=None, max_steps=40
         history["u_accel"].append(u_opt[1])
 
         # ------------------------------------------------------------------
-        # 5. PREDICTED HORIZON for visualization (linear model rollout)
+        # 5. PREDICTED HORIZON for visualization
         # ------------------------------------------------------------------
         px, py = [], []
         X_p, Y_p, psi_p = plant_state[0], plant_state[1], plant_state[2]
         x_p_tmp = x_current.copy()
         for k in range(N_horizon):
             v_p = current_v + x_p_tmp[4]
-            X_p += v_p * np.cos(psi_p) * dt
-            Y_p += v_p * np.sin(psi_p) * dt
+            X_p -= v_p * np.cos(psi_p) * dt
+            Y_p -= v_p * np.sin(psi_p) * dt
             psi_p += x_p_tmp[3] * dt
             px.append(X_p)
             py.append(Y_p)
@@ -565,10 +568,12 @@ def run_simulation(event):
     ax_ey0.set_visible(False)
     ax_epsi0.set_visible(False)
 
-    # BUG FIX: pass R_rate_w explicitly so updated tuner weights are used.
+    # Calculate steps based on the active path geometry
+    dynamic_steps = calculate_dynamic_max_steps(path_X, path_Y, dt=dt)
+
     history = simulate_closed_loop(
         Q, R, slider_ey0.val, slider_epsi0.val, flip_heading_180,
-        rng_seed=None, R_rate_w=R_rate,
+        rng_seed=None, max_steps=dynamic_steps, R_rate_w=R_rate,
     )
 
     sim_history = history

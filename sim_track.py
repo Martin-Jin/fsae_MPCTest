@@ -134,3 +134,26 @@ class SimPlanner:
         self._cone_map.reset()
         self.centreline = None
         self.v_profile  = np.array([])
+
+    
+def calculate_dynamic_max_steps(path_X, path_Y, dt=0.05, fallback_speed=3.0, buffer=1.5):
+    """
+    Dynamically calculates the maximum simulation steps required to finish a path.
+    Assumes worst-case conservative speed to ensure the car reaches the end.
+    """
+    px = np.asarray(path_X)
+    py = np.asarray(path_Y)
+
+    # Return default if path is uninitialized
+    if len(px) < 2:
+        return 400
+
+    # Calculate total track arc length (meters)
+    ds = np.hypot(np.diff(px), np.diff(py))
+    total_length = np.sum(ds)
+
+    # Estimate max time needed: (Length / conservative speed) * buffer
+    max_time = (total_length / fallback_speed) * buffer
+    max_steps = int(math.ceil(max_time / dt))
+
+    return max_steps
