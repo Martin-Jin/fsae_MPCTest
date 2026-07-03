@@ -6,7 +6,7 @@ from scipy.interpolate import CubicSpline
 import signal
 
 from vehicle_physics import VehicleParams, step_nonlinear_plant, init_plant_state
-from model import get_8state_discrete_model
+from bicycle_model import get_8state_discrete_model
 from optimiser import solve_mpc
 import speed_profile as sp
 import cvxpy as cp

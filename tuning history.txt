@@ -1,7 +1,7 @@
 
 # Initial tuning results
 # 3/07/26 12:00 - Tracks path in simulator very accurately, slightly wobbly at lower speeds. Main issue is  low speed, had too high weight on acceleration
-that it had to be reduced for the car to even move. Need to implement higher friction in vehicle model.
+that it had to be reduced for the car to even move. Need to implement higher friction in vehicle model. Sometimes issue turning corners (exceeding cone boundary)
 Q_diag      = [23.84993795527158, 32.86695969860588, 0.9111941899078135, 22.201061425364593, 6.276870373001204, 0.0, 0.0, 0.0]
 R_diag      = [44.833851046596166, 27.15782639103162]
 R_rate_diag = [49.91540241422914, 16.791740027086462]
@@ -9,7 +9,7 @@ Duration    = 15.2 minutes
 Score       = Yet to be scored in fsds. Need to implement scroing system.
 
 # Retuning after higher friction implemented in vehicle model, and fixed initial speed not being 0.
-# 03/07/26 13:55 - Improved performance, 1 to 0 cones hit on test map 3, does not exceed cone booundaries at all.
+# 03/07/26 13:55 - Improved performance, 1 to 0 cones hit on comp test map 3. Same for other test maps does not exceed cone booundaries at all.
 Q_diag      = [9.353616402368889, 22.210542631007502, 18.906268193489474, 49.76446014969844, 10.808291199592064, 0.0, 0.0, 0.0]
 R_diag      = [49.33735358370815, 45.43435542843825]
 R_rate_diag = [49.98401941989215, 49.61230208743996]

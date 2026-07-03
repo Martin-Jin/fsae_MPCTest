@@ -1,104 +1,112 @@
-# Language: python
-# Title: High-Fidelity Vehicle Physics Plant (vehicle_physics.py)
 """
-Nonlinear Vehicle Plant Model — PhysX/FSDS Fidelity Level
-File Name: vehicle_physics.py
+vehicle_physics.py — High-Fidelity Nonlinear Vehicle Plant Model
 
-Upgrade from the previous dual-track model to a full 22-state plant that
-matches the fidelity level of Nvidia PhysX (used by FSDS / AirSim / UE4)
-and the AMZ Driverless winning simulation stack.
+PURPOSE
+-------
+Implements a 24-state nonlinear vehicle dynamics simulation plant intended to
+match the fidelity of Nvidia PhysX (used by FSDS/AirSim). This is the "truth"
+model that drives the vehicle in simulation; the MPC controller (optimiser.py)
+uses a much simpler 8-state linear model internally, creating a deliberate
+plant-model mismatch that mirrors the real-world situation.
 
-State vector (22 elements) — indices 0-7 are IDENTICAL to the old model
-so simulation.py and offline_tuner.py require zero changes to their
-index accesses:
+The plant is stepped at 20 Hz (dt=0.05 s) but internally sub-steps at 4×
+(h=0.0125 s) to maintain numerical stability through the stiff suspension
+dynamics and tyre relaxation lag.
 
-  [0]  X           — global position X (m)
-  [1]  Y           — global position Y (m)
-  [2]  psi         — yaw angle (rad)
-  [3]  vx          — longitudinal velocity body frame (m/s)
-  [4]  vy          — lateral velocity body frame (m/s)
-  [5]  r           — yaw rate (rad/s)
-  [6]  delta_act   — actual steering angle after lag (rad)
-  [7]  a_act       — actual acceleration command after lag (m/s²)
-  [8]  omega_RL    — rear-left  wheel spin (rad/s)
-  [9]  omega_RR    — rear-right wheel spin (rad/s)
-  [10] z_FL        — front-left  suspension deflection from equilibrium (m, +ve = compression)
-  [11] z_FR        — front-right suspension deflection from equilibrium (m)
-  [12] z_RL        — rear-left   suspension deflection from equilibrium (m)
-  [13] z_RR        — rear-right  suspension deflection from equilibrium (m)
-  [14] dz_FL_dt    — front-left  suspension velocity (m/s)
-  [15] dz_FR_dt    — front-right suspension velocity (m/s)
-  [16] dz_RL_dt    — rear-left   suspension velocity (m/s)
-  [17] dz_RR_dt    — rear-right  suspension velocity (m/s)
-  [18] Fy_FL_rlx   — front-left  actual lateral tyre force (N, after relaxation lag)
-  [19] Fy_FR_rlx   — front-right actual lateral tyre force (N)
-  [20] Fy_RL_rlx   — rear-left   actual lateral tyre force (N)
-  [21] Fy_RR_rlx   — rear-right  actual lateral tyre force (N)
+STATE VECTOR (24 elements)
+--------------------------
+Indices 0-7 are identical to the MPC's 8-state linear model so that
+simulation.py and offline_tuner.py can read positions/velocities/actuator
+states without any index remapping.
 
-Suspension deflection convention
-─────────────────────────────────
-z[i] = 0 at the static equilibrium position.  The spring force on the
-chassis from corner i is:
+  [0]  X            Global position X (m)
+  [1]  Y            Global position Y (m)
+  [2]  psi          Yaw angle (rad)
+  [3]  vx           Longitudinal velocity, body frame (m/s)
+  [4]  vy           Lateral velocity, body frame (m/s)
+  [5]  r            Yaw rate (rad/s)
+  [6]  delta_act    Actual steering angle after first-order lag (rad)
+  [7]  a_act        Actual acceleration command after first-order lag (m/s²)
+  [8]  omega_RL     Rear-left  wheel angular velocity (rad/s)
+  [9]  omega_RR     Rear-right wheel angular velocity (rad/s)
+  [10] z_FL         Front-left  suspension deflection from equilibrium (m)
+  [11] z_FR         Front-right suspension deflection from equilibrium (m)
+  [12] z_RL         Rear-left   suspension deflection from equilibrium (m)
+  [13] z_RR         Rear-right  suspension deflection from equilibrium (m)
+  [14] dz_FL_dt     Front-left  suspension velocity (m/s)
+  [15] dz_FR_dt     Front-right suspension velocity (m/s)
+  [16] dz_RL_dt     Rear-left   suspension velocity (m/s)
+  [17] dz_RR_dt     Rear-right  suspension velocity (m/s)
+  [18] Fy_FL_rlx    Front-left  tyre lateral force after relaxation lag (N)
+  [19] Fy_FR_rlx    Front-right tyre lateral force after relaxation lag (N)
+  [20] Fy_RL_rlx    Rear-left   tyre lateral force after relaxation lag (N)
+  [21] Fy_RR_rlx    Rear-right  tyre lateral force after relaxation lag (N)
+  [22] omega_FL     Front-left  wheel angular velocity (rad/s)
+  [23] omega_FR     Front-right wheel angular velocity (rad/s)
 
-    F_spring_i = k_i * (z_eq_i + z_i)
+SUSPENSION DEFLECTION CONVENTION
+---------------------------------
+z[i] = 0 at the static + aero equilibrium position at a nominal cruise speed.
+Spring force on chassis from corner i:  F_spring_i = k_i * (z_eq_i + z_i)
+At equilibrium: k_i * z_eq_i = Fz_static_i  so storing only the deviation z[i]
+gives a spring-force floor of the static load without double-counting.
+The unsprung mass EOM is then:  m_us * ddz_i = −k_i*z_i − c_i*dz_i − F_arb_i
 
-where k_i * z_eq_i = Fz_static_i  (equilibrium condition, pre-computed).
-
-Storing only the DEVIATION from equilibrium (z[i]) means the spring-force
-floor is automatically the static load — there is no double-counting with a
-quasi-static layer.  The unsprung mass equation is then:
-
-    m_us * ddz_i = Fz_road_i - k_i*(z_eq_i + z_i) - c_i*dz_i - F_arb_i
-
-where Fz_road_i is the normal force the road exerts on the tyre.  We
-approximate Fz_road ≈ Fz_static_i (planar road — no wheel hop off the
-ground) so the net driving term is just:
-
-    m_us * ddz_i = Fz_static_i - k_i*(z_eq_i + z_i) - c_i*dz_i - F_arb_i
-                 = -k_i*z_i - c_i*dz_i - F_arb_i        (since k_i*z_eq_i = Fz_static_i)
-
-This is a standard spring-damper with ARB coupling — stable by construction.
-
-All seven additions from the analysis are present:
-  1. Full MF94 Pacejka lateral+longitudinal (E, Sv, Sh, camber thrust)
-  2. Longitudinal wheel spin dynamics (omega per driven wheel, slip ratio)
-  3. Per-wheel spring/damper/ARB suspension with dynamic Fz
-  4. Split front/rear aero downforce (Cl_front, Cl_rear) + pitch sensitivity
+PHYSICS FEATURES
+----------------
+  1. Full MF94 Pacejka lateral + longitudinal tyre model (B, C, D, E, Sv, Sh, camber)
+  2. Per-wheel longitudinal slip ratio and wheel spin dynamics
+  3. Per-corner spring / damper / anti-roll-bar suspension with dynamic Fz
+  4. Split front/rear aerodynamic downforce with pitch sensitivity
   5. Tyre relaxation length (first-order lag on lateral force)
-  6. Torque vectoring (tv_gain parameter, default 0 = disabled)
-  7. Kinematic camber gain (suspension deflection → camber → Pacejka D shift)
-  8. Road-surface mu scaling (road_mu parameter, default 1.0 = dry)
+  6. Optional torque vectoring (tv_gain parameter; default 0 = disabled)
+  7. Kinematic camber gain (suspension deflection → camber angle → Pacejka D shift)
+  8. Road-surface mu scaling (road_mu parameter; default 1.0 = dry tarmac)
+
+USED BY
+-------
+  simulation.py   — calls step_nonlinear_plant() at every simulation timestep;
+                    calls init_plant_state() to initialise the vehicle.
+  offline_tuner.py — calls step_nonlinear_plant() and init_plant_state() in
+                    run_headless_rollout() for each CMA-ES candidate evaluation.
+
+DOES NOT USE
+------------
+  model.py, optimiser.py, speed_profile.py, sim_track.py, performance_stats.py
 """
+
 import numpy as np
 
 # ─────────────────────────────────────────────────────────────
-# NAMED STATE INDICES
+# NAMED STATE INDEX CONSTANTS
+# Using named constants everywhere prevents silent index bugs
+# when the state vector length changes.
 # ─────────────────────────────────────────────────────────────
-IDX_X        = 0
-IDX_Y        = 1
-IDX_PSI      = 2
-IDX_VX       = 3
-IDX_VY       = 4
-IDX_R        = 5
-IDX_DELTA    = 6
-IDX_A_ACT    = 7
-IDX_OMEGA_RL = 8
-IDX_OMEGA_RR = 9
-IDX_Z_FL     = 10
-IDX_Z_FR     = 11
-IDX_Z_RL     = 12
-IDX_Z_RR     = 13
-IDX_DZ_FL    = 14
-IDX_DZ_FR    = 15
-IDX_DZ_RL    = 16
-IDX_DZ_RR    = 17
-IDX_FY_FL    = 18
-IDX_FY_FR    = 19
-IDX_FY_RL    = 20
-IDX_FY_RR    = 21
-IDX_OMEGA_FL = 22
-IDX_OMEGA_FR = 23
-N_STATES     = 24
+IDX_X        = 0   # Global X position (m)
+IDX_Y        = 1   # Global Y position (m)
+IDX_PSI      = 2   # Yaw angle (rad)
+IDX_VX       = 3   # Longitudinal velocity body frame (m/s)
+IDX_VY       = 4   # Lateral velocity body frame (m/s)
+IDX_R        = 5   # Yaw rate (rad/s)
+IDX_DELTA    = 6   # Actual steering angle after lag (rad)
+IDX_A_ACT    = 7   # Actual acceleration after lag (m/s²)
+IDX_OMEGA_RL = 8   # Rear-left  wheel spin (rad/s)
+IDX_OMEGA_RR = 9   # Rear-right wheel spin (rad/s)
+IDX_Z_FL     = 10  # Front-left  suspension deviation from equilibrium (m)
+IDX_Z_FR     = 11  # Front-right suspension deviation from equilibrium (m)
+IDX_Z_RL     = 12  # Rear-left   suspension deviation from equilibrium (m)
+IDX_Z_RR     = 13  # Rear-right  suspension deviation from equilibrium (m)
+IDX_DZ_FL    = 14  # Front-left  suspension velocity (m/s)
+IDX_DZ_FR    = 15  # Front-right suspension velocity (m/s)
+IDX_DZ_RL    = 16  # Rear-left   suspension velocity (m/s)
+IDX_DZ_RR    = 17  # Rear-right  suspension velocity (m/s)
+IDX_FY_FL    = 18  # Front-left  tyre lateral force after relaxation (N)
+IDX_FY_FR    = 19  # Front-right tyre lateral force after relaxation (N)
+IDX_FY_RL    = 20  # Rear-left   tyre lateral force after relaxation (N)
+IDX_FY_RR    = 21  # Rear-right  tyre lateral force after relaxation (N)
+IDX_OMEGA_FL = 22  # Front-left  wheel spin (rad/s)
+IDX_OMEGA_FR = 23  # Front-right wheel spin (rad/s)
+N_STATES     = 24  # Total state vector length
 
 
 # ─────────────────────────────────────────────────────────────
@@ -106,150 +114,234 @@ N_STATES     = 24
 # ─────────────────────────────────────────────────────────────
 class VehicleParams:
     """
-    Physical parameters for a Formula Student EV (~255 kg wet).
-    All values are documented with source and rationale.
+    Physical parameters for a Formula Student electric vehicle (~255 kg wet).
+
+    All values are based on typical FS EV specifications with rationale
+    provided inline. This class is instantiated once per simulation run and
+    passed by reference to avoid re-allocation overhead during inner loops.
+
+    Used by: step_nonlinear_plant(), init_plant_state(), plant_to_tracking_error()
+    Instantiated in: simulation.py, offline_tuner.py (init_worker, run_headless_rollout)
     """
 
     def __init__(self):
-        # ── Geometry ────────────────────────────────────────────────
-        self.lf    = 0.85       # CoM → front axle (m)
-        self.lr    = 0.70       # CoM → rear  axle (m)
-        self.m     = 255.0     # total vehicle mass (kg)
-        self.Iz    = 110.0     # yaw inertia (kg·m²)
-        self.tf    = 1.25      # front track width (m)
-        self.tr    = 1.20      # rear  track width (m)
-        self.h_cg  = 0.30      # CoG height (m)
-        self.Cf = 11500.0   # front cornering stiffness (N/rad)
-        self.Cr = 12500.0   # rear  cornering stiffness (N/rad)
-        self.max_steer = np.radians(35.0)  # max steering angle (rad)
-        self.max_accel  = 5.0       # max longitudinal acceleration (m/s²)
-        self.max_accel_brake = -5.0      # max longitudinal braking (m/s²)
+        # ── Geometry ────────────────────────────────────────────────────────
+        self.lf    = 0.85     # Distance from CoM to front axle (m)
+        self.lr    = 0.70     # Distance from CoM to rear  axle (m)
+        self.m     = 255.0    # Total vehicle mass including driver (kg)
+        self.Iz    = 110.0    # Yaw moment of inertia about CoM (kg·m²)
+        self.tf    = 1.25     # Front track width between tyre contact patches (m)
+        self.tr    = 1.20     # Rear  track width between tyre contact patches (m)
+        self.h_cg  = 0.30     # Centre-of-gravity height (m); drives load transfer
+        # Linear cornering stiffness — used only by the MPC's linear model (model.py),
+        # not by this nonlinear plant which uses Pacejka curves directly.
+        self.Cf = 11500.0     # Front cornering stiffness (N/rad)
+        self.Cr = 12500.0     # Rear  cornering stiffness (N/rad)
+        # Actuator limits: enforced as hard bounds in optimiser.py's QP constraints.
+        self.max_steer       = np.radians(35.0)  # Max rack-limited steering angle (rad)
+        self.max_accel       = 5.0               # Max longitudinal acceleration (m/s²)
+        self.max_accel_brake = -5.0              # Max longitudinal braking (m/s²)
 
-        # ── Unsprung mass ────────────────────────────────────────────
-        self.m_us  = 7.5       # unsprung mass per corner (kg)
+        # ── Unsprung Mass ────────────────────────────────────────────────────
+        self.m_us  = 7.5      # Unsprung mass per corner: wheel + upright + hub (kg)
 
-        # ── Tyre geometry ────────────────────────────────────────────
-        self.r_eff = 0.2286    # effective rolling radius, 13" wheel (m)
+        # ── Tyre Geometry ────────────────────────────────────────────────────
+        self.r_eff = 0.2286   # Effective rolling radius for a 13" wheel+tyre (m)
 
-        # ── Wheel + drivetrain rotational inertia ────────────────────
-        # Wheel: hollow cylinder ~0.9 kg·m²
-        # Motor/gearbox inertia referred to wheel ~0.05 kg·m²
-        self.I_wheel      = 0.9    # per wheel (kg·m²)
-        self.I_drivetrain = 0.05   # per rear driven wheel (kg·m²)
-        self.I_w_eff_r    = self.I_wheel + self.I_drivetrain
-        self.I_w_eff_f    = self.I_wheel  # Front wheels lack drivetrain mass
-        self.brake_bias   = 0.60   # 60% front braking distributio
+        # ── Rotational Inertia ───────────────────────────────────────────────
+        # Each driven wheel's effective inertia includes the motor/gearbox
+        # referred through the reduction ratio.
+        self.I_wheel      = 0.9    # Per-wheel rotational inertia (kg·m²)
+        self.I_drivetrain = 0.05   # Motor+gearbox inertia referred to wheel (kg·m²)
+        self.I_w_eff_r    = self.I_wheel + self.I_drivetrain  # Rear driven wheels
+        self.I_w_eff_f    = self.I_wheel                       # Front free-rolling wheels
+        self.brake_bias   = 0.60   # Fraction of total brake force at front axle
 
-        # ── Suspension ──────────────────────────────────────────────
-        # FS typical effective wheel-rate: front 25 N/mm, rear 30 N/mm
-        # (spring rate × motion_ratio²; MR ≈ 0.65-0.70 for pushrod)
-        self.k_susp_f = 25000.0   # front wheel-rate (N/m)
-        self.k_susp_r = 30000.0   # rear  wheel-rate (N/m)
+        # ── Suspension Spring / Damper / ARB ────────────────────────────────
+        # Wheel-rate = spring-rate × motion_ratio²; motion_ratio ≈ 0.65-0.70
+        # for a pushrod FS suspension gives ~25 N/mm front, ~30 N/mm rear.
+        self.k_susp_f = 25000.0   # Front wheel-rate (N/m)
+        self.k_susp_r = 30000.0   # Rear  wheel-rate (N/m)
+        # Damping at ~30% of critical damping plus unsprung contribution.
+        # c_crit ≈ 2*sqrt(k * m_corner); 30% of that + unsprung ≈ 1500 front.
+        self.c_damp_f = 1500.0    # Front corner damper rate (N·s/m)
+        self.c_damp_r = 1800.0    # Rear  corner damper rate (N·s/m)
+        # Anti-roll bars add an effective wheel-rate that couples left and right
+        # suspension: the ARB force = k_arb * (z_left - z_right).
+        self.k_arb_f = 8000.0     # Front ARB equivalent wheel-rate (N/m)
+        self.k_arb_r = 6000.0     # Rear  ARB equivalent wheel-rate (N/m)
+        # Hard bump/droop stops at ±40 mm from equilibrium.
+        self.z_max =  0.040       # Maximum compression from equilibrium (m)
+        self.z_min = -0.040       # Maximum droop from equilibrium (m)
 
-        # Damping: ~30% of critical = 2*sqrt(k * m_corner)
-        # m_corner_f ≈ 255*0.4/2 = 51 kg → c_crit ≈ 2*sqrt(25000*51) ≈ 2254
-        # 30% → 676; round up to 1500 to include unsprung contribution
-        self.c_damp_f = 1500.0    # front damper rate (N·s/m)
-        self.c_damp_r = 1800.0    # rear  damper rate (N·s/m)
+        # ── Kinematic Camber Gain ────────────────────────────────────────────
+        # In a double-wishbone suspension, jounce (compression) induces negative
+        # camber on the outer wheel, increasing lateral grip.
+        # Gain = 0.5 deg/mm = 0.5 * π/180 / 0.001 ≈ 8.73 rad/m
+        self.camber_gain    = 8.73  # Camber change per unit suspension travel (rad/m)
+        self.camber_stiff_f = 0.15  # Front camber stiffness: fraction of Fz added as Fy per rad
+        self.camber_stiff_r = 0.12  # Rear  camber stiffness (slightly lower, typical slick)
 
-        # Anti-roll bars — equivalent wheel-rate contribution
-        # Front ARB ~8 N/mm, rear ~6 N/mm (FS typical aluminium bars)
-        self.k_arb_f = 8000.0     # front ARB wheel-rate (N/m)
-        self.k_arb_r = 6000.0     # rear  ARB wheel-rate (N/m)
-
-        # Suspension travel limits (bump / droop from equilibrium)
-        self.z_max =  0.040    # max compression from equilibrium (m)
-        self.z_min = -0.040    # max droop     from equilibrium (m)
-
-        # ── Kinematic camber gain ───────────────────────────────────
-        # Double-wishbone FS: ~0.5 deg camber per mm of travel
-        #   = 0.5 * pi/180 / 0.001 = 8.73 rad/m
-        self.camber_gain   = 8.73   # rad camber per m of compression
-        # Camber stiffness: fraction of Fz added as lateral force per rad gamma
-        # Typical slick ~0.12-0.18
-        self.camber_stiff_f = 0.15
-        self.camber_stiff_r = 0.12
-
-        # ── Pacejka MF94 lateral (FS slick, aligned to Cf=13500 N/rad) ─
-        # B, C, D from previous model (calibrated).
-        # E ~-1.5 (sharpens peak vs pure BCD), typical for racing slick.
-        # Sv, Sh: small ply-steer / conicity offsets (rad, N)
+        # ── Pacejka MF94 Lateral Coefficients ───────────────────────────────
+        # The MF94 formula: Fy = mu*Fz * sin(C * arctan(B*alpha - E*(B*alpha - arctan(B*alpha))))
+        # B: stiffness factor (controls initial slope of the Fy-vs-alpha curve)
+        # C: shape factor    (controls the sharpness of the peak)
+        # D: peak factor     (scales peak force; combined with mu*Fz gives peak Fy)
+        # E: curvature factor (negative = sharper peak, typical for racing slick)
+        # Sv, Sh: vertical/horizontal offsets from ply-steer and conicity
         self.B_f  = 13.5;  self.C_f  = 1.40;  self.D_f  = 0.90
         self.E_f  = -1.5;  self.Sv_f = 0.0;   self.Sh_f = 0.002
 
         self.B_r  = 10.0;  self.C_r  = 1.40;  self.D_r  = 0.95
         self.E_r  = -1.8;  self.Sv_r = 0.0;   self.Sh_r = 0.001
 
-        # ── Pacejka MF94 longitudinal (rear wheels) ──────────────────
-        # Peak at slip ratio ~0.10-0.15 for slick; Dx≈1.0 (similar to mu)
+        # ── Pacejka MF94 Longitudinal Coefficients ───────────────────────────
+        # Same shape function applied to longitudinal slip ratio kappa.
+        # Peak at slip ratio ≈ 0.10-0.15 for a slick tyre.
         self.Bx_r = 12.0;  self.Cx_r = 1.65
         self.Dx_r = 1.00;  self.Ex_r = -0.5
 
-        # ── Tyre relaxation lengths ──────────────────────────────────
-        # First-order lag: dFy/dt = (vx/sigma) * (Fy_ss - Fy_act)
-        # FS slick: sigma_y ≈ 0.30-0.40 m (lateral)
-        self.sigma_y_f = 0.35      # front lateral relaxation length (m)
-        self.sigma_y_r = 0.30      # rear  lateral relaxation length (m)
+        # ── Tyre Relaxation Lengths ───────────────────────────────────────────
+        # A tyre does not respond instantaneously to a slip angle change.
+        # The lateral force builds up over a "relaxation length" σ (m):
+        #   dFy/dt = (vx / σ) * (Fy_steady_state − Fy_actual)
+        # At vx=10 m/s with σ=0.35 m: time constant ≈ 35 ms — significant at 20 Hz.
+        self.sigma_y_f = 0.35      # Front lateral relaxation length (m)
+        self.sigma_y_r = 0.30      # Rear  lateral relaxation length (m)
 
-        # ── Friction & load sensitivity ──────────────────────────────
-        self.mu     = 1.6          # peak friction coefficient (racing slick)
-        self.k_sens = 0.00018      # load sensitivity (1/N) — degrades mu at high Fz
+        # ── Friction and Load Sensitivity ────────────────────────────────────
+        # Peak friction coefficient for a dry racing slick.
+        self.mu     = 1.6          # Peak friction coefficient (dimensionless)
+        # At high normal loads the rubber deforms less efficiently, reducing mu.
+        # k_sens: mu degrades by k_sens*Fz from the nominal peak value.
+        self.k_sens = 0.00018      # Load sensitivity (1/N)
 
-        # ── Aerodynamics — split front/rear ─────────────────────────
-        # Total Cl_A = 1.5, split 43/57 front/rear for neutral aero balance
-        self.rho       = 1.225     # air density (kg/m³)
-        self.Cd_A      = 0.9       # drag area (m²)
-        self.Cl_A_f    = 0.645     # front downforce area
-        self.Cl_A_r    = 0.855     # rear  downforce area
-        # Pitch sensitivity: +1% front Cl per % longitudinal deceleration
-        # expressed as fraction of g per unit pitch angle proxy
-        self.Cl_pitch_sens = 0.03  # fractional Cl_f change per (a/g)
+        # ── Aerodynamics ─────────────────────────────────────────────────────
+        # Total downforce coefficient Cl_A split 43/57 front/rear for
+        # neutral balance: more rear downforce than front is typical FS tuning.
+        self.rho       = 1.225     # Air density at sea level (kg/m³)
+        self.Cd_A      = 0.9       # Drag area (drag coefficient × frontal area, m²)
+        self.Cl_A_f    = 0.645     # Front wing downforce area (m²)
+        self.Cl_A_r    = 0.855     # Rear  wing downforce area (m²)
+        # Under braking the nose dips (pitch forward), increasing front downforce
+        # and reducing rear. Cl_pitch_sens = 0.03 means a 1g deceleration shifts
+        # front Cl_f up by 3% and rear Cl_r down by 3%.
+        self.Cl_pitch_sens = 0.03  # Fractional Cl change per unit (a/g)
 
-        # ── Rolling resistance & Stiction (UPDATED) ──────────────────
-        self.Crr        = 37.5     # constant dynamic drag force (N)
-        self.F_stiction = 70.0     # static breakaway friction (N)
+        # ── Rolling Resistance and Stiction ──────────────────────────────────
+        self.Crr        = 37.5     # Constant rolling drag force at speed (N)
+        self.F_stiction = 70.0     # Static breakaway force (N); not currently applied per-step
 
-        # ── Actuator lag (UPDATED) ───────────────────────────────────
-        self.tau_delta = 0.08      # steering (s) - FS actuators are FAST
-        self.tau_a     = 0.05      # acceleration (s) - EV torque is nearly instant
+        # ── Actuator Lag ─────────────────────────────────────────────────────
+        # First-order lag: d(delta_act)/dt = (delta_cmd - delta_act) / tau_delta
+        # EV motors respond almost instantly; FS rack-and-pinion steering has
+        # a small but non-negligible lag (~80 ms) compared to a hydraulic system.
+        self.tau_delta = 0.08      # Steering actuator time constant (s)
+        self.tau_a     = 0.05      # Acceleration (torque) time constant (s)
 
-        self.g = 9.81
+        self.g = 9.81              # Gravitational acceleration (m/s²)
 
     @property
     def L(self):
+        """Total wheelbase: lf + lr (m). Used frequently in weight distribution formulae."""
         return self.lf + self.lr
 
     def static_fz_per_corner(self):
-        """Static normal load per corner at rest (no aero, no accel)."""
+        """
+        Compute the static normal load at each front and rear corner at rest
+        (no aerodynamics, no longitudinal acceleration).
+
+        Physics: weight distribution by moment balance about the rear axle:
+          Fz_front_total = m * g * (lr / L)
+          Fz_rear_total  = m * g * (lf / L)
+        Divided by 2 for left/right symmetry.
+
+        Returns
+        -------
+        (Fz_f, Fz_r) : (float, float)
+            Normal load per front corner (N) and per rear corner (N).
+
+        Used by: static_z_equilibrium(), and indirectly by step_nonlinear_plant()
+                 to set baseline Fz before load transfer is applied.
+        """
         Fz_f = self.m * self.g * (self.lr / self.L) / 2.0
         Fz_r = self.m * self.g * (self.lf / self.L) / 2.0
-        return Fz_f, Fz_r   # (front_corner, rear_corner) in N
+        return Fz_f, Fz_r
 
     def static_z_equilibrium(self, v_nominal=7.0):
         """
-        Suspension equilibrium deflections z_eq (m) at a nominal cruise speed,
-        including aerodynamic downforce.  States track deviation from this point.
+        Compute the suspension equilibrium deflection z_eq (m) at a nominal
+        cruise speed, including aerodynamic downforce.
 
-        Using a speed-inclusive equilibrium means the suspension sits near the
-        centre of its travel range at typical running speeds, rather than
-        slamming into the bump stop when aero load is added.
+        Why include aero in the equilibrium?
+        If the equilibrium is computed at rest (no aero), then when the vehicle
+        reaches speed the aero load pushes the suspension down by z_eq_aero, which
+        would appear as a large initial transient. Using a speed-inclusive equilibrium
+        centres the suspension in its travel range at typical running speeds.
 
-        v_nominal : representative speed for aero calculation (m/s).
-                    Defaults to 7.0 m/s (the previous fixed v_ref).
+        Physics: At equilibrium, spring force = total static load:
+          k * z_eq = Fz_static + 0.5 * (0.5 * rho * Cl_A * v²)
+        Solving: z_eq = (Fz_static + F_aero_per_corner) / k
+
+        Parameters
+        ----------
+        v_nominal : float
+            Representative cruise speed for aero calculation (m/s).
+            Defaults to 7.0 m/s (the previous fixed v_ref).
+
+        Returns
+        -------
+        (z_eq_f, z_eq_r) : (float, float)
+            Front and rear equilibrium suspension deflection (m).
+
+        Used by: step_nonlinear_plant() — called once per call to compute the
+                 spring force baseline.
         """
         Fz_f_static, Fz_r_static = self.static_fz_per_corner()
+        # Aerodynamic downforce per axle at nominal speed, split per corner (÷2)
         F_down_f = 0.5 * self.rho * self.Cl_A_f * v_nominal**2
         F_down_r = 0.5 * self.rho * self.Cl_A_r * v_nominal**2
         Fz_f_total = Fz_f_static + 0.5 * F_down_f   # per corner
         Fz_r_total = Fz_r_static + 0.5 * F_down_r   # per corner
+        # Deflection = load / spring-rate
         return Fz_f_total / self.k_susp_f, Fz_r_total / self.k_susp_r
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PACEJKA MF94 — LATERAL
+# PACEJKA MF94 TYRE MODEL — LATERAL
 # ─────────────────────────────────────────────────────────────────────────────
 def _mf94(x_in, B, C, D, E):
-    """Core MF94 shape function (no offsets, no Fz scaling — applied outside)."""
+    """
+    Core Pacejka MF94 (Magic Formula 1994) shape function.
+
+    Computes the normalised tyre force curve used for both lateral (Fy) and
+    longitudinal (Fx) tyre force. Does NOT apply friction scaling (mu*Fz)
+    or horizontal/vertical offsets — those are applied in the callers.
+
+    The MF94 formula:
+        Bx = B * x_in
+        y = D * sin(C * arctan(Bx − E * (Bx − arctan(Bx))))
+
+    Behaviour:
+      - B controls initial slope: dFy/d(alpha) at alpha=0 ≈ B*C*D (stiffness)
+      - C controls shape: C<2 → pronounced peak, C=2 → flat peak (asymptotes)
+      - D is the peak value (force normalised; actual peak = mu*Fz*D)
+      - E < 0 sharpens the peak and increases the shape near zero slip;
+        E → 1 gives a rounder response (typical for bias-ply; slicks: E ≈ −1.5)
+
+    Parameters
+    ----------
+    x_in : float
+        Input slip (slip angle in rad for lateral; slip ratio for longitudinal).
+    B, C, D, E : float
+        Pacejka shape coefficients.
+
+    Returns
+    -------
+    float : Normalised force (dimensionless; multiply by mu*Fz to get Newtons).
+
+    Called by: pacejka_lateral_mf94(), pacejka_longitudinal_mf94()
+    """
     Bx = B * x_in
     return D * np.sin(C * np.arctan(Bx - E * (Bx - np.arctan(Bx))))
 
@@ -257,71 +349,160 @@ def _mf94(x_in, B, C, D, E):
 def pacejka_lateral_mf94(alpha, Fz, mu, B, C, D, E, Sv, Sh,
                           gamma=0.0, camber_stiff=0.0):
     """
-    Full MF94 lateral tyre force (N).
+    Full MF94 lateral tyre force including offsets and camber thrust (N).
 
-      Fy = mu*Fz * MF94(alpha + Sh)  +  Sv  +  camber_stiff*Fz*gamma
+    Formula:
+        Fy = mu * Fz * MF94(alpha + Sh) + Sv + camber_stiff * Fz * gamma
 
-    alpha        : slip angle (rad)
-    Fz           : normal load (N)
-    mu           : effective friction (load sensitivity already applied)
-    B,C,D,E      : Pacejka shape coefficients
-    Sv, Sh       : vertical/horizontal offsets (ply steer, conicity)
-    gamma        : camber angle (rad; +ve = top leans outward from centre)
-    camber_stiff : camber stiffness per unit Fz (fraction)
+    The ply-steer offset Sh shifts the zero-force slip angle slightly
+    (non-zero Fy at zero slip angle is common in real tyres due to
+    construction asymmetry). Sv is a constant vertical offset (conicity).
+    Camber thrust adds lateral force proportional to camber angle gamma
+    and normal load Fz.
+
+    Parameters
+    ----------
+    alpha : float
+        Tyre slip angle (rad). Positive = tyre pointing left of travel direction.
+    Fz : float
+        Normal load on the tyre (N). Scales peak lateral force.
+    mu : float
+        Effective peak friction coefficient (dimensionless). Already includes
+        load sensitivity degradation — computed externally.
+    B, C, D, E : float
+        Pacejka shape coefficients (see _mf94 docstring).
+    Sv : float
+        Vertical offset (N) — ply-steer / conicity constant force.
+    Sh : float
+        Horizontal offset (rad) — shifts zero-crossing of the Fy curve.
+    gamma : float
+        Camber angle (rad). Positive = top of tyre leans outward from car centre.
+    camber_stiff : float
+        Camber stiffness coefficient: fraction of Fz added as Fy per rad of camber.
+
+    Returns
+    -------
+    float : Lateral tyre force Fy (N). Positive = leftward in tyre frame.
+
+    Called by: step_nonlinear_plant() — once per wheel per substep.
     """
     Fy0 = mu * Fz * _mf94(alpha + Sh, B, C, D, E) + Sv
     return Fy0 + camber_stiff * Fz * gamma
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PACEJKA MF94 — LONGITUDINAL
+# PACEJKA MF94 TYRE MODEL — LONGITUDINAL
 # ─────────────────────────────────────────────────────────────────────────────
 def pacejka_longitudinal_mf94(kappa, Fz, mu, Bx, Cx, Dx, Ex):
     """
     MF94 longitudinal tyre force (N).
 
-      Fx = mu*Fz * MF94(kappa)
+    Formula:
+        Fx = mu * Fz * MF94(kappa)
 
-    kappa : longitudinal slip ratio (positive = driving, negative = braking)
+    No offsets (Sv, Sh) are needed for the longitudinal direction; the
+    symmetry of driving vs. braking is captured by the kappa sign alone.
+
+    Longitudinal slip ratio kappa:
+        kappa = (r_eff * omega − vx) / max(r_eff * omega, |vx|)
+    Positive kappa = wheel spinning faster than ground speed (drive slip / wheelspin).
+    Negative kappa = wheel slower than ground speed (brake slip / lockup).
+    Peak Fx typically occurs at |kappa| ≈ 0.10-0.15 for a racing slick.
+
+    Parameters
+    ----------
+    kappa : float
+        Longitudinal slip ratio (dimensionless).
+    Fz : float
+        Normal load (N).
+    mu : float
+        Effective peak friction (dimensionless; load-sensitivity applied externally).
+    Bx, Cx, Dx, Ex : float
+        Pacejka longitudinal shape coefficients.
+
+    Returns
+    -------
+    float : Longitudinal tyre force Fx (N). Positive = driving/forward force.
+
+    Called by: step_nonlinear_plant() — once per wheel per substep.
     """
     return mu * Fz * _mf94(kappa, Bx, Cx, Dx, Ex)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MAIN PLANT STEP
+# MAIN PLANT INTEGRATION STEP
 # ─────────────────────────────────────────────────────────────────────────────
 def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
                          road_mu=1.0, tv_gain=0.0):
     """
-    Advance the 22-state high-fidelity plant by one control timestep dt.
+    Advance the 24-state nonlinear plant by one control timestep dt.
+
+    This is the core integration function called at every simulation step.
+    It sub-steps the ODEs 4× internally (h = dt/4 = 0.0125 s) to remain
+    numerically stable through the stiff suspension and tyre relaxation dynamics.
+
+    The 20 computational steps within each sub-step follow this pipeline:
+      1.  Actuator lag            — first-order steering and throttle/brake lag
+      2.  Aerodynamics            — drag, pitch-sensitive split downforce
+      3.  Wheel corner velocities — body-frame velocity at each contact patch
+      4.  Lateral slip angles     — angle between tyre heading and travel direction
+      5.  Suspension Fz           — spring + ARB + aero gives normal load per corner
+      6.  Suspension dynamics     — quasi-static load transfer drives spring deflection
+      7.  Kinematic camber        — suspension travel changes camber angle
+      8.  Friction coefficient    — degrade mu with normal load (load sensitivity)
+      9.  Longitudinal slip ratio — compare wheel speed to ground speed
+     10.  Torque vectoring        — optional yaw-rate-based differential torque split
+     11.  Pacejka longitudinal Fx — tyre force from slip ratio via MF94
+     12.  Wheel spin dynamics     — angular acceleration from torque imbalance
+     13.  MF94 lateral Fy_ss     — steady-state lateral force from slip angle
+     14.  Tyre relaxation lag     — first-order filter toward Fy_ss
+     15.  Friction ellipse        — scale Fy down if Fx is consuming friction budget
+     16.  Body-frame transform    — rotate front-wheel forces to body axes
+     17.  Rolling resistance      — constant drag opposing longitudinal motion
+     18.  Resultant forces + Mz  — sum all forces; compute yaw moment
+     19.  Rigid-body EOM         — Newton/Euler: accelerations from forces
+     20.  State integration       — explicit Euler on all states (semi-implicit for suspension)
 
     Parameters
     ----------
-    state    : np.ndarray, length 22
-    u_cmd    : [delta_cmd (rad), a_cmd (m/s²)]
-    dt       : control timestep (s)
-    params   : VehicleParams instance
-    road_mu  : surface grip multiplier (1.0=dry, 0.6=damp, etc.)
-    tv_gain  : torque-vectoring proportional gain (N·m per rad/s of r).
-               ΔT = tv_gain * r → ΔFx = ΔT/(r_eff * 2) at each rear wheel.
-               Default 0 = disabled.
+    state : np.ndarray, shape (24,)
+        Current vehicle state vector (see module-level docstring for layout).
+    u_cmd : array-like, shape (2,)
+        Control commands: [delta_cmd (rad), a_cmd (m/s²)].
+        These are the MPC's computed outputs, passed in as commanded setpoints
+        for the first-order actuator lag filters.
+    dt : float
+        Control timestep (s). Typically 0.05 s (20 Hz).
+    params : VehicleParams
+        Vehicle parameter struct. Passed by reference — not copied.
+    road_mu : float, optional
+        Surface grip multiplier. 1.0 = dry tarmac, ~0.6 = damp, ~0.3 = wet.
+        Scales the effective mu at every tyre corner.
+    tv_gain : float, optional
+        Torque vectoring gain (N·m per rad/s of yaw rate).
+        ΔT = tv_gain * r ; ΔFx = ΔT / (r_eff * 2) applied between rear wheels.
+        Default 0 = disabled (standard open differential behaviour).
 
     Returns
     -------
-    np.ndarray, length 22
+    np.ndarray, shape (24,)
+        New state vector after dt seconds.
+
+    Called by: simulation.py (simulate_closed_loop),
+               offline_tuner.py (run_headless_rollout)
     """
     p         = params
-    sub_steps = 4
-    h         = dt / sub_steps
+    sub_steps = 4           # Number of Euler sub-steps per control timestep
+    h         = dt / sub_steps  # Sub-step size: 0.0125 s
 
-    # Pre-compute static equilibrium deflections (constant for this vehicle)
+    # Pre-compute equilibrium deflections once per outer step (constant for this vehicle)
     z_eq_f, z_eq_r = p.static_z_equilibrium()
 
-    s = state.copy()
+    s = state.copy()  # Work on a copy; never mutate the caller's array
 
     for _ in range(sub_steps):
 
-        # ── Unpack ──────────────────────────────────────────────────────
+        # ── Unpack state vector ──────────────────────────────────────────────
         X         = s[IDX_X]
         Y         = s[IDX_Y]
         psi       = s[IDX_PSI]
@@ -334,178 +515,189 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
         omega_RR  = s[IDX_OMEGA_RR]
         omega_FL  = s[IDX_OMEGA_FL]
         omega_FR  = s[IDX_OMEGA_FR]
-        # Suspension deviation from equilibrium
-        z_FL = s[IDX_Z_FL];  z_FR = s[IDX_Z_FR]
-        z_RL = s[IDX_Z_RL];  z_RR = s[IDX_Z_RR]
-        dz_FL = s[IDX_DZ_FL]; dz_FR = s[IDX_DZ_FR]
-        dz_RL = s[IDX_DZ_RL]; dz_RR = s[IDX_DZ_RR]
-        # Tyre relaxation states
-        Fy_FL_rlx = s[IDX_FY_FL]; Fy_FR_rlx = s[IDX_FY_FR]
-        Fy_RL_rlx = s[IDX_FY_RL]; Fy_RR_rlx = s[IDX_FY_RR]
+        z_FL  = s[IDX_Z_FL];   z_FR  = s[IDX_Z_FR]
+        z_RL  = s[IDX_Z_RL];   z_RR  = s[IDX_Z_RR]
+        dz_FL = s[IDX_DZ_FL];  dz_FR = s[IDX_DZ_FR]
+        dz_RL = s[IDX_DZ_RL];  dz_RR = s[IDX_DZ_RR]
+        Fy_FL_rlx = s[IDX_FY_FL];  Fy_FR_rlx = s[IDX_FY_FR]
+        Fy_RL_rlx = s[IDX_FY_RL];  Fy_RR_rlx = s[IDX_FY_RR]
 
+        # Guard against exact-zero vx to avoid divide-by-zero in slip angle calcs
         vx_safe = max(vx, 0.5)
 
-        # ── 1. Actuator lag ─────────────────────────────────────────────
-        ddelta = (u_cmd[0] - delta_act) / p.tau_delta
-        da     = (u_cmd[1] - a_act)     / p.tau_a
+        # ── 1. Actuator lag (first-order lag on steering and throttle) ────────
+        # The rate of change is (target - actual) / time_constant.
+        # This is the derivative of a first-order ODE: tau * dx/dt = u - x.
+        ddelta = (u_cmd[0] - delta_act) / p.tau_delta  # Steering rate (rad/s)
+        da     = (u_cmd[1] - a_act)     / p.tau_a      # Acceleration rate (m/s³)
 
-        # ── 2. Aerodynamics (split front/rear, pitch-sensitive) ──────────
+        # ── 2. Aerodynamics (split front/rear, pitch-sensitive) ──────────────
         v_sq   = vx_safe**2 + vy**2
+        # Aerodynamic drag: F_drag = 0.5 * rho * Cd_A * v²
         F_drag = 0.5 * p.rho * p.Cd_A * v_sq
-
-        # Pitch proxy: braking (a_act < 0) → nose dips → more front downforce
+        # Pitch proxy: a_act < 0 (braking) → nose pitches forward → more front downforce.
+        # Fraction represents the nose pitch as a fraction of 1g deceleration.
         pitch_frac = -a_act / p.g
-        Cl_f_eff  = p.Cl_A_f * (1.0 + p.Cl_pitch_sens * pitch_frac)
-        Cl_r_eff  = p.Cl_A_r * (1.0 - p.Cl_pitch_sens * pitch_frac)
+        Cl_f_eff  = p.Cl_A_f * (1.0 + p.Cl_pitch_sens * pitch_frac)  # Modified front Cl
+        Cl_r_eff  = p.Cl_A_r * (1.0 - p.Cl_pitch_sens * pitch_frac)  # Modified rear  Cl
+        # Downforce: F_down = 0.5 * rho * Cl_A * v²  (per axle; ÷2 for per corner below)
         F_down_f  = 0.5 * p.rho * Cl_f_eff * v_sq
         F_down_r  = 0.5 * p.rho * Cl_r_eff * v_sq
 
-        # ── 3. Wheel-corner velocities (body frame) ─────────────────────
+        # ── 3. Wheel corner velocities (body frame) ──────────────────────────
+        # Velocity at each contact patch due to yaw rotation (r) and lateral offset.
+        # vx_corner = vx ± r * (track/2)  ;  vy_corner = vy ± r * axle_distance
         vx_FL = vx_safe - r * (p.tf / 2.0);  vy_FL = vy + r * p.lf
         vx_FR = vx_safe + r * (p.tf / 2.0);  vy_FR = vy + r * p.lf
         vx_RL = vx_safe - r * (p.tr / 2.0);  vy_RL = vy - r * p.lr
         vx_RR = vx_safe + r * (p.tr / 2.0);  vy_RR = vy - r * p.lr
 
-        # ── 4. Lateral slip angles ───────────────────────────────────────
+        # ── 4. Lateral slip angles ────────────────────────────────────────────
+        # Slip angle alpha = steer_angle - arctan(vy_corner / vx_corner)
+        # For rear wheels: no steer, so alpha = -arctan(vy/vx)
+        # A positive slip angle generates positive (leftward) lateral force.
         alpha_FL = delta_act - np.arctan2(vy_FL, max(vx_FL, 0.5))
         alpha_FR = delta_act - np.arctan2(vy_FR, max(vx_FR, 0.5))
         alpha_RL =           - np.arctan2(vy_RL, max(vx_RL, 0.5))
         alpha_RR =           - np.arctan2(vy_RR, max(vx_RR, 0.5))
 
-        # ── 5. Suspension spring/damper/ARB → normal loads ──────────────
-        #
-        # Total spring deflection = z_eq_i + z_i  (equilibrium + deviation)
-        # Spring force on body = k * (z_eq + z)
-        # At equilibrium (z=0, dz=0, z_RL=z_RR): F_spring = k*z_eq = Fz_static ✓
-        #
-        # ARB coupling: F_arb = k_arb * (z_left - z_right)
-        # Applied +F_arb to left corner, -F_arb to right corner.
-        #
-        # Normal load at each wheel:
-        #   Fz = k*(z_eq + z)  +  aero_downforce_per_corner
-        # (The aero load adds to road reaction, not to suspension spring force)
+        # ── 5. Suspension spring / damper / ARB → normal loads ───────────────
+        # ARB (anti-roll bar) couples left and right corners:
+        #   F_arb = k_arb * (z_left - z_right)   [+ve on left, -ve on right]
+        # This resists roll by transferring load from the compressing (outside) wheel
+        # to the extending (inside) wheel, reducing steady-state roll angle.
+        arb_f = p.k_arb_f * (z_FL - z_FR)   # Front ARB force (N)
+        arb_r = p.k_arb_r * (z_RL - z_RR)   # Rear  ARB force (N)
 
-        arb_f = p.k_arb_f * (z_FL - z_FR)
-        arb_r = p.k_arb_r * (z_RL - z_RR)
-
+        # Spring force = k * (z_eq + z_deviation)  [z_eq accounts for static + aero load]
         Fz_spring_FL = p.k_susp_f * (z_eq_f + z_FL)
         Fz_spring_FR = p.k_susp_f * (z_eq_f + z_FR)
         Fz_spring_RL = p.k_susp_r * (z_eq_r + z_RL)
         Fz_spring_RR = p.k_susp_r * (z_eq_r + z_RR)
 
-        # Normal load = spring + aero (per corner), floored at 10 N
+        # Total normal load = spring force + ARB contribution + aerodynamic downforce.
+        # Floored at 10 N to prevent tyre from going completely unloaded and causing NaN.
         Fz_FL = max(10.0, Fz_spring_FL + arb_f + 0.5 * F_down_f)
         Fz_FR = max(10.0, Fz_spring_FR - arb_f + 0.5 * F_down_f)
         Fz_RL = max(10.0, Fz_spring_RL + arb_r + 0.5 * F_down_r)
         Fz_RR = max(10.0, Fz_spring_RR - arb_r + 0.5 * F_down_r)
 
-        # ── 6. Suspension dynamics (deviation from equilibrium) ──────────
+        # ── 6. Suspension dynamics (unsprung mass EOM) ───────────────────────
+        # Quasi-static load transfer drives the road reaction force at each corner.
+        # These are the NET road forces the ground pushes up with, which the
+        # suspension spring must resist to find the new equilibrium.
         #
-        # The unsprung mass equation is:
-        #   m_us * ddz = Fz_road - F_spring - F_damp - F_arb
-        #
-        # For a planar road: Fz_road_i = Fz_static_i + delta_from_load_transfer
-        #
-        # Quasi-static load transfer terms (what drives the suspension to deflect):
-        #   longitudinal: ±(m * ax * h_cg) / L  per axle, then /2 per corner
-        #   lateral:      ±(m * ay * h_cg) / track  per axle
-        #
-        # These are the NET external forces that the suspension spring must resist:
-        ax_body = a_act                   # longitudinal acceleration command (m/s²)
-        ay_body = vx_safe * r             # lateral acceleration proxy (m/s²)
+        # Longitudinal transfer: braking shifts load forward by m*ax*h_cg/L per axle.
+        # Lateral transfer: cornering shifts load outward by m*ay*h_cg/track per axle.
+        # Aero adds directly to road reaction (not to spring force baseline).
+        ax_body = a_act               # Longitudinal acceleration command (m/s²)
+        ay_body = vx_safe * r         # Lateral acceleration proxy: v²/R = vx*r (m/s²)
 
-        # Per-corner road reaction (what the road pushes up with):
-        Fz_road_FL = (p.m * p.g * (p.lr / p.L) / 2.0
-                      - (p.m * ax_body * p.h_cg) / (2.0 * p.L)
-                      - (p.m * ay_body * p.h_cg) / (2.0 * p.tf)
-                      + 0.5 * F_down_f)
+        # Road reaction at each corner (what the ground pushes up with):
+        Fz_road_FL = (p.m * p.g * (p.lr / p.L) / 2.0          # Static weight share
+                      - (p.m * ax_body * p.h_cg) / (2.0 * p.L) # Longitudinal transfer (forward under braking)
+                      - (p.m * ay_body * p.h_cg) / (2.0 * p.tf) # Lateral transfer (unloads inside front)
+                      + 0.5 * F_down_f)                          # Aero pushes down on road
         Fz_road_FR = (p.m * p.g * (p.lr / p.L) / 2.0
                       - (p.m * ax_body * p.h_cg) / (2.0 * p.L)
-                      + (p.m * ay_body * p.h_cg) / (2.0 * p.tf)
+                      + (p.m * ay_body * p.h_cg) / (2.0 * p.tf) # Lateral loads outside front
                       + 0.5 * F_down_f)
-        Fz_road_RL = (p.m * p.g * (p.lf / p.L) / 2.0
-                      + (p.m * ax_body * p.h_cg) / (2.0 * p.L)
-                      - (p.m * ay_body * p.h_cg) / (2.0 * p.tr)
+        Fz_road_RL = (p.m * p.g * (p.lf / p.L) / 2.0          # Rear has more static share (lf > lr)
+                      + (p.m * ax_body * p.h_cg) / (2.0 * p.L)  # Under braking: load transfers off rear
+                      - (p.m * ay_body * p.h_cg) / (2.0 * p.tr) # Lateral unloads inside rear
                       + 0.5 * F_down_r)
         Fz_road_RR = (p.m * p.g * (p.lf / p.L) / 2.0
                       + (p.m * ax_body * p.h_cg) / (2.0 * p.L)
-                      + (p.m * ay_body * p.h_cg) / (2.0 * p.tr)
+                      + (p.m * ay_body * p.h_cg) / (2.0 * p.tr) # Lateral loads outside rear
                       + 0.5 * F_down_r)
 
-        # Suspension damper force (opposes velocity)
+        # Damper forces (velocity-proportional; oppose suspension motion)
         Fd_FL = p.c_damp_f * dz_FL;  Fd_FR = p.c_damp_f * dz_FR
         Fd_RL = p.c_damp_r * dz_RL;  Fd_RR = p.c_damp_r * dz_RR
 
-        # The suspension equations of motion are integrated by _integrate_susp
-        # below using a semi-implicit scheme (implicit damping) — no ddz needed here.
-
-        # ── 7. Kinematic camber from suspension deflection ───────────────
-        # z > 0 (compression) on outside wheel in corner → negative camber
-        # gamma sign: +ve = top leans away from vehicle centre
-        gamma_FL = -p.camber_gain * (z_eq_f + z_FL)
-        gamma_FR =  p.camber_gain * (z_eq_f + z_FR)
+        # ── 7. Kinematic camber from suspension deflection ───────────────────
+        # Compression (z > 0) on the outside wheel in a corner pulls the tyre
+        # into negative camber — the top leans toward the car centre — which
+        # increases the contact patch's effective grip angle.
+        # gamma sign: positive = top leans away from car centre.
+        gamma_FL = -p.camber_gain * (z_eq_f + z_FL)   # Left: negative camber in compression
+        gamma_FR =  p.camber_gain * (z_eq_f + z_FR)   # Right: sign flipped (leans other way)
         gamma_RL = -p.camber_gain * (z_eq_r + z_RL)
         gamma_RR =  p.camber_gain * (z_eq_r + z_RR)
 
-        # ── 8. Friction coefficient (with load sensitivity) ──────────────
+        # ── 8. Effective friction coefficient with load sensitivity ──────────
+        # Real tyres suffer "friction fade" at high normal loads: the contact
+        # patch rubber cannot deform uniformly, reducing available grip per unit load.
+        # mu_eff = mu_peak * road_mu * (1 - k_sens * Fz)
+        # Floored at 0.1 to prevent instabilities in zero-grip edge cases.
         eff_mu = p.mu * road_mu
         mu_FL  = max(0.1, eff_mu * (1.0 - p.k_sens * Fz_FL))
         mu_FR  = max(0.1, eff_mu * (1.0 - p.k_sens * Fz_FR))
         mu_RL  = max(0.1, eff_mu * (1.0 - p.k_sens * Fz_RL))
         mu_RR  = max(0.1, eff_mu * (1.0 - p.k_sens * Fz_RR))
 
-        # ── 9. Longitudinal slip ratios (rear driven wheels) ─────────────
+        # ── 9. Longitudinal slip ratios ───────────────────────────────────────
+        # Slip ratio kappa = (r_eff * omega - vx_wheel) / max(r_eff*omega, |vx_wheel|)
+        # This normalises to [-1, 1] where 0 = free rolling, +1 = full wheelspin.
         def _kappa(omega, vx_w):
-            r_om  = p.r_eff * max(omega, 0.0)
-            v_ref = max(max(r_om, abs(vx_w)), 0.01)
-            return (r_om - abs(vx_w)) / v_ref
+            r_om  = p.r_eff * max(omega, 0.0)       # Peripheral tyre speed (m/s)
+            v_ref = max(max(r_om, abs(vx_w)), 0.01)  # Denominator: avoid div-by-zero
+            return (r_om - abs(vx_w)) / v_ref        # Positive = driving slip
 
         kappa_FL = _kappa(omega_FL, vx_FL)
         kappa_FR = _kappa(omega_FR, vx_FR)
         kappa_RL = _kappa(omega_RL, vx_RL)
         kappa_RR = _kappa(omega_RR, vx_RR)
 
-        # ── 10. Torque vectoring & Longitudinal Force Distribution ─────
+        # ── 10. Torque vectoring and longitudinal force distribution ──────────
+        # TV applies a yaw-stabilising torque by biasing drive torque left/right:
+        #   ΔFx_tv = tv_gain * r / tr   [N; added to right, subtracted from left]
         delta_Fx_tv = (tv_gain * r / p.tr) if abs(tv_gain) > 1e-6 else 0.0
-        Fx_req_total = p.m * a_act
-        
+        Fx_req_total = p.m * a_act  # Newton's 2nd law: total required longitudinal force
+
         if a_act > 0:
-            # Acceleration: RWD only
+            # Acceleration: rear-wheel drive only; front wheels are passive.
             Fx_FL_req, Fx_FR_req = 0.0, 0.0
-            Fx_RL_req = 0.5 * Fx_req_total - delta_Fx_tv
-            Fx_RR_req = 0.5 * Fx_req_total + delta_Fx_tv
+            Fx_RL_req = 0.5 * Fx_req_total - delta_Fx_tv   # TV: reduces left to yaw right
+            Fx_RR_req = 0.5 * Fx_req_total + delta_Fx_tv   # TV: increases right
         else:
-            # Braking: Distributed by brake bias
+            # Braking: distributed by brake_bias (60% front, 40% rear default)
             Fx_FL_req = 0.5 * Fx_req_total * p.brake_bias
             Fx_FR_req = 0.5 * Fx_req_total * p.brake_bias
             Fx_RL_req = 0.5 * Fx_req_total * (1.0 - p.brake_bias) - delta_Fx_tv
             Fx_RR_req = 0.5 * Fx_req_total * (1.0 - p.brake_bias) + delta_Fx_tv
 
-        # ── 11. Pacejka longitudinal force ────────────────────────
-        Fmax_FL, Fmax_FR = mu_FL * Fz_FL, mu_FR * Fz_FR
+        # ── 11. Pacejka longitudinal force ────────────────────────────────────
+        # The MF94 formula gives the peak achievable Fx from friction and slip ratio.
+        # Commanded force is then clipped to what the tyre's friction circle allows.
+        Fmax_FL, Fmax_FR = mu_FL * Fz_FL, mu_FR * Fz_FR  # Friction ceiling per corner
         Fmax_RL, Fmax_RR = mu_RL * Fz_RL, mu_RR * Fz_RR
 
-        # Note: Using rear Bx, Cx, Dx, Ex for front assuming identical slick compounds
+        # Using rear Bx/Cx/Dx/Ex for fronts; same compound, acceptable approximation.
         Fx_FL_pac = pacejka_longitudinal_mf94(kappa_FL, Fz_FL, mu_FL, p.Bx_r, p.Cx_r, p.Dx_r, p.Ex_r)
         Fx_FR_pac = pacejka_longitudinal_mf94(kappa_FR, Fz_FR, mu_FR, p.Bx_r, p.Cx_r, p.Dx_r, p.Ex_r)
         Fx_RL_pac = pacejka_longitudinal_mf94(kappa_RL, Fz_RL, mu_RL, p.Bx_r, p.Cx_r, p.Dx_r, p.Ex_r)
         Fx_RR_pac = pacejka_longitudinal_mf94(kappa_RR, Fz_RR, mu_RR, p.Bx_r, p.Cx_r, p.Dx_r, p.Ex_r)
 
-        # Commanded force saturated by friction ceiling and Pacejka curve
+        # Clip commanded force to [−min(Fmax, Pac_peak), +min(Fmax, Pac_peak)]
         Fx_FL = float(np.clip(Fx_FL_req, -min(Fmax_FL, abs(Fx_FL_pac) + 1.0), min(Fmax_FL, abs(Fx_FL_pac) + 1.0)))
         Fx_FR = float(np.clip(Fx_FR_req, -min(Fmax_FR, abs(Fx_FR_pac) + 1.0), min(Fmax_FR, abs(Fx_FR_pac) + 1.0)))
         Fx_RL = float(np.clip(Fx_RL_req, -min(Fmax_RL, abs(Fx_RL_pac) + 1.0), min(Fmax_RL, abs(Fx_RL_pac) + 1.0)))
         Fx_RR = float(np.clip(Fx_RR_req, -min(Fmax_RR, abs(Fx_RR_pac) + 1.0), min(Fmax_RR, abs(Fx_RR_pac) + 1.0)))
 
-        # ── 12. Wheel spin dynamics ──────────────────────────────────────
-        # I_w * dω/dt = T_input - Fx * r_eff
-        # T_input = Fx_req * r_eff  (commanded torque; Fx_req sets target slip)
+        # ── 12. Wheel spin dynamics ────────────────────────────────────────────
+        # Newton's 2nd for rotation: I * dω/dt = T_drive − T_road_reaction
+        # T_drive = Fx_req * r_eff  (commanded torque; what the motor tries to apply)
+        # T_road  = Fx_actual * r_eff  (what the road actually reacts with)
+        # Net torque = imbalance → wheel accelerates or decelerates.
         domega_FL = (Fx_FL_req * p.r_eff - Fx_FL * p.r_eff) / p.I_w_eff_f
         domega_FR = (Fx_FR_req * p.r_eff - Fx_FR * p.r_eff) / p.I_w_eff_f
         domega_RL = (Fx_RL_req * p.r_eff - Fx_RL * p.r_eff) / p.I_w_eff_r
         domega_RR = (Fx_RR_req * p.r_eff - Fx_RR * p.r_eff) / p.I_w_eff_r
 
-        # ── 13. MF94 lateral steady-state ───────────────────────────────
+        # ── 13. MF94 lateral steady-state forces ──────────────────────────────
+        # These are the forces the tyre WOULD produce if there were no relaxation lag.
+        # The relaxation filter (step 14) then delays them toward this target.
         Fy_FL_ss = pacejka_lateral_mf94(
             alpha_FL, Fz_FL, mu_FL, p.B_f, p.C_f, p.D_f, p.E_f, p.Sv_f, p.Sh_f,
             gamma_FL, p.camber_stiff_f)
@@ -519,102 +711,139 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
             alpha_RR, Fz_RR, mu_RR, p.B_r, p.C_r, p.D_r, p.E_r, p.Sv_r, p.Sh_r,
             gamma_RR, p.camber_stiff_r)
 
-        # ── 14. Tyre relaxation (first-order lag) ────────────────────────
-        # dFy/dt = (vx/σ) * (Fy_ss - Fy_rlx)
-        # Euler step: Fy_rlx += h * (vx/σ) * (Fy_ss - Fy_rlx)
-        # Clamp gain to 1 to avoid overshoot in a single substep
-        gain_f = min(1.0, (vx_safe / p.sigma_y_f) * h)
-        gain_r = min(1.0, (vx_safe / p.sigma_y_r) * h)
+        # ── 14. Tyre relaxation (first-order lateral force lag) ───────────────
+        # Physical origin: when the slip angle changes, the tyre contact patch
+        # must travel one "relaxation length" σ before the stress distribution
+        # (and thus the lateral force) fully adjusts. The first-order ODE is:
+        #   dFy_rlx/dt = (vx / σ) * (Fy_ss − Fy_rlx)
+        # Time constant: τ = σ / vx  →  at vx=10 m/s, σ=0.35 m: τ ≈ 35 ms.
+        # Gain clamped to 1.0 to avoid overshooting in a single sub-step.
+        gain_f = min(1.0, (vx_safe / p.sigma_y_f) * h)  # Front lag gain per sub-step
+        gain_r = min(1.0, (vx_safe / p.sigma_y_r) * h)  # Rear  lag gain per sub-step
 
         Fy_FL_rlx_new = Fy_FL_rlx + gain_f * (Fy_FL_ss - Fy_FL_rlx)
         Fy_FR_rlx_new = Fy_FR_rlx + gain_f * (Fy_FR_ss - Fy_FR_rlx)
         Fy_RL_rlx_new = Fy_RL_rlx + gain_r * (Fy_RL_ss - Fy_RL_rlx)
         Fy_RR_rlx_new = Fy_RR_rlx + gain_r * (Fy_RR_ss - Fy_RR_rlx)
 
-        # ── 15. Friction ellipse coupling (Fx + Fy ≤ mu*Fz) ────────────
-        # Front: free-rolling, no Fx commanded → full Fmax available for Fy
-        ell_FL = max(0.0, 1.0 - (Fx_FL / max(Fmax_FL, 1.0))**2)
+        # ── 15. Friction ellipse coupling (Fx² + Fy² ≤ (mu*Fz)²) ─────────────
+        # The friction circle (or ellipse in practice) constrains the combined
+        # horizontal force a tyre can produce. When Fx consumes part of the
+        # friction budget, the remaining capacity for Fy is reduced:
+        #   Fy_available = Fy_rlx * sqrt(1 − (Fx/Fmax)²)
+        # This is the "friction ellipse" approximation; the exact shape depends
+        # on tyre construction but this is standard for race vehicle simulation.
+        ell_FL = max(0.0, 1.0 - (Fx_FL / max(Fmax_FL, 1.0))**2)  # Remaining fraction
         ell_FR = max(0.0, 1.0 - (Fx_FR / max(Fmax_FR, 1.0))**2)
         Fy_FL  = float(np.clip(Fy_FL_rlx_new * np.sqrt(ell_FL), -Fmax_FL, Fmax_FL))
         Fy_FR  = float(np.clip(Fy_FR_rlx_new * np.sqrt(ell_FR), -Fmax_FR, Fmax_FR))
 
-        # Rear: friction ellipse reduces available lateral force when Fx is present
         ell_RL = max(0.0, 1.0 - (Fx_RL / max(Fmax_RL, 1.0))**2)
         ell_RR = max(0.0, 1.0 - (Fx_RR / max(Fmax_RR, 1.0))**2)
         Fy_RL  = float(np.clip(Fy_RL_rlx_new * np.sqrt(ell_RL), -Fmax_RL, Fmax_RL))
         Fy_RR  = float(np.clip(Fy_RR_rlx_new * np.sqrt(ell_RR), -Fmax_RR, Fmax_RR))
 
-        # ── 16. Body-frame coordinate transform (front steer) ───────────
+        # ── 16. Body-frame coordinate transform (front-steer rotation) ────────
+        # Front tyre forces are in the tyre frame (aligned with delta_act).
+        # Rotate to body frame using the 2D rotation matrix:
+        #   [Fx_b]   [cos(δ)  -sin(δ)] [Fx]
+        #   [Fy_b] = [sin(δ)   cos(δ)] [Fy]
         cd = np.cos(delta_act);  sd = np.sin(delta_act)
         Fx_FL_b = Fx_FL * cd - Fy_FL * sd;  Fy_FL_b = Fx_FL * sd + Fy_FL * cd
         Fx_FR_b = Fx_FR * cd - Fy_FR * sd;  Fy_FR_b = Fx_FR * sd + Fy_FR * cd
-        Fx_RL_b, Fy_RL_b = Fx_RL, Fy_RL
+        Fx_RL_b, Fy_RL_b = Fx_RL, Fy_RL   # Rear tyres aligned with body — no rotation
         Fx_RR_b, Fy_RR_b = Fx_RR, Fy_RR
 
-        # ── 17. Rolling resistance ───────────────────────────────────────
+        # ── 17. Rolling resistance ─────────────────────────────────────────────
+        # Constant hysteresis drag opposing forward motion (positive vx → negative Fx).
         F_roll = p.Crr * np.sign(vx) if abs(vx) > 1e-3 else 0.0
 
-        # ── 18. Resultant forces & yaw moment ───────────────────────────
+        # ── 18. Resultant forces and yaw moment ───────────────────────────────
+        # Sum all corner forces in body frame.
         Fx_total = Fx_FL_b + Fx_FR_b + Fx_RL_b + Fx_RR_b - F_drag - F_roll
         Fy_total = Fy_FL_b + Fy_FR_b + Fy_RL_b + Fy_RR_b
 
-        M_z = (  p.lf * (Fy_FL_b + Fy_FR_b)
-               - p.lr * (Fy_RL_b + Fy_RR_b)
-               + (p.tf / 2.0) * (Fx_FR_b - Fx_FL_b)
-               + (p.tr / 2.0) * (Fx_RR_b - Fx_RL_b))
+        # Yaw moment Mz about CoM: front axle forces create positive yaw (turn left),
+        # rear axle forces oppose yaw. Track-width terms from asymmetric Fx.
+        M_z = (  p.lf * (Fy_FL_b + Fy_FR_b)     # Front lateral → yaw moment
+               - p.lr * (Fy_RL_b + Fy_RR_b)      # Rear lateral  → oppose yaw
+               + (p.tf / 2.0) * (Fx_FR_b - Fx_FL_b)  # Differential Fx at front
+               + (p.tr / 2.0) * (Fx_RR_b - Fx_RL_b)) # Differential Fx at rear (TV)
 
-        # ── 19. Rigid-body EOM ───────────────────────────────────────────
-        ax_rb = Fx_total / p.m + vy * r
-        ay_rb = Fy_total / p.m - vx_safe * r
-        r_dot = M_z / p.Iz
+        # ── 19. Rigid-body equations of motion ────────────────────────────────
+        # Newton in body frame; Coriolis terms appear because the frame rotates:
+        #   F = m * (a_body + ω × v_body)
+        # Longitudinal: ax_rb = Fx/m + vy*r   (centripetal term)
+        # Lateral:      ay_rb = Fy/m - vx*r   (centripetal term, opposite sign)
+        # Yaw:          r_dot = Mz / Iz
+        ax_rb = Fx_total / p.m + vy * r   # Body-frame longitudinal acceleration (m/s²)
+        ay_rb = Fy_total / p.m - vx_safe * r  # Body-frame lateral acceleration (m/s²)
+        r_dot = M_z / p.Iz                 # Yaw angular acceleration (rad/s²)
 
-        # ── 20. Integrate all states (explicit Euler, substep h) ─────────
-        vx_new  = max(0.0, vx + ax_rb * h)
+        # ── 20. Integrate all states (explicit Euler, h sub-steps) ────────────
+        # Velocities and rates: standard Euler forward integration.
+        vx_new  = max(0.0, vx + ax_rb * h)   # Clamp to zero: no reversing
         vy_new  = vy + ay_rb * h
         r_new   = r  + r_dot * h
 
+        # Global position: integrate body-frame velocity rotated to world frame.
+        # dx_world = vx*cos(ψ) - vy*sin(ψ)  ;  dy_world = vx*sin(ψ) + vy*cos(ψ)
         X_new   = X   + (vx * np.cos(psi) - vy * np.sin(psi)) * h
         Y_new   = Y   + (vx * np.sin(psi) + vy * np.cos(psi)) * h
-        psi_new = psi + r * h
+        psi_new = psi + r * h              # Yaw: integrate yaw rate
 
+        # Actuator states: Euler on the lag ODEs
         delta_new = delta_act + ddelta * h
         a_new     = a_act     + da     * h
 
+        # Wheel speeds: floor at 0 (wheels don't spin backward in normal driving)
         omega_RL_new = max(0.0, omega_RL + domega_RL * h)
         omega_RR_new = max(0.0, omega_RR + domega_RR * h)
         omega_FL_new = max(0.0, omega_FL + domega_FL * h)
         omega_FR_new = max(0.0, omega_FR + domega_FR * h)
 
+        # ── Suspension integration (semi-implicit Euler) ────────────────────
         def _integrate_susp(z, dz, Fz_road, Fz_spring, F_damp, F_arb_signed, k, c):
             """
-            Semi-implicit integration for a spring-damper-ARB suspension corner.
+            Integrate one suspension corner using semi-implicit Euler.
 
-            Implicit damping makes this unconditionally stable regardless of the
-            spring rate, damper rate, or timestep h — critical here because the
-            FS suspension natural frequency (~11 Hz front, ~12 Hz rear) is high
-            relative to the 0.0125 s substep, and explicit Euler would require
-            many more substeps to remain stable.
+            Why semi-implicit?
+            The FS suspension natural frequency is ~11-12 Hz (high relative to
+            the 0.0125 s sub-step). Explicit Euler would require many more
+            sub-steps to remain stable because the stability condition for a
+            spring-damper is: h < 2/ω_n ≈ 0.018 s (right on the boundary here).
+            Semi-implicit Euler treats the damping term implicitly (puts it in
+            the denominator) while keeping spring and external forces explicit,
+            which gives unconditional stability for any h.
 
-            Semi-implicit scheme:
-              dz_new = (dz + (Fz_road - Fz_spring - F_arb) / m_us * h)
-                       / (1 + c/m_us * h)
-              z_new  = z + dz_new * h          ← use updated velocity
+            Scheme:
+              dz_new = [dz + (F_net / m_us) * h] / (1 + c/m_us * h)   ← implicit damping
+              z_new  = z + dz_new * h                                   ← use updated velocity
 
-            This is equivalent to treating damping implicitly (denominator)
-            while treating spring and external forces explicitly.  It is O(h)
-            accurate and unconditionally stable for a linear spring-damper,
-            which the suspension is (ARB is linear in z difference).
+            F_net = Fz_road − Fz_spring − F_arb  (external − restoring; damper handled implicitly)
 
-            Hard bump-stop: if travel limit is reached, zero velocity component
-            pointing into the limit (inelastic contact).
+            Hard bump-stops: inelastic contact clamps velocity to zero at the limits.
+
+            Parameters
+            ----------
+            z : float             Current deflection from equilibrium (m)
+            dz : float            Current deflection velocity (m/s)
+            Fz_road : float       Road reaction force (N)
+            Fz_spring : float     Current spring force k*(z_eq + z) (N)
+            F_damp : float        Current damper force c*dz (N) [for reference only]
+            F_arb_signed : float  ARB force applied to THIS corner (+ve or -ve)
+            k : float             Spring rate (N/m)
+            c : float             Damper rate (N·s/m)
+
+            Returns
+            -------
+            (z_new, dz_new) : (float, float)
             """
-            # Net external forcing (excluding damper — handled implicitly)
             F_net = Fz_road - Fz_spring - F_arb_signed
-            # Semi-implicit velocity update
+            # Semi-implicit: damping appears in denominator → unconditional stability
             dz_new = (dz + (F_net / p.m_us) * h) / (1.0 + (c / p.m_us) * h)
-            # Position update using new velocity
             z_new  = float(np.clip(z + dz_new * h, p.z_min, p.z_max))
-            # Bump-stop contact: inelastic — zero velocity into the limit
+            # Inelastic bump stop: zero velocity component pressing into the stop
             if z_new >= p.z_max and dz_new > 0.0:
                 dz_new = 0.0
             if z_new <= p.z_min and dz_new < 0.0:
@@ -622,19 +851,15 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
             return z_new, dz_new
 
         z_FL_new, dz_FL_new = _integrate_susp(
-            z_FL, dz_FL, Fz_road_FL, Fz_spring_FL,
-            Fd_FL, arb_f, p.k_susp_f, p.c_damp_f)
+            z_FL, dz_FL, Fz_road_FL, Fz_spring_FL, Fd_FL, arb_f, p.k_susp_f, p.c_damp_f)
         z_FR_new, dz_FR_new = _integrate_susp(
-            z_FR, dz_FR, Fz_road_FR, Fz_spring_FR,
-            Fd_FR, -arb_f, p.k_susp_f, p.c_damp_f)
+            z_FR, dz_FR, Fz_road_FR, Fz_spring_FR, Fd_FR, -arb_f, p.k_susp_f, p.c_damp_f)
         z_RL_new, dz_RL_new = _integrate_susp(
-            z_RL, dz_RL, Fz_road_RL, Fz_spring_RL,
-            Fd_RL, arb_r, p.k_susp_r, p.c_damp_r)
+            z_RL, dz_RL, Fz_road_RL, Fz_spring_RL, Fd_RL, arb_r, p.k_susp_r, p.c_damp_r)
         z_RR_new, dz_RR_new = _integrate_susp(
-            z_RR, dz_RR, Fz_road_RR, Fz_spring_RR,
-            Fd_RR, -arb_r, p.k_susp_r, p.c_damp_r)
+            z_RR, dz_RR, Fz_road_RR, Fz_spring_RR, Fd_RR, -arb_r, p.k_susp_r, p.c_damp_r)
 
-        # ── 21. Pack new state ───────────────────────────────────────────
+        # ── Pack new state vector ────────────────────────────────────────────
         s_new = np.empty(N_STATES)
         s_new[IDX_X]        = X_new
         s_new[IDX_Y]        = Y_new
@@ -666,17 +891,40 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# INITIALISATION
+# STATE INITIALISATION
 # ─────────────────────────────────────────────────────────────────────────────
 def init_plant_state(X0, Y0, psi0, vx0=10.0):
     """
-    Build an initial 22-element plant state vector at true static equilibrium:
+    Build a 24-element plant state vector at true static equilibrium.
 
-      - Wheel speeds set to no-slip: omega = vx0 / r_eff
-      - Suspension deflection deviation z_i = 0  (all corners at equilibrium;
-        the spring force k*(z_eq + 0) = k*z_eq = Fz_static exactly balances
-        the weight at each corner, so ddz = 0 and there are no t=0 transients)
-      - Relaxed tyre forces = 0 (zero slip angle at start → zero Fy_ss → no transient)
+    "True static equilibrium" means:
+      - Wheel speeds set to free-rolling: omega = vx0 / r_eff (no slip)
+      - Suspension deviation z_i = 0 at all corners (equilibrium defined
+        to include aero at v_nominal, so ddz = 0 exactly at t=0)
+      - Tyre relaxation forces = 0 (zero slip angle → zero Fy_ss → no transient)
+      - All velocities and rates start at their nominal values with no transients
+
+    Without this initialisation, a simulation started with suspension
+    deflection states at zero (the spring-force-only equilibrium ignoring aero)
+    would have an initial transient as the suspension compresses to its true
+    aero-loaded equilibrium, which pollutes the first ~0.5 s of every rollout.
+
+    Parameters
+    ----------
+    X0, Y0 : float
+        Initial global position (m).
+    psi0 : float
+        Initial yaw angle (rad).
+    vx0 : float, optional
+        Initial longitudinal speed (m/s). Defaults to 10.0 m/s.
+
+    Returns
+    -------
+    np.ndarray, shape (24,)
+        Initial state vector, ready to pass to step_nonlinear_plant().
+
+    Called by: simulation.py (simulate_closed_loop),
+               offline_tuner.py (run_headless_rollout)
     """
     s = np.zeros(N_STATES)
     p = VehicleParams()
@@ -686,29 +934,58 @@ def init_plant_state(X0, Y0, psi0, vx0=10.0):
     s[IDX_PSI] = psi0
     s[IDX_VX]  = vx0
 
-    # Wheel angular velocity: rolling without slip at vx0
-    s[IDX_OMEGA_RL] = vx0 / p.r_eff
-    s[IDX_OMEGA_RR] = vx0 / p.r_eff
-    s[IDX_OMEGA_FL] = vx0 / p.r_eff
-    s[IDX_OMEGA_FR] = vx0 / p.r_eff
+    # Set wheel speeds to free-rolling at vx0 (no slip at start → no wheelspin transient)
+    omega_init = vx0 / p.r_eff
+    s[IDX_OMEGA_RL] = omega_init
+    s[IDX_OMEGA_RR] = omega_init
+    s[IDX_OMEGA_FL] = omega_init
+    s[IDX_OMEGA_FR] = omega_init
 
-    # Suspension deviation from equilibrium = 0 for all corners.
-    # z_eq is computed at vx0, so suspension is centred in its travel
-    # range at the initial speed (no t=0 aero transient).
-    # Indices 10-17 remain zero from np.zeros — this IS the equilibrium state.
+    # Suspension deviations z_i = 0 (states 10-17 already zero from np.zeros).
+    # z_eq computed at vx0 places the suspension at the correct operating point.
 
-    # Tyre relaxation forces: zero at zero slip (indices 18-21 remain zero)
+    # Tyre relaxation states = 0 (states 18-21 already zero).
+    # At zero slip angle, Fy_ss = 0, so no relaxation transient.
 
     return s
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TRACKING ERROR HELPER (unchanged — reads only indices 0-7)
+# TRACKING ERROR HELPER
 # ─────────────────────────────────────────────────────────────────────────────
 def plant_to_tracking_error(state, ref_x, ref_y, ref_psi):
     """
-    Convert global plant state into MPC tracking errors.
-    Reads only indices 0-7, so it works with both 8-state and 22-state vectors.
+    Convert a global plant state to the MPC's tracking error state vector.
+
+    This is the bridge between the 24-state nonlinear plant and the 8-state
+    linear MPC model. Only indices 0-7 are read, so the function works with
+    both 24-state (nonlinear plant) and 8-state (linear model) vectors.
+
+    Tracking errors are computed in the Frenet frame aligned with the
+    reference path point (ref_x, ref_y, ref_psi):
+      e_y   = lateral deviation  (+ve = car is left of the reference)
+      e_psi = heading error      (+ve = car points left of path direction)
+
+    Lateral error formula (rotation of global position error to path frame):
+      e_y = (Y - ref_y)*cos(ref_psi) - (X - ref_x)*sin(ref_psi)
+
+    Parameters
+    ----------
+    state : array-like, shape ≥ 8
+        Plant state vector. Reads indices 0 (X), 1 (Y), 2 (psi),
+        3 (vx), 4 (vy), 5 (r), 6 (delta_act), 7 (a_act).
+    ref_x, ref_y : float
+        Reference path point coordinates (m).
+    ref_psi : float
+        Reference path heading at the reference point (rad).
+
+    Returns
+    -------
+    (e_y, e_y_dot, e_psi, e_psi_dot, delta_act, a_act, vx) : tuple of floats
+        MPC input quantities. e_psi_dot = yaw rate r.
+
+    Called by: simulation.py (simulate_closed_loop — fallback path),
+               offline_tuner.py (used indirectly via _tracking_errors)
     """
     X, Y, psi  = state[IDX_X], state[IDX_Y], state[IDX_PSI]
     vx, vy     = state[IDX_VX], state[IDX_VY]
@@ -718,10 +995,13 @@ def plant_to_tracking_error(state, ref_x, ref_y, ref_psi):
 
     dx    = X - ref_x
     dy    = Y - ref_y
+    # Rotate global position error into path-tangent frame
     e_y   = dy * np.cos(ref_psi) - dx * np.sin(ref_psi)
+    # Wrap heading error to [-π, π]
     e_psi = np.arctan2(np.sin(psi - ref_psi), np.cos(psi - ref_psi))
 
+    # Lateral velocity in path frame: projects body velocities onto path normal
     e_y_dot   = vx * np.sin(e_psi) + vy * np.cos(e_psi)
-    e_psi_dot = r
+    e_psi_dot = r   # Yaw rate is the time derivative of heading error
 
     return e_y, e_y_dot, e_psi, e_psi_dot, delta_act, a_act, vx

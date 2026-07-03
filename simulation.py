@@ -7,7 +7,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button, Slider
 from scipy.interpolate import CubicSpline
-from model import get_8state_discrete_model
+from bicycle_model import get_8state_discrete_model
 from optimiser import solve_mpc
 from vehicle_physics import VehicleParams, step_nonlinear_plant, init_plant_state
 import performance_stats
