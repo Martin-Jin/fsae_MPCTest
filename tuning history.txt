@@ -1,6 +1,6 @@
 
 # 3/07/26 - Tracks path very accurately, slightly wobbly at lower speeds. Main issue is very low speed, had too high weight on acceleration
 that it had to be reduced for the car to even move. Need to implement higher friction in vehicle model.
-Q_diag      = [2.352541219349554, 36.725202427797036, 32.30321832371175, 1.3863729751951293, 1.3751656204787062, 0.0, 0.0, 0.0]
-R_diag      = [39.536241476500976, 49.74547536739016]
+Q_diag      = [2.352541219349554, 36.725202427797036, 32.30321832371175, 1.3863729751951293, 4.3751656204787062, 0.0, 0.0, 0.0]
+R_diag      = [39.536241476500976, 30.74547536739016]
 R_rate_diag = [41.63349744497637, 8.650011625973125]

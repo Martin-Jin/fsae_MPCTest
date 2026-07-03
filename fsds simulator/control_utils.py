@@ -125,8 +125,8 @@ class MPCController:
         self.nu = 2
 
         # For tuning copy and paste purposes
-        Q_diag      = [2.352541219349554, 36.725202427797036, 32.30321832371175, 1.3863729751951293, 1.3751656204787062, 0.0, 0.0, 0.0]
-        R_diag      = [39.536241476500976, 49.74547536739016]
+        Q_diag      = [2.352541219349554, 36.725202427797036, 32.30321832371175, 1.3863729751951293, 5.3751656204787062, 0.0, 0.0, 0.0]
+        R_diag      = [39.536241476500976, 20.74547536739016]
         R_rate_diag = [41.63349744497637, 8.650011625973125]
 
         # ── Cost weight matrices (Matched to simulation.py tuner defaults) ───
@@ -243,44 +243,59 @@ class MPCController:
         kappa: float,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Discretizes the continuous-time linear vehicle model for the current timestep
-        using the Matrix Exponential (ZOH - Zero Order Hold).
-
-        Returns:
-            Ad: Discrete state transition matrix (8x8)
-            Bd: Discrete input matrix (8x2)
-            dd: Discrete disturbance vector (8x1) due to path curvature
+        Discretizes the model using velocity-blending while forcing a constant
+        dense sparsity pattern (8x8) to prevent OSQP reallocation crashes.
         """
-        v_x = max(0.5, abs(v_x))
+        # Safe speed for matrix denominators
+        v_x_safe = max(0.01, abs(v_x))
         m, Iz, lf, lr = self.m, self.Iz, self.lf, self.lr
         Cf, Cr        = self.Cf, self.Cr
         td, ta, dt    = self.tau_delta, self.tau_a, self.dt
 
-        A_c = np.zeros((self.nx, self.nx))
-        A_c[0, 1] = 1.0
-        A_c[1, 1] = -(2 * Cf + 2 * Cr) / (m * v_x)
-        A_c[1, 2] = (2 * Cf + 2 * Cr) / m
-        A_c[1, 3] = (-2 * Cf * lf + 2 * Cr * lr) / (m * v_x)
-        A_c[1, 6] = (2 * Cf) / m
-        A_c[2, 3] = 1.0
-        A_c[3, 1] = (-2 * Cf * lf + 2 * Cr * lr) / (Iz * v_x)
-        A_c[3, 2] = (2 * Cf * lf - 2 * Cr * lr) / Iz
-        A_c[3, 3] = -(2 * Cf * lf**2 + 2 * Cr * lr**2) / (Iz * v_x)
-        A_c[3, 6] = (2 * Cf * lf) / Iz
+        # FORCE DENSE: Initialize all 64 entries with a tiny epsilon to ensure
+        # that even 'zero' entries are treated as non-zero by the solver.
+        A_kin = np.ones((self.nx, self.nx)) * 1e-12
+        A_dyn = np.ones((self.nx, self.nx)) * 1e-12
 
-        A_c[4, 5] = 1.0   
-        A_c[5, 7] = 1.0   
+        # --- 1. Kinematic Model Setup ---
+        A_kin[0, 1] = 1.0
+        A_kin[2, 6] = v_x_safe / (lf + lr) 
+        A_kin[4, 5] = 1.0
+        A_kin[5, 7] = 1.0
+        A_kin[6, 6] = -1.0 / td
+        A_kin[7, 7] = -1.0 / ta
 
-        A_c[6, 6] = -1.0 / td   
-        A_c[7, 7] = -1.0 / ta   
+        # --- 2. Dynamic Model Setup ---
+        A_dyn[0, 1] = 1.0
+        A_dyn[1, 1] = -(2 * Cf + 2 * Cr) / (m * v_x_safe)
+        A_dyn[1, 2] = (2 * Cf + 2 * Cr) / m
+        A_dyn[1, 3] = (-2 * Cf * lf + 2 * Cr * lr) / (m * v_x_safe)
+        A_dyn[1, 6] = (2 * Cf) / m
+        A_dyn[2, 3] = 1.0
+        A_dyn[3, 1] = (-2 * Cf * lf + 2 * Cr * lr) / (Iz * v_x_safe)
+        A_dyn[3, 2] = (2 * Cf * lf - 2 * Cr * lr) / Iz
+        A_dyn[3, 3] = -(2 * Cf * lf**2 + 2 * Cr * lr**2) / (Iz * v_x_safe)
+        A_dyn[3, 6] = (2 * Cf * lf) / Iz
+        A_dyn[4, 5] = 1.0   
+        A_dyn[5, 7] = 1.0   
+        A_dyn[6, 6] = -1.0 / td   
+        A_dyn[7, 7] = -1.0 / ta   
 
-        B_c = np.zeros((self.nx, self.nu))
-        B_c[6, 0] = 1.0 / td  
-        B_c[7, 1] = 1.0 / ta  
+        # --- 3. B-Matrices (Force dense) ---
+        B = np.ones((self.nx, self.nu)) * 1e-12
+        B[6, 0] = 1.0 / td
+        B[7, 1] = 1.0 / ta
 
+        # --- 4. Blending ---
+        alpha = np.clip((v_x - 1.0) / (2.5 - 1.0), 0.0, 1.0)
+        A_c = (1.0 - alpha) * A_kin + alpha * A_dyn
+        B_c = B 
+        
+        # Disturbance vector
         d_c = np.zeros(self.nx)
-        d_c[2] = -kappa * v_x
+        d_c[2] = -kappa * v_x_safe
 
+        # --- 5. ZOH Discretization ---
         n_aug = self.nx + self.nu + 1
         M     = np.zeros((n_aug, n_aug))
         M[: self.nx, : self.nx]                   = A_c
@@ -288,12 +303,7 @@ class MPCController:
         M[: self.nx, -1]                          = d_c
 
         eM = expm(M * dt)
-
-        Ad = eM[: self.nx, : self.nx]
-        Bd = eM[: self.nx, self.nx : self.nx + self.nu]
-        dd = eM[: self.nx, -1]
-
-        return Ad, Bd, dd
+        return eM[: self.nx, : self.nx], eM[: self.nx, self.nx : self.nx + self.nu], eM[: self.nx, -1]
 
     # ------------------------------------------------------------------
     # Error state extraction
@@ -521,7 +531,7 @@ class MPCController:
             path, car_pos, car_yaw, car_speed, car_yaw_rate, desired_speed,
         )
 
-        Ad, Bd, dd = self._discrete_model(max(car_speed, 1.0), kappa)
+        Ad, Bd, dd = self._discrete_model(car_speed, kappa)
 
         R_scaled      = _adaptive_R_scaling(car_speed, self.R)
         R_rate_scaled = _adaptive_R_rate(kappa, self.R_rate)

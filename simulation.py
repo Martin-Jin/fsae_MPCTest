@@ -27,8 +27,8 @@ v_ref = 7.0  # fallback constant speed, used only if no path speed profile is av
 # Cost weight matrices.
 # States: [e_y, e_y_dot, e_psi, e_psi_dot, e_v, e_a, delta_act, a_act]
 # For tuning copy and paste purposes
-Q_diag      = [2.352541219349554, 36.725202427797036, 32.30321832371175, 1.3863729751951293, 1.3751656204787062, 0.0, 0.0, 0.0]
-R_diag      = [39.536241476500976, 49.74547536739016]
+Q_diag      = [2.352541219349554, 36.725202427797036, 32.30321832371175, 1.3863729751951293, 4.3751656204787062, 0.0, 0.0, 0.0]
+R_diag      = [39.536241476500976, 30.74547536739016]
 R_rate_diag = [41.63349744497637, 8.650011625973125]
 
 Q = np.diag(
@@ -401,7 +401,9 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, flip, rng_seed=None, max_steps=40
     Y_g = path_Y[0] + ey0_eff * np.cos(base_path_heading)
     psi_g = normalize_angle(base_path_heading + np.radians(epsi0_eff))
 
-    v_start = path_v_profile[0] if len(path_v_profile) > 0 else v_ref
+    v_start = 0.0  # Force vehicle to start from a standstill
+    # Nonlinear plant truth state: [X, Y, psi, vx, vy, r, delta_act, a_act]
+    plant_state = init_plant_state(X_g, Y_g, psi_g, vx0=v_start)
 
     # Nonlinear plant truth state: [X, Y, psi, vx, vy, r, delta_act, a_act]
     plant_state = init_plant_state(X_g, Y_g, psi_g, vx0=v_start)

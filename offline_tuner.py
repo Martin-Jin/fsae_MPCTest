@@ -447,7 +447,7 @@ def run_headless_rollout(
     X0 = path_X[0] - ey0 * np.sin(base_heading)
     Y0 = path_Y[0] + ey0 * np.cos(base_heading)
     psi0 = _normalize_angle(base_heading + epsi0)
-    vx0 = float(path_v[0])
+    vx0 = 0
 
     state = init_plant_state(X0, Y0, psi0, vx0=vx0)
 
