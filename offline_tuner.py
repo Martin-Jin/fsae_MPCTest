@@ -13,6 +13,7 @@ import cvxpy as cp
 import cma
 from sim_track import place_cones, SimPerception, SimPlanner, calculate_dynamic_max_steps
 import math
+import datetime
 
 
 # --- TUNING WEIGHT INDEXES ---
@@ -214,10 +215,6 @@ def vector_to_weights(vec, Q_template, R_template, R_rate_template):
         R_rate[i, i] = vec[n_q + n_r + j] * base_val
 
     return Q, R, R_rate
-
-
-# Language: Python
-# Title: Formula Student Compliant Synthetic Path Library
 
 def build_synthetic_paths():
     """
@@ -723,10 +720,23 @@ def parallel_evaluate_candidate(vec):
     task_scores = _eval_pool.map(_score_task, flat_tasks, chunksize=chunksize)
     return float(_aggregate_task_scores(task_scores))
 
+# ==========================================
+# Logging
+# ==========================================
+def log_results_to_history(Q, R, R_rate, duration):
+    """Appends best found weights to tuning history.txt."""
+    timestamp = datetime.datetime.now().strftime("%d/%m/%y %H:%M")
+    with open("tuning history.txt", "a") as f:
+        f.write(f"\n\n# {timestamp} - [Pending Description: yet to be tested]\n")
+        f.write(f"Q_diag      = {np.diag(Q).tolist()}\n")
+        f.write(f"R_diag      = {np.diag(R).tolist()}\n")
+        f.write(f"R_rate_diag = {np.diag(R_rate).tolist()}\n")
+        f.write(f"Duration    = {duration / 60:.2f} minutes\n")
+        f.write(f"Score       = Yet to be scored in fsds.\n")
 
 # ==========================================
 # MAIN EXECUTION
-# ==========================================
+# ==========================================  
 Q = np.diag([5.0, 5.0, 5.0, 5.0, 5.0, 0.0, 0.0, 0.0])
 R = np.diag([5.0, 5.0])
 R_rate = np.diag([5.0, 5.0])
@@ -932,3 +942,20 @@ if __name__ == "__main__":
             if last_reported is None or rb < last_reported * 0.99:
                 print(f"  evals={ev:5d}  →  {rb:.5f}")
                 last_reported = rb
+    try:
+        # Print to console as usual
+        print("\n" + "=" * 60)
+        print("Optimization finished or interrupted. Saving results...")
+        
+        # Save to file
+        duration = end_time - start_time
+        log_results_to_history(best_Q, best_R, best_R_rate, duration)
+        
+        print("Results successfully appended to tuning history.txt")
+        print("=" * 60)
+
+    except KeyboardInterrupt:
+        print("\n[!] Optimization interrupted by user. Saving best-found state...")
+        # The logic above already handles the save via the 'try' block, 
+        # so we just let it exit naturally.
+        exit()

@@ -27,9 +27,9 @@ v_ref = 7.0  # fallback constant speed, used only if no path speed profile is av
 # Cost weight matrices.
 # States: [e_y, e_y_dot, e_psi, e_psi_dot, e_v, e_a, delta_act, a_act]
 # For tuning copy and paste purposes
-Q_diag      = [2.352541219349554, 36.725202427797036, 32.30321832371175, 1.3863729751951293, 4.3751656204787062, 0.0, 0.0, 0.0]
-R_diag      = [39.536241476500976, 30.74547536739016]
-R_rate_diag = [41.63349744497637, 8.650011625973125]
+Q_diag      = [23.84993795527158, 32.86695969860588, 0.9111941899078135, 22.201061425364593, 6.276870373001204, 0.0, 0.0, 0.0]
+R_diag      = [44.833851046596166, 27.15782639103162]
+R_rate_diag = [49.91540241422914, 16.791740027086462]
 
 Q = np.diag(
     Q_diag
