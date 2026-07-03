@@ -7,6 +7,7 @@ R_diag      = [44.833851046596166, 27.15782639103162]
 R_rate_diag = [49.91540241422914, 16.791740027086462]
 Duration    = 15.2 minutes
 Score       = Yet to be scored in fsds. Need to implement scroing system.
+Git Commit = N/A
 
 # Retuning after higher friction implemented in vehicle model, and fixed initial speed not being 0.
 # 03/07/26 13:55 - Improved performance, 1 to 0 cones hit on comp test map 3. Same for other test maps does not exceed cone booundaries at all.
@@ -15,3 +16,4 @@ R_diag      = [49.33735358370815, 45.43435542843825]
 R_rate_diag = [49.98401941989215, 49.61230208743996]
 Duration    = 45.50 minutes
 Score       = Yet to be scored in fsds.
+Git Commit  = 567bfc717dc5d4ef60a641c30546a9f219dcd2f4

@@ -4,6 +4,7 @@ import time
 from collections import Counter
 from scipy.interpolate import CubicSpline
 import signal
+import subprocess
 
 from vehicle_physics import VehicleParams, step_nonlinear_plant, init_plant_state
 from bicycle_model import get_8state_discrete_model
@@ -646,6 +647,7 @@ def run_headless_rollout(
 # ==========================================
 # PATH_MIXED appears once (equal weight to others). Previously 2x, which
 # over-specialised weights toward mixed-path geometry at the cost of transfer.
+
 VALIDATION_SUITE = [
     "PATH_MICRO_SLALOM",
     #"PATH_OFFSET_CHICANE",
@@ -723,9 +725,19 @@ def parallel_evaluate_candidate(vec):
 # ==========================================
 # Logging
 # ==========================================
+def get_git_revision_hash():
+    """Retrieves the current git commit hash."""
+    try:
+        # Runs 'git rev-parse HEAD' to get the current commit hash
+        return subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode('ascii').strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        # Returns a fallback if not a git repo or git is not installed
+        return "Unknown (not a git repository)"
+
 def log_results_to_history(Q, R, R_rate, duration):
     """Appends best found weights to tuning history.txt."""
     timestamp = datetime.datetime.now().strftime("%d/%m/%y %H:%M")
+    commit_hash = get_git_revision_hash()
     with open("tuning history.txt", "a") as f:
         f.write(f"\n\n# {timestamp} - [Pending Description: yet to be tested]\n")
         f.write(f"Q_diag      = {np.diag(Q).tolist()}\n")
@@ -733,6 +745,7 @@ def log_results_to_history(Q, R, R_rate, duration):
         f.write(f"R_rate_diag = {np.diag(R_rate).tolist()}\n")
         f.write(f"Duration    = {duration / 60:.2f} minutes\n")
         f.write(f"Score       = Yet to be scored in fsds.\n")
+        f.write(f"Commit hash = {commit_hash}\n")
 
 # ==========================================
 # MAIN EXECUTION
@@ -777,7 +790,7 @@ if __name__ == "__main__":
 
     # Budget in true evaluations (surrogate skips many; this controls wall time)
     max_evals = MAX_EVALS
-    max_restarts = 9
+    max_restarts = 6
 
     num_cores = max(1, mp.cpu_count() - 1)
 
