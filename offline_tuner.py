@@ -97,23 +97,23 @@ MAX_EVALS = 1000
 # smooth_rms (Δu) and jerk_rms (Δ²u) are also correlated but measure different
 # timescales of roughness so both are retained with reduced individual weights.
 SCORE_WEIGHTS = np.array([
-    0.40,  # 0  rmse                (increased — primary tracking signal)
+    0.41,  # 0  rmse                (increased — primary tracking signal)
     0.06,  # 1  yaw_rms
     0.07,  # 2  smooth_rms
     0.04,  # 3  steer_rms
-    0.03,  # 4  accel_rms
+    0.01,  # 4  accel_rms
     0.03,  # 5  max_steering
     0.09,  # 6  steering_sat_ratio
-    0.10,  # 7  jerk_rms
+    0.11,  # 7  jerk_rms
     0.03,  # 8  max_yaw_rate
     0.02,  # 9  steering_reversals
     0.13,  # 10 peak_lateral_error
 ], dtype=float)
 
-COMPLETION_BONUS_WEIGHT = 0.30   # subtracted — reward for finishing
-TIME_BONUS_WEIGHT       = 0.05   # subtracted — reward for finishing quickly
+COMPLETION_BONUS_WEIGHT = 0.35   # subtracted — reward for finishing
+TIME_BONUS_WEIGHT       = 0.175   # subtracted — reward for finishing quickly
 
-assert abs(SCORE_WEIGHTS.sum() - 1.0) < 1e-9,
+assert abs(SCORE_WEIGHTS.sum() - 1.0) < 1e-9, \
     f"SCORE_WEIGHTS must sum to 1.0, got {SCORE_WEIGHTS.sum():.6f}"
 
 # Module-level dictionary to share initial parameters safely across processes
@@ -652,9 +652,9 @@ def run_headless_rollout(
 VALIDATION_SUITE = [
     "PATH_MICRO_SLALOM",
     #"PATH_OFFSET_CHICANE",
-    "PATH_SPIRAL",
+    # "PATH_SPIRAL",
     "PATH_SUDDEN_TURN",
-    #"PATH_SKIDPAD",
+    "PATH_SKIDPAD",
     "PATH_S_BEND",
     #"PATH_MIXED",
     #"PATH_HAIRPIN",

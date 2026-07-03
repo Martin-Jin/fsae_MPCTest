@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.linalg import expm
+import vehicle_physics as vp
 
 # ==========================================
 # 1. VEHICLE DYNAMICS MODEL
@@ -27,16 +28,17 @@ def get_8state_discrete_model(v_x, dt):
     """
     v_x = max(0.5, v_x) # Prevent division by zero
     
-    # m, Iz, lf, lr = 1600.0, 2500.0, 1.2, 1.4
-    # Cf, Cr = 80000.0, 85000.0
 
-    lf  = 0.9       # CoM -> front axle (m)  (wheelbase 1.5 m)
-    lr  = 0.6       # CoM -> rear  axle (m)
-    m   = 255.0     # Vehicle mass (kg)  [FSDS spec]
-    Iz  = 110.0     # Yaw inertia (kg m^2)  [255 kg * 0.43^2 ≈ 110]
-    Cf  = 11500.0   # Front cornering stiffness (N/rad)  [FS slick estimate]
-    Cr  = 12500.0   # Rear  cornering stiffness (N/rad)  [slightly stiffer rear]
-    tau_delta, tau_a = 0.30, 0.20     
+    vehicle_parameters = vp.VehicleParams()
+
+    lf  = vehicle_parameters.lf    # CoM -> front axle (m)  (wheelbase 1.5 m)
+    lr  = vehicle_parameters.lr    # CoM -> rear  axle (m)
+    m   = vehicle_parameters.m     # Vehicle mass (kg)  [FSDS spec]
+    Iz  = vehicle_parameters.Iz    # Yaw inertia (kg m^2)  [255 kg * 0.43^2 ≈ 110]
+    Cf  = vehicle_parameters.Cf    # Front cornering stiffness (N/rad)  [FS slick estimate]
+    Cr  = vehicle_parameters.Cr    # Rear  cornering stiffness (N/rad)  [slightly stiffer rear]
+    
+    tau_delta, tau_a = vehicle_parameters.tau_delta, vehicle_parameters.tau_a  # Actuator lag (s)
     
     A_c = np.zeros((8, 8))
     A_c[0, 1] = 1.0

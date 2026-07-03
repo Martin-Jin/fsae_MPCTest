@@ -110,16 +110,16 @@ class MPCController:
         self.N  = N
 
         # ── Vehicle geometry & dynamics (Matched to model.py) ─────
-        self.lf = 0.9    # CoM -> front axle (m)
-        self.lr = 0.6    # CoM -> rear  axle (m)
+        self.lf = 0.85   # CoM -> front axle (m)
+        self.lr = 0.70   # CoM -> rear  axle (m)
         self.m  = 255.0  # Vehicle mass (kg)
         self.Iz = 110.0  # Yaw inertia (kg m^2)
         self.Cf = 11500.0  # Front cornering stiffness (N/rad)
         self.Cr = 12500.0  # Rear  cornering stiffness (N/rad)
 
         # First-order actuator time constants (s)
-        self.tau_delta = 0.30  # Steering lag
-        self.tau_a     = 0.20  # Throttle/brake lag
+        self.tau_delta = 0.08  # Steering lag
+        self.tau_a     = 0.05  # Throttle/brake lag
 
         self.nx = 8
         self.nu = 2

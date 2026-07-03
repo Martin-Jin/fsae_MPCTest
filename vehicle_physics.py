@@ -112,20 +112,21 @@ class VehicleParams:
 
     def __init__(self):
         # ── Geometry ────────────────────────────────────────────────
-        self.lf    = 0.9       # CoM → front axle (m)
-        self.lr    = 0.6       # CoM → rear  axle (m)
+        self.lf    = 0.85       # CoM → front axle (m)
+        self.lr    = 0.70       # CoM → rear  axle (m)
         self.m     = 255.0     # total vehicle mass (kg)
         self.Iz    = 110.0     # yaw inertia (kg·m²)
         self.tf    = 1.25      # front track width (m)
         self.tr    = 1.20      # rear  track width (m)
         self.h_cg  = 0.30      # CoG height (m)
+        self.Cf = 11500.0   # front cornering stiffness (N/rad)
+        self.Cr = 12500.0   # rear  cornering stiffness (N/rad)
         self.max_steer = np.radians(35.0)  # max steering angle (rad)
         self.max_accel  = 5.0       # max longitudinal acceleration (m/s²)
         self.max_accel_brake = -5.0      # max longitudinal braking (m/s²)
 
         # ── Unsprung mass ────────────────────────────────────────────
-        # ~3.5 kg wheel + ~1.5 kg upright per corner, FS typical
-        self.m_us  = 5.0       # unsprung mass per corner (kg)
+        self.m_us  = 7.5       # unsprung mass per corner (kg)
 
         # ── Tyre geometry ────────────────────────────────────────────
         self.r_eff = 0.2286    # effective rolling radius, 13" wheel (m)
@@ -204,12 +205,13 @@ class VehicleParams:
         # expressed as fraction of g per unit pitch angle proxy
         self.Cl_pitch_sens = 0.03  # fractional Cl_f change per (a/g)
 
-        # ── Rolling resistance ───────────────────────────────────────
-        self.Crr = 12.0            # constant drag force (N)
+        # ── Rolling resistance & Stiction (UPDATED) ──────────────────
+        self.Crr        = 37.5     # constant dynamic drag force (N)
+        self.F_stiction = 70.0     # static breakaway friction (N)
 
-        # ── Actuator lag ────────────────────────────────────────────
-        self.tau_delta = 0.40      # steering (s)
-        self.tau_a     = 0.25      # acceleration command (s)
+        # ── Actuator lag (UPDATED) ───────────────────────────────────
+        self.tau_delta = 0.08      # steering (s) - FS actuators are FAST
+        self.tau_a     = 0.05      # acceleration (s) - EV torque is nearly instant
 
         self.g = 9.81
 

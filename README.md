@@ -229,7 +229,7 @@ directly—it only receives tracking errors from the plant state each tick.
 ```
 m=255 kg, lf=0.9 m, lr=0.6 m, Iz=110 kg·m²
 Cf=11500 N/rad, Cr=12500 N/rad
-tau_delta=0.40 s, tau_a=0.25 s
+tau_delta= 0.08 s, tau_a=0.05 s
 mu=1.6 (peak, racing slick)
 max_steer=35°, max_accel=±5 m/s²
 ```
