@@ -6,7 +6,7 @@ Q_diag      = [23.84993795527158, 32.86695969860588, 0.9111941899078135, 22.2010
 R_diag      = [44.833851046596166, 27.15782639103162]
 R_rate_diag = [49.91540241422914, 16.791740027086462]
 Duration    = 15.2 minutes
-Score       = Yet to be scored in fsds. Need to implement scroing system.
+Fsds score  = Yet to be implemented in fsds.
 Git Commit = N/A
 
 # Retuning after higher friction implemented in vehicle model, and fixed initial speed not being 0.
@@ -15,5 +15,5 @@ Q_diag      = [9.353616402368889, 22.210542631007502, 18.906268193489474, 49.764
 R_diag      = [49.33735358370815, 45.43435542843825]
 R_rate_diag = [49.98401941989215, 49.61230208743996]
 Duration    = 45.50 minutes
-Score       = Yet to be scored in fsds.
+Fsds score  = Yet to be implemented in fsds.
 Git Commit  = 567bfc717dc5d4ef60a641c30546a9f219dcd2f4

@@ -12,10 +12,10 @@ from optimiser import solve_mpc
 from vehicle_physics import VehicleParams, step_nonlinear_plant, init_plant_state
 import performance_stats
 import speed_profile
-from offline_tuner import curvature_estimate, adaptive_R_rate, adaptive_R_scaling, SYNTHETIC_PATHS, PATH_NAMES
-from sim_track import place_cones, SimPerception, SimPlanner
-import math
+from offline_tuner import SYNTHETIC_PATHS, PATH_NAMES
 from sim_track import place_cones, SimPerception, SimPlanner, calculate_dynamic_max_steps
+import math
+from model_utils import curvature_estimate, adaptive_R_rate, adaptive_R_scaling
 
 # ==========================================
 # SETUP AND CONFIGURATION
@@ -440,15 +440,14 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, flip, rng_seed=None, max_steps=40
 
         # ------------------------------------------------------------------
         # 2. FIND reference point and compute tracking errors from CURRENT
-        #    plant state — this is the fix for the stale-state bug.
-        #    In v5 this block lived at the BOTTOM of the loop, after the
-        #    plant step, so the MPC was fed last timestep's errors.
+        #    plant state
         # ------------------------------------------------------------------
         X_g, Y_g, psi_g = plant_state[0], plant_state[1], plant_state[2]
 
         car_pos_np = np.array([X_g, Y_g])
         b_vis, y_vis = perception.visible_cones(X_g, Y_g, psi_g)
         planner.update(b_vis, y_vis, car_pos_np, psi_g)
+        idx, _, _, _ = find_closest_reference_bounded(X_g, Y_g, idx, window=40)
 
         cl = planner.centreline
         if cl is not None and len(cl) >= 2:
@@ -509,8 +508,11 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, flip, rng_seed=None, max_steps=40
             history["fail_reason"] = f"off-track (|e_y|={abs(e_y):.2f} m) at step {step}"
             break
 
-        if idx >= len(path_X) - 2:
+        dist_to_finish = math.hypot(X_g - path_X[-1], Y_g - path_Y[-1])
+        if idx >= len(path_X) - 2 or dist_to_finish <= 3.0:
             history["reached_end"] = True
+            # Explicitly capture unused steps to ensure time_bonus calculates correctly
+            history["remaining_steps"] = max_steps - step
             break
 
         # ------------------------------------------------------------------
@@ -547,15 +549,20 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, flip, rng_seed=None, max_steps=40
         # 5. PREDICTED HORIZON for visualization
         # ------------------------------------------------------------------
         px, py = [], []
-        X_p, Y_p, psi_p = plant_state[0], plant_state[1], plant_state[2]
         x_p_tmp = x_current.copy()
+        
+        current_ref_psi = rpsi
+
         for k in range(N_horizon):
-            v_p = current_v + x_p_tmp[4]
-            X_p -= v_p * np.cos(psi_p) * dt
-            Y_p -= v_p * np.sin(psi_p) * dt
-            psi_p += x_p_tmp[3] * dt
-            px.append(X_p)
-            py.append(Y_p)
+            # 1. Get lateral error from the model prediction
+            e_y_pred = x_p_tmp[0]
+            
+            # 2. Project Frenet e_y back to Global Coordinates
+            # The lateral direction is orthogonal to the path heading
+            px.append(X_g + (k + 1) * plant_state[3] * np.cos(psi_g) * dt - e_y_pred * np.sin(current_ref_psi))
+            py.append(Y_g + (k + 1) * plant_state[3] * np.sin(psi_g) * dt + e_y_pred * np.cos(current_ref_psi))
+            
+            # 3. Propagate the error state
             x_p_tmp = Ad @ x_p_tmp + Bd @ u_opt
         history["pred_X"].append(px)
         history["pred_Y"].append(py)
@@ -566,10 +573,21 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, flip, rng_seed=None, max_steps=40
         plant_state = step_nonlinear_plant(plant_state, u_opt, dt, vehicle_params)
 
     history.setdefault("reached_end", False)
+    # Calculate the peak lateral error from the entire run
+    history["peak_lateral_error"] = float(np.max(np.abs(history["e_y"]))) if history["e_y"] else 0.0
+    
     if history["reached_end"]:
         history["completion_frac"] = 1.0
+        
+        # Calculate time bonus identically to the offline tuner
+        expected_time = max_steps * dt
+        sim_time = len(history["X"]) * dt
+        
+        history["time_bonus"] = max(0.0, 1.0 - (sim_time / expected_time))
     else:
         history["completion_frac"] = len(history["X"]) / max(max_steps, 1)
+        history["time_bonus"] = 0.0
+        
     return history
 
 
@@ -662,7 +680,11 @@ def update_scrub_frame(val):
     h = sim_history
 
     trail_line.set_data(h["X"][: frame + 1], h["Y"][: frame + 1])
-    pred_line.set_data(h["pred_X"][frame], h["pred_Y"][frame])
+    safe_frame_post = min(frame, len(h["pred_X"]) - 1) if h["pred_X"] else 0
+    if h["pred_X"]:
+        pred_line.set_data(h["pred_X"][safe_frame_post], h["pred_Y"][safe_frame_post])
+    else:
+        pred_line.set_data([], [])
 
     car_x, car_y = get_car_triangle(h["X"][frame], h["Y"][frame], h["psi"][frame])
     vehicle_marker.set_data(car_x, car_y)
@@ -684,8 +706,8 @@ def update_scrub_frame(val):
         f"Lat Error : {h['e_y'][frame]:6.2f} m\n"
         f"Yaw Error : {np.degrees(h['e_psi'][frame]):6.2f} deg\n"
         f"-----------------------\n"
-        f"Steer Cmd : {np.degrees(h['u_steer'][frame]):6.1f} deg\n"
-        f"Accel Cmd : {h['u_accel'][frame]:6.2f} m/s²"
+        f"Steer Cmd : {np.degrees(h['u_steer'][safe_frame_post]):6.1f} deg\n"
+        f"Accel Cmd : {h['u_accel'][safe_frame_post]:6.2f} m/s²"
     )
     telemetry_text.set_text(text)
     fig.canvas.draw_idle()
