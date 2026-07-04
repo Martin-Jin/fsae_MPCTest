@@ -509,18 +509,18 @@ def build_synthetic_paths():
     # Two tangent circles R=9.125 m (FS skidpad centreline specification) with
     # 5 m entry/exit straight. Tests sustained constant-radius cornering at speed —
     # the most common FS dynamic event and the hardest for the linear model.
-    R_skid = 9.125
-    s0x    = np.zeros(8)
-    s0y    = np.linspace(-5, 0, 8)
-    # Right circle: clockwise, centre at (R_skid, 0)
-    arc1x, arc1y = _make_arc(R_skid, 0, R_skid, 180, -180, n=60)
-    # Left circle: counter-clockwise, centre at (-R_skid, 0)
-    arc2x, arc2y = _make_arc(-R_skid, 0, R_skid, 0, 360, n=60)
-    s1x    = np.zeros(8)
-    s1y    = np.linspace(0, 5, 8)
-    wx     = np.concatenate([s0x, arc1x[1:], arc2x[1:], s1x[1:]])
-    wy     = np.concatenate([s0y, arc1y[1:], arc2y[1:], s1y[1:]])
-    paths["PATH_SKIDPAD"] = _resample_path(wx, wy)
+    # R_skid = 9.125
+    # s0x    = np.zeros(8)
+    # s0y    = np.linspace(-5, 0, 8)
+    # # Right circle: clockwise, centre at (R_skid, 0)
+    # arc1x, arc1y = _make_arc(R_skid, 0, R_skid, 180, -180, n=60)
+    # # Left circle: counter-clockwise, centre at (-R_skid, 0)
+    # arc2x, arc2y = _make_arc(-R_skid, 0, R_skid, 0, 360, n=60)
+    # s1x    = np.zeros(8)
+    # s1y    = np.linspace(0, 5, 8)
+    # wx     = np.concatenate([s0x, arc1x[1:], arc2x[1:], s1x[1:]])
+    # wy     = np.concatenate([s0y, arc1y[1:], arc2y[1:], s1y[1:]])
+    # paths["PATH_SKIDPAD"] = _resample_path(wx, wy)
 
     # --- PATH_SPIRAL ---
     # Continuously tightening clothoid (Euler spiral): curvature increases linearly
@@ -1094,6 +1094,47 @@ def run_headless_rollout(
 # OBJECTIVE FUNCTION WRAPPERS
 # ==========================================
 
+def evaluate_all_paths(weights_vector, n_repeats=3):
+    """
+    Evaluate a weights vector across every path in PATH_NAMES (not just
+    VALIDATION_SUITE), repeated n_repeats times, and return the mean
+    composite score and per-path breakdown.
+
+    Intended for post-tuning benchmarking from performance_stats.py.
+    Must be called after init_worker() has populated _init_context, or
+    after manually setting _init_context in the calling process.
+
+    Parameters
+    ----------
+    weights_vector : array-like, shape (9,)
+        CMA-ES parameter vector (multiplicative scale factors).
+    n_repeats : int
+        Number of independent rollouts per path (scores are averaged).
+
+    Returns
+    -------
+    dict with keys:
+        'mean_score'    : float  — mean composite score across all paths × repeats
+        'per_path'      : dict   — {path_name: mean_score} for each path
+        'all_scores'    : list   — flat list of every individual rollout score
+    """
+    per_path = {}
+    all_scores = []
+
+    for path_name in PATH_NAMES:
+        path_scores = [
+            run_headless_rollout(weights_vector, path_name=path_name)
+            for _ in range(n_repeats)
+        ]
+        per_path[path_name] = float(np.mean(path_scores))
+        all_scores.extend(path_scores)
+
+    return {
+        'mean_score': float(np.mean(all_scores)),
+        'per_path':   per_path,
+        'all_scores': all_scores,
+    }
+
 # Active validation suite: subset of paths used for CMA-ES evaluation.
 # Commented-out paths are available but excluded to balance coverage vs. speed.
 VALIDATION_SUITE = [
@@ -1340,10 +1381,8 @@ if __name__ == "__main__":
     # sigma0: initial CMA-ES step size.
     # Too small → slow exploration (stagnates in local minimum near x0).
     # Too large → poor exploitation (misses fine structure near optima).
-    sigma0   = 0.5
-    # Per-dimension std scaled to log-space range: ln(upper/lower) = ln(100) ≈ 4.6
-    # 0.23 * 4.6 ≈ 1.06, giving ~1 decade of exploration per sigma — appropriate
-    # for a multiplicative search space starting at the geometric midpoint x0=1.0.
+    sigma0   = 0.65
+    # Per-dimension std scaled to log-space range: ln(upper/lower)
     log_ranges = np.log(upper / lower)
     cma_stds   = 0.23 * log_ranges
 

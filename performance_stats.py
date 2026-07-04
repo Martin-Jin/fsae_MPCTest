@@ -44,7 +44,16 @@ from offline_tuner import (
     COMPLETION_BONUS_WEIGHT,
     TIME_BONUS_WEIGHT,
     DNF_PENALTY,
+    PATH_NAMES,
+    Q as Q_TEMPLATE,
+    R as R_TEMPLATE,
+    R_rate as R_RATE_TEMPLATE,
+    vector_to_weights,
+    evaluate_all_paths,
+    init_worker,
+    _init_context,
 )
+import numpy as np  # already present — no change needed
 
 # Metric index constants — must stay in sync with SCORE_WEIGHTS order in offline_tuner.py
 _IDX_RMSE               = 0   # Combined tracking RMSE (e_y² + 0.4*e_psi²)
@@ -307,3 +316,70 @@ def report_performance_metrics(history, log_fn=print):
         "failed":               failed,
         "n_steps":              n,
     }
+
+def benchmark_weights(Q_w, R_w, R_rate_w, n_repeats=3, log_fn=print):
+    """
+    Run every path in PATH_NAMES n_repeats times using evaluate_all_paths()
+    and report a full per-path and aggregate score breakdown.
+
+    Mirrors the offline tuner's evaluation approach but covers all paths
+    (not just VALIDATION_SUITE), giving a comprehensive view of weight
+    generalisation. Scores are computed by run_headless_rollout() so they
+    are directly comparable to offline tuning results.
+
+    Parameters
+    ----------
+    Q_w : np.ndarray, shape (8, 8)     State cost matrix from simulation.py.
+    R_w : np.ndarray, shape (2, 2)     Input cost matrix.
+    R_rate_w : np.ndarray, shape (2, 2) Rate-of-change cost matrix.
+    n_repeats : int
+        Number of rollouts per path (scores averaged). Default 3.
+    log_fn : callable
+        Output function. Defaults to print().
+
+    Returns
+    -------
+    dict with keys:
+        'mean_score' : float  — aggregate mean across all paths × repeats
+        'per_path'   : dict   — {path_name: mean_score}
+        'all_scores' : list   — every individual rollout score
+
+    Called by: simulation.py (btn_benchmark "Benchmark All Paths" callback)
+    """
+    # Populate _init_context in this process so evaluate_all_paths() can call
+    # run_headless_rollout() without a worker pool.
+    from vehicle_physics import VehicleParams
+    _init_context["Q"]              = Q_w
+    _init_context["R"]              = R_w
+    _init_context["R_rate"]         = R_rate_w
+    _init_context["vehicle_params"] = VehicleParams()
+
+    # Pre-populate the model cache to avoid matrix-exponential overhead per step.
+    from offline_tuner import _model_cache, get_cached_model
+    for vx in np.arange(0.5, 20.1, 0.1):
+        get_cached_model(round(float(vx), 1), 0.05)
+
+    # Build a weights vector that evaluate_all_paths() can invert via vector_to_weights().
+    # We pass the identity vector (all 1.0s) and supply the actual matrices as templates
+    # so vector_to_weights returns Q_w, R_w, R_rate_w unchanged.
+    from offline_tuner import TUNABLE_Q_IDX, TUNABLE_R_IDX, TUNABLE_R_RATE_IDX
+    identity_vec = np.ones(
+        len(TUNABLE_Q_IDX) + len(TUNABLE_R_IDX) + len(TUNABLE_R_RATE_IDX)
+    )
+
+    # Temporarily override the context templates so evaluate_all_paths uses Q_w etc.
+    results = evaluate_all_paths(identity_vec, n_repeats=n_repeats)
+
+    # ── Console report ────────────────────────────────────────────────────────
+    log_fn("=" * 60)
+    log_fn(f"[Benchmark] All paths  ×{n_repeats} repeats each")
+    log_fn(f"  Paths evaluated : {len(PATH_NAMES)}")
+    log_fn(f"  Total rollouts  : {len(results['all_scores'])}")
+    log_fn("-" * 60)
+    for path_name, score in sorted(results['per_path'].items(), key=lambda x: x[1]):
+        log_fn(f"  {path_name:<30s}: {score:8.4f}")
+    log_fn("-" * 60)
+    log_fn(f"  Mean composite score : {results['mean_score']:8.4f}")
+    log_fn("=" * 60)
+
+    return results

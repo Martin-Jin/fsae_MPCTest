@@ -73,7 +73,7 @@ USER INPUT (draw path / load synthetic path)
 └─────────────────────────────────────────────────────────┘
         │
         ▼
-  history dict → scrub viewer + performance_stats
+  history dict → scrub viewer + performance_stats (Show Metrics / Benchmark All Paths)
 ```
 
 ### Controller / Plant Architecture
@@ -113,14 +113,15 @@ ROS 2 Node              │  Simulator Equivalent
 ────────────────────────┼─────────────────────────────────────
 perception_node.py      │  sim_track.SimPerception
 planner_node.py         │  sim_track.SimPlanner
-cone_map.py             │  cone_map.ConeMap       (shared)
-boundary.py             │  boundary.py            (shared)
-path_utils.py           │  path_utils.py          (shared)
-speed_profile.py        │  speed_profile.py       (shared)
+cone_map.py             │  planning/cone_map.ConeMap        (shared)
+boundary.py             │  planning/boundary.py             (shared)
+path_utils.py           │  planning/path_utils.py           (shared)
+cone_sorting.py         │  planning/cone_sorting.py         (shared)
+speed_profile.py        │  speed_profile.py                 (shared)
 control_utils.py        │  simulation.py / model_utils.py
-vehicle_physics.py      │  vehicle_physics.py     (shared)
-bicycle_model.py        │  bicycle_model.py       (shared)
-optimiser.py            │  optimiser.py           (shared)
+vehicle_physics.py      │  vehicle_physics.py               (shared)
+bicycle_model.py        │  bicycle_model.py                 (shared)
+optimiser.py            │  optimiser.py                     (shared)
 ```
 
 ---
@@ -144,7 +145,8 @@ dt         = 0.05 s     (20 Hz control rate)
 N_horizon  = 25 steps   (1.25 s look-ahead)
 V_MAX      = 20.0 m/s   (planner + profiler cap)
 V_MIN      = 1.5 m/s    (planner floor speed)
-OFFTRACK_LIMIT = 5.0 m  (live sim failure threshold; tuner uses 2.5 m)
+OFFTRACK_LIMIT = 2.5 m  (live sim failure threshold)
+MAX_CONSECUTIVE_FAILURES = 5  (solver failures before DNF)
 ```
 
 **Dependencies:** `bicycle_model`, `optimiser`, `vehicle_physics`, `performance_stats`, `speed_profile`, `offline_tuner` (SYNTHETIC_PATHS / PATH_NAMES only), `sim_track`, `model_utils`.
@@ -379,7 +381,7 @@ x = [e_y, ė_y, e_ψ, ψ̇, e_v, 0, δ_act, a_act]
 `e_y_dot` = `vx*sin(e_psi) + vy*cos(e_psi)` (lateral velocity projected onto path normal). `e_v` = `vx - v_target` (speed error relative to planner's desired speed).
 
 **5. Early-exit checks:**
-- `|e_y| > 8.0 m` → off-track, `failed = True`
+- `|e_y| > 2.50 m` → off-track, `failed = True`
 - `consecutive_solver_failures ≥ 5` → `failed = True`
 - `idx ≥ len(path) - 2` OR `dist_to_end ≤ 3.0 m` → `reached_end = True`
 
@@ -421,11 +423,11 @@ Uses `cma.fmin_lq_surr2`: BIPOP (bi-population) restart strategy combined with a
 
 **Parameter space:** 9 multipliers (5 Q, 2 R, 2 R_rate), each bounded `[0.1, 10.0]` relative to the template diagonals. This allows ±1 decade of adjustment in any weight.
 
-**Initial point:** `x0 = (lower + upper) / 2 = 5.05` per parameter (midpoint of bounds).
+**Initial point:** `x0 = sqrt(lower × upper) = 1.0` per parameter (geometric / log-scale midpoint of bounds).
 
-**`sigma0=0.75`, `CMA_stds = 0.23 × log(upper - lower)`** — 23% of the parameter range as the initial 1-sigma exploration radius per dimension.
+**`sigma0=0.5`, `CMA_stds = 0.23 × log(upper/lower)`** — 23% of the log-space parameter range as the initial per-dimension 1-sigma radius. `log(10/0.1) ≈ 4.6`, so `CMA_stds ≈ 1.06` per dimension.
 
-**`max_restarts=6`, `max_evals=1000`** — total budget including all restarts. Each BIPOP restart uses `incpopsize=2` (large restarts double the population from the previous large restart's size).
+**`max_restarts=6`, `max_evals=1500`** — total budget including all restarts. Each BIPOP restart uses `incpopsize=2` (large restarts double the population from the previous large restart's size).
 
 ### Objective Function
 
@@ -440,7 +442,7 @@ The 30% worst-case term prevents the optimiser from finding weights that work we
 Functionally mirrors `simulate_closed_loop()` but without GUI, matplotlib, or full history storage. Uses looser OSQP tolerances (`eps=1e-4`, `max_iter=5000`) for ~2× speed over the live simulator's `1e-5`. A model cache keyed by `round(vx, 1)` avoids rebuilding ZOH matrices every step.
 
 **DNF conditions (tighter than live simulator):**
-- `|e_y| > 2.5 m` (vs 8.0 m in simulation.py — penalises poor tracking harder)
+- `|e_y| > 2.5 m`
 - `consecutive_fails ≥ 5`
 - Progress `< 3 m` after 60 steps (stuck/oscillating detection)
 
@@ -502,7 +504,6 @@ python simulation.py
 1. Click and drag on the map to draw a reference path (at least 6 points).
 2. The path is automatically splined, heading computed, and speed profile generated.
 3. Optionally adjust **Initial Lat Error** (±4 m) and **Initial Yaw Error** (±30°) sliders to start the car off-centre.
-4. Use **Flip Heading (180°)** to start the car facing backward — tests recovery from worst-case heading mismatch.
 
 ### Loading a synthetic path
 
@@ -543,7 +544,7 @@ In `offline_tuner.py`:
 
 ```python
 MAX_EVALS     = 1000   # Total true rollout budget (surrogate reduces actual count ~3-10×)
-sigma0        = 0.75   # CMA-ES initial step size (23% of per-dim range)
+sigma0        = 0.65    # CMA-ES initial step size
 max_restarts  = 6      # BIPOP restart budget
 VALIDATION_SUITE = [   # Paths used for scoring — add/remove to change coverage
     "PATH_MICRO_SLALOM",
@@ -615,13 +616,6 @@ The most impactful `speed_profile.compute_speed_profile()` parameters:
 - `mu=0.6` — planning friction. Currently ~37% of peak 1.6. Reduce to slow corners further; increase to allow faster cornering speeds.
 - `safety=1.0` — multiplier on curvature-derived corner speed. Values 0.85–0.95 compensate for spline smoothing underestimating true curvature at tight corners.
 - `v_max=20.0` — absolute top speed cap. The MPC actuator bound (±5 m/s²) limits acceleration from standstill independently.
-
-### DNF threshold comparison
-
-| Context | `OFFTRACK_LIMIT` | Rationale |
-|---|---|---|
-| `simulation.py` | 5.0 m | Physical track half-width; vehicle must actually leave the corridor |
-| `offline_tuner.py` | 2.5 m | Tighter for scoring pressure; gives CMA-ES a stronger gradient toward good tracking |
 
 Tightening the tuner's limit produces more conservative weights. Loosening it allows the tuner to accept borderline trajectories and may produce more aggressive weights.
 

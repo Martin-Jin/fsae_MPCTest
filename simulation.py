@@ -65,6 +65,7 @@ from bicycle_model import get_8state_discrete_model
 from optimiser import solve_mpc
 from vehicle_physics import VehicleParams, step_nonlinear_plant, init_plant_state
 import performance_stats
+from performance_stats import benchmark_weights
 import speed_profile
 from offline_tuner import SYNTHETIC_PATHS, PATH_NAMES
 from sim_track import place_cones, SimPerception, SimPlanner, calculate_dynamic_max_steps
@@ -101,7 +102,6 @@ V_MIN = 1.5    # Minimum speed floor (m/s); prevents near-zero speed targets
 # ── Global GUI State ────────────────────────────────────────────────────────────
 is_drawing          = False          # True while user is dragging a path
 is_simulated        = False          # True after a simulation has been run
-flip_heading_180    = False          # True if "Flip Heading" was pressed
 drawn_points        = []             # Raw mouse points before spline fitting
 path_X, path_Y, path_Psi = [], [], []  # Resampled path arrays (after spline fit)
 path_v_profile      = np.array([])   # Per-point target speed from speed_profile.py
@@ -123,68 +123,97 @@ current_test_path_idx = -1
 # ==========================================
 # INTERACTIVE GUI LAYOUT
 # ==========================================
-# 6-row, 2-column gridspec:
-#   Row 0:       main map (col 0) | telemetry panel (col 1)
-#   Rows 1-2:    sliders (col 0) | buttons (col 1)
-#   Rows 3-5:    time-scrub slider (col 0, spans 3 rows) | buttons (col 1)
-fig = plt.figure(figsize=(15, 9.2))
+# Layout: 8-row × 2-column gridspec.
+#   Left column : row 0     = map (tall)
+#                 rows 1-3  = sliders (ey0, epsi0, scrub)
+#   Right column: rows 0-4  = buttons (one per row)
+#                 rows 5-7  = telemetry text panel
+# Sliders share the left column beneath the map; the right column runs
+# buttons at the top and the telemetry box at the bottom independently.
+# ── Figure and gridspec ────────────────────────────────────────────────────────
+# 9 uniform rows × 2 columns.
+#   Left  col: rows 0-5 = map, rows 6-8 = three sliders
+#   Right col: rows 0-4 = five equal-height buttons, rows 5-8 = telemetry box
+# All rows share the same height so buttons are uniform and the map simply
+# spans more of them.
+fig = plt.figure(figsize=(13.0, 8.0))
 gs  = fig.add_gridspec(
-    6, 2,
-    width_ratios=[3.8, 1.2],
-    height_ratios=[12, 1, 1, 1, 1, 1],
-    left=0.06, right=0.94, top=0.94, bottom=0.06,
-    wspace=0.15, hspace=0.45,
+    9, 2,
+    width_ratios=[3.8, 1.4],
+    height_ratios=[1, 1, 1, 1, 1, 1, 1, 1, 1],   # 9 equal rows
+    left=0.06, right=0.97, top=0.95, bottom=0.04,
+    wspace=0.20, hspace=0.45,
 )
 
-ax_map  = fig.add_subplot(gs[0, 0])   # Main map view (path drawing + simulation display)
-ax_info = fig.add_subplot(gs[0, 1])   # Telemetry text panel
-ax_info.axis("off")
+ax_map = fig.add_subplot(gs[0:6, 0])   # Map spans rows 0-5 of left column
 
 # Plot lines — updated each scrub frame and during simulation
-(path_line,)        = ax_map.plot([], [], "r--",  label="Target Path",           linewidth=2)
-(trail_line,)       = ax_map.plot([], [], "b-",   label="Actual Vehicle Trail",  alpha=0.6)
-(pred_line,)        = ax_map.plot([], [], "c-o",  label="MPC Horizon Prediction", markersize=3, alpha=0.8)
-(vehicle_marker,)   = ax_map.plot([], [], "g-",   linewidth=2.0,                  label="Vehicle")
-(blue_cones_line,)  = ax_map.plot([], [], color="blue", marker="o", linestyle="None", markersize=4, label="Blue Cones")
-(yellow_cones_line,)= ax_map.plot([], [], color="gold", marker="o", linestyle="None", markersize=4, label="Yellow Cones")
+(path_line,)         = ax_map.plot([], [], "r--",  label="Target Path",            linewidth=2)
+(trail_line,)        = ax_map.plot([], [], "b-",   label="Actual Vehicle Trail",   alpha=0.6)
+(pred_line,)         = ax_map.plot([], [], "c-o",  label="MPC Horizon Prediction", markersize=3, alpha=0.8)
+(vehicle_marker,)    = ax_map.plot([], [], "g-",   linewidth=2.0,                  label="Vehicle")
+(blue_cones_line,)   = ax_map.plot([], [], color="blue", marker="o", linestyle="None", markersize=4, label="Blue Cones")
+(yellow_cones_line,) = ax_map.plot([], [], color="gold", marker="o", linestyle="None", markersize=4, label="Yellow Cones")
 
-ax_map.set_xlim(0, 100)
-ax_map.set_ylim(0, 60)
+ax_map.set_xlim(0, 75)
+ax_map.set_ylim(0, 45)
 ax_map.set_aspect("equal")
 ax_map.grid(True)
-ax_map.set_title("Robust High-Speed Path MPC Sandbox", fontweight="bold")
-ax_map.legend(loc="upper right")
+ax_map.set_title("Robust High-Speed Path MPC Sandbox", fontweight="bold", fontsize=10)
+ax_map.legend(loc="upper right", fontsize=8)
 
-# Telemetry panel: monospaced text box updated each scrub frame
+# ── Sliders — left column rows 6, 7, 8 (below map) ───────────────────────────
+ax_ey0   = fig.add_subplot(gs[6, 0])
+ax_epsi0 = fig.add_subplot(gs[7, 0])
+ax_scrub = fig.add_subplot(gs[8, 0])
+
+pos_map = ax_map.get_position()
+slider_w = pos_map.width * 0.9
+slider_x = pos_map.x0 + 0.08
+
+ax_ey0.set_position([slider_x, pos_map.y0 - 0.08, slider_w, 0.03])
+ax_epsi0.set_position([slider_x, pos_map.y0 - 0.14, slider_w, 0.03])
+
+slider_ey0   = Slider(ax_ey0,   "Initial Lat Error", -4.0,  4.0,  valinit=0.0, valfmt="%0.1f m", color="orange")
+slider_epsi0 = Slider(ax_epsi0, "Initial Yaw Error", -30.0, 30.0, valinit=0.0, valfmt="%0.1f°",  color="orange")
+slider_scrub = Slider(ax_scrub, "Time",               0,    1,    valinit=0,   valfmt="%d",       color="teal")
+
+for s in [slider_ey0, slider_epsi0, slider_scrub]:
+    s.label.set_fontsize(10.5)
+    s.valtext.set_fontsize(10.5)
+
+# All sliders hidden on startup; revealed when a path is loaded/drawn
+ax_ey0.set_visible(False)
+ax_epsi0.set_visible(False)
+ax_scrub.set_visible(False)
+
+# ── Buttons — right column rows 0-4 (one per row, equal height) ───────────────
+ax_btn_load      = fig.add_subplot(gs[0, 1])
+ax_btn_start     = fig.add_subplot(gs[1, 1])
+ax_btn_reset     = fig.add_subplot(gs[2, 1])
+ax_btn_optimize  = fig.add_subplot(gs[3, 1])
+ax_btn_benchmark = fig.add_subplot(gs[4, 1])
+
+btn_load      = Button(ax_btn_load,      "Load Test Path",      color="thistle",    hovercolor="plum")
+btn_start     = Button(ax_btn_start,     "Start Sim",           color="lightgreen", hovercolor="limegreen")
+btn_reset     = Button(ax_btn_reset,     "Reset Environment",   color="tomato",     hovercolor="crimson")
+btn_optimize  = Button(ax_btn_optimize,  "Show Metrics",        color="lightblue",  hovercolor="deepskyblue")
+btn_benchmark = Button(ax_btn_benchmark, "Benchmark All Paths", color="lightyellow",hovercolor="gold")
+
+# ── Telemetry panel — right column rows 5-8 (top-anchored below buttons) ──────
+# Spans four rows; text is top-anchored so it fills downward from just below
+# the last button, matching the map's vertical extent on the left.
+ax_info = fig.add_subplot(gs[5:9, 1])
+ax_info.axis("off")
+
+# Telemetry text — full axes width, top-anchored, centred horizontally
 telemetry_text = ax_info.text(
-    0.0, 0.95, "",
-    family="monospace", fontsize=10.5, verticalalignment="top",
-    bbox=dict(facecolor="#f8f9fa", edgecolor="#ccced1", boxstyle="round,pad=0.7"),
+    0.5, 1.0, "",
+    family="monospace", fontsize=9.5, verticalalignment="top",
+    horizontalalignment="center",
+    transform=ax_info.transAxes,
+    bbox=dict(facecolor="#f8f9fa", edgecolor="#ccced1", boxstyle="round,pad=0.8"),
 )
-
-# Slider axes
-ax_ey0   = fig.add_subplot(gs[1, 0])   # Initial lateral error slider
-ax_epsi0 = fig.add_subplot(gs[2, 0])   # Initial yaw error slider
-ax_scrub = fig.add_subplot(gs[3:6, 0]) # Timeline scrub slider (spans 3 rows)
-
-slider_ey0   = Slider(ax_ey0,   "Initial Lat Error", -4.0, 4.0,    valinit=0.0, valfmt="%0.1f m",  color="orange")
-slider_epsi0 = Slider(ax_epsi0, "Initial Yaw Error", -30.0, 30.0,  valinit=0.0, valfmt="%0.1f°",  color="orange")
-slider_scrub = Slider(ax_scrub, "Time",               0,    1,      valinit=0,   valfmt="%d",       color="teal")
-ax_scrub.set_visible(False)   # Hidden until a simulation completes
-
-# Button column
-ax_btn_load     = fig.add_subplot(gs[1, 1])
-ax_btn_start    = fig.add_subplot(gs[2, 1])
-ax_btn_flip     = fig.add_subplot(gs[3, 1])
-ax_btn_reset    = fig.add_subplot(gs[4, 1])
-ax_btn_optimize = fig.add_subplot(gs[5, 1])
-
-btn_load     = Button(ax_btn_load,     "Load Test Path",      color="thistle",   hovercolor="plum")
-btn_start    = Button(ax_btn_start,    "Start Sim",           color="lightgreen",hovercolor="limegreen")
-btn_flip     = Button(ax_btn_flip,     "Flip Heading (180°)", color="lightgreen",hovercolor="khaki")
-btn_reset    = Button(ax_btn_reset,    "Reset Environment",   color="tomato",    hovercolor="crimson")
-btn_optimize = Button(ax_btn_optimize, "Show Metrics",        color="lightblue", hovercolor="deepskyblue")
-
 
 # ==========================================
 # HELPER MATHEMATICS AND GEOMETRY
@@ -210,7 +239,7 @@ def get_car_triangle(x, y, heading, size=2.2):
     (tx, ty) : tuple of np.ndarray, shape (4,)
         Closed polygon vertices (4 points, last = first) for ax.plot().
 
-    Called by: on_release(), toggle_heading_flip(), update_scrub_frame(),
+    Called by: on_release(), update_scrub_frame(),
                load_test_path()
     """
     corners = np.array([
@@ -239,7 +268,7 @@ def normalize_angle(angle):
     -------
     float : Equivalent angle in (−π, π].
 
-    Called by: simulate_closed_loop(), toggle_heading_flip(), load_test_path()
+    Called by: simulate_closed_loop(), load_test_path()
     """
     return np.arctan2(np.sin(angle), np.cos(angle))
 
@@ -298,11 +327,10 @@ def reset_environment(event):
 
     Called by: btn_reset ("Reset Environment" button)
     """
-    global is_simulated, flip_heading_180, drawn_points, path_X, path_Y, \
+    global is_simulated, drawn_points, path_X, path_Y, \
            path_Psi, path_v_profile, sim_history, current_test_path_idx
 
     is_simulated          = False
-    flip_heading_180      = False
     drawn_points          = []
     path_X, path_Y, path_Psi = [], [], []
     path_v_profile        = np.array([])
@@ -317,16 +345,16 @@ def reset_environment(event):
     blue_cones_line.set_data([], [])
     yellow_cones_line.set_data([], [])
 
-    ax_map.set_xlim(0, 100)
-    ax_map.set_ylim(0, 60)
+    ax_map.set_xlim(0, 75)
+    ax_map.set_ylim(0, 45)
 
-    ax_ey0.set_visible(True)
-    ax_epsi0.set_visible(True)
+    # Hide all sliders back to the pristine environment state
+    ax_ey0.set_visible(False)
+    ax_epsi0.set_visible(False)
     ax_scrub.set_visible(False)
 
     btn_load.set_active(True)
     btn_start.set_active(True)
-    btn_flip.set_active(True)
     btn_optimize.set_active(True)
     slider_ey0.set_val(0.0)
     slider_epsi0.set_val(0.0)
@@ -350,7 +378,7 @@ def load_test_path(event):
 
     Called by: btn_load ("Load Test Path" button)
     """
-    global path_X, path_Y, path_Psi, path_v_profile, flip_heading_180, \
+    global path_X, path_Y, path_Psi, path_v_profile, \
            current_test_path_idx, _blue_cones_all, _yellow_cones_all
 
     if is_simulated:
@@ -362,7 +390,6 @@ def load_test_path(event):
 
     # Unpack the pre-computed geometry and speed profile
     path_X, path_Y, path_Psi, path_v_profile, _, _ = SYNTHETIC_PATHS[path_name]
-    flip_heading_180 = False
 
     # Generate and render cones
     _blue_cones_all, _yellow_cones_all = place_cones(path_X, path_Y)
@@ -375,6 +402,10 @@ def load_test_path(event):
     # Place vehicle marker at path start
     car_x, car_y = get_car_triangle(path_X[0], path_Y[0], path_Psi[0])
     vehicle_marker.set_data(car_x, car_y)
+
+    # Reveal the condition sliders now that a path exists
+    ax_ey0.set_visible(True)
+    ax_epsi0.set_visible(True)
 
     ax_map.set_title(f"Loaded: {path_name} | Click 'Start Sim'", fontweight="bold", color="blue")
 
@@ -438,7 +469,7 @@ def on_release(event):
 
     Called by: fig.canvas.mpl_connect("button_release_event", on_release)
     """
-    global is_drawing, path_X, path_Y, path_Psi, path_v_profile, flip_heading_180
+    global is_drawing, path_X, path_Y, path_Psi, path_v_profile
     global _blue_cones_all, _yellow_cones_all
 
     if not is_drawing:
@@ -479,7 +510,6 @@ def on_release(event):
     path_v_profile = speed_profile.smooth_profile(raw_profile, window=9)
 
     # Place cones for perception
-    flip_heading_180      = False
     _blue_cones_all, _yellow_cones_all = place_cones(path_X, path_Y)
     if len(_blue_cones_all) > 0:
         blue_cones_line.set_data(_blue_cones_all[:, 0], _blue_cones_all[:, 1])
@@ -488,41 +518,18 @@ def on_release(event):
     path_line.set_data(path_X, path_Y)
     car_x, car_y = get_car_triangle(path_X[0], path_Y[0], path_Psi[0])
     vehicle_marker.set_data(car_x, car_y)
+
+    # Reveal the condition sliders now that a path has been drawn
+    ax_ey0.set_visible(True)
+    ax_epsi0.set_visible(True)
+
     fig.canvas.draw_idle()
-
-
-def toggle_heading_flip(event):
-    """
-    Toggle whether the vehicle starts pointing 180° away from the path direction.
-
-    When flipped, the initial heading becomes path_Psi[0] + π (pointing backward).
-    This tests the MPC's recovery capability from a worst-case heading mismatch.
-    The vehicle marker on the map is updated immediately to show the new heading.
-
-    Called by: btn_flip ("Flip Heading (180°)" button)
-    """
-    global flip_heading_180
-    if len(path_X) == 0:
-        return
-    flip_heading_180 = not flip_heading_180
-
-    base_heading = path_Psi[0] + (np.pi if flip_heading_180 else 0.0)
-    current_psi  = normalize_angle(base_heading + np.radians(slider_epsi0.val))
-
-    X_g = path_X[0] - slider_ey0.val * np.sin(base_heading)
-    Y_g = path_Y[0] + slider_ey0.val * np.cos(base_heading)
-
-    car_x, car_y = get_car_triangle(X_g, Y_g, current_psi)
-    vehicle_marker.set_data(car_x, car_y)
-    fig.canvas.draw_idle()
-
 
 # Register event handlers
 fig.canvas.mpl_connect("button_press_event",   on_press)
 fig.canvas.mpl_connect("motion_notify_event",  on_motion)
 fig.canvas.mpl_connect("button_release_event", on_release)
 btn_load.on_clicked(load_test_path)
-btn_flip.on_clicked(toggle_heading_flip)
 btn_reset.on_clicked(reset_environment)
 
 
@@ -530,7 +537,7 @@ btn_reset.on_clicked(reset_environment)
 # SIMULATION ENGINE
 # ==========================================
 
-def simulate_closed_loop(Q_w, R_w, ey0, epsi0, flip, rng_seed=None, max_steps=400, R_rate_w=None):
+def simulate_closed_loop(Q_w, R_w, ey0, epsi0, flip=False, rng_seed=None, max_steps=400, R_rate_w=None):
     """
     Run one closed-loop simulation rollout on the currently loaded path.
 
@@ -575,7 +582,7 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, flip, rng_seed=None, max_steps=40
     ----------------------
     The loop ends on the first of:
       - Reaching path end: idx ≥ len(path_X) - 2  OR  dist_to_end ≤ 3.0 m
-      - Off-track:  |e_y| > OFFTRACK_LIMIT (5.0 m) → history["failed"] = True
+      - Off-track:  |e_y| > OFFTRACK_LIMIT (2.5 m) → history["failed"] = True
       - Solver failure: consecutive_solver_failures ≥ MAX_CONSECUTIVE_FAILURES (5)
       - Step budget: step ≥ max_steps
 
@@ -658,7 +665,7 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, flip, rng_seed=None, max_steps=40
     u_prev                     = np.zeros(2)
     consecutive_solver_failures = 0
     MAX_CONSECUTIVE_FAILURES    = 5
-    OFFTRACK_LIMIT              = 5.0   # metres; well beyond the MPC's ±3.5 m soft corridor
+    OFFTRACK_LIMIT              = 2.50  # metres; well beyond the MPC's ±3.5 m soft corridor
 
     history = {
         "X": [], "Y": [], "psi": [], "v": [], "v_target": [],
@@ -865,7 +872,6 @@ def run_simulation(event):
 
     is_simulated = True
     btn_start.set_active(False)
-    btn_flip.set_active(False)
     btn_optimize.set_active(False)
     ax_ey0.set_visible(False)
     ax_epsi0.set_visible(False)
@@ -874,7 +880,7 @@ def run_simulation(event):
     dynamic_steps = calculate_dynamic_max_steps(path_X, path_Y, dt=dt)
 
     history = simulate_closed_loop(
-        Q, R, slider_ey0.val, slider_epsi0.val, flip_heading_180,
+        Q, R, slider_ey0.val, slider_epsi0.val,
         rng_seed=None, max_steps=dynamic_steps, R_rate_w=R_rate,
     )
     sim_history = history
@@ -945,6 +951,37 @@ def run_optimize(event):
 btn_optimize.on_clicked(run_optimize)
 
 
+def run_benchmark(event):
+    """
+    Callback for "Benchmark All Paths". Runs every synthetic path 3 times
+    and prints a full score breakdown to the console. No simulation needs
+    to have been run first — uses the current weight matrices directly.
+
+    This is a blocking call (~minutes); the GUI will be unresponsive until
+    all rollouts complete. The plot title updates when done.
+
+    Called by: btn_benchmark ("Benchmark All Paths" button)
+    """
+    ax_map.set_title(
+        "Benchmarking all paths (3× each) — see console. GUI is busy...",
+        fontweight="bold", color="darkorange",
+    )
+    fig.canvas.draw_idle()
+    plt.pause(0.05)   # Flush the title update before the blocking loop starts
+
+    results = benchmark_weights(Q, R, R_rate, n_repeats=3, log_fn=print)
+
+    ax_map.set_title(
+        f"Benchmark complete: mean score = {results['mean_score']:.4f}  "
+        f"({len(PATH_NAMES)} paths × 3 repeats — see console)",
+        fontweight="bold", color="darkgreen",
+    )
+    fig.canvas.draw_idle()
+
+
+btn_benchmark.on_clicked(run_benchmark)
+
+
 # ==========================================
 # TIMELINE SCRUBBING
 # ==========================================
@@ -991,8 +1028,8 @@ def update_scrub_frame(val):
 
     # Telemetry panel text — monospaced for column alignment
     text = (
-        f"     HISTORIC FRAME: {frame:03d}\n"
-        f"=======================\n"
+        f"    HISTORIC FRAME: {frame:03d}\n"
+        f"========================\n"
         f"Speed     : {h['v'][frame]:6.2f} m/s\n"
         f"Target Spd: {v_target_str}\n"
         f"Pos X     : {h['X'][frame]:6.2f} m\n"
