@@ -76,7 +76,7 @@ Fsds score  = Yet to be implemented in fsds.
 Tuner score = 0.27550416180274867
 Commit hash = 5f517c2dfacddf6e7f30d11cc714a145e1db3d70
 
-# 04/07/26 21:24 - [Pending Description: yet to be tested]
+# 04/07/26 21:24 - Increased friction turns out still wasn't enough, and lateral error doesn't appear to have enough weight. Increased weighing in rmse calculation and static friction again.
 Q_diag      = [0.44699925053467116, 0.11743991596344988, 1.0478877615188058, 1.015194705332446, 0.28559173167385327, 0.0, 0.0, 0.0]
 R_diag      = [6.218096358132944, 3.342253795684056]
 R_rate_diag = [4.53327446204952, 0.42309080491967443]
@@ -84,3 +84,13 @@ Duration    = 76.37 minutes
 Fsds score  = Yet to be implemented in fsds.
 Tuner score = -0.31759709653007817
 Commit hash = e040c79b02088e9344cd1ed2bbe7bf2b7f8ffe9e
+
+# 04/07/26 22:39 - Good tracking accuracy + decent speed in simulator. Only problem remaining is when in a starting position where planner
+demands low speed, insufficient acceleration to start car. Need to take into account of this by adding similar scenario for tuner.
+Q_diag      = [1.4874498708543875, 0.1645310754457231, 1.003638475838103, 1.0504026619603863, 0.11780576114366814, 0.0, 0.0, 0.0]
+R_diag      = [2.317753195005961, 0.935875152859843]
+R_rate_diag = [3.3873852754948603, 1.1495831086210677]
+Duration    = 56.78 minutes
+Fsds score  = Yet to be implemented in fsds.
+Tuner score = -0.24337832980228216
+Commit hash = 6bf4081730950ac75b1e7d78fda0f5a8ab1286e2

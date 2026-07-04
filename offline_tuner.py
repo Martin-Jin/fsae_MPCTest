@@ -211,8 +211,8 @@ PATH_N_POINTS   = 1000
 SCORE_WEIGHTS = np.array([
     0.51,  # 0  rmse               (primary tracking; highest weight)
     0.04,  # 1  yaw_rms
-    0.05,  # 2  smooth_rms
-    0.04,  # 3  steer_rms
+    0.06,  # 2  smooth_rms
+    0.03,  # 3  steer_rms
     0.02,  # 4  accel_rms
     0.03,  # 5  max_steering
     0.08,  # 6  steering_sat_ratio
