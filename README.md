@@ -639,7 +639,7 @@ travels 25 m per horizon; this is well-matched to the 25 m perception window.
 
 ### DNF thresholds (tuner only)
 
-`OFFTRACK_LIMIT = 2.5 m` in `run_headless_rollout`. Tightening this makes the
+`OFFTRACK_LIMIT = 2.3 m` in `run_headless_rollout`. Tightening this makes the
 tuner penalise any lateral deviation more harshly, producing more conservative
 weights. The live simulator uses `8.0 m` (physical track width limit).
 

@@ -207,21 +207,21 @@ MAX_EVALS = 1000
 # Weight was redistributed to rmse and peak_lateral_error which are the primary
 # tracking quality signals and previously under-weighted.
 SCORE_WEIGHTS = np.array([
-    0.41,  # 0  rmse               (primary tracking; highest weight)
-    0.06,  # 1  yaw_rms
-    0.07,  # 2  smooth_rms
+    0.43,  # 0  rmse               (primary tracking; highest weight)
+    0.03,  # 1  yaw_rms
+    0.11,  # 2  smooth_rms
     0.04,  # 3  steer_rms
-    0.01,  # 4  accel_rms
+    0.02,  # 4  accel_rms
     0.03,  # 5  max_steering
-    0.09,  # 6  steering_sat_ratio
-    0.11,  # 7  jerk_rms
-    0.03,  # 8  max_yaw_rate
-    0.02,  # 9  steering_reversals
-    0.13,  # 10 peak_lateral_error  (safety; second-highest weight)
+    0.10,  # 6  steering_sat_ratio
+    0.07,  # 7  jerk_rms
+    0.02,  # 8  max_yaw_rate
+    0.05,  # 9  steering_reversals
+    0.10,  # 10 peak_lateral_error 
 ], dtype=float)
 
 COMPLETION_BONUS_WEIGHT = 0.35    # Subtracted from score when vehicle finishes path
-TIME_BONUS_WEIGHT       = 0.125   # Subtracted from score for fast completion
+TIME_BONUS_WEIGHT       = 0.20   # Subtracted from score for fast completion
 
 # Sanity check: weights must sum to 1 so the composite score is interpretable
 assert abs(SCORE_WEIGHTS.sum() - 1.0) < 1e-9, \
@@ -476,22 +476,22 @@ def build_synthetic_paths():
     paths = {}
 
     # --- PATH_SUDDEN_TURN ---
-    # 5 m straight then sharp 90° left (R=6 m). Tests late-apex cornering response:
+    # Long straight then sharp 90° left (R=6 m). Tests late-apex cornering response:
     # the vehicle must slow and turn simultaneously from a straight-line approach.
-    s1x = np.linspace(0, 5, 10)
+    s1x = np.linspace(-55, 5, 10)
     s1y = np.zeros(10)
-    arc_x, arc_y = _make_arc(5, 6, 6, -90, 0, n=20)
-    s2x = np.full(10, 11.0)
-    s2y = np.linspace(6, 11, 10)
+    arc_x, arc_y = _make_arc(5, 4.5, 4.5, -90, 0, n=20)
+    s2x = np.full(10, 9.5)
+    s2y = np.linspace(4.5, 10, 10)
     wx  = np.concatenate([s1x, arc_x[1:], s2x[1:]])
     wy  = np.concatenate([s1y, arc_y[1:], s2y[1:]])
     paths["PATH_SUDDEN_TURN"] = _resample_path(wx, wy)
 
     # --- PATH_S_BEND ---
-    # 5 m straight (East) → right 90° (R=10 m) → 5 m link (South) →
+    # Long straight (East) → right 90° (R=10 m) → 5 m link (South) →
     # left 90° (R=10 m) → 10 m exit (East).
     # Tests consecutive direction changes and weight transfer between corners.
-    s0x = np.linspace(15, 20, 10)
+    s0x = np.linspace(-10, 20, 10)
     s0y = np.zeros(10)
     arc1x, arc1y = _make_arc(20, -10, 10, 90, 0, n=20)
     lx   = np.full(8, 30.0)
@@ -527,7 +527,7 @@ def build_synthetic_paths():
     # is integrated numerically from the curvature profile:
     #   ψ(s) = -∫₀ˢ κ(t) dt  (accumulated heading change)
     #   x(s) = ∫₀ˢ cos(ψ) dt, y(s) = ∫₀ˢ sin(ψ) dt
-    s0x      = np.linspace(0, 5, 10)
+    s0x      = np.linspace(-10, 5, 10)
     s0y      = np.zeros(10)
     L_spiral = 60.0
     ds_spiral = 0.1
@@ -554,7 +554,7 @@ def build_synthetic_paths():
     # --- PATH_OFFSET_CHICANE ---
     # Lateral gate offsets of ±2.0 m at 10 m intervals.
     # Similar to slalom but with cleaner step-input geometry.
-    wx = [0, 5, 15, 25, 35, 45, 50]
+    wx = [-20, 5, 15, 25, 35, 45, 50]
     wy = [0, 0, 2.0, -2.0, 2.0, 0, 0]
     paths["PATH_OFFSET_CHICANE"] = _resample_path(wx, wy)
 
@@ -600,7 +600,7 @@ def build_synthetic_paths():
     # Compound sequence: 5 m straight → left 90° (R=6 m) → 5 m N link →
     # right 90° (R=6 m) → 5 m E link → 180° hairpin (R=5 m) → 5 m W exit.
     # Tests generalisation: the controller must handle all corner types in sequence.
-    s_mix0x = np.linspace(0, 5, 10)
+    s_mix0x = np.linspace(-20, 5, 10)
     s_mix0y = np.zeros(10)
     arc_m1x, arc_m1y = _make_arc(5, 6, 6, -90, 0, n=15)
     l_m1x   = np.full(6, 11.0)
@@ -887,7 +887,7 @@ def run_headless_rollout(
     offtrack_excess     = 0.0    # How far past OFFTRACK_LIMIT at time of DNF
 
     MAX_FAILS      = 5     # Consecutive solve failures before DNF
-    OFFTRACK_LIMIT = 2.5   # Lateral error threshold for DNF (m)
+    OFFTRACK_LIMIT = 2.3   # Lateral error threshold for DNF (m)
 
     # Pre-compute arc-length segments for progress tracking
     path_seg_dist = np.hypot(np.diff(path_X), np.diff(path_Y))
@@ -1080,15 +1080,15 @@ def run_headless_rollout(
 # Active validation suite: subset of paths used for CMA-ES evaluation.
 # Commented-out paths are available but excluded to balance coverage vs. speed.
 VALIDATION_SUITE = [
-    "PATH_MICRO_SLALOM",
+    # "PATH_MICRO_SLALOM",
     "PATH_OFFSET_CHICANE",
     "PATH_SPIRAL",
     "PATH_SUDDEN_TURN",
-    "PATH_SKIDPAD",
+    # "PATH_SKIDPAD",
     "PATH_S_BEND",
-    # # "PATH_MIXED",
-    # # "PATH_HAIRPIN",
-    "PATH_CHICANE",
+    "PATH_MIXED",
+    # "PATH_HAIRPIN",
+    # "PATH_CHICANE",
 ]
 
 # Initial condition perturbations tested for each path.
@@ -1332,7 +1332,7 @@ if __name__ == "__main__":
     popsize         = default_popsize
 
     max_evals    = MAX_EVALS
-    max_restarts = 6    # BIPOP restart budget (reduced from 9 for faster total runs)
+    max_restarts = 6    # BIPOP restart budget
     num_cores    = max(1, mp.cpu_count() - 1)   # Leave one core for the OS
 
     print("\n[Offline Tuner] Strategy: BIPOP + lq-CMA-ES (surrogate-assisted)")
