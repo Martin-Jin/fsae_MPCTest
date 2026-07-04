@@ -144,7 +144,7 @@ dt         = 0.05 s     (20 Hz control rate)
 N_horizon  = 25 steps   (1.25 s look-ahead)
 V_MAX      = 20.0 m/s   (planner + profiler cap)
 V_MIN      = 1.5 m/s    (planner floor speed)
-OFFTRACK_LIMIT = 8.0 m  (live sim failure threshold; tuner uses 2.5 m)
+OFFTRACK_LIMIT = 5.0 m  (live sim failure threshold; tuner uses 2.5 m)
 ```
 
 **Dependencies:** `bicycle_model`, `optimiser`, `vehicle_physics`, `performance_stats`, `speed_profile`, `offline_tuner` (SYNTHETIC_PATHS / PATH_NAMES only), `sim_track`, `model_utils`.
@@ -423,7 +423,7 @@ Uses `cma.fmin_lq_surr2`: BIPOP (bi-population) restart strategy combined with a
 
 **Initial point:** `x0 = (lower + upper) / 2 = 5.05` per parameter (midpoint of bounds).
 
-**`sigma0=0.75`, `CMA_stds = 0.23 × (upper - lower)`** — 23% of the parameter range as the initial 1-sigma exploration radius per dimension.
+**`sigma0=0.75`, `CMA_stds = 0.23 × log(upper - lower)`** — 23% of the parameter range as the initial 1-sigma exploration radius per dimension.
 
 **`max_restarts=6`, `max_evals=1000`** — total budget including all restarts. Each BIPOP restart uses `incpopsize=2` (large restarts double the population from the previous large restart's size).
 
@@ -450,25 +450,25 @@ The graded form (proportional to missing fraction + excess) gives CMA-ES a conti
 ### Composite Score (`SCORE_WEIGHTS`)
 
 ```
-Index  Metric               Weight  Notes
-  0    rmse                  0.41   primary: combined e_y² + 0.5*e_psi² RMSE
-  1    yaw_rms               0.06   stability
-  2    smooth_rms (Δu)       0.07   control smoothness
-  3    steer_rms             0.04   steering effort magnitude
-  4    accel_rms             0.01   acceleration effort magnitude
-  5    max_steering          0.03   peak steering command
-  6    steering_sat_ratio    0.09   fraction of steps near saturation
-  7    jerk_rms (Δ²u)        0.11   control jerk
-  8    max_yaw_rate          0.03   cornering aggressiveness
-  9    steering_reversals    0.02   sign-change hunting count
- 10    peak_lateral_error    0.13   worst single-step deviation
+Index  Metric                Notes
+  0    rmse                  primary: combined e_y² + 0.4*e_psi² RMSE
+  1    yaw_rms               stability
+  2    smooth_rms (Δu)       control smoothness
+  3    steer_rms             steering effort magnitude
+  4    accel_rms             acceleration effort magnitude
+  5    max_steering          peak steering command
+  6    steering_sat_ratio    fraction of steps near saturation
+  7    jerk_rms (Δ²u)        control jerk
+  8    max_yaw_rate          cornering aggressiveness
+  9    steering_reversals    sign-change hunting count
+ 10    peak_lateral_error    worst single-step deviation
 ```
 
 Bonuses (subtracted from score — reward for completing quickly):
-- `COMPLETION_BONUS_WEIGHT=0.35` × `completion_frac`
-- `TIME_BONUS_WEIGHT=0.175` × `time_bonus`
+- `COMPLETION_BONUS_WEIGHT` × `completion_frac`
+- `TIME_BONUS_WEIGHT` × `time_bonus`
 
-Lower composite score is better. A good finishing run typically scores in the range `[-0.4, 0.0]`.
+Lower composite score is better. A good finishing run typically scores in the range `[-0.2, 0.1]`.
 
 ### Inaccuracy Penalty
 

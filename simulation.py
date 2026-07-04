@@ -817,6 +817,21 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, flip, rng_seed=None, max_steps=40
     history.setdefault("reached_end", False)
     history["peak_lateral_error"] = float(np.max(np.abs(history["e_y"]))) if history["e_y"] else 0.0
 
+    # Compute arc-length progress along the reference path (same method as offline_tuner)
+    _path_X_arr = np.asarray(path_X)
+    _path_Y_arr = np.asarray(path_Y)
+    _path_total_len = float(np.sum(np.hypot(np.diff(_path_X_arr), np.diff(_path_Y_arr))))
+    if _path_total_len > 0 and len(history["X"]) > 0:
+        # Find closest reference index at final vehicle position
+        _final_dists = np.hypot(_path_X_arr - history["X"][-1], _path_Y_arr - history["Y"][-1])
+        _final_idx   = int(np.argmin(_final_dists))
+        _travelled   = float(np.sum(np.hypot(np.diff(_path_X_arr[:_final_idx + 1]),
+                                             np.diff(_path_Y_arr[:_final_idx + 1]))))
+        _progress    = float(np.clip(_travelled / _path_total_len, 0.0, 1.0))
+    else:
+        history["reached_end"] = False
+        _progress = 0.0
+
     if history["reached_end"]:
         history["completion_frac"] = 1.0
         # Time bonus: how much earlier than max_steps did the vehicle finish?
@@ -824,8 +839,8 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, flip, rng_seed=None, max_steps=40
         sim_time      = len(history["X"]) * dt
         history["time_bonus"] = max(0.0, 1.0 - (sim_time / expected_time))
     else:
-        # Partial completion: fraction of max_steps used
-        history["completion_frac"] = len(history["X"]) / max(max_steps, 1)
+        # Partial completion: arc-length fraction actually travelled along the path
+        history["completion_frac"] = _progress
         history["time_bonus"]      = 0.0
 
     return history

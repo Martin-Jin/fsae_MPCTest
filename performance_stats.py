@@ -47,7 +47,7 @@ from offline_tuner import (
 )
 
 # Metric index constants — must stay in sync with SCORE_WEIGHTS order in offline_tuner.py
-_IDX_RMSE               = 0   # Combined tracking RMSE (e_y² + 0.5*e_psi²)
+_IDX_RMSE               = 0   # Combined tracking RMSE (e_y² + 0.4*e_psi²)
 _IDX_YAW_RMS            = 1   # Yaw rate RMS (approximated from diff(e_psi)/dt)
 _IDX_SMOOTH_RMS         = 2   # Control smoothness RMS (Δu)
 _IDX_STEER_RMS          = 3   # Steering effort RMS
@@ -77,7 +77,7 @@ def report_performance_metrics(history, log_fn=print):
     The function replicates the accumulation that run_headless_rollout() does
     step-by-step, but operates on the already-stored history arrays:
 
-      rmse:               sqrt( Σ(e_y² + 0.5*e_psi²) / n )
+      rmse:               sqrt( Σ(e_y² + 0.4*e_psi²) / n )
       yaw_rms:            sqrt( 0.8 * Σ(r_proxy²) / n )         [proxy: Δe_psi/dt]
       smooth_rms:         sqrt( Σ(Δu_steer² + Δu_accel²) / n )
       steer_rms:          sqrt( Σ(u_steer²) / n )
@@ -147,10 +147,10 @@ def report_performance_metrics(history, log_fn=print):
     completion_frac = float(history.get("completion_frac", 1.0))
 
     # ── Tracking error cost ───────────────────────────────────────────────────
-    # Mirrors: error_cost += e_y**2 + 0.5 * e_psi**2  in run_headless_rollout()
-    # The 0.5 factor down-weights heading error relative to lateral error,
+    # Mirrors: error_cost += e_y**2 + 0.4 * e_psi**2  in run_headless_rollout()
+    # The 0.4 factor down-weights heading error relative to lateral error,
     # reflecting that e_psi is more tolerant at low curvature.
-    error_cost = float(np.sum(e_y**2 + 0.5 * e_psi**2))
+    error_cost = float(np.sum(e_y**2 + 0.4 * e_psi**2))
     rmse       = float(np.sqrt(error_cost / n))
 
     # ── Yaw rate (proxy from diff(e_psi)/dt) ──────────────────────────────────
@@ -241,7 +241,7 @@ def report_performance_metrics(history, log_fn=print):
     if failed:
         time_bonus = 0.0   # No time bonus for failed runs
     else:
-        time_bonus = history.get("time_bonus")
+        time_bonus = float(history.get("time_bonus") or 0.0)
 
     composite -= COMPLETION_BONUS_WEIGHT * progress + TIME_BONUS_WEIGHT * time_bonus
 

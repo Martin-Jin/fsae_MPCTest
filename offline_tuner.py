@@ -183,7 +183,9 @@ ROLLOUT_MAX_ITER = 5000
 # Graceful shutdown flag: set by SIGINT handler; checked each CMA generation.
 _stop_requested = False
 # Total true-evaluation budget (surrogate skips many; this controls wall time).
-MAX_EVALS = 2000
+MAX_EVALS = 1500
+# Path resampling resolution — independent of CMA-ES budget
+PATH_N_POINTS   = 1000   
 
 # ==========================================
 # SCORING WEIGHTS
@@ -207,21 +209,21 @@ MAX_EVALS = 2000
 # Weight was redistributed to rmse and peak_lateral_error which are the primary
 # tracking quality signals and previously under-weighted.
 SCORE_WEIGHTS = np.array([
-    0.43,  # 0  rmse               (primary tracking; highest weight)
-    0.03,  # 1  yaw_rms
-    0.11,  # 2  smooth_rms
+    0.51,  # 0  rmse               (primary tracking; highest weight)
+    0.04,  # 1  yaw_rms
+    0.05,  # 2  smooth_rms
     0.04,  # 3  steer_rms
     0.02,  # 4  accel_rms
     0.03,  # 5  max_steering
-    0.10,  # 6  steering_sat_ratio
-    0.07,  # 7  jerk_rms
+    0.08,  # 6  steering_sat_ratio
+    0.06,  # 7  jerk_rms
     0.02,  # 8  max_yaw_rate
     0.05,  # 9  steering_reversals
     0.10,  # 10 peak_lateral_error 
 ], dtype=float)
 
-COMPLETION_BONUS_WEIGHT = 0.325    # Subtracted from score when vehicle finishes path
-TIME_BONUS_WEIGHT       = 0.25   # Subtracted from score for fast completion
+COMPLETION_BONUS_WEIGHT = 0.50   # Subtracted from score when vehicle finishes path
+TIME_BONUS_WEIGHT       = 0.30   # Subtracted from score for fast completion
 
 # Sanity check: weights must sum to 1 so the composite score is interpretable
 assert abs(SCORE_WEIGHTS.sum() - 1.0) < 1e-9, \
@@ -316,7 +318,7 @@ def adaptive_R_scaling(vx, R_base):
 # SYNTHETIC PATH LIBRARY — INTERNAL HELPERS
 # ==========================================
 
-def _resample_path(waypoints_x, waypoints_y, n_points=MAX_EVALS):
+def _resample_path(waypoints_x, waypoints_y, n_points=PATH_N_POINTS):
     """
     Fit a clamped cubic spline through the given waypoints and resample to
     n_points uniformly-spaced points. Computes path heading, speed profile,
@@ -331,7 +333,7 @@ def _resample_path(waypoints_x, waypoints_y, n_points=MAX_EVALS):
     ----------
     waypoints_x : array-like   Sparse X waypoints defining the path shape.
     waypoints_y : array-like   Sparse Y waypoints defining the path shape.
-    n_points : int             Number of output points (default: MAX_EVALS=1000).
+    n_points : int             Number of output points (default: PATH_N_POINTS=1000).
 
     Returns
     -------
@@ -751,9 +753,11 @@ def init_worker(Q_init, R_init, R_rate_init):
     _init_context["R_rate"]         = R_rate_init
     _init_context["vehicle_params"] = VehicleParams()
 
-    # Pre-cache all models from 2.5 m/s to 16 m/s in 0.1 m/s steps
+    # Pre-cache all models from 0.5 m/s to 20.0 m/s in 0.1 m/s steps
+    # Range covers vx clamp floor (0.5) through V_MAX (20.0) to avoid
+    # mid-rollout cache misses during startup and high-speed phases.
     dt = 0.05
-    for vx in np.arange(2.5, 16.1, 0.1):
+    for vx in np.arange(0.5, 20.1, 0.1):
         key = np.round(vx, 1)
         if key not in _model_cache:
             _model_cache[key] = get_8state_discrete_model(key, dt)
@@ -819,9 +823,9 @@ def run_headless_rollout(
     -------
     score : float
         Composite performance score (lower is better). Typical range:
-          Good finish:  −0.4 to 0.0
-          Poor finish:   0.0 to 1.0
-          DNF:           > 1 (depending on how early the DNF)
+          Good finish:  −0.2 to 0.2
+          Poor finish:   0.2 to 1.0
+          DNF:           >= 1 (depending on how early the DNF)
 
     Called by: _score_task() (from pool.map in parallel_evaluate_candidate),
                evaluate_candidate() (serial fallback)
@@ -863,7 +867,7 @@ def run_headless_rollout(
     state = init_plant_state(X0, Y0, psi0, vx0=vx0)
 
     # ── Metric accumulators ────────────────────────────────────────────────────
-    error_cost          = 0.0    # Σ(e_y² + 0.5*e_psi²): combined tracking cost
+    error_cost          = 0.0    # Σ(e_y² + 0.4*e_psi²): combined tracking cost
     yaw_rate_cost       = 0.0    # Σ(0.8 * r²): yaw rate stability cost
     control_smooth      = 0.0    # Σ(||Δu||²): control rate-of-change
     steering_reversals  = 0      # Count of sign changes in steering > threshold
@@ -887,10 +891,15 @@ def run_headless_rollout(
     offtrack_excess     = 0.0    # How far past OFFTRACK_LIMIT at time of DNF
 
     MAX_FAILS      = 5     # Consecutive solve failures before DNF
-    OFFTRACK_LIMIT = 2.5  # Lateral error threshold for DNF (m)
+    OFFTRACK_LIMIT = 2.5   # Lateral error threshold for DNF (m)
 
     # Pre-compute arc-length segments for progress tracking
     path_seg_dist = np.hypot(np.diff(path_X), np.diff(path_Y))
+
+    reached_end             = False
+    STALL_CHECK_INTERVAL    = 60    # Steps between rolling stall checks (3 s at 20 Hz)
+    STALL_MIN_DISTANCE      = 3.0   # Minimum distance (m) expected per interval
+    dist_at_last_stall_check = 0.0  # cumulative_distance snapshot at last check
 
     for step in range(num_steps):
         car_pos_np = np.array([state[0], state[1]])
@@ -916,7 +925,7 @@ def run_headless_rollout(
                 e_y     = -float(np.dot(car_pos_np - cl[cl_idx], right_n))
                 e_psi   = _normalize_angle(state[2] - rpsi)
             else:
-                e_y, e_psi, _ = _tracking_errors(state, path_X, path_Y, path_Psi, idx)
+                e_y, e_psi, idx = _tracking_errors(state, path_X, path_Y, path_Psi, idx)
         else:
             e_y, e_psi, idx_new = _tracking_errors(state, path_X, path_Y, path_Psi, idx)
             idx = idx_new
@@ -925,20 +934,22 @@ def run_headless_rollout(
         _, _, idx_ref = _tracking_errors(state, path_X, path_Y, path_Psi, idx)
         if idx_ref > last_idx:
             cumulative_distance += np.sum(path_seg_dist[last_idx:idx_ref])
-        last_idx = idx_ref
+            last_idx = idx_ref 
+
         idx = idx_ref
 
         # ── Speed target from planner ─────────────────────────────────────────
         _, v_target = planner.get_target(car_pos_np, state[2])
         v_target    = float(v_target)
-        vx          = max(state[3], 0.5)
+        vx_true = state[3]                  # True longitudinal speed for state error
+        vx      = max(vx_true, 0.5)         # Clamped speed for model linearisation only
 
         # ── Build MPC state vector ────────────────────────────────────────────
         # [e_y, e_y_dot, e_psi, r, e_v, 0, delta_act, a_act]
         # e_y_dot: lateral velocity projected onto path-normal direction
-        e_y_dot = state[3] * np.sin(e_psi) + state[4] * np.cos(e_psi)
+        e_y_dot = vx_true * np.sin(e_psi) + state[4] * np.cos(e_psi)
         x0_mpc  = np.array(
-            [e_y, e_y_dot, e_psi, state[5], vx - v_target, 0.0, state[6], state[7]]
+            [e_y, e_y_dot, e_psi, state[5], vx_true - v_target, 0.0, state[6], state[7]]
         )
 
         # ── Adaptive gain scaling ─────────────────────────────────────────────
@@ -974,12 +985,17 @@ def run_headless_rollout(
             num_steps = step + 1
             break
 
-        # Stalled detection: if the vehicle hasn't moved 3 m after 60 steps (3 s),
-        # it's stuck (e.g. oscillating on the spot or fighting a bad initial condition)
-        if step > 60 and cumulative_distance < 3.0:
-            dnf       = True
-            num_steps = step + 1
-            break
+        # Rolling stall detection: every STALL_CHECK_INTERVAL steps, verify the
+        # vehicle has advanced at least STALL_MIN_DISTANCE m since the last check.
+        # This catches stalls that start after the initial acceleration phase,
+        # including friction-stall that the one-shot check at step > 60 misses.
+        if step > 0 and step % STALL_CHECK_INTERVAL == 0:
+            dist_since_last_check = cumulative_distance - dist_at_last_stall_check
+            if dist_since_last_check < STALL_MIN_DISTANCE:
+                dnf       = True
+                num_steps = step + 1
+                break
+            dist_at_last_stall_check = cumulative_distance
 
         # ── Metric accumulation ───────────────────────────────────────────────
         # Steering reversal: sign change with magnitude above threshold (0.02 rad)
@@ -991,7 +1007,7 @@ def run_headless_rollout(
 
         max_yaw_rate     = max(max_yaw_rate, abs(state[5]))
         # Combined tracking cost: e_y weighted 2×, e_psi weighted 1× (in quadrature)
-        error_cost       += e_y**2 + 0.5 * e_psi**2
+        error_cost       += e_y**2 + 0.4 * e_psi**2
         # Yaw stability: 0.8 weighting reduces contribution relative to lateral error
         yaw_rate_cost    += 0.8 * state[5] ** 2
         # Control smoothness: sum of squared first differences of u
@@ -1021,9 +1037,10 @@ def run_headless_rollout(
         # Path completion check: reached path end → clean finish
         dist_to_finish = math.hypot(state[0] - path_X[-1], state[1] - path_Y[-1])
         if idx >= len(path_X) - 2 or dist_to_finish <= 3.0:
-            num_steps = step + 1
+            reached_end = True
+            num_steps   = step + 1
             break
-
+    
         u_prev = u_opt.copy()
         state  = step_nonlinear_plant(state, u_opt, dt, p)
 
@@ -1048,13 +1065,13 @@ def run_headless_rollout(
     # ── Completion and time bonuses (subtracted — reward for finishing well) ───
     progress = np.clip(cumulative_distance / PATH_LENGTHS[path_name], 0.0, 1.0)
 
-    if dnf:
-        time_bonus = 0.0   # No time bonus for DNF — didn't finish
-    else:
-        sim_time   = step * dt
+    if reached_end:
+        sim_time   = num_steps * dt   # num_steps = step + 1 at clean finish; one dt more accurate than step * dt
         # time_bonus ∈ [0, 1]: 1 if sim_time = 0 (instant), 0 if sim_time ≥ expected_time
-        expected_time     = dynamic_max_steps * dt
-        time_bonus = max(0, (1 - sim_time / expected_time))
+        expected_time = dynamic_max_steps * dt
+        time_bonus    = max(0.0, 1.0 - (sim_time / expected_time))
+    else:
+        time_bonus = 0.0   # No time bonus for DNF — didn't finish
 
     score -= COMPLETION_BONUS_WEIGHT * progress + TIME_BONUS_WEIGHT * time_bonus
 
@@ -1067,8 +1084,8 @@ def run_headless_rollout(
     # Uses abs() + sign() to preserve the sign of good (negative) scores while
     # still penalising poor solver quality.
     if inaccurate_count > 0:
-        factor = 1.0 + min(5, inaccurate_count) * 0.1   # Up to 50% penalty
-        score  = np.sign(score) * abs(score) * factor
+        factor = min(5, inaccurate_count) * 0.1   # Up to 0.5 additive penalty on |score|
+        score  = score + abs(score) * factor       # Always increases score (penalises), regardless of sign
 
     return score
 
@@ -1288,12 +1305,11 @@ def log_results_to_history(Q, R, R_rate, duration, score):
 # TEMPLATE WEIGHT MATRICES
 # ==========================================
 # These define the search space centre. CMA-ES multiplies each diagonal entry
-# by a factor from bounds (0.1-10.0). Setting all to 5.0 starts the search
+# by a factor from bounds (0.1-10.0). Setting all to 1.0 starts the search
 # at the midpoint of the multiplicative range on a log scale.
-Q      = np.diag([5.0, 5.0, 5.0, 5.0, 5.0, 0.0, 0.0, 0.0])
-R      = np.diag([5.0, 5.0])
-R_rate = np.diag([5.0, 5.0])
-
+Q      = np.diag([1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0])
+R      = np.diag([1.0, 1.0])
+R_rate = np.diag([1.0, 1.0])
 
 # ==========================================
 # MAIN EXECUTION
@@ -1316,16 +1332,20 @@ if __name__ == "__main__":
     upper        = np.array([b[1] for b in bounds])
     param_ranges = upper - lower
 
-    # Start at midpoint of each bound to avoid initial bias toward floor/ceiling
-    x0 = (lower + upper) / 2.0
+    # Start at geometric (log-scale) midpoint: sqrt(lower * upper) = 1.0 for [0.1, 10.0].
+    # This is the correct neutral point for a multiplicative search space — it means
+    # "start with the template weights unscaled."
+    x0 = np.sqrt(lower * upper)
 
     # sigma0: initial CMA-ES step size.
     # Too small → slow exploration (stagnates in local minimum near x0).
     # Too large → poor exploitation (misses fine structure near optima).
-    # 0.75 with per-dim std of 0.23 * range gives ≈ ±23% of each param range
-    # as the initial 1-sigma exploration radius.
-    sigma0    = 0.75
-    cma_stds  = 0.23 * param_ranges   # Per-dimension scaling for CMA_stds option
+    sigma0   = 0.5
+    # Per-dimension std scaled to log-space range: ln(upper/lower) = ln(100) ≈ 4.6
+    # 0.23 * 4.6 ≈ 1.06, giving ~1 decade of exploration per sigma — appropriate
+    # for a multiplicative search space starting at the geometric midpoint x0=1.0.
+    log_ranges = np.log(upper / lower)
+    cma_stds   = 0.23 * log_ranges
 
     # Default population size: pycma heuristic 5 + 3*ln(n) ≈ 12 for n=9 params
     default_popsize = int(5 + np.floor(3 * np.log(num_params)))
@@ -1385,7 +1405,7 @@ if __name__ == "__main__":
         _init_context["R_rate"]         = R_rate_init
         _init_context["vehicle_params"] = VehicleParams()
         dt = 0.05
-        for vx in np.arange(2.5, 16.1, 0.1):
+        for vx in np.arange(0.5, 20.1, 0.1):
             key = np.round(vx, 1)
             if key not in _model_cache:
                 _model_cache[key] = get_8state_discrete_model(key, dt)
