@@ -38,7 +38,7 @@ Fsds score  = Yet to be implemented in fsds.
 Tuner score = -0.0800900231871634
 Commit hash = bd8d35d5d9ce8d3a317a8127b8b3bdb55d43061f
 
-# 04/07/26 14:28 - Doesn't move in simulator, too much cost on acceleration. Need to increase score from speed and increase friction of vehicle model.
+# 04/07/26 14:28 - Doesn't move in fsds simulator, too much cost on acceleration. Need to increase score from speed and increase friction of vehicle model.
 Q_diag      = [1.0183759459339357, 0.976697255260965, 28.738153874481, 0.5306028079715992, 4.38214845893275, 0.0, 0.0, 0.0]
 R_diag      = [44.803475493970396, 49.84407709101785]
 R_rate_diag = [41.29277347324602, 2.14748612384217]
@@ -46,3 +46,12 @@ Duration    = 68.54 minutes
 Fsds score  = Yet to be implemented in fsds.
 Tuner score = -0.1444654063621843
 Commit hash = 6e4e4dbbc5e632a3e221647482808bd5c2891f08
+
+# 04/07/26 16:30 - [Pending Description: yet to be tested]
+Q_diag      = [0.9365821893567162, 0.7908873608739447, 1.7755070976010836, 0.5629983651168567, 2.794154632539115, 0.0, 0.0, 0.0]
+R_diag      = [28.530734808156705, 46.57972816219924]
+R_rate_diag = [47.15491944668902, 26.076186131991633]
+Duration    = 45.80 minutes
+Fsds score  = Yet to be implemented in fsds.
+Tuner score = -0.15261435464378068
+Commit hash = 4874e25865196d68a2789790f396f57b9f3e2157

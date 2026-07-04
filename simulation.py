@@ -86,9 +86,9 @@ v_ref     = 7.0     # Fallback constant speed (m/s); only used if path_v_profile
 # R_rate handles smoothness indirectly through Δu costs.
 # These values are the output of the most recent offline_tuner.py run.
 # To update: paste Q_diag, R_diag, R_rate_diag printed by offline_tuner.py.
-Q_diag      = [1.0183759459339357, 0.976697255260965, 28.738153874481, 0.5306028079715992, 4.38214845893275, 0.0, 0.0, 0.0]
-R_diag      = [44.803475493970396, 49.84407709101785]
-R_rate_diag = [41.29277347324602, 2.14748612384217]
+Q_diag      = [0.9365821893567162, 0.7908873608739447, 1.7755070976010836, 0.5629983651168567, 2.794154632539115, 0.0, 0.0, 0.0]
+R_diag      = [28.530734808156705, 46.57972816219924]
+R_rate_diag = [47.15491944668902, 26.076186131991633]
 
 Q      = np.diag(Q_diag)       # State cost matrix (8×8 diagonal)
 R      = np.diag(R_diag)       # Input cost matrix (2×2 diagonal)
@@ -716,7 +716,8 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, flip, rng_seed=None, max_steps=40
 
         e_psi = normalize_angle(psi_g - rpsi)    # Heading error (wrapped to ±π)
 
-        _, v_target = planner.get_target(car_pos_np, psi_g)   # Desired speed from planner
+        # _, v_target = planner.get_target(car_pos_np, psi_g)   # Desired speed from planner
+        v_target = 11.0
         history["v_target"].append(v_target)
         history["e_y"].append(e_y)
         history["e_psi"].append(e_psi)

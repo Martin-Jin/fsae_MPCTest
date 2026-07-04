@@ -229,8 +229,8 @@ class VehicleParams:
         self.Cl_pitch_sens = 0.03  # Fractional Cl change per unit (a/g)
 
         # ── Rolling Resistance and Stiction ──────────────────────────────────
-        self.Crr        = 15.5     # Constant rolling drag force at speed (N)
-        self.F_stiction = 75.0     # Static breakaway force (N); not currently applied per-step
+        self.Crr        = 16.5     # Constant rolling drag force at speed (N)
+        self.F_stiction = 115.0     # Static breakaway force (N); not currently applied per-step
 
         # ── Actuator Lag ─────────────────────────────────────────────────────
         # First-order lag: d(delta_act)/dt = (delta_cmd - delta_act) / tau_delta

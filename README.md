@@ -468,7 +468,7 @@ Bonuses (subtracted from score — reward for completing quickly):
 - `COMPLETION_BONUS_WEIGHT=0.35` × `completion_frac`
 - `TIME_BONUS_WEIGHT=0.175` × `time_bonus`
 
-Lower composite score is better. A good finishing run typically scores in the range `[-0.4, 0.3]`.
+Lower composite score is better. A good finishing run typically scores in the range `[-0.4, 0.0]`.
 
 ### Inaccuracy Penalty
 

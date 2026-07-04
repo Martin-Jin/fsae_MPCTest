@@ -183,7 +183,7 @@ ROLLOUT_MAX_ITER = 5000
 # Graceful shutdown flag: set by SIGINT handler; checked each CMA generation.
 _stop_requested = False
 # Total true-evaluation budget (surrogate skips many; this controls wall time).
-MAX_EVALS = 1000
+MAX_EVALS = 2000
 
 # ==========================================
 # SCORING WEIGHTS
@@ -220,8 +220,8 @@ SCORE_WEIGHTS = np.array([
     0.10,  # 10 peak_lateral_error 
 ], dtype=float)
 
-COMPLETION_BONUS_WEIGHT = 0.35    # Subtracted from score when vehicle finishes path
-TIME_BONUS_WEIGHT       = 0.20   # Subtracted from score for fast completion
+COMPLETION_BONUS_WEIGHT = 0.325    # Subtracted from score when vehicle finishes path
+TIME_BONUS_WEIGHT       = 0.25   # Subtracted from score for fast completion
 
 # Sanity check: weights must sum to 1 so the composite score is interpretable
 assert abs(SCORE_WEIGHTS.sum() - 1.0) < 1e-9, \
@@ -819,9 +819,9 @@ def run_headless_rollout(
     -------
     score : float
         Composite performance score (lower is better). Typical range:
-          Good finish:  −0.4 to 0.3
-          Poor finish:   0.3 to 1.0
-          DNF:           1.0 to ~3.5 (depending on how early the DNF)
+          Good finish:  −0.4 to 0.0
+          Poor finish:   0.0 to 1.0
+          DNF:           > 1 (depending on how early the DNF)
 
     Called by: _score_task() (from pool.map in parallel_evaluate_candidate),
                evaluate_candidate() (serial fallback)
@@ -1096,7 +1096,7 @@ VALIDATION_SUITE = [
 # Two conditions: perfect start and a slightly offset start (robustness test).
 INITIAL_CONDITIONS = [
     (0.00, 0.00),   # Nominal: start exactly on path
-    (0.15, 0.05),   # Perturbed: slight lateral/heading offset
+    # (0.15, 0.05),   # Perturbed: slight lateral/heading offset
 ]
 
 
