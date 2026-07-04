@@ -848,7 +848,7 @@ def run_headless_rollout(
 
     # Initialise perception and planning pipeline
     perception = SimPerception(blue_all, yellow_all)
-    planner    = SimPlanner(v_max=18.0, v_min=2.5)
+    planner    = SimPlanner(v_max=20.0, v_min=1.5)
     # Warm-start the planner with the initial cone observations before the loop
     _b0, _y0 = perception.visible_cones(float(path_X[0]), float(path_Y[0]), float(path_Psi[0]))
     planner.update(_b0, _y0, np.array([path_X[0], path_Y[0]]), float(path_Psi[0]))

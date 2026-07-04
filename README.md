@@ -291,11 +291,11 @@ k_susp_f=25000 N/m, k_susp_r=30000 N/m
 
 **Key parameters:**
 ```
-v_max=18.0 m/s       absolute top speed cap
+v_max=20.0 m/s       absolute top speed cap
 mu=0.6               planning friction (~37% of peak 1.6; gives MPC margin)
 a_accel_max=4.0 m/s² matches MPC actuator bound
 a_brake_max=-5.0 m/s²
-v_min=2.5 m/s        floor speed
+v_min=1.5 m/s        floor speed
 safety=1.0           corner speed multiplier (reduce to 0.85–0.95 on tight paths)
 scan_end=14.0 m      short-path v_max scaling reference
 ```
@@ -614,7 +614,7 @@ The most impactful `speed_profile.compute_speed_profile()` parameters:
 
 - `mu=0.6` — planning friction. Currently ~37% of peak 1.6. Reduce to slow corners further; increase to allow faster cornering speeds.
 - `safety=1.0` — multiplier on curvature-derived corner speed. Values 0.85–0.95 compensate for spline smoothing underestimating true curvature at tight corners.
-- `v_max=18.0` — absolute top speed cap. The MPC actuator bound (±5 m/s²) limits acceleration from standstill independently.
+- `v_max=20.0` — absolute top speed cap. The MPC actuator bound (±5 m/s²) limits acceleration from standstill independently.
 
 ### DNF threshold comparison
 

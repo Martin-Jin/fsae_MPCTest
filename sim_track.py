@@ -41,7 +41,7 @@ import math
 import numpy as np
 from planning.cone_map import ConeMap
 from planning.boundary import build_path_walls
-from planning.path_utils import build_local_path, get_lookahead_waypoint, compute_desired_speed
+from planning.path_utils import build_local_path, get_lookahead_waypoint
 import speed_profile as sp
 
 # ── Track geometry constants (FSG / FSUK specification) ─────────────────────
@@ -315,9 +315,10 @@ class SimPlanner:
         )
 
         if len(self.v_profile) > 0:
-            v_des = compute_desired_speed(
-                self.centreline, v_max=self._v_max, v_min=self._v_min
-            )
+            # Query the pre-computed physical speed profile at our closest point
+            dists = np.linalg.norm(self.centreline - car_pos, axis=1)
+            cl_idx = int(np.argmin(dists))
+            v_des = float(self.v_profile[cl_idx])
         else:
             v_des = self._v_min   # No profile yet; start slow
 

@@ -215,96 +215,59 @@ def get_lookahead_waypoint(waypoints, car_pos, car_yaw,
     return target
 
 
-def compute_desired_speed(waypoints, v_max=5.0, v_min=1.5, a_lat_max=4.0,
-                           scan_start=1.5, scan_end=14.0, step=2.0,
-                           safety: float = 1):
-    """
-    Estimate peak curvature over the next scan_end metres and return a safe speed.
+# def compute_desired_speed(waypoints, v_max=5.0, v_min=1.5, a_lat_max=4.0,
+#                            scan_start=1.5, scan_end=14.0, step=2.0,
+#                            safety: float = 1):
+#     """
+#     Estimate peak curvature over the next scan_end metres and return a safe speed.
 
-    Short-path cap: when the visible path is shorter than scan_end, v_max is
-    scaled down proportionally (can't see what's coming → don't accelerate).
+#     Short-path cap: when the visible path is shorter than scan_end, v_max is
+#     scaled down proportionally (can't see what's coming → don't accelerate).
 
-    Safety multiplier: curvature-derived speed is multiplied by `safety` to
-    compensate for spline smoothing underestimating true curvature at corners.
+#     Safety multiplier: curvature-derived speed is multiplied by `safety` to
+#     compensate for spline smoothing underestimating true curvature at corners.
 
-    waypoints[0] is assumed to be the car's current position.
-    """
-    n = len(waypoints)
-    if n < 3:
-        return float(v_max)
+#     waypoints[0] is assumed to be the car's current position.
+#     """
+#     n = len(waypoints)
+#     if n < 3:
+#         return float(v_max)
 
-    segs  = np.linalg.norm(np.diff(waypoints, axis=0), axis=1)
-    arc   = np.concatenate([[0.0], np.cumsum(segs)])
-    total = arc[-1]
+#     segs  = np.linalg.norm(np.diff(waypoints, axis=0), axis=1)
+#     arc   = np.concatenate([[0.0], np.cumsum(segs)])
+#     total = arc[-1]
 
-    v_max_eff = max(v_min, v_max * min(1.0, total / scan_end))
+#     v_max_eff = max(v_min, v_max * min(1.0, total / scan_end))
 
-    if total < scan_start + step:
-        return float(v_max_eff)
+#     if total < scan_start + step:
+#         return float(v_max_eff)
 
-    sample_arcs = np.arange(scan_start, min(scan_end, total), step)
-    if len(sample_arcs) < 3:
-        return float(v_max_eff)
+#     sample_arcs = np.arange(scan_start, min(scan_end, total), step)
+#     if len(sample_arcs) < 3:
+#         return float(v_max_eff)
 
-    sx  = np.interp(sample_arcs, arc, waypoints[:, 0])
-    sy  = np.interp(sample_arcs, arc, waypoints[:, 1])
-    pts = np.column_stack([sx, sy])
+#     sx  = np.interp(sample_arcs, arc, waypoints[:, 0])
+#     sy  = np.interp(sample_arcs, arc, waypoints[:, 1])
+#     pts = np.column_stack([sx, sy])
 
-    max_kappa = 0.0
-    for i in range(1, len(pts) - 1):
-        p1, p2, p3 = pts[i - 1], pts[i], pts[i + 1]
-        d12 = float(np.linalg.norm(p2 - p1))
-        d23 = float(np.linalg.norm(p3 - p2))
-        d31 = float(np.linalg.norm(p1 - p3))
-        denom = d12 * d23 * d31
-        if denom < 1e-9:
-            continue
-        v1    = p2 - p1
-        v2    = p3 - p1
-        cross = abs(float(v1[0] * v2[1] - v1[1] * v2[0]))
-        kappa = 2.0 * cross / denom
-        if kappa > max_kappa:
-            max_kappa = kappa
+#     max_kappa = 0.0
+#     for i in range(1, len(pts) - 1):
+#         p1, p2, p3 = pts[i - 1], pts[i], pts[i + 1]
+#         d12 = float(np.linalg.norm(p2 - p1))
+#         d23 = float(np.linalg.norm(p3 - p2))
+#         d31 = float(np.linalg.norm(p1 - p3))
+#         denom = d12 * d23 * d31
+#         if denom < 1e-9:
+#             continue
+#         v1    = p2 - p1
+#         v2    = p3 - p1
+#         cross = abs(float(v1[0] * v2[1] - v1[1] * v2[0]))
+#         kappa = 2.0 * cross / denom
+#         if kappa > max_kappa:
+#             max_kappa = kappa
 
-    if max_kappa < 1e-4:
-        return float(v_max_eff)
+#     if max_kappa < 1e-4:
+#         return float(v_max_eff)
 
-    v_target = safety * math.sqrt(a_lat_max / max_kappa)
-    return float(max(v_min, min(v_max_eff, v_target)))
-
-
-def check_direction(car_pos, car_yaw, blue_cones, yellow_cones,
-                    min_cones: int = 4) -> bool:
-    """
-    Return True when the car is travelling in the correct direction.
-
-    Checks that blue cones are predominantly LEFT and yellow predominantly RIGHT
-    within a short forward window.  The narrow window avoids false positives at
-    corners where outer-arc cones appear on the wrong side at distance.
-
-    Abstains (returns True) when fewer than min_cones of either colour are visible.
-    Requires a two-thirds majority on the correct side before returning False.
-    """
-    cos_y = math.cos(car_yaw)
-    sin_y = math.sin(car_yaw)
-
-    def in_window(cones):
-        if len(cones) == 0:
-            return np.empty((0, 2))
-        rel = cones - car_pos
-        x_car =  rel[:, 0] * cos_y + rel[:, 1] * sin_y
-        y_car = -rel[:, 0] * sin_y + rel[:, 1] * cos_y
-        mask = (x_car > 0.5) & (x_car < _DIR_LOOK_AHEAD) & (np.abs(y_car) < _DIR_LOOK_WIDE)
-        return np.column_stack([x_car[mask], y_car[mask]]) if mask.any() else np.empty((0, 2))
-
-    blue_view   = in_window(blue_cones)
-    yellow_view = in_window(yellow_cones)
-
-    if len(blue_view) < min_cones or len(yellow_view) < min_cones:
-        return True
-
-    blue_on_left    = int(np.sum(blue_view[:, 1] > 0))
-    yellow_on_right = int(np.sum(yellow_view[:, 1] < 0))
-
-    return (blue_on_left    >= math.ceil(len(blue_view)   * 2 / 3) and
-            yellow_on_right >= math.ceil(len(yellow_view) * 2 / 3))
+#     v_target = safety * math.sqrt(a_lat_max / max_kappa)
+#     return float(max(v_min, min(v_max_eff, v_target)))

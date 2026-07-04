@@ -68,8 +68,8 @@ import performance_stats
 import speed_profile
 from offline_tuner import SYNTHETIC_PATHS, PATH_NAMES
 from sim_track import place_cones, SimPerception, SimPlanner, calculate_dynamic_max_steps
-import math
 from model_utils import curvature_estimate, adaptive_R_rate, adaptive_R_scaling
+import math
 
 
 # ==========================================
