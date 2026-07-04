@@ -230,7 +230,7 @@ class VehicleParams:
 
         # ── Rolling Resistance and Stiction ──────────────────────────────────
         self.Crr        = 15.5     # Constant rolling drag force at speed (N)
-        self.F_stiction = 70.0     # Static breakaway force (N); not currently applied per-step
+        self.F_stiction = 75.0     # Static breakaway force (N); not currently applied per-step
 
         # ── Actuator Lag ─────────────────────────────────────────────────────
         # First-order lag: d(delta_act)/dt = (delta_cmd - delta_act) / tau_delta
@@ -766,7 +766,8 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
             # Static regime: Vehicle is effectively at rest (vx < 1 mm/s).
             # Stiction opposes the applied tyre forces exactly, up to the breakaway threshold.
             if abs(Fx_tires) <= p.F_stiction:
-                Fx_total = 0.0  # Forces are insufficient to break static friction
+                F_roll = 0.0
+                Fx_total = 0.0
             else:
                 # Breakaway: Tyre forces exceed stiction. Friction drops to kinetic rolling resistance.
                 F_roll = p.Crr * np.sign(Fx_tires)
@@ -774,7 +775,6 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
 
         # ── 18. Resultant forces and yaw moment ───────────────────────────────
         # Sum all corner forces in body frame.
-        Fx_total = Fx_FL_b + Fx_FR_b + Fx_RL_b + Fx_RR_b - F_drag - F_roll
         Fy_total = Fy_FL_b + Fy_FR_b + Fy_RL_b + Fy_RR_b
 
         # Yaw moment Mz about CoM: front axle forces create positive yaw (turn left),

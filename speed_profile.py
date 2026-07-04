@@ -138,7 +138,7 @@ def compute_speed_profile(
              becomes inaccurate
         At mu=0.6 and R=9 m: v_corner = sqrt(0.6*9.81/0.111) ≈ 7.3 m/s.
 
-    a_accel_max=5.0 / a_brake_max=−5.0:
+    a_accel_max=4.0 / a_brake_max=−5.0:
         Match the vehicle's actuator bounds in optimiser.py (u_max[1]=5.0,
         u_min[1]=−5.0) so the profiler doesn't request speeds that the
         controller's own limits prevent it from achieving.
