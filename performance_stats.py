@@ -147,10 +147,10 @@ def report_performance_metrics(history, log_fn=print):
     completion_frac = float(history.get("completion_frac", 1.0))
 
     # ── Tracking error cost ───────────────────────────────────────────────────
-    # Mirrors: error_cost += e_y**2 + 0.4 * e_psi**2  in run_headless_rollout()
+    # Mirrors: error_cost += 1.2 * e_y**2 + 0.4 * e_psi**2  in run_headless_rollout()
     # The 0.4 factor down-weights heading error relative to lateral error,
     # reflecting that e_psi is more tolerant at low curvature.
-    error_cost = float(np.sum(e_y**2 + 0.4 * e_psi**2))
+    error_cost = float(np.sum(1.2 * e_y**2 + 0.4 * e_psi**2))
     rmse       = float(np.sqrt(error_cost / n))
 
     # ── Yaw rate (proxy from diff(e_psi)/dt) ──────────────────────────────────

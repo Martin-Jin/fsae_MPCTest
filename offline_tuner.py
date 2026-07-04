@@ -163,7 +163,7 @@ N_HORIZON = 25
 # DNF (DID-NOT-FINISH) PENALTY
 # ==========================================
 # Graded penalty: proportional to how much track the vehicle missed.
-# Scaled to ~2-3× the typical finishing score range (~[-0.4, 1.0]) so
+# Scaled to ~2-3× the typical finishing score range (~[-0.4, 0]) so
 # CMA-ES still sees a gradient toward "get further" rather than treating
 # all DNFs as equally bad. A cliff penalty (previous value: 10.0) dominated
 # the covariance update and masked the continuous metric gradients.
@@ -823,8 +823,8 @@ def run_headless_rollout(
     -------
     score : float
         Composite performance score (lower is better). Typical range:
-          Good finish:  −0.2 to 0.2
-          Poor finish:   0.2 to 1.0
+          Good finish:  −0.4 to 0.0
+          Poor finish:   0.0 to 1.0
           DNF:           >= 1 (depending on how early the DNF)
 
     Called by: _score_task() (from pool.map in parallel_evaluate_candidate),
@@ -1007,7 +1007,7 @@ def run_headless_rollout(
 
         max_yaw_rate     = max(max_yaw_rate, abs(state[5]))
         # Combined tracking cost: e_y weighted 2×, e_psi weighted 1× (in quadrature)
-        error_cost       += e_y**2 + 0.4 * e_psi**2
+        error_cost       += 1.2 * e_y**2 + 0.4 * e_psi**2
         # Yaw stability: 0.8 weighting reduces contribution relative to lateral error
         yaw_rate_cost    += 0.8 * state[5] ** 2
         # Control smoothness: sum of squared first differences of u

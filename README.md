@@ -451,7 +451,7 @@ The graded form (proportional to missing fraction + excess) gives CMA-ES a conti
 
 ```
 Index  Metric                Notes
-  0    rmse                  primary: combined e_y² + 0.4*e_psi² RMSE
+  0    rmse                  primary: combined 1.2 * e_y² + 0.4*e_psi² RMSE
   1    yaw_rms               stability
   2    smooth_rms (Δu)       control smoothness
   3    steer_rms             steering effort magnitude
@@ -468,7 +468,7 @@ Bonuses (subtracted from score — reward for completing quickly):
 - `COMPLETION_BONUS_WEIGHT` × `completion_frac`
 - `TIME_BONUS_WEIGHT` × `time_bonus`
 
-Lower composite score is better. A good finishing run typically scores in the range `[-0.2, 0.1]`.
+Lower composite score is better. A good finishing run typically scores in the range `[-0.4, 0.0]`.
 
 ### Inaccuracy Penalty
 

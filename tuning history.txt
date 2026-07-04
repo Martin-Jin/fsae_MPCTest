@@ -75,3 +75,12 @@ Duration    = 23.02 minutes
 Fsds score  = Yet to be implemented in fsds.
 Tuner score = 0.27550416180274867
 Commit hash = 5f517c2dfacddf6e7f30d11cc714a145e1db3d70
+
+# 04/07/26 21:24 - [Pending Description: yet to be tested]
+Q_diag      = [0.44699925053467116, 0.11743991596344988, 1.0478877615188058, 1.015194705332446, 0.28559173167385327, 0.0, 0.0, 0.0]
+R_diag      = [6.218096358132944, 3.342253795684056]
+R_rate_diag = [4.53327446204952, 0.42309080491967443]
+Duration    = 76.37 minutes
+Fsds score  = Yet to be implemented in fsds.
+Tuner score = -0.31759709653007817
+Commit hash = e040c79b02088e9344cd1ed2bbe7bf2b7f8ffe9e
