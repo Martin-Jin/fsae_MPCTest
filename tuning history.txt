@@ -37,3 +37,12 @@ Duration    = 46.24 minutes
 Fsds score  = Yet to be implemented in fsds.
 Tuner score = -0.0800900231871634
 Commit hash = bd8d35d5d9ce8d3a317a8127b8b3bdb55d43061f
+
+# 04/07/26 14:28 - Doesn't move in simulator, too much cost on acceleration. Need to increase score from speed and increase friction of vehicle model.
+Q_diag      = [1.0183759459339357, 0.976697255260965, 28.738153874481, 0.5306028079715992, 4.38214845893275, 0.0, 0.0, 0.0]
+R_diag      = [44.803475493970396, 49.84407709101785]
+R_rate_diag = [41.29277347324602, 2.14748612384217]
+Duration    = 68.54 minutes
+Fsds score  = Yet to be implemented in fsds.
+Tuner score = -0.1444654063621843
+Commit hash = 6e4e4dbbc5e632a3e221647482808bd5c2891f08

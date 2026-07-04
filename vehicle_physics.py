@@ -229,7 +229,7 @@ class VehicleParams:
         self.Cl_pitch_sens = 0.03  # Fractional Cl change per unit (a/g)
 
         # ── Rolling Resistance and Stiction ──────────────────────────────────
-        self.Crr        = 37.5     # Constant rolling drag force at speed (N)
+        self.Crr        = 15.5     # Constant rolling drag force at speed (N)
         self.F_stiction = 70.0     # Static breakaway force (N); not currently applied per-step
 
         # ── Actuator Lag ─────────────────────────────────────────────────────
@@ -754,9 +754,23 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
         Fx_RL_b, Fy_RL_b = Fx_RL, Fy_RL   # Rear tyres aligned with body — no rotation
         Fx_RR_b, Fy_RR_b = Fx_RR, Fy_RR
 
-        # ── 17. Rolling resistance ─────────────────────────────────────────────
-        # Constant hysteresis drag opposing forward motion (positive vx → negative Fx).
-        F_roll = p.Crr * np.sign(vx) if abs(vx) > 1e-3 else 0.0
+        # ── 17. Rolling Resistance & Stiction (Static Friction) ────────────────
+        # Sum of longitudinal tyre forces acting on the chassis
+        Fx_tires = Fx_FL_b + Fx_FR_b + Fx_RL_b + Fx_RR_b
+
+        if abs(vx) > 1e-3:
+            # Kinetic regime: Constant hysteresis drag opposing forward motion.
+            F_roll = p.Crr * np.sign(vx)
+            Fx_total = Fx_tires - F_drag - F_roll
+        else:
+            # Static regime: Vehicle is effectively at rest (vx < 1 mm/s).
+            # Stiction opposes the applied tyre forces exactly, up to the breakaway threshold.
+            if abs(Fx_tires) <= p.F_stiction:
+                Fx_total = 0.0  # Forces are insufficient to break static friction
+            else:
+                # Breakaway: Tyre forces exceed stiction. Friction drops to kinetic rolling resistance.
+                F_roll = p.Crr * np.sign(Fx_tires)
+                Fx_total = Fx_tires - F_drag - F_roll
 
         # ── 18. Resultant forces and yaw moment ───────────────────────────────
         # Sum all corner forces in body frame.
