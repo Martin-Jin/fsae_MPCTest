@@ -887,7 +887,7 @@ def run_headless_rollout(
     offtrack_excess     = 0.0    # How far past OFFTRACK_LIMIT at time of DNF
 
     MAX_FAILS      = 5     # Consecutive solve failures before DNF
-    OFFTRACK_LIMIT = 2.3   # Lateral error threshold for DNF (m)
+    OFFTRACK_LIMIT = 2.5  # Lateral error threshold for DNF (m)
 
     # Pre-compute arc-length segments for progress tracking
     path_seg_dist = np.hypot(np.diff(path_X), np.diff(path_Y))

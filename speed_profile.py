@@ -108,7 +108,7 @@ def compute_speed_profile(
     v_max=18.0,
     mu=0.6,
     g=9.81,
-    a_accel_max=5.0,
+    a_accel_max=4.0,
     a_brake_max=-5.0,
     v_min=2.5,
     safety=1.0,

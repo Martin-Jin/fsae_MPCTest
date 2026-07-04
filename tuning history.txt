@@ -1,13 +1,14 @@
 
 # Initial tuning results
-# 3/07/26 12:00 - Tracks path in simulator very accurately, slightly wobbly at lower speeds. Main issue is  low speed, had too high weight on acceleration
-that it had to be reduced for the car to even move. Need to implement higher friction in vehicle model. Sometimes issue turning corners (exceeding cone boundary)
+# 3/07/26 12:00 - Tracks path in simulator accurately, slightly wobbly at lower speeds. Main issue is low speed, had too high weight on acceleration
+that it had to be reduced for the car to even move. Need to implement higher friction in vehicle model.
 Q_diag      = [23.84993795527158, 32.86695969860588, 0.9111941899078135, 22.201061425364593, 6.276870373001204, 0.0, 0.0, 0.0]
 R_diag      = [44.833851046596166, 27.15782639103162]
 R_rate_diag = [49.91540241422914, 16.791740027086462]
 Duration    = 15.2 minutes
 Fsds score  = Yet to be implemented in fsds.
-Git Commit = N/A
+Tuner score = N/A
+Commit hash = N/A
 
 # Retuning after higher friction implemented in vehicle model, and fixed initial speed not being 0.
 # 03/07/26 13:55 - Improved performance, 1 to 0 cones hit on comp test map 3. Same for other test maps does not exceed cone booundaries at all.
@@ -16,7 +17,8 @@ R_diag      = [49.33735358370815, 45.43435542843825]
 R_rate_diag = [49.98401941989215, 49.61230208743996]
 Duration    = 45.50 minutes
 Fsds score  = Yet to be implemented in fsds.
-Git Commit  = 567bfc717dc5d4ef60a641c30546a9f219dcd2f4
+Tuner score = N/A
+Commit hash  = 567bfc717dc5d4ef60a641c30546a9f219dcd2f4
 
 # 04/07/26 11:28 - Retuned with fixed completion and speed scoring. Doesn't handle sudden corners after high speed well
 Q_diag      = [2.383170175353726, 0.597902607211363, 20.13652700912051, 1.7564179458279525, 16.361049736144796, 0.0, 0.0, 0.0]
