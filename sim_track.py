@@ -41,7 +41,7 @@ import math
 import numpy as np
 from planning.cone_map import ConeMap
 from planning.boundary import build_path_walls
-from planning.path_utils import build_local_path, get_lookahead_waypoint
+from planning.path_utils import build_local_path
 import speed_profile as sp
 
 # ── Track geometry constants (FSG / FSUK specification) ─────────────────────

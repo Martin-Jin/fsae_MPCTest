@@ -6,7 +6,8 @@ time-varying MPC controller, and provides CMA-ES-based automated weight optimisa
 
 This includes an implementation of a control node that is combined with the fsae_planning repo (replacing the corresponding controller node file in the repo) to run the MPC controller in the fsds simulator, which simulates the car using Unreal Engine 4.
 
-The 2D simulator simulates perception and planning for an autonomous vehicle, rather than just using a predefined path. This is implemented by placing cones to define the borders of a provided path in `sim_track.py` with the help of cone functions (in the `planning` folder) from the fsae_planning repo.
+The 2D simulator  places cones to define the borders of a provided path in `sim_track.py` with the help of cone functions (in the `planning` folder) from the fsae_planning repo.
+It is also capable of simulating perception and planning, however this is currently commented out in the simulator and tuner and instead the true center line is used.
 
 fsds simulator repo: https://github.com/FS-Driverless/Formula-Student-Driverless-Simulator (current implementation uses commit 59f03fa, and the V2.20 release)  
 fsae planning repo: https://github.com/UOA-FSAE/fsae_planning (current implementation uses commit 28dcd4d)

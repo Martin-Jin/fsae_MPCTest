@@ -650,14 +650,14 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
     plant_state = init_plant_state(X_g, Y_g, psi_g, vx0=v_start)
 
     # Initialise perception and planning pipeline
-    perception = SimPerception(_blue_cones_all, _yellow_cones_all)
-    planner    = SimPlanner(
-        v_max=V_MAX if "V_MAX" in dir() else 20.0,
-        v_min=V_MIN if "V_MIN" in dir() else 1.5,
-    )
+    # perception = SimPerception(_blue_cones_all, _yellow_cones_all)
+    # planner    = SimPlanner(
+    #     v_max=V_MAX if "V_MAX" in dir() else 20.0,
+    #     v_min=V_MIN if "V_MIN" in dir() else 1.5,
+    # )
     # Warm-start the planner with the initial cone observations
-    _b0, _y0 = perception.visible_cones(X_g, Y_g, psi_g)
-    planner.update(_b0, _y0, np.array([X_g, Y_g]), psi_g)
+    # _b0, _y0 = perception.visible_cones(X_g, Y_g, psi_g)
+    # planner.update(_b0, _y0, np.array([X_g, Y_g]), psi_g)
 
     u_prev                     = np.zeros(2)
     consecutive_solver_failures = 0
@@ -687,8 +687,8 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
         X_g, Y_g, psi_g = plant_state[0], plant_state[1], plant_state[2]
         car_pos_np       = np.array([X_g, Y_g])
 
-        b_vis, y_vis = perception.visible_cones(X_g, Y_g, psi_g)
-        planner.update(b_vis, y_vis, car_pos_np, psi_g)
+        # b_vis, y_vis = perception.visible_cones(X_g, Y_g, psi_g)
+        # planner.update(b_vis, y_vis, car_pos_np, psi_g)
 
         # Track progress on the original reference path for path-end detection
         idx, _, _, _ = find_closest_reference_bounded(X_g, Y_g, idx, window=40)

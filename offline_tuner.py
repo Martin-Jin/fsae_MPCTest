@@ -850,11 +850,11 @@ def run_headless_rollout(
     num_steps     = dynamic_max_steps
 
     # Initialise perception and planning pipeline
-    perception = SimPerception(blue_all, yellow_all)
-    planner    = SimPlanner(v_max=20.0, v_min=1.5)
+    # perception = SimPerception(blue_all, yellow_all)
+    # planner    = SimPlanner(v_max=20.0, v_min=1.5)
     # Warm-start the planner with the initial cone observations before the loop
-    _b0, _y0 = perception.visible_cones(float(path_X[0]), float(path_Y[0]), float(path_Psi[0]))
-    planner.update(_b0, _y0, np.array([path_X[0], path_Y[0]]), float(path_Psi[0]))
+    # _b0, _y0 = perception.visible_cones(float(path_X[0]), float(path_Y[0]), float(path_Psi[0]))
+    # planner.update(_b0, _y0, np.array([path_X[0], path_Y[0]]), float(path_Psi[0]))
 
     # Apply initial condition offsets in the Frenet frame
     base_heading = path_Psi[0]
@@ -904,8 +904,8 @@ def run_headless_rollout(
         car_pos_np = np.array([state[0], state[1]])
 
         # ── Perception + planning update ──────────────────────────────────────
-        b_vis, y_vis = perception.visible_cones(state[0], state[1], state[2])
-        planner.update(b_vis, y_vis, car_pos_np, state[2])
+        # b_vis, y_vis = perception.visible_cones(state[0], state[1], state[2])
+        # planner.update(b_vis, y_vis, car_pos_np, state[2])
 
         # ── Tracking error computation ────────────────────────────────────────
         # Primary: use SimPlanner's centreline (old code)
