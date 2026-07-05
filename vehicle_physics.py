@@ -151,8 +151,8 @@ class VehicleParams:
         # ── Rotational Inertia ───────────────────────────────────────────────
         # Each driven wheel's effective inertia includes the motor/gearbox
         # referred through the reduction ratio.
-        self.I_wheel      = 0.6   # Per-wheel rotational inertia (kg·m²)
-        self.I_drivetrain = 0.05   # Motor+gearbox inertia referred to wheel (kg·m²)
+        self.I_wheel      = 0.3   # Per-wheel rotational inertia (kg·m²)
+        self.I_drivetrain = 0.02   # Motor+gearbox inertia referred to wheel (kg·m²)
         self.I_w_eff_r    = self.I_wheel + self.I_drivetrain   # Rear driven wheels
         self.I_w_eff_f    = self.I_wheel + self.I_drivetrain   # Front driven wheels (4WD)
         self.brake_bias   = 0.60   # Fraction of total brake force at front axle
@@ -198,20 +198,20 @@ class VehicleParams:
         # ── Pacejka MF94 Longitudinal Coefficients ───────────────────────────
         # Same shape function applied to longitudinal slip ratio kappa.
         # Peak at slip ratio ≈ 0.10-0.15 for a slick tyre.
-        self.Bx_r = 13.0;  self.Cx_r = 1.65
-        self.Dx_r = 1.00;  self.Ex_r = -0.5
+        self.Bx_r = 11.0;  self.Cx_r = 1.45
+        self.Dx_r = 0.865;  self.Ex_r = -0.5
 
         # ── Tyre Relaxation Lengths ───────────────────────────────────────────
         # A tyre does not respond instantaneously to a slip angle change.
         # The lateral force builds up over a "relaxation length" σ (m):
         #   dFy/dt = (vx / σ) * (Fy_steady_state − Fy_actual)
-        # At vx=10 m/s with σ=0.30 m: time constant ≈ 30 ms — significant at 20 Hz.
-        self.sigma_y_f = 0.30      # Front lateral relaxation length (m)
-        self.sigma_y_r = 0.25      # Rear  lateral relaxation length (m)
+        # At vx=10 m/s with σ=0.35 m: time constant ≈ 35 ms — significant at 20 Hz.
+        self.sigma_y_f = 0.35      # Front lateral relaxation length (m)
+        self.sigma_y_r = 0.30      # Rear  lateral relaxation length (m)
 
         # ── Friction and Load Sensitivity ────────────────────────────────────
         # Peak friction coefficient for a dry racing slick.
-        self.mu     = 1.70         # Peak friction coefficient (dimensionless)
+        self.mu     = 1.80         # Peak friction coefficient (dimensionless)
         # At high normal loads the rubber deforms less efficiently, reducing mu.
         # k_sens: mu degrades by k_sens*Fz from the nominal peak value.
         self.k_sens = 0.00018      # Load sensitivity (1/N)
@@ -226,10 +226,10 @@ class VehicleParams:
         # Under braking the nose dips (pitch forward), increasing front downforce
         # and reducing rear. Cl_pitch_sens = 0.03 means a 1g deceleration shifts
         # front Cl_f up by 3% and rear Cl_r down by 3%.
-        self.Cl_pitch_sens = 0.025  # Fractional Cl change per unit (a/g)
+        self.Cl_pitch_sens = 0.03  # Fractional Cl change per unit (a/g)
 
         # ── Rolling Resistance and Stiction ──────────────────────────────────
-        self.Crr        = 12.5     # Constant rolling drag force at speed (N)
+        self.Crr        = 20.0     # Constant rolling drag force at speed (N)
         self.F_stiction = 165.0    # Static breakaway force (N); (From the four wheels in total, so / 4 for a single wheel)
 
         # ── Actuator Lag ─────────────────────────────────────────────────────
@@ -242,7 +242,7 @@ class VehicleParams:
         self.g = 9.81              # Gravitational acceleration (m/s²)
 
         # ── Powertrain & Braking (4WD FSDS Equivalence) ──────────────────────
-        self.max_tractive_force = 4500.0  # Max total longitudinal drive force (N)
+        self.max_tractive_force = 5000.0  # Max total longitudinal drive force (N)
         self.max_braking_force  = 6500.0  # Max total longitudinal brake force (N)
         self.max_power          = 80000.0 # FS accumulator limit (Watts)
         self.is_4wd             = True    # Enable 4WD force distribution
@@ -663,7 +663,7 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
 
         if a_act >= 0.0:
             # Map abstract MPC command to a throttle ratio
-            throttle = float(np.clip(a_act / p.max_accel, 0.0, 0.85))
+            throttle = float(np.clip(a_act**2.50 / p.max_accel, 0.0, 0.85))
             
             # Physics: Force drops off at high speed due to battery power limit (F = P / v)
             power_limited_force = p.max_power / max(vx_safe, 1.0)
@@ -684,7 +684,7 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
                 Fx_RR_req = 0.5 * Fx_req_total + delta_Fx_tv_r
         else:
             # Map abstract MPC command to a brake ratio
-            brake = float(np.clip(-a_act / 8.0, 0.0, 0.50))
+            brake = float(np.clip(a_act*2.50 / p.max_accel_brake, 0.0, 0.5))
             Fx_req_total = -brake * p.max_braking_force
 
             # Braking: Distributed by brake_bias (60% front, 40% rear default)
@@ -706,10 +706,10 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
         Fx_RR_pac = pacejka_longitudinal_mf94(kappa_RR, Fz_RR, mu_RR, p.Bx_r, p.Cx_r, p.Dx_r, p.Ex_r)
 
         # Clip commanded force to [−min(Fmax, Pac_peak), +min(Fmax, Pac_peak)]
-        Fx_FL = float(np.clip(Fx_FL_req, -min(Fmax_FL, abs(Fx_FL_pac) + 1.0), min(Fmax_FL, abs(Fx_FL_pac) + 1.0)))
-        Fx_FR = float(np.clip(Fx_FR_req, -min(Fmax_FR, abs(Fx_FR_pac) + 1.0), min(Fmax_FR, abs(Fx_FR_pac) + 1.0)))
-        Fx_RL = float(np.clip(Fx_RL_req, -min(Fmax_RL, abs(Fx_RL_pac) + 1.0), min(Fmax_RL, abs(Fx_RL_pac) + 1.0)))
-        Fx_RR = float(np.clip(Fx_RR_req, -min(Fmax_RR, abs(Fx_RR_pac) + 1.0), min(Fmax_RR, abs(Fx_RR_pac) + 1.0)))
+        Fx_FL = float(np.clip(Fx_FL_pac, -Fmax_FL, Fmax_FL))
+        Fx_FR = float(np.clip(Fx_FR_pac, -Fmax_FR, Fmax_FR))
+        Fx_RL = float(np.clip(Fx_RL_pac, -Fmax_RL, Fmax_RL))
+        Fx_RR = float(np.clip(Fx_RR_pac, -Fmax_RR, Fmax_RR))
 
         # ── 12. Wheel spin dynamics ────────────────────────────────────────────
         # Newton's 2nd for rotation: I * dω/dt = T_drive − T_road_reaction

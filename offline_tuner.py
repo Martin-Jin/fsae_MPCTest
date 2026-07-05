@@ -565,9 +565,9 @@ def build_synthetic_paths():
 
     # --- PATH_ACCELERATION---
     # Straight path for acceleration testing
-    wx = np.linspace(0, 200, 100)
+    wx = np.linspace(0, 80, 100)
     wy = np.zeros(100)
-    paths["ACCELERATION"] = _resample_path(wx, wy)
+    paths["PATH_ACCELERATION"] = _resample_path(wx, wy)
 
     # --- PATH_HAIRPIN ---
     # 5 m entry → 180° turn (R=5 m, the tightest FS-legal corner) → 5 m exit.
@@ -1096,10 +1096,6 @@ def run_headless_rollout(
     
         u_prev = u_opt.copy()
         state  = step_nonlinear_plant(state, u_opt, dt, p)
-    
-    dist_to_finish = math.hypot(state[0] - path_X[-1], state[1] - path_Y[-1])
-    if (dnf):
-        print(dist_to_finish)
 
     # ── Normalise metrics to RMS values ───────────────────────────────────────
     n = max(num_steps, 1)
@@ -1198,6 +1194,7 @@ VALIDATION_SUITE = [
     # "PATH_CHICANE",
     "PATH_FS_CORNER",
     "PATH_MICRO_SLALOM"
+    "PATH_ACCELERATION"
 ]
 
 # Initial condition perturbations tested for each path.
