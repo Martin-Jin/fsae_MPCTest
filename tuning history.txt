@@ -106,7 +106,8 @@ Overall score (avged from all testing scenarios)  = Haven't been tested.
 Tuner score (tuning scenarios / validation suite) = -0.3521204555442503
 Commit hash = ea49d64e624412ca3a64bd84af46460fcfc7aa21
 
-# 05/07/26 14:17 - [Pending Description: yet to be tested]
+# 05/07/26 14:17 - Perfomed worse with true center line assumption. Presumably because the lateral error was not as accurate since it was using the actual planner centerline?
+Still fails on corner, need to add more weight to the sudden turn path by adding two of it and or DNF penalty.
 Q_diag      = [4.5121467429042, 0.13625975578457844, 1.3870726914833138, 0.21249256271143357, 0.557444999109886, 0.0, 0.0, 0.0]
 R_diag      = [1.5800986780949908, 2.1577147089750452]
 R_rate_diag = [3.6220649239735367, 3.2210166727029566]

@@ -163,14 +163,14 @@ N_HORIZON = 25
 # DNF (DID-NOT-FINISH) PENALTY
 # ==========================================
 # Graded penalty: proportional to how much track the vehicle missed.
-# Scaled to ~2-3× the typical finishing score range (~[-0.4, -0.2]) so
+# Scaled to ~2-3× the typical finishing score range (~[-0.5, -0.3]) so
 # CMA-ES still sees a gradient toward "get further" rather than treating
 # all DNFs as equally bad. A cliff penalty (previous value: 10.0) dominated
 # the covariance update and masked the continuous metric gradients.
 DNF_PENALTY = 3.0
 # Additional penalty proportional to how far past the off-track limit the
 # vehicle was when it failed: discourages borderline-DNF solutions.
-DNF_OFFTRACK_WEIGHT = 1.0
+DNF_OFFTRACK_WEIGHT = 3.0
 
 # ==========================================
 # SOLVER SETTINGS FOR HEADLESS ROLLOUTS
@@ -529,7 +529,7 @@ def build_synthetic_paths():
     # is integrated numerically from the curvature profile:
     #   ψ(s) = -∫₀ˢ κ(t) dt  (accumulated heading change)
     #   x(s) = ∫₀ˢ cos(ψ) dt, y(s) = ∫₀ˢ sin(ψ) dt
-    s0x      = np.linspace(-10, 5, 10)
+    s0x      = np.linspace(-15, 5, 10)
     s0y      = np.zeros(10)
     L_spiral = 60.0
     ds_spiral = 0.1
@@ -602,7 +602,7 @@ def build_synthetic_paths():
     # Compound sequence: 5 m straight → left 90° (R=6 m) → 5 m N link →
     # right 90° (R=6 m) → 5 m E link → 180° hairpin (R=5 m) → 5 m W exit.
     # Tests generalisation: the controller must handle all corner types in sequence.
-    s_mix0x = np.linspace(-20, 5, 10)
+    s_mix0x = np.linspace(-25, 5, 10)
     s_mix0y = np.zeros(10)
     arc_m1x, arc_m1y = _make_arc(5, 6, 6, -90, 0, n=15)
     l_m1x   = np.full(6, 11.0)
@@ -766,13 +766,13 @@ def init_worker(Q_init, R_init, R_rate_init):
 # ==========================================
 # HEADLESS SIMULATION ROLLOUT
 # ==========================================
-
 def run_headless_rollout(
     weights_vector,
     path_name=None,
     num_steps=350,
     ey0=0.0,
     epsi0=0.0,
+    use_planner=True,
 ):
     """
     Run a single closed-loop simulation rollout without graphics and return
@@ -817,13 +817,17 @@ def run_headless_rollout(
         to imperfect initial positioning.
     epsi0 : float
         Initial heading offset from path tangent (rad).
+    use_planner : bool, optional
+        If True, use SimPerception + SimPlanner for errors/speed profile,
+        matching the real ROS2 pipeline. If False (default), use the true
+        reference path directly for faster, noise-free tuning rollouts.
 
     Returns
     -------
     score : float
         Composite performance score (lower is better). Typical range:
-          Good finish:  −0.4 to -0.2
-          Poor finish:   -0.2 to 1
+          Good finish:  Around -0.5
+          Poor finish:   -0.1 to 1
           DNF:           >= 1 (depending on how early the DNF)
 
     Called by: _score_task() (from pool.map in parallel_evaluate_candidate),
@@ -849,12 +853,12 @@ def run_headless_rollout(
     dynamic_max_steps = calculate_dynamic_max_steps(path_X, path_Y, dt=0.05)
     num_steps     = dynamic_max_steps
 
-    # Initialise perception and planning pipeline
-    # perception = SimPerception(blue_all, yellow_all)
-    # planner    = SimPlanner(v_max=20.0, v_min=1.5)
-    # Warm-start the planner with the initial cone observations before the loop
-    # _b0, _y0 = perception.visible_cones(float(path_X[0]), float(path_Y[0]), float(path_Psi[0]))
-    # planner.update(_b0, _y0, np.array([path_X[0], path_Y[0]]), float(path_Psi[0]))
+    # Initialise perception and planning pipeline (only used when use_planner=True)
+    if use_planner:
+        perception = SimPerception(blue_all, yellow_all)
+        planner    = SimPlanner(v_max=20.0, v_min=1.5)
+        _b0, _y0   = perception.visible_cones(float(path_X[0]), float(path_Y[0]), float(path_Psi[0]))
+        planner.update(_b0, _y0, np.array([path_X[0], path_Y[0]]), float(path_Psi[0]))
 
     # Apply initial condition offsets in the Frenet frame
     base_heading = path_Psi[0]
@@ -887,7 +891,7 @@ def run_headless_rollout(
     cumulative_distance = 0.0    # Arc length travelled along reference path
     last_idx            = idx
     dnf                 = False
-    offtrack_excess     = 0.0    # How far past OFFTRACK_LIMIT at time of DNF
+    e_y_offtrack     = 0.0    # How far past OFFTRACK_LIMIT at time of DNF
 
     MAX_FAILS      = 5     # Consecutive solve failures before DNF
     OFFTRACK_LIMIT = TRACK_HALF_WIDTH * 2  # Lateral error threshold for DNF (m)
@@ -903,47 +907,45 @@ def run_headless_rollout(
     for step in range(num_steps):
         car_pos_np = np.array([state[0], state[1]])
 
-        # ── Perception + planning update ──────────────────────────────────────
-        # b_vis, y_vis = perception.visible_cones(state[0], state[1], state[2])
-        # planner.update(b_vis, y_vis, car_pos_np, state[2])
+        # ── Perception, planning, tracking error and speed target ─────────────
+        if use_planner:
+            b_vis, y_vis = perception.visible_cones(state[0], state[1], state[2])
+            planner.update(b_vis, y_vis, car_pos_np, state[2])
 
-        # ── Tracking error computation ────────────────────────────────────────
-        # Primary: use SimPlanner's centreline (old code)
-        # Fallback: use reference path directly (if planner hasn't built a path)
-        # cl = planner.centreline
-        # if cl is not None and len(cl) >= 2:
-        #     dists  = np.linalg.norm(cl - car_pos_np, axis=1)
-        #     cl_idx = int(np.argmin(dists))
-        #     seg    = cl[cl_idx + 1] - cl[cl_idx] if cl_idx < len(cl) - 1 else cl[cl_idx] - cl[cl_idx - 1]
-        #     seg_len = float(np.linalg.norm(seg))
-        #     if seg_len > 1e-6:
-        #         t_hat   = seg / seg_len                           # Unit tangent along centreline
-        #         right_n = np.array([t_hat[1], -t_hat[0]])        # Right-pointing normal
-        #         rpsi    = math.atan2(t_hat[1], t_hat[0])         # Path heading at this point
-        #         # Lateral error: positive = car is to the left of centreline
-        #         e_y     = -float(np.dot(car_pos_np - cl[cl_idx], right_n))
-        #         e_psi   = _normalize_angle(state[2] - rpsi)
-        #     else:
-        #         e_y, e_psi, idx = _tracking_errors(state, path_X, path_Y, path_Psi, idx)
-        # else:
-        #     e_y, e_psi, idx_new = _tracking_errors(state, path_X, path_Y, path_Psi, idx)
-        #     idx = idx_new
-
-
-        # Should always use reference path / center line for lateral error
-        e_y, e_psi, idx_new = _tracking_errors(state, path_X, path_Y, path_Psi, idx)
-        idx = idx_new
+            cl = planner.centreline
+            if cl is not None and len(cl) >= 2:
+                dists   = np.linalg.norm(cl - car_pos_np, axis=1)
+                cl_idx  = int(np.argmin(dists))
+                seg     = cl[cl_idx + 1] - cl[cl_idx] if cl_idx < len(cl) - 1 \
+                          else cl[cl_idx] - cl[cl_idx - 1]
+                seg_len = float(np.linalg.norm(seg))
+                if seg_len > 1e-6:
+                    t_hat   = seg / seg_len
+                    right_n = np.array([t_hat[1], -t_hat[0]])
+                    rpsi    = math.atan2(t_hat[1], t_hat[0])
+                    e_y     = -float(np.dot(car_pos_np - cl[cl_idx], right_n))
+                    e_psi   = _normalize_angle(state[2] - rpsi)
+                else:
+                    e_y, e_psi, _ = _tracking_errors(state, path_X, path_Y, path_Psi, idx)
+                v_target = float(np.interp(
+                    float(cl_idx), np.arange(len(planner.v_profile)), planner.v_profile,
+                )) if len(planner.v_profile) > 0 else float(path_v[idx])
+            else:
+                # Planner not yet ready — fall back to reference path
+                e_y, e_psi, _ = _tracking_errors(state, path_X, path_Y, path_Psi, idx)
+                v_target = float(path_v[idx])
+        else:
+            # Oracle mode: single call, result used for both errors and progress
+            e_y, e_psi, _ = _tracking_errors(state, path_X, path_Y, path_Psi, idx)
+            v_target = float(path_v[idx])
 
         # ── Progress tracking (always against reference path for consistency) ─
         _, _, idx_ref = _tracking_errors(state, path_X, path_Y, path_Psi, idx)
         if idx_ref > last_idx:
             cumulative_distance += np.sum(path_seg_dist[last_idx:idx_ref])
-            last_idx = idx_ref 
-
+            last_idx = idx_ref
         idx = idx_ref
-
-        # ── Speed target from speed profile ─────────────────────────────────────────
-        v_target = float(path_v[idx])
+        
         vx_true = state[3]                  # True longitudinal speed for state error
         vx      = max(vx_true, 0.5)         # Clamped speed for model linearisation only
 
@@ -1032,7 +1034,7 @@ def run_headless_rollout(
 
         # Off-track check: exceeding OFFTRACK_LIMIT triggers immediate DNF
         if abs(e_y) > OFFTRACK_LIMIT:
-            offtrack_excess = abs(e_y) - OFFTRACK_LIMIT
+            e_y_offtrack = abs(e_y) - OFFTRACK_LIMIT
             dnf       = True
             num_steps = step + 1
             break
@@ -1080,7 +1082,7 @@ def run_headless_rollout(
 
     if dnf:
         score += DNF_PENALTY * (1.0 - progress)          # Proportional to missing fraction
-        score += DNF_OFFTRACK_WEIGHT * offtrack_excess**2  # Extra for how far off-track
+        score += DNF_OFFTRACK_WEIGHT * e_y_offtrack**2  # Extra for how far off-track
 
     # ── Inaccurate solver penalty ─────────────────────────────────────────────
     # Scale the score magnitude if OSQP returned OPTIMAL_INACCURATE frequently.
@@ -1125,10 +1127,10 @@ def evaluate_all_paths(weights_vector, n_repeats=3):
     all_scores = []
 
     for path_name in PATH_NAMES:
-        path_scores = [
-            run_headless_rollout(weights_vector, path_name=path_name)
-            for _ in range(n_repeats)
-        ]
+        path_scores = []
+        for _ in range(n_repeats):
+            path_scores.append(run_headless_rollout(weights_vector, path_name=path_name))
+            
         per_path[path_name] = float(np.mean(path_scores))
         all_scores.extend(path_scores)
 
@@ -1143,6 +1145,7 @@ def evaluate_all_paths(weights_vector, n_repeats=3):
 VALIDATION_SUITE = [
     # "PATH_OFFSET_CHICANE",
     "PATH_SPIRAL",
+    "PATH_SUDDEN_TURN",
     "PATH_SUDDEN_TURN",
     # "PATH_SKIDPAD",
     "PATH_S_BEND",

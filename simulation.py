@@ -86,9 +86,9 @@ v_ref     = 7.0     # Fallback constant speed (m/s); only used if path_v_profile
 # R_rate handles smoothness indirectly through Δu costs.
 # These values are the output of the most recent offline_tuner.py run.
 # To update: paste Q_diag, R_diag, R_rate_diag printed by offline_tuner.py.
-Q_diag      = [3.1952978765602795, 0.1144377569347634, 1.314537236072376, 1.193381391201559, 0.6227745477316035, 0.0, 0.0, 0.0]
-R_diag      = [4.835888990800663, 2.401601418207025]
-R_rate_diag = [5.4701559513367, 1.1488970572322637]
+Q_diag      = [4.5121467429042, 0.13625975578457844, 1.3870726914833138, 0.21249256271143357, 0.557444999109886, 0.0, 0.0, 0.0]
+R_diag      = [1.5800986780949908, 2.1577147089750452]
+R_rate_diag = [3.6220649239735367, 3.2210166727029566]
 
 Q      = np.diag(Q_diag)       # State cost matrix (8×8 diagonal)
 R      = np.diag(R_diag)       # Input cost matrix (2×2 diagonal)
@@ -536,7 +536,7 @@ btn_reset.on_clicked(reset_environment)
 # SIMULATION ENGINE
 # ==========================================
 
-def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_rate_w=None):
+def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_rate_w=None, use_planner=False):
     """
     Run one closed-loop simulation rollout on the currently loaded path.
 
@@ -552,12 +552,13 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
 
     PERCEPTION AND PLANNING
     -----------------------
-    SimPerception filters the full static cone map to the car's forward FOV
-    each step. SimPlanner accumulates observations and rebuilds the centreline
-    and speed profile on every step. Tracking errors are computed against the
-    planner's centreline (matching the real ROS2 pipeline). While the planner
-    warms up (insufficient cones to build a path yet), errors fall back to
-    the drawn reference path.
+    Controlled by the `use_planner` parameter. When True, SimPerception filters
+    the static cone map to the car's FOV and SimPlanner accumulates observations
+    to rebuild the centreline and speed profile each step, matching the real ROS2
+    pipeline. When False (default), tracking errors and speed targets are derived
+    directly from the true reference path — faster and deterministic, which is
+    preferred for tuning. The planner-in-the-loop path falls back to the reference
+    path while the planner warms up (insufficient cones to build a centreline).
 
     ADAPTIVE GAIN SCHEDULING
     ------------------------
@@ -604,6 +605,10 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
         in run_simulation(). Default 400.
     R_rate_w : np.ndarray, shape (2, 2), optional
         Rate-of-change cost matrix. Defaults to module-level R_rate if None.
+    use_planner : bool, optional
+        If True, use SimPerception + SimPlanner centreline for tracking errors
+        and speed profile. If False (default), use the true reference path
+        directly. Toggling allows comparison of planner-in-the-loop vs oracle.
 
     Returns
     -------
@@ -649,15 +654,12 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
     # Initialise nonlinear plant (24-state) at true static equilibrium
     plant_state = init_plant_state(X_g, Y_g, psi_g, vx0=v_start)
 
-    # Initialise perception and planning pipeline
-    # perception = SimPerception(_blue_cones_all, _yellow_cones_all)
-    # planner    = SimPlanner(
-    #     v_max=V_MAX if "V_MAX" in dir() else 20.0,
-    #     v_min=V_MIN if "V_MIN" in dir() else 1.5,
-    # )
-    # Warm-start the planner with the initial cone observations
-    # _b0, _y0 = perception.visible_cones(X_g, Y_g, psi_g)
-    # planner.update(_b0, _y0, np.array([X_g, Y_g]), psi_g)
+    # Initialise perception and planning pipeline (only used when use_planner=True)
+    if use_planner:
+        perception = SimPerception(_blue_cones_all, _yellow_cones_all)
+        planner    = SimPlanner(v_max=V_MAX, v_min=V_MIN)
+        _b0, _y0   = perception.visible_cones(X_g, Y_g, psi_g)
+        planner.update(_b0, _y0, np.array([X_g, Y_g]), psi_g)
 
     u_prev                     = np.zeros(2)
     consecutive_solver_failures = 0
@@ -683,46 +685,55 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
         history["psi"].append(plant_state[2])
         history["v"].append(plant_state[3])
 
-        # ── 2. Perception + planning update ───────────────────────────────────
+        # ── 2. Update state and perception/planning ────────────────────────────
         X_g, Y_g, psi_g = plant_state[0], plant_state[1], plant_state[2]
         car_pos_np       = np.array([X_g, Y_g])
 
-        # b_vis, y_vis = perception.visible_cones(X_g, Y_g, psi_g)
-        # planner.update(b_vis, y_vis, car_pos_np, psi_g)
+        # ── 3. Tracking error and speed target ────────────────────────────────
+        if use_planner:
+            # Planner-in-the-loop: update cone accumulation and rebuild centreline
+            b_vis, y_vis = perception.visible_cones(X_g, Y_g, psi_g)
+            planner.update(b_vis, y_vis, car_pos_np, psi_g)
 
-        # Track progress on the original reference path for path-end detection
-        idx, _, _, _ = find_closest_reference_bounded(X_g, Y_g, idx, window=40)
-
-        # ── 3. Tracking error from planner centreline (primary) ───────────────
-        # Uses SimPlanner's accumulated centreline if available; falls back to
-        # the drawn reference path while the planner warms up (first ~0.5 s).
-        # cl = planner.centreline
-        # if cl is not None and len(cl) >= 2:
-        #     dists  = np.linalg.norm(cl - car_pos_np, axis=1)
-        #     cl_idx = int(np.argmin(dists))
-        #     seg    = (cl[cl_idx + 1] - cl[cl_idx]) if cl_idx < len(cl) - 1 else (cl[cl_idx] - cl[cl_idx - 1])
-        #     seg_len = float(np.linalg.norm(seg))
-        #     if seg_len > 1e-6:
-        #         t_hat   = seg / seg_len                     # Unit tangent along centreline
-        #         right_n = np.array([t_hat[1], -t_hat[0]])  # Right-pointing normal
-        #         rpsi    = math.atan2(t_hat[1], t_hat[0])   # Path heading at cl_idx
-        #         # Lateral error: positive = vehicle is to the LEFT of the centreline
-        #         e_y     = -float(np.dot(car_pos_np - cl[cl_idx], right_n))
-        #     else:
-        #         rpsi = psi_g; e_y = 0.0
-        # else:
-        #     # Fallback: use drawn reference path directly
-        #     idx, rx, ry, rpsi = find_closest_reference_bounded(X_g, Y_g, idx, window=40)
-        
-        idx, rx, ry, rpsi = find_closest_reference_bounded(X_g, Y_g, idx, window=40)
-        dx_err = X_g - rx
-        dy_err = Y_g - ry
-        # Lateral error: Frenet frame projection (positive = left of path)
-        e_y = dy_err * np.cos(rpsi) - dx_err * np.sin(rpsi)
-        e_psi = normalize_angle(psi_g - rpsi)    # Heading error (wrapped to ±π)
-
-        # Extract desired speed directly from the pre-computed physical speed profile
-        v_target = path_v_profile[idx]
+            cl = planner.centreline
+            if cl is not None and len(cl) >= 2:
+                dists   = np.linalg.norm(cl - car_pos_np, axis=1)
+                cl_idx  = int(np.argmin(dists))
+                seg     = (cl[cl_idx + 1] - cl[cl_idx]) if cl_idx < len(cl) - 1 \
+                          else (cl[cl_idx] - cl[cl_idx - 1])
+                seg_len = float(np.linalg.norm(seg))
+                if seg_len > 1e-6:
+                    t_hat   = seg / seg_len
+                    right_n = np.array([t_hat[1], -t_hat[0]])
+                    rpsi    = math.atan2(t_hat[1], t_hat[0])
+                    e_y     = -float(np.dot(car_pos_np - cl[cl_idx], right_n))
+                else:
+                    rpsi = psi_g; e_y = 0.0
+                e_psi = normalize_angle(psi_g - rpsi)
+                # Speed from planner profile; fall back to reference if unavailable
+                if len(planner.v_profile) > 0:
+                    v_target = float(np.interp(
+                        np.linalg.norm(car_pos_np - cl[0]),
+                        np.linspace(0, np.sum(np.linalg.norm(np.diff(cl, axis=0), axis=1)), len(planner.v_profile)),
+                        planner.v_profile,
+                    ))
+                else:
+                    idx, _, _, _ = find_closest_reference_bounded(X_g, Y_g, idx, window=40)
+                    v_target = float(path_v_profile[idx])
+            else:
+                # Planner not yet ready — fall back to reference path
+                idx, rx, ry, rpsi = find_closest_reference_bounded(X_g, Y_g, idx, window=40)
+                dx_err = X_g - rx; dy_err = Y_g - ry
+                e_y    = dy_err * np.cos(rpsi) - dx_err * np.sin(rpsi)
+                e_psi  = normalize_angle(psi_g - rpsi)
+                v_target = float(path_v_profile[idx])
+        else:
+            # Use true reference path directly (no planner overhead)
+            idx, rx, ry, rpsi = find_closest_reference_bounded(X_g, Y_g, idx, window=40)
+            dx_err = X_g - rx; dy_err = Y_g - ry
+            e_y    = dy_err * np.cos(rpsi) - dx_err * np.sin(rpsi)
+            e_psi  = normalize_angle(psi_g - rpsi)
+            v_target = float(path_v_profile[idx])
 
         history["v_target"].append(v_target)
         history["e_y"].append(e_y)

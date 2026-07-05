@@ -7,7 +7,7 @@ time-varying MPC controller, and provides CMA-ES-based automated weight optimisa
 This includes an implementation of a control node that is combined with the fsae_planning repo (replacing the corresponding controller node file in the repo) to run the MPC controller in the fsds simulator, which simulates the car using Unreal Engine 4.
 
 The 2D simulator  places cones to define the borders of a provided path in `sim_track.py` with the help of cone functions (in the `planning` folder) from the fsae_planning repo.
-It is also capable of simulating perception and planning, however this is currently commented out in the simulator and tuner and instead the true center line is used.
+It is also capable of simulating perception and planning, if this option is toggled on in the code. (currently by default it is false)
 
 fsds simulator repo: https://github.com/FS-Driverless/Formula-Student-Driverless-Simulator (current implementation uses commit 59f03fa, and the V2.20 release)  
 fsae planning repo: https://github.com/UOA-FSAE/fsae_planning (current implementation uses commit 28dcd4d)
@@ -112,8 +112,8 @@ How each component maps to its ROS2 equivalent in the planning package.
 ```
 ROS 2 Node              │  Simulator Equivalent
 ────────────────────────┼─────────────────────────────────────
-perception_node.py      │  sim_track.SimPerception
-planner_node.py         │  sim_track.SimPlanner
+perception_node.py      │  sim_track.SimPerception  (active when use_planner=True)
+planner_node.py         │  sim_track.SimPlanner     (active when use_planner=True)
 cone_map.py             │  planning/cone_map.ConeMap        (shared)
 boundary.py             │  planning/boundary.py             (shared)
 path_utils.py           │  planning/path_utils.py           (shared)
@@ -370,9 +370,9 @@ Runs for up to `max_steps` steps (dynamically computed from path length) at `dt=
 
 **1. Record state** — append `X, Y, psi, v` to history before any computation.
 
-**2. Perception update** — `SimPerception.visible_cones()` filters the static cone map to the car's forward FOV. `SimPlanner.update()` accumulates observations into a `ConeMap`, runs `build_path_walls()` (falling back to `build_local_path()` if that fails), and recomputes the speed profile via `speed_profile.compute_speed_profile()`.
+**2. Perception update** — Controlled by the `use_planner` boolean passed to `simulate_closed_loop()` (and `run_headless_rollout()` in the offline tuner). When `True`: `SimPerception.visible_cones()` filters the static cone map; `SimPlanner.update()` accumulates cones, runs `build_path_walls()`, and recomputes the speed profile. When `False` (default): the true reference path and pre-computed speed profile are used directly.
 
-**3. Reference extraction** — the car is projected onto the path's centreline. The nearest waypoint segment gives the reference heading `rpsi`. Lateral error `e_y` is the signed perpendicular distance (positive = left of path).
+**3. Reference extraction** — the car is projected onto the active centreline (planner's or reference path's). The nearest waypoint segment gives the reference heading `rpsi`. Lateral error `e_y` is the signed perpendicular distance (positive = left of path).
 **4. Error state assembly** — the 8-element MPC state vector:
 ```
 x = [e_y, ė_y, e_ψ, ψ̇, e_v, 0, δ_act, a_act]
@@ -445,7 +445,7 @@ Functionally mirrors `simulate_closed_loop()` but without GUI, matplotlib, or fu
 - `consecutive_fails ≥ 5`
 - Progress `< 3 m` after 60 steps (stuck/oscillating detection)
 
-**DNF penalty:** `3.0 × (1 - progress) + 1.0 × offtrack_excess²`  
+**DNF penalty:** `5.0 × (1 - progress) + 1.0 × offtrack_excess²`  
 The graded form (proportional to missing fraction + excess) gives CMA-ES a continuous gradient slope toward "complete more of the track" rather than a cliff that collapses the covariance update.
 
 ### Composite Score (`SCORE_WEIGHTS`)
@@ -469,7 +469,7 @@ Bonuses (subtracted from score — reward for completing quickly):
 - `COMPLETION_BONUS_WEIGHT` × `completion_frac`
 - `TIME_BONUS_WEIGHT` × `time_bonus`
 
-Lower composite score is better. A good finishing run typically scores in the range `[-0.4, -0.2]`.
+Lower composite score is better. A good finishing run typically scores in the range `[-0.5, -0.3]`.
 
 ### Inaccuracy Penalty
 
