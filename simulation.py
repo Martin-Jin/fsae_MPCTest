@@ -68,7 +68,7 @@ import performance_stats
 from performance_stats import benchmark_weights
 import speed_profile
 from offline_tuner import SYNTHETIC_PATHS, PATH_NAMES
-from sim_track import place_cones, SimPerception, SimPlanner, calculate_dynamic_max_steps
+from sim_track import place_cones, SimPerception, SimPlanner, calculate_dynamic_max_steps, TRACK_HALF_WIDTH
 from model_utils import curvature_estimate, adaptive_R_rate, adaptive_R_scaling
 import math
 
@@ -87,9 +87,9 @@ v_ref     = 7.0     # Fallback constant speed (m/s); only used if path_v_profile
 # R_rate handles smoothness indirectly through Δu costs.
 # These values are the output of the most recent offline_tuner.py run.
 # To update: paste Q_diag, R_diag, R_rate_diag printed by offline_tuner.py.
-Q_diag      = [1.4874498708543875, 0.1645310754457231, 1.003638475838103, 1.0504026619603863, 0.11780576114366814, 0.0, 0.0, 0.0]
-R_diag      = [2.317753195005961, 0.935875152859843]
-R_rate_diag = [3.3873852754948603, 1.1495831086210677]
+Q_diag      = [3.1952978765602795, 0.1144377569347634, 1.314537236072376, 1.193381391201559, 0.6227745477316035, 0.0, 0.0, 0.0]
+R_diag      = [4.835888990800663, 2.401601418207025]
+R_rate_diag = [5.4701559513367, 1.1488970572322637]
 
 Q      = np.diag(Q_diag)       # State cost matrix (8×8 diagonal)
 R      = np.diag(R_diag)       # Input cost matrix (2×2 diagonal)
@@ -537,7 +537,7 @@ btn_reset.on_clicked(reset_environment)
 # SIMULATION ENGINE
 # ==========================================
 
-def simulate_closed_loop(Q_w, R_w, ey0, epsi0, flip=False, rng_seed=None, max_steps=400, R_rate_w=None):
+def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_rate_w=None):
     """
     Run one closed-loop simulation rollout on the currently loaded path.
 
@@ -582,7 +582,7 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, flip=False, rng_seed=None, max_st
     ----------------------
     The loop ends on the first of:
       - Reaching path end: idx ≥ len(path_X) - 2  OR  dist_to_end ≤ 3.0 m
-      - Off-track:  |e_y| > OFFTRACK_LIMIT (2.5 m) → history["failed"] = True
+      - Off-track:  |e_y| > OFFTRACK_LIMIT (3.5 m) → history["failed"] = True
       - Solver failure: consecutive_solver_failures ≥ MAX_CONSECUTIVE_FAILURES (5)
       - Step budget: step ≥ max_steps
 
@@ -598,8 +598,6 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, flip=False, rng_seed=None, max_st
         Applied perpendicular to the path heading.
     epsi0 : float
         Initial heading offset from path direction (degrees).
-    flip : bool
-        If True, vehicle starts facing path_Psi[0] + π (away from path).
     rng_seed : int or None, optional
         Seed for initial condition jitter RNG. None = deterministic.
     max_steps : int, optional
@@ -638,7 +636,7 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, flip=False, rng_seed=None, max_st
     jitter_epsi = rng.normal(0, 1.0)  if rng_seed is not None else 0.0   # degrees
 
     # Compute initial vehicle position in global frame
-    base_path_heading = path_Psi[0] + (np.pi if flip else 0.0)
+    base_path_heading = path_Psi[0]
     ey0_eff           = ey0   + jitter_ey
     epsi0_eff         = epsi0 + jitter_epsi
 
@@ -665,7 +663,7 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, flip=False, rng_seed=None, max_st
     u_prev                     = np.zeros(2)
     consecutive_solver_failures = 0
     MAX_CONSECUTIVE_FAILURES    = 5
-    OFFTRACK_LIMIT              = 2.50  # metres; well beyond the MPC's ±3.5 m soft corridor
+    OFFTRACK_LIMIT              = TRACK_HALF_WIDTH * 2
 
     history = {
         "X": [], "Y": [], "psi": [], "v": [], "v_target": [],
@@ -699,28 +697,29 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, flip=False, rng_seed=None, max_st
         # ── 3. Tracking error from planner centreline (primary) ───────────────
         # Uses SimPlanner's accumulated centreline if available; falls back to
         # the drawn reference path while the planner warms up (first ~0.5 s).
-        cl = planner.centreline
-        if cl is not None and len(cl) >= 2:
-            dists  = np.linalg.norm(cl - car_pos_np, axis=1)
-            cl_idx = int(np.argmin(dists))
-            seg    = (cl[cl_idx + 1] - cl[cl_idx]) if cl_idx < len(cl) - 1 else (cl[cl_idx] - cl[cl_idx - 1])
-            seg_len = float(np.linalg.norm(seg))
-            if seg_len > 1e-6:
-                t_hat   = seg / seg_len                     # Unit tangent along centreline
-                right_n = np.array([t_hat[1], -t_hat[0]])  # Right-pointing normal
-                rpsi    = math.atan2(t_hat[1], t_hat[0])   # Path heading at cl_idx
-                # Lateral error: positive = vehicle is to the LEFT of the centreline
-                e_y     = -float(np.dot(car_pos_np - cl[cl_idx], right_n))
-            else:
-                rpsi = psi_g; e_y = 0.0
-        else:
-            # Fallback: use drawn reference path directly
-            idx, rx, ry, rpsi = find_closest_reference_bounded(X_g, Y_g, idx, window=40)
-            if flip:
-                rpsi = normalize_angle(rpsi + np.pi)
-            dx_err = X_g - rx; dy_err = Y_g - ry
-            e_y    = dy_err * np.cos(rpsi) - dx_err * np.sin(rpsi)
-
+        # cl = planner.centreline
+        # if cl is not None and len(cl) >= 2:
+        #     dists  = np.linalg.norm(cl - car_pos_np, axis=1)
+        #     cl_idx = int(np.argmin(dists))
+        #     seg    = (cl[cl_idx + 1] - cl[cl_idx]) if cl_idx < len(cl) - 1 else (cl[cl_idx] - cl[cl_idx - 1])
+        #     seg_len = float(np.linalg.norm(seg))
+        #     if seg_len > 1e-6:
+        #         t_hat   = seg / seg_len                     # Unit tangent along centreline
+        #         right_n = np.array([t_hat[1], -t_hat[0]])  # Right-pointing normal
+        #         rpsi    = math.atan2(t_hat[1], t_hat[0])   # Path heading at cl_idx
+        #         # Lateral error: positive = vehicle is to the LEFT of the centreline
+        #         e_y     = -float(np.dot(car_pos_np - cl[cl_idx], right_n))
+        #     else:
+        #         rpsi = psi_g; e_y = 0.0
+        # else:
+        #     # Fallback: use drawn reference path directly
+        #     idx, rx, ry, rpsi = find_closest_reference_bounded(X_g, Y_g, idx, window=40)
+        
+        idx, rx, ry, rpsi = find_closest_reference_bounded(X_g, Y_g, idx, window=40)
+        dx_err = X_g - rx
+        dy_err = Y_g - ry
+        # Lateral error: Frenet frame projection (positive = left of path)
+        e_y = dy_err * np.cos(rpsi) - dx_err * np.sin(rpsi)
         e_psi = normalize_angle(psi_g - rpsi)    # Heading error (wrapped to ±π)
 
         _, v_target = planner.get_target(car_pos_np, psi_g)   # Desired speed from planner

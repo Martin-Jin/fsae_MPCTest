@@ -6,8 +6,8 @@ Q_diag      = [23.84993795527158, 32.86695969860588, 0.9111941899078135, 22.2010
 R_diag      = [44.833851046596166, 27.15782639103162]
 R_rate_diag = [49.91540241422914, 16.791740027086462]
 Duration    = 15.2 minutes
-Fsds score  = Yet to be implemented in fsds.
-Tuner score = N/A
+Overall score (avged from all testing scenarios)  = Yet to be implemented in fsds.
+Tuner score (tuning scenarios / validation suite) = N/A
 Commit hash = N/A
 
 # Retuning after higher friction implemented in vehicle model, and fixed initial speed not being 0.
@@ -16,8 +16,8 @@ Q_diag      = [9.353616402368889, 22.210542631007502, 18.906268193489474, 49.764
 R_diag      = [49.33735358370815, 45.43435542843825]
 R_rate_diag = [49.98401941989215, 49.61230208743996]
 Duration    = 45.50 minutes
-Fsds score  = Yet to be implemented in fsds.
-Tuner score = N/A
+Overall score (avged from all testing scenarios)  = Haven't been tested.
+Tuner score (tuning scenarios / validation suite) = N/A
 Commit hash  = 567bfc717dc5d4ef60a641c30546a9f219dcd2f4
 
 # 04/07/26 11:28 - Retuned with fixed completion and speed scoring. Doesn't handle sudden corners after high speed well
@@ -25,8 +25,8 @@ Q_diag      = [2.383170175353726, 0.597902607211363, 20.13652700912051, 1.756417
 R_diag      = [47.700295962420014, 40.098520641890346]
 R_rate_diag = [43.152302574649475, 47.5529895287447]
 Duration    = 47.22 minutes
-Fsds score  = Yet to be implemented in fsds.
-Tuner score = -0.14925503052401473
+Overall score (avged from all testing scenarios)  = Haven't been tested.
+Tuner score (tuning scenarios / validation suite) = -0.14925503052401473
 Commit hash = bd8d35d5d9ce8d3a317a8127b8b3bdb55d43061f
 
 # 04/07/26 12:34 - Second tuning attempt. Also doesn't handle sudden corners after high speed well. Need to adjust the sudden corner path and retune.
@@ -34,8 +34,8 @@ Q_diag      = [24.880379797073147, 1.2387705996774256, 16.241408139282775, 0.505
 R_diag      = [47.50398581132921, 44.19542535286135]
 R_rate_diag = [47.65347491410725, 49.92043709772807]
 Duration    = 46.24 minutes
-Fsds score  = Yet to be implemented in fsds.
-Tuner score = -0.0800900231871634
+Overall score (avged from all testing scenarios)  = Haven't been tested.
+Tuner score (tuning scenarios / validation suite) = -0.0800900231871634
 Commit hash = bd8d35d5d9ce8d3a317a8127b8b3bdb55d43061f
 
 # 04/07/26 14:28 - Doesn't move in fsds simulator, too much cost on acceleration. Need to increase score from speed and increase friction of vehicle model.
@@ -43,8 +43,8 @@ Q_diag      = [1.0183759459339357, 0.976697255260965, 28.738153874481, 0.5306028
 R_diag      = [44.803475493970396, 49.84407709101785]
 R_rate_diag = [41.29277347324602, 2.14748612384217]
 Duration    = 68.54 minutes
-Fsds score  = Yet to be implemented in fsds.
-Tuner score = -0.1444654063621843
+Overall score (avged from all testing scenarios)  = Haven't been tested.
+Tuner score (tuning scenarios / validation suite) = -0.1444654063621843
 Commit hash = 6e4e4dbbc5e632a3e221647482808bd5c2891f08
 
 # 04/07/26 16:30 - Doesn't move in fsds simulator, too much cost on acceleration. Need to retune vehicle static friction.
@@ -52,8 +52,8 @@ Q_diag      = [0.9365821893567162, 0.7908873608739447, 1.7755070976010836, 0.562
 R_diag      = [28.530734808156705, 46.57972816219924]
 R_rate_diag = [47.15491944668902, 26.076186131991633]
 Duration    = 45.80 minutes
-Fsds score  = Yet to be implemented in fsds.
-Tuner score = -0.15261435464378068
+Overall score (avged from all testing scenarios)  = Haven't been tested.
+Tuner score (tuning scenarios / validation suite) = -0.15261435464378068
 Commit hash = 4874e25865196d68a2789790f396f57b9f3e2157
 
 # 04/07/26 18:24 - Still doesn't move, and lateral error is a bit too high. Need to increase friction abit more and score for lateral error.
@@ -61,8 +61,8 @@ Q_diag      = [0.7917408828096778, 0.5004757194097726, 48.48441914946618, 4.4904
 R_diag      = [43.11232446369553, 28.455091019407895]
 R_rate_diag = [49.0183685364327, 49.619496292546046]
 Duration    = 102.93 minutes
-Fsds score  = Yet to be implemented in fsds.
-Tuner score = -0.1178564251734995
+Overall score (avged from all testing scenarios)  = Haven't been tested.
+Tuner score (tuning scenarios / validation suite) = -0.1178564251734995
 Commit hash = 5f517c2dfacddf6e7f30d11cc714a145e1db3d70
 
 
@@ -72,8 +72,8 @@ Q_diag      = [0.3208265999299169, 0.10235847084070875, 0.5025001583004347, 0.49
 R_diag      = [4.6843621125519945, 3.88769575802876]
 R_rate_diag = [7.458154348419826, 1.4748639807293191]
 Duration    = 23.02 minutes
-Fsds score  = Yet to be implemented in fsds.
-Tuner score = 0.27550416180274867
+Overall score (avged from all testing scenarios)  = Haven't been tested.
+Tuner score (tuning scenarios / validation suite) = 0.27550416180274867
 Commit hash = 5f517c2dfacddf6e7f30d11cc714a145e1db3d70
 
 # 04/07/26 21:24 - Increased friction turns out still wasn't enough, and lateral error doesn't appear to have enough weight. Increased weighing in rmse calculation and static friction again.
@@ -81,8 +81,8 @@ Q_diag      = [0.44699925053467116, 0.11743991596344988, 1.0478877615188058, 1.0
 R_diag      = [6.218096358132944, 3.342253795684056]
 R_rate_diag = [4.53327446204952, 0.42309080491967443]
 Duration    = 76.37 minutes
-Fsds score  = Yet to be implemented in fsds.
-Tuner score = -0.31759709653007817
+Overall score (avged from all testing scenarios)  = Haven't been tested.
+Tuner score (tuning scenarios / validation suite) = -0.31759709653007817
 Commit hash = e040c79b02088e9344cd1ed2bbe7bf2b7f8ffe9e
 
 # 04/07/26 22:39 - Good tracking accuracy + decent speed in simulator. Only problem remaining is when in a starting position where planner
@@ -91,6 +91,17 @@ Q_diag      = [1.4874498708543875, 0.1645310754457231, 1.003638475838103, 1.0504
 R_diag      = [2.317753195005961, 0.935875152859843]
 R_rate_diag = [3.3873852754948603, 1.1495831086210677]
 Duration    = 56.78 minutes
-Fsds score  = Yet to be implemented in fsds.
-Tuner score = -0.24337832980228216
+Overall score (avged from all testing scenarios)  = Haven't been tested.
+Tuner score (tuning scenarios / validation suite) = -0.24337832980228216
 Commit hash = 6bf4081730950ac75b1e7d78fda0f5a8ab1286e2
+
+# 05/07/26 12:08 - Great accuracy + speed in fsds simulator. Sometimes exceeds cone boundary slightly but is able to recorrect when there is 
+a sudden corner at high speeds, causing it to not perform as well. Can try increasing lateral error weight slightly. Also, slows down more than
+it needs on very gradual curves, should add to testing paths so tuner takes this into account.
+Q_diag      = [3.1952978765602795, 0.1144377569347634, 1.314537236072376, 1.193381391201559, 0.6227745477316035, 0.0, 0.0, 0.0]
+R_diag      = [4.835888990800663, 2.401601418207025]
+R_rate_diag = [5.4701559513367, 1.1488970572322637]
+Duration    = 50.12 minutes
+Overall score (avged from all testing scenarios)  = Haven't been tested.
+Tuner score (tuning scenarios / validation suite) = -0.3521204555442503
+Commit hash = ea49d64e624412ca3a64bd84af46460fcfc7aa21

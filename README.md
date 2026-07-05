@@ -145,7 +145,7 @@ dt         = 0.05 s     (20 Hz control rate)
 N_horizon  = 25 steps   (1.25 s look-ahead)
 V_MAX      = 20.0 m/s   (planner + profiler cap)
 V_MIN      = 1.5 m/s    (planner floor speed)
-OFFTRACK_LIMIT = 2.5 m  (live sim failure threshold)
+OFFTRACK_LIMIT = 3.5 m  (live sim failure threshold)
 MAX_CONSECUTIVE_FAILURES = 5  (solver failures before DNF)
 ```
 
@@ -372,8 +372,7 @@ Runs for up to `max_steps` steps (dynamically computed from path length) at `dt=
 
 **2. Perception update** — `SimPerception.visible_cones()` filters the static cone map to the car's forward FOV. `SimPlanner.update()` accumulates observations into a `ConeMap`, runs `build_path_walls()` (falling back to `build_local_path()` if that fails), and recomputes the speed profile via `speed_profile.compute_speed_profile()`.
 
-**3. Reference extraction** — the car is projected onto the planner's centreline. The nearest waypoint segment gives the reference heading `rpsi`. Lateral error `e_y` is the signed perpendicular distance (positive = left of path). While the planner warms up (first few steps), this falls back to the original drawn reference path.
-
+**3. Reference extraction** — the car is projected onto the path's centreline. The nearest waypoint segment gives the reference heading `rpsi`. Lateral error `e_y` is the signed perpendicular distance (positive = left of path).
 **4. Error state assembly** — the 8-element MPC state vector:
 ```
 x = [e_y, ė_y, e_ψ, ψ̇, e_v, 0, δ_act, a_act]
@@ -381,7 +380,7 @@ x = [e_y, ė_y, e_ψ, ψ̇, e_v, 0, δ_act, a_act]
 `e_y_dot` = `vx*sin(e_psi) + vy*cos(e_psi)` (lateral velocity projected onto path normal). `e_v` = `vx - v_target` (speed error relative to planner's desired speed).
 
 **5. Early-exit checks:**
-- `|e_y| > 2.50 m` → off-track, `failed = True`
+- `|e_y| > 3.50 m` → off-track, `failed = True`
 - `consecutive_solver_failures ≥ 5` → `failed = True`
 - `idx ≥ len(path) - 2` OR `dist_to_end ≤ 3.0 m` → `reached_end = True`
 
@@ -442,7 +441,7 @@ The 30% worst-case term prevents the optimiser from finding weights that work we
 Functionally mirrors `simulate_closed_loop()` but without GUI, matplotlib, or full history storage. Uses looser OSQP tolerances (`eps=1e-4`, `max_iter=5000`) for ~2× speed over the live simulator's `1e-5`. A model cache keyed by `round(vx, 1)` avoids rebuilding ZOH matrices every step.
 
 **DNF conditions (tighter than live simulator):**
-- `|e_y| > 2.5 m`
+- `|e_y| >= 3.50 m`
 - `consecutive_fails ≥ 5`
 - Progress `< 3 m` after 60 steps (stuck/oscillating detection)
 
@@ -470,7 +469,7 @@ Bonuses (subtracted from score — reward for completing quickly):
 - `COMPLETION_BONUS_WEIGHT` × `completion_frac`
 - `TIME_BONUS_WEIGHT` × `time_bonus`
 
-Lower composite score is better. A good finishing run typically scores in the range `[-0.4, 0.0]`.
+Lower composite score is better. A good finishing run typically scores in the range `[-0.4, -0.2]`.
 
 ### Inaccuracy Penalty
 

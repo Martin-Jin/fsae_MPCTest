@@ -109,7 +109,7 @@ from optimiser import solve_mpc
 import speed_profile as sp
 import cvxpy as cp
 import cma
-from sim_track import place_cones, SimPerception, SimPlanner, calculate_dynamic_max_steps
+from sim_track import place_cones, SimPerception, SimPlanner, calculate_dynamic_max_steps, TRACK_HALF_WIDTH
 import math
 import datetime
 
@@ -163,7 +163,7 @@ N_HORIZON = 25
 # DNF (DID-NOT-FINISH) PENALTY
 # ==========================================
 # Graded penalty: proportional to how much track the vehicle missed.
-# Scaled to ~2-3× the typical finishing score range (~[-0.4, 0]) so
+# Scaled to ~2-3× the typical finishing score range (~[-0.4, -0.2]) so
 # CMA-ES still sees a gradient toward "get further" rather than treating
 # all DNFs as equally bad. A cliff penalty (previous value: 10.0) dominated
 # the covariance update and masked the continuous metric gradients.
@@ -209,10 +209,10 @@ PATH_N_POINTS   = 1000
 # Weight was redistributed to rmse and peak_lateral_error which are the primary
 # tracking quality signals and previously under-weighted.
 SCORE_WEIGHTS = np.array([
-    0.51,  # 0  rmse               (primary tracking; highest weight)
+    0.52,  # 0  rmse               (primary tracking; highest weight)
     0.04,  # 1  yaw_rms
     0.06,  # 2  smooth_rms
-    0.03,  # 3  steer_rms
+    0.02,  # 3  steer_rms
     0.02,  # 4  accel_rms
     0.03,  # 5  max_steering
     0.08,  # 6  steering_sat_ratio
@@ -223,7 +223,7 @@ SCORE_WEIGHTS = np.array([
 ], dtype=float)
 
 COMPLETION_BONUS_WEIGHT = 0.50   # Subtracted from score when vehicle finishes path
-TIME_BONUS_WEIGHT       = 0.30   # Subtracted from score for fast completion
+TIME_BONUS_WEIGHT       = 0.45   # Subtracted from score for fast completion
 
 # Sanity check: weights must sum to 1 so the composite score is interpretable
 assert abs(SCORE_WEIGHTS.sum() - 1.0) < 1e-9, \
@@ -823,8 +823,8 @@ def run_headless_rollout(
     -------
     score : float
         Composite performance score (lower is better). Typical range:
-          Good finish:  −0.4 to 0.0
-          Poor finish:   0.0 to 1.0
+          Good finish:  −0.4 to -0.2
+          Poor finish:   -0.2 to 1
           DNF:           >= 1 (depending on how early the DNF)
 
     Called by: _score_task() (from pool.map in parallel_evaluate_candidate),
@@ -891,7 +891,7 @@ def run_headless_rollout(
     offtrack_excess     = 0.0    # How far past OFFTRACK_LIMIT at time of DNF
 
     MAX_FAILS      = 5     # Consecutive solve failures before DNF
-    OFFTRACK_LIMIT = 2.5   # Lateral error threshold for DNF (m)
+    OFFTRACK_LIMIT = TRACK_HALF_WIDTH * 2  # Lateral error threshold for DNF (m)
 
     # Pre-compute arc-length segments for progress tracking
     path_seg_dist = np.hypot(np.diff(path_X), np.diff(path_Y))
@@ -909,26 +909,29 @@ def run_headless_rollout(
         planner.update(b_vis, y_vis, car_pos_np, state[2])
 
         # ── Tracking error computation ────────────────────────────────────────
-        # Primary: use SimPlanner's centreline (mirrors real vehicle behaviour)
+        # Primary: use SimPlanner's centreline (old code)
         # Fallback: use reference path directly (if planner hasn't built a path)
-        cl = planner.centreline
-        if cl is not None and len(cl) >= 2:
-            dists  = np.linalg.norm(cl - car_pos_np, axis=1)
-            cl_idx = int(np.argmin(dists))
-            seg    = cl[cl_idx + 1] - cl[cl_idx] if cl_idx < len(cl) - 1 else cl[cl_idx] - cl[cl_idx - 1]
-            seg_len = float(np.linalg.norm(seg))
-            if seg_len > 1e-6:
-                t_hat   = seg / seg_len                           # Unit tangent along centreline
-                right_n = np.array([t_hat[1], -t_hat[0]])        # Right-pointing normal
-                rpsi    = math.atan2(t_hat[1], t_hat[0])         # Path heading at this point
-                # Lateral error: positive = car is to the left of centreline
-                e_y     = -float(np.dot(car_pos_np - cl[cl_idx], right_n))
-                e_psi   = _normalize_angle(state[2] - rpsi)
-            else:
-                e_y, e_psi, idx = _tracking_errors(state, path_X, path_Y, path_Psi, idx)
-        else:
-            e_y, e_psi, idx_new = _tracking_errors(state, path_X, path_Y, path_Psi, idx)
-            idx = idx_new
+        # cl = planner.centreline
+        # if cl is not None and len(cl) >= 2:
+        #     dists  = np.linalg.norm(cl - car_pos_np, axis=1)
+        #     cl_idx = int(np.argmin(dists))
+        #     seg    = cl[cl_idx + 1] - cl[cl_idx] if cl_idx < len(cl) - 1 else cl[cl_idx] - cl[cl_idx - 1]
+        #     seg_len = float(np.linalg.norm(seg))
+        #     if seg_len > 1e-6:
+        #         t_hat   = seg / seg_len                           # Unit tangent along centreline
+        #         right_n = np.array([t_hat[1], -t_hat[0]])        # Right-pointing normal
+        #         rpsi    = math.atan2(t_hat[1], t_hat[0])         # Path heading at this point
+        #         # Lateral error: positive = car is to the left of centreline
+        #         e_y     = -float(np.dot(car_pos_np - cl[cl_idx], right_n))
+        #         e_psi   = _normalize_angle(state[2] - rpsi)
+        #     else:
+        #         e_y, e_psi, idx = _tracking_errors(state, path_X, path_Y, path_Psi, idx)
+        # else:
+        #     e_y, e_psi, idx_new = _tracking_errors(state, path_X, path_Y, path_Psi, idx)
+        #     idx = idx_new
+        # Should always use reference path / center line for lateral error
+        e_y, e_psi, idx_new = _tracking_errors(state, path_X, path_Y, path_Psi, idx)
+        idx = idx_new
 
         # ── Progress tracking (always against reference path for consistency) ─
         _, _, idx_ref = _tracking_errors(state, path_X, path_Y, path_Psi, idx)
@@ -1138,8 +1141,7 @@ def evaluate_all_paths(weights_vector, n_repeats=3):
 # Active validation suite: subset of paths used for CMA-ES evaluation.
 # Commented-out paths are available but excluded to balance coverage vs. speed.
 VALIDATION_SUITE = [
-    # "PATH_MICRO_SLALOM",
-    "PATH_OFFSET_CHICANE",
+    # "PATH_OFFSET_CHICANE",
     "PATH_SPIRAL",
     "PATH_SUDDEN_TURN",
     # "PATH_SKIDPAD",
@@ -1147,11 +1149,12 @@ VALIDATION_SUITE = [
     "PATH_MIXED",
     # "PATH_HAIRPIN",
     # "PATH_CHICANE",
+    "PATH_FS_CORNER",
+    "PATH_MICRO_SLALOM"
 ]
 
 # Initial condition perturbations tested for each path.
 # (ey0, epsi0): lateral offset (m), heading offset (rad).
-# Two conditions: perfect start and a slightly offset start (robustness test).
 INITIAL_CONDITIONS = [
     (0.00, 0.00),   # Nominal: start exactly on path
     # (0.15, 0.05),   # Perturbed: slight lateral/heading offset
@@ -1337,8 +1340,8 @@ def log_results_to_history(Q, R, R_rate, duration, score):
         f.write(f"R_diag      = {np.diag(R).tolist()}\n")
         f.write(f"R_rate_diag = {np.diag(R_rate).tolist()}\n")
         f.write(f"Duration    = {duration / 60:.2f} minutes\n")
-        f.write(f"Fsds score  = Yet to be implemented in fsds.\n")
-        f.write(f"Tuner score = {score}\n")
+        f.write(f"Overall score (avged from all testing scenarios)  = Haven't been tested.\n")
+        f.write(f"Tuner score (tuning scenarios / validation suite) = {score}\n")
         f.write(f"Commit hash = {commit_hash}\n")
 
 
