@@ -86,9 +86,9 @@ v_ref     = 7.0     # Fallback constant speed (m/s); only used if path_v_profile
 # R_rate handles smoothness indirectly through Δu costs.
 # These values are the output of the most recent offline_tuner.py run.
 # To update: paste Q_diag, R_diag, R_rate_diag printed by offline_tuner.py.
-Q_diag      = [0.5033342406884888, 0.1351368654899604, 0.7000669149532808, 0.6193157161190033, 0.8687842624228068, 0.0, 0.0, 0.0]
-R_diag      = [6.32676286268335, 3.1899069771826496]
-R_rate_diag = [4.276385490350809, 9.215314852892405]
+Q_diag      = [4.314155687205675, 3.7668913967822037, 5.983794429037129, 1.244871042077623, 0.18558923122813623, 0.0, 0.0, 0.0]
+R_diag      = [0.29494175729625577, 0.9099966479164758]
+R_rate_diag = [0.7514543495246067, 4.168019637528193]
 
 Q      = np.diag(Q_diag)       # State cost matrix (8×8 diagonal)
 R      = np.diag(R_diag)       # Input cost matrix (2×2 diagonal)
@@ -99,7 +99,7 @@ V_MAX = 20.0   # Absolute speed cap (m/s); planner and profiler respect this
 V_MIN = 1.5    # Minimum speed floor (m/s); prevents near-zero speed targets
 
 # Whether to use perception and planner in tuner
-USE_PLANNER = True
+USE_PLANNER = False
 
 # ── Global GUI State ────────────────────────────────────────────────────────────
 is_drawing          = False          # True while user is dragging a path
@@ -722,17 +722,25 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
                     idx, _, _, _ = find_closest_reference_bounded(X_g, Y_g, idx, window=40)
                     v_target = float(path_v_profile[idx])
             else:
-                # Planner not yet ready — fall back to reference path
                 idx, rx, ry, rpsi = find_closest_reference_bounded(X_g, Y_g, idx, window=40)
-                dx_err = X_g - rx; dy_err = Y_g - ry
-                e_y    = dy_err * np.cos(rpsi) - dx_err * np.sin(rpsi)
+                dx_err = X_g - rx
+                dy_err = Y_g - ry
+                
+                # Robust signed Euclidean distance
+                e_y_proj  = dy_err * np.cos(rpsi) - dx_err * np.sin(rpsi)
+                true_dist = math.hypot(dx_err, dy_err)
+                e_y       = true_dist * (1.0 if e_y_proj >= 0 else -1.0)
+                
                 e_psi  = normalize_angle(psi_g - rpsi)
                 v_target = float(path_v_profile[idx])
         else:
-            # Use true reference path directly (no planner overhead)
             idx, rx, ry, rpsi = find_closest_reference_bounded(X_g, Y_g, idx, window=40)
-            dx_err = X_g - rx; dy_err = Y_g - ry
-            e_y    = dy_err * np.cos(rpsi) - dx_err * np.sin(rpsi)
+            dx_err = X_g - rx
+            dy_err = Y_g - ry
+            # Robust signed Euclidean distance
+            e_y_proj  = dy_err * np.cos(rpsi) - dx_err * np.sin(rpsi)
+            true_dist = math.hypot(dx_err, dy_err)
+            e_y       = true_dist * (1.0 if e_y_proj >= 0 else -1.0)
             e_psi  = normalize_angle(psi_g - rpsi)
             v_target = float(path_v_profile[idx])
 
@@ -756,23 +764,25 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
         ])
 
         # ── 5. Early-exit checks ───────────────────────────────────────────────
+        failed = False
         if consecutive_solver_failures >= MAX_CONSECUTIVE_FAILURES:
             history["failed"]      = True
             history["fail_reason"] = (
                 f"solver failed {consecutive_solver_failures} consecutive steps at step {step}"
             )
-            break
 
         if abs(e_y) > OFFTRACK_LIMIT:
             history["failed"]      = True
+            history["offtrack"]    = True
             history["fail_reason"] = f"off-track (|e_y|={abs(e_y):.2f} m) at step {step}"
-            break
 
         dist_to_finish = math.hypot(X_g - path_X[-1], Y_g - path_Y[-1])
         if idx >= len(path_X) - 2 or dist_to_finish <= 3.0:
             history["reached_end"]       = True
             history["remaining_steps"]   = max_steps - step
             break
+
+        if history.get("failed"): break
 
         # ── 6. MPC solve ───────────────────────────────────────────────────────
         # Linearise the bicycle model at the current speed
@@ -858,6 +868,7 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
         history["time_bonus"] = max(0.0, 1.0 - (sim_time / expected_time))
     else:
         # Partial completion: arc-length fraction actually travelled along the path
+        history["failed"]      = True
         history["completion_frac"] = _progress
         history["time_bonus"]      = 0.0
 

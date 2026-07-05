@@ -6,8 +6,10 @@ time-varying MPC controller, and provides CMA-ES-based automated weight optimisa
 
 This includes an implementation of a control node that is combined with the fsae_planning repo (replacing the corresponding controller node file in the repo) to run the MPC controller in the fsds simulator, which simulates the car using Unreal Engine 4.
 
-The 2D simulator  places cones to define the borders of a provided path in `sim_track.py` with the help of cone functions (in the `planning` folder) from the fsae_planning repo.
-It is also capable of simulating perception and planning, if this option is toggled on in the code. (currently by default it is false)
+The simulator is also capable of simulating perception and planning, if this option is toggled on in the code. (currently by default it is True)
+The 2D simulator does this by "placing" cones (setting coordinates of cones) to define the borders of a provided path in `sim_track.py` with the help of cone functions (in the `planning` folder) from the fsae_planning repo. These cones are then used for perception and planning in `sim_track.py`.
+This is also togglable by a `USE_PLANNER` constant in the simulation file and tuner file. 
+
 
 fsds simulator repo: https://github.com/FS-Driverless/Formula-Student-Driverless-Simulator (current implementation uses commit 59f03fa, and the V2.20 release)  
 fsae planning repo: https://github.com/UOA-FSAE/fsae_planning (current implementation uses commit 28dcd4d)
@@ -32,6 +34,8 @@ fsae planning repo: https://github.com/UOA-FSAE/fsae_planning (current implement
 ## Architecture Overview
 
 ### Full System Flow
+Note that this is when `USE_PLANNER` is toggled to be true and perception and planning is simulated.
+When `USE_PLANNER` is false, the only difference is that true lateral error is calculated with the true center line rather than with the planner center line.
 
 ```
 USER INPUT (draw path / load synthetic path)
@@ -65,8 +69,9 @@ USER INPUT (draw path / load synthetic path)
 │  │ + Adaptive   │                  │   Clarabel)     │  │
 │  │ Gain Scaling │                  └────────┬────────┘  │
 │  └──────────────┘                           │ u=[δ, a]  │
-│         ▲                                   ▼           │
-│  ┌──────────────┐                                       │
+│         ▲                                   |           |
+|         |                          ▼        |           |
+│  ┌──────────────┐                           |           │
 │  │ 24-State     │◄──────────────────────────┘           │
 │  │ Nonlinear    │  step_nonlinear_plant(state, u, dt)   │
 │  │ Plant        │                                       │
@@ -107,22 +112,19 @@ USER INPUT (draw path / load synthetic path)
 
 ### ROS 2 vs Simulator Mapping
 
-How each component maps to its ROS2 equivalent in the planning package.
+How each component maps to its ROS2 equivalent, when compared to the fase planning package.
 
 ```
 ROS 2 Node              │  Simulator Equivalent
 ────────────────────────┼─────────────────────────────────────
-perception_node.py      │  sim_track.SimPerception  (active when use_planner=True)
-planner_node.py         │  sim_track.SimPlanner     (active when use_planner=True)
+perception_node.py      │  sim_track.SimPerception  (active when USE_PLANNER=True)
+planner_node.py         │  sim_track.SimPlanner     (active when USE_PLANNER=True)
 cone_map.py             │  planning/cone_map.ConeMap        (shared)
 boundary.py             │  planning/boundary.py             (shared)
 path_utils.py           │  planning/path_utils.py           (shared)
 cone_sorting.py         │  planning/cone_sorting.py         (shared)
-speed_profile.py        │  speed_profile.py                 (shared)
-control_utils.py        │  simulation.py / model_utils.py
-vehicle_physics.py      │  vehicle_physics.py               (shared)
-bicycle_model.py        │  bicycle_model.py                 (shared)
-optimiser.py            │  optimiser.py                     (shared)
+control_utils.py        │  simulation.py / control_utils.py (shared)
+control_node.py         │  simulation.py / control_node.py  (shared)
 ```
 
 ---
@@ -254,7 +256,7 @@ m=255 kg, lf=0.85 m, lr=0.70 m, L=1.55 m, Iz=110 kg·m²
 Cf=11500 N/rad, Cr=12500 N/rad  (linear; used by bicycle_model only)
 tau_delta=0.08 s, tau_a=0.02 s
 mu=1.6 (Pacejka peak, racing slick)
-max_steer=35°, max_accel=5 m/s², max_brake=-5 m/s²
+max_steer=35°, max_accel=12 m/s², max_brake=-8 m/s²
 k_susp_f=25000 N/m, k_susp_r=30000 N/m
 ```
 
@@ -340,18 +342,6 @@ One approximation: `yaw_rms` and `max_yaw_rate` are derived from `diff(e_psi)/dt
 
 ---
 
-### ROS 2 Nodes (not used by simulator directly)
-
-| File | Node name | Role |
-|---|---|---|
-| `perception_node.py` | `perception` | Oracle FOV filter → `/FusionCones` |
-| `planner_node.py` | `centreline_planner` | Cone map + path + speed → `/fsds/planned_path`, `/fsds/desired_speed` |
-| `control_node.py` | `controller` | MPC → `/fsds/control_command` |
-| `control_utils.py` | — | `MPCController` class (QP, error state, adaptive gains) |
-| `integration_node.py` | `fsds_mock_pipeline` | Simple fallback mock node |
-
----
-
 ## Simulator Deep-Dive
 
 ### Startup and Path Input
@@ -370,7 +360,7 @@ Runs for up to `max_steps` steps (dynamically computed from path length) at `dt=
 
 **1. Record state** — append `X, Y, psi, v` to history before any computation.
 
-**2. Perception update** — Controlled by the `use_planner` boolean passed to `simulate_closed_loop()` (and `run_headless_rollout()` in the offline tuner). When `True`: `SimPerception.visible_cones()` filters the static cone map; `SimPlanner.update()` accumulates cones, runs `build_path_walls()`, and recomputes the speed profile. When `False` (default): the true reference path and pre-computed speed profile are used directly.
+**2. Perception update** — Controlled by the `USE_PLANNER` boolean passed to `simulate_closed_loop()` (and `run_headless_rollout()` in the offline tuner). When `True`: `SimPerception.visible_cones()` filters the static cone map; `SimPlanner.update()` accumulates cones, runs `build_path_walls()`, and recomputes the speed profile. When `False` (default): the true reference path and pre-computed speed profile are used directly.
 
 **3. Reference extraction** — the car is projected onto the active centreline (planner's or reference path's). The nearest waypoint segment gives the reference heading `rpsi`. Lateral error `e_y` is the signed perpendicular distance (positive = left of path).
 **4. Error state assembly** — the 8-element MPC state vector:

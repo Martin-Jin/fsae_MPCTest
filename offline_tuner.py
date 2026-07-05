@@ -41,9 +41,7 @@ via a weighted dot product (SCORE_WEIGHTS). Lower is better.
 
   Completion bonus: subtracted if the vehicle finishes the path.
   Time bonus:       subtracted if the vehicle finishes quickly.
-  DNF penalty:      added (proportional to how early the vehicle went off-track)
-                    if the vehicle exceeds OFFTRACK_LIMIT or the solver fails
-                    repeatedly.
+  DNF penalty:      Added if vehicle does not the finish the track.
 
 The objective function evaluated by CMA-ES is a weighted combination of the
 mean score across all tasks and the worst-case score (70% mean + 30% worst),
@@ -160,20 +158,16 @@ for idx in TUNABLE_R_RATE_IDX:
 N_HORIZON = 25
 
 # Whether to use perception and planner in tuner
-USE_PLANNER = True
+USE_PLANNER = False
 
 # ==========================================
 # DNF (DID-NOT-FINISH) PENALTY
 # ==========================================
-# Graded penalty: proportional to how much track the vehicle missed.
-# Scaled to ~2-3× the typical finishing score range (~[-0.5, -0.3]) so
-# CMA-ES still sees a gradient toward "get further" rather than treating
-# all DNFs as equally bad. A cliff penalty (previous value: 10.0) dominated
-# the covariance update and masked the continuous metric gradients.
+# Penalty for not completing the track, used to discourage
+# stationary vehicle behaviour
 DNF_PENALTY = 3.0
-# Additional penalty proportional to how far past the off-track limit the
-# vehicle was when it failed: discourages borderline-DNF solutions.
-DNF_OFFTRACK_WEIGHT = 3.0
+# Penalty if the vehicle went off track
+DNF_OFFTRACK_PENALTY = 3.0
 
 # ==========================================
 # SOLVER SETTINGS FOR HEADLESS ROLLOUTS
@@ -496,7 +490,7 @@ def build_synthetic_paths():
     # Long straight (East) → right 90° (R=10 m) → 5 m link (South) →
     # left 90° (R=10 m) → 10 m exit (East).
     # Tests consecutive direction changes and weight transfer between corners.
-    s0x = np.linspace(-10, 20, 10)
+    s0x = np.linspace(10, 20, 10)
     s0y = np.zeros(10)
     arc1x, arc1y = _make_arc(20, -10, 10, 90, 0, n=20)
     lx   = np.full(8, 30.0)
@@ -532,7 +526,7 @@ def build_synthetic_paths():
     # is integrated numerically from the curvature profile:
     #   ψ(s) = -∫₀ˢ κ(t) dt  (accumulated heading change)
     #   x(s) = ∫₀ˢ cos(ψ) dt, y(s) = ∫₀ˢ sin(ψ) dt
-    s0x      = np.linspace(-15, 5, 10)
+    s0x      = np.linspace(0, 5, 10)
     s0y      = np.zeros(10)
     L_spiral = 60.0
     ds_spiral = 0.1
@@ -720,12 +714,19 @@ def _tracking_errors(plant_state, path_X, path_Y, path_Psi, last_idx):
     X, Y, psi = plant_state[0], plant_state[1], plant_state[2]
     idx       = _find_closest(path_X, path_Y, X, Y, last_idx)
     rx, ry, rpsi = path_X[idx], path_Y[idx], path_Psi[idx]
-    dx    = X - rx
-    dy    = Y - ry
-    # Rotate position error into path-tangent frame
-    e_y   = dy * np.cos(rpsi) - dx * np.sin(rpsi)
+    
+    dx = X - rx
+    dy = Y - ry
+    
+    # Standard Frenet projection to determine side/direction
+    e_y_proj = dy * np.cos(rpsi) - dx * np.sin(rpsi)
+    
+    # Use true Euclidean distance for magnitude, keep the projection's sign
+    true_dist = math.hypot(dx, dy)
+    e_y       = true_dist * (1.0 if e_y_proj >= 0 else -1.0)
+    
     e_psi = _normalize_angle(psi - rpsi)
-    return e_y, e_psi, idx
+    return float(e_y), float(e_psi), idx
 
 
 # ==========================================
@@ -780,7 +781,7 @@ def compute_composite_score(
     max_steering, steering_sat_ratio, jerk_rms, max_yaw_rate,  
     steering_reversals, peak_lateral_error,  
     progress, time_bonus=0.0, dnf=False,  
-    e_y_offtrack=0.0, inaccurate_count=0,  
+    offtrack=False, inaccurate_count=0,  
 ):  
     """  
     Single source of truth for the composite performance score.  
@@ -800,8 +801,9 @@ def compute_composite_score(
     score -= COMPLETION_BONUS_WEIGHT * progress + TIME_BONUS_WEIGHT * time_bonus  
   
     if dnf:  
-        score += DNF_PENALTY * (1.0 - progress)  
-        score += DNF_OFFTRACK_WEIGHT * e_y_offtrack ** 2 
+        score += DNF_PENALTY
+    if offtrack:
+        score += DNF_OFFTRACK_PENALTY
     if inaccurate_count > 0:  
         factor = min(5, inaccurate_count) * 0.1  
         score = score + abs(score) * factor  
@@ -939,7 +941,7 @@ def run_headless_rollout(
     cumulative_distance = 0.0    # Arc length travelled along reference path
     last_idx            = idx
     dnf                 = False
-    e_y_offtrack     = 0.0    # How far past OFFTRACK_LIMIT at time of DNF
+    offtrack     = False         # Whether the vehicle went off track
 
     MAX_FAILS      = 5     # Consecutive solve failures before DNF
     OFFTRACK_LIMIT = TRACK_HALF_WIDTH * 2  # Lateral error threshold for DNF (m)
@@ -1089,9 +1091,10 @@ def run_headless_rollout(
 
         # Off-track check: exceeding OFFTRACK_LIMIT triggers immediate DNF
         if abs(e_y) > OFFTRACK_LIMIT:
-            e_y_offtrack = abs(e_y) - OFFTRACK_LIMIT
+            offtrack = True
             dnf       = True
             num_steps = step + 1
+            print("off track")
             break
     
         u_prev = u_opt.copy()
@@ -1130,7 +1133,7 @@ def run_headless_rollout(
         max_steering, steering_sat_ratio, jerk_rms, max_yaw_rate,  
         steering_reversals, peak_lateral_error,  
         progress=progress, time_bonus=time_bonus, dnf=dnf,  
-        e_y_offtrack=e_y_offtrack, inaccurate_count=inaccurate_count,  
+        offtrack=offtrack, inaccurate_count=inaccurate_count,  
     )  
     return score
 
@@ -1193,8 +1196,8 @@ VALIDATION_SUITE = [
     # "PATH_HAIRPIN",
     # "PATH_CHICANE",
     "PATH_FS_CORNER",
-    "PATH_MICRO_SLALOM"
-    "PATH_ACCELERATION"
+    "PATH_MICRO_SLALOM",
+    #"PATH_ACCELERATION"
 ]
 
 # Initial condition perturbations tested for each path.

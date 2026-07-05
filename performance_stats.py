@@ -43,8 +43,6 @@ from offline_tuner import (
     SCORE_WEIGHTS,  
     COMPLETION_BONUS_WEIGHT,  
     TIME_BONUS_WEIGHT,  
-    DNF_PENALTY,  
-    DNF_OFFTRACK_WEIGHT,  
     PATH_NAMES,  
     evaluate_all_paths,  
     _init_context,  
@@ -95,11 +93,7 @@ def report_performance_metrics(history, log_fn=print):
       steering_reversals: count of sign changes > 0.02 rad threshold
       peak_lateral_error: max(|e_y|)
 
-    These 11 metrics are then combined:
-      composite = SCORE_WEIGHTS @ metrics
-                - COMPLETION_BONUS_WEIGHT * progress
-                - TIME_BONUS_WEIGHT * time_bonus
-                + DNF_PENALTY * (1 - progress)    [if failed]
+    These 11 metrics are then combined.
 
     Parameters
     ----------
@@ -248,13 +242,13 @@ def report_performance_metrics(history, log_fn=print):
         time_bonus = 0.0  
     else:  
         time_bonus = float(history.get("time_bonus") or 0.0)  
-  
+    print(failed)
     composite = compute_composite_score(  
         rmse, yaw_rms, smooth_rms, steer_rms, accel_rms,  
         max_steering, steering_sat_ratio, jerk_rms, max_yaw_rate,  
         steering_reversals, peak_lateral_error,  
         progress=progress, time_bonus=time_bonus, dnf=failed,  
-        e_y_offtrack=float(history.get("e_y_offtrack", 0.0)),  
+        offtrack=history.get("offtrack"),  
         inaccurate_count=int(history.get("inaccurate_count", 0)),  
     )
 

@@ -139,8 +139,8 @@ class VehicleParams:
         self.Cr = 12500.0     # Rear  cornering stiffness (N/rad)
         # Actuator limits: enforced as hard bounds in optimiser.py's QP constraints.
         self.max_steer       = np.radians(35.0)  # Max rack-limited steering angle (rad)
-        self.max_accel       = 5.0               # Max longitudinal acceleration (m/s²)
-        self.max_accel_brake = -5.0             # Max longitudinal braking (m/s²)
+        self.max_accel       = 12.0              # Max longitudinal acceleration (m/s²); ~11 m/s² needed for 16 m/s in 1.4 s
+        self.max_accel_brake = -8.0              # Max longitudinal braking (m/s²); 16→0 in 3 s requires ~5.3 m/s²
 
         # ── Unsprung Mass ────────────────────────────────────────────────────
         self.m_us  = 7.5      # Unsprung mass per corner: wheel + upright + hub (kg)
@@ -152,7 +152,7 @@ class VehicleParams:
         # Each driven wheel's effective inertia includes the motor/gearbox
         # referred through the reduction ratio.
         self.I_wheel      = 0.3   # Per-wheel rotational inertia (kg·m²)
-        self.I_drivetrain = 0.02   # Motor+gearbox inertia referred to wheel (kg·m²)
+        self.I_drivetrain = 0.04   # Motor+gearbox inertia referred to wheel (kg·m²)
         self.I_w_eff_r    = self.I_wheel + self.I_drivetrain   # Rear driven wheels
         self.I_w_eff_f    = self.I_wheel + self.I_drivetrain   # Front driven wheels (4WD)
         self.brake_bias   = 0.60   # Fraction of total brake force at front axle
@@ -230,7 +230,7 @@ class VehicleParams:
 
         # ── Rolling Resistance and Stiction ──────────────────────────────────
         self.Crr        = 20.0     # Constant rolling drag force at speed (N)
-        self.F_stiction = 165.0    # Static breakaway force (N); (From the four wheels in total, so / 4 for a single wheel)
+        self.F_stiction = 3350.0    # Static breakaway force (N); (From the four wheels in total, so / 4 for a single wheel)
 
         # ── Actuator Lag ─────────────────────────────────────────────────────
         # First-order lag: d(delta_act)/dt = (delta_cmd - delta_act) / tau_delta
@@ -243,7 +243,7 @@ class VehicleParams:
 
         # ── Powertrain & Braking (4WD FSDS Equivalence) ──────────────────────
         self.max_tractive_force = 5000.0  # Max total longitudinal drive force (N)
-        self.max_braking_force  = 6500.0  # Max total longitudinal brake force (N)
+        self.max_braking_force  = 4000.0  # Max total longitudinal brake force (N)
         self.max_power          = 80000.0 # FS accumulator limit (Watts)
         self.is_4wd             = True    # Enable 4WD force distribution
 
@@ -662,14 +662,18 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
         delta_Fx_tv_f = (tv_gain * r / p.tf) if abs(tv_gain) > 1e-6 else 0.0
 
         if a_act >= 0.0:
-            # Map abstract MPC command to a throttle ratio
-            throttle = float(np.clip(a_act**2.50 / p.max_accel, 0.0, 0.85))
+            # 1. Inverse Dynamics (Feed-forward): Calculate the total physical force 
+            # required to achieve the requested accfeleration while overcoming resistance.
+            # F_total = (m * a) + F_drag + F_roll
+            Fx_req_total = (p.m * a_act) + F_drag + p.Crr
             
-            # Physics: Force drops off at high speed due to battery power limit (F = P / v)
-            power_limited_force = p.max_power / max(vx_safe, 1.0)
+            # 2. Powertrain Limits: An 80kW FS accumulator cannot provide infinite force at high speeds.
+            # Power = Force * velocity  ->  Force_max = Power / velocity
+            power_limited_force = p.max_power / vx_safe
+            
+            # 3. Saturate the requested force against mechanical traction and electrical limits
             available_force = min(p.max_tractive_force, power_limited_force)
-            
-            Fx_req_total = throttle * available_force
+            Fx_req_total = min(Fx_req_total, available_force)
 
             if p.is_4wd:
                 # 4WD: Distribute thrust and apply vectoring to all 4 corners
@@ -683,15 +687,16 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
                 Fx_RL_req = 0.5 * Fx_req_total - delta_Fx_tv_r
                 Fx_RR_req = 0.5 * Fx_req_total + delta_Fx_tv_r
         else:
-            # Map abstract MPC command to a brake ratio
-            brake = float(np.clip(a_act*2.50 / p.max_accel_brake, 0.0, 0.5))
-            Fx_req_total = -brake * p.max_braking_force
+            # Braking: Reverse feed-forward. Drag ASSISTS braking, so we subtract it.
+            # We want negative acceleration, so absolute required force is reduced by aero drag.
+            Fx_req_total = max((p.m * abs(a_act)) - F_drag - p.Crr, 0.0)
+            Fx_req_total = min(Fx_req_total, p.max_braking_force)
 
             # Braking: Distributed by brake_bias (60% front, 40% rear default)
-            Fx_FL_req = 0.5 * Fx_req_total * p.brake_bias
-            Fx_FR_req = 0.5 * Fx_req_total * p.brake_bias
-            Fx_RL_req = 0.5 * Fx_req_total * (1.0 - p.brake_bias) - delta_Fx_tv_r
-            Fx_RR_req = 0.5 * Fx_req_total * (1.0 - p.brake_bias) + delta_Fx_tv_r
+            Fx_FL_req = -0.5 * Fx_req_total * p.brake_bias
+            Fx_FR_req = -0.5 * Fx_req_total * p.brake_bias
+            Fx_RL_req = -0.5 * Fx_req_total * (1.0 - p.brake_bias) - delta_Fx_tv_r
+            Fx_RR_req = -0.5 * Fx_req_total * (1.0 - p.brake_bias) + delta_Fx_tv_r
 
         # ── 11. Pacejka longitudinal force ────────────────────────────────────
         # The MF94 formula gives the peak achievable Fx from friction and slip ratio.
