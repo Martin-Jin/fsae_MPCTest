@@ -39,14 +39,16 @@ DOES NOT USE
 """
 
 import numpy as np
-from offline_tuner import (
-    SCORE_WEIGHTS,
-    COMPLETION_BONUS_WEIGHT,
-    TIME_BONUS_WEIGHT,
-    DNF_PENALTY,
-    PATH_NAMES,
-    evaluate_all_paths,
-    _init_context,
+from offline_tuner import (  
+    SCORE_WEIGHTS,  
+    COMPLETION_BONUS_WEIGHT,  
+    TIME_BONUS_WEIGHT,  
+    DNF_PENALTY,  
+    DNF_OFFTRACK_WEIGHT,  
+    PATH_NAMES,  
+    evaluate_all_paths,  
+    _init_context,  
+    compute_composite_score,  
 )
 import numpy as np  # already present — no change needed
 
@@ -240,17 +242,21 @@ def report_performance_metrics(history, log_fn=print):
     composite = float(SCORE_WEIGHTS @ metrics)
 
     # ── Progress and time bonus ───────────────────────────────────────────────
-    progress = np.clip(completion_frac, 0.0, 1.0)
-
-    if failed:
-        time_bonus = 0.0   # No time bonus for failed runs
-    else:
-        time_bonus = float(history.get("time_bonus") or 0.0)
-
-    composite -= COMPLETION_BONUS_WEIGHT * progress + TIME_BONUS_WEIGHT * time_bonus
-
-    if failed:
-        composite += DNF_PENALTY * (1.0 - progress)   # Graded DNF penalty
+    progress = float(np.clip(completion_frac, 0.0, 1.0))  
+  
+    if failed:  
+        time_bonus = 0.0  
+    else:  
+        time_bonus = float(history.get("time_bonus") or 0.0)  
+  
+    composite = compute_composite_score(  
+        rmse, yaw_rms, smooth_rms, steer_rms, accel_rms,  
+        max_steering, steering_sat_ratio, jerk_rms, max_yaw_rate,  
+        steering_reversals, peak_lateral_error,  
+        progress=progress, time_bonus=time_bonus, dnf=failed,  
+        e_y_offtrack=float(history.get("e_y_offtrack", 0.0)),  
+        inaccurate_count=int(history.get("inaccurate_count", 0)),  
+    )
 
     # ── Informational-only metrics (not in composite score) ───────────────────
     # Provided for human-readable reporting; not used by CMA-ES.

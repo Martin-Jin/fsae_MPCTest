@@ -159,6 +159,9 @@ for idx in TUNABLE_R_RATE_IDX:
 # tuned here are valid when transferred to the live simulator.
 N_HORIZON = 25
 
+# Whether to use perception and planner in tuner
+USE_PLANNER = True
+
 # ==========================================
 # DNF (DID-NOT-FINISH) PENALTY
 # ==========================================
@@ -484,7 +487,7 @@ def build_synthetic_paths():
     s1y = np.zeros(10)
     arc_x, arc_y = _make_arc(5, 4.5, 4.5, -90, 0, n=20)
     s2x = np.full(10, 9.5)
-    s2y = np.linspace(4.5, 10, 10)
+    s2y = np.linspace(4.5, 24, 10)
     wx  = np.concatenate([s1x, arc_x[1:], s2x[1:]])
     wy  = np.concatenate([s1y, arc_y[1:], s2y[1:]])
     paths["PATH_SUDDEN_TURN"] = _resample_path(wx, wy)
@@ -559,6 +562,12 @@ def build_synthetic_paths():
     wx = [-20, 5, 15, 25, 35, 45, 50]
     wy = [0, 0, 2.0, -2.0, 2.0, 0, 0]
     paths["PATH_OFFSET_CHICANE"] = _resample_path(wx, wy)
+
+    # --- PATH_ACCELERATION---
+    # Straight path for acceleration testing
+    wx = np.linspace(0, 200, 100)
+    wy = np.zeros(100)
+    paths["ACCELERATION"] = _resample_path(wx, wy)
 
     # --- PATH_HAIRPIN ---
     # 5 m entry → 180° turn (R=5 m, the tightest FS-legal corner) → 5 m exit.
@@ -766,13 +775,46 @@ def init_worker(Q_init, R_init, R_rate_init):
 # ==========================================
 # HEADLESS SIMULATION ROLLOUT
 # ==========================================
+def compute_composite_score(  
+    rmse, yaw_rms, smooth_rms, steer_rms, accel_rms,  
+    max_steering, steering_sat_ratio, jerk_rms, max_yaw_rate,  
+    steering_reversals, peak_lateral_error,  
+    progress, time_bonus=0.0, dnf=False,  
+    e_y_offtrack=0.0, inaccurate_count=0,  
+):  
+    """  
+    Single source of truth for the composite performance score.  
+    Combines the 11 metrics with SCORE_WEIGHTS, applies completion/time  
+    bonuses, DNF penalties, and the inaccurate-solver factor.  
+    Lower is better. Shared by run_headless_rollout() and  
+    performance_stats.report_performance_metrics().  
+    """  
+    metrics = np.array([  
+        rmse, yaw_rms, smooth_rms, steer_rms, accel_rms,  
+        max_steering, steering_sat_ratio, jerk_rms, max_yaw_rate,  
+        float(steering_reversals), peak_lateral_error,  
+    ])  
+    score = float(SCORE_WEIGHTS @ metrics)  
+  
+    progress = float(np.clip(progress, 0.0, 1.0))  
+    score -= COMPLETION_BONUS_WEIGHT * progress + TIME_BONUS_WEIGHT * time_bonus  
+  
+    if dnf:  
+        score += DNF_PENALTY * (1.0 - progress)  
+        score += DNF_OFFTRACK_WEIGHT * e_y_offtrack ** 2 
+    if inaccurate_count > 0:  
+        factor = min(5, inaccurate_count) * 0.1  
+        score = score + abs(score) * factor  
+  
+    return score
+
 def run_headless_rollout(
     weights_vector,
     path_name=None,
     num_steps=350,
     ey0=0.0,
     epsi0=0.0,
-    use_planner=True,
+    use_planner=USE_PLANNER,
 ):
     """
     Run a single closed-loop simulation rollout without graphics and return
@@ -849,9 +891,15 @@ def run_headless_rollout(
         raise ValueError("path_name must be provided")
 
     path_X, path_Y, path_Psi, path_v, blue_all, yellow_all = SYNTHETIC_PATHS[path_name]
-    # Override num_steps with a dynamic budget based on path length
+    # Budget based on path length / conservative speed — also compute a
+    # speed-profile-aware budget in case the path is very slow (e.g. hairpin),
+    # where fallback_speed is too optimistic, and take the larger of the two.
     dynamic_max_steps = calculate_dynamic_max_steps(path_X, path_Y, dt=0.05)
-    num_steps     = dynamic_max_steps
+    mean_v_profile    = float(np.mean(path_v)) if len(path_v) > 0 else 1.5
+    profile_max_steps = int(math.ceil(
+        (PATH_LENGTHS[path_name] / max(mean_v_profile * 0.6, 1.5)) * 1.5 / dt
+    ))
+    num_steps = max(dynamic_max_steps, profile_max_steps)
 
     # Initialise perception and planning pipeline (only used when use_planner=True)
     if use_planner:
@@ -984,6 +1032,13 @@ def run_headless_rollout(
             if status in (cp.OPTIMAL_INACCURATE, "optimal_inaccurate"):
                 inaccurate_count += 1
 
+        # Path completion check: reached path end → clean finish
+        dist_to_finish = math.hypot(state[0] - path_X[-1], state[1] - path_Y[-1])
+        if idx >= len(path_X) - 2 or dist_to_finish <= 3.0:
+            reached_end = True
+            num_steps   = step + 1
+            break
+
         # ── DNF checks ────────────────────────────────────────────────────────
         if consecutive_fails >= MAX_FAILS:
             dnf       = True
@@ -994,7 +1049,7 @@ def run_headless_rollout(
         # vehicle has advanced at least STALL_MIN_DISTANCE m since the last check.
         # This catches stalls that start after the initial acceleration phase,
         # including friction-stall that the one-shot check at step > 60 misses.
-        if step > 0 and step % STALL_CHECK_INTERVAL == 0:
+        if step > 0 and step % STALL_CHECK_INTERVAL == 0 and step > STALL_CHECK_INTERVAL:
             dist_since_last_check = cumulative_distance - dist_at_last_stall_check
             if dist_since_last_check < STALL_MIN_DISTANCE:
                 dnf       = True
@@ -1038,16 +1093,13 @@ def run_headless_rollout(
             dnf       = True
             num_steps = step + 1
             break
-
-        # Path completion check: reached path end → clean finish
-        dist_to_finish = math.hypot(state[0] - path_X[-1], state[1] - path_Y[-1])
-        if idx >= len(path_X) - 2 or dist_to_finish <= 3.0:
-            reached_end = True
-            num_steps   = step + 1
-            break
     
         u_prev = u_opt.copy()
         state  = step_nonlinear_plant(state, u_opt, dt, p)
+    
+    dist_to_finish = math.hypot(state[0] - path_X[-1], state[1] - path_Y[-1])
+    if (dnf):
+        print(dist_to_finish)
 
     # ── Normalise metrics to RMS values ───────────────────────────────────────
     n = max(num_steps, 1)
@@ -1067,31 +1119,23 @@ def run_headless_rollout(
     ])
     score = float(SCORE_WEIGHTS @ metrics)
 
-    # ── Completion and time bonuses (subtracted — reward for finishing well) ───
-    progress = np.clip(cumulative_distance / PATH_LENGTHS[path_name], 0.0, 1.0)
-
-    if reached_end:
-        sim_time   = num_steps * dt   # num_steps = step + 1 at clean finish; one dt more accurate than step * dt
-        # time_bonus ∈ [0, 1]: 1 if sim_time = 0 (instant), 0 if sim_time ≥ expected_time
-        expected_time = dynamic_max_steps * dt
-        time_bonus    = max(0.0, 1.0 - (sim_time / expected_time))
-    else:
-        time_bonus = 0.0   # No time bonus for DNF — didn't finish
-
-    score -= COMPLETION_BONUS_WEIGHT * progress + TIME_BONUS_WEIGHT * time_bonus
-
-    if dnf:
-        score += DNF_PENALTY * (1.0 - progress)          # Proportional to missing fraction
-        score += DNF_OFFTRACK_WEIGHT * e_y_offtrack**2  # Extra for how far off-track
-
-    # ── Inaccurate solver penalty ─────────────────────────────────────────────
-    # Scale the score magnitude if OSQP returned OPTIMAL_INACCURATE frequently.
-    # Uses abs() + sign() to preserve the sign of good (negative) scores while
-    # still penalising poor solver quality.
-    if inaccurate_count > 0:
-        factor = min(5, inaccurate_count) * 0.1   # Up to 0.5 additive penalty on |score|
-        score  = score + abs(score) * factor       # Always increases score (penalises), regardless of sign
-
+    # ── Completion and time bonuses ───────────────────────────────────────────  
+    progress = cumulative_distance / PATH_LENGTHS[path_name]  
+  
+    if reached_end:  
+        sim_time      = num_steps * dt  
+        expected_time = dynamic_max_steps * dt  
+        time_bonus    = max(0.0, 1.0 - (sim_time / expected_time))  
+    else:  
+        time_bonus = 0.0  
+  
+    score = compute_composite_score(  
+        rmse, yaw_rms, smooth_rms, steer_rms, accel_rms,  
+        max_steering, steering_sat_ratio, jerk_rms, max_yaw_rate,  
+        steering_reversals, peak_lateral_error,  
+        progress=progress, time_bonus=time_bonus, dnf=dnf,  
+        e_y_offtrack=e_y_offtrack, inaccurate_count=inaccurate_count,  
+    )  
     return score
 
 

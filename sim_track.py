@@ -281,7 +281,7 @@ class SimPlanner:
         self.v_profile  = np.array([])
 
 
-def calculate_dynamic_max_steps(path_X, path_Y, dt=0.05, fallback_speed=3.25, buffer=1.5):
+def calculate_dynamic_max_steps(path_X, path_Y, dt=0.05, fallback_speed=2.50, buffer=1.5):
     """
     Compute the maximum number of simulation steps required to traverse the path.
 

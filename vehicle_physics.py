@@ -140,7 +140,7 @@ class VehicleParams:
         # Actuator limits: enforced as hard bounds in optimiser.py's QP constraints.
         self.max_steer       = np.radians(35.0)  # Max rack-limited steering angle (rad)
         self.max_accel       = 5.0               # Max longitudinal acceleration (m/s²)
-        self.max_accel_brake = -5.0              # Max longitudinal braking (m/s²)
+        self.max_accel_brake = -5.0             # Max longitudinal braking (m/s²)
 
         # ── Unsprung Mass ────────────────────────────────────────────────────
         self.m_us  = 7.5      # Unsprung mass per corner: wheel + upright + hub (kg)
@@ -151,10 +151,10 @@ class VehicleParams:
         # ── Rotational Inertia ───────────────────────────────────────────────
         # Each driven wheel's effective inertia includes the motor/gearbox
         # referred through the reduction ratio.
-        self.I_wheel      = 0.9    # Per-wheel rotational inertia (kg·m²)
+        self.I_wheel      = 0.6   # Per-wheel rotational inertia (kg·m²)
         self.I_drivetrain = 0.05   # Motor+gearbox inertia referred to wheel (kg·m²)
-        self.I_w_eff_r    = self.I_wheel + self.I_drivetrain  # Rear driven wheels
-        self.I_w_eff_f    = self.I_wheel                       # Front free-rolling wheels
+        self.I_w_eff_r    = self.I_wheel + self.I_drivetrain   # Rear driven wheels
+        self.I_w_eff_f    = self.I_wheel + self.I_drivetrain   # Front driven wheels (4WD)
         self.brake_bias   = 0.60   # Fraction of total brake force at front axle
 
         # ── Suspension Spring / Damper / ARB ────────────────────────────────
@@ -198,20 +198,20 @@ class VehicleParams:
         # ── Pacejka MF94 Longitudinal Coefficients ───────────────────────────
         # Same shape function applied to longitudinal slip ratio kappa.
         # Peak at slip ratio ≈ 0.10-0.15 for a slick tyre.
-        self.Bx_r = 12.0;  self.Cx_r = 1.65
+        self.Bx_r = 13.0;  self.Cx_r = 1.65
         self.Dx_r = 1.00;  self.Ex_r = -0.5
 
         # ── Tyre Relaxation Lengths ───────────────────────────────────────────
         # A tyre does not respond instantaneously to a slip angle change.
         # The lateral force builds up over a "relaxation length" σ (m):
         #   dFy/dt = (vx / σ) * (Fy_steady_state − Fy_actual)
-        # At vx=10 m/s with σ=0.35 m: time constant ≈ 35 ms — significant at 20 Hz.
-        self.sigma_y_f = 0.35      # Front lateral relaxation length (m)
-        self.sigma_y_r = 0.30      # Rear  lateral relaxation length (m)
+        # At vx=10 m/s with σ=0.30 m: time constant ≈ 30 ms — significant at 20 Hz.
+        self.sigma_y_f = 0.30      # Front lateral relaxation length (m)
+        self.sigma_y_r = 0.25      # Rear  lateral relaxation length (m)
 
         # ── Friction and Load Sensitivity ────────────────────────────────────
         # Peak friction coefficient for a dry racing slick.
-        self.mu     = 1.6          # Peak friction coefficient (dimensionless)
+        self.mu     = 1.70         # Peak friction coefficient (dimensionless)
         # At high normal loads the rubber deforms less efficiently, reducing mu.
         # k_sens: mu degrades by k_sens*Fz from the nominal peak value.
         self.k_sens = 0.00018      # Load sensitivity (1/N)
@@ -220,16 +220,16 @@ class VehicleParams:
         # Total downforce coefficient Cl_A split 43/57 front/rear for
         # neutral balance: more rear downforce than front is typical FS tuning.
         self.rho       = 1.225     # Air density at sea level (kg/m³)
-        self.Cd_A      = 0.9       # Drag area (drag coefficient × frontal area, m²)
+        self.Cd_A      = 0.7     # Drag area (drag coefficient × frontal area, m²)
         self.Cl_A_f    = 0.645     # Front wing downforce area (m²)
         self.Cl_A_r    = 0.855     # Rear  wing downforce area (m²)
         # Under braking the nose dips (pitch forward), increasing front downforce
         # and reducing rear. Cl_pitch_sens = 0.03 means a 1g deceleration shifts
         # front Cl_f up by 3% and rear Cl_r down by 3%.
-        self.Cl_pitch_sens = 0.03  # Fractional Cl change per unit (a/g)
+        self.Cl_pitch_sens = 0.025  # Fractional Cl change per unit (a/g)
 
         # ── Rolling Resistance and Stiction ──────────────────────────────────
-        self.Crr        = 21.5     # Constant rolling drag force at speed (N)
+        self.Crr        = 12.5     # Constant rolling drag force at speed (N)
         self.F_stiction = 165.0    # Static breakaway force (N); (From the four wheels in total, so / 4 for a single wheel)
 
         # ── Actuator Lag ─────────────────────────────────────────────────────
@@ -237,9 +237,15 @@ class VehicleParams:
         # EV motors respond almost instantly; FS rack-and-pinion steering has
         # a small but non-negligible lag (~80 ms) compared to a hydraulic system.
         self.tau_delta = 0.08      # Steering actuator time constant (s)
-        self.tau_a     = 0.05      # Acceleration (torque) time constant (s)
+        self.tau_a     = 0.02      # Acceleration (torque) time constant (s)
 
         self.g = 9.81              # Gravitational acceleration (m/s²)
+
+        # ── Powertrain & Braking (4WD FSDS Equivalence) ──────────────────────
+        self.max_tractive_force = 4500.0  # Max total longitudinal drive force (N)
+        self.max_braking_force  = 6500.0  # Max total longitudinal brake force (N)
+        self.max_power          = 80000.0 # FS accumulator limit (Watts)
+        self.is_4wd             = True    # Enable 4WD force distribution
 
     @property
     def L(self):
@@ -650,22 +656,42 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
         kappa_RR = _kappa(omega_RR, vx_RR)
 
         # ── 10. Torque vectoring and longitudinal force distribution ──────────
-        # TV applies a yaw-stabilising torque by biasing drive torque left/right:
-        #   ΔFx_tv = tv_gain * r / tr   [N; added to right, subtracted from left]
-        delta_Fx_tv = (tv_gain * r / p.tr) if abs(tv_gain) > 1e-6 else 0.0
-        Fx_req_total = p.m * a_act  # Newton's 2nd law: total required longitudinal force
+        # TV applies a yaw-stabilising torque by biasing drive torque left/right.
+        # Applied to both axles in a 4WD independent hub-motor setup.
+        delta_Fx_tv_r = (tv_gain * r / p.tr) if abs(tv_gain) > 1e-6 else 0.0
+        delta_Fx_tv_f = (tv_gain * r / p.tf) if abs(tv_gain) > 1e-6 else 0.0
 
-        if a_act > 0:
-            # Acceleration: rear-wheel drive only; front wheels are passive.
-            Fx_FL_req, Fx_FR_req = 0.0, 0.0
-            Fx_RL_req = 0.5 * Fx_req_total - delta_Fx_tv   # TV: reduces left to yaw right
-            Fx_RR_req = 0.5 * Fx_req_total + delta_Fx_tv   # TV: increases right
+        if a_act >= 0.0:
+            # Map abstract MPC command to a throttle ratio
+            throttle = float(np.clip(a_act / p.max_accel, 0.0, 0.85))
+            
+            # Physics: Force drops off at high speed due to battery power limit (F = P / v)
+            power_limited_force = p.max_power / max(vx_safe, 1.0)
+            available_force = min(p.max_tractive_force, power_limited_force)
+            
+            Fx_req_total = throttle * available_force
+
+            if p.is_4wd:
+                # 4WD: Distribute thrust and apply vectoring to all 4 corners
+                Fx_FL_req = 0.25 * Fx_req_total - delta_Fx_tv_f
+                Fx_FR_req = 0.25 * Fx_req_total + delta_Fx_tv_f
+                Fx_RL_req = 0.25 * Fx_req_total - delta_Fx_tv_r
+                Fx_RR_req = 0.25 * Fx_req_total + delta_Fx_tv_r
+            else:
+                # RWD: Front wheels are passive
+                Fx_FL_req, Fx_FR_req = 0.0, 0.0
+                Fx_RL_req = 0.5 * Fx_req_total - delta_Fx_tv_r
+                Fx_RR_req = 0.5 * Fx_req_total + delta_Fx_tv_r
         else:
-            # Braking: distributed by brake_bias (60% front, 40% rear default)
+            # Map abstract MPC command to a brake ratio
+            brake = float(np.clip(-a_act / 8.0, 0.0, 0.50))
+            Fx_req_total = -brake * p.max_braking_force
+
+            # Braking: Distributed by brake_bias (60% front, 40% rear default)
             Fx_FL_req = 0.5 * Fx_req_total * p.brake_bias
             Fx_FR_req = 0.5 * Fx_req_total * p.brake_bias
-            Fx_RL_req = 0.5 * Fx_req_total * (1.0 - p.brake_bias) - delta_Fx_tv
-            Fx_RR_req = 0.5 * Fx_req_total * (1.0 - p.brake_bias) + delta_Fx_tv
+            Fx_RL_req = 0.5 * Fx_req_total * (1.0 - p.brake_bias) - delta_Fx_tv_r
+            Fx_RR_req = 0.5 * Fx_req_total * (1.0 - p.brake_bias) + delta_Fx_tv_r
 
         # ── 11. Pacejka longitudinal force ────────────────────────────────────
         # The MF94 formula gives the peak achievable Fx from friction and slip ratio.

@@ -109,7 +109,7 @@ def get_8state_discrete_model(v_x, dt):
     Cf = vehicle_parameters.Cf                                 # Front cornering stiffness (N/rad)
     Cr = vehicle_parameters.Cr                                 # Rear  cornering stiffness (N/rad)
     tau_delta = vehicle_parameters.tau_delta                   # Steering lag time constant (s)
-    tau_a     = vehicle_parameters.tau_a                       # Acceleration lag time constant (s)
+    tau_a     = 0.05                                           # Acceleration lag time constant (s)
 
     # Guard against exact zero speed — prevents 1/v_x divisions from blowing up
     v_x_safe = max(0.01, v_x)

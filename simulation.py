@@ -86,9 +86,9 @@ v_ref     = 7.0     # Fallback constant speed (m/s); only used if path_v_profile
 # R_rate handles smoothness indirectly through Δu costs.
 # These values are the output of the most recent offline_tuner.py run.
 # To update: paste Q_diag, R_diag, R_rate_diag printed by offline_tuner.py.
-Q_diag      = [4.5121467429042, 0.13625975578457844, 1.3870726914833138, 0.21249256271143357, 0.557444999109886, 0.0, 0.0, 0.0]
-R_diag      = [1.5800986780949908, 2.1577147089750452]
-R_rate_diag = [3.6220649239735367, 3.2210166727029566]
+Q_diag      = [0.5033342406884888, 0.1351368654899604, 0.7000669149532808, 0.6193157161190033, 0.8687842624228068, 0.0, 0.0, 0.0]
+R_diag      = [6.32676286268335, 3.1899069771826496]
+R_rate_diag = [4.276385490350809, 9.215314852892405]
 
 Q      = np.diag(Q_diag)       # State cost matrix (8×8 diagonal)
 R      = np.diag(R_diag)       # Input cost matrix (2×2 diagonal)
@@ -97,6 +97,9 @@ R_rate = np.diag(R_rate_diag)  # Input rate-of-change cost matrix (2×2 diagonal
 # Speed profile limits passed to SimPlanner and speed_profile.compute_speed_profile()
 V_MAX = 20.0   # Absolute speed cap (m/s); planner and profiler respect this
 V_MIN = 1.5    # Minimum speed floor (m/s); prevents near-zero speed targets
+
+# Whether to use perception and planner in tuner
+USE_PLANNER = True
 
 # ── Global GUI State ────────────────────────────────────────────────────────────
 is_drawing          = False          # True while user is dragging a path
@@ -536,7 +539,7 @@ btn_reset.on_clicked(reset_environment)
 # SIMULATION ENGINE
 # ==========================================
 
-def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_rate_w=None, use_planner=False):
+def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_rate_w=None, use_planner=USE_PLANNER):
     """
     Run one closed-loop simulation rollout on the currently loaded path.
 
@@ -711,11 +714,9 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
                     rpsi = psi_g; e_y = 0.0
                 e_psi = normalize_angle(psi_g - rpsi)
                 # Speed from planner profile; fall back to reference if unavailable
-                if len(planner.v_profile) > 0:
-                    v_target = float(np.interp(
-                        np.linalg.norm(car_pos_np - cl[0]),
-                        np.linspace(0, np.sum(np.linalg.norm(np.diff(cl, axis=0), axis=1)), len(planner.v_profile)),
-                        planner.v_profile,
+                if len(planner.v_profile) > 0:  
+                    v_target = float(np.interp(  
+                        float(cl_idx), np.arange(len(planner.v_profile)), planner.v_profile,  
                     ))
                 else:
                     idx, _, _, _ = find_closest_reference_bounded(X_g, Y_g, idx, window=40)
@@ -980,7 +981,7 @@ def run_benchmark(event):
     fig.canvas.draw_idle()
     plt.pause(0.05)   # Flush the title update before the blocking loop starts
 
-    results = benchmark_weights(Q, R, R_rate, n_repeats=3, log_fn=print)
+    results = benchmark_weights(Q, R, R_rate, n_repeats=1, log_fn=print)
 
     ax_map.set_title(
         f"Benchmark complete: mean score = {results['mean_score']:.4f}  "

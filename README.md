@@ -252,7 +252,7 @@ s.t. x[:,0] = x0
 ```
 m=255 kg, lf=0.85 m, lr=0.70 m, L=1.55 m, Iz=110 kg·m²
 Cf=11500 N/rad, Cr=12500 N/rad  (linear; used by bicycle_model only)
-tau_delta=0.08 s, tau_a=0.05 s
+tau_delta=0.08 s, tau_a=0.02 s
 mu=1.6 (Pacejka peak, racing slick)
 max_steer=35°, max_accel=5 m/s², max_brake=-5 m/s²
 k_susp_f=25000 N/m, k_susp_r=30000 N/m

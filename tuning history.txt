@@ -115,3 +115,12 @@ Duration    = 44.15 minutes
 Overall score (avged from all testing scenarios)  = Haven't been tested.
 Tuner score (tuning scenarios / validation suite) = -0.1240217737788913
 Commit hash = b73e9218c8a6f472e3a9b8649d32397781073936
+
+# 05/07/26 17:26 - Good corner performance + decent speed, does not across cone boundaries at all. Only remaining small prbolem is going slightly slow on straights.
+Q_diag      = [0.5033342406884888, 0.1351368654899604, 0.7000669149532808, 0.6193157161190033, 0.8687842624228068, 0.0, 0.0, 0.0]
+R_diag      = [6.32676286268335, 3.1899069771826496]
+R_rate_diag = [4.276385490350809, 9.215314852892405]
+Duration    = 55.30 minutes
+Overall score (avged from all testing scenarios)  = Haven't been tested.
+Tuner score (tuning scenarios / validation suite) = -0.38412329359288416
+Commit hash = 392e07731a35204bf90d13cf67f87d37e8f2fd43
