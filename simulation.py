@@ -28,8 +28,7 @@ At each 20 Hz step:
   1.  Record current plant state to history
   2.  Filter visible cones via SimPerception
   3.  Update SimPlanner (centreline + speed profile rebuild)
-  4.  Compute tracking errors (e_y, e_psi) from planner centreline
-      (falls back to drawn path if planner hasn't converged yet)
+  4.  Compute tracking errors (e_y, e_psi) 
   5.  Assemble 8-state MPC error vector
   6.  Check early-exit conditions (off-track, solver failure, path end)
   7.  Solve MPC with adaptive gain scaling
@@ -722,7 +721,9 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
         e_y = dy_err * np.cos(rpsi) - dx_err * np.sin(rpsi)
         e_psi = normalize_angle(psi_g - rpsi)    # Heading error (wrapped to ±π)
 
-        _, v_target = planner.get_target(car_pos_np, psi_g)   # Desired speed from planner
+        # Extract desired speed directly from the pre-computed physical speed profile
+        v_target = path_v_profile[idx]
+
         history["v_target"].append(v_target)
         history["e_y"].append(e_y)
         history["e_psi"].append(e_psi)

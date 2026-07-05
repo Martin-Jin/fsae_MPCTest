@@ -787,8 +787,7 @@ def run_headless_rollout(
     ROLLOUT PIPELINE (per step):
       1.  Get visible cones from SimPerception (FOV filter)
       2.  Update SimPlanner (cone accumulation → centreline + speed profile)
-      3.  Compute tracking errors from SimPlanner centreline (or fallback to
-          reference path if planner hasn't converged yet)
+      3.  Compute tracking errors 
       4.  Track progress along the reference path (for completion scoring)
       5.  Build MPC state vector x0_mpc from tracking errors + plant state
       6.  Apply adaptive gain scaling (curvature and speed dependent)
@@ -929,6 +928,8 @@ def run_headless_rollout(
         # else:
         #     e_y, e_psi, idx_new = _tracking_errors(state, path_X, path_Y, path_Psi, idx)
         #     idx = idx_new
+
+
         # Should always use reference path / center line for lateral error
         e_y, e_psi, idx_new = _tracking_errors(state, path_X, path_Y, path_Psi, idx)
         idx = idx_new
@@ -941,9 +942,8 @@ def run_headless_rollout(
 
         idx = idx_ref
 
-        # ── Speed target from planner ─────────────────────────────────────────
-        _, v_target = planner.get_target(car_pos_np, state[2])
-        v_target    = float(v_target)
+        # ── Speed target from speed profile ─────────────────────────────────────────
+        v_target = float(path_v[idx])
         vx_true = state[3]                  # True longitudinal speed for state error
         vx      = max(vx_true, 0.5)         # Clamped speed for model linearisation only
 

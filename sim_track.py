@@ -193,9 +193,6 @@ class SimPlanner:
       2. Attempts to rebuild the boundary walls and centreline
       3. Computes a curvature-based speed profile along the new centreline
 
-    On each get_target() call, it returns the lookahead waypoint and desired
-    speed for the MPC's reference tracking.
-
     The stateful accumulation (ConeMap) means the planner's centreline improves
     as the vehicle moves forward and more cones enter the FOV — matching the
     behaviour of the real ROS2 planner which also accumulates observations.
@@ -213,14 +210,10 @@ class SimPlanner:
             Passed to speed_profile.compute_speed_profile().
         v_min : float
             Minimum speed floor for the speed profile (m/s).
-        lookahead_dist : float
-            Distance ahead of the vehicle to place the MPC's target waypoint (m).
-            Used in get_target() via get_lookahead_waypoint().
         """
         self._cone_map      = ConeMap()       # Persistent accumulator for cone observations
         self._v_max         = v_max
         self._v_min         = v_min
-        self._lookahead     = lookahead_dist
         self.centreline     = None            # Current best-estimate centreline (n, 2) or None
         self.v_profile      = np.array([])   # Speed profile along centreline (n,) or empty
 
@@ -236,8 +229,7 @@ class SimPlanner:
         cone-to-cone boundary matching). If that fails (e.g. too few cones),
         it falls back to build_local_path() which uses a simpler heuristic.
 
-        Speed profile is computed only if the centreline has ≥ 3 points;
-        shorter paths get an empty profile and get_target() falls back to v_min.
+        Speed profile is computed only if the centreline has ≥ 3 points.
 
         Parameters
         ----------
@@ -276,53 +268,6 @@ class SimPlanner:
             self.v_profile = sp.smooth_profile(raw, window=9)
         else:
             self.v_profile = np.array([])   # Insufficient points; use v_min fallback
-
-    def get_target(self, car_pos, car_yaw):
-        """
-        Return the MPC's lookahead target and desired speed.
-
-        Queries the current centreline for a point LOOK_AHEAD metres ahead
-        of the vehicle, then queries the speed profile for the desired speed
-        at the vehicle's current position.
-
-        Mirrors planner_node.py's output: (lookahead_waypoint, desired_speed).
-
-        Parameters
-        ----------
-        car_pos : np.ndarray, shape (2,)
-            Vehicle position [X, Y] in global frame (m).
-        car_yaw : float
-            Vehicle yaw angle (rad).
-
-        Returns
-        -------
-        (target, v_des) : tuple
-            target : np.ndarray, shape (2,) or None
-                [X, Y] of the lookahead waypoint (m). None if no centreline.
-            v_des : float
-                Desired speed at the vehicle's current position (m/s).
-                Falls back to v_min if no speed profile is available.
-
-        Called by: simulation.py (simulate_closed_loop),
-                   offline_tuner.py (run_headless_rollout)
-        """
-        if self.centreline is None or len(self.centreline) == 0:
-            return None, self._v_min
-
-        # Find waypoint LOOK_AHEAD metres ahead along the centreline
-        target = get_lookahead_waypoint(
-            self.centreline, car_pos, car_yaw, self._lookahead
-        )
-
-        if len(self.v_profile) > 0:
-            # Query the pre-computed physical speed profile at our closest point
-            dists = np.linalg.norm(self.centreline - car_pos, axis=1)
-            cl_idx = int(np.argmin(dists))
-            v_des = float(self.v_profile[cl_idx])
-        else:
-            v_des = self._v_min   # No profile yet; start slow
-
-        return target, v_des
 
     def reset(self):
         """

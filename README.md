@@ -317,7 +317,6 @@ Evenly spaces cones along both boundaries at `CONE_SPACING=3.0 m`, offset `TRACK
 
 **`SimPlanner(v_max, v_min, lookahead_dist)`**
 - `update(blue_obs, yellow_obs, car_pos, car_yaw)` — ingest new cones into ConeMap, rebuild centreline + speed profile each step
-- `get_target(car_pos, car_yaw) → (target_xy, v_desired)` — lookahead waypoint and desired speed
 - `reset()` — clear accumulated cone map and centreline
 
 **`calculate_dynamic_max_steps(path_X, path_Y, dt, fallback_speed, buffer) → int`**  
