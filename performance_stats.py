@@ -218,22 +218,10 @@ def report_performance_metrics(history, log_fn=print):
     # Mirrors: peak_lateral_error = max(peak_lateral_error, abs(e_y))
     peak_lateral_error = float(np.max(np.abs(e_y))) if len(e_y) else 0.0
 
-    # ── Composite score ───────────────────────────────────────────────────────
-    # Weighted dot product with SCORE_WEIGHTS (imported from offline_tuner.py).
-    metrics = np.array([
-        rmse,
-        yaw_rms,
-        smooth_rms,
-        steer_rms,
-        accel_rms,
-        max_steering,
-        steering_sat_ratio,
-        jerk_rms,
-        max_yaw_rate,
-        float(steering_reversals),
-        peak_lateral_error,
-    ])
-    composite = float(SCORE_WEIGHTS @ metrics)
+    # ── Speed RMSE (Required for composite score) ─────────────────────────────
+    v_target_arr = np.asarray(history.get("v_target", []), dtype=float)
+    speed_rmse   = float(np.sqrt(np.mean((v - v_target_arr)**2))) \
+        if len(v_target_arr) == len(v) and len(v) > 0 else float("nan")
 
     # ── Progress and time bonus ───────────────────────────────────────────────
     progress = float(np.clip(completion_frac, 0.0, 1.0))  
@@ -243,10 +231,12 @@ def report_performance_metrics(history, log_fn=print):
     else:  
         time_bonus = float(history.get("time_bonus") or 0.0)  
     print(failed)
+    
+    # ── Composite score ───────────────────────────────────────────────────────
     composite = compute_composite_score(  
         rmse, yaw_rms, smooth_rms, steer_rms, accel_rms,  
         max_steering, steering_sat_ratio, jerk_rms, max_yaw_rate,  
-        steering_reversals, peak_lateral_error,  
+        steering_reversals, peak_lateral_error, speed_rmse, 
         progress=progress, time_bonus=time_bonus, dnf=failed,  
         offtrack=history.get("offtrack"),  
         inaccurate_count=int(history.get("inaccurate_count", 0)),  

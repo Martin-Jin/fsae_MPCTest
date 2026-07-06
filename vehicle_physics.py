@@ -135,12 +135,15 @@ class VehicleParams:
         self.h_cg  = 0.30     # Centre-of-gravity height (m); drives load transfer
         # Linear cornering stiffness — used only by the MPC's linear model (model.py),
         # not by this nonlinear plant which uses Pacejka curves directly.
-        self.Cf = 11500.0     # Front cornering stiffness (N/rad)
-        self.Cr = 12500.0     # Rear  cornering stiffness (N/rad)
+        # Effective linearised cornering stiffness matched to Pacejka initial slope:
+        # C_eff ≈ mu * Fz_nominal * B * C * D.  Front: 1.9*600*15*1.45*1.0 ≈ 24,800 N/rad.
+        self.Cf = 25000.0     # Front cornering stiffness (N/rad)
+        self.Cr = 20000.0     # Rear  cornering stiffness (N/rad)
         # Actuator limits: enforced as hard bounds in optimiser.py's QP constraints.
         self.max_steer       = np.radians(35.0)  # Max rack-limited steering angle (rad)
-        self.max_accel       = 5.0               # Max longitudinal acceleration (m/s²)
-        self.max_accel_brake = -5.0              # Max longitudinal braking (m/s²)
+        # FS EV peak acceleration ~12 m/s² (0→17 m/s in ~2 s); braking ~10 m/s² (~1g).
+        self.max_accel       = 12.0              # Max longitudinal acceleration (m/s²)
+        self.max_accel_brake = -10.0             # Max longitudinal braking (m/s²)
 
         # ── Unsprung Mass ────────────────────────────────────────────────────
         self.m_us  = 7.5      # Unsprung mass per corner: wheel + upright + hub (kg)
@@ -189,10 +192,10 @@ class VehicleParams:
         # D: peak factor     (scales peak force; combined with mu*Fz gives peak Fy)
         # E: curvature factor (negative = sharper peak, typical for racing slick)
         # Sv, Sh: vertical/horizontal offsets from ply-steer and conicity
-        self.B_f  = 13.5;  self.C_f  = 1.40;  self.D_f  = 0.90
+        self.B_f  = 15.0;  self.C_f  = 1.45;  self.D_f  = 1.0
         self.E_f  = -1.5;  self.Sv_f = 0.0;   self.Sh_f = 0.002
 
-        self.B_r  = 10.0;  self.C_r  = 1.40;  self.D_r  = 0.95
+        self.B_r  = 12.0;  self.C_r  = 1.45;  self.D_r  = 1.0
         self.E_r  = -1.8;  self.Sv_r = 0.0;   self.Sh_r = 0.001
 
         # ── Pacejka MF94 Longitudinal Coefficients ───────────────────────────
@@ -211,10 +214,12 @@ class VehicleParams:
 
         # ── Friction and Load Sensitivity ────────────────────────────────────
         # Peak friction coefficient for a dry racing slick.
-        self.mu     = 1.6          # Peak friction coefficient (dimensionless)
-        # At high normal loads the rubber deforms less efficiently, reducing mu.
-        # k_sens: mu degrades by k_sens*Fz from the nominal peak value.
-        self.k_sens = 0.00018      # Load sensitivity (1/N)
+        # mu=1.9: representative of FS-spec 13" slick on dry tarmac (Hoosier/Avon data).
+        # Previously 1.6 was too conservative, causing marginal grip in low-speed turns.
+        self.mu     = 1.9          # Peak friction coefficient (dimensionless)
+        # Reduced load sensitivity: slicks show less degradation than road tyres.
+        # At nominal Fz~600 N: mu_eff = 1.9*(1 - 0.00012*600) = 1.76 — still strong.
+        self.k_sens = 0.00012      # Load sensitivity (1/N)
 
         # ── Aerodynamics ─────────────────────────────────────────────────────
         # Total downforce coefficient Cl_A split 43/57 front/rear for
@@ -806,9 +811,11 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
         Y_new   = Y   + (vx * np.sin(psi) + vy * np.cos(psi)) * h
         psi_new = psi + r * h              # Yaw: integrate yaw rate
 
-        # Actuator states: Euler on the lag ODEs
-        delta_new = delta_act + ddelta * h
-        a_new     = a_act     + da     * h
+        # Actuator states: Euler on lag ODEs, clamped to physical limits.
+        # Without clamping, integrator wind-up can push delta_act or a_act
+        # outside their hardware limits between MPC solve steps.
+        delta_new = float(np.clip(delta_act + ddelta * h, -p.max_steer, p.max_steer))
+        a_new     = float(np.clip(a_act     + da     * h, p.max_accel_brake, p.max_accel))
 
         # Wheel speeds: floor at 0 (wheels don't spin backward in normal driving)
         omega_RL_new = max(0.0, omega_RL + domega_RL * h)

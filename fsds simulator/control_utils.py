@@ -547,12 +547,14 @@ class MPCController:
 
         steering = float(np.clip(-delta_cmd / MAX_STEER_RAD, -1.0, 1.0))
 
+        # Normalise to [0,1] using the plant's actuator limits so FSDS throttle/brake
+        # scale correctly after max_accel was raised from 5 to 12 m/s².
         if a_cmd >= 0.0:
-            throttle = float(np.clip(a_cmd / 4.0, 0.0, 1.0))
+            throttle = float(np.clip(a_cmd / 12.0, 0.0, 1.0))
             brake    = 0.0
         else:
             throttle = 0.0
-            brake    = float(np.clip(-a_cmd / 4.0, 0.0, 1.0))
+            brake    = float(np.clip(-a_cmd / 10.0, 0.0, 1.0))
 
         self.last_telemetry = {
             **dbg,

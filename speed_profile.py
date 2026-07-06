@@ -17,28 +17,24 @@ The result is a smooth speed profile that:
 
 HOW THE PROFILING WORKS
 -----------------------
-The algorithm has three passes:
+The algorithm iterates over every point in the path and applies a look-ahead
+heuristic to find the maximum upcoming curvature. 
 
-  Pass 0 — Corner speed limit at each point:
-      The centripetal acceleration needed to follow a path of curvature κ at
-      speed v is: a_c = v² * κ. Setting a_c = mu*g gives the grip-limited
-      corner speed: v_corner = sqrt(mu*g / κ). This is the speed at which the
-      lateral tyre force demand exactly equals the available lateral grip,
-      using the same friction-circle concept as vehicle_physics.py's tyre model
-      (but applied at the path planning level rather than per-tyre).
+  1. Look-ahead Window:
+     At each path point, it samples upcoming points between a `scan_start` 
+     and `scan_end` distance.
+  2. 3-Point Curvature Estimation:
+     It uses a 3-point cross-product method across the sampled window to 
+     find the maximum geometric curvature (κ_max) ahead of the vehicle.
+  3. Speed Target Generation:
+     Using the friction circle approximation (a_c = v² * κ), it sets the 
+     target speed to v_target = sqrt(a_lat_max / κ_max), keeping it bounded 
+     between the global v_min and an effective v_max (which scales down near 
+     the end of the path).
 
-  Pass 1 — Forward pass (acceleration limit):
-      Starting from the first point, each subsequent point's speed is capped by
-      how fast the vehicle can accelerate from the previous point:
-          v_next² ≤ v_prev² + 2 * a_accel_max * ds
-      Prevents the profile from asking for unreachable speed gains between points.
-
-  Pass 2 — Backward pass (braking limit):
-      Starting from the last point, each previous point's speed is capped by
-      how early braking must begin to reach the next point's speed limit:
-          v_prev² ≤ v_next² + 2 * |a_brake_max| * ds
-      This enforces "you must start braking before the corner, not at it",
-      which is the critical insight for generating realistic speed profiles.
+This method directly mirrors the ROS2 planner's speed profiling behavior, 
+prioritizing upcoming severe corners over strict point-to-point kinematic 
+acceleration limits.
 
 USED BY
 -------

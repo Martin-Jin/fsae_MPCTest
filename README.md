@@ -453,6 +453,7 @@ Index  Metric                Notes
   8    max_yaw_rate          cornering aggressiveness
   9    steering_reversals    sign-change hunting count
  10    peak_lateral_error    worst single-step deviation
+ 11    speed_rmse            difference between current and planner speed
 ```
 
 Bonuses (subtracted from score — reward for completing quickly):

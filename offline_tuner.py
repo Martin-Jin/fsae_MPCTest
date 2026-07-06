@@ -107,10 +107,15 @@ from optimiser import solve_mpc
 import speed_profile as sp
 import cvxpy as cp
 import cma
-from sim_track import place_cones, SimPerception, SimPlanner, calculate_dynamic_max_steps, TRACK_HALF_WIDTH
+from sim_track import (
+    place_cones,
+    SimPerception,
+    SimPlanner,
+    calculate_dynamic_max_steps,
+    TRACK_HALF_WIDTH,
+)
 import math
 import datetime
-
 
 # ==========================================
 # TUNABLE WEIGHT CONFIGURATION
@@ -118,9 +123,9 @@ import datetime
 # These index lists define WHICH diagonal entries of Q, R, R_rate are
 # handed to CMA-ES as free parameters. Entries not listed are held fixed
 # at their template values (e.g. Q[5,5]=0 stays zero — no cost on e_a).
-TUNABLE_Q_IDX      = [0, 1, 2, 3, 4]   # e_y, e_y_dot, e_psi, e_psi_dot, e_v
-TUNABLE_R_IDX      = [0, 1]            # delta_cmd, a_cmd
-TUNABLE_R_RATE_IDX = [0, 1]            # d(delta_cmd)/dt, d(a_cmd)/dt
+TUNABLE_Q_IDX = [0, 1, 2, 3, 4]  # e_y, e_y_dot, e_psi, e_psi_dot, e_v
+TUNABLE_R_IDX = [0, 1]  # delta_cmd, a_cmd
+TUNABLE_R_RATE_IDX = [0, 1]  # d(delta_cmd)/dt, d(a_cmd)/dt
 
 # Multiplicative bounds on each tunable weight (multiplier, not absolute value).
 # Floor of 0.1 allows reduction below the template; ceiling of 10.0 prevents
@@ -174,15 +179,15 @@ DNF_OFFTRACK_PENALTY = 3.0
 # ==========================================
 # Looser than the live simulator (1e-5) for ~2× faster rollouts at negligible
 # accuracy cost. These are passed to solve_mpc() in run_headless_rollout().
-ROLLOUT_EPS      = 1e-4
-ROLLOUT_MAX_ITER = 5000
+ROLLOUT_EPS = 1e-4
+ROLLOUT_MAX_ITER = 5000 
 
 # Graceful shutdown flag: set by SIGINT handler; checked each CMA generation.
 _stop_requested = False
 # Total true-evaluation budget (surrogate skips many; this controls wall time).
-MAX_EVALS = 1500
+MAX_EVALS = 2500
 # Path resampling resolution — independent of CMA-ES budget
-PATH_N_POINTS   = 1000   
+PATH_N_POINTS = 1000
 
 # ==========================================
 # SCORING WEIGHTS
@@ -200,31 +205,37 @@ PATH_N_POINTS   = 1000
 #   8: max_yaw_rate       — peak yaw rate (limits cornering aggression)
 #   9: steering_reversals — count of steering sign reversals (penalises hunting)
 #  10: peak_lateral_error — worst single-step lateral deviation (safety margin)
+#  11: speed_rmse         - difference between current and planner speed
 #
 # Design note: steer_rms (3), max_steering (5), and steering_sat_ratio (6)
 # are correlated (all measure the same signal at different aggregation levels).
 # Weight was redistributed to rmse and peak_lateral_error which are the primary
 # tracking quality signals and previously under-weighted.
-SCORE_WEIGHTS = np.array([
-    0.52,  # 0  rmse               (primary tracking; highest weight)
-    0.04,  # 1  yaw_rms
-    0.06,  # 2  smooth_rms
-    0.02,  # 3  steer_rms
-    0.02,  # 4  accel_rms
-    0.03,  # 5  max_steering
-    0.08,  # 6  steering_sat_ratio
-    0.06,  # 7  jerk_rms
-    0.02,  # 8  max_yaw_rate
-    0.05,  # 9  steering_reversals
-    0.10,  # 10 peak_lateral_error 
-], dtype=float)
+SCORE_WEIGHTS = np.array(
+    [
+        0.48,  # 0  rmse               (lateral + heading + speed tracking; primary)
+        0.04,  # 1  yaw_rms
+        0.06,  # 2  smooth_rms
+        0.02,  # 3  steer_rms
+        0.03,  # 4  accel_rms
+        0.03,  # 5  max_steering
+        0.06,  # 6  steering_sat_ratio
+        0.06,  # 7  jerk_rms
+        0.02,  # 8  max_yaw_rate
+        0.05,  # 9  steering_reversals
+        0.13,  # 10 peak_lateral_error
+        0.02,  # 11 speed_rmse
+    ],
+    dtype=float,
+)
 
-COMPLETION_BONUS_WEIGHT = 0.50   # Subtracted from score when vehicle finishes path
-TIME_BONUS_WEIGHT       = 0.45   # Subtracted from score for fast completion
+COMPLETION_BONUS_WEIGHT = 0.50  # Subtracted from score when vehicle finishes path
+TIME_BONUS_WEIGHT = 0.45  # Subtracted from score for fast completion
 
 # Sanity check: weights must sum to 1 so the composite score is interpretable
-assert abs(SCORE_WEIGHTS.sum() - 1.0) < 1e-9, \
-    f"SCORE_WEIGHTS must sum to 1.0, got {SCORE_WEIGHTS.sum():.6f}"
+assert (
+    abs(SCORE_WEIGHTS.sum() - 1.0) < 1e-9
+), f"SCORE_WEIGHTS must sum to 1.0, got {SCORE_WEIGHTS.sum():.6f}"
 
 # Module-level dict: shared initial parameters passed to worker processes.
 # Set in the main process before the Pool is opened; each worker reads it
@@ -274,13 +285,14 @@ def get_cached_model(vx, dt):
 # Once simulation.py is updated to import from model_utils.py directly,
 # these copies should be removed.
 
+
 def curvature_estimate(state):
     """
     Estimate instantaneous path curvature from yaw rate and speed.
     κ = |r / vx|. See model_utils.py for full documentation.
     """
     vx = max(state[3], 0.5)
-    r  = state[5]
+    r = state[5]
     return abs(r / vx)
 
 
@@ -289,7 +301,7 @@ def adaptive_R_rate(kappa, R_rate_base):
     Soften the steering rate-of-change cost in corners.
     scale = max(0.35, 1/(1 + 3*κ)). See model_utils.py for full documentation.
     """
-    R     = np.array(R_rate_base, copy=True)
+    R = np.array(R_rate_base, copy=True)
     scale = max(0.35, 1.0 / (1.0 + 3.0 * kappa))
     R[0, 0] *= scale
     return R
@@ -300,12 +312,12 @@ def adaptive_R_scaling(vx, R_base):
     Increase steering cost with speed (Hill function) to maintain stability.
     steer_scale = 1 + 1.5*vx/(6+vx). See model_utils.py for full documentation.
     """
-    vx          = max(vx, 0.5)
-    A           = 1.5
-    vx_half     = 6.0
+    vx = max(vx, 0.5)
+    A = 1.5
+    vx_half = 6.0
     steer_scale = 1.0 + (A * vx) / (vx_half + vx)
     accel_scale = 1.0 + 0.05 * vx
-    R_scaled    = np.array(R_base, copy=True)
+    R_scaled = np.array(R_base, copy=True)
     R_scaled[0, 0] *= steer_scale
     R_scaled[1, 1] *= accel_scale
     return R_scaled
@@ -314,6 +326,7 @@ def adaptive_R_scaling(vx, R_base):
 # ==========================================
 # SYNTHETIC PATH LIBRARY — INTERNAL HELPERS
 # ==========================================
+
 
 def _resample_path(waypoints_x, waypoints_y, n_points=PATH_N_POINTS):
     """
@@ -345,7 +358,7 @@ def _resample_path(waypoints_x, waypoints_y, n_points=PATH_N_POINTS):
     """
     wx = np.asarray(waypoints_x, dtype=float)
     wy = np.asarray(waypoints_y, dtype=float)
-    t  = np.linspace(0.0, 1.0, len(wx))
+    t = np.linspace(0.0, 1.0, len(wx))
 
     # Clamped end derivatives: direction of first/last chord
     d0 = np.array([wx[1] - wx[0], wy[1] - wy[0]]) / (t[1] - t[0])
@@ -354,16 +367,16 @@ def _resample_path(waypoints_x, waypoints_y, n_points=PATH_N_POINTS):
     cs_x = CubicSpline(t, wx, bc_type=((1, d0[0]), (1, dN[0])))
     cs_y = CubicSpline(t, wy, bc_type=((1, d0[1]), (1, dN[1])))
 
-    t_fine   = np.linspace(0.0, 1.0, n_points)
-    path_X   = cs_x(t_fine)
-    path_Y   = cs_y(t_fine)
+    t_fine = np.linspace(0.0, 1.0, n_points)
+    path_X = cs_x(t_fine)
+    path_Y = cs_y(t_fine)
     # Path heading: atan2 of the spline derivative vector
-    dx       = cs_x.derivative()(t_fine)
-    dy       = cs_y.derivative()(t_fine)
+    dx = cs_x.derivative()(t_fine)
+    dy = cs_y.derivative()(t_fine)
     path_Psi = np.arctan2(dy, dx)
 
     # Curvature-based speed profile + smoothing
-    raw_v  = sp.compute_speed_profile(path_X, path_Y)
+    raw_v = sp.compute_speed_profile(path_X, path_Y)
     path_v = sp.smooth_profile(raw_v, window=9)
 
     # Cone placement for SimPerception / SimPlanner
@@ -425,8 +438,8 @@ def vector_to_weights(vec, Q_template, R_template, R_rate_template):
     Called by: run_headless_rollout() (converts each CMA-ES candidate to weights),
                main block (converts best found vector to final weights for display)
     """
-    Q      = Q_template.copy()
-    R      = R_template.copy()
+    Q = Q_template.copy()
+    R = R_template.copy()
     R_rate = R_rate_template.copy()
 
     n_q = len(TUNABLE_Q_IDX)
@@ -434,16 +447,16 @@ def vector_to_weights(vec, Q_template, R_template, R_rate_template):
 
     for j, i in enumerate(TUNABLE_Q_IDX):
         # Use template value as base; substitute 1.0 if template entry is zero
-        base_val  = Q_template[i, i] if Q_template[i, i] != 0.0 else 1.0
-        Q[i, i]   = vec[j] * base_val
+        base_val = Q_template[i, i] if Q_template[i, i] != 0.0 else 1.0
+        Q[i, i] = vec[j] * base_val
 
     for j, i in enumerate(TUNABLE_R_IDX):
-        base_val  = R_template[i, i] if R_template[i, i] != 0.0 else 1.0
-        R[i, i]   = vec[n_q + j] * base_val
+        base_val = R_template[i, i] if R_template[i, i] != 0.0 else 1.0
+        R[i, i] = vec[n_q + j] * base_val
 
     for j, i in enumerate(TUNABLE_R_RATE_IDX):
-        base_val        = R_rate_template[i, i] if R_rate_template[i, i] != 0.0 else 1.0
-        R_rate[i, i]    = vec[n_q + n_r + j] * base_val
+        base_val = R_rate_template[i, i] if R_rate_template[i, i] != 0.0 else 1.0
+        R_rate[i, i] = vec[n_q + n_r + j] * base_val
 
     return Q, R, R_rate
 
@@ -482,8 +495,8 @@ def build_synthetic_paths():
     arc_x, arc_y = _make_arc(5, 4.5, 4.5, -90, 0, n=20)
     s2x = np.full(10, 9.5)
     s2y = np.linspace(4.5, 24, 10)
-    wx  = np.concatenate([s1x, arc_x[1:], s2x[1:]])
-    wy  = np.concatenate([s1y, arc_y[1:], s2y[1:]])
+    wx = np.concatenate([s1x, arc_x[1:], s2x[1:]])
+    wy = np.concatenate([s1y, arc_y[1:], s2y[1:]])
     paths["PATH_SUDDEN_TURN"] = _resample_path(wx, wy)
 
     # --- PATH_S_BEND ---
@@ -493,13 +506,13 @@ def build_synthetic_paths():
     s0x = np.linspace(10, 20, 10)
     s0y = np.zeros(10)
     arc1x, arc1y = _make_arc(20, -10, 10, 90, 0, n=20)
-    lx   = np.full(8, 30.0)
-    ly   = np.linspace(-10, -15, 8)
+    lx = np.full(8, 30.0)
+    ly = np.linspace(-10, -15, 8)
     arc2x, arc2y = _make_arc(40, -15, 10, 180, 270, n=20)
-    s1x  = np.linspace(40, 50, 10)
-    s1y  = np.full(10, -25.0)
-    wx   = np.concatenate([s0x, arc1x[1:], lx[1:], arc2x[1:], s1x[1:]])
-    wy   = np.concatenate([s0y, arc1y[1:], ly[1:], arc2y[1:], s1y[1:]])
+    s1x = np.linspace(40, 50, 10)
+    s1y = np.full(10, -25.0)
+    wx = np.concatenate([s0x, arc1x[1:], lx[1:], arc2x[1:], s1x[1:]])
+    wy = np.concatenate([s0y, arc1y[1:], ly[1:], arc2y[1:], s1y[1:]])
     paths["PATH_S_BEND"] = _resample_path(wx, wy)
 
     # --- PATH_SKIDPAD ---
@@ -526,21 +539,21 @@ def build_synthetic_paths():
     # is integrated numerically from the curvature profile:
     #   ψ(s) = -∫₀ˢ κ(t) dt  (accumulated heading change)
     #   x(s) = ∫₀ˢ cos(ψ) dt, y(s) = ∫₀ˢ sin(ψ) dt
-    s0x      = np.linspace(0, 5, 10)
-    s0y      = np.zeros(10)
+    s0x = np.linspace(0, 5, 10)
+    s0y = np.zeros(10)
     L_spiral = 60.0
     ds_spiral = 0.1
     s_spiral = np.arange(0, L_spiral + ds_spiral, ds_spiral)
     # Linearly varying curvature: κ = κ_start + (κ_end - κ_start) * s/L
     kappa_spiral = (1.0 / 15.0) + ((1.0 / 5.5) - (1.0 / 15.0)) * (s_spiral / L_spiral)
-    psi_spiral   = -np.cumsum(kappa_spiral * ds_spiral)        # Integrated heading (clockwise)
-    psi_spiral   = np.concatenate([[0.0], psi_spiral[:-1]])    # Shift to start at ψ=0
-    curve_sx     = 5.0 + np.cumsum(np.cos(psi_spiral) * ds_spiral)
-    curve_sy     = 0.0 + np.cumsum(np.sin(psi_spiral) * ds_spiral)
-    curve_sx     = np.concatenate([[5.0], curve_sx])
-    curve_sy     = np.concatenate([[0.0], curve_sy])
-    wx  = np.concatenate([s0x, curve_sx[1:]])
-    wy  = np.concatenate([s0y, curve_sy[1:]])
+    psi_spiral = -np.cumsum(kappa_spiral * ds_spiral)  # Integrated heading (clockwise)
+    psi_spiral = np.concatenate([[0.0], psi_spiral[:-1]])  # Shift to start at ψ=0
+    curve_sx = 5.0 + np.cumsum(np.cos(psi_spiral) * ds_spiral)
+    curve_sy = 0.0 + np.cumsum(np.sin(psi_spiral) * ds_spiral)
+    curve_sx = np.concatenate([[5.0], curve_sx])
+    curve_sy = np.concatenate([[0.0], curve_sy])
+    wx = np.concatenate([s0x, curve_sx[1:]])
+    wy = np.concatenate([s0y, curve_sy[1:]])
     paths["PATH_SPIRAL"] = _resample_path(wx, wy)
 
     # --- PATH_MICRO_SLALOM ---
@@ -559,46 +572,46 @@ def build_synthetic_paths():
 
     # --- PATH_ACCELERATION---
     # Straight path for acceleration testing
-    wx = np.linspace(0, 80, 100)
-    wy = np.zeros(100)
+    wx = np.linspace(0, 75, 50)
+    wy = np.zeros(50)
     paths["PATH_ACCELERATION"] = _resample_path(wx, wy)
 
     # --- PATH_HAIRPIN ---
     # 5 m entry → 180° turn (R=5 m, the tightest FS-legal corner) → 5 m exit.
     # Tests maximum steering demand and slowest-speed tracking.
-    s1x    = np.linspace(0, 5, 10)
-    s1y    = np.zeros(10)
+    s1x = np.linspace(0, 5, 10)
+    s1y = np.zeros(10)
     arc_hp_x, arc_hp_y = _make_arc(5, -5, 5, 90, -90, n=25)
-    s2x    = np.linspace(5, 0, 10)
-    s2y    = np.full(10, -10.0)
-    wx     = np.concatenate([s1x, arc_hp_x[1:], s2x[1:]])
-    wy     = np.concatenate([s1y, arc_hp_y[1:], s2y[1:]])
+    s2x = np.linspace(5, 0, 10)
+    s2y = np.full(10, -10.0)
+    wx = np.concatenate([s1x, arc_hp_x[1:], s2x[1:]])
+    wy = np.concatenate([s1y, arc_hp_y[1:], s2y[1:]])
     paths["PATH_HAIRPIN"] = _resample_path(wx, wy)
 
     # --- PATH_CHICANE ---
     # Two matched-radius (R=6 m) arcs forming a pure S-transition without a
     # straight link between them. Tests the controller's ability to reverse
     # lateral error sign while still in a corner.
-    s0x    = np.linspace(0, 5, 10)
-    s0y    = np.zeros(10)
+    s0x = np.linspace(0, 5, 10)
+    s0y = np.zeros(10)
     arc_ch1x, arc_ch1y = _make_arc(5, 6, 6, -90, 0, n=15)
     arc_ch2x, arc_ch2y = _make_arc(17, 6, 6, 180, 90, n=15)
-    s1x    = np.linspace(17, 22, 10)
-    s1y    = np.full(10, 12.0)
-    wx     = np.concatenate([s0x, arc_ch1x[1:], arc_ch2x[1:], s1x[1:]])
-    wy     = np.concatenate([s0y, arc_ch1y[1:], arc_ch2y[1:], s1y[1:]])
+    s1x = np.linspace(17, 22, 10)
+    s1y = np.full(10, 12.0)
+    wx = np.concatenate([s0x, arc_ch1x[1:], arc_ch2x[1:], s1x[1:]])
+    wy = np.concatenate([s0y, arc_ch1y[1:], arc_ch2y[1:], s1y[1:]])
     paths["PATH_CHICANE"] = _resample_path(wx, wy)
 
     # --- PATH_FS_CORNER ---
     # Classic single 90° right-hand corner (R=6 m) with 5 m approach/exit.
     # Symmetric to PATH_SUDDEN_TURN but turning right; tests directional parity.
-    s1x    = np.linspace(0, 5, 10)
-    s1y    = np.zeros(10)
+    s1x = np.linspace(0, 5, 10)
+    s1y = np.zeros(10)
     arc_fsc_x, arc_fsc_y = _make_arc(5, -6, 6, 90, 0, n=20)
-    s2x    = np.full(10, 11.0)
-    s2y    = np.linspace(-6, -11, 10)
-    wx     = np.concatenate([s1x, arc_fsc_x[1:], s2x[1:]])
-    wy     = np.concatenate([s1y, arc_fsc_y[1:], s2y[1:]])
+    s2x = np.full(10, 11.0)
+    s2y = np.linspace(-6, -11, 10)
+    wx = np.concatenate([s1x, arc_fsc_x[1:], s2x[1:]])
+    wy = np.concatenate([s1y, arc_fsc_y[1:], s2y[1:]])
     paths["PATH_FS_CORNER"] = _resample_path(wx, wy)
 
     # --- PATH_MIXED ---
@@ -608,16 +621,36 @@ def build_synthetic_paths():
     s_mix0x = np.linspace(-25, 5, 10)
     s_mix0y = np.zeros(10)
     arc_m1x, arc_m1y = _make_arc(5, 6, 6, -90, 0, n=15)
-    l_m1x   = np.full(6, 11.0)
-    l_m1y   = np.linspace(6, 11, 6)
+    l_m1x = np.full(6, 11.0)
+    l_m1y = np.linspace(6, 11, 6)
     arc_m2x, arc_m2y = _make_arc(17, 11, 6, 180, 90, n=15)
-    l_m2x   = np.linspace(17, 22, 6)
-    l_m2y   = np.full(6, 17.0)
+    l_m2x = np.linspace(17, 22, 6)
+    l_m2y = np.full(6, 17.0)
     arc_m3x, arc_m3y = _make_arc(22, 12, 5, 90, -90, n=25)
     s_mix1x = np.linspace(22, 17, 10)
     s_mix1y = np.full(10, 7.0)
-    wx  = np.concatenate([s_mix0x, arc_m1x[1:], l_m1x[1:], arc_m2x[1:], l_m2x[1:], arc_m3x[1:], s_mix1x[1:]])
-    wy  = np.concatenate([s_mix0y, arc_m1y[1:], l_m1y[1:], arc_m2y[1:], l_m2y[1:], arc_m3y[1:], s_mix1y[1:]])
+    wx = np.concatenate(
+        [
+            s_mix0x,
+            arc_m1x[1:],
+            l_m1x[1:],
+            arc_m2x[1:],
+            l_m2x[1:],
+            arc_m3x[1:],
+            s_mix1x[1:],
+        ]
+    )
+    wy = np.concatenate(
+        [
+            s_mix0y,
+            arc_m1y[1:],
+            l_m1y[1:],
+            arc_m2y[1:],
+            l_m2y[1:],
+            arc_m3y[1:],
+            s_mix1y[1:],
+        ]
+    )
     paths["PATH_MIXED"] = _resample_path(wx, wy)
 
     return paths
@@ -636,6 +669,7 @@ PATH_NAMES = list(SYNTHETIC_PATHS.keys())
 # ==========================================
 # TRACKING ERROR HELPERS
 # ==========================================
+
 
 def _normalize_angle(angle):
     """
@@ -676,14 +710,14 @@ def _find_closest(path_X, path_Y, x, y, last_idx, window=40):
     """
     n = len(path_X)
     if last_idx <= 5:
-        start, end = 0, min(n, 100)   # Wide initial window to avoid index-0 lock
+        start, end = 0, min(n, 100)  # Wide initial window to avoid index-0 lock
     else:
-        start = max(0, last_idx - 5)       # 5 points backward tolerance
-        end   = min(n, last_idx + window)  # Forward window
+        start = max(0, last_idx - 5)  # 5 points backward tolerance
+        end = min(n, last_idx + window)  # Forward window
 
-    dx    = path_X[start:end] - x
-    dy    = path_Y[start:end] - y
-    local = int(np.argmin(dx * dx + dy * dy))   # Closest in Euclidean distance
+    dx = path_X[start:end] - x
+    dy = path_Y[start:end] - y
+    local = int(np.argmin(dx * dx + dy * dy))  # Closest in Euclidean distance
     return start + local
 
 
@@ -712,19 +746,19 @@ def _tracking_errors(plant_state, path_X, path_Y, path_Psi, last_idx):
                and for consistent progress tracking against the reference path)
     """
     X, Y, psi = plant_state[0], plant_state[1], plant_state[2]
-    idx       = _find_closest(path_X, path_Y, X, Y, last_idx)
+    idx = _find_closest(path_X, path_Y, X, Y, last_idx)
     rx, ry, rpsi = path_X[idx], path_Y[idx], path_Psi[idx]
-    
+
     dx = X - rx
     dy = Y - ry
-    
+
     # Standard Frenet projection to determine side/direction
     e_y_proj = dy * np.cos(rpsi) - dx * np.sin(rpsi)
-    
+
     # Use true Euclidean distance for magnitude, keep the projection's sign
     true_dist = math.hypot(dx, dy)
-    e_y       = true_dist * (1.0 if e_y_proj >= 0 else -1.0)
-    
+    e_y = true_dist * (1.0 if e_y_proj >= 0 else -1.0)
+
     e_psi = _normalize_angle(psi - rpsi)
     return float(e_y), float(e_psi), idx
 
@@ -732,6 +766,7 @@ def _tracking_errors(plant_state, path_X, path_Y, path_Psi, last_idx):
 # ==========================================
 # WORKER INITIALIZER
 # ==========================================
+
 
 def init_worker(Q_init, R_init, R_rate_init):
     """
@@ -753,14 +788,14 @@ def init_worker(Q_init, R_init, R_rate_init):
 
     Called by: mp.Pool(initializer=init_worker, initargs=(...))
     """
-    signal.signal(signal.SIGINT, signal.SIG_IGN)   # Workers ignore Ctrl+C
+    signal.signal(signal.SIGINT, signal.SIG_IGN)  # Workers ignore Ctrl+C
 
-    np.random.seed()   # Re-seed RNG in each worker (fork inherits parent's state)
+    np.random.seed()  # Re-seed RNG in each worker (fork inherits parent's state)
 
     global _init_context, _model_cache
-    _init_context["Q"]              = Q_init
-    _init_context["R"]              = R_init
-    _init_context["R_rate"]         = R_rate_init
+    _init_context["Q"] = Q_init
+    _init_context["R"] = R_init
+    _init_context["R_rate"] = R_rate_init
     _init_context["vehicle_params"] = VehicleParams()
 
     # Pre-cache all models from 0.5 m/s to 20.0 m/s in 0.1 m/s steps
@@ -776,39 +811,63 @@ def init_worker(Q_init, R_init, R_rate_init):
 # ==========================================
 # HEADLESS SIMULATION ROLLOUT
 # ==========================================
-def compute_composite_score(  
-    rmse, yaw_rms, smooth_rms, steer_rms, accel_rms,  
-    max_steering, steering_sat_ratio, jerk_rms, max_yaw_rate,  
-    steering_reversals, peak_lateral_error,  
-    progress, time_bonus=0.0, dnf=False,  
-    offtrack=False, inaccurate_count=0,  
-):  
-    """  
-    Single source of truth for the composite performance score.  
-    Combines the 11 metrics with SCORE_WEIGHTS, applies completion/time  
-    bonuses, DNF penalties, and the inaccurate-solver factor.  
-    Lower is better. Shared by run_headless_rollout() and  
-    performance_stats.report_performance_metrics().  
-    """  
-    metrics = np.array([  
-        rmse, yaw_rms, smooth_rms, steer_rms, accel_rms,  
-        max_steering, steering_sat_ratio, jerk_rms, max_yaw_rate,  
-        float(steering_reversals), peak_lateral_error,  
-    ])  
-    score = float(SCORE_WEIGHTS @ metrics)  
-  
-    progress = float(np.clip(progress, 0.0, 1.0))  
-    score -= COMPLETION_BONUS_WEIGHT * progress + TIME_BONUS_WEIGHT * time_bonus  
-  
-    if dnf:  
+def compute_composite_score(
+    rmse,
+    yaw_rms,
+    smooth_rms,
+    steer_rms,
+    accel_rms,
+    max_steering,
+    steering_sat_ratio,
+    jerk_rms,
+    max_yaw_rate,
+    steering_reversals,
+    peak_lateral_error,
+    speed_rmse,
+    progress,
+    time_bonus=0.0,
+    dnf=False,
+    offtrack=False,
+    inaccurate_count=0,
+):
+    """
+    Single source of truth for the composite performance score.
+    Combines the 11 metrics with SCORE_WEIGHTS, applies completion/time
+    bonuses, DNF penalties, and the inaccurate-solver factor.
+    Lower is better. Shared by run_headless_rollout() and
+    performance_stats.report_performance_metrics().
+    """
+    metrics = np.array(
+        [
+            rmse,
+            yaw_rms,
+            smooth_rms,
+            steer_rms,
+            accel_rms,
+            max_steering,
+            steering_sat_ratio,
+            jerk_rms,
+            max_yaw_rate,
+            float(steering_reversals),
+            peak_lateral_error,
+            speed_rmse
+        ]
+    )
+    score = float(SCORE_WEIGHTS @ metrics)
+
+    progress = float(np.clip(progress, 0.0, 1.0))
+    score -= COMPLETION_BONUS_WEIGHT * progress + TIME_BONUS_WEIGHT * time_bonus
+
+    if dnf:
         score += DNF_PENALTY
     if offtrack:
         score += DNF_OFFTRACK_PENALTY
-    if inaccurate_count > 0:  
-        factor = min(5, inaccurate_count) * 0.1  
-        score = score + abs(score) * factor  
-  
+    if inaccurate_count > 0:
+        factor = min(5, inaccurate_count) * 0.1
+        score = score + abs(score) * factor
+
     return score
+
 
 def run_headless_rollout(
     weights_vector,
@@ -831,7 +890,7 @@ def run_headless_rollout(
     ROLLOUT PIPELINE (per step):
       1.  Get visible cones from SimPerception (FOV filter)
       2.  Update SimPlanner (cone accumulation → centreline + speed profile)
-      3.  Compute tracking errors 
+      3.  Compute tracking errors
       4.  Track progress along the reference path (for completion scoring)
       5.  Build MPC state vector x0_mpc from tracking errors + plant state
       6.  Apply adaptive gain scaling (curvature and speed dependent)
@@ -877,17 +936,17 @@ def run_headless_rollout(
     Called by: _score_task() (from pool.map in parallel_evaluate_candidate),
                evaluate_candidate() (serial fallback)
     """
-    Q_init      = _init_context["Q"]
-    R_init      = _init_context["R"]
+    Q_init = _init_context["Q"]
+    R_init = _init_context["R"]
     R_rate_init = _init_context["R_rate"]
 
     Q, R, R_rate = vector_to_weights(weights_vector, Q_init, R_init, R_rate_init)
 
-    p  = _init_context["vehicle_params"]
+    p = _init_context["vehicle_params"]
     dt = 0.05
 
     u_min = np.array([-p.max_steer, p.max_accel_brake])
-    u_max = np.array([p.max_steer,  p.max_accel])
+    u_max = np.array([p.max_steer, p.max_accel])
 
     if path_name is None:
         raise ValueError("path_name must be provided")
@@ -897,61 +956,64 @@ def run_headless_rollout(
     # speed-profile-aware budget in case the path is very slow (e.g. hairpin),
     # where fallback_speed is too optimistic, and take the larger of the two.
     dynamic_max_steps = calculate_dynamic_max_steps(path_X, path_Y, dt=0.05)
-    mean_v_profile    = float(np.mean(path_v)) if len(path_v) > 0 else 1.5
-    profile_max_steps = int(math.ceil(
-        (PATH_LENGTHS[path_name] / max(mean_v_profile * 0.6, 1.5)) * 1.5 / dt
-    ))
+    mean_v_profile = float(np.mean(path_v)) if len(path_v) > 0 else 1.5
+    profile_max_steps = int(
+        math.ceil((PATH_LENGTHS[path_name] / max(mean_v_profile * 0.6, 1.5)) * 1.5 / dt)
+    )
     num_steps = max(dynamic_max_steps, profile_max_steps)
 
     # Initialise perception and planning pipeline (only used when use_planner=True)
     if use_planner:
         perception = SimPerception(blue_all, yellow_all)
-        planner    = SimPlanner(v_max=20.0, v_min=1.5)
-        _b0, _y0   = perception.visible_cones(float(path_X[0]), float(path_Y[0]), float(path_Psi[0]))
+        planner = SimPlanner(v_max=20.0, v_min=1.5)
+        _b0, _y0 = perception.visible_cones(
+            float(path_X[0]), float(path_Y[0]), float(path_Psi[0])
+        )
         planner.update(_b0, _y0, np.array([path_X[0], path_Y[0]]), float(path_Psi[0]))
 
     # Apply initial condition offsets in the Frenet frame
     base_heading = path_Psi[0]
-    X0   = path_X[0] - ey0 * np.sin(base_heading)   # Lateral offset perpendicular to path
-    Y0   = path_Y[0] + ey0 * np.cos(base_heading)
-    psi0 = _normalize_angle(base_heading + epsi0)    # Heading offset
-    vx0  = 0                                          # Always start from standstill
+    X0 = path_X[0] - ey0 * np.sin(base_heading)  # Lateral offset perpendicular to path
+    Y0 = path_Y[0] + ey0 * np.cos(base_heading)
+    psi0 = _normalize_angle(base_heading + epsi0)  # Heading offset
+    vx0 = 0  # Always start from standstill
 
     state = init_plant_state(X0, Y0, psi0, vx0=vx0)
 
     # ── Metric accumulators ────────────────────────────────────────────────────
-    error_cost          = 0.0    # Σ(e_y² + 0.4*e_psi²): combined tracking cost
-    yaw_rate_cost       = 0.0    # Σ(0.8 * r²): yaw rate stability cost
-    control_smooth      = 0.0    # Σ(||Δu||²): control rate-of-change
-    steering_reversals  = 0      # Count of sign changes in steering > threshold
-    last_sign           = 0      # Previous steering sign (for reversal detection)
-    max_yaw_rate        = 0.0    # Peak |r| seen during rollout
-    steering_effort     = 0.0    # Σ(u_steer²)
-    steering_saturation = 0.0    # Steps where |u_steer| > 0.95 * u_max[0]
-    accel_effort        = 0.0    # Σ(u_accel²)
-    max_steering        = 0.0    # Peak |u_steer|
-    max_accel           = 0.0    # Peak |u_accel|
-    peak_lateral_error  = 0.0    # Peak |e_y|
-    inaccurate_count    = 0      # Steps with OPTIMAL_INACCURATE solver status
-    u_prev              = np.zeros(2)   # Previous control (for rate cost + jerk)
-    du_prev             = np.zeros(2)   # Previous Δu (for jerk = Δ²u)
-    jerk_cost           = 0.0    # Σ(||Δu - Δu_prev||²): control jerk
-    idx                 = 0      # Current closest path index
-    consecutive_fails   = 0      # MPC solve failures in a row
-    cumulative_distance = 0.0    # Arc length travelled along reference path
-    last_idx            = idx
-    dnf                 = False
-    offtrack     = False         # Whether the vehicle went off track
+    error_cost = 0.0  # Σ(e_y² + 0.4*e_psi²): combined tracking cost
+    yaw_rate_cost = 0.0  # Σ(0.8 * r²): yaw rate stability cost
+    control_smooth = 0.0  # Σ(||Δu||²): control rate-of-change
+    steering_reversals = 0  # Count of sign changes in steering > threshold
+    last_sign = 0  # Previous steering sign (for reversal detection)
+    max_yaw_rate = 0.0  # Peak |r| seen during rollout
+    steering_effort = 0.0  # Σ(u_steer²)
+    steering_saturation = 0.0  # Steps where |u_steer| > 0.95 * u_max[0]
+    accel_effort = 0.0  # Σ(u_accel²)
+    max_steering = 0.0  # Peak |u_steer|
+    max_accel = 0.0  # Peak |u_accel|
+    peak_lateral_error = 0.0  # Peak |e_y|
+    inaccurate_count = 0  # Steps with OPTIMAL_INACCURATE solver status
+    u_prev = np.zeros(2)  # Previous control (for rate cost + jerk)
+    du_prev = np.zeros(2)  # Previous Δu (for jerk = Δ²u)
+    jerk_cost = 0.0  # Σ(||Δu - Δu_prev||²): control jerk
+    idx = 0  # Current closest path index
+    consecutive_fails = 0  # MPC solve failures in a row
+    cumulative_distance = 0.0  # Arc length travelled along reference path
+    speed_cost = 0  # difference between current and planner speed
+    last_idx = idx
+    dnf = False
+    offtrack = False  # Whether the vehicle went off track
 
-    MAX_FAILS      = 5     # Consecutive solve failures before DNF
+    MAX_FAILS = 5  # Consecutive solve failures before DNF
     OFFTRACK_LIMIT = TRACK_HALF_WIDTH * 2  # Lateral error threshold for DNF (m)
 
     # Pre-compute arc-length segments for progress tracking
     path_seg_dist = np.hypot(np.diff(path_X), np.diff(path_Y))
 
-    reached_end             = False
-    STALL_CHECK_INTERVAL    = 60    # Steps between rolling stall checks (3 s at 20 Hz)
-    STALL_MIN_DISTANCE      = 3.0   # Minimum distance (m) expected per interval
+    reached_end = False
+    STALL_CHECK_INTERVAL = 60  # Steps between rolling stall checks (3 s at 20 Hz)
+    STALL_MIN_DISTANCE = 3.0  # Minimum distance (m) expected per interval
     dist_at_last_stall_check = 0.0  # cumulative_distance snapshot at last check
 
     for step in range(num_steps):
@@ -964,22 +1026,35 @@ def run_headless_rollout(
 
             cl = planner.centreline
             if cl is not None and len(cl) >= 2:
-                dists   = np.linalg.norm(cl - car_pos_np, axis=1)
-                cl_idx  = int(np.argmin(dists))
-                seg     = cl[cl_idx + 1] - cl[cl_idx] if cl_idx < len(cl) - 1 \
-                          else cl[cl_idx] - cl[cl_idx - 1]
+                dists = np.linalg.norm(cl - car_pos_np, axis=1)
+                cl_idx = int(np.argmin(dists))
+                seg = (
+                    cl[cl_idx + 1] - cl[cl_idx]
+                    if cl_idx < len(cl) - 1
+                    else cl[cl_idx] - cl[cl_idx - 1]
+                )
                 seg_len = float(np.linalg.norm(seg))
                 if seg_len > 1e-6:
-                    t_hat   = seg / seg_len
+                    t_hat = seg / seg_len
                     right_n = np.array([t_hat[1], -t_hat[0]])
-                    rpsi    = math.atan2(t_hat[1], t_hat[0])
-                    e_y     = -float(np.dot(car_pos_np - cl[cl_idx], right_n))
-                    e_psi   = _normalize_angle(state[2] - rpsi)
+                    rpsi = math.atan2(t_hat[1], t_hat[0])
+                    e_y = -float(np.dot(car_pos_np - cl[cl_idx], right_n))
+                    e_psi = _normalize_angle(state[2] - rpsi)
                 else:
-                    e_y, e_psi, _ = _tracking_errors(state, path_X, path_Y, path_Psi, idx)
-                v_target = float(np.interp(
-                    float(cl_idx), np.arange(len(planner.v_profile)), planner.v_profile,
-                )) if len(planner.v_profile) > 0 else float(path_v[idx])
+                    e_y, e_psi, _ = _tracking_errors(
+                        state, path_X, path_Y, path_Psi, idx
+                    )
+                v_target = (
+                    float(
+                        np.interp(
+                            float(cl_idx),
+                            np.arange(len(planner.v_profile)),
+                            planner.v_profile,
+                        )
+                    )
+                    if len(planner.v_profile) > 0
+                    else float(path_v[idx])
+                )
             else:
                 # Planner not yet ready — fall back to reference path
                 e_y, e_psi, _ = _tracking_errors(state, path_X, path_Y, path_Psi, idx)
@@ -995,41 +1070,52 @@ def run_headless_rollout(
             cumulative_distance += np.sum(path_seg_dist[last_idx:idx_ref])
             last_idx = idx_ref
         idx = idx_ref
-        
-        vx_true = state[3]                  # True longitudinal speed for state error
-        vx      = max(vx_true, 0.5)         # Clamped speed for model linearisation only
+
+        vx_true = state[3]  # True longitudinal speed for state error
+        vx = max(vx_true, 0.5)  # Clamped speed for model linearisation only
 
         # ── Build MPC state vector ────────────────────────────────────────────
         # [e_y, e_y_dot, e_psi, r, e_v, 0, delta_act, a_act]
         # e_y_dot: lateral velocity projected onto path-normal direction
         e_y_dot = vx_true * np.sin(e_psi) + state[4] * np.cos(e_psi)
-        x0_mpc  = np.array(
+        x0_mpc = np.array(
             [e_y, e_y_dot, e_psi, state[5], vx_true - v_target, 0.0, state[6], state[7]]
         )
 
         # ── Adaptive gain scaling ─────────────────────────────────────────────
-        kappa         = curvature_estimate(state)
-        R_rate_scaled = adaptive_R_rate(kappa, R_rate)   # Soften in corners
-        R_scaled      = adaptive_R_scaling(vx, R)         # Stiffen at speed
-        Ad, Bd        = get_cached_model(vx, dt)
+        kappa = curvature_estimate(state)
+        R_rate_scaled = adaptive_R_rate(kappa, R_rate)  # Soften in corners
+        R_scaled = adaptive_R_scaling(vx, R)  # Stiffen at speed
+        Ad, Bd = get_cached_model(vx, dt)
 
         # ── MPC solve ─────────────────────────────────────────────────────────
         # warm_start=False on step 0 prevents carrying solver state from a
         # previous rollout (rollouts run in sequence within each worker).
         mpc_result = solve_mpc(
-            x0_mpc, Ad, Bd, N_HORIZON, Q, R_scaled, u_min, u_max,
-            R_rate=R_rate_scaled, u_prev=u_prev, silent=True,
-            return_status=True, eps_abs=ROLLOUT_EPS, eps_rel=ROLLOUT_EPS,
+            x0_mpc,
+            Ad,
+            Bd,
+            N_HORIZON,
+            Q,
+            R_scaled,
+            u_min,
+            u_max,
+            R_rate=R_rate_scaled,
+            u_prev=u_prev,
+            silent=True,
+            return_status=True,
+            eps_abs=ROLLOUT_EPS,
+            eps_rel=ROLLOUT_EPS,
             max_iter=ROLLOUT_MAX_ITER,
-            warm_start=(step != 0),   # No warm start on first step of each rollout
+            warm_start=(step != 0),  # No warm start on first step of each rollout
         )
 
         if mpc_result is None:
             consecutive_fails += 1
-            u_opt = u_prev.copy()    # Hold previous command on failure
-            control_smooth += 5      # Penalise failure as a large Δu event
+            u_opt = u_prev.copy()  # Hold previous command on failure
+            control_smooth += 5  # Penalise failure as a large Δu event
         else:
-            u_opt, status    = mpc_result
+            u_opt, status = mpc_result
             consecutive_fails = 0
             if status in (cp.OPTIMAL_INACCURATE, "optimal_inaccurate"):
                 inaccurate_count += 1
@@ -1038,12 +1124,12 @@ def run_headless_rollout(
         dist_to_finish = math.hypot(state[0] - path_X[-1], state[1] - path_Y[-1])
         if idx >= len(path_X) - 2 or dist_to_finish <= 3.0:
             reached_end = True
-            num_steps   = step + 1
+            num_steps = step + 1
             break
 
         # ── DNF checks ────────────────────────────────────────────────────────
         if consecutive_fails >= MAX_FAILS:
-            dnf       = True
+            dnf = True
             num_steps = step + 1
             break
 
@@ -1051,10 +1137,14 @@ def run_headless_rollout(
         # vehicle has advanced at least STALL_MIN_DISTANCE m since the last check.
         # This catches stalls that start after the initial acceleration phase,
         # including friction-stall that the one-shot check at step > 60 misses.
-        if step > 0 and step % STALL_CHECK_INTERVAL == 0 and step > STALL_CHECK_INTERVAL:
+        if (
+            step > 0
+            and step % STALL_CHECK_INTERVAL == 0
+            and step > STALL_CHECK_INTERVAL
+        ):
             dist_since_last_check = cumulative_distance - dist_at_last_stall_check
             if dist_since_last_check < STALL_MIN_DISTANCE:
-                dnf       = True
+                dnf = True
                 num_steps = step + 1
                 break
             dist_at_last_stall_check = cumulative_distance
@@ -1067,79 +1157,88 @@ def run_headless_rollout(
                 steering_reversals += 1
             last_sign = current_sign
 
-        max_yaw_rate     = max(max_yaw_rate, abs(state[5]))
+        max_yaw_rate = max(max_yaw_rate, abs(state[5]))
         # Combined tracking cost: e_y weighted 2×, e_psi weighted 1× (in quadrature)
-        error_cost       += 1.2 * e_y**2 + 0.4 * e_psi**2
+        # Include speed error in tracking cost so Q[4] is meaningfully tuned.
+        e_v_now = state[3] - v_target
+        speed_cost = e_v_now**2
+        error_cost += 1.2 * e_y**2 + 0.4 * e_psi**2
         # Yaw stability: 0.8 weighting reduces contribution relative to lateral error
-        yaw_rate_cost    += 0.8 * state[5] ** 2
+        yaw_rate_cost += 0.8 * state[5] ** 2
         # Control smoothness: sum of squared first differences of u
-        control_smooth   += np.sum((u_opt - u_prev) ** 2)
+        control_smooth += np.sum((u_opt - u_prev) ** 2)
 
-        du       = u_opt - u_prev             # First difference of control
-        jerk     = du - du_prev               # Second difference (jerk)
+        du = u_opt - u_prev  # First difference of control
+        jerk = du - du_prev  # Second difference (jerk)
         jerk_cost += np.sum(jerk**2)
-        du_prev  = du
+        du_prev = du
 
         steering_effort += u_opt[0] ** 2
-        accel_effort    += u_opt[1] ** 2
+        accel_effort += u_opt[1] ** 2
         if abs(u_opt[0]) > 0.95 * u_max[0]:  # 95% of limit → near saturation
             steering_saturation += 1.0
 
         peak_lateral_error = max(peak_lateral_error, abs(e_y))
-        max_steering       = max(max_steering, abs(u_opt[0]))
-        max_accel          = max(max_accel, abs(u_opt[1]))
+        max_steering = max(max_steering, abs(u_opt[0]))
+        max_accel = max(max_accel, abs(u_opt[1]))
 
         # Off-track check: exceeding OFFTRACK_LIMIT triggers immediate DNF
         if abs(e_y) > OFFTRACK_LIMIT:
             offtrack = True
-            dnf       = True
+            dnf = True
             num_steps = step + 1
             break
-    
+
         u_prev = u_opt.copy()
-        state  = step_nonlinear_plant(state, u_opt, dt, p)
+        state = step_nonlinear_plant(state, u_opt, dt, p)
 
     # ── Normalise metrics to RMS values ───────────────────────────────────────
     n = max(num_steps, 1)
-    rmse               = np.sqrt(error_cost     / n)
-    yaw_rms            = np.sqrt(yaw_rate_cost  / n)
-    smooth_rms         = np.sqrt(control_smooth / n)
-    steer_rms          = np.sqrt(steering_effort / n)
-    accel_rms          = np.sqrt(accel_effort   / n)
-    jerk_rms           = np.sqrt(jerk_cost      / n)
-    steering_sat_ratio = steering_saturation    / n
+    rmse = np.sqrt(error_cost / n)
+    speed_rmse = np.sqrt(speed_cost / n)
+    yaw_rms = np.sqrt(yaw_rate_cost / n)
+    smooth_rms = np.sqrt(control_smooth / n)
+    steer_rms = np.sqrt(steering_effort / n)
+    accel_rms = np.sqrt(accel_effort / n)
+    jerk_rms = np.sqrt(jerk_cost / n)
+    steering_sat_ratio = steering_saturation / n
 
-    # ── Composite score: weighted dot product with SCORE_WEIGHTS ──────────────
-    metrics = np.array([
-        rmse, yaw_rms, smooth_rms, steer_rms, accel_rms,
-        max_steering, steering_sat_ratio, jerk_rms, max_yaw_rate,
-        float(steering_reversals), peak_lateral_error,
-    ])
-    score = float(SCORE_WEIGHTS @ metrics)
+    # ── Completion and time bonuses ───────────────────────────────────────────
+    progress = cumulative_distance / PATH_LENGTHS[path_name]
 
-    # ── Completion and time bonuses ───────────────────────────────────────────  
-    progress = cumulative_distance / PATH_LENGTHS[path_name]  
-  
-    if reached_end:  
-        sim_time      = num_steps * dt  
-        expected_time = dynamic_max_steps * dt  
-        time_bonus    = max(0.0, 1.0 - (sim_time / expected_time))  
-    else:  
-        time_bonus = 0.0  
-  
-    score = compute_composite_score(  
-        rmse, yaw_rms, smooth_rms, steer_rms, accel_rms,  
-        max_steering, steering_sat_ratio, jerk_rms, max_yaw_rate,  
-        steering_reversals, peak_lateral_error,  
-        progress=progress, time_bonus=time_bonus, dnf=dnf,  
-        offtrack=offtrack, inaccurate_count=inaccurate_count,  
-    )  
+    if reached_end:
+        sim_time = num_steps * dt
+        expected_time = dynamic_max_steps * dt
+        time_bonus = max(0.0, 1.0 - (sim_time / expected_time))
+    else:
+        time_bonus = 0.0
+
+    score = compute_composite_score(
+        rmse,
+        yaw_rms,
+        smooth_rms,
+        steer_rms,
+        accel_rms,
+        max_steering,
+        steering_sat_ratio,
+        jerk_rms,
+        max_yaw_rate,
+        steering_reversals,
+        peak_lateral_error,
+        speed_rmse,
+        progress=progress,
+        time_bonus=time_bonus,
+        dnf=dnf,
+        offtrack=offtrack,
+        inaccurate_count=inaccurate_count,
+    )
     return score
 
 
 # ==========================================
 # OBJECTIVE FUNCTION WRAPPERS
 # ==========================================
+
 
 def evaluate_all_paths(weights_vector, n_repeats=3):
     """
@@ -1171,16 +1270,19 @@ def evaluate_all_paths(weights_vector, n_repeats=3):
     for path_name in PATH_NAMES:
         path_scores = []
         for _ in range(n_repeats):
-            path_scores.append(run_headless_rollout(weights_vector, path_name=path_name))
-            
+            path_scores.append(
+                run_headless_rollout(weights_vector, path_name=path_name)
+            )
+
         per_path[path_name] = float(np.mean(path_scores))
         all_scores.extend(path_scores)
 
     return {
-        'mean_score': float(np.mean(all_scores)),
-        'per_path':   per_path,
-        'all_scores': all_scores,
+        "mean_score": float(np.mean(all_scores)),
+        "per_path": per_path,
+        "all_scores": all_scores,
     }
+
 
 # Active validation suite: subset of paths used for CMA-ES evaluation.
 # Commented-out paths are available but excluded to balance coverage vs. speed.
@@ -1191,18 +1293,18 @@ VALIDATION_SUITE = [
     "PATH_SUDDEN_TURN",
     # "PATH_SKIDPAD",
     "PATH_S_BEND",
-    "PATH_MIXED",
-    # "PATH_HAIRPIN",
+    # "PATH_MIXED",
+    "PATH_HAIRPIN",
     # "PATH_CHICANE",
     "PATH_FS_CORNER",
     "PATH_MICRO_SLALOM",
-    #"PATH_ACCELERATION"
+    # "PATH_ACCELERATION"
 ]
 
 # Initial condition perturbations tested for each path.
 # (ey0, epsi0): lateral offset (m), heading offset (rad).
 INITIAL_CONDITIONS = [
-    (0.00, 0.00),   # Nominal: start exactly on path
+    (0.00, 0.00),  # Nominal: start exactly on path
     # (0.15, 0.05),   # Perturbed: slight lateral/heading offset
 ]
 
@@ -1217,8 +1319,8 @@ def _build_task_table(suite, ics):
 
     Called at module import time: EVAL_TASKS, EVAL_WEIGHTS = _build_task_table(...)
     """
-    counts  = Counter((p, ey0, epsi0) for p in suite for (ey0, epsi0) in ics)
-    tasks   = list(counts.keys())
+    counts = Counter((p, ey0, epsi0) for p in suite for (ey0, epsi0) in ics)
+    tasks = list(counts.keys())
     weights = np.array([counts[t] for t in tasks], dtype=float)
     return tasks, weights
 
@@ -1247,9 +1349,9 @@ def _aggregate_task_scores(task_scores):
 
     Called by: evaluate_candidate(), parallel_evaluate_candidate()
     """
-    s             = np.asarray(task_scores, dtype=float)
+    s = np.asarray(task_scores, dtype=float)
     weighted_mean = float(np.sum(EVAL_WEIGHTS * s) / np.sum(EVAL_WEIGHTS))
-    worst         = float(np.max(s))
+    worst = float(np.max(s))
     return 0.7 * weighted_mean + 0.3 * worst
 
 
@@ -1298,7 +1400,7 @@ def evaluate_candidate(vec):
 # fmin_lq_surr2 calls parallel_evaluate_candidate serially per candidate;
 # each call parallelises across tasks internally via this pool.
 _eval_pool = None
-_n_tasks   = None
+_n_tasks = None
 
 
 def parallel_evaluate_candidate(vec):
@@ -1324,11 +1426,8 @@ def parallel_evaluate_candidate(vec):
     if _eval_pool is None:
         return evaluate_candidate(vec)
 
-    flat_tasks = [
-        (vec, p, ey0, epsi0)
-        for (p, ey0, epsi0) in EVAL_TASKS
-    ]
-    chunksize   = max(1, len(flat_tasks) // (_n_tasks * 4))
+    flat_tasks = [(vec, p, ey0, epsi0) for (p, ey0, epsi0) in EVAL_TASKS]
+    chunksize = max(1, len(flat_tasks) // (_n_tasks * 4))
     task_scores = _eval_pool.map(_score_task, flat_tasks, chunksize=chunksize)
     return float(_aggregate_task_scores(task_scores))
 
@@ -1336,6 +1435,7 @@ def parallel_evaluate_candidate(vec):
 # ==========================================
 # LOGGING
 # ==========================================
+
 
 def get_git_revision_hash():
     """
@@ -1353,7 +1453,11 @@ def get_git_revision_hash():
     Called by: log_results_to_history()
     """
     try:
-        return subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode('ascii').strip()
+        return (
+            subprocess.check_output(["git", "rev-parse", "HEAD"])
+            .decode("ascii")
+            .strip()
+        )
     except (subprocess.CalledProcessError, FileNotFoundError):
         return "Unknown (not a git repository)"
 
@@ -1378,7 +1482,7 @@ def log_results_to_history(Q, R, R_rate, duration, score):
 
     Called by: main block (after optimisation completes or is interrupted)
     """
-    timestamp   = datetime.datetime.now().strftime("%d/%m/%y %H:%M")
+    timestamp = datetime.datetime.now().strftime("%d/%m/%y %H:%M")
     commit_hash = get_git_revision_hash()
     with open("tuning history.txt", "a") as f:
         f.write(f"\n# {timestamp} - [Pending Description: yet to be tested]\n")
@@ -1386,7 +1490,9 @@ def log_results_to_history(Q, R, R_rate, duration, score):
         f.write(f"R_diag      = {np.diag(R).tolist()}\n")
         f.write(f"R_rate_diag = {np.diag(R_rate).tolist()}\n")
         f.write(f"Duration    = {duration / 60:.2f} minutes\n")
-        f.write(f"Overall score (avged from all testing scenarios)  = Haven't been tested.\n")
+        f.write(
+            f"Overall score (avged from all testing scenarios)  = Haven't been tested.\n"
+        )
         f.write(f"Tuner score (tuning scenarios / validation suite) = {score}\n")
         f.write(f"Commit hash = {commit_hash}\n")
 
@@ -1397,16 +1503,16 @@ def log_results_to_history(Q, R, R_rate, duration, score):
 # These define the search space centre. CMA-ES multiplies each diagonal entry
 # by a factor from bounds (0.1-10.0). Setting all to 1.0 starts the search
 # at the midpoint of the multiplicative range on a log scale.
-Q      = np.diag([1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0])
-R      = np.diag([1.0, 1.0])
+Q = np.diag([1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0])
+R = np.diag([1.0, 1.0])
 R_rate = np.diag([1.0, 1.0])
 
 # ==========================================
 # MAIN EXECUTION
 # ==========================================
 if __name__ == "__main__":
-    Q_init      = Q
-    R_init      = R
+    Q_init = Q
+    R_init = R
     R_rate_init = R_rate
 
     print("[Offline Tuner] Building synthetic path library...")
@@ -1417,9 +1523,9 @@ if __name__ == "__main__":
             f"Y=[{py.min():.1f},{py.max():.1f}]"
         )
 
-    num_params   = len(bounds)
-    lower        = np.array([b[0] for b in bounds])
-    upper        = np.array([b[1] for b in bounds])
+    num_params = len(bounds)
+    lower = np.array([b[0] for b in bounds])
+    upper = np.array([b[1] for b in bounds])
     param_ranges = upper - lower
 
     # Start at geometric (log-scale) midpoint: sqrt(lower * upper) = 1.0 for [0.1, 10.0].
@@ -1430,25 +1536,29 @@ if __name__ == "__main__":
     # sigma0: initial CMA-ES step size.
     # Too small → slow exploration (stagnates in local minimum near x0).
     # Too large → poor exploitation (misses fine structure near optima).
-    sigma0   = 0.65
+    sigma0 = 0.65
     # Per-dimension std scaled to log-space range: ln(upper/lower)
     log_ranges = np.log(upper / lower)
-    cma_stds   = 0.23 * log_ranges
+    cma_stds = 0.23 * log_ranges
 
     # Default population size: pycma heuristic 5 + 3*ln(n) ≈ 12 for n=9 params
     default_popsize = int(5 + np.floor(3 * np.log(num_params)))
-    popsize         = default_popsize
+    popsize = default_popsize
 
-    max_evals    = MAX_EVALS
-    max_restarts = 6    # BIPOP restart budget
-    num_cores    = max(1, mp.cpu_count() - 1)   # Leave one core for the OS
+    max_evals = MAX_EVALS
+    max_restarts = 6  # BIPOP restart budget
+    num_cores = max(1, mp.cpu_count() - 1)  # Leave one core for the OS
 
     print("\n[Offline Tuner] Strategy: BIPOP + lq-CMA-ES (surrogate-assisted)")
     print(f"  Parameters:    {num_params}")
     print(f"  x0 (midpoint): {np.round(x0, 2).tolist()}")
-    print(f"  sigma0:        {sigma0}  |  per-dim stds: {np.round(cma_stds, 3).tolist()}")
+    print(
+        f"  sigma0:        {sigma0}  |  per-dim stds: {np.round(cma_stds, 3).tolist()}"
+    )
     print(f"  Base popsize:  {popsize}  |  max restarts: {max_restarts}")
-    print(f"  True-eval budget: {max_evals}  (surrogate reduces actual rollouts ~3-10x)")
+    print(
+        f"  True-eval budget: {max_evals}  (surrogate reduces actual rollouts ~3-10x)"
+    )
     print(f"  Eval tasks/candidate: {len(EVAL_TASKS)}")
     print(f"  Workers: {num_cores}")
 
@@ -1459,16 +1569,16 @@ if __name__ == "__main__":
     # tolconditioncov=1e14: allows the covariance matrix to become moderately
     # ill-conditioned before terminating (avoids premature stops in flat regions).
     cma_options = {
-        "bounds":          [lower.tolist(), upper.tolist()],
-        "CMA_stds":        cma_stds,
-        "popsize":         popsize,
-        "seed":            42,         # Fixed seed for reproducibility
-        "verb_disp":       False,
-        "verb_log":        0,
-        "verbose":         -9,
-        "CMA_active":      True,
+        "bounds": [lower.tolist(), upper.tolist()],
+        "CMA_stds": cma_stds,
+        "popsize": popsize,
+        "seed": 42,  # Fixed seed for reproducibility
+        "verb_disp": False,
+        "verb_log": 0,
+        "verbose": -9,
+        "CMA_active": True,
         "tolconditioncov": 1e14,
-        "maxfevals":       max_evals,
+        "maxfevals": max_evals,
     }
 
     start_time = time.time()
@@ -1485,15 +1595,17 @@ if __name__ == "__main__":
     ) as pool:
 
         _eval_pool = pool
-        _n_tasks   = num_cores
+        _n_tasks = num_cores
 
         # Also initialise the main process context (used for post-opt evaluation)
-        _init_context["Q"]              = Q_init
-        _init_context["R"]              = R_init
-        _init_context["R_rate"]         = R_rate_init
+        _init_context["Q"] = Q_init
+        _init_context["R"] = R_init
+        _init_context["R_rate"] = R_rate_init
         _init_context["vehicle_params"] = VehicleParams()
+
         dt = 0.05
-        for vx in np.arange(0.5, 20.1, 0.1):
+        # 196 steps ensures exactly 0.1 increments between 0.5 and 20.0 inclusive
+        for vx in np.linspace(0.5, 20.0, 196):
             key = np.round(vx, 1)
             if key not in _model_cache:
                 _model_cache[key] = get_8state_discrete_model(key, dt)
@@ -1507,7 +1619,9 @@ if __name__ == "__main__":
             """
             global _stop_requested
             if not _stop_requested:
-                print("\n[Tuner] Ctrl+C caught — finishing current generation then stopping...")
+                print(
+                    "\n[Tuner] Ctrl+C caught — finishing current generation then stopping..."
+                )
                 _stop_requested = True
 
         signal.signal(signal.SIGINT, _handle_sigint)
@@ -1525,12 +1639,14 @@ if __name__ == "__main__":
             es : cma.CMAEvolutionStrategy   The active CMA-ES instance.
             """
             gen_best = es.best.f if es.best.f is not None else float("inf")
-            generation_log.append({
-                "gen":   es.countiter,
-                "evals": es.countevals,
-                "best":  gen_best,
-                "sigma": es.sigma,
-            })
+            generation_log.append(
+                {
+                    "gen": es.countiter,
+                    "evals": es.countevals,
+                    "best": gen_best,
+                    "sigma": es.sigma,
+                }
+            )
             running_best = min(e["best"] for e in generation_log)
             print(
                 f"[lq-CMA-ES] gen {es.countiter:4d} | "
@@ -1540,7 +1656,7 @@ if __name__ == "__main__":
                 f"sigma {es.sigma:.4e}"
             )
             if _stop_requested:
-                es.opts["maxfevals"] = 0   # Signal pycma to stop after this gen
+                es.opts["maxfevals"] = 0  # Signal pycma to stop after this gen
 
         # ── fmin_lq_surr2 — BIPOP + quadratic surrogate ─────────────────────────
         # incpopsize=2:  large restarts double population (IPOP-CMA-ES schedule)
@@ -1561,7 +1677,7 @@ if __name__ == "__main__":
             callback=_log_callback,
         )
 
-    _eval_pool = None   # Pool is now closed; remove reference
+    _eval_pool = None  # Pool is now closed; remove reference
 
     end_time = time.time()
 
@@ -1569,10 +1685,10 @@ if __name__ == "__main__":
     # xbest:     the single best candidate observed across all evaluations
     # xfavorite: the distribution mean (more robust average of recent good candidates)
     # Fresh serial evaluation of both avoids noise from the parallel pool.
-    mean_vec    = es.result.xfavorite
-    score_best  = evaluate_candidate(best_vec)
-    score_mean  = evaluate_candidate(mean_vec)
-    final_vec   = best_vec if score_best <= score_mean else mean_vec
+    mean_vec = es.result.xfavorite
+    score_best = evaluate_candidate(best_vec)
+    score_mean = evaluate_candidate(mean_vec)
+    final_vec = best_vec if score_best <= score_mean else mean_vec
 
     best_Q, best_R, best_R_rate = vector_to_weights(
         final_vec, Q_init, R_init, R_rate_init
@@ -1586,7 +1702,9 @@ if __name__ == "__main__":
     print(f"Restarts completed:    {es.result.stop.get('maxrestarts', '?')}")
     print(f"Best score (xbest):    {score_best:.4f}")
     print(f"Best score (xfavorite): {score_mean:.4f}")
-    print(f"Selected:              {'xbest' if score_best <= score_mean else 'xfavorite'}")
+    print(
+        f"Selected:              {'xbest' if score_best <= score_mean else 'xfavorite'}"
+    )
     print("=" * 60)
     print("\nReplace your simulation.py weights with:")
     print("Q_diag      =", np.diag(best_Q).tolist())
@@ -1596,8 +1714,8 @@ if __name__ == "__main__":
 
     # ── Generation log summary ───────────────────────────────────────────────────
     if generation_log:
-        evals_arr    = [e["evals"] for e in generation_log]
-        best_arr     = [e["best"]  for e in generation_log]
+        evals_arr = [e["evals"] for e in generation_log]
+        best_arr = [e["best"] for e in generation_log]
         running_best = np.minimum.accumulate(best_arr)
         print("\nImprovement milestones (true-eval count → score):")
         last_reported = None
