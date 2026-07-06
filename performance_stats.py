@@ -35,10 +35,11 @@ USED BY
 
 DOES NOT USE
 ------------
-  vehicle_physics.py, model.py, optimiser.py, speed_profile.py, sim_track.py
+  vehicle_physics.py, bicycle_model.py, optimiser.py, speed_profile.py, sim_track.py
 """
 
 import numpy as np
+import math
 from offline_tuner import (  
     SCORE_WEIGHTS,  
     COMPLETION_BONUS_WEIGHT,  
@@ -48,7 +49,6 @@ from offline_tuner import (
     _init_context,  
     compute_composite_score,  
 )
-import numpy as np  # already present — no change needed
 
 # Metric index constants — must stay in sync with SCORE_WEIGHTS order in offline_tuner.py
 _IDX_RMSE               = 0   # Combined tracking RMSE (e_y² + 0.4*e_psi²)
@@ -62,9 +62,10 @@ _IDX_JERK_RMS           = 7   # Control jerk RMS (Δ²u)
 _IDX_MAX_YAW_RATE       = 8   # Peak yaw rate (approximated from diff(e_psi)/dt)
 _IDX_STEER_REVERSALS    = 9   # Count of steering direction reversals
 _IDX_PEAK_LATERAL_ERROR = 10  # Worst single-step lateral error
+_IDX_SPEED_RMSE         = 11
 
-# Must match u_max[0] in optimiser.py and offline_tuner.py's u_bounds
-_U_STEER_MAX = 0.4   # Max steering command magnitude (rad); VehicleParams.max_steer
+
+_U_STEER_MAX = math.radians(35.0)   # Max steering command magnitude (rad)
 _DT          = 0.05  # Simulation timestep (s); must match simulation.py's dt
 
 
@@ -93,7 +94,7 @@ def report_performance_metrics(history, log_fn=print):
       steering_reversals: count of sign changes > 0.02 rad threshold
       peak_lateral_error: max(|e_y|)
 
-    These 11 metrics are then combined.
+    These 12 metrics are then combined.
 
     Parameters
     ----------
@@ -230,8 +231,7 @@ def report_performance_metrics(history, log_fn=print):
         time_bonus = 0.0  
     else:  
         time_bonus = float(history.get("time_bonus") or 0.0)  
-    print(failed)
-    
+
     # ── Composite score ───────────────────────────────────────────────────────
     composite = compute_composite_score(  
         rmse, yaw_rms, smooth_rms, steer_rms, accel_rms,  
@@ -246,10 +246,6 @@ def report_performance_metrics(history, log_fn=print):
     # Provided for human-readable reporting; not used by CMA-ES.
     lateral_rmse = float(np.sqrt(np.mean(e_y**2)))   if len(e_y)   else 0.0
     heading_rmse = float(np.sqrt(np.mean(e_psi**2))) if len(e_psi) else 0.0
-
-    v_target_arr = np.asarray(history.get("v_target", []), dtype=float)
-    speed_rmse   = float(np.sqrt(np.mean((v - v_target_arr)**2))) \
-        if len(v_target_arr) == len(v) and len(v) > 0 else float("nan")
 
     # ── Console report ────────────────────────────────────────────────────────
     W          = SCORE_WEIGHTS

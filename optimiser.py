@@ -52,7 +52,7 @@ USED BY
 
 DOES NOT USE
 ------------
-  vehicle_physics.py (directly), model.py (receives Ad/Bd as arguments),
+  vehicle_physics.py (directly), bicycle_model.py (receives Ad/Bd as arguments),
   speed_profile.py, sim_track.py, performance_stats.py
 """
 
@@ -87,8 +87,8 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max):
 
     PARAMETERS (updated each solve without recompilation)
     ---------
-    A_param            : (nx, nx)  Discrete-time A matrix from model.py
-    B_param            : (nx, nu)  Discrete-time B matrix from model.py
+    A_param            : (nx, nx)  Discrete-time A matrix from bicycle_model.py
+    B_param            : (nx, nu)  Discrete-time B matrix from bicycle_model.py
     x0_param           : (nx,)     Current state (MPC initial condition)
     sqrtQ_param        : (nx, 1)   Element-wise sqrt of diagonal Q weights
     sqrtR_param        : (nu, 1)   Element-wise sqrt of diagonal R weights
@@ -116,8 +116,8 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max):
     Called by: solve_mpc() — on first call or when N changes
     """
     # ── CVXPY Parameters (updated each solve, not recompiled) ────────────────
-    A_param = cp.Parameter((nx, nx))            # Discrete-time A from model.py
-    B_param = cp.Parameter((nx, nu))            # Discrete-time B from model.py
+    A_param = cp.Parameter((nx, nx))            # Discrete-time A from bicycle_model.py
+    B_param = cp.Parameter((nx, nu))            # Discrete-time B from bicycle_model.py
     x0_param = cp.Parameter(nx)                 # Current MPC state
 
     # (nx,1) and (nu,1) shapes allow broadcasting across N horizon columns

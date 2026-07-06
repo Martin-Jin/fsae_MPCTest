@@ -66,16 +66,17 @@ The tuner evaluates candidates on a library of synthetic FS-spec paths that
 cover representative corner types:
   PATH_SUDDEN_TURN  — single sharp 90° corner, tests late-apex response
   PATH_S_BEND       — paired corners (right then left), tests weight transfer
-  PATH_SKIDPAD      — two full circles, tests sustained cornering
+  PATH_SKIDPAD      — two full circles (currently disabled/commented out)
   PATH_SPIRAL       — continuously tightening corner, tests progressive response
   PATH_MICRO_SLALOM — tight slalom gates, tests rapid direction changes
   PATH_OFFSET_CHICANE — lateral offset gates
   PATH_HAIRPIN      — ultra-tight 180° turn
+  PATH_ACCELERATION — straight-line acceleration run
   PATH_CHICANE      — S-transition between matched-radius arcs
   PATH_FS_CORNER    — classic single 90° corner
   PATH_MIXED        — combined sequence: corner + link + corner + hairpin
 
-Only the VALIDATION_SUITE subset (currently 5 paths) is used for evaluation
+Only the VALIDATION_SUITE subset is used for evaluation
 to balance coverage vs. computation time. The full library is available for
 manual testing.
 
@@ -832,7 +833,7 @@ def compute_composite_score(
 ):
     """
     Single source of truth for the composite performance score.
-    Combines the 11 metrics with SCORE_WEIGHTS, applies completion/time
+    Combines the 12 metrics with SCORE_WEIGHTS, applies completion/time
     bonuses, DNF penalties, and the inaccurate-solver factor.
     Lower is better. Shared by run_headless_rollout() and
     performance_stats.report_performance_metrics().

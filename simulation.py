@@ -585,7 +585,7 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
     ----------------------
     The loop ends on the first of:
       - Reaching path end: idx ≥ len(path_X) - 2  OR  dist_to_end ≤ 3.0 m
-      - Off-track:  |e_y| > OFFTRACK_LIMIT (3.5 m) → history["failed"] = True
+      - Off-track:  |e_y| > OFFTRACK_LIMIT (TRACK_HALF_WIDTH * 2) → history["failed"] = True
       - Solver failure: consecutive_solver_failures ≥ MAX_CONSECUTIVE_FAILURES (5)
       - Step budget: step ≥ max_steps
 
@@ -872,6 +872,8 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
         history["completion_frac"] = _progress
         history["time_bonus"]      = 0.0
 
+    # Note: inaccurate_count is not tracked here (always 0 in the live simulator);
+    # the offline tuner tracks it per rollout in run_headless_rollout().
     return history
 
 

@@ -72,7 +72,7 @@ USED BY
 
 DOES NOT USE
 ------------
-  model.py, optimiser.py, speed_profile.py, sim_track.py, performance_stats.py
+  bicycle_model.py, optimiser.py, speed_profile.py, sim_track.py, performance_stats.py
 """
 
 import numpy as np
@@ -133,7 +133,7 @@ class VehicleParams:
         self.tf    = 1.25     # Front track width between tyre contact patches (m)
         self.tr    = 1.20     # Rear  track width between tyre contact patches (m)
         self.h_cg  = 0.30     # Centre-of-gravity height (m); drives load transfer
-        # Linear cornering stiffness — used only by the MPC's linear model (model.py),
+        # Linear cornering stiffness — used only by the MPC's linear model
         # not by this nonlinear plant which uses Pacejka curves directly.
         # Effective linearised cornering stiffness matched to Pacejka initial slope:
         # C_eff ≈ mu * Fz_nominal * B * C * D.  Front: 1.9*600*15*1.45*1.0 ≈ 24,800 N/rad.
@@ -668,7 +668,6 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
             Fx_RL_req = 0.5 * Fx_req_total - delta_Fx_tv   # TV: reduces left to yaw right
             Fx_RR_req = 0.5 * Fx_req_total + delta_Fx_tv   # TV: increases right
         else:
-            # Braking: distributed by brake_bias (60% front, 40% rear default)
             Fx_FL_req = 0.5 * Fx_req_total 
             Fx_FR_req = 0.5 * Fx_req_total 
             Fx_RL_req = 0.5 * Fx_req_total - delta_Fx_tv

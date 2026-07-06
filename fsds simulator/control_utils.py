@@ -109,7 +109,7 @@ class MPCController:
         self.dt = dt
         self.N  = N
 
-        # ── Vehicle geometry & dynamics (Matched to model.py) ─────
+        # ── Vehicle geometry & dynamics  ─────
         self.lf = 0.85   # CoM -> front axle (m)
         self.lr = 0.70   # CoM -> rear  axle (m)
         self.m  = 255.0  # Vehicle mass (kg)

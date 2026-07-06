@@ -6,7 +6,7 @@ time-varying MPC controller, and provides CMA-ES-based automated weight optimisa
 
 This includes an implementation of a control node that is combined with the fsae_planning repo (replacing the corresponding controller node file in the repo) to run the MPC controller in the fsds simulator, which simulates the car using Unreal Engine 4.
 
-The simulator is also capable of simulating perception and planning, if this option is toggled on in the code. (currently by default it is True)
+The simulator is also capable of simulating perception and planning via `USE_PLANNER`. In `simulation.py` this defaults to `False` (uses true reference path); in `offline_tuner.py` it defaults to `True` (full planner pipeline).
 The 2D simulator does this by "placing" cones (setting coordinates of cones) to define the borders of a provided path in `sim_track.py` with the help of cone functions (in the `planning` folder) from the fsae_planning repo. These cones are then used for perception and planning in `sim_track.py`.
 This is also togglable by a `USE_PLANNER` constant in the simulation file and tuner file. 
 
@@ -253,10 +253,10 @@ s.t. x[:,0] = x0
 **`VehicleParams` key values:**
 ```
 m=255 kg, lf=0.85 m, lr=0.70 m, L=1.55 m, Iz=110 kg·m²
-Cf=11500 N/rad, Cr=12500 N/rad  (linear; used by bicycle_model only)
+Cf=25000 N/rad, Cr=20000 N/rad  (linear; used by bicycle_model only)
 tau_delta=0.08 s, tau_a=0.02 s
-mu=1.6 (Pacejka peak, racing slick)
-max_steer=35°, max_accel=12 m/s², max_brake=-8 m/s²
+mu=1.9 (Pacejka peak, racing slick)
+max_steer=35°, max_accel=12 m/s², max_brake=-10 m/s²
 k_susp_f=25000 N/m, k_susp_r=30000 N/m
 ```
 
@@ -291,7 +291,7 @@ k_susp_f=25000 N/m, k_susp_r=30000 N/m
 
 **Functions:**
 - `compute_path_curvature(path_X, path_Y) → kappa[]` — finite-difference curvature κ = (x'y'' − y'x'') / (x'²+y'²)^1.5
-- `compute_speed_profile(...) → v_profile[]` — three-pass: corner speed limit → forward acceleration pass → backward braking pass
+- `compute_speed_profile(...) → v_profile[]` — per-point look-ahead: samples upcoming curvature in a window via the 3-point cross-product method and derives a safe speed from the friction circle limit
 - `smooth_profile(v_profile, window=9) → v_profile[]` — moving-average smoothing
 
 **Key parameters:**
@@ -360,7 +360,7 @@ Runs for up to `max_steps` steps (dynamically computed from path length) at `dt=
 
 **1. Record state** — append `X, Y, psi, v` to history before any computation.
 
-**2. Perception update** — Controlled by the `USE_PLANNER` boolean passed to `simulate_closed_loop()` (and `run_headless_rollout()` in the offline tuner). When `True`: `SimPerception.visible_cones()` filters the static cone map; `SimPlanner.update()` accumulates cones, runs `build_path_walls()`, and recomputes the speed profile. When `False` (default): the true reference path and pre-computed speed profile are used directly.
+**2. Perception update** — Controlled by the `USE_PLANNER` boolean passed to `simulate_closed_loop()` (and `run_headless_rollout()` in the offline tuner). When `True`: `SimPerception.visible_cones()` filters the static cone map; `SimPlanner.update()` accumulates cones, runs `build_path_walls()`, and recomputes the speed profile.
 
 **3. Reference extraction** — the car is projected onto the active centreline (planner's or reference path's). The nearest waypoint segment gives the reference heading `rpsi`. Lateral error `e_y` is the signed perpendicular distance (positive = left of path).
 **4. Error state assembly** — the 8-element MPC state vector:
@@ -420,7 +420,7 @@ Uses `cma.fmin_lq_surr2`: BIPOP (bi-population) restart strategy combined with a
 
 ### Objective Function
 
-`parallel_evaluate_candidate(vec)` distributes `len(EVAL_TASKS)` rollouts (currently 4 paths × 2 ICs = 8 tasks) across `cpu_count - 1` worker processes via `pool.map()`. Results are aggregated as:
+`parallel_evaluate_candidate(vec)` distributes `len(EVAL_TASKS)` rollouts across `cpu_count - 1` worker processes via `pool.map()`. Results are aggregated as:
 ```
 score = 0.7 × weighted_mean + 0.3 × worst_case
 ```
@@ -433,10 +433,9 @@ Functionally mirrors `simulate_closed_loop()` but without GUI, matplotlib, or fu
 **DNF conditions (tighter than live simulator):**
 - `|e_y| >= 3.50 m`
 - `consecutive_fails ≥ 5`
-- Progress `< 3 m` after 60 steps (stuck/oscillating detection)
+- Less than `3 m` progress in any rolling 60-step (3 s) window (rolling stall detection)
 
-**DNF penalty:** `5.0 × (1 - progress) + 1.0 × offtrack_excess²`  
-The graded form (proportional to missing fraction + excess) gives CMA-ES a continuous gradient slope toward "complete more of the track" rather than a cliff that collapses the covariance update.
+**DNF penalty:** `DNF_PENALTY = 3.0` added for any non-completion; `DNF_OFFTRACK_PENALTY = 3.0` added additionally if the vehicle left the track boundary. Both are flat constants defined in `offline_tuner.py`.
 
 ### Composite Score (`SCORE_WEIGHTS`)
 
@@ -498,9 +497,9 @@ python simulation.py
 ### Loading a synthetic path
 
 Click **Load Test Path** to cycle through the 10 built-in FS-spec paths:  
-`PATH_SUDDEN_TURN`, `PATH_S_BEND`, `PATH_SKIDPAD`, `PATH_SPIRAL`,  
-`PATH_MICRO_SLALOM`, `PATH_OFFSET_CHICANE`, `PATH_HAIRPIN`, `PATH_CHICANE`,  
-`PATH_FS_CORNER`, `PATH_MIXED`.  
+`PATH_SUDDEN_TURN`, `PATH_S_BEND`, `PATH_SPIRAL`, `PATH_MICRO_SLALOM`,  
+`PATH_OFFSET_CHICANE`, `PATH_ACCELERATION`, `PATH_HAIRPIN`, `PATH_CHICANE`,  
+`PATH_FS_CORNER`, `PATH_MIXED`.
 Each click advances to the next path. Camera auto-frames to the path with a 15 m margin.
 
 ### Running a simulation
@@ -603,7 +602,7 @@ Currently `N=25` (1.25 s at 20 Hz). At `v_max=20 m/s` the car travels 25 m per h
 
 The most impactful `speed_profile.compute_speed_profile()` parameters:
 
-- `mu=0.6` — planning friction. Currently ~37% of peak 1.6. Reduce to slow corners further; increase to allow faster cornering speeds.
+- `mu=0.6` — planning friction. Reduce to slow corners further; increase to allow faster cornering speeds.
 - `safety=1.0` — multiplier on curvature-derived corner speed. Values 0.85–0.95 compensate for spline smoothing underestimating true curvature at tight corners.
 - `v_max=20.0` — absolute top speed cap. The MPC actuator bound (±5 m/s²) limits acceleration from standstill independently.
 

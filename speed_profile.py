@@ -45,13 +45,13 @@ USED BY
 
 DOES NOT USE
 ------------
-  vehicle_physics.py, model.py, optimiser.py, sim_track.py, performance_stats.py
+  vehicle_physics.py, bicycle_model.py, optimiser.py, sim_track.py, performance_stats.py
 """
 
 import numpy as np
 import math
 
-
+# Note: not called by the active compute_speed_profile; retained for previous speed profile function
 def compute_path_curvature(path_X, path_Y):
     """
     Compute the signed curvature κ(s) at each point along the path using
@@ -243,15 +243,15 @@ def compute_speed_profile(
     scan_end=14.0,
 ):
     """
-    Compute a per-point target speed profile using the path_utils.py look-ahead logic.
+    Compute a per-point target speed profile using a forward look-ahead heuristic.
 
-    This acts as a drop-in replacement for testing purposes. It iterates over every
-    point in the path and applies the look-ahead heuristic (sampling points between 
-    scan_start and scan_end) to find the maximum upcoming curvature using the 
-    3-point cross-product method. 
-    
-    Note: This version intentionally excludes the forward/backward kinematic passes 
-    to strictly test the path_utils heuristic behavior.
+    At each path point, samples upcoming points in the window [scan_start, scan_end]
+    metres ahead and finds the maximum curvature using the 3-point cross-product
+    method. Target speed is derived from the friction circle limit:
+        v_target = safety * sqrt(a_lat_max / kappa_max)
+
+    The a_accel_max and a_brake_max parameters are kept for signature compatibility
+    with the old three-pass implementation but are not used.
     """
     path_X = np.asarray(path_X)
     path_Y = np.asarray(path_Y)

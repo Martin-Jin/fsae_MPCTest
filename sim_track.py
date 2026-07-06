@@ -33,7 +33,7 @@ USED BY
 
 DOES NOT USE (directly)
 -----------------------
-  vehicle_physics.py, model.py, optimiser.py, performance_stats.py
+  vehicle_physics.py, bicycle_model.py, optimiser.py, performance_stats.py
   (uses speed_profile.py indirectly via SimPlanner.update)
 """
 
