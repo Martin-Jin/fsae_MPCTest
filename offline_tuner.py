@@ -1094,7 +1094,6 @@ def run_headless_rollout(
             offtrack = True
             dnf       = True
             num_steps = step + 1
-            print("off track")
             break
     
         u_prev = u_opt.copy()

@@ -125,9 +125,9 @@ class MPCController:
         self.nu = 2
 
         # For tuning copy and paste purposes
-        Q_diag      = [0.8272234497643787, 0.12414925328330728, 4.4135201967414694, 0.44809502633366416, 0.6767584308766955, 0.0, 0.0, 0.0]
-        R_diag      = [5.109150728883122, 5.752126672173076]
-        R_rate_diag = [6.482078562228737, 1.844043028681526]
+        Q_diag      = [0.5033342406884888, 0.1351368654899604, 0.7000669149532808, 0.6193157161190033, 0.8687842624228068, 0.0, 0.0, 0.0]
+        R_diag      = [6.32676286268335, 3.1899069771826496]
+        R_rate_diag = [4.276385490350809, 9.215314852892405]
 
         # ── Cost weight matrices (Matched to simulation.py tuner defaults) ───
         # State order: [e_y, e_yd, e_psi, e_psi_d, e_v, e_a, delta_act, a_act]
@@ -143,8 +143,8 @@ class MPCController:
         self.R_rate = np.diag(R_rate_diag)
 
         # ── Hard actuator limits ───────────────────────────────────────
-        self.u_min = np.array([-MAX_STEER_RAD, -6.0])  # [rad, m/s²]; matches VehicleParams.max_accel_brake
-        self.u_max = np.array([ MAX_STEER_RAD, 12.0])  # matches VehicleParams.max_accel
+        self.u_min = np.array([-MAX_STEER_RAD, -5.0])  # [rad, m/s^2]
+        self.u_max = np.array([ MAX_STEER_RAD,  5.0])
 
         # Per-step rate limits (symmetric)
         self.du_max = np.array([math.radians(4.0), 0.6])  # [rad/step, m/s^2/step]
@@ -547,34 +547,12 @@ class MPCController:
 
         steering = float(np.clip(-delta_cmd / MAX_STEER_RAD, -1.0, 1.0))
 
-        # Vehicle constants for FSDS mapping
-        mass = 255.0
-        max_fsds_force = 4000.0  # Must match the Unreal Engine max torque / wheel radius
-        cda = 0.7
-        rho = 1.225
-        crr = 20.0
-
         if a_cmd >= 0.0:
-            # Calculate opposing forces at current speed
-            f_drag = 0.5 * rho * cda * (car_speed ** 2)
-            
-            # Feed-forward force requirement
-            f_req = (mass * a_cmd) + f_drag + crr
-            
-            # Map required force to a 0.0 to 1.0 throttle percentage
-            throttle = float(np.clip(f_req / max_fsds_force, 0.0, 1.0))
+            throttle = float(np.clip(a_cmd / 4.0, 0.0, 1.0))
             brake    = 0.0
         else:
             throttle = 0.0
-            
-            # Drag assists braking. We want a negative acceleration, 
-            # so the brakes need to do less work at high speeds.
-            f_drag = 0.5 * rho * cda * (car_speed ** 2)
-            f_req_brake = (mass * abs(a_cmd)) - f_drag - crr
-            
-            # Max FSDS braking force (tune to match your FSDS vehicle setup)
-            max_fsds_brake = 2000.0 
-            brake = float(np.clip(f_req_brake / max_fsds_brake, 0.0, 1.0))
+            brake    = float(np.clip(-a_cmd / 4.0, 0.0, 1.0))
 
         self.last_telemetry = {
             **dbg,
