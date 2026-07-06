@@ -27,18 +27,14 @@ CONE_BRAKE_WIDTH = 0.18  # m    — lateral half-width of braking corridor (36 c
 TARGET_TIMEOUT   = 0.5   # s    — brake if no fresh path received within this window
 
 # Minimum duration (s) the cone proximity brake must be active continuously
-# before reset() is called on the MPC. Single-frame cone hits do not warrant
-# discarding the warm-start; only sustained stops do.
+# before reset() is called on the MPC. 
 CONE_RESET_THRESHOLD = 0.3   # s  (~6 consecutive 50 ms ticks)
 
 # ── Logging ─────────────────────────────────────────────────────────────────
-# Set to None to disable CSV logging entirely (zero overhead when disabled).
-# Writes one row per control tick (20 Hz). At ~250 bytes/row this is roughly
-# 5 KB/s -- a 10-minute test session is ~3 MB, fine for local disk.
 LOG_DIR = None #FsPath('/tmp/mpc_logs')
 LOG_FIELDS = [
     'ros_time', 'car_speed', 'desired_speed',
-    'e_y', 'e_psi', 'e_psi_d', 'e_v', 'kappa',
+    'e_y', 'e_psi', 'e_v', 'kappa',
     'steering', 'throttle', 'brake',
     'delta_cmd', 'a_cmd', 'delta_act', 'a_act',
     'car_x', 'car_y', 'car_yaw',
@@ -47,16 +43,14 @@ LOG_FIELDS = [
 class ControlNode(Node):
     """
     ROS 2 Node responsible for handling sensor data, maintaining vehicle state,
-    and running the MPC control loop at a fixed frequency.
+    and running the MPC control loop at a fixed frequency (20 Hz).
     """
     
     def __init__(self):
-        """
-        Initializes the ControlNode, setting up ROS 2 subscriptions, publishers,
-        internal state variables, the MPC controller instance, and the telemetry logger.
-        """
         super().__init__('controller')
 
+        # Best effort QoS ensures we don't build up a latency-inducing backlog 
+        # of stale odometry frames if CPU loads momentarily spike.
         sensor_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
@@ -76,7 +70,7 @@ class ControlNode(Node):
         # ── Internal state ─────────────────────────────────────────────
         self._go_received    = False
         self._path_pts:  np.ndarray = np.empty((0, 2))
-        self._path_stamp = None           # rclpy.time.Time of last path message
+        self._path_stamp = None           
         self._desired_speed: float = V_FALLBACK
         self._car_pos        = np.zeros(2)
         self._car_yaw        = 0.0
@@ -84,20 +78,12 @@ class ControlNode(Node):
         self._car_yaw_rate   = 0.0
         self._blue_cones:   np.ndarray = np.empty((0, 2))
         self._yellow_cones: np.ndarray = np.empty((0, 2))
-
-        # Cone-brake continuity tracking — avoids spurious MPC resets on
-        # momentary single-frame detections inside the braking corridor.
-        self._cone_brake_duration: float = 0.0   # seconds currently braking
+        self._cone_brake_duration: float = 0.0   
 
         # ── MPC controller ─────────────────────────────────────────────
-        # N=25 gives 1.25 s of preview at 50 ms per step — sufficient at 7 m/s
-        # (covers ~8.75 m, spanning 1–2 cone pairs ahead). Larger N increases
-        # QP solve time without benefit when speed is capped at 7 m/s.
         self._mpc = MPCController(dt=0.05, N=25)
 
         # ── CSV telemetry logger ────────────────────────────────────────
-        # One file per run, timestamped, written incrementally so a crash mid-run 
-        # doesn't lose the log. Disable by setting LOG_DIR = None at the top.
         self._log_file = None
         self._log_writer = None
         if LOG_DIR is not None:
@@ -121,19 +107,13 @@ class ControlNode(Node):
     # ------------------------------------------------------------------
 
     def _go_cb(self, msg: GoSignal) -> None:
-        """
-        Callback for the 'Go' signal. 
-        Unlocks the vehicle to begin following the path.
-        """
+        """Unlocks the vehicle to begin following the path."""
         if not self._go_received:
             self._go_received = True
             self.get_logger().info('GO signal received. Launching control loop.')
 
     def _path_cb(self, msg: Path) -> None:
-        """
-        Callback for the planned trajectory path.
-        Converts the incoming Path poses into a 2D numpy array [x, y].
-        """
+        """Converts the incoming Path poses into a 2D numpy array [x, y]."""
         self._path_pts = np.array(
             [[ps.pose.position.x, ps.pose.position.y] for ps in msg.poses],
             dtype=np.float64,
@@ -141,16 +121,11 @@ class ControlNode(Node):
         self._path_stamp = self.get_clock().now()
 
     def _speed_cb(self, msg: Float32) -> None:
-        """
-        Callback for the desired target speed published by the planner.
-        """
+        """Updates the desired target speed published by the planner."""
         self._desired_speed = float(msg.data)
 
     def _odom_cb(self, msg: Odometry) -> None:
-        """
-        Callback for vehicle odometry.
-        Extracts position (x, y), speed, yaw rate, and calculates yaw from the quaternion.
-        """
+        """Extracts position, speed, and yaw rate from Odometry."""
         p = msg.pose.pose.position
         self._car_pos = np.array([p.x, p.y])
 
@@ -158,18 +133,49 @@ class ControlNode(Node):
         self._car_speed    = math.hypot(v.x, v.y)
         self._car_yaw_rate = msg.twist.twist.angular.z
 
-        # Quaternion -> yaw (Z-axis rotation)
         q = msg.pose.pose.orientation
         siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
         self._car_yaw = math.atan2(siny_cosp, cosy_cosp)
 
     def _track_cb(self, msg: Track) -> None:
-        """
-        Callback for track cone detections.
-        Separates the incoming cone map into blue and yellow arrays for the safety brake.
-        """
+        """Separates the incoming cone map into blue and yellow arrays."""
         self._blue_cones, self._yellow_cones = separate_cones_by_color(msg)
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _check_cone_proximity(self) -> bool:
+        """
+        Transforms visible cones into the car-relative frame to check if any
+        obstruct the dynamic braking corridor ahead of the vehicle.
+        
+        Returns True if a cone collision is imminent.
+        """
+        cone_parts = [c for c in (self._blue_cones, self._yellow_cones) if len(c) > 0]
+        if not cone_parts:
+            return False
+
+        all_cones = np.vstack(cone_parts)
+        cos_y = math.cos(self._car_yaw)
+        sin_y = math.sin(self._car_yaw)
+        rel   = all_cones - self._car_pos
+
+        x_car =  rel[:, 0] * cos_y + rel[:, 1] * sin_y   # forward (+)
+        y_car = -rel[:, 0] * sin_y + rel[:, 1] * cos_y   # left    (+)
+
+        dynamic_brake_dist = float(np.clip(
+            self._car_speed * 0.25, 0.6, CONE_BRAKE_DIST
+        ))
+
+        too_close = bool(np.any(
+            (x_car > 0.2) &
+            (x_car < dynamic_brake_dist) &
+            (np.abs(y_car) < CONE_BRAKE_WIDTH)
+        ))
+        
+        return too_close
 
     # ------------------------------------------------------------------
     # Core MPC control loop (50 ms / 20 Hz)
@@ -178,39 +184,29 @@ class ControlNode(Node):
     def _control_loop(self) -> None:
         """
         Main execution loop running at 20 Hz.
-        Handles startup waiting, emergency braking for stale paths, executing the 
-        MPC optimization step, applying the safety cone-brake, and publishing commands.
+        Handles startup wait, trajectory loss fail-safes, MPC optimization, 
+        and the safety cone-brake override.
         """
         cmd = ControlCommand()
 
         # ── Phase 1: Hold at start line until GO signal ────────────────
         if not self._go_received:
-            cmd.throttle = 0.0
-            cmd.steering = 0.0
-            cmd.brake    = 1.0
+            cmd.throttle, cmd.steering, cmd.brake = 0.0, 0.0, 1.0
             self.pub_cmd.publish(cmd)
-            self.get_logger().info(
-                'Waiting for GO signal...', throttle_duration_sec=2.0
-            )
+            self.get_logger().info('Waiting for GO signal...', throttle_duration_sec=2.0)
             return
 
         # ── Phase 2: Emergency brake on stale / missing path ──────────
         path_stale = (
             self._path_stamp is None
-            or (self.get_clock().now() - self._path_stamp).nanoseconds * 1e-9
-               > TARGET_TIMEOUT
+            or (self.get_clock().now() - self._path_stamp).nanoseconds * 1e-9 > TARGET_TIMEOUT
             or len(self._path_pts) < 2
         )
         if path_stale:
-            cmd.throttle = 0.0
-            cmd.steering = 0.0
-            cmd.brake    = 1.0
-            self._mpc.reset()   # path loss is a large discontinuity; discard warm-start
+            cmd.throttle, cmd.steering, cmd.brake = 0.0, 0.0, 1.0
+            self._mpc.reset()   
             self.pub_cmd.publish(cmd)
-            self.get_logger().warn(
-                'Trajectory path lost or stale — emergency braking.',
-                throttle_duration_sec=1.0,
-            )
+            self.get_logger().warn('Trajectory path lost or stale — emergency braking.', throttle_duration_sec=1.0)
             return
 
         # ── Phase 3: MPC optimal control ──────────────────────────────
@@ -227,7 +223,7 @@ class ControlNode(Node):
         cmd.throttle = throttle_out
         cmd.brake    = brake_out
 
-        # ── Telemetry log (per-tick, before any cone-brake override below) ─
+        # ── Telemetry log (pre-override) ──────────────────────────────
         if self._log_writer is not None:
             tel = self._mpc.last_telemetry
             try:
@@ -237,7 +233,6 @@ class ControlNode(Node):
                     'desired_speed': self._desired_speed,
                     'e_y': tel.get('e_y', ''),
                     'e_psi': tel.get('e_psi', ''),
-                    'e_psi_d': tel.get('e_psi_d', ''),
                     'e_v': tel.get('e_v', ''),
                     'kappa': tel.get('kappa', ''),
                     'steering': steer_out,
@@ -251,82 +246,37 @@ class ControlNode(Node):
                     'car_y': self._car_pos[1],
                     'car_yaw': self._car_yaw,
                 })
-                # Flush every row to ensure data is saved in case of a crash.
                 self._log_file.flush()
             except Exception as exc:
-                self.get_logger().warn(f'Telemetry log write failed: {exc!r}',
-                                        throttle_duration_sec=5.0)
+                self.get_logger().warn(f'Telemetry log write failed: {exc!r}', throttle_duration_sec=5.0)
 
         # ── Phase 4: Cone proximity brake override ────────────────────
-        # Transform all visible cones into the car-relative frame and check
-        # whether any fall inside the braking corridor ahead of the car.
-        cone_parts = [c for c in (self._blue_cones, self._yellow_cones) if len(c) > 0]
-        too_close  = False
-
-        if cone_parts:
-            all_cones = np.vstack(cone_parts)
-            cos_y = math.cos(self._car_yaw)
-            sin_y = math.sin(self._car_yaw)
-            rel   = all_cones - self._car_pos
-
-            x_car =  rel[:, 0] * cos_y + rel[:, 1] * sin_y   # forward (+)
-            y_car = -rel[:, 0] * sin_y + rel[:, 1] * cos_y   # left    (+)
-
-            # Scale braking corridor depth with speed so faster approaches
-            # get more stopping distance; clamped to physical limits.
-            dynamic_brake_dist = float(np.clip(
-                self._car_speed * 0.25, 0.6, CONE_BRAKE_DIST
-            ))
-
-            too_close = bool(np.any(
-                (x_car > 0.2) &
-                (x_car < dynamic_brake_dist) &
-                (np.abs(y_car) < CONE_BRAKE_WIDTH)
-            ))
-
-        if too_close:
+        if self._check_cone_proximity():
             cmd.throttle = 0.0
             cmd.brake    = 1.0
             self._cone_brake_duration += 0.05
 
-            # Only reset warm-start after a sustained stop — brief single-frame
-            # detections should not throw away OSQP continuity.
             if self._cone_brake_duration >= CONE_RESET_THRESHOLD:
                 self._mpc.reset()
 
             self.get_logger().warn(
-                f'Cone proximity brake active '
-                f'({self._cone_brake_duration:.2f} s).',
+                f'Cone proximity brake active ({self._cone_brake_duration:.2f} s).',
                 throttle_duration_sec=0.5,
             )
         else:
-            # Clear cone-brake timer when corridor is free
             self._cone_brake_duration = 0.0
 
         # ── Phase 5: Timestamp and publish ────────────────────────────
         cmd.header.stamp = self.get_clock().now().to_msg()
-
+        self.pub_cmd.publish(cmd)
+        
         self.get_logger().debug(
-            f'MPC thr={cmd.throttle:.2f} brk={cmd.brake:.2f} '
-            f'steer={cmd.steering:.3f} | '
+            f'MPC thr={cmd.throttle:.2f} brk={cmd.brake:.2f} steer={cmd.steering:.3f} | '
             f'v={self._car_speed:.1f}/{self._desired_speed:.1f} m/s'
         )
-        # Throttled INFO summary — one line per second for operator awareness
-        self.get_logger().info(
-            f'MPC_CMD thr={cmd.throttle:.2f} brk={cmd.brake:.2f} '
-            f'steer={cmd.steering:.3f} | '
-            f'v={self._car_speed:.1f}/{self._desired_speed:.1f} m/s',
-            throttle_duration_sec=1.0,
-        )
-
-        self.pub_cmd.publish(cmd)
-
 
     def destroy_node(self) -> None:
-        """
-        Cleanup hook to cleanly close the telemetry logging file 
-        before the node shuts down.
-        """
+        """Cleanup hook to cleanly close the telemetry logging file."""
         if self._log_file is not None:
             try:
                 self._log_file.flush()
@@ -335,11 +285,7 @@ class ControlNode(Node):
                 pass
         super().destroy_node()
 
-
 def main(args=None):
-    """
-    Entry point for the control node executable.
-    """
     rclpy.init(args=args)
     node = ControlNode()
     try:
@@ -350,7 +296,6 @@ def main(args=None):
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
-
 
 if __name__ == '__main__':
     main()

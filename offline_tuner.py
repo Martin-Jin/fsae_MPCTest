@@ -100,6 +100,7 @@ import time
 from collections import Counter
 from scipy.interpolate import CubicSpline
 import signal
+from model_utils import curvature_estimate, adaptive_R_rate, adaptive_R_scaling
 import subprocess
 
 from vehicle_physics import VehicleParams, step_nonlinear_plant, init_plant_state
@@ -275,54 +276,6 @@ def get_cached_model(vx, dt):
     if key not in _model_cache:
         _model_cache[key] = get_8state_discrete_model(key, dt)
     return _model_cache[key]
-
-
-# ==========================================
-# ADAPTIVE MPC GAIN HELPERS
-# ==========================================
-# Note: these three functions are also defined canonically in model_utils.py.
-# They are duplicated here for backward compatibility with imports from
-# simulation.py which currently does `from offline_tuner import curvature_estimate`.
-# Once simulation.py is updated to import from model_utils.py directly,
-# these copies should be removed.
-
-
-def curvature_estimate(state):
-    """
-    Estimate instantaneous path curvature from yaw rate and speed.
-    κ = |r / vx|. See model_utils.py for full documentation.
-    """
-    vx = max(state[3], 0.5)
-    r = state[5]
-    return abs(r / vx)
-
-
-def adaptive_R_rate(kappa, R_rate_base):
-    """
-    Soften the steering rate-of-change cost in corners.
-    scale = max(0.35, 1/(1 + 3*κ)). See model_utils.py for full documentation.
-    """
-    R = np.array(R_rate_base, copy=True)
-    scale = max(0.35, 1.0 / (1.0 + 3.0 * kappa))
-    R[0, 0] *= scale
-    return R
-
-
-def adaptive_R_scaling(vx, R_base):
-    """
-    Increase steering cost with speed (Hill function) to maintain stability.
-    steer_scale = 1 + 1.5*vx/(6+vx). See model_utils.py for full documentation.
-    """
-    vx = max(vx, 0.5)
-    A = 1.5
-    vx_half = 6.0
-    steer_scale = 1.0 + (A * vx) / (vx_half + vx)
-    accel_scale = 1.0 + 0.05 * vx
-    R_scaled = np.array(R_base, copy=True)
-    R_scaled[0, 0] *= steer_scale
-    R_scaled[1, 1] *= accel_scale
-    return R_scaled
-
 
 # ==========================================
 # SYNTHETIC PATH LIBRARY — INTERNAL HELPERS

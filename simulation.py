@@ -62,7 +62,7 @@ from matplotlib.widgets import Button, Slider
 from scipy.interpolate import CubicSpline
 from bicycle_model import get_8state_discrete_model
 from optimiser import solve_mpc
-from vehicle_physics import VehicleParams, step_nonlinear_plant, init_plant_state
+from vehicle_physics import VehicleParams, step_nonlinear_plant, init_plant_state, plant_to_tracking_error
 import performance_stats
 from performance_stats import benchmark_weights
 import speed_profile
@@ -75,7 +75,6 @@ import math
 # ==========================================
 # SETUP AND CONFIGURATION
 # ==========================================
-
 dt        = 0.05    # Simulation timestep (s) — 20 Hz, matches vehicle_physics sub-stepping
 N_horizon = 25      # MPC prediction horizon (steps = 1.25 s of look-ahead at 20 Hz)
 v_ref     = 7.0     # Fallback constant speed (m/s); only used if path_v_profile is empty
@@ -86,9 +85,9 @@ v_ref     = 7.0     # Fallback constant speed (m/s); only used if path_v_profile
 # R_rate handles smoothness indirectly through Δu costs.
 # These values are the output of the most recent offline_tuner.py run.
 # To update: paste Q_diag, R_diag, R_rate_diag printed by offline_tuner.py.
-Q_diag      = [1.9939068391209007, 1.0669482933520642, 1.8282046892219437, 0.12441450684791018, 2.6736825903897574, 0.0, 0.0, 0.0]
-R_diag      = [1.136331850862419, 1.2932463727542287]
-R_rate_diag = [8.264483639982082, 0.8789695107565911]
+Q_diag      = [0.3765645542218161, 0.12646484259578666, 3.1959296785873383, 0.1646109778619751, 5.423346518471351, 0.0, 0.0, 0.0]
+R_diag      = [2.5355713303060665, 4.808809523587337]
+R_rate_diag = [6.506304257521467, 1.2358760051895425]
 
 Q      = np.diag(Q_diag)       # State cost matrix (8×8 diagonal)
 R      = np.diag(R_diag)       # Input cost matrix (2×2 diagonal)
@@ -723,25 +722,11 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
                     v_target = float(path_v_profile[idx])
             else:
                 idx, rx, ry, rpsi = find_closest_reference_bounded(X_g, Y_g, idx, window=40)
-                dx_err = X_g - rx
-                dy_err = Y_g - ry
-                
-                # Robust signed Euclidean distance
-                e_y_proj  = dy_err * np.cos(rpsi) - dx_err * np.sin(rpsi)
-                true_dist = math.hypot(dx_err, dy_err)
-                e_y       = true_dist * (1.0 if e_y_proj >= 0 else -1.0)
-                
-                e_psi  = normalize_angle(psi_g - rpsi)
+                e_y, _, e_psi, _, _, _, _ = plant_to_tracking_error(plant_state, rx, ry, rpsi)
                 v_target = float(path_v_profile[idx])
         else:
             idx, rx, ry, rpsi = find_closest_reference_bounded(X_g, Y_g, idx, window=40)
-            dx_err = X_g - rx
-            dy_err = Y_g - ry
-            # Robust signed Euclidean distance
-            e_y_proj  = dy_err * np.cos(rpsi) - dx_err * np.sin(rpsi)
-            true_dist = math.hypot(dx_err, dy_err)
-            e_y       = true_dist * (1.0 if e_y_proj >= 0 else -1.0)
-            e_psi  = normalize_angle(psi_g - rpsi)
+            e_y, _, e_psi, _, _, _, _ = plant_to_tracking_error(plant_state, rx, ry, rpsi)
             v_target = float(path_v_profile[idx])
 
         history["v_target"].append(v_target)

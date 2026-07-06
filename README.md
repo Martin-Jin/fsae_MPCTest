@@ -704,3 +704,25 @@ colcon build --packages-select fsae_planning --symlink-install
 | `fs_msgs` | FSDS | `Track`, `ControlCommand`, `GoSignal` message types |
 | `nav_msgs` | ROS 2 | `Odometry`, `Path` |
 | `geometry_msgs` | ROS 2 | `PoseStamped`, `PointStamped` |
+
+## Developer Guide
+
+If you are extending the simulator or tuning the vehicle, follow these guidelines to maintain the integrity of the MPC-plant architecture.
+
+### Modifying Vehicle Parameters
+The single source of truth for all vehicle physics is the `VehicleParams` class in `vehicle_physics.py`. 
+- **Tyre Data:** We use a Pacejka MF94 model. If you are importing new tyre data (e.g., from TTC), update the `B`, `C`, `D`, and `E` coefficients. Note that the linear bicycle model (`bicycle_model.py`) relies on `Cf` and `Cr`. If you alter the Pacejka peak coefficients (`D`) or stiffness (`B`), you **must** recalculate and update `Cf` and `Cr` to match the new initial slope, or the MPC's internal predictions will heavily diverge from the plant.
+- **Actuator Limits:** Changing `max_steer` or `max_accel` automatically propagates to the MPC's hard QP constraints in `optimiser.py`.
+
+### Adding a New Synthetic Path
+To test against a new track geometry, you need to append it to the library in `offline_tuner.py`:
+1. Navigate to the `build_synthetic_paths()` function.
+2. Define your segments. Use `_make_arc(cx, cy, radius, start_deg, end_deg, n)` for constant-radius corners and `np.linspace()` for straights.
+3. Concatenate your arrays and pass them through `_resample_path(wx, wy)`.
+4. Add the resulting tuple to the `paths` dictionary.
+5. *(Optional)* Add the dictionary key to `VALIDATION_SUITE` if you want the CMA-ES tuner to optimise against it.
+
+### Debugging Solver Failures
+If the live simulator throws `consecutive_solver_failures` or the GUI terminal flags `OPTIMAL_INACCURATE` frequently, check the following:
+* **Weight Scaling:** OSQP is sensitive to poorly conditioned matrices. If any element in `Q`, `R`, or `R_rate` exceeds `1e4` or drops below `1e-4`, the solver may fail to converge. Check the outputs of `adaptive_R_scaling` in `model_utils.py` to ensure high speeds aren't blowing up the steering costs.
+* **Kinematic vs. Dynamic Gap:** If the car consistently fails at tight hairpins, the `speed_profile.py` might be commanding speeds that require lateral forces exceeding the Pacejka friction circle. Lower the `mu` planning parameter in `compute_speed_profile()` to force the MPC to approach corners more conservatively.

@@ -503,6 +503,54 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
 
     s = state.copy()  # Work on a copy; never mutate the caller's array
 
+    # ── Suspension integration (semi-implicit Euler) ────────────────────
+    def _integrate_susp(z, dz, Fz_road, Fz_spring, F_damp, F_arb_signed, k, c):
+        """
+        Integrate one suspension corner using semi-implicit Euler.
+
+        Why semi-implicit?
+        The FS suspension natural frequency is ~11-12 Hz (high relative to
+        the 0.0125 s sub-step). Explicit Euler would require many more
+        sub-steps to remain stable because the stability condition for a
+        spring-damper is: h < 2/ω_n ≈ 0.018 s (right on the boundary here).
+        Semi-implicit Euler treats the damping term implicitly (puts it in
+        the denominator) while keeping spring and external forces explicit,
+        which gives unconditional stability for any h.
+
+        Scheme:
+            dz_new = [dz + (F_net / m_us) * h] / (1 + c/m_us * h)   ← implicit damping
+            z_new  = z + dz_new * h                                   ← use updated velocity
+
+        F_net = Fz_road − Fz_spring − F_arb  (external − restoring; damper handled implicitly)
+
+        Hard bump-stops: inelastic contact clamps velocity to zero at the limits.
+
+        Parameters
+        ----------
+        z : float             Current deflection from equilibrium (m)
+        dz : float            Current deflection velocity (m/s)
+        Fz_road : float       Road reaction force (N)
+        Fz_spring : float     Current spring force k*(z_eq + z) (N)
+        F_damp : float        Current damper force c*dz (N) [for reference only]
+        F_arb_signed : float  ARB force applied to THIS corner (+ve or -ve)
+        k : float             Spring rate (N/m)
+        c : float             Damper rate (N·s/m)
+
+        Returns
+        -------
+        (z_new, dz_new) : (float, float)
+        """
+        F_net = Fz_road - Fz_spring - F_arb_signed
+        # Semi-implicit: damping appears in denominator → unconditional stability
+        dz_new = (dz + (F_net / p.m_us) * h) / (1.0 + (c / p.m_us) * h)
+        z_new  = float(np.clip(z + dz_new * h, p.z_min, p.z_max))
+        # Inelastic bump stop: zero velocity component pressing into the stop
+        if z_new >= p.z_max and dz_new > 0.0:
+            dz_new = 0.0
+        if z_new <= p.z_min and dz_new < 0.0:
+            dz_new = 0.0
+        return z_new, dz_new
+
     for _ in range(sub_steps):
 
         # ── Unpack state vector ──────────────────────────────────────────────
@@ -824,54 +872,6 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
         omega_FL_new = max(0.0, omega_FL + domega_FL * h)
         omega_FR_new = max(0.0, omega_FR + domega_FR * h)
 
-        # ── Suspension integration (semi-implicit Euler) ────────────────────
-        def _integrate_susp(z, dz, Fz_road, Fz_spring, F_damp, F_arb_signed, k, c):
-            """
-            Integrate one suspension corner using semi-implicit Euler.
-
-            Why semi-implicit?
-            The FS suspension natural frequency is ~11-12 Hz (high relative to
-            the 0.0125 s sub-step). Explicit Euler would require many more
-            sub-steps to remain stable because the stability condition for a
-            spring-damper is: h < 2/ω_n ≈ 0.018 s (right on the boundary here).
-            Semi-implicit Euler treats the damping term implicitly (puts it in
-            the denominator) while keeping spring and external forces explicit,
-            which gives unconditional stability for any h.
-
-            Scheme:
-              dz_new = [dz + (F_net / m_us) * h] / (1 + c/m_us * h)   ← implicit damping
-              z_new  = z + dz_new * h                                   ← use updated velocity
-
-            F_net = Fz_road − Fz_spring − F_arb  (external − restoring; damper handled implicitly)
-
-            Hard bump-stops: inelastic contact clamps velocity to zero at the limits.
-
-            Parameters
-            ----------
-            z : float             Current deflection from equilibrium (m)
-            dz : float            Current deflection velocity (m/s)
-            Fz_road : float       Road reaction force (N)
-            Fz_spring : float     Current spring force k*(z_eq + z) (N)
-            F_damp : float        Current damper force c*dz (N) [for reference only]
-            F_arb_signed : float  ARB force applied to THIS corner (+ve or -ve)
-            k : float             Spring rate (N/m)
-            c : float             Damper rate (N·s/m)
-
-            Returns
-            -------
-            (z_new, dz_new) : (float, float)
-            """
-            F_net = Fz_road - Fz_spring - F_arb_signed
-            # Semi-implicit: damping appears in denominator → unconditional stability
-            dz_new = (dz + (F_net / p.m_us) * h) / (1.0 + (c / p.m_us) * h)
-            z_new  = float(np.clip(z + dz_new * h, p.z_min, p.z_max))
-            # Inelastic bump stop: zero velocity component pressing into the stop
-            if z_new >= p.z_max and dz_new > 0.0:
-                dz_new = 0.0
-            if z_new <= p.z_min and dz_new < 0.0:
-                dz_new = 0.0
-            return z_new, dz_new
-
         z_FL_new, dz_FL_new = _integrate_susp(
             z_FL, dz_FL, Fz_road_FL, Fz_spring_FL, Fd_FL, arb_f, p.k_susp_f, p.c_damp_f)
         z_FR_new, dz_FR_new = _integrate_susp(
@@ -1017,8 +1017,12 @@ def plant_to_tracking_error(state, ref_x, ref_y, ref_psi):
 
     dx    = X - ref_x
     dy    = Y - ref_y
-    # Rotate global position error into path-tangent frame
-    e_y   = dy * np.cos(ref_psi) - dx * np.sin(ref_psi)
+    
+    # Robust signed Euclidean distance (matches simulation.py logic)
+    e_y_proj  = dy * np.cos(ref_psi) - dx * np.sin(ref_psi)
+    true_dist = np.hypot(dx, dy)
+    e_y       = true_dist * (1.0 if e_y_proj >= 0 else -1.0)
+    
     # Wrap heading error to [-π, π]
     e_psi = np.arctan2(np.sin(psi - ref_psi), np.cos(psi - ref_psi))
 
