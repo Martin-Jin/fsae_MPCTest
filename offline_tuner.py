@@ -97,7 +97,7 @@ DOES NOT USE (as module)
 import numpy as np
 import multiprocessing as mp
 import time
-from collections import Counter
+from collections import Counter, deque
 from scipy.interpolate import CubicSpline
 import signal
 from model_utils import curvature_estimate, adaptive_R_rate, adaptive_R_scaling
@@ -166,6 +166,8 @@ N_HORIZON = 25
 
 # Whether to use perception and planner in tuner
 USE_PLANNER = False
+# How steps of delay to simulate between controller commands
+DELAY_STEPS = 2
 
 # ==========================================
 # DNF (DID-NOT-FINISH) PENALTY
@@ -224,9 +226,9 @@ SCORE_WEIGHTS = np.array(
         0.06,  # 6  steering_sat_ratio
         0.06,  # 7  jerk_rms
         0.02,  # 8  max_yaw_rate
-        0.05,  # 9  steering_reversals
+        0.06,  # 9  steering_reversals
         0.13,  # 10 peak_lateral_error
-        0.02,  # 11 speed_rmse
+        0.01,  # 11 speed_rmse
     ],
     dtype=float,
 )
@@ -934,6 +936,8 @@ def run_headless_rollout(
     vx0 = 0  # Always start from standstill
 
     state = init_plant_state(X0, Y0, psi0, vx0=vx0)
+    # ── NEW: Transport Delay Queue ────────────────────────────────────────
+    command_queue = deque([np.zeros(2) for _ in range(DELAY_STEPS)], maxlen=DELAY_STEPS)
 
     # ── Metric accumulators ────────────────────────────────────────────────────
     error_cost = 0.0  # Σ(e_y² + 0.4*e_psi²): combined tracking cost
@@ -1075,6 +1079,10 @@ def run_headless_rollout(
             if status in (cp.OPTIMAL_INACCURATE, "optimal_inaccurate"):
                 inaccurate_count += 1
 
+        # ── NEW: Apply Delay ──────────────────────────────────────────────────
+        command_queue.append(u_opt)
+        delayed_u_cmd = command_queue[0]  # Pop the oldest command
+
         # Path completion check: reached path end → clean finish
         dist_to_finish = math.hypot(state[0] - path_X[-1], state[1] - path_Y[-1])
         if idx >= len(path_X) - 2 or dist_to_finish <= 3.0:
@@ -1145,7 +1153,13 @@ def run_headless_rollout(
             break
 
         u_prev = u_opt.copy()
-        state = step_nonlinear_plant(state, u_opt, dt, p)
+        # Feed the delayed command to the nonlinear plant
+        state = step_nonlinear_plant(state, delayed_u_cmd, dt, p)
+    
+    if(dnf):
+        print(path_name)
+        print(offtrack)
+        print(peak_lateral_error)
 
     # ── Normalise metrics to RMS values ───────────────────────────────────────
     n = max(num_steps, 1)
@@ -1195,7 +1209,7 @@ def run_headless_rollout(
 # ==========================================
 
 
-def evaluate_all_paths(weights_vector, n_repeats=3):
+def evaluate_all_paths(weights_vector, n_repeats=3, ey0=0.0, epsi0=0.0):
     """
     Evaluate a weights vector across every path in PATH_NAMES (not just
     VALIDATION_SUITE), repeated n_repeats times, and return the mean
@@ -1204,6 +1218,8 @@ def evaluate_all_paths(weights_vector, n_repeats=3):
     Intended for post-tuning benchmarking from performance_stats.py.
     Must be called after init_worker() has populated _init_context, or
     after manually setting _init_context in the calling process.
+
+    Initial conditions to be used for path testing can be specified as well.
 
     Parameters
     ----------
@@ -1226,7 +1242,10 @@ def evaluate_all_paths(weights_vector, n_repeats=3):
         path_scores = []
         for _ in range(n_repeats):
             path_scores.append(
-                run_headless_rollout(weights_vector, path_name=path_name)
+                run_headless_rollout(weights_vector, path_name=path_name,
+                    ey0=ey0,      
+                    epsi0=epsi0   
+                )
             )
 
         per_path[path_name] = float(np.mean(path_scores))
@@ -1259,8 +1278,8 @@ VALIDATION_SUITE = [
 # Initial condition perturbations tested for each path.
 # (ey0, epsi0): lateral offset (m), heading offset (rad).
 INITIAL_CONDITIONS = [
-    (0.00, 0.00),  # Nominal: start exactly on path
-    # (0.15, 0.05),   # Perturbed: slight lateral/heading offset
+    # (0.00, 0.00),  # Nominal: start exactly on path
+    (0.2, 0.05),   # Perturbed: slight lateral/heading offset
 ]
 
 
@@ -1390,8 +1409,6 @@ def parallel_evaluate_candidate(vec):
 # ==========================================
 # LOGGING
 # ==========================================
-
-
 def get_git_revision_hash():
     """
     Retrieve the current git commit hash for logging alongside tuning results.

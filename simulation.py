@@ -57,6 +57,7 @@ DOES NOT USE
 """
 
 import numpy as np
+from collections import deque
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button, Slider
 from scipy.interpolate import CubicSpline
@@ -84,9 +85,9 @@ v_ref     = 7.0     # Fallback constant speed (m/s); only used if path_v_profile
 # R_rate handles smoothness indirectly through Δu costs.
 # These values are the output of the most recent offline_tuner.py run.
 # To update: paste Q_diag, R_diag, R_rate_diag printed by offline_tuner.py.
-Q_diag      = [0.3765645542218161, 0.12646484259578666, 3.1959296785873383, 0.1646109778619751, 5.423346518471351, 0.0, 0.0, 0.0]
-R_diag      = [2.5355713303060665, 4.808809523587337]
-R_rate_diag = [6.506304257521467, 1.2358760051895425]
+Q_diag      = [3.638052519141927, 0.3132900819848592, 0.3868295060617668, 0.10443494593654155, 5.002322400309148, 0.0, 0.0, 0.0]
+R_diag      = [0.933576511781534, 2.2105290762562477]
+R_rate_diag = [0.4756298125388402, 0.4405499781668463]
 
 Q      = np.diag(Q_diag)       # State cost matrix (8×8 diagonal)
 R      = np.diag(R_diag)       # Input cost matrix (2×2 diagonal)
@@ -98,6 +99,8 @@ V_MIN = 1.5    # Minimum speed floor (m/s); prevents near-zero speed targets
 
 # Whether to use perception and planner in tuner
 USE_PLANNER = False
+# How steps of delay to simulate between controller commands
+DELAY_STEPS = 2
 
 # ── Global GUI State ────────────────────────────────────────────────────────────
 is_drawing          = False          # True while user is dragging a path
@@ -551,6 +554,9 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
     It only receives the tracking errors derived from the plant's global
     position each step, exactly as a real controller does from state estimates.
 
+    Furthermore, this simulation also simulates controller input delay. How much delay
+    can be changed with the DELAY_STEPS constant at the top of the file.
+
     PERCEPTION AND PLANNING
     -----------------------
     Controlled by the `use_planner` parameter. When True, SimPerception filters
@@ -678,6 +684,10 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
 
     idx = 0   # Current closest reference path index
 
+    # ── NEW: Transport Delay Queue ────────────────────────────────────────
+    command_queue = deque([np.zeros(2) for _ in range(DELAY_STEPS)], maxlen=DELAY_STEPS)
+    u_prev = np.zeros(2)
+    
     for step in range(max_steps):
 
         # ── 1. Record current plant state ─────────────────────────────────────
@@ -807,6 +817,10 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
         history["u_steer"].append(u_opt[0])
         history["u_accel"].append(u_opt[1])
 
+        # ── NEW: Apply Delay ──────────────────────────────────────────────────
+        command_queue.append(u_opt)
+        delayed_u_cmd = command_queue[0]  # Pop the oldest command
+
         # ── 7. N-step horizon prediction (visualisation only) ─────────────────
         # Propagates the error state forward with the linear model to give
         # the MPC's look-ahead trajectory for display on the map. This is
@@ -833,7 +847,7 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
         # suspension, aerodynamics). The controller never sees any of this
         # directly — all that feeds back is the tracking error computed from
         # the plant's global X, Y, psi at the next step.
-        plant_state = step_nonlinear_plant(plant_state, u_opt, dt, vehicle_params)
+        plant_state = step_nonlinear_plant(plant_state, delayed_u_cmd, dt, vehicle_params)
 
     # ── Post-loop: compute completion and bonus fields ─────────────────────────
     history.setdefault("reached_end", False)

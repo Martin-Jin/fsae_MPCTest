@@ -45,6 +45,7 @@ from offline_tuner import (
     COMPLETION_BONUS_WEIGHT,  
     TIME_BONUS_WEIGHT,  
     PATH_NAMES,  
+    INITIAL_CONDITIONS,
     evaluate_all_paths,  
     _init_context,  
     compute_composite_score,  
@@ -308,6 +309,8 @@ def benchmark_weights(Q_w, R_w, R_rate_w, n_repeats=3, log_fn=print):
     generalisation. Scores are computed by run_headless_rollout() so they
     are directly comparable to offline tuning results.
 
+    Uses offline tuner's initial conditions to bench mark all paths.
+
     Parameters
     ----------
     Q_w : np.ndarray, shape (8, 8)     State cost matrix from simulation.py.
@@ -349,7 +352,9 @@ def benchmark_weights(Q_w, R_w, R_rate_w, n_repeats=3, log_fn=print):
     )
 
     # Temporarily override the context templates so evaluate_all_paths uses Q_w etc.
-    results = evaluate_all_paths(identity_vec, n_repeats=n_repeats)
+    eye0 = INITIAL_CONDITIONS[0][0]
+    epsi0 = INITIAL_CONDITIONS[0][1]
+    results = evaluate_all_paths(identity_vec, n_repeats=n_repeats, epsi0=epsi0, ey0=eye0)
 
     # ── Console report ────────────────────────────────────────────────────────
     log_fn("=" * 60)

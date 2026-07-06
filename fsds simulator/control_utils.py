@@ -18,7 +18,7 @@ from scipy.linalg import expm
 # FSDS: maximum physical steering deflection
 MAX_STEER_RAD: float = math.radians(35.0)
 MAX_ACCEL: float = 12.0
-MAX_BRAKE: float = 10.0
+MAX_BRAKE: float = 9.0
 
 # ---------------------------------------------------------------------------
 # Adaptive gain helpers

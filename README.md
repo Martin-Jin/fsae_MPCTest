@@ -36,6 +36,7 @@ fsae planning repo: https://github.com/UOA-FSAE/fsae_planning (current implement
 ### Full System Flow
 Note that this is when `USE_PLANNER` is toggled to be true and perception and planning is simulated.
 When `USE_PLANNER` is false, the only difference is that true lateral error is calculated with the true center line rather than with the planner center line.
+Also, note that there is input delay in the simulation which can be adjusted by `DELAY_STEPS` in `simulation.py`.
 
 ```
 USER INPUT (draw path / load synthetic path)
@@ -256,7 +257,7 @@ m=255 kg, lf=0.85 m, lr=0.70 m, L=1.55 m, Iz=110 kg·m²
 Cf=25000 N/rad, Cr=20000 N/rad  (linear; used by bicycle_model only)
 tau_delta=0.08 s, tau_a=0.02 s
 mu=1.9 (Pacejka peak, racing slick)
-max_steer=35°, max_accel=12 m/s², max_brake=-10 m/s²
+max_steer=35°, max_accel=12 m/s², max_brake=-9.0 m/s²
 k_susp_f=25000 N/m, k_susp_r=30000 N/m
 ```
 
@@ -713,6 +714,7 @@ If you are extending the simulator or tuning the vehicle, follow these guideline
 The single source of truth for all vehicle physics is the `VehicleParams` class in `vehicle_physics.py`. 
 - **Tyre Data:** We use a Pacejka MF94 model. If you are importing new tyre data (e.g., from TTC), update the `B`, `C`, `D`, and `E` coefficients. Note that the linear bicycle model (`bicycle_model.py`) relies on `Cf` and `Cr`. If you alter the Pacejka peak coefficients (`D`) or stiffness (`B`), you **must** recalculate and update `Cf` and `Cr` to match the new initial slope, or the MPC's internal predictions will heavily diverge from the plant.
 - **Actuator Limits:** Changing `max_steer` or `max_accel` automatically propagates to the MPC's hard QP constraints in `optimiser.py`.
+- **Tuning knobs:** There are some constants defined at the top of the `VehicleParams` which proportional scale relevant vehicle parameters for ease of tuning. These being `GRIP_SCALE`, `INERTIA_SCALE`, and `COASTING_SCALE`.
 
 ### Adding a New Synthetic Path
 To test against a new track geometry, you need to append it to the library in `offline_tuner.py`:

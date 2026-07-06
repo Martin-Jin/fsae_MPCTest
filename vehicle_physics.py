@@ -126,9 +126,9 @@ class VehicleParams:
 
     def __init__(self):
         # ── Tuning Constants (Modify these to change car behavior) ────
-        GRIP_SCALE    = 1.0  # Scales tyre stiffness and Pacejka slope
-        INERTIA_SCALE = 1.1  # Scales yaw inertia and wheel rotational mass
-        COASTING_SCALE = 0.8 # < 1.0 = Rolls further, > 1.0 = Stops faster
+        GRIP_SCALE    = 0.85  # Scales tyre stiffness and Pacejka slope
+        INERTIA_SCALE = 1.05  # Scales yaw inertia and wheel rotational mass
+        COASTING_SCALE = 0.6 # < 1.0 = Rolls further, > 1.0 = Stops faster
 
         # ── Geometry ────────────────────────────────────────────────────────
         self.lf    = 0.85     # Distance from CoM to front axle (m)
@@ -148,7 +148,7 @@ class VehicleParams:
         self.max_steer       = np.radians(35.0)  # Max rack-limited steering angle (rad)
         # FS EV peak acceleration ~12 m/s² (0→17 m/s in ~2 s); braking ~10 m/s² (~1g).
         self.max_accel       = 12.0              # Max longitudinal acceleration (m/s²)
-        self.max_accel_brake = -10.0             # Max longitudinal braking (m/s²)
+        self.max_accel_brake = -9.0             # Max longitudinal braking (m/s²)
 
         # ── Unsprung Mass ────────────────────────────────────────────────────
         self.m_us  = 7.5      # Unsprung mass per corner: wheel + upright + hub (kg)
@@ -212,9 +212,9 @@ class VehicleParams:
         # A tyre does not respond instantaneously to a slip angle change.
         # The lateral force builds up over a "relaxation length" σ (m):
         #   dFy/dt = (vx / σ) * (Fy_steady_state − Fy_actual)
-        # At vx=10 m/s with σ=0.35 m: time constant ≈ 35 ms — significant at 20 Hz.
-        self.sigma_y_f = 0.35      # Front lateral relaxation length (m)
-        self.sigma_y_r = 0.30      # Rear  lateral relaxation length (m)
+        # At vx=10 m/s with σ=0.45 m: time constant ≈ 40 ms — significant at 20 Hz.
+        self.sigma_y_f = 0.45      # Front lateral relaxation length (m)
+        self.sigma_y_r = 0.40      # Rear  lateral relaxation length (m)
 
         # ── Friction and Load Sensitivity ────────────────────────────────────
         # Peak friction coefficient for a dry racing slick.
@@ -237,7 +237,7 @@ class VehicleParams:
         self.Cl_pitch_sens = 0.03  # Fractional Cl change per unit (a/g)
 
         # ── Rolling Resistance and Stiction ──────────────────────────────────
-        self.Crr        = 15.5  * COASTING_SCALE # Constant rolling drag force at speed (N)
+        self.Crr        = 20.5  * COASTING_SCALE # Constant rolling drag force at speed (N)
         self.F_stiction = 600.0 # Static breakaway force (N); (From the four wheels in total, so / 4 for a single wheel)
 
         # ── Actuator Lag ─────────────────────────────────────────────────────
