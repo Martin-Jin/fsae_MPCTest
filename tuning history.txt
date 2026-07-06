@@ -151,3 +151,21 @@ Duration    = 20.36 minutes
 Overall score (avged from all testing scenarios)  = Haven't been tested.
 Tuner score (tuning scenarios / validation suite) = 0.3721143645473328
 Commit hash = 425f73f04fae9c2e0875af266f8b9f981f5d7d5d
+
+# 06/07/26 18:01 - About the same performance.
+Q_diag      = [1.9939068391209007, 1.0669482933520642, 1.8282046892219437, 0.12441450684791018, 2.6736825903897574, 0.0, 0.0, 0.0]
+R_diag      = [1.136331850862419, 1.2932463727542287]
+R_rate_diag = [8.264483639982082, 0.8789695107565911]
+Duration    = 27.93 minutes
+Overall score (avged from all testing scenarios)  = Haven't been tested.
+Tuner score (tuning scenarios / validation suite) = -0.26064456815508197
+Commit hash = 8ab49206ea23ae144a9e7e56a61c0ee97024a94b
+
+# 06/07/26 19:17 - Slightly better recover from corners. Need to tune tire grip to be a bit lower so tuner takes into account of this.
+Q_diag      = [0.3765645542218161, 0.12646484259578666, 3.1959296785873383, 0.1646109778619751, 5.423346518471351, 0.0, 0.0, 0.0]
+R_diag      = [2.5355713303060665, 4.808809523587337]
+R_rate_diag = [6.506304257521467, 1.2358760051895425]
+Duration    = 59.36 minutes
+Overall score (avged from all testing scenarios)  = Haven't been tested.
+Tuner score (tuning scenarios / validation suite) = -0.3947547392550951
+Commit hash = 8ab49206ea23ae144a9e7e56a61c0ee97024a94b

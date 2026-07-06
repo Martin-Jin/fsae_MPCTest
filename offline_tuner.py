@@ -163,7 +163,7 @@ for idx in TUNABLE_R_RATE_IDX:
 N_HORIZON = 25
 
 # Whether to use perception and planner in tuner
-USE_PLANNER = False
+USE_PLANNER = True
 
 # ==========================================
 # DNF (DID-NOT-FINISH) PENALTY
