@@ -63,8 +63,7 @@ from scipy.interpolate import CubicSpline
 from bicycle_model import get_8state_discrete_model
 from optimiser import solve_mpc
 from vehicle_physics import VehicleParams, step_nonlinear_plant, init_plant_state, plant_to_tracking_error
-import performance_stats
-from performance_stats import benchmark_weights
+from performance_stats import benchmark_weights, report_performance_metrics
 import speed_profile
 from offline_tuner import SYNTHETIC_PATHS, PATH_NAMES
 from sim_track import place_cones, SimPerception, SimPlanner, calculate_dynamic_max_steps, TRACK_HALF_WIDTH
@@ -584,7 +583,7 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
     ----------------------
     The loop ends on the first of:
       - Reaching path end: idx ≥ len(path_X) - 2  OR  dist_to_end ≤ 3.0 m
-      - Off-track:  |e_y| > OFFTRACK_LIMIT (TRACK_HALF_WIDTH * 2) → history["failed"] = True
+      - Off-track:  |e_y| > OFFTRACK_LIMIT (TRACK_HALF_WIDTH * 1.3) → history["failed"] = True
       - Solver failure: consecutive_solver_failures ≥ MAX_CONSECUTIVE_FAILURES (5)
       - Step budget: step ≥ max_steps
 
@@ -666,7 +665,7 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
     u_prev                     = np.zeros(2)
     consecutive_solver_failures = 0
     MAX_CONSECUTIVE_FAILURES    = 5
-    OFFTRACK_LIMIT              = TRACK_HALF_WIDTH * 2
+    OFFTRACK_LIMIT              = TRACK_HALF_WIDTH * 1.5
 
     history = {
         "X": [], "Y": [], "psi": [], "v": [], "v_target": [],
@@ -722,11 +721,21 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
                     v_target = float(path_v_profile[idx])
             else:
                 idx, rx, ry, rpsi = find_closest_reference_bounded(X_g, Y_g, idx, window=40)
-                e_y, _, e_psi, _, _, _, _ = plant_to_tracking_error(plant_state, rx, ry, rpsi)
+                e_y, e_y_dot, e_psi, e_psi_dot, _, _, _ = plant_to_tracking_error(
+                    plant_state, 
+                    path_x=path_X, 
+                    path_y=path_Y, 
+                    path_psi=path_Psi
+                )
                 v_target = float(path_v_profile[idx])
         else:
             idx, rx, ry, rpsi = find_closest_reference_bounded(X_g, Y_g, idx, window=40)
-            e_y, _, e_psi, _, _, _, _ = plant_to_tracking_error(plant_state, rx, ry, rpsi)
+            e_y, e_y_dot, e_psi, e_psi_dot, _, _, _ = plant_to_tracking_error(
+                plant_state, 
+                path_x=path_X, 
+                path_y=path_Y, 
+                path_psi=path_Psi
+            )
             v_target = float(path_v_profile[idx])
 
         history["v_target"].append(v_target)
@@ -944,7 +953,7 @@ def run_optimize(event):
         return
 
     print("=" * 58)
-    metrics = performance_stats.report_performance_metrics(sim_history, log_fn=print)
+    metrics = report_performance_metrics(sim_history, log_fn=print)
 
     ax_map.set_title(
         f"Metrics: composite={metrics['composite_score']:.4f}  "

@@ -103,7 +103,7 @@ import signal
 from model_utils import curvature_estimate, adaptive_R_rate, adaptive_R_scaling
 import subprocess
 
-from vehicle_physics import VehicleParams, step_nonlinear_plant, init_plant_state
+from vehicle_physics import VehicleParams, step_nonlinear_plant, init_plant_state, get_interpolated_ref_point
 from bicycle_model import get_8state_discrete_model
 from optimiser import solve_mpc
 import speed_profile as sp
@@ -165,7 +165,7 @@ for idx in TUNABLE_R_RATE_IDX:
 N_HORIZON = 25
 
 # Whether to use perception and planner in tuner
-USE_PLANNER = True
+USE_PLANNER = False
 
 # ==========================================
 # DNF (DID-NOT-FINISH) PENALTY
@@ -677,7 +677,7 @@ def _find_closest(path_X, path_Y, x, y, last_idx, window=40):
 
 def _tracking_errors(plant_state, path_X, path_Y, path_Psi, last_idx):
     """
-    Compute lateral and heading tracking errors relative to the reference path.
+    Compute interpolated lateral and heading tracking errors relative to the reference path.
 
     Finds the closest path point, then projects the vehicle's position error
     into the Frenet frame (path-tangent aligned):
@@ -701,21 +701,22 @@ def _tracking_errors(plant_state, path_X, path_Y, path_Psi, last_idx):
     """
     X, Y, psi = plant_state[0], plant_state[1], plant_state[2]
     idx = _find_closest(path_X, path_Y, X, Y, last_idx)
-    rx, ry, rpsi = path_X[idx], path_Y[idx], path_Psi[idx]
+    rx, ry, rpsi = get_interpolated_ref_point(X, Y, path_X, path_Y, path_Psi)
 
     dx = X - rx
     dy = Y - ry
 
-    # Standard Frenet projection to determine side/direction
+    # Frenet projection
     e_y_proj = dy * np.cos(rpsi) - dx * np.sin(rpsi)
-
-    # Use true Euclidean distance for magnitude, keep the projection's sign
+    
+    # Distance magnitude
     true_dist = math.hypot(dx, dy)
     e_y = true_dist * (1.0 if e_y_proj >= 0 else -1.0)
 
+    # Heading error using normalized angle
     e_psi = _normalize_angle(psi - rpsi)
+    
     return float(e_y), float(e_psi), idx
-
 
 # ==========================================
 # WORKER INITIALIZER
@@ -960,7 +961,7 @@ def run_headless_rollout(
     offtrack = False  # Whether the vehicle went off track
 
     MAX_FAILS = 5  # Consecutive solve failures before DNF
-    OFFTRACK_LIMIT = TRACK_HALF_WIDTH * 2  # Lateral error threshold for DNF (m)
+    OFFTRACK_LIMIT = TRACK_HALF_WIDTH * 1.5  # Lateral error threshold for DNF (m)
 
     # Pre-compute arc-length segments for progress tracking
     path_seg_dist = np.hypot(np.diff(path_X), np.diff(path_Y))

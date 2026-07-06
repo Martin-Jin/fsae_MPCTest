@@ -125,6 +125,11 @@ class VehicleParams:
     """
 
     def __init__(self):
+        # ── Tuning Constants (Modify these to change car behavior) ────
+        GRIP_SCALE    = 1.0  # Scales tyre stiffness and Pacejka slope
+        INERTIA_SCALE = 1.1  # Scales yaw inertia and wheel rotational mass
+        COASTING_SCALE = 0.8 # < 1.0 = Rolls further, > 1.0 = Stops faster
+
         # ── Geometry ────────────────────────────────────────────────────────
         self.lf    = 0.85     # Distance from CoM to front axle (m)
         self.lr    = 0.70     # Distance from CoM to rear  axle (m)
@@ -154,8 +159,8 @@ class VehicleParams:
         # ── Rotational Inertia ───────────────────────────────────────────────
         # Each driven wheel's effective inertia includes the motor/gearbox
         # referred through the reduction ratio.
-        self.I_wheel      = 0.9    # Per-wheel rotational inertia (kg·m²)
-        self.I_drivetrain = 0.05  # Motor+gearbox inertia referred to wheel (kg·m²)
+        self.I_wheel      = 0.9 * INERTIA_SCALE  # Per-wheel rotational inertia (kg·m²)
+        self.I_drivetrain = 0.05 * INERTIA_SCALE # Motor+gearbox inertia referred to wheel (kg·m²)
         self.I_w_eff_r    = self.I_wheel + self.I_drivetrain  # Rear driven wheels
         self.I_w_eff_f    = self.I_wheel                       # Front free-rolling wheels
 
@@ -191,10 +196,10 @@ class VehicleParams:
         # D: peak factor     (scales peak force; combined with mu*Fz gives peak Fy)
         # E: curvature factor (negative = sharper peak, typical for racing slick)
         # Sv, Sh: vertical/horizontal offsets from ply-steer and conicity
-        self.B_f  = 15.0;  self.C_f  = 1.45;  self.D_f  = 1.0
+        self.B_f  = 15.0 * GRIP_SCALE;  self.C_f  = 1.45;  self.D_f  = 1.0 * GRIP_SCALE
         self.E_f  = -1.5;  self.Sv_f = 0.0;   self.Sh_f = 0.002
 
-        self.B_r  = 12.0;  self.C_r  = 1.45;  self.D_r  = 1.0
+        self.B_r  = 12.0 * GRIP_SCALE;  self.C_r  = 1.45;  self.D_r  = 1.0 * GRIP_SCALE
         self.E_r  = -1.8;  self.Sv_r = 0.0;   self.Sh_r = 0.001
 
         # ── Pacejka MF94 Longitudinal Coefficients ───────────────────────────
@@ -223,7 +228,7 @@ class VehicleParams:
         # Total downforce coefficient Cl_A split 43/57 front/rear for
         # neutral balance: more rear downforce than front is typical FS tuning.
         self.rho       = 1.225     # Air density at sea level (kg/m³)
-        self.Cd_A      = 0.9       # Drag area (drag coefficient × frontal area, m²)
+        self.Cd_A      = 0.9 * COASTING_SCALE # Drag area (drag coefficient × frontal area, m²)
         self.Cl_A_f    = 0.645     # Front wing downforce area (m²)
         self.Cl_A_r    = 0.855     # Rear  wing downforce area (m²)
         # Under braking the nose dips (pitch forward), increasing front downforce
@@ -232,8 +237,8 @@ class VehicleParams:
         self.Cl_pitch_sens = 0.03  # Fractional Cl change per unit (a/g)
 
         # ── Rolling Resistance and Stiction ──────────────────────────────────
-        self.Crr        = 15.5     # Constant rolling drag force at speed (N)
-        self.F_stiction = 600.0    # Static breakaway force (N); (From the four wheels in total, so / 4 for a single wheel)
+        self.Crr        = 15.5  * COASTING_SCALE # Constant rolling drag force at speed (N)
+        self.F_stiction = 600.0 # Static breakaway force (N); (From the four wheels in total, so / 4 for a single wheel)
 
         # ── Actuator Lag ─────────────────────────────────────────────────────
         # First-order lag: d(delta_act)/dt = (delta_cmd - delta_act) / tau_delta
@@ -975,59 +980,105 @@ def init_plant_state(X0, Y0, psi0, vx0=10.0):
 # ─────────────────────────────────────────────────────────────────────────────
 # TRACKING ERROR HELPER
 # ─────────────────────────────────────────────────────────────────────────────
-def plant_to_tracking_error(state, ref_x, ref_y, ref_psi):
+def get_interpolated_ref_point(x, y, path_x, path_y, path_psi):
     """
-    Convert a global plant state to the MPC's tracking error state vector.
+    Computes a smooth, continuous reference point on the path via linear interpolation.
 
-    This is the bridge between the 24-state nonlinear plant and the 8-state
-    linear MPC model. Only indices 0-7 are read, so the function works with
-    both 24-state (nonlinear plant) and 8-state (linear model) vectors.
-
-    Tracking errors are computed in the Frenet frame aligned with the
-    reference path point (ref_x, ref_y, ref_psi):
-      e_y   = lateral deviation  (+ve = car is left of the reference)
-      e_psi = heading error      (+ve = car points left of path direction)
-
-    Lateral error formula (rotation of global position error to path frame):
-      e_y = (Y - ref_y)*cos(ref_psi) - (X - ref_x)*sin(ref_psi)
+    To eliminate discontinuous "ballooning" errors caused by snapping to discrete path
+    nodes, this function projects the vehicle's position onto the line segment between
+    the two closest path points. This generates a "virtual" reference point (rx, ry, rpsi)
+    that allows for continuous, smooth error estimation, significantly reducing noise
+    in the tracking error signal.
 
     Parameters
     ----------
-    state : array-like, shape ≥ 8
-        Plant state vector. Reads indices 0 (X), 1 (Y), 2 (psi),
-        3 (vx), 4 (vy), 5 (r), 6 (delta_act), 7 (a_act).
-    ref_x, ref_y : float
-        Reference path point coordinates (m).
-    ref_psi : float
-        Reference path heading at the reference point (rad).
+    x, y : float
+        Current vehicle global coordinates (m).
+    path_x, path_y : np.ndarray
+        Reference path coordinates.
+    path_psi : np.ndarray
+        Reference path heading at each point (rad).
 
     Returns
     -------
-    (e_y, e_y_dot, e_psi, e_psi_dot, delta_act, a_act, vx) : tuple of floats
-        MPC input quantities. e_psi_dot = yaw rate r.
-
-    Called by: simulation.py (simulate_closed_loop — fallback path),
-               offline_tuner.py (used indirectly via _tracking_errors)
+    ref_x, ref_y : float
+        The interpolated global coordinates on the path closest to the vehicle.
+    ref_psi : float
+        The interpolated heading angle at the projected point (rad).
     """
+    # Find squared distance to all points
+    dist_sq = (path_x - x)**2 + (path_y - y)**2
+    idx = np.argmin(dist_sq)
+
+    # If at the very start or end, return the closest point
+    if idx <= 0 or idx >= len(path_x) - 1:
+        return path_x[idx], path_y[idx], path_psi[idx]
+
+    # Use the closest point and the one ahead/behind it (whichever is closer)
+    # We define vectors along the path
+    p_prev = np.array([path_x[idx-1], path_y[idx-1]])
+    p_curr = np.array([path_x[idx], path_y[idx]])
+    p_next = np.array([path_x[idx+1], path_y[idx+1]])
+
+    # Choose the segment [p_prev, p_curr] or [p_curr, p_next]
+    # We pick the one that the vehicle is closer to
+    dist_to_prev = np.hypot(x - p_prev[0], y - p_prev[1])
+    dist_to_next = np.hypot(x - p_next[0], y - p_next[1])
+    
+    if dist_to_prev < dist_to_next:
+        p1, p2 = p_prev, p_curr
+        psi1, psi2 = path_psi[idx-1], path_psi[idx]
+    else:
+        p1, p2 = p_curr, p_next
+        psi1, psi2 = path_psi[idx], path_psi[idx+1]
+
+    # Project vehicle onto line segment p1->p2 to find interpolation factor 't'
+    v = p2 - p1
+    w = np.array([x, y]) - p1
+    t = np.clip(np.dot(w, v) / np.dot(v, v), 0, 1)
+
+    # Linear Interpolate
+    ref_x = p1[0] + t * v[0]
+    ref_y = p1[1] + t * v[1]
+    
+    # Angular Interpolation (normalise angle difference)
+    d_psi = (psi2 - psi1 + np.pi) % (2 * np.pi) - np.pi
+    ref_psi = psi1 + t * d_psi
+
+    return ref_x, ref_y, ref_psi
+
+def plant_to_tracking_error(state, ref_x=None, ref_y=None, ref_psi=None, 
+                            path_x=None, path_y=None, path_psi=None):
+    """
+    Computes tracking error. If path_x/y/psi are provided, it interpolates 
+    the reference point for smoother cornering.
+    """
+    # 1. Resolve Reference Point (Interpolated or Provided)
+    if path_x is not None:
+        ref_x, ref_y, ref_psi = get_interpolated_ref_point(
+            state[IDX_X], state[IDX_Y], path_x, path_y, path_psi
+        )
+    
+    # 2. Extract State
     X, Y, psi  = state[IDX_X], state[IDX_Y], state[IDX_PSI]
     vx, vy     = state[IDX_VX], state[IDX_VY]
     r          = state[IDX_R]
     delta_act  = state[IDX_DELTA]
     a_act      = state[IDX_A_ACT]
 
-    dx    = X - ref_x
-    dy    = Y - ref_y
+    # 3. Calculate Errors
+    dx = X - ref_x
+    dy = Y - ref_y
     
-    # Robust signed Euclidean distance (matches simulation.py logic)
-    e_y_proj  = dy * np.cos(ref_psi) - dx * np.sin(ref_psi)
-    true_dist = np.hypot(dx, dy)
-    e_y       = true_dist * (1.0 if e_y_proj >= 0 else -1.0)
+    # Lateral error (signed distance)
+    e_y_proj = dy * np.cos(ref_psi) - dx * np.sin(ref_psi)
+    e_y = e_y_proj  # Keep sign intact directly
     
-    # Wrap heading error to [-π, π]
+    # Heading error
     e_psi = np.arctan2(np.sin(psi - ref_psi), np.cos(psi - ref_psi))
 
-    # Lateral velocity in path frame: projects body velocities onto path normal
-    e_y_dot   = vx * np.sin(e_psi) + vy * np.cos(e_psi)
-    e_psi_dot = r   # Yaw rate is the time derivative of heading error
+    # Velocities
+    e_y_dot = vx * np.sin(e_psi) + vy * np.cos(e_psi)
+    e_psi_dot = r 
 
     return e_y, e_y_dot, e_psi, e_psi_dot, delta_act, a_act, vx
