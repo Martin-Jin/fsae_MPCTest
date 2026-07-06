@@ -213,11 +213,11 @@ PATH_N_POINTS = 1000
 # tracking quality signals and previously under-weighted.
 SCORE_WEIGHTS = np.array(
     [
-        0.48,  # 0  rmse               (lateral + heading + speed tracking; primary)
+        0.505,  # 0  rmse               (lateral + heading + speed tracking; primary)
         0.04,  # 1  yaw_rms
         0.06,  # 2  smooth_rms
         0.02,  # 3  steer_rms
-        0.03,  # 4  accel_rms
+        0.005,  # 4  accel_rms
         0.03,  # 5  max_steering
         0.06,  # 6  steering_sat_ratio
         0.06,  # 7  jerk_rms
@@ -1546,7 +1546,7 @@ if __name__ == "__main__":
     popsize = default_popsize
 
     max_evals = MAX_EVALS
-    max_restarts = 6  # BIPOP restart budget
+    max_restarts = 7  # BIPOP restart budget
     num_cores = max(1, mp.cpu_count() - 1)  # Leave one core for the OS
 
     print("\n[Offline Tuner] Strategy: BIPOP + lq-CMA-ES (surrogate-assisted)")

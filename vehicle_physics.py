@@ -155,10 +155,9 @@ class VehicleParams:
         # Each driven wheel's effective inertia includes the motor/gearbox
         # referred through the reduction ratio.
         self.I_wheel      = 0.9    # Per-wheel rotational inertia (kg·m²)
-        self.I_drivetrain = 0.05   # Motor+gearbox inertia referred to wheel (kg·m²)
+        self.I_drivetrain = 0.05  # Motor+gearbox inertia referred to wheel (kg·m²)
         self.I_w_eff_r    = self.I_wheel + self.I_drivetrain  # Rear driven wheels
         self.I_w_eff_f    = self.I_wheel                       # Front free-rolling wheels
-        self.brake_bias   = 0.60   # Fraction of total brake force at front axle
 
         # ── Suspension Spring / Damper / ARB ────────────────────────────────
         # Wheel-rate = spring-rate × motion_ratio²; motion_ratio ≈ 0.65-0.70
@@ -215,7 +214,6 @@ class VehicleParams:
         # ── Friction and Load Sensitivity ────────────────────────────────────
         # Peak friction coefficient for a dry racing slick.
         # mu=1.9: representative of FS-spec 13" slick on dry tarmac (Hoosier/Avon data).
-        # Previously 1.6 was too conservative, causing marginal grip in low-speed turns.
         self.mu     = 1.9          # Peak friction coefficient (dimensionless)
         # Reduced load sensitivity: slicks show less degradation than road tyres.
         # At nominal Fz~600 N: mu_eff = 1.9*(1 - 0.00012*600) = 1.76 — still strong.
@@ -234,15 +232,15 @@ class VehicleParams:
         self.Cl_pitch_sens = 0.03  # Fractional Cl change per unit (a/g)
 
         # ── Rolling Resistance and Stiction ──────────────────────────────────
-        self.Crr        = 21.5     # Constant rolling drag force at speed (N)
-        self.F_stiction = 165.0    # Static breakaway force (N); (From the four wheels in total, so / 4 for a single wheel)
+        self.Crr        = 15.5     # Constant rolling drag force at speed (N)
+        self.F_stiction = 600.0    # Static breakaway force (N); (From the four wheels in total, so / 4 for a single wheel)
 
         # ── Actuator Lag ─────────────────────────────────────────────────────
         # First-order lag: d(delta_act)/dt = (delta_cmd - delta_act) / tau_delta
         # EV motors respond almost instantly; FS rack-and-pinion steering has
         # a small but non-negligible lag (~80 ms) compared to a hydraulic system.
         self.tau_delta = 0.08      # Steering actuator time constant (s)
-        self.tau_a     = 0.05      # Acceleration (torque) time constant (s)
+        self.tau_a     = 0.02      # Acceleration (torque) time constant (s)
 
         self.g = 9.81              # Gravitational acceleration (m/s²)
 
@@ -595,7 +593,9 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
         # Longitudinal transfer: braking shifts load forward by m*ax*h_cg/L per axle.
         # Lateral transfer: cornering shifts load outward by m*ay*h_cg/track per axle.
         # Aero adds directly to road reaction (not to spring force baseline).
-        ax_body = a_act               # Longitudinal acceleration command (m/s²)
+
+        # Use the actual longitudinal acceleration from the previous calculation (or the last sub-step)
+        ax_body = a_act
         ay_body = vx_safe * r         # Lateral acceleration proxy: v²/R = vx*r (m/s²)
 
         # Road reaction at each corner (what the ground pushes up with):
@@ -658,6 +658,8 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
         # TV applies a yaw-stabilising torque by biasing drive torque left/right:
         #   ΔFx_tv = tv_gain * r / tr   [N; added to right, subtracted from left]
         delta_Fx_tv = (tv_gain * r / p.tr) if abs(tv_gain) > 1e-6 else 0.0
+
+        
         Fx_req_total = p.m * a_act  # Newton's 2nd law: total required longitudinal force
 
         if a_act > 0:
@@ -667,10 +669,10 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
             Fx_RR_req = 0.5 * Fx_req_total + delta_Fx_tv   # TV: increases right
         else:
             # Braking: distributed by brake_bias (60% front, 40% rear default)
-            Fx_FL_req = 0.5 * Fx_req_total * p.brake_bias
-            Fx_FR_req = 0.5 * Fx_req_total * p.brake_bias
-            Fx_RL_req = 0.5 * Fx_req_total * (1.0 - p.brake_bias) - delta_Fx_tv
-            Fx_RR_req = 0.5 * Fx_req_total * (1.0 - p.brake_bias) + delta_Fx_tv
+            Fx_FL_req = 0.5 * Fx_req_total 
+            Fx_FR_req = 0.5 * Fx_req_total 
+            Fx_RL_req = 0.5 * Fx_req_total - delta_Fx_tv
+            Fx_RR_req = 0.5 * Fx_req_total + delta_Fx_tv
 
         # ── 11. Pacejka longitudinal force ────────────────────────────────────
         # The MF94 formula gives the peak achievable Fx from friction and slip ratio.

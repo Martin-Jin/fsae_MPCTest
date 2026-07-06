@@ -416,7 +416,7 @@ Uses `cma.fmin_lq_surr2`: BIPOP (bi-population) restart strategy combined with a
 
 **`sigma0=0.5`, `CMA_stds = 0.23 × log(upper/lower)`** — 23% of the log-space parameter range as the initial per-dimension 1-sigma radius. `log(10/0.1) ≈ 4.6`, so `CMA_stds ≈ 1.06` per dimension.
 
-**`max_restarts=6`, `max_evals=1500`** — total budget including all restarts. Each BIPOP restart uses `incpopsize=2` (large restarts double the population from the previous large restart's size).
+**`max_restarts=7`, `max_evals=2500`** — total budget including all restarts. Each BIPOP restart uses `incpopsize=2` (large restarts double the population from the previous large restart's size).
 
 ### Objective Function
 
@@ -535,7 +535,7 @@ In `offline_tuner.py`:
 ```python
 MAX_EVALS     = 1000   # Total true rollout budget (surrogate reduces actual count ~3-10×)
 sigma0        = 0.65    # CMA-ES initial step size
-max_restarts  = 6      # BIPOP restart budget
+max_restarts  = 7      # BIPOP restart budget
 VALIDATION_SUITE = [   # Paths used for scoring — add/remove to change coverage
     "PATH_MICRO_SLALOM",
     "PATH_SUDDEN_TURN",

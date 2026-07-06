@@ -86,9 +86,9 @@ v_ref     = 7.0     # Fallback constant speed (m/s); only used if path_v_profile
 # R_rate handles smoothness indirectly through Δu costs.
 # These values are the output of the most recent offline_tuner.py run.
 # To update: paste Q_diag, R_diag, R_rate_diag printed by offline_tuner.py.
-Q_diag      = [1.4602608829567498, 3.471668131300169, 9.709032979945414, 2.3030673647249498, 1.8946664024288606, 0.0, 0.0, 0.0]
-R_diag      = [4.267824198517928, 9.734600245200207]
-R_rate_diag = [3.0654141250023095, 9.999919374217086]
+Q_diag      = [0.3689917826894509, 0.27329343049350463, 2.394187850569209, 1.0514076121965723, 1.926172288570466, 0.0, 0.0, 0.0]
+R_diag      = [0.22557556258671269, 0.5457438599038626]
+R_rate_diag = [1.6099286080523123, 0.1260569275432615]
 
 Q      = np.diag(Q_diag)       # State cost matrix (8×8 diagonal)
 R      = np.diag(R_diag)       # Input cost matrix (2×2 diagonal)

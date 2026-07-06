@@ -114,8 +114,8 @@ class MPCController:
         self.lr = 0.70   # CoM -> rear  axle (m)
         self.m  = 255.0  # Vehicle mass (kg)
         self.Iz = 110.0  # Yaw inertia (kg m^2)
-        self.Cf = 11500.0  # Front cornering stiffness (N/rad)
-        self.Cr = 12500.0  # Rear  cornering stiffness (N/rad)
+        self.Cf = 25000.0     # Front cornering stiffness (N/rad)
+        self.Cr = 20000.0     # Rear  cornering stiffness (N/rad)
 
         # First-order actuator time constants (s)
         self.tau_delta = 0.08  # Steering lag
@@ -125,9 +125,9 @@ class MPCController:
         self.nu = 2
 
         # For tuning copy and paste purposes
-        Q_diag      = [0.5033342406884888, 0.1351368654899604, 0.7000669149532808, 0.6193157161190033, 0.8687842624228068, 0.0, 0.0, 0.0]
-        R_diag      = [6.32676286268335, 3.1899069771826496]
-        R_rate_diag = [4.276385490350809, 9.215314852892405]
+        Q_diag      = [0.3689917826894509, 0.27329343049350463, 2.394187850569209, 1.0514076121965723, 1.926172288570466, 0.0, 0.0, 0.0]
+        R_diag      = [0.22557556258671269, 0.5457438599038626]
+        R_rate_diag = [1.6099286080523123, 0.1260569275432615]
 
         # ── Cost weight matrices (Matched to simulation.py tuner defaults) ───
         # State order: [e_y, e_yd, e_psi, e_psi_d, e_v, e_a, delta_act, a_act]
@@ -145,6 +145,8 @@ class MPCController:
         # ── Hard actuator limits ───────────────────────────────────────
         self.u_min = np.array([-MAX_STEER_RAD, -5.0])  # [rad, m/s^2]
         self.u_max = np.array([ MAX_STEER_RAD,  5.0])
+        self.a_max = 12.0
+        self.a_max_brake = 10.0
 
         # Per-step rate limits (symmetric)
         self.du_max = np.array([math.radians(4.0), 0.6])  # [rad/step, m/s^2/step]
@@ -550,11 +552,11 @@ class MPCController:
         # Normalise to [0,1] using the plant's actuator limits so FSDS throttle/brake
         # scale correctly after max_accel was raised from 5 to 12 m/s².
         if a_cmd >= 0.0:
-            throttle = float(np.clip(a_cmd / 12.0, 0.0, 1.0))
+            throttle = float(np.clip(a_cmd / self.a_max, 0.0, 1.0))
             brake    = 0.0
         else:
             throttle = 0.0
-            brake    = float(np.clip(-a_cmd / 10.0, 0.0, 1.0))
+            brake    = float(np.clip(-a_cmd / self.a_max_brake, 0.0, 1.0))
 
         self.last_telemetry = {
             **dbg,
