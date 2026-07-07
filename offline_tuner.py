@@ -183,8 +183,8 @@ DNF_OFFTRACK_PENALTY = 3.0
 # ==========================================
 # Looser than the live simulator (1e-5) for ~2× faster rollouts at negligible
 # accuracy cost. These are passed to solve_mpc() in run_headless_rollout().
-ROLLOUT_EPS = 1e-4
-ROLLOUT_MAX_ITER = 5000 
+ROLLOUT_EPS = 1e-5
+ROLLOUT_MAX_ITER = 8000 
 
 # Graceful shutdown flag: set by SIGINT handler; checked each CMA generation.
 _stop_requested = False
@@ -709,11 +709,7 @@ def _tracking_errors(plant_state, path_X, path_Y, path_Psi, last_idx):
     dy = Y - ry
 
     # Frenet projection
-    e_y_proj = dy * np.cos(rpsi) - dx * np.sin(rpsi)
-    
-    # Distance magnitude
-    true_dist = math.hypot(dx, dy)
-    e_y = true_dist * (1.0 if e_y_proj >= 0 else -1.0)
+    e_y = dy * np.cos(rpsi) - dx * np.sin(rpsi)
 
     # Heading error using normalized angle
     e_psi = _normalize_angle(psi - rpsi)
@@ -915,7 +911,7 @@ def run_headless_rollout(
     dynamic_max_steps = calculate_dynamic_max_steps(path_X, path_Y, dt=0.05)
     mean_v_profile = float(np.mean(path_v)) if len(path_v) > 0 else 1.5
     profile_max_steps = int(
-        math.ceil((PATH_LENGTHS[path_name] / max(mean_v_profile * 0.6, 1.5)) * 1.5 / dt)
+        math.ceil((PATH_LENGTHS[path_name] / max(mean_v_profile * 0.6, 1.5)) * 1.2 / dt)
     )
     num_steps = max(dynamic_max_steps, profile_max_steps)
 
@@ -937,7 +933,7 @@ def run_headless_rollout(
 
     state = init_plant_state(X0, Y0, psi0, vx0=vx0)
     # ── NEW: Transport Delay Queue ────────────────────────────────────────
-    command_queue = deque([np.zeros(2) for _ in range(DELAY_STEPS)], maxlen=DELAY_STEPS)
+    command_queue = deque([np.zeros(2) for _ in range(DELAY_STEPS + 1)], maxlen=DELAY_STEPS + 1)
 
     # ── Metric accumulators ────────────────────────────────────────────────────
     error_cost = 0.0  # Σ(e_y² + 0.4*e_psi²): combined tracking cost
@@ -965,7 +961,7 @@ def run_headless_rollout(
     offtrack = False  # Whether the vehicle went off track
 
     MAX_FAILS = 5  # Consecutive solve failures before DNF
-    OFFTRACK_LIMIT = TRACK_HALF_WIDTH * 1.5  # Lateral error threshold for DNF (m)
+    OFFTRACK_LIMIT = TRACK_HALF_WIDTH * 1.2  # Lateral error threshold for DNF (m)
 
     # Pre-compute arc-length segments for progress tracking
     path_seg_dist = np.hypot(np.diff(path_X), np.diff(path_Y))
@@ -1155,11 +1151,6 @@ def run_headless_rollout(
         u_prev = u_opt.copy()
         # Feed the delayed command to the nonlinear plant
         state = step_nonlinear_plant(state, delayed_u_cmd, dt, p)
-    
-    if(dnf):
-        print(path_name)
-        print(offtrack)
-        print(peak_lateral_error)
 
     # ── Normalise metrics to RMS values ───────────────────────────────────────
     n = max(num_steps, 1)

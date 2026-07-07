@@ -126,8 +126,8 @@ class VehicleParams:
 
     def __init__(self):
         # ── Tuning Constants (Modify these to change car behavior) ────
-        GRIP_SCALE    = 0.85  # Scales tyre stiffness and Pacejka slope
-        INERTIA_SCALE = 1.05  # Scales yaw inertia and wheel rotational mass
+        GRIP_SCALE    = 0.80  # Scales tyre stiffness and Pacejka slope
+        INERTIA_SCALE = 1.0  # Scales yaw inertia and wheel rotational mass
         COASTING_SCALE = 0.6 # < 1.0 = Rolls further, > 1.0 = Stops faster
 
         # ── Geometry ────────────────────────────────────────────────────────
@@ -219,7 +219,7 @@ class VehicleParams:
         # ── Friction and Load Sensitivity ────────────────────────────────────
         # Peak friction coefficient for a dry racing slick.
         # mu=1.9: representative of FS-spec 13" slick on dry tarmac (Hoosier/Avon data).
-        self.mu     = 1.9          # Peak friction coefficient (dimensionless)
+        self.mu     = 1.9 * GRIP_SCALE # Peak friction coefficient (dimensionless)
         # Reduced load sensitivity: slicks show less degradation than road tyres.
         # At nominal Fz~600 N: mu_eff = 1.9*(1 - 0.00012*600) = 1.76 — still strong.
         self.k_sens = 0.00012      # Load sensitivity (1/N)

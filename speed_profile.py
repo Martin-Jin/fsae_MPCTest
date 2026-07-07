@@ -92,7 +92,7 @@ def compute_path_curvature(path_X, path_Y):
     ddy = np.gradient(dy)         # Second derivative: d²y/dt²
 
     # Denominator: (x'² + y'²)^(3/2) — the speed cubed in the parameter
-    denom = (dx**2 + dy**2) ** 1.5
+    denom = (dx**2 + dy**2) ** 1.2
     # Floor to avoid division by near-zero on duplicate or very close path points
     denom = np.where(denom < 1e-6, 1e-6, denom)
 

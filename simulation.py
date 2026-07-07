@@ -671,7 +671,7 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
     u_prev                     = np.zeros(2)
     consecutive_solver_failures = 0
     MAX_CONSECUTIVE_FAILURES    = 5
-    OFFTRACK_LIMIT              = TRACK_HALF_WIDTH * 1.5
+    OFFTRACK_LIMIT              = TRACK_HALF_WIDTH * 1.2
 
     history = {
         "X": [], "Y": [], "psi": [], "v": [], "v_target": [],
@@ -685,7 +685,7 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
     idx = 0   # Current closest reference path index
 
     # ── NEW: Transport Delay Queue ────────────────────────────────────────
-    command_queue = deque([np.zeros(2) for _ in range(DELAY_STEPS)], maxlen=DELAY_STEPS)
+    command_queue = deque([np.zeros(2) for _ in range(DELAY_STEPS + 1)], maxlen=DELAY_STEPS + 1)
     u_prev = np.zeros(2)
     
     for step in range(max_steps):
