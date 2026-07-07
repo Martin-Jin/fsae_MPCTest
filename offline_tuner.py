@@ -1085,6 +1085,9 @@ def run_headless_rollout(
         u_prev = u_opt.copy()
         # Feed the delayed command to the nonlinear plant
         state = step_nonlinear_plant(state, delayed_u_cmd, dt, p)
+    
+    if path_name == "PATH_SUDDEN_TURN":
+        print(peak_lateral_error)
 
     # ── Normalise metrics to RMS values ───────────────────────────────────────
     n = max(num_steps, 1)
@@ -1201,7 +1204,7 @@ VALIDATION_SUITE = [
 # Initial condition perturbations tested for each path.
 # (ey0, epsi0): lateral offset (m), heading offset (rad).
 INITIAL_CONDITIONS = [
-    # (0.00, 0.00),  # Nominal: start exactly on path
+    (0.00, 0.00),  # Nominal: start exactly on path
     (0.2, 0.05),   # Perturbed: slight lateral/heading offset
 ]
 
