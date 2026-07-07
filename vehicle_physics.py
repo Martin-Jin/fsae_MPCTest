@@ -128,7 +128,7 @@ class VehicleParams:
         # ── Tuning Constants (Modify these to change car behavior) ────
         GRIP_SCALE    = 1.0  # Scales tyre stiffness and Pacejka slope
         INERTIA_SCALE = 0.5  # Scales yaw inertia and wheel rotational mass
-        COASTING_SCALE = 0.4 # < 1.0 = Rolls further, > 1.0 = Stops faster
+        COASTING_SCALE = 0.2 # < 1.0 = Rolls further, > 1.0 = Stops faster
 
         # ── Geometry ────────────────────────────────────────────────────────
         self.lf    = 0.85     # Distance from CoM to front axle (m)

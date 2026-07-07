@@ -94,9 +94,9 @@ v_ref     = 7.0     # Fallback constant speed (m/s); only used if path_v_profile
 # R_rate handles smoothness indirectly through Δu costs.
 # These values are the output of the most recent offline_tuner.py run.
 # To update: paste Q_diag, R_diag, R_rate_diag printed by offline_tuner.py.
-Q_diag      = [0.3689917826894509, 0.27329343049350463, 2.394187850569209, 1.0514076121965723, 1.926172288570466, 0.0, 0.0, 0.0]
-R_diag      = [0.22557556258671269, 0.5457438599038626]
-R_rate_diag = [1.6099286080523123, 0.1260569275432615]
+Q_diag      = [0.9070616621135821, 1.1694205194881948, 0.8284529067355608, 0.7134316418931564, 1.3541179857941443, 0.0, 0.0, 0.0]
+R_diag      = [1.8820340013633878, 1.3661115229214285]
+R_rate_diag = [2.5388600567942534, 2.769357784895007]
 
 Q      = np.diag(Q_diag)       # State cost matrix (8×8 diagonal)
 R      = np.diag(R_diag)       # Input cost matrix (2×2 diagonal)
@@ -668,19 +668,26 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
 
             cl = planner.centreline
             if cl is not None and len(cl) >= 2:
+                # Calculate tracking error relative to the planner's centreline
+                # using the smooth interpolated plant_to_tracking_error function.
+                cl_x = cl[:, 0]
+                cl_y = cl[:, 1]
+                
+                cl_psi = np.zeros_like(cl_x)
+                cl_psi[:-1] = np.arctan2(np.diff(cl_y), np.diff(cl_x))
+                cl_psi[-1] = cl_psi[-2] if len(cl_psi) > 1 else psi_g
+
+                e_y, _, e_psi, _, _, _, _ = plant_to_tracking_error(
+                    plant_state, path_x=cl_x, path_y=cl_y, path_psi=cl_psi
+                )
+                
+                # Reconstruct reference heading for the visualisation horizon
+                rpsi = psi_g - e_psi
+
+                # Find closest index for target velocity profiling
                 dists   = np.linalg.norm(cl - car_pos_np, axis=1)
                 cl_idx  = int(np.argmin(dists))
-                seg     = (cl[cl_idx + 1] - cl[cl_idx]) if cl_idx < len(cl) - 1 \
-                          else (cl[cl_idx] - cl[cl_idx - 1])
-                seg_len = float(np.linalg.norm(seg))
-                if seg_len > 1e-6:
-                    t_hat   = seg / seg_len
-                    right_n = np.array([t_hat[1], -t_hat[0]])
-                    rpsi    = math.atan2(t_hat[1], t_hat[0])
-                    e_y     = -float(np.dot(car_pos_np - cl[cl_idx], right_n))
-                else:
-                    rpsi = psi_g; e_y = 0.0
-                e_psi = normalize_angle(psi_g - rpsi)
+
                 # Speed from planner profile; fall back to reference if unavailable
                 if len(planner.v_profile) > 0:  
                     v_target = float(np.interp(  
@@ -689,15 +696,6 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
                 else:
                     idx, _, _, _ = find_closest_reference_bounded(path_X, path_Y, path_Psi, X_g, Y_g, idx, window=40)
                     v_target = float(path_v_profile[idx])
-            else:
-                idx, _, _, rpsi = find_closest_reference_bounded(path_X, path_Y, path_Psi, X_g, Y_g, idx, window=40)
-                e_y, _, e_psi, _, _, _, _ = plant_to_tracking_error(
-                    plant_state, 
-                    path_x=path_X, 
-                    path_y=path_Y, 
-                    path_psi=path_Psi
-                )
-                v_target = float(path_v_profile[idx])
         else:
             idx, _, _, rpsi = find_closest_reference_bounded(path_X, path_Y, path_Psi, X_g, Y_g, idx, window=40)
             e_y, _, e_psi, _, _, _, _ = plant_to_tracking_error(

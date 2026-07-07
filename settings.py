@@ -13,7 +13,7 @@ N_HORIZON = 25
 USE_PLANNER = True
 
 # How steps of delay to simulate between controller commands
-DELAY_STEPS = 1
+DELAY_STEPS = 0
 
 MAX_FAILS = 5  # Consecutive solve failures before DNF
 
