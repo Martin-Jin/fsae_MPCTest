@@ -126,9 +126,9 @@ class VehicleParams:
 
     def __init__(self):
         # ── Tuning Constants (Modify these to change car behavior) ────
-        GRIP_SCALE    = 1.0  # Scales tyre stiffness and Pacejka slope
-        INERTIA_SCALE = 0.5  # Scales yaw inertia and wheel rotational mass
-        COASTING_SCALE = 0.2 # < 1.0 = Rolls further, > 1.0 = Stops faster
+        GRIP_SCALE    = 0.95  # Scales tyre stiffness and Pacejka slope
+        INERTIA_SCALE = 0.3  # Scales yaw inertia and wheel rotational mass
+        COASTING_SCALE = 0.5 # < 1.0 = Rolls further, > 1.0 = Stops faster
 
         # ── Geometry ────────────────────────────────────────────────────────
         self.lf    = 0.85     # Distance from CoM to front axle (m)
@@ -149,6 +149,7 @@ class VehicleParams:
         # FS EV peak acceleration ~12 m/s² (0→17 m/s in ~2 s); braking ~10 m/s² (~1g).
         self.max_accel       = 12.0              # Max longitudinal acceleration (m/s²)
         self.max_accel_brake = -9.0             # Max longitudinal braking (m/s²)
+        self.max_v = 17.0 # Maximum possible speed the vehicle can go
 
         # ── Unsprung Mass ────────────────────────────────────────────────────
         self.m_us  = 7.5      # Unsprung mass per corner: wheel + upright + hub (kg)
@@ -218,8 +219,7 @@ class VehicleParams:
 
         # ── Friction and Load Sensitivity ────────────────────────────────────
         # Peak friction coefficient for a dry racing slick.
-        # mu=1.9: representative of FS-spec 13" slick on dry tarmac (Hoosier/Avon data).
-        self.mu     = 1.9 * GRIP_SCALE # Peak friction coefficient (dimensionless)
+        self.mu     = 1.75 * GRIP_SCALE # Peak friction coefficient (dimensionless)
         # Reduced load sensitivity: slicks show less degradation than road tyres.
         # At nominal Fz~600 N: mu_eff = 1.9*(1 - 0.00012*600) = 1.76 — still strong.
         self.k_sens = 0.00012      # Load sensitivity (1/N)
@@ -706,16 +706,28 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
         kappa_FR = _kappa(omega_FR, vx_FR)
         kappa_RL = _kappa(omega_RL, vx_RL)
         kappa_RR = _kappa(omega_RR, vx_RR)
-
+        
         # ── 10. Torque vectoring and longitudinal force distribution ──────────
         # TV applies a yaw-stabilising torque by biasing drive torque left/right:
         #   ΔFx_tv = tv_gain * r / tr   [N; added to right, subtracted from left]
         delta_Fx_tv = (tv_gain * r / p.tr) if abs(tv_gain) > 1e-6 else 0.0
 
+        # Velocity Governor: Prevent acceleration if at or above max velocity.
+        # We only limit positive acceleration (driving), allowing braking.
+        governed_a_act = a_act
         
-        Fx_req_total = p.m * a_act  # Newton's 2nd law: total required longitudinal force
+        # Taper range to prevent high-frequency chattering around max_v
+        taper_range = 1.0 
+        if a_act > 0.0:
+            if vx_safe >= p.max_v:
+                governed_a_act = 0.0
+            elif vx_safe > (p.max_v - taper_range):
+                # Linearly roll off the acceleration request
+                governed_a_act = a_act * ((p.max_v - vx_safe) / taper_range)
+                
+        Fx_req_total = p.m * governed_a_act  # Total required longitudinal force
 
-        if a_act > 0:
+        if governed_a_act > 0.0:
             # Acceleration: rear-wheel drive only; front wheels are passive.
             Fx_FL_req, Fx_FR_req = 0.0, 0.0
             Fx_RL_req = 0.5 * Fx_req_total - delta_Fx_tv   # TV: reduces left to yaw right
@@ -870,7 +882,7 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
         # outside their hardware limits between MPC solve steps.
         delta_new = float(np.clip(delta_act + ddelta * h, -p.max_steer, p.max_steer))
         a_new     = float(np.clip(a_act     + da     * h, p.max_accel_brake, p.max_accel))
-
+            
         # Wheel speeds: floor at 0 (wheels don't spin backward in normal driving)
         omega_RL_new = max(0.0, omega_RL + domega_RL * h)
         omega_RR_new = max(0.0, omega_RR + domega_RR * h)

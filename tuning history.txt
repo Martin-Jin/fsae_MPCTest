@@ -189,20 +189,11 @@ Overall score (avged from all testing scenarios)  = Haven't been tested.
 Tuner score (tuning scenarios / validation suite) = -0.2652409852518931
 Commit hash = 345b149cb3449286c0e1db88225f1ff7c72766d2
 
-# 07/07/26 22:57 - [Pending Description: yet to be tested]
-Q_diag      = [4.862897948643164, 2.565690209935078, 0.11234423293371426, 0.5026546537125534, 1.7428762995982183, 0.0, 0.0, 0.0]
-R_diag      = [0.5278120665088281, 0.9763938446521605]
-R_rate_diag = [0.5681013919015826, 1.1430494711330141]
-Duration    = 14.85 minutes
+# 08/07/26 11:16 - Retuned with unified scoring and simulation. Decent tracking performance and speed, just not the best at sudden corners.
+Q_diag      = [0.9638529433528358, 0.16917546433555822, 0.8412084423109519, 0.6719136934634028, 1.3722642626759542, 0.0, 0.0, 0.0]
+R_diag      = [1.0732323890203437, 0.6986142210105707]
+R_rate_diag = [2.2731056206565956, 3.8354972983644497]
+Duration    = 43.10 minutes
 Overall score (avged from all testing scenarios)  = Haven't been tested.
-Tuner score (tuning scenarios / validation suite) = 0.16296475869874538
-Commit hash = 16b425a51fdac00d760f520c4df8769e45b33a92
-
-# 08/07/26 09:05 - [Pending Description: yet to be tested]
-Q_diag      = [0.9070616621135821, 1.1694205194881948, 0.8284529067355608, 0.7134316418931564, 1.3541179857941443, 0.0, 0.0, 0.0]
-R_diag      = [1.8820340013633878, 1.3661115229214285]
-R_rate_diag = [2.5388600567942534, 2.769357784895007]
-Duration    = 9.25 minutes
-Overall score (avged from all testing scenarios)  = Haven't been tested.
-Tuner score (tuning scenarios / validation suite) = -0.7927202212152249
-Commit hash = 68b9e6453c7b8e33938e2f31d763fdb34d51b58f
+Tuner score (tuning scenarios / validation suite) = -0.3210404317670047
+Commit hash = d5f8c9b9fc0e8a7bb7d1a166d89dab09e16a573d

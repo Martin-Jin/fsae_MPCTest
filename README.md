@@ -155,16 +155,6 @@ Note: this covers the main simulator files only. The shared planning code in the
 
 **Key outputs:** `sim_history` dict populated after each run, containing `X, Y, psi, v, v_target, u_steer, u_accel, e_y, e_psi, pred_X, pred_Y, failed, completion_frac, time_bonus, peak_lateral_error`.
 
-**Key constants:**
-```
-_DT         = 0.05 s     (20 Hz control rate)
-N_horizon  = 25 steps   (1.25 s look-ahead)
-V_MAX      = 20.0 m/s   (planner + profiler cap)
-V_MIN      = 1.5 m/s    (planner floor speed)
-OFFTRACK_LIMIT = around 2 m  (lateral error failure threshold)
-MAX_CONSECUTIVE_FAILURES = 5  (solver failures before DNF)
-```
-
 **Dependencies:** `rollout_core` (the shared rollout loop — `simulate_closed_loop()` is now a thin wrapper around `rollout_core.run_core_rollout()` called with `want_history=True, want_horizon_pred=True`), `vehicle_physics`, `performance_stats`, `speed_profile`, `offline_tuner` (`SYNTHETIC_PATHS`/`PATH_NAMES`/`get_cached_model`), `sim_track` (`place_cones`, `calculate_dynamic_max_steps`).
 
 Note: `bicycle_model`, `optimiser`, and `model_utils` are no longer imported directly here — they're only used inside `rollout_core.py` now.

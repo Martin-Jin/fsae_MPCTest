@@ -67,11 +67,9 @@ import speed_profile
 from offline_tuner import SYNTHETIC_PATHS, PATH_NAMES, get_cached_model
 from sim_track import place_cones, calculate_dynamic_max_steps
 from rollout_core import run_core_rollout, compute_step_budget
-import math
 
 from settings import (
     USE_PLANNER,
-    DT,
     ROLLOUT_MAX_ITER,
     ROLLOUT_EPS
 )
@@ -90,17 +88,13 @@ v_ref     = 7.0     # Fallback constant speed (m/s); only used if path_v_profile
 # R_rate handles smoothness indirectly through Δu costs.
 # These values are the output of the most recent offline_tuner.py run.
 # To update: paste Q_diag, R_diag, R_rate_diag printed by offline_tuner.py.
-Q_diag      = [0.9070616621135821, 1.1694205194881948, 0.8284529067355608, 0.7134316418931564, 1.3541179857941443, 0.0, 0.0, 0.0]
-R_diag      = [1.8820340013633878, 1.3661115229214285]
-R_rate_diag = [2.5388600567942534, 2.769357784895007]
+Q_diag      = [0.9638529433528358, 0.16917546433555822, 0.8412084423109519, 0.6719136934634028, 1.3722642626759542, 0.0, 0.0, 0.0]
+R_diag      = [1.0732323890203437, 0.6986142210105707]
+R_rate_diag = [2.2731056206565956, 3.8354972983644497]
 
 Q      = np.diag(Q_diag)       # State cost matrix (8×8 diagonal)
 R      = np.diag(R_diag)       # Input cost matrix (2×2 diagonal)
 R_rate = np.diag(R_rate_diag)  # Input rate-of-change cost matrix (2×2 diagonal)
-
-# Speed profile limits passed to SimPlanner and speed_profile.compute_speed_profile()
-V_MAX = 20.0   # Absolute speed cap (m/s); planner and profiler respect this
-V_MIN = 1.5    # Minimum speed floor (m/s); prevents near-zero speed targets
 
 # ── Global GUI State ────────────────────────────────────────────────────────────
 is_drawing          = False          # True while user is dragging a path
