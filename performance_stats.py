@@ -10,7 +10,7 @@ button output in simulation.py.
 
 The scoring is deliberately kept in a separate file rather than inlined into
 simulation.py so that:
-  1. Weights and metric definitions have a single source of truth in offline_tuner.py
+  1. Weights and metric definitions have a single source of truth in settings.py
   2. The console report can be updated without touching the simulation engine
   3. The returned dict can be used programmatically (e.g. logging, plotting)
 
@@ -25,8 +25,8 @@ trajectories but may diverge in highly dynamic cornering. All other terms are
 mathematically identical.
 
 SCORE_WEIGHTS, COMPLETION_BONUS_WEIGHT, TIME_BONUS_WEIGHT, and DNF_PENALTY
-are imported directly from offline_tuner.py so any change to the scoring
-formula there automatically propagates to this report.
+are defined in settings.py and re-exported via offline_tuner.py, so any change
+to the scoring formula in settings.py automatically propagates to this report.
 
 USED BY
 -------
@@ -40,7 +40,6 @@ DOES NOT USE
 
 from vehicle_physics import VehicleParams
 import numpy as np
-import math
 from offline_tuner import (  
     SCORE_WEIGHTS,  
     COMPLETION_BONUS_WEIGHT,  
@@ -53,6 +52,7 @@ from offline_tuner import (
     get_cached_model,
     TUNABLE_Q_IDX, TUNABLE_R_IDX, TUNABLE_R_RATE_IDX
 )
+from settings import DT
 
 # Metric index constants — must stay in sync with SCORE_WEIGHTS order in offline_tuner.py
 _IDX_RMSE               = 0   # Combined tracking RMSE (e_y² + 0.4*e_psi²)
@@ -67,11 +67,6 @@ _IDX_MAX_YAW_RATE       = 8   # Peak yaw rate (approximated from diff(e_psi)/dt)
 _IDX_STEER_REVERSALS    = 9   # Count of steering direction reversals
 _IDX_PEAK_LATERAL_ERROR = 10  # Worst single-step lateral error
 _IDX_SPEED_RMSE         = 11
-
-
-_U_STEER_MAX = math.radians(35.0)   # Max steering command magnitude (rad)
-_DT          = 0.05  # Simulation timestep (s); must match simulation.py's dt
-
 
 def report_performance_metrics(history, log_fn=print):
     """
@@ -88,12 +83,12 @@ def report_performance_metrics(history, log_fn=print):
 
       rmse:               sqrt( Σ(e_y² + 0.4*e_psi²) / n )
       yaw_rms:            sqrt( 0.8 * Σ(r_proxy²) / n )         [proxy: Δe_psi/dt]
-      smooth_rms:         sqrt( Σ(Δu_steer² + Δu_accel²) / n )
+      smooth_rms:         sqrt( Σ(Δu_steer² + Δu_accel²) / n )   [Δu from u[-1]=0]
       steer_rms:          sqrt( Σ(u_steer²) / n )
       accel_rms:          sqrt( Σ(u_accel²) / n )
       max_steering:       max(|u_steer|)
-      steering_sat_ratio: count(|u_steer| > 0.95 * _U_STEER_MAX) / n
-      jerk_rms:           sqrt( Σ(Δ²u_steer² + Δ²u_accel²) / n )
+      steering_sat_ratio: count(|u_steer| > 0.95 * max steer) / n
+      jerk_rms:           sqrt( Σ(Δ²u_steer² + Δ²u_accel²) / n ) [Δ²u from u[-1]=du[-1]=0]
       max_yaw_rate:       max(|r_proxy|)                          [proxy: Δe_psi/dt]
       steering_reversals: count of sign changes > 0.02 rad threshold
       peak_lateral_error: max(|e_y|)
@@ -164,7 +159,7 @@ def report_performance_metrics(history, log_fn=print):
     # This is close for smooth trajectories but may differ in tight corners where
     # the path heading changes rapidly (Δe_psi conflates vehicle yaw with path curvature).
     if len(e_psi) > 1:
-        r_proxy       = np.diff(e_psi) / _DT             # Approximate yaw rate (rad/s)
+        r_proxy       = np.diff(e_psi) / DT             # Approximate yaw rate (rad/s)
         yaw_rate_cost = 0.8 * float(np.sum(r_proxy**2))   # 0.8 weighting matches offline_tuner
         yaw_rms       = float(np.sqrt(yaw_rate_cost / n))
         max_yaw_rate  = float(np.max(np.abs(r_proxy)))
@@ -174,14 +169,22 @@ def report_performance_metrics(history, log_fn=print):
     # ── Control smoothness and jerk ───────────────────────────────────────────
     # Mirrors: control_smooth += sum((u_opt - u_prev)**2)  (Δu, first differences)
     # Mirrors: jerk_cost += sum(jerk**2)                   (Δ²u, second differences)
-    if len(u_steer) > 1 and len(u_accel) > 1:
-        du_steer       = np.diff(u_steer)   # First difference of steering
-        du_accel       = np.diff(u_accel)   # First difference of acceleration
+    #
+    # Prepend zero to u and du sequences to match the tuner's u_prev=0 and
+    # du_prev=0 initialisations. Without this, np.diff gives n-1 smoothness
+    # terms and n-2 jerk terms, missing the initial jump from standstill.
+    if len(u_steer) > 0 and len(u_accel) > 0:
+        # First difference including initial Δu from zero → n terms each
+        du_steer = np.diff(np.concatenate([[0.0], u_steer]))
+        du_accel = np.diff(np.concatenate([[0.0], u_accel]))
         control_smooth = float(np.sum(du_steer**2 + du_accel**2))
         smooth_rms     = float(np.sqrt(control_smooth / n))
 
-        # Jerk = Δ(Δu) = second difference of control
-        jerk_cost = float(np.sum(np.diff(du_steer)**2 + np.diff(du_accel)**2))
+        # Second difference including initial jerk from zero → n terms each
+        jerk_cost = float(np.sum(
+            np.diff(np.concatenate([[0.0], du_steer]))**2 +
+            np.diff(np.concatenate([[0.0], du_accel]))**2
+        ))
         jerk_rms  = float(np.sqrt(jerk_cost / n))
     else:
         smooth_rms = jerk_rms = 0.0
@@ -201,7 +204,7 @@ def report_performance_metrics(history, log_fn=print):
     # ── Steering saturation ratio ──────────────────────────────────────────────
     # Mirrors: if abs(u_opt[0]) > 0.95 * u_max[0]: steering_saturation += 1
     # Counts steps where the steering command was within 5% of its hard limit.
-    steering_saturation = float(np.sum(np.abs(u_steer) > 0.95 * _U_STEER_MAX)) \
+    steering_saturation = float(np.sum(np.abs(u_steer) > 0.95 * VehicleParams().max_steer)) \
         if len(u_steer) else 0.0
     steering_sat_ratio = steering_saturation / n
 
@@ -225,8 +228,10 @@ def report_performance_metrics(history, log_fn=print):
 
     # ── Speed RMSE (Required for composite score) ─────────────────────────────
     v_target_arr = np.asarray(history.get("v_target", []), dtype=float)
+    # Floor to 0.0 on length mismatch rather than NaN; NaN propagates through
+    # SCORE_WEIGHTS @ metrics and would produce a NaN composite score.
     speed_rmse   = float(np.sqrt(np.mean((v - v_target_arr)**2))) \
-        if len(v_target_arr) == len(v) and len(v) > 0 else float("nan")
+        if len(v_target_arr) == len(v) and len(v) > 0 else 0.0
 
     # ── Progress and time bonus ───────────────────────────────────────────────
     progress = float(np.clip(completion_frac, 0.0, 1.0))  
@@ -278,6 +283,7 @@ def report_performance_metrics(history, log_fn=print):
     log_fn(f"  Max yaw rate       : {max_yaw_rate:8.4f} rad/s  (x{W[_IDX_MAX_YAW_RATE]:.2f}) [approx]")
     log_fn(f"  Steer Reversals    : {steering_reversals:8d}           (x{W[_IDX_STEER_REVERSALS]:.2f})")
     log_fn(f"  Peak Lateral Error : {peak_lateral_error:8.4f} m        (x{W[_IDX_PEAK_LATERAL_ERROR]:.2f})")
+    log_fn(f"  Speed RMS          : {speed_rmse:8.4f} m/s        (x{W[_IDX_SPEED_RMSE]:.2f})")
     log_fn("-" * 60)
     log_fn(f"  Path completion    : {completion_frac*100:8.1f} %      (-{COMPLETION_BONUS_WEIGHT:.2f} bonus)")
     log_fn(f"  Time bonus         : {time_bonus:8.4f}        (-{TIME_BONUS_WEIGHT:.2f} bonus)")

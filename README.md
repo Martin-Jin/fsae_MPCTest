@@ -145,7 +145,7 @@ Note: this covers the main simulator files only. The shared planning code in the
 
 **Key constants:**
 ```
-dt         = 0.05 s     (20 Hz control rate)
+_DT         = 0.05 s     (20 Hz control rate)
 N_horizon  = 25 steps   (1.25 s look-ahead)
 V_MAX      = 20.0 m/s   (planner + profiler cap)
 V_MIN      = 1.5 m/s    (planner floor speed)

@@ -19,6 +19,8 @@ MAX_FAILS = 5  # Consecutive solve failures before DNF
 
 OFFTRACK_LIMIT = TRACK_HALF_WIDTH * 1.3  # Lateral error threshold for DNF (m)
 
+DT        = 0.05    # Simulation timestep (s) — 20 Hz, matches vehicle_physics sub-stepping
+
 
 # ==============================================================================
 # TUNER ENGINE & CONSTRAINT SETTINGS
@@ -80,17 +82,17 @@ PATH_N_POINTS = 1000
 # tracking quality signals and previously under-weighted.
 SCORE_WEIGHTS = np.array(
     [
-        0.549,  # 0  rmse               (lateral + heading + speed tracking; primary)
+        0.505,  # 0  rmse               (lateral + heading + speed tracking; primary)
         0.06,   # 1  yaw_rms
         0.07,   # 2  smooth_rms
         0.02,   # 3  steer_rms
         0.005,  # 4  accel_rms
-        0.03,   # 5  max_steering
-        0.05,   # 6  steering_sat_ratio
+        0.06,   # 5  max_steering
+        0.09,   # 6  steering_sat_ratio
         0.06,   # 7  jerk_rms
         0.02,   # 8  max_yaw_rate
-        0.001,  # 9  steering_reversals
-        0.13,   # 10 peak_lateral_error
+        0.005,  # 9  steering_reversals
+        0.10,   # 10 peak_lateral_error
         0.005,  # 11 speed_rmse
     ],
     dtype=float,
@@ -101,5 +103,5 @@ SCORE_WEIGHTS = np.array(
 # PERFORMANCE BONUS WEIGHTS
 # ------------------------------------------------------------------------------
 
-COMPLETION_BONUS_WEIGHT = 1.0  # Subtracted from score when vehicle finishes path
+COMPLETION_BONUS_WEIGHT = 0.5 # Subtracted from score when vehicle finishes path
 TIME_BONUS_WEIGHT = 0.25  # Subtracted from score for fast completion

@@ -126,9 +126,9 @@ class VehicleParams:
 
     def __init__(self):
         # ── Tuning Constants (Modify these to change car behavior) ────
-        GRIP_SCALE    = 0.95  # Scales tyre stiffness and Pacejka slope
-        INERTIA_SCALE = 0.3  # Scales yaw inertia and wheel rotational mass
-        COASTING_SCALE = 0.6 # < 1.0 = Rolls further, > 1.0 = Stops faster
+        GRIP_SCALE    = 1.0  # Scales tyre stiffness and Pacejka slope
+        INERTIA_SCALE = 0.5  # Scales yaw inertia and wheel rotational mass
+        COASTING_SCALE = 0.4 # < 1.0 = Rolls further, > 1.0 = Stops faster
 
         # ── Geometry ────────────────────────────────────────────────────────
         self.lf    = 0.85     # Distance from CoM to front axle (m)
@@ -142,8 +142,8 @@ class VehicleParams:
         # not by this nonlinear plant which uses Pacejka curves directly.
         # Effective linearised cornering stiffness matched to Pacejka initial slope:
         # C_eff ≈ mu * Fz_nominal * B * C * D.  Front: 1.9*600*15*1.45*1.0 ≈ 24,800 N/rad.
-        self.Cf = 25000.0     # Front cornering stiffness (N/rad)
-        self.Cr = 20000.0     # Rear  cornering stiffness (N/rad)
+        self.Cf = 15000.0     # Front cornering stiffness (N/rad)
+        self.Cr = 14000.0     # Rear  cornering stiffness (N/rad)
         # Actuator limits: enforced as hard bounds in optimiser.py's QP constraints.
         self.max_steer       = np.radians(35.0)  # Max rack-limited steering angle (rad)
         # FS EV peak acceleration ~12 m/s² (0→17 m/s in ~2 s); braking ~10 m/s² (~1g).

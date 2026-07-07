@@ -116,7 +116,8 @@ from settings import (
     MAX_EVALS,
     N_HORIZON,
     OFFTRACK_LIMIT,
-    MAX_FAILS
+    MAX_FAILS,
+    DT
 )
 
 from vehicle_physics import (
@@ -624,11 +625,10 @@ def init_worker(Q_init, R_init, R_rate_init):
     # Pre-cache all models from 0.5 m/s to 20.0 m/s in 0.1 m/s steps
     # Range covers vx clamp floor (0.5) through V_MAX (20.0) to avoid
     # mid-rollout cache misses during startup and high-speed phases.
-    dt = 0.05
     for vx in np.arange(0.5, 20.1, 0.1):
         key = np.round(vx, 1)
         if key not in _model_cache:
-            _model_cache[key] = get_8state_discrete_model(key, dt)
+            _model_cache[key] = get_8state_discrete_model(key, DT)
 
 
 # ==========================================
@@ -766,7 +766,6 @@ def run_headless_rollout(
     Q, R, R_rate = vector_to_weights(weights_vector, Q_init, R_init, R_rate_init)
 
     p = _init_context["vehicle_params"]
-    dt = 0.05
 
     u_min = np.array([-p.max_steer, p.max_accel_brake])
     u_max = np.array([p.max_steer, p.max_accel])
@@ -781,7 +780,7 @@ def run_headless_rollout(
     dynamic_max_steps = calculate_dynamic_max_steps(path_X, path_Y, dt=0.05)
     mean_v_profile = float(np.mean(path_v)) if len(path_v) > 0 else 1.5
     profile_max_steps = int(
-        math.ceil((PATH_LENGTHS[path_name] / max(mean_v_profile * 0.6, 1.5)) * 1.5 / dt)
+        math.ceil((PATH_LENGTHS[path_name] / max(mean_v_profile * 0.6, 1.5)) * 1.5 / DT)
     )
     num_steps = max(dynamic_max_steps, profile_max_steps)
 
@@ -917,7 +916,7 @@ def run_headless_rollout(
         kappa = curvature_estimate(state)
         R_rate_scaled = adaptive_R_rate(kappa, R_rate)  # Soften in corners
         R_scaled = adaptive_R_scaling(vx, R)  # Stiffen at speed
-        Ad, Bd = get_cached_model(vx, dt)
+        Ad, Bd = get_cached_model(vx, DT)
 
         # ── MPC solve ─────────────────────────────────────────────────────────
         # warm_start=False on step 0 prevents carrying solver state from a
@@ -1026,7 +1025,7 @@ def run_headless_rollout(
 
         u_prev = u_opt.copy()
         # Feed the delayed command to the nonlinear plant
-        state = step_nonlinear_plant(state, delayed_u_cmd, dt, p)
+        state = step_nonlinear_plant(state, delayed_u_cmd, DT, p)
 
     # ── Normalise metrics to RMS values ───────────────────────────────────────
     n = max(num_steps, 1)
@@ -1043,8 +1042,8 @@ def run_headless_rollout(
     progress = cumulative_distance / PATH_LENGTHS[path_name]
 
     if reached_end:
-        sim_time = num_steps * dt
-        expected_time = dynamic_max_steps * dt
+        sim_time = num_steps * DT
+        expected_time = dynamic_max_steps * DT
         time_bonus = max(0.0, 1.0 - (sim_time / expected_time))
     else:
         time_bonus = 0.0
@@ -1438,12 +1437,11 @@ if __name__ == "__main__":
         _init_context["R_rate"] = R_rate_init
         _init_context["vehicle_params"] = VehicleParams()
 
-        dt = 0.05
         # 196 steps ensures exactly 0.1 increments between 0.5 and 20.0 inclusive
         for vx in np.linspace(0.5, 20.0, 196):
             key = np.round(vx, 1)
             if key not in _model_cache:
-                _model_cache[key] = get_8state_discrete_model(key, dt)
+                _model_cache[key] = get_8state_discrete_model(key, DT)
 
         def _handle_sigint(sig, frame):
             """

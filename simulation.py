@@ -76,7 +76,8 @@ from settings import (
     USE_PLANNER,
     DELAY_STEPS,
     OFFTRACK_LIMIT,
-    MAX_FAILS
+    MAX_FAILS,
+    DT
 )
 
 
@@ -84,7 +85,6 @@ from settings import (
 # ==========================================
 # SETUP AND CONFIGURATION
 # ==========================================
-dt        = 0.05    # Simulation timestep (s) — 20 Hz, matches vehicle_physics sub-stepping
 N_horizon = 25      # MPC prediction horizon (steps = 1.25 s of look-ahead at 20 Hz)
 v_ref     = 7.0     # Fallback constant speed (m/s); only used if path_v_profile is empty
 
@@ -751,7 +751,7 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
         # ── 6. MPC solve ───────────────────────────────────────────────────────
         # Linearise the bicycle model at the current speed
         current_v    = plant_state[3]
-        Ad, Bd       = get_8state_discrete_model(max(current_v, 0.5), dt)
+        Ad, Bd       = get_8state_discrete_model(max(current_v, 0.5), DT)
 
         # Adaptive gain scheduling (model_utils.py)
         kappa         = curvature_estimate(plant_state)     # Instantaneous κ = r/vx
@@ -800,9 +800,9 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
             e_y_pred = x_p_tmp[0]
             # Project Frenet lateral error back to global XY for display:
             # global_X ≈ X + k*vx*cos(ψ)*dt − e_y*sin(ψ_ref)
-            px.append(X_g + (k + 1) * plant_state[3] * np.cos(psi_g) * dt
+            px.append(X_g + (k + 1) * plant_state[3] * np.cos(psi_g) * DT
                       - e_y_pred * np.sin(current_ref_psi))
-            py.append(Y_g + (k + 1) * plant_state[3] * np.sin(psi_g) * dt
+            py.append(Y_g + (k + 1) * plant_state[3] * np.sin(psi_g) * DT
                       + e_y_pred * np.cos(current_ref_psi))
             x_p_tmp = Ad @ x_p_tmp + Bd @ u_opt   # Propagate error state
 
@@ -814,7 +814,7 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
         # suspension, aerodynamics). The controller never sees any of this
         # directly — all that feeds back is the tracking error computed from
         # the plant's global X, Y, psi at the next step.
-        plant_state = step_nonlinear_plant(plant_state, delayed_u_cmd, dt, vehicle_params)
+        plant_state = step_nonlinear_plant(plant_state, delayed_u_cmd, DT, vehicle_params)
 
     # ── Post-loop: compute completion and bonus fields ─────────────────────────
     history.setdefault("reached_end", False)
@@ -838,8 +838,8 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
     if history["reached_end"]:
         history["completion_frac"] = 1.0
         # Time bonus: how much earlier than max_steps did the vehicle finish?
-        expected_time = max_steps * dt
-        sim_time      = len(history["X"]) * dt
+        expected_time = max_steps * DT
+        sim_time      = len(history["X"]) * DT
         history["time_bonus"] = max(0.0, 1.0 - (sim_time / expected_time))
     else:
         # Partial completion: arc-length fraction actually travelled along the path
@@ -876,7 +876,7 @@ def run_simulation(event):
     ax_epsi0.set_visible(False)
 
     # Dynamic step budget: based on path length at a conservative fallback speed
-    dynamic_steps = calculate_dynamic_max_steps(path_X, path_Y, dt=dt)
+    dynamic_steps = calculate_dynamic_max_steps(path_X, path_Y, dt=DT)
 
     history = simulate_closed_loop(
         Q, R, slider_ey0.val, slider_epsi0.val,
