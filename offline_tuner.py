@@ -103,7 +103,7 @@ import signal
 from model_utils import curvature_estimate, adaptive_R_rate, adaptive_R_scaling
 import subprocess
 
-from vehicle_physics import VehicleParams, step_nonlinear_plant, init_plant_state, get_interpolated_ref_point
+from vehicle_physics import VehicleParams, step_nonlinear_plant, init_plant_state, plant_to_tracking_error, find_closest_reference_bounded
 from bicycle_model import get_8state_discrete_model
 from optimiser import solve_mpc
 import speed_profile as sp
@@ -183,8 +183,8 @@ DNF_OFFTRACK_PENALTY = 3.0
 # ==========================================
 # Looser than the live simulator (1e-5) for ~2× faster rollouts at negligible
 # accuracy cost. These are passed to solve_mpc() in run_headless_rollout().
-ROLLOUT_EPS = 1e-5
-ROLLOUT_MAX_ITER = 8000 
+ROLLOUT_EPS = 1e-4
+ROLLOUT_MAX_ITER = 5000 
 
 # Graceful shutdown flag: set by SIGINT handler; checked each CMA generation.
 _stop_requested = False
@@ -625,8 +625,6 @@ PATH_NAMES = list(SYNTHETIC_PATHS.keys())
 # ==========================================
 # TRACKING ERROR HELPERS
 # ==========================================
-
-
 def _normalize_angle(angle):
     """
     Wrap an angle to the range (−π, π] using atan2.
@@ -640,87 +638,9 @@ def _normalize_angle(angle):
     """
     return np.arctan2(np.sin(angle), np.cos(angle))
 
-
-def _find_closest(path_X, path_Y, x, y, last_idx, window=40):
-    """
-    Find the index of the closest path point to (x, y) within a bounded search
-    window centred on last_idx.
-
-    The windowed search prevents the tracker from jumping backward when the
-    path doubles back on itself (e.g. after a 180° hairpin). At the start of a
-    rollout (last_idx ≤ 5), a wider initial window is used to avoid getting
-    stuck at index 0.
-
-    Parameters
-    ----------
-    path_X, path_Y : np.ndarray   Path coordinate arrays.
-    x, y : float                  Query point (current vehicle position).
-    last_idx : int                Previously found closest index.
-    window : int                  Forward search window (number of path points).
-
-    Returns
-    -------
-    int : Global index of the closest path point.
-
-    Called by: _tracking_errors()
-    """
-    n = len(path_X)
-    if last_idx <= 5:
-        start, end = 0, min(n, 100)  # Wide initial window to avoid index-0 lock
-    else:
-        start = max(0, last_idx - 5)  # 5 points backward tolerance
-        end = min(n, last_idx + window)  # Forward window
-
-    dx = path_X[start:end] - x
-    dy = path_Y[start:end] - y
-    local = int(np.argmin(dx * dx + dy * dy))  # Closest in Euclidean distance
-    return start + local
-
-
-def _tracking_errors(plant_state, path_X, path_Y, path_Psi, last_idx):
-    """
-    Compute interpolated lateral and heading tracking errors relative to the reference path.
-
-    Finds the closest path point, then projects the vehicle's position error
-    into the Frenet frame (path-tangent aligned):
-        e_y   = (Y − ref_Y)*cos(ref_ψ) − (X − ref_X)*sin(ref_ψ)
-        e_psi = normalise(ψ_vehicle − ψ_ref)
-
-    Parameters
-    ----------
-    plant_state : array-like   Vehicle state. Reads indices 0 (X), 1 (Y), 2 (psi).
-    path_X, path_Y : np.ndarray   Reference path coordinates.
-    path_Psi : np.ndarray         Reference path heading at each point (rad).
-    last_idx : int                Previous closest-point index (search anchor).
-
-    Returns
-    -------
-    (e_y, e_psi, idx) : (float, float, int)
-        Lateral error (m), heading error (rad), new closest-point index.
-
-    Called by: run_headless_rollout() (fallback when SimPlanner has no centreline,
-               and for consistent progress tracking against the reference path)
-    """
-    X, Y, psi = plant_state[0], plant_state[1], plant_state[2]
-    idx = _find_closest(path_X, path_Y, X, Y, last_idx)
-    rx, ry, rpsi = get_interpolated_ref_point(X, Y, path_X, path_Y, path_Psi)
-
-    dx = X - rx
-    dy = Y - ry
-
-    # Frenet projection
-    e_y = dy * np.cos(rpsi) - dx * np.sin(rpsi)
-
-    # Heading error using normalized angle
-    e_psi = _normalize_angle(psi - rpsi)
-    
-    return float(e_y), float(e_psi), idx
-
 # ==========================================
 # WORKER INITIALIZER
 # ==========================================
-
-
 def init_worker(Q_init, R_init, R_rate_init):
     """
     Initialise each worker process in the multiprocessing Pool.
@@ -911,7 +831,7 @@ def run_headless_rollout(
     dynamic_max_steps = calculate_dynamic_max_steps(path_X, path_Y, dt=0.05)
     mean_v_profile = float(np.mean(path_v)) if len(path_v) > 0 else 1.5
     profile_max_steps = int(
-        math.ceil((PATH_LENGTHS[path_name] / max(mean_v_profile * 0.6, 1.5)) * 1.2 / dt)
+        math.ceil((PATH_LENGTHS[path_name] / max(mean_v_profile * 0.6, 1.5)) * 1.5 / dt)
     )
     num_steps = max(dynamic_max_steps, profile_max_steps)
 
@@ -961,7 +881,7 @@ def run_headless_rollout(
     offtrack = False  # Whether the vehicle went off track
 
     MAX_FAILS = 5  # Consecutive solve failures before DNF
-    OFFTRACK_LIMIT = TRACK_HALF_WIDTH * 1.2  # Lateral error threshold for DNF (m)
+    OFFTRACK_LIMIT = TRACK_HALF_WIDTH * 2.0  # Lateral error threshold for DNF (m)
 
     # Pre-compute arc-length segments for progress tracking
     path_seg_dist = np.hypot(np.diff(path_X), np.diff(path_Y))
@@ -981,24 +901,26 @@ def run_headless_rollout(
 
             cl = planner.centreline
             if cl is not None and len(cl) >= 2:
+                # Calculate tracking error relative to the planner's centreline
+                # Pass centreline components directly to the tracking error calculator
+                cl_x = cl[:, 0]
+                cl_y = cl[:, 1]
+                # Reconstruct approximate headings along the centreline points
+                cl_psi = np.zeros_like(cl_x)
+                cl_psi[:-1] = np.arctan2(np.diff(cl_y), np.diff(cl_x))
+                cl_psi[-1] = cl_psi[-2] if len(cl_psi) > 1 else state[2]
+
+                e_y, _, e_psi, _, _, _, _ = plant_to_tracking_error(
+                    state, 
+                    path_x=cl_x, 
+                    path_y=cl_y, 
+                    path_psi=cl_psi
+                )
+
+                # Find closest index for target velocity profiling
                 dists = np.linalg.norm(cl - car_pos_np, axis=1)
                 cl_idx = int(np.argmin(dists))
-                seg = (
-                    cl[cl_idx + 1] - cl[cl_idx]
-                    if cl_idx < len(cl) - 1
-                    else cl[cl_idx] - cl[cl_idx - 1]
-                )
-                seg_len = float(np.linalg.norm(seg))
-                if seg_len > 1e-6:
-                    t_hat = seg / seg_len
-                    right_n = np.array([t_hat[1], -t_hat[0]])
-                    rpsi = math.atan2(t_hat[1], t_hat[0])
-                    e_y = -float(np.dot(car_pos_np - cl[cl_idx], right_n))
-                    e_psi = _normalize_angle(state[2] - rpsi)
-                else:
-                    e_y, e_psi, _ = _tracking_errors(
-                        state, path_X, path_Y, path_Psi, idx
-                    )
+
                 v_target = (
                     float(
                         np.interp(
@@ -1011,16 +933,28 @@ def run_headless_rollout(
                     else float(path_v[idx])
                 )
             else:
-                # Planner not yet ready — fall back to reference path
-                e_y, e_psi, _ = _tracking_errors(state, path_X, path_Y, path_Psi, idx)
+                # Planner not yet ready — fall back to global reference path
+                e_y, _, e_psi, _, _, _, _ = plant_to_tracking_error(
+                    state, 
+                    path_x=path_X, 
+                    path_y=path_Y, 
+                    path_psi=path_Psi
+                )
                 v_target = float(path_v[idx])
         else:
-            # Oracle mode: single call, result used for both errors and progress
-            e_y, e_psi, _ = _tracking_errors(state, path_X, path_Y, path_Psi, idx)
+            # Oracle mode: directly track the global reference track layout
+            e_y, _, e_psi, _, _, _, _ = plant_to_tracking_error(
+                state, 
+                path_x=path_X, 
+                path_y=path_Y, 
+                path_psi=path_Psi
+            )
             v_target = float(path_v[idx])
 
-        # ── Progress tracking (always against reference path for consistency) ─
-        _, _, idx_ref = _tracking_errors(state, path_X, path_Y, path_Psi, idx)
+        # ── Progress tracking — Find current reference index ──────────────────
+        # Find the index of the closest point on the global path to update progress metrics
+        idx_ref, _, _, _ = find_closest_reference_bounded(path_X, path_Y, path_Psi, state[0], state[1], idx)
+
         if idx_ref > last_idx:
             cumulative_distance += np.sum(path_seg_dist[last_idx:idx_ref])
             last_idx = idx_ref
@@ -1062,7 +996,7 @@ def run_headless_rollout(
             eps_abs=ROLLOUT_EPS,
             eps_rel=ROLLOUT_EPS,
             max_iter=ROLLOUT_MAX_ITER,
-            warm_start=(step != 0),  # No warm start on first step of each rollout
+            warm_start=(step != 0),  # Prevent stale OSQP state across rollouts
         )
 
         if mpc_result is None:
@@ -1120,7 +1054,7 @@ def run_headless_rollout(
         # Combined tracking cost: e_y weighted 2×, e_psi weighted 1× (in quadrature)
         # Include speed error in tracking cost so Q[4] is meaningfully tuned.
         e_v_now = state[3] - v_target
-        speed_cost = e_v_now**2
+        speed_cost += e_v_now**2
         error_cost += 1.2 * e_y**2 + 0.4 * e_psi**2
         # Yaw stability: 0.8 weighting reduces contribution relative to lateral error
         yaw_rate_cost += 0.8 * state[5] ** 2
@@ -1198,8 +1132,6 @@ def run_headless_rollout(
 # ==========================================
 # OBJECTIVE FUNCTION WRAPPERS
 # ==========================================
-
-
 def evaluate_all_paths(weights_vector, n_repeats=3, ey0=0.0, epsi0=0.0):
     """
     Evaluate a weights vector across every path in PATH_NAMES (not just

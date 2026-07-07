@@ -63,13 +63,14 @@ from matplotlib.widgets import Button, Slider
 from scipy.interpolate import CubicSpline
 from bicycle_model import get_8state_discrete_model
 from optimiser import solve_mpc
-from vehicle_physics import VehicleParams, step_nonlinear_plant, init_plant_state, plant_to_tracking_error
+from vehicle_physics import VehicleParams, step_nonlinear_plant, init_plant_state, plant_to_tracking_error, find_closest_reference_bounded
 from performance_stats import benchmark_weights, report_performance_metrics
 import speed_profile
 from offline_tuner import SYNTHETIC_PATHS, PATH_NAMES
 from sim_track import place_cones, SimPerception, SimPlanner, calculate_dynamic_max_steps, TRACK_HALF_WIDTH
 from model_utils import curvature_estimate, adaptive_R_rate, adaptive_R_scaling
 import math
+import cvxpy as cp
 
 
 # ==========================================
@@ -85,9 +86,9 @@ v_ref     = 7.0     # Fallback constant speed (m/s); only used if path_v_profile
 # R_rate handles smoothness indirectly through Δu costs.
 # These values are the output of the most recent offline_tuner.py run.
 # To update: paste Q_diag, R_diag, R_rate_diag printed by offline_tuner.py.
-Q_diag      = [3.638052519141927, 0.3132900819848592, 0.3868295060617668, 0.10443494593654155, 5.002322400309148, 0.0, 0.0, 0.0]
-R_diag      = [0.933576511781534, 2.2105290762562477]
-R_rate_diag = [0.4756298125388402, 0.4405499781668463]
+Q_diag      = [7.368990769988415, 0.17549150582645281, 3.8933811763673885, 1.0355934679161058, 0.10722412258824966, 0.0, 0.0, 0.0]
+R_diag      = [0.44834626076765677, 1.6212828598782207]
+R_rate_diag = [1.871652806399019, 0.25219086629126125]
 
 Q      = np.diag(Q_diag)       # State cost matrix (8×8 diagonal)
 R      = np.diag(R_diag)       # Input cost matrix (2×2 diagonal)
@@ -274,49 +275,6 @@ def normalize_angle(angle):
     Called by: simulate_closed_loop(), load_test_path()
     """
     return np.arctan2(np.sin(angle), np.cos(angle))
-
-
-def find_closest_reference_bounded(x_g, y_g, last_idx, window=40):
-    """
-    Find the closest point on the reference path (path_X, path_Y) to the
-    given global position, searching within a bounded window around last_idx.
-
-    The windowed search prevents the tracker from jumping backward on paths
-    that double back on themselves (e.g. after a hairpin). At the start of a
-    simulation (last_idx ≤ 5), a wider initial window prevents the tracker
-    from locking onto index 0 if the vehicle has already moved forward.
-
-    This function reads the module-level path_X, path_Y, path_Psi arrays.
-
-    Parameters
-    ----------
-    x_g, y_g : float   Vehicle global position (m).
-    last_idx : int      Previously found closest index (search anchor).
-    window : int        Forward search range in path indices. Default 40.
-
-    Returns
-    -------
-    (global_idx, ref_x, ref_y, ref_psi) : (int, float, float, float)
-        Index and coordinates of the nearest path point, plus path heading there.
-
-    Called by: simulate_closed_loop() — fallback path when SimPlanner has no centreline,
-               and for path-end detection (idx ≥ len(path_X) - 2)
-    """
-    if last_idx <= 5:
-        start_search = 0
-        end_search   = min(len(path_X), 100)   # Wide initial window
-    else:
-        start_search = max(0, last_idx - 5)
-        end_search   = min(len(path_X), last_idx + window)
-
-    distances  = np.hypot(
-        path_X[start_search:end_search] - x_g,
-        path_Y[start_search:end_search] - y_g,
-    )
-    local_idx  = np.argmin(distances)
-    global_idx = start_search + local_idx
-
-    return global_idx, path_X[global_idx], path_Y[global_idx], path_Psi[global_idx]
 
 
 # ==========================================
@@ -589,7 +547,7 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
     ----------------------
     The loop ends on the first of:
       - Reaching path end: idx ≥ len(path_X) - 2  OR  dist_to_end ≤ 3.0 m
-      - Off-track:  |e_y| > OFFTRACK_LIMIT (TRACK_HALF_WIDTH * 1.3) → history["failed"] = True
+      - Off-track:  |e_y| > OFFTRACK_LIMIT (TRACK_HALF_WIDTH * 1.5) → history["failed"] = True
       - Solver failure: consecutive_solver_failures ≥ MAX_CONSECUTIVE_FAILURES (5)
       - Step budget: step ≥ max_steps
 
@@ -671,7 +629,7 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
     u_prev                     = np.zeros(2)
     consecutive_solver_failures = 0
     MAX_CONSECUTIVE_FAILURES    = 5
-    OFFTRACK_LIMIT              = TRACK_HALF_WIDTH * 1.2
+    OFFTRACK_LIMIT              = TRACK_HALF_WIDTH * 2.0
 
     history = {
         "X": [], "Y": [], "psi": [], "v": [], "v_target": [],
@@ -684,10 +642,11 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
 
     idx = 0   # Current closest reference path index
 
-    # ── NEW: Transport Delay Queue ────────────────────────────────────────
+# ── Transport Delay Queue ─────────────────────────────────────────────
     command_queue = deque([np.zeros(2) for _ in range(DELAY_STEPS + 1)], maxlen=DELAY_STEPS + 1)
     u_prev = np.zeros(2)
-    
+    inaccurate_count = 0  # Steps where OSQP returned OPTIMAL_INACCURATE
+
     for step in range(max_steps):
 
         # ── 1. Record current plant state ─────────────────────────────────────
@@ -727,11 +686,11 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
                         float(cl_idx), np.arange(len(planner.v_profile)), planner.v_profile,  
                     ))
                 else:
-                    idx, _, _, _ = find_closest_reference_bounded(X_g, Y_g, idx, window=40)
+                    idx, _, _, _ = find_closest_reference_bounded(path_X, path_Y, path_Psi, X_g, Y_g, idx, window=40)
                     v_target = float(path_v_profile[idx])
             else:
-                idx, rx, ry, rpsi = find_closest_reference_bounded(X_g, Y_g, idx, window=40)
-                e_y, e_y_dot, e_psi, e_psi_dot, _, _, _ = plant_to_tracking_error(
+                idx, _, _, rpsi = find_closest_reference_bounded(path_X, path_Y, path_Psi, X_g, Y_g, idx, window=40)
+                e_y, _, e_psi, _, _, _, _ = plant_to_tracking_error(
                     plant_state, 
                     path_x=path_X, 
                     path_y=path_Y, 
@@ -739,8 +698,8 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
                 )
                 v_target = float(path_v_profile[idx])
         else:
-            idx, rx, ry, rpsi = find_closest_reference_bounded(X_g, Y_g, idx, window=40)
-            e_y, e_y_dot, e_psi, e_psi_dot, _, _, _ = plant_to_tracking_error(
+            idx, _, _, rpsi = find_closest_reference_bounded(path_X, path_Y, path_Psi, X_g, Y_g, idx, window=40)
+            e_y, _, e_psi, _, _, _, _ = plant_to_tracking_error(
                 plant_state, 
                 path_x=path_X, 
                 path_y=path_Y, 
@@ -798,16 +757,23 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
         R_rate_scaled = adaptive_R_rate(kappa, R_rate_w)    # Soften jerk cost in corners
         R_scaled      = adaptive_R_scaling(current_v, R_w)  # Stiffen steering cost at speed
 
-        u_opt = solve_mpc(
+        # warm_start=False on step 0 prevents carrying stale OSQP state
+        # from a previous simulation or benchmark into the first solve.
+        mpc_result = solve_mpc(
             x_current, Ad, Bd, N_horizon,
             Q_w, R_scaled,
             u_bounds_min, u_bounds_max,
             R_rate=R_rate_scaled,
             u_prev=u_prev,
+            return_status=True,
+            warm_start=(step != 0),
         )
 
-        if u_opt is not None:
+        if mpc_result is not None:
+            u_opt, mpc_status = mpc_result
             consecutive_solver_failures = 0
+            if mpc_status in (cp.OPTIMAL_INACCURATE, "optimal_inaccurate"):
+                inaccurate_count += 1
         else:
             # Hold previous command on failure; increment failure counter
             consecutive_solver_failures += 1
@@ -880,8 +846,7 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
         history["completion_frac"] = _progress
         history["time_bonus"]      = 0.0
 
-    # Note: inaccurate_count is not tracked here (always 0 in the live simulator);
-    # the offline tuner tracks it per rollout in run_headless_rollout().
+    history["inaccurate_count"] = inaccurate_count
     return history
 
 

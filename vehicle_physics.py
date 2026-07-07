@@ -126,8 +126,8 @@ class VehicleParams:
 
     def __init__(self):
         # ── Tuning Constants (Modify these to change car behavior) ────
-        GRIP_SCALE    = 0.80  # Scales tyre stiffness and Pacejka slope
-        INERTIA_SCALE = 1.0  # Scales yaw inertia and wheel rotational mass
+        GRIP_SCALE    = 0.85  # Scales tyre stiffness and Pacejka slope
+        INERTIA_SCALE = 1.05  # Scales yaw inertia and wheel rotational mass
         COASTING_SCALE = 0.6 # < 1.0 = Rolls further, > 1.0 = Stops faster
 
         # ── Geometry ────────────────────────────────────────────────────────
@@ -980,6 +980,48 @@ def init_plant_state(X0, Y0, psi0, vx0=10.0):
 # ─────────────────────────────────────────────────────────────────────────────
 # TRACKING ERROR HELPER
 # ─────────────────────────────────────────────────────────────────────────────
+def find_closest_reference_bounded(path_X, path_Y, path_Psi, x_g, y_g, last_idx, window=40):
+    """
+    Find the closest point on the reference path (path_X, path_Y) to the
+    given global position, searching within a bounded window around last_idx.
+
+    The windowed search prevents the tracker from jumping backward on paths
+    that double back on themselves (e.g. after a hairpin). At the start of a
+    simulation (last_idx ≤ 5), a wider initial window prevents the tracker
+    from locking onto index 0 if the vehicle has already moved forward.
+
+    This function reads the module-level path_X, path_Y, path_Psi arrays.
+
+    Parameters
+    ----------
+    x_g, y_g : float   Vehicle global position (m).
+    last_idx : int      Previously found closest index (search anchor).
+    window : int        Forward search range in path indices. Default 40.
+
+    Returns
+    -------
+    (global_idx, ref_x, ref_y, ref_psi) : (int, float, float, float)
+        Index and coordinates of the nearest path point, plus path heading there.
+
+    Called by: simulate_closed_loop() — fallback path when SimPlanner has no centreline,
+               and for path-end detection (idx ≥ len(path_X) - 2)
+    """
+    if last_idx <= 5:
+        start_search = 0
+        end_search   = min(len(path_X), 100)   # Wide initial window
+    else:
+        start_search = max(0, last_idx - 5)
+        end_search   = min(len(path_X), last_idx + window)
+
+    distances  = np.hypot(
+        path_X[start_search:end_search] - x_g,
+        path_Y[start_search:end_search] - y_g,
+    )
+    local_idx  = np.argmin(distances)
+    global_idx = start_search + local_idx
+
+    return global_idx, path_X[global_idx], path_Y[global_idx], path_Psi[global_idx]
+
 def get_interpolated_ref_point(x, y, path_x, path_y, path_psi):
     """
     Computes a smooth, continuous reference point on the path via linear interpolation.

@@ -38,6 +38,7 @@ DOES NOT USE
   vehicle_physics.py, bicycle_model.py, optimiser.py, speed_profile.py, sim_track.py
 """
 
+from vehicle_physics import VehicleParams
 import numpy as np
 import math
 from offline_tuner import (  
@@ -49,6 +50,8 @@ from offline_tuner import (
     evaluate_all_paths,  
     _init_context,  
     compute_composite_score,  
+    get_cached_model,
+    TUNABLE_Q_IDX, TUNABLE_R_IDX, TUNABLE_R_RATE_IDX
 )
 
 # Metric index constants — must stay in sync with SCORE_WEIGHTS order in offline_tuner.py
@@ -332,29 +335,32 @@ def benchmark_weights(Q_w, R_w, R_rate_w, n_repeats=3, log_fn=print):
     """
     # Populate _init_context in this process so evaluate_all_paths() can call
     # run_headless_rollout() without a worker pool.
-    from vehicle_physics import VehicleParams
     _init_context["Q"]              = Q_w
     _init_context["R"]              = R_w
     _init_context["R_rate"]         = R_rate_w
     _init_context["vehicle_params"] = VehicleParams()
 
     # Pre-populate the model cache to avoid matrix-exponential overhead per step.
-    from offline_tuner import _model_cache, get_cached_model
     for vx in np.arange(0.5, 20.1, 0.1):
         get_cached_model(round(float(vx), 1), 0.05)
 
-    # Build a weights vector that evaluate_all_paths() can invert via vector_to_weights().
-    # We pass the identity vector (all 1.0s) and supply the actual matrices as templates
-    # so vector_to_weights returns Q_w, R_w, R_rate_w unchanged.
-    from offline_tuner import TUNABLE_Q_IDX, TUNABLE_R_IDX, TUNABLE_R_RATE_IDX
-    identity_vec = np.ones(
-        len(TUNABLE_Q_IDX) + len(TUNABLE_R_IDX) + len(TUNABLE_R_RATE_IDX)
-    )
+    identity_vec = []
+    
+    for idx in TUNABLE_Q_IDX:
+        identity_vec.append(1.0 if Q_w[idx, idx] != 0.0 else 0.0)
+        
+    for idx in TUNABLE_R_IDX:
+        identity_vec.append(1.0 if R_w[idx, idx] != 0.0 else 0.0)
+        
+    for idx in TUNABLE_R_RATE_IDX:
+        identity_vec.append(1.0 if R_rate_w[idx, idx] != 0.0 else 0.0)
+
+    vec = np.array(identity_vec, dtype=float)
 
     # Temporarily override the context templates so evaluate_all_paths uses Q_w etc.
     eye0 = INITIAL_CONDITIONS[0][0]
     epsi0 = INITIAL_CONDITIONS[0][1]
-    results = evaluate_all_paths(identity_vec, n_repeats=n_repeats, epsi0=epsi0, ey0=eye0)
+    results = evaluate_all_paths(vec, n_repeats=n_repeats, epsi0=epsi0, ey0=eye0)
 
     # ── Console report ────────────────────────────────────────────────────────
     log_fn("=" * 60)

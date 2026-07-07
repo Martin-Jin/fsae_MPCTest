@@ -170,7 +170,7 @@ Overall score (avged from all testing scenarios)  = Haven't been tested.
 Tuner score (tuning scenarios / validation suite) = -0.3947547392550951
 Commit hash = 8ab49206ea23ae144a9e7e56a61c0ee97024a94b
 
-# 07/07/26 10:40 - Vehicle is hunting center line too much, need to 
+# 07/07/26 10:40 - Vehicle is hunting center line too much, need to address this in vehicle physics.
 Q_diag      = [3.638052519141927, 0.3132900819848592, 0.3868295060617668, 0.10443494593654155, 5.002322400309148, 0.0, 0.0, 0.0]
 R_diag      = [0.933576511781534, 2.2105290762562477]
 R_rate_diag = [0.4756298125388402, 0.4405499781668463]
@@ -178,3 +178,12 @@ Duration    = 31.54 minutes
 Overall score (avged from all testing scenarios)  = Haven't been tested.
 Tuner score (tuning scenarios / validation suite) = -0.41336576903790373
 Commit hash = b2a44e7827068c667bfd07610ada7e3a3afb715c
+
+# 07/07/26 13:46 - [Pending Description: yet to be tested]
+Q_diag      = [1.4482916189576558, 0.16539909909593875, 7.138551774447528, 0.6632281818539646, 0.13704868282639, 0.0, 0.0, 0.0]
+R_diag      = [0.1320783333275749, 2.087105936571688]
+R_rate_diag = [0.5759349191385124, 1.8621582289019547]
+Duration    = 56.50 minutes
+Overall score (avged from all testing scenarios)  = Haven't been tested.
+Tuner score (tuning scenarios / validation suite) = -0.2652409852518931
+Commit hash = 345b149cb3449286c0e1db88225f1ff7c72766d2
