@@ -87,7 +87,8 @@ USER INPUT (draw path / load synthetic path)
 
 ```
                     ┌──────────────────────────────────────────┐
-                    │              MPC (control layer)         │
+                    │   rollout_core.run_core_rollout()         │
+                    │   (single shared rollout loop — see below)│
                     │                                          │
   path waypoints ──►│  bicycle_model.get_8state_discrete_model │
   car state      ──►│  → Ad, Bd  (ZOH linearised bicycle model)│
@@ -98,6 +99,9 @@ USER INPUT (draw path / load synthetic path)
                     │                                          │
                     │  optimiser.solve_mpc()                   │
                     │  → OSQP QP → u* = [δ_cmd, a_cmd]         │
+                    │                                          │
+                    │  scoring.RolloutMetrics.add_step()       │
+                    │  → accumulates the 12 score metrics      │
                     └──────────────┬───────────────────────────┘
                                    │
                     ┌──────────────▼───────────────────────────┐
@@ -110,6 +114,14 @@ USER INPUT (draw path / load synthetic path)
                     │  4 sub-steps per control tick            │
                     └──────────────────────────────────────────┘
 ```
+Both `offline_tuner.run_headless_rollout()` and `simulation.simulate_closed_loop()`
+are now thin wrappers around `rollout_core.run_core_rollout()` — the single
+implementation of the tracking-error computation, progress tracking, MPC solve,
+delay queue, termination checks, and metric accumulation. `simulation.py` calls
+it with `want_history=True` to get a full step-by-step history dict for the GUI;
+`offline_tuner.py` calls it with `want_history=False` for a fast, scoring-only
+path. This is what guarantees a path run in the live simulator and the same path
+benchmarked offline produce (near-)identical composite scores.
 
 ### ROS 2 vs Simulator Mapping
 
@@ -153,7 +165,44 @@ OFFTRACK_LIMIT = around 2 m  (lateral error failure threshold)
 MAX_CONSECUTIVE_FAILURES = 5  (solver failures before DNF)
 ```
 
-**Dependencies:** `bicycle_model`, `optimiser`, `vehicle_physics`, `performance_stats`, `speed_profile`, `offline_tuner` (SYNTHETIC_PATHS / PATH_NAMES only), `sim_track`, `model_utils`.
+**Dependencies:** `rollout_core` (the shared rollout loop — `simulate_closed_loop()` is now a thin wrapper around `rollout_core.run_core_rollout()` called with `want_history=True, want_horizon_pred=True`), `vehicle_physics`, `performance_stats`, `speed_profile`, `offline_tuner` (`SYNTHETIC_PATHS`/`PATH_NAMES`/`get_cached_model`), `sim_track` (`place_cones`, `calculate_dynamic_max_steps`).
+
+Note: `bicycle_model`, `optimiser`, and `model_utils` are no longer imported directly here — they're only used inside `rollout_core.py` now.
+
+---
+
+---
+
+### `rollout_core.py`
+**Purpose:** The single implementation of the closed-loop MPC rollout loop, shared by `offline_tuner.py` and `simulation.py`. Extracted specifically to stop the two from silently drifting apart (which is what caused offline-tuner scores and the live simulator's "Show Metrics" scores to disagree before this refactor).
+
+**Functions:**
+
+`compute_step_budget(path_X, path_Y, path_v_profile) → (dynamic_max_steps, max_steps)`
+Single source of truth for the dynamic step budget: `dynamic_max_steps` from `sim_track.calculate_dynamic_max_steps()` alone (used as the time-bonus baseline), and `max_steps = max(dynamic_max_steps, profile_max_steps)` (the actual loop budget), where `profile_max_steps` is a speed-profile-aware estimate. Both callers used to duplicate this formula inline.
+
+`run_core_rollout(path_X, path_Y, path_Psi, path_v_profile, blue_cones, yellow_cones, Q, R, R_rate, u_min, u_max, vehicle_params, ey0=0.0, epsi0=0.0, max_steps=400, dynamic_max_steps=None, use_planner=USE_PLANNER, model_lookup=None, want_history=False, want_horizon_pred=False) → dict`
+Runs one closed-loop rollout: tracking-error computation (planner-in-the-loop or oracle, with an explicit fallback to the global path while the planner warms up), progress tracking against the global reference path, MPC state-vector assembly, adaptive gain scaling, MPC solve, transport delay, termination checks (off-track, consecutive solver failures, rolling stall, path completion), and per-step metric accumulation via `scoring.RolloutMetrics`. Returns `{"composite_score", "metrics_result", "progress", "reached_end", "dnf", "offtrack", "time_bonus", "history"}` — `history` is `None` unless `want_history=True`.
+
+**Note on epsi0 units:** `epsi0` here is in **radians** (matching `offline_tuner.py`'s convention). `simulation.py`'s GUI slider is in degrees, so its wrapper converts with `np.radians()` before calling.
+
+**Why not in `simulation.py`:** `simulation.py` builds a matplotlib GUI at import time; `offline_tuner.py` runs rollouts inside `multiprocessing.Pool` worker processes, and importing `simulation.py` there would try to open a GUI window in every worker. `rollout_core.py` imports nothing GUI-related.
+
+**Dependencies:** `vehicle_physics`, `optimiser`, `sim_track`, `model_utils`, `scoring`, `cvxpy`, `settings`.
+
+---
+
+### `scoring.py`
+**Purpose:** Single source of truth for turning raw per-step rollout signals into the 12 score metrics and the final composite score. Previously `offline_tuner.run_headless_rollout()` and `performance_stats.report_performance_metrics()` each hand-implemented this accumulation independently — exactly how they drifted apart.
+
+**Class:** `RolloutMetrics` — accumulate with `add_step(e_y, e_psi, r, u_opt, v_target, v_actual, u_max_steer, solver_failed=False, inaccurate=False)` once per step; call `finalize(progress, time_bonus=0.0, dnf=False, offtrack=False) → dict` once at the end to get RMS-normalised metrics plus `"composite_score"`.
+
+**Function:** `compute_composite_score(rmse, yaw_rms, smooth_rms, steer_rms, accel_rms, max_steering, steering_sat_ratio, jerk_rms, max_yaw_rate, steering_reversals, peak_lateral_error, speed_rmse, progress, time_bonus=0.0, dnf=False, offtrack=False, inaccurate_count=0) → float`
+Combines the 12 metrics with `SCORE_WEIGHTS`, subtracts completion/time bonuses, adds DNF/off-track penalties, and applies the inaccurate-solver-count penalty factor. Called internally by `RolloutMetrics.finalize()`.
+
+**Used by:** `rollout_core.py` (live accumulation during the rollout loop), `performance_stats.py` (replays stored history arrays through the identical accumulator).
+
+**Dependencies:** `numpy`, `settings` (`SCORE_WEIGHTS`, `COMPLETION_BONUS_WEIGHT`, `TIME_BONUS_WEIGHT`, `DNF_PENALTY`, `DNF_OFFTRACK_PENALTY`).
 
 ---
 
@@ -170,10 +219,12 @@ All matrices are initialised with ε=1e-12 rather than exact zeros to maintain c
 
 **Dependencies:** `numpy`, `scipy.linalg`, `vehicle_physics` (VehicleParams).
 
+**Called by:** `optimiser.solve_mpc()` (indirectly, via `rollout_core.run_core_rollout()`'s `model_lookup` parameter — usually `offline_tuner.get_cached_model()`, which wraps this function with a rounded-speed cache).
+
 ---
 
 ### `model_utils.py`
-**Purpose:** Runtime adaptive gain-scheduling helpers that modify the MPC's R and R_rate weight matrices each step based on the vehicle's current speed and estimated path curvature. Extracted from offline_tuner/simulation into a shared module to avoid duplication.
+**Purpose:** Runtime adaptive gain-scheduling helpers that modify the MPC's R and R_rate weight matrices each step based on the vehicle's current speed and estimated path curvature. Called once per step from inside `rollout_core.run_core_rollout()` — the single shared rollout loop — rather than being called separately from `offline_tuner.py` and `simulation.py`.
 
 **Functions:**
 
@@ -188,6 +239,8 @@ At κ=0 (straight): scale=1.0 (no change). At κ=0.2 (R=5 m): scale≈0.63. Floo
 Scales R[0,0] (steering cost) by `1 + (1.5·vx)/(6+vx)` (Hill function; asymptotes to 2.5× at high speed). Scales R[1,1] (acceleration cost) by `1 + 0.05·vx` (linear, gentler).
 
 **Dependencies:** `numpy`.
+
+**Called by:** `rollout_core.run_core_rollout()`.
 
 ---
 
@@ -218,6 +271,8 @@ s.t. x[:,0] = x0
 - `W_slack = 10000` — large enough to effectively enforce the lane constraint except during recovery
 
 **Dependencies:** `cvxpy`, `numpy`.
+
+**Called by:** `rollout_core.run_core_rollout()` (the shared rollout loop used by both `offline_tuner.py` and `simulation.py`).
 
 ---
 
@@ -270,12 +325,14 @@ k_susp_f=25000 N/m, k_susp_r=30000 N/m
 ---
 
 ### `offline_tuner.py`
-**Purpose:** Headless CMA-ES weight optimiser. Runs many closed-loop rollouts across synthetic paths and initial conditions to minimise a composite performance score, then prints the best-found `Q_diag`, `R_diag`, `R_rate_diag` ready to paste into `simulation.py`.
+**Purpose:** Headless CMA-ES weight optimiser. Runs many closed-loop rollouts across synthetic paths and initial conditions to minimise a composite performance score, then prints the best-found `Q_diag`, `R_diag`, `R_rate_diag` ready to paste into `simulation.py`. The rollout itself is delegated to `rollout_core.run_core_rollout()` (see that entry above) — this file's `run_headless_rollout()` is now a thin wrapper that builds the weight matrices, computes the step budget via `rollout_core.compute_step_budget()`, and reads `rollout["composite_score"]` back out.
 
 **Also exports** (imported by other modules):
-- `SYNTHETIC_PATHS`, `PATH_NAMES` — pre-built path library (used by simulation.py)
-- `SCORE_WEIGHTS`, `COMPLETION_BONUS_WEIGHT`, `TIME_BONUS_WEIGHT`, `DNF_PENALTY` — shared scoring constants (used by performance_stats.py)
-- `curvature_estimate`, `adaptive_R_rate`, `adaptive_R_scaling` — legacy re-exports of model_utils functions (kept for backward compatibility; canonical source is model_utils.py)
+- `SYNTHETIC_PATHS`, `PATH_NAMES`, `PATH_LENGTHS` — pre-built path library (used by `simulation.py` and `rollout_core.py` callers)
+- `get_cached_model` — rounded-speed-keyed cache wrapping `bicycle_model.get_8state_discrete_model`; passed into `rollout_core.run_core_rollout()` as `model_lookup` by both `offline_tuner.py` and `simulation.py`, so both share the exact same cache
+- `evaluate_all_paths`, `INITIAL_CONDITIONS`, `_init_context`, `TUNABLE_Q_IDX`/`TUNABLE_R_IDX`/`TUNABLE_R_RATE_IDX` — used by `performance_stats.benchmark_weights()`
+
+Note: `SCORE_WEIGHTS`/`COMPLETION_BONUS_WEIGHT`/`TIME_BONUS_WEIGHT`/`DNF_PENALTY` and the composite-score formula now live in `scoring.py` (and, upstream of that, `settings.py`) — not in this file. `performance_stats.py` imports them from `scoring.py` directly.
 
 **Search space:** 9 multiplicative scale factors (5 Q, 2 R, 2 R_rate), each bounded [0.1, 10.0] relative to the template diagonals.
 
@@ -283,7 +340,7 @@ k_susp_f=25000 N/m, k_susp_r=30000 N/m
 
 **Objective:** `0.7 × weighted_mean + 0.3 × worst_case` across all tasks in `VALIDATION_SUITE × INITIAL_CONDITIONS`. The worst-case term prevents catastrophic failure on any single path type.
 
-**Dependencies:** `vehicle_physics`, `bicycle_model`, `optimiser`, `speed_profile`, `sim_track`, `model_utils`, `cma`, `scipy`.
+**Dependencies:** `rollout_core` (the shared rollout loop), `vehicle_physics`, `bicycle_model`, `speed_profile`, `sim_track`, `cma`, `scipy`.
 
 ---
 
@@ -331,15 +388,17 @@ Computes `ceil((arc_length / fallback_speed) × buffer / dt)` to size the step b
 ---
 
 ### `performance_stats.py`
-**Purpose:** Scores a completed `sim_history` dict using the identical cost formula as `offline_tuner.run_headless_rollout`, so live simulator scores are directly comparable to offline tuning scores. Called by the "Show Metrics" button in simulation.py.
+**Purpose:** Scores a completed `sim_history` dict for the "Show Metrics" button in `simulation.py`. Rather than recomputing the 12 metrics with hand-written formulas, it **replays** every stored history step through `scoring.RolloutMetrics.add_step()` — the identical accumulator `rollout_core.run_core_rollout()` uses live during both the offline tuner and the simulator. This is what guarantees a path run in the GUI and the same path benchmarked offline score (near-)identically: there is exactly one implementation of the metric math, not two.
 
-One approximation: `yaw_rms` and `max_yaw_rate` are derived from `diff(e_psi)/dt` rather than the plant's direct yaw rate state (which is not stored in the history dict). All other terms are exact replicas of the offline tuner's accumulation.
+Since `simulation.py`'s history dict now records the plant's true yaw rate (`state[5]`) directly per step, the old `diff(e_psi)/dt` yaw-rate approximation no longer applies — `yaw_rms`/`max_yaw_rate` are computed from the true signal, same as the offline tuner.
 
 **Function:** `report_performance_metrics(history, log_fn=print) → metrics dict`
 
 **Returns dict keys:** `composite_score`, `lateral_rmse_m`, `heading_rmse_deg`, `speed_rmse_mps`, `yaw_rms_radps`, `control_smooth_rms`, `steering_rms_deg`, `accel_rms_mps2`, `jerk_rms`, `max_steering_deg`, `steering_sat_ratio`, `steering_reversals`, `peak_lateral_error_m`, `completion_pct`, `failed`, `n_steps`.
 
-**Dependencies:** `offline_tuner` (SCORE_WEIGHTS + bonus constants), `numpy`.
+**Also exports:** `benchmark_weights(Q_w, R_w, R_rate_w, n_repeats=3, log_fn=print)` — called by `simulation.py`'s "Benchmark All Paths" button; runs every path in `offline_tuner.PATH_NAMES` via `offline_tuner.evaluate_all_paths()`.
+
+**Dependencies:** `scoring` (`SCORE_WEIGHTS`, `COMPLETION_BONUS_WEIGHT`, `TIME_BONUS_WEIGHT`, `RolloutMetrics`), `offline_tuner` (`PATH_NAMES`, `INITIAL_CONDITIONS`, `evaluate_all_paths`, `_init_context`, `get_cached_model`, tunable-index lists), `vehicle_physics`, `numpy`.
 
 ---
 
@@ -356,6 +415,8 @@ The simulator opens a matplotlib figure. The user either draws a path by clickin
 After path creation, `sim_track.place_cones()` populates the static cone arrays that `SimPerception` filters each simulation step.
 
 ### Simulation Loop (`simulate_closed_loop`)
+
+`simulate_closed_loop()` is a thin wrapper: it applies initial-condition jitter (a simulation-only feature for multi-rollout averaging), converts the heading offset from degrees to radians, computes the step budget via `rollout_core.compute_step_budget()` if not explicitly overridden, and calls `rollout_core.run_core_rollout(..., want_history=True, want_horizon_pred=True)`. The description below is of the rollout loop itself, which now lives in `rollout_core.py` and is shared verbatim with the offline tuner.
 
 Runs for up to `max_steps` steps (dynamically computed from path length) at `dt=0.05 s` (20 Hz). Each step:
 
@@ -429,7 +490,7 @@ The 30% worst-case term prevents the optimiser from finding weights that work we
 
 ### Headless Rollout (`run_headless_rollout`)
 
-Functionally mirrors `simulate_closed_loop()` but without GUI, matplotlib, or full history storage. Uses looser OSQP tolerances (`eps=1e-4`, `max_iter=5000`) for ~2× speed over the live simulator's `1e-5`. A model cache keyed by `round(vx, 1)` avoids rebuilding ZOH matrices every step.
+Delegates the actual rollout to `rollout_core.run_core_rollout(..., want_history=False)` — the exact same function `simulation.simulate_closed_loop()` calls with `want_history=True`. The only differences between the two callers are: (1) offline tuner passes looser OSQP tolerances (`ROLLOUT_EPS=1e-5`, `ROLLOUT_MAX_ITER=8000` — historically described as looser than live, but both currently use the same `settings.py` constants; check `settings.py` if you need them to diverge again), and (2) offline tuner skips history storage entirely for speed, since CMA-ES only needs the scalar `composite_score`. A model cache keyed by `round(vx, 1)` (`offline_tuner.get_cached_model`) avoids rebuilding ZOH matrices every step, and is shared with the live simulator via the same function.
 
 **DNF conditions (tighter than live simulator):**
 - `|e_y| >= 3.50 m`
