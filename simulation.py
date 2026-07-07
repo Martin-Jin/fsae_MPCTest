@@ -61,25 +61,19 @@ from collections import deque
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button, Slider
 from scipy.interpolate import CubicSpline
-from bicycle_model import get_8state_discrete_model
-from optimiser import solve_mpc
-from vehicle_physics import VehicleParams, step_nonlinear_plant, init_plant_state, plant_to_tracking_error, find_closest_reference_bounded
+from vehicle_physics import VehicleParams
 from performance_stats import benchmark_weights, report_performance_metrics
 import speed_profile
 from offline_tuner import SYNTHETIC_PATHS, PATH_NAMES, get_cached_model
-from sim_track import place_cones, SimPerception, SimPlanner, calculate_dynamic_max_steps
-from model_utils import curvature_estimate, adaptive_R_rate, adaptive_R_scaling
+from sim_track import place_cones, calculate_dynamic_max_steps
+from rollout_core import run_core_rollout, compute_step_budget
 import math
-import cvxpy as cp
 
 from settings import (
     USE_PLANNER,
-    DELAY_STEPS,
-    OFFTRACK_LIMIT,
-    MAX_FAILS,
     DT,
-    ROLLOUT_EPS,
-    ROLLOUT_MAX_ITER
+    ROLLOUT_MAX_ITER,
+    ROLLOUT_EPS
 )
 
 
@@ -503,7 +497,7 @@ btn_reset.on_clicked(reset_environment)
 # SIMULATION ENGINE
 # ==========================================
  
-def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_rate_w=None, use_planner=USE_PLANNER):
+def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=None, R_rate_w=None, use_planner=USE_PLANNER):
     """
     Run one closed-loop simulation rollout on the currently loaded path.
 
@@ -604,255 +598,35 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
     if R_rate_w is None:
         R_rate_w = R_rate
 
-    # Optional initial condition jitter (for multi-rollout averaging)
+    # Optional initial condition jitter (for multi-rollout averaging) —
+    # this is a simulation.py-only feature; offline_tuner always runs
+    # deterministic ICs, so the jitter stays here rather than in rollout_core.
     rng         = np.random.default_rng(rng_seed)
     jitter_ey   = rng.normal(0, 0.05) if rng_seed is not None else 0.0
     jitter_epsi = rng.normal(0, 1.0)  if rng_seed is not None else 0.0   # degrees
 
-    # Compute initial vehicle position in global frame
-    base_path_heading = path_Psi[0]
-    ey0_eff           = ey0   + jitter_ey
-    epsi0_eff         = epsi0 + jitter_epsi
+    ey0_eff   = ey0   + jitter_ey
+    epsi0_eff = epsi0 + jitter_epsi   # degrees
 
-    # Lateral offset applied perpendicular to path heading
-    X_g   = path_X[0] - ey0_eff * np.sin(base_path_heading)
-    Y_g   = path_Y[0] + ey0_eff * np.cos(base_path_heading)
-    psi_g = normalize_angle(base_path_heading + np.radians(epsi0_eff))
-
-    v_start = 0.0   # Always start from standstill
-
-    # Initialise nonlinear plant (24-state) at true static equilibrium
-    plant_state = init_plant_state(X_g, Y_g, psi_g, vx0=v_start)
-
-    # Initialise perception and planning pipeline (only used when use_planner=True)
-    if use_planner:
-        perception = SimPerception(_blue_cones_all, _yellow_cones_all)
-        planner    = SimPlanner(v_max=V_MAX, v_min=V_MIN)
-        _b0, _y0   = perception.visible_cones(X_g, Y_g, psi_g)
-        planner.update(_b0, _y0, np.array([X_g, Y_g]), psi_g)
-
-    u_prev                     = np.zeros(2)
-    consecutive_solver_failures = 0
-
-    history = {
-        "X": [], "Y": [], "psi": [], "v": [], "r": [], "v_target": [],
-        "u_steer": [], "u_accel": [],
-        "e_y": [], "e_psi": [],
-        "pred_X": [], "pred_Y": [],
-        "failed": False,
-        "solver_failed": [],
-        "fail_reason": None,
-    }
-
-    idx = 0   # Current closest reference path index
-
-    # ── Transport Delay Queue ─────────────────────────────────────────────
-    command_queue = deque([np.zeros(2) for _ in range(DELAY_STEPS + 1)], maxlen=DELAY_STEPS + 1)
-    u_prev = np.zeros(2)
-    inaccurate_count = 0  # Steps where OSQP returned OPTIMAL_INACCURATE
-
-    cumulative_distance = 0.0
-    last_idx = idx
-    path_seg_dist = np.hypot(np.diff(path_X), np.diff(path_Y))
-    for step in range(max_steps):
-
-        # ── 1. Record current plant state ─────────────────────────────────────
-        history["X"].append(plant_state[0])
-        history["Y"].append(plant_state[1])
-        history["psi"].append(plant_state[2])
-        history["v"].append(plant_state[3])
-        history["r"].append(plant_state[5])
-
-        # ── 2. Update state and perception/planning ────────────────────────────
-        X_g, Y_g, psi_g = plant_state[0], plant_state[1], plant_state[2]
-        car_pos_np       = np.array([X_g, Y_g])
-
-        # ── 3. Tracking error and speed target ────────────────────────────────
-        if use_planner:
-            # Planner-in-the-loop: update cone accumulation and rebuild centreline
-            b_vis, y_vis = perception.visible_cones(X_g, Y_g, psi_g)
-            planner.update(b_vis, y_vis, car_pos_np, psi_g)
-
-            cl = planner.centreline
-            if cl is not None and len(cl) >= 2:
-                # Calculate tracking error relative to the planner's centreline
-                # using the smooth interpolated plant_to_tracking_error function.
-                cl_x = cl[:, 0]
-                cl_y = cl[:, 1]
-                
-                cl_psi = np.zeros_like(cl_x)
-                cl_psi[:-1] = np.arctan2(np.diff(cl_y), np.diff(cl_x))
-                cl_psi[-1] = cl_psi[-2] if len(cl_psi) > 1 else psi_g
-
-                e_y, _, e_psi, _, _, _, _ = plant_to_tracking_error(
-                    plant_state, path_x=cl_x, path_y=cl_y, path_psi=cl_psi
-                )
-                
-                # Reconstruct reference heading for the visualisation horizon
-                rpsi = psi_g - e_psi
-
-                # Find closest index for target velocity profiling
-                dists   = np.linalg.norm(cl - car_pos_np, axis=1)
-                cl_idx  = int(np.argmin(dists))
-
-                # Speed from planner profile; fall back to reference if unavailable
-                if len(planner.v_profile) > 0:  
-                    v_target = float(np.interp(  
-                        float(cl_idx), np.arange(len(planner.v_profile)), planner.v_profile,  
-                    ))
-                else:
-                    idx, _, _, _ = find_closest_reference_bounded(path_X, path_Y, path_Psi, X_g, Y_g, idx, window=40)
-                    v_target = float(path_v_profile[idx])
-        else:
-            idx, _, _, rpsi = find_closest_reference_bounded(path_X, path_Y, path_Psi, X_g, Y_g, idx, window=40)
-            e_y, _, e_psi, _, _, _, _ = plant_to_tracking_error(
-                plant_state, 
-                path_x=path_X, 
-                path_y=path_Y, 
-                path_psi=path_Psi
-            )
-            v_target = float(path_v_profile[idx])
-
-        if idx > last_idx:
-            cumulative_distance += np.sum(path_seg_dist[last_idx:idx])
-            last_idx = idx
-
-        history["v_target"].append(v_target)
-        history["e_y"].append(e_y)
-        history["e_psi"].append(e_psi)
-
-        # ── 4. Assemble 8-state MPC error vector ──────────────────────────────
-        # [e_y, ė_y, e_ψ, ψ̇, e_v, 0, δ_act, a_act]
-        # e_y_dot: lateral velocity projected onto the path-normal direction
-        # e_v:     speed error relative to the planner's desired speed
-        x_current = np.array([
-            e_y,
-            plant_state[3] * np.sin(e_psi) + plant_state[4] * np.cos(e_psi),  # ė_y
-            e_psi,
-            plant_state[5],              # yaw rate r (= ψ̇ for the MPC)
-            plant_state[3] - v_target,   # speed error (vx - v_target)
-            0.0,                         # e_a unused; R_rate handles smoothness
-            plant_state[6],              # delta_act (steering lag state)
-            plant_state[7],              # a_act (acceleration lag state)
-        ])
-
-        # ── 5. Early-exit checks ───────────────────────────────────────────────
-        if consecutive_solver_failures >= MAX_FAILS:
-            history["failed"]      = True
-            history["fail_reason"] = (
-                f"solver failed {consecutive_solver_failures} consecutive steps at step {step}"
-            )
-            break
-
-        if abs(e_y) > OFFTRACK_LIMIT:
-            history["failed"]      = True
-            history["offtrack"]    = True
-            history["fail_reason"] = f"off-track (|e_y|={abs(e_y):.2f} m) at step {step}"
-            break
-
-        dist_to_finish = math.hypot(X_g - path_X[-1], Y_g - path_Y[-1])
-        if idx >= len(path_X) - 2 or dist_to_finish <= 3.0:
-            history["reached_end"]       = True
-            history["remaining_steps"]   = max_steps - step
-            break
-
-        # ── 6. MPC solve ───────────────────────────────────────────────────────
-        # Linearise the bicycle model at the current speed (using cached/rounded model to match tuner)
-        current_v    = plant_state[3]
-        Ad, Bd       = get_cached_model(max(current_v, 0.5), DT)
-
-        # Adaptive gain scheduling (model_utils.py)
-        kappa         = curvature_estimate(plant_state)     # Instantaneous κ = r/vx
-        R_rate_scaled = adaptive_R_rate(kappa, R_rate_w)    # Soften jerk cost in corners
-        R_scaled      = adaptive_R_scaling(current_v, R_w)  # Stiffen steering cost at speed
-
-        # warm_start=False on step 0 prevents carrying stale OSQP state
-        mpc_result = solve_mpc(
-            x_current, Ad, Bd, N_horizon,
-            Q_w, R_scaled,
-            u_bounds_min, u_bounds_max,
-            R_rate=R_rate_scaled,
-            u_prev=u_prev,
-            return_status=True,
-            warm_start=(step != 0),
-            eps_abs=ROLLOUT_EPS,
-            eps_rel=ROLLOUT_EPS,
-            max_iter=ROLLOUT_MAX_ITER,
-        )
-
-        if mpc_result is not None:
-            u_opt, mpc_status = mpc_result
-            consecutive_solver_failures = 0
-            history["solver_failed"].append(False)
-            if mpc_status in (cp.OPTIMAL_INACCURATE, "optimal_inaccurate"):
-                inaccurate_count += 1
-        else:
-            # Hold previous command on failure; increment failure counter
-            consecutive_solver_failures += 1
-            u_opt = u_prev.copy()
-            history["solver_failed"].append(True)
-
-        u_prev = u_opt.copy()
-        history["u_steer"].append(u_opt[0])
-        history["u_accel"].append(u_opt[1])
-
-        # ── NEW: Apply Delay ──────────────────────────────────────────────────
-        command_queue.append(u_opt)
-        delayed_u_cmd = command_queue[0]  # Pop the oldest command
-
-        # ── 7. N-step horizon prediction (visualisation only) ─────────────────
-        # Propagates the error state forward with the linear model to give
-        # the MPC's look-ahead trajectory for display on the map. This is
-        # purely cosmetic — the plant does not use this prediction.
-        px, py         = [], []
-        x_p_tmp        = x_current.copy()
-        current_ref_psi = rpsi
-
-        for k in range(N_horizon):
-            e_y_pred = x_p_tmp[0]
-            # Project Frenet lateral error back to global XY for display:
-            # global_X ≈ X + k*vx*cos(ψ)*dt − e_y*sin(ψ_ref)
-            px.append(X_g + (k + 1) * plant_state[3] * np.cos(psi_g) * DT
-                      - e_y_pred * np.sin(current_ref_psi))
-            py.append(Y_g + (k + 1) * plant_state[3] * np.sin(psi_g) * DT
-                      + e_y_pred * np.cos(current_ref_psi))
-            x_p_tmp = Ad @ x_p_tmp + Bd @ u_opt   # Propagate error state
-
-        history["pred_X"].append(px)
-        history["pred_Y"].append(py)
-
-        # ── 8. Advance the nonlinear plant ────────────────────────────────────
-        # The plant is advanced using the full nonlinear model (Pacejka tyres,
-        # suspension, aerodynamics). The controller never sees any of this
-        # directly — all that feeds back is the tracking error computed from
-        # the plant's global X, Y, psi at the next step.
-        plant_state = step_nonlinear_plant(plant_state, delayed_u_cmd, DT, vehicle_params)
-
-    # ── Post-loop: compute completion and bonus fields ─────────────────────────
-    history.setdefault("reached_end", False)
-    history["peak_lateral_error"] = float(np.max(np.abs(history["e_y"]))) if history["e_y"] else 0.0
-
-    # Match tuner completion using cumulative distance explicitly
-    _path_total_len = float(np.sum(np.hypot(np.diff(path_X), np.diff(path_Y))))
-    if _path_total_len > 0:
-        history["completion_frac"] = float(np.clip(cumulative_distance / _path_total_len, 0.0, 1.0))
+    if max_steps is None:
+        # Match offline_tuner.py exactly: compute the budget internally
+        # rather than requiring the caller to duplicate the formula.
+        dynamic_max_steps, max_steps = compute_step_budget(path_X, path_Y, path_v_profile)
     else:
-        history["completion_frac"] = 0.0
+        dynamic_max_steps, _ = compute_step_budget(path_X, path_Y, path_v_profile)
 
-    if history["reached_end"]:
-        # Time bonus: Explicitly match offline_tuner's dynamic expected time
-        dynamic_expected_steps = calculate_dynamic_max_steps(path_X, path_Y, dt=DT)
-        expected_time = dynamic_expected_steps * DT
-        sim_time      = len(history["X"]) * DT
-        history["time_bonus"] = max(0.0, 1.0 - (sim_time / expected_time))
-        history["completion_frac"] = 1
-    else:
-        history["failed"]      = True
-        history["time_bonus"]  = 0.0
-        history["completion_frac"] = 0
+    rollout = run_core_rollout(
+        path_X, path_Y, path_Psi, path_v_profile,
+        _blue_cones_all, _yellow_cones_all,
+        Q_w, R_w, R_rate_w, u_bounds_min, u_bounds_max, vehicle_params,
+        ey0=ey0_eff, epsi0=np.radians(epsi0_eff),
+        max_steps=max_steps, dynamic_max_steps=dynamic_max_steps,
+        use_planner=use_planner, model_lookup=get_cached_model,
+        n_horizon=N_horizon, eps=ROLLOUT_EPS, max_iter=ROLLOUT_MAX_ITER,
+        want_history=True, want_horizon_pred=True,
+    )
 
-    history["inaccurate_count"] = inaccurate_count
-    return history
+    return rollout["history"]
 
 
 def run_simulation(event):
@@ -879,19 +653,11 @@ def run_simulation(event):
     ax_ey0.set_visible(False)
     ax_epsi0.set_visible(False)
 
-    # Dynamic step budget: based on path length at a conservative fallback speed
-    dynamic_steps = calculate_dynamic_max_steps(path_X, path_Y, dt=DT)
-    mean_v_profile = float(np.mean(path_v_profile)) if len(path_v_profile) > 0 else 1.5
-    path_length = float(np.sum(np.hypot(np.diff(path_X), np.diff(path_Y))))
-    
-    profile_max_steps = int(
-        math.ceil((path_length / max(mean_v_profile * 0.6, 1.5)) * 1.5 / DT)
-    )
-    final_max_steps = max(dynamic_steps, profile_max_steps)
-
+    # Step budget is now computed inside simulate_closed_loop() (via
+    # rollout_core.compute_step_budget) — identical formula to offline_tuner.
     history = simulate_closed_loop(
         Q, R, slider_ey0.val, slider_epsi0.val,
-        rng_seed=None, max_steps=final_max_steps, R_rate_w=R_rate,
+        rng_seed=None, R_rate_w=R_rate,
     )
 
     sim_history = history

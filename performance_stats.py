@@ -39,15 +39,12 @@ DOES NOT USE
 
 from vehicle_physics import VehicleParams
 import numpy as np
-from offline_tuner import (  
-    SCORE_WEIGHTS,  
-    COMPLETION_BONUS_WEIGHT,  
-    TIME_BONUS_WEIGHT,  
-    PATH_NAMES,  
+from scoring import SCORE_WEIGHTS, COMPLETION_BONUS_WEIGHT, TIME_BONUS_WEIGHT, RolloutMetrics
+from offline_tuner import (
+    PATH_NAMES,
     INITIAL_CONDITIONS,
-    evaluate_all_paths,  
-    _init_context,  
-    compute_composite_score,  
+    evaluate_all_paths,
+    _init_context,
     get_cached_model,
     TUNABLE_Q_IDX, TUNABLE_R_IDX, TUNABLE_R_RATE_IDX
 )
@@ -138,119 +135,66 @@ def report_performance_metrics(history, log_fn=print):
     e_y     = np.asarray(history.get("e_y",     []), dtype=float)
     e_psi   = np.asarray(history.get("e_psi",   []), dtype=float)
     v       = np.asarray(history.get("v",        []), dtype=float)
+    v_target_arr = np.asarray(history.get("v_target", []), dtype=float)
     u_steer = np.asarray(history.get("u_steer", []), dtype=float)
     u_accel = np.asarray(history.get("u_accel", []), dtype=float)
+    r_arr   = np.asarray(history.get("r",        []), dtype=float)
+    solver_failed_arr = history.get("solver_failed", [])
 
-    n               = max(len(e_y), 1)
+    n_hist          = len(e_y)
     failed          = bool(history.get("failed", False))
     completion_frac = float(history.get("completion_frac", 1.0))
+    u_max_steer     = VehicleParams().max_steer
 
-    # ── Tracking error cost ───────────────────────────────────────────────────
-    # Mirrors: error_cost += 1.2 * e_y**2 + 0.4 * e_psi**2  in run_headless_rollout()
-    # The 0.4 factor down-weights heading error relative to lateral error,
-    # reflecting that e_psi is more tolerant at low curvature.
-    error_cost = float(np.sum(1.2 * e_y**2 + 0.4 * e_psi**2))
-    rmse       = float(np.sqrt(error_cost / n))
+    # ── Replay every step through the SAME accumulator offline_tuner uses ─────
+    # This is what guarantees "Show Metrics" and the offline benchmark produce
+    # identical numbers for the identical trajectory: there is only one
+    # implementation of the metric math (scoring.RolloutMetrics), not two.
+    rm = RolloutMetrics()
+    for i in range(n_hist):
+        u_opt = np.array([
+            u_steer[i] if i < len(u_steer) else 0.0,
+            u_accel[i] if i < len(u_accel) else 0.0,
+        ])
+        r_i = r_arr[i] if i < len(r_arr) else 0.0
+        v_t = v_target_arr[i] if i < len(v_target_arr) else (v[i] if i < len(v) else 0.0)
+        v_a = v[i] if i < len(v) else 0.0
+        s_failed = bool(solver_failed_arr[i]) if i < len(solver_failed_arr) else False
+        rm.add_step(
+            e_y=e_y[i], e_psi=e_psi[i], r=r_i,
+            u_opt=u_opt, v_target=v_t, v_actual=v_a,
+            u_max_steer=u_max_steer, solver_failed=s_failed,
+        )
 
-    # ── Yaw rate (True plant state) ──────────────────────────────────────────
-    r_arr = np.asarray(history.get("r", []), dtype=float)
-    
-    if len(r_arr) > 0:
-        yaw_rate_cost = 0.8 * float(np.sum(r_arr**2))   # 0.8 weighting matches offline_tuner
-        yaw_rms       = float(np.sqrt(yaw_rate_cost / n))
-        max_yaw_rate  = float(np.max(np.abs(r_arr)))
-    else:
-        yaw_rms = max_yaw_rate = 0.0
+    # inaccurate_count isn't stored per-step in history; pass through the total
+    rm.inaccurate_count = int(history.get("inaccurate_count", 0))
 
-    # ── Control smoothness and jerk ───────────────────────────────────────────
-    # Mirrors: control_smooth += sum((u_opt - u_prev)**2)  (Δu, first differences)
-    # Mirrors: jerk_cost += sum(jerk**2)                   (Δ²u, second differences)
-    #
-    # Prepend zero to u and du sequences to match the tuner's u_prev=0 and
-    # du_prev=0 initialisations. Without this, np.diff gives n-1 smoothness
-    # terms and n-2 jerk terms, missing the initial jump from standstill.
-    if len(u_steer) > 0 and len(u_accel) > 0:
-        du_steer = np.diff(np.concatenate([[0.0], u_steer]))
-        du_accel = np.diff(np.concatenate([[0.0], u_accel]))
-        solver_fails = sum(history.get("solver_failed", []))
-        control_smooth = float(np.sum(du_steer**2 + du_accel**2)) + (5.0 * solver_fails)
-        smooth_rms     = float(np.sqrt(control_smooth / n))
+    progress = float(np.clip(completion_frac, 0.0, 1.0))
+    time_bonus = 0.0 if failed else float(history.get("time_bonus") or 0.0)
 
-        # Second difference including initial jerk from zero → n terms each
-        jerk_cost = float(np.sum(
-            np.diff(np.concatenate([[0.0], du_steer]))**2 +
-            np.diff(np.concatenate([[0.0], du_accel]))**2
-        ))
-        jerk_rms  = float(np.sqrt(jerk_cost / n))
-    else:
-        smooth_rms = jerk_rms = 0.0
-
-    # ── Steering and acceleration effort ──────────────────────────────────────
-    # Mirrors: steering_effort += u_opt[0]**2  (absolute magnitude, not change)
-    steering_effort = float(np.sum(u_steer**2))
-    steer_rms       = float(np.sqrt(steering_effort / n))
-
-    accel_effort = float(np.sum(u_accel**2))
-    accel_rms    = float(np.sqrt(accel_effort / n))
-
-    # ── Peak steering command ─────────────────────────────────────────────────
-    # Mirrors: max_steering = max(max_steering, abs(u_opt[0]))
-    max_steering = float(np.max(np.abs(u_steer))) if len(u_steer) else 0.0
-
-    # ── Steering saturation ratio ──────────────────────────────────────────────
-    # Mirrors: if abs(u_opt[0]) > 0.95 * u_max[0]: steering_saturation += 1
-    # Counts steps where the steering command was within 5% of its hard limit.
-    steering_saturation = float(np.sum(np.abs(u_steer) > 0.95 * VehicleParams().max_steer)) \
-        if len(u_steer) else 0.0
-    steering_sat_ratio = steering_saturation / n
-
-    # ── Steering reversals ────────────────────────────────────────────────────
-    # Mirrors the sign-change detection in run_headless_rollout().
-    # A reversal is counted when the steering sign changes AND the magnitude
-    # exceeds 0.02 rad (filters out near-zero noise crossings).
-    steering_reversals = 0
-    if len(u_steer) > 0:
-        last_sign = 0
-        for val in u_steer:
-            current_sign = int(np.sign(val))
-            if current_sign != 0:
-                if last_sign != 0 and current_sign != last_sign and abs(val) > 0.02:
-                    steering_reversals += 1
-                last_sign = current_sign
-
-    # ── Peak lateral error ────────────────────────────────────────────────────
-    # Mirrors: peak_lateral_error = max(peak_lateral_error, abs(e_y))
-    peak_lateral_error = float(np.max(np.abs(e_y))) if len(e_y) else 0.0
-
-    # ── Speed RMSE (Required for composite score) ─────────────────────────────
-    v_target_arr = np.asarray(history.get("v_target", []), dtype=float)
-    # Floor to 0.0 on length mismatch rather than NaN; NaN propagates through
-    # SCORE_WEIGHTS @ metrics and would produce a NaN composite score.
-    speed_rmse   = float(np.sqrt(np.mean((v - v_target_arr)**2))) \
-        if len(v_target_arr) == len(v) and len(v) > 0 else 0.0
-
-    # ── Progress and time bonus ───────────────────────────────────────────────
-    progress = float(np.clip(completion_frac, 0.0, 1.0))  
-  
-    if failed:  
-        time_bonus = 0.0  
-    else:  
-        time_bonus = float(history.get("time_bonus") or 0.0)  
-
-    # ── Composite score ───────────────────────────────────────────────────────
-    composite = compute_composite_score(  
-        rmse, yaw_rms, smooth_rms, steer_rms, accel_rms,  
-        max_steering, steering_sat_ratio, jerk_rms, max_yaw_rate,  
-        steering_reversals, peak_lateral_error, speed_rmse, 
-        progress=progress, time_bonus=time_bonus, dnf=failed,  
-        offtrack=history.get("offtrack"),  
-        inaccurate_count=int(history.get("inaccurate_count", 0)),  
+    result = rm.finalize(
+        progress=progress, time_bonus=time_bonus, dnf=failed,
+        offtrack=history.get("offtrack", False),
     )
+    composite = result["composite_score"]
 
     # ── Informational-only metrics (not in composite score) ───────────────────
-    # Provided for human-readable reporting; not used by CMA-ES.
     lateral_rmse = float(np.sqrt(np.mean(e_y**2)))   if len(e_y)   else 0.0
     heading_rmse = float(np.sqrt(np.mean(e_psi**2))) if len(e_psi) else 0.0
+
+    rmse                = result["rmse"]
+    yaw_rms             = result["yaw_rms_radps"]
+    smooth_rms          = result["control_smooth_rms"]
+    steer_rms           = result["steer_rms"]
+    accel_rms           = result["accel_rms_mps2"]
+    max_steering        = result["max_steering_rad"]
+    steering_sat_ratio  = result["steering_sat_ratio"]
+    jerk_rms            = result["jerk_rms"]
+    max_yaw_rate        = result["max_yaw_rate_radps"]
+    steering_reversals  = result["steering_reversals"]
+    peak_lateral_error  = result["peak_lateral_error_m"]
+    speed_rmse          = result["speed_rmse_mps"]
+    n                   = result["n_steps"]
 
     # ── Console report ────────────────────────────────────────────────────────
     W          = SCORE_WEIGHTS
