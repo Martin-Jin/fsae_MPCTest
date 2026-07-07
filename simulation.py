@@ -67,10 +67,18 @@ from vehicle_physics import VehicleParams, step_nonlinear_plant, init_plant_stat
 from performance_stats import benchmark_weights, report_performance_metrics
 import speed_profile
 from offline_tuner import SYNTHETIC_PATHS, PATH_NAMES
-from sim_track import place_cones, SimPerception, SimPlanner, calculate_dynamic_max_steps, TRACK_HALF_WIDTH
+from sim_track import place_cones, SimPerception, SimPlanner, calculate_dynamic_max_steps
 from model_utils import curvature_estimate, adaptive_R_rate, adaptive_R_scaling
 import math
 import cvxpy as cp
+
+from settings import (
+    USE_PLANNER,
+    DELAY_STEPS,
+    OFFTRACK_LIMIT,
+    MAX_FAILS
+)
+
 
 
 # ==========================================
@@ -86,9 +94,9 @@ v_ref     = 7.0     # Fallback constant speed (m/s); only used if path_v_profile
 # R_rate handles smoothness indirectly through Δu costs.
 # These values are the output of the most recent offline_tuner.py run.
 # To update: paste Q_diag, R_diag, R_rate_diag printed by offline_tuner.py.
-Q_diag      = [7.368990769988415, 0.17549150582645281, 3.8933811763673885, 1.0355934679161058, 0.10722412258824966, 0.0, 0.0, 0.0]
-R_diag      = [0.44834626076765677, 1.6212828598782207]
-R_rate_diag = [1.871652806399019, 0.25219086629126125]
+Q_diag      = [0.3689917826894509, 0.27329343049350463, 2.394187850569209, 1.0514076121965723, 1.926172288570466, 0.0, 0.0, 0.0]
+R_diag      = [0.22557556258671269, 0.5457438599038626]
+R_rate_diag = [1.6099286080523123, 0.1260569275432615]
 
 Q      = np.diag(Q_diag)       # State cost matrix (8×8 diagonal)
 R      = np.diag(R_diag)       # Input cost matrix (2×2 diagonal)
@@ -97,11 +105,6 @@ R_rate = np.diag(R_rate_diag)  # Input rate-of-change cost matrix (2×2 diagonal
 # Speed profile limits passed to SimPlanner and speed_profile.compute_speed_profile()
 V_MAX = 20.0   # Absolute speed cap (m/s); planner and profiler respect this
 V_MIN = 1.5    # Minimum speed floor (m/s); prevents near-zero speed targets
-
-# Whether to use perception and planner in tuner
-USE_PLANNER = False
-# How steps of delay to simulate between controller commands
-DELAY_STEPS = 2
 
 # ── Global GUI State ────────────────────────────────────────────────────────────
 is_drawing          = False          # True while user is dragging a path
@@ -547,7 +550,7 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
     ----------------------
     The loop ends on the first of:
       - Reaching path end: idx ≥ len(path_X) - 2  OR  dist_to_end ≤ 3.0 m
-      - Off-track:  |e_y| > OFFTRACK_LIMIT (TRACK_HALF_WIDTH * 1.5) → history["failed"] = True
+      - Off-track:  |e_y| > OFFTRACK_LIMIT (TRACK_HALF_WIDTH * 1.3) → history["failed"] = True
       - Solver failure: consecutive_solver_failures ≥ MAX_CONSECUTIVE_FAILURES (5)
       - Step budget: step ≥ max_steps
 
@@ -628,8 +631,6 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
 
     u_prev                     = np.zeros(2)
     consecutive_solver_failures = 0
-    MAX_CONSECUTIVE_FAILURES    = 5
-    OFFTRACK_LIMIT              = TRACK_HALF_WIDTH * 2.0
 
     history = {
         "X": [], "Y": [], "psi": [], "v": [], "v_target": [],
@@ -642,7 +643,7 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
 
     idx = 0   # Current closest reference path index
 
-# ── Transport Delay Queue ─────────────────────────────────────────────
+    # ── Transport Delay Queue ─────────────────────────────────────────────
     command_queue = deque([np.zeros(2) for _ in range(DELAY_STEPS + 1)], maxlen=DELAY_STEPS + 1)
     u_prev = np.zeros(2)
     inaccurate_count = 0  # Steps where OSQP returned OPTIMAL_INACCURATE
@@ -728,7 +729,7 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
 
         # ── 5. Early-exit checks ───────────────────────────────────────────────
         failed = False
-        if consecutive_solver_failures >= MAX_CONSECUTIVE_FAILURES:
+        if consecutive_solver_failures >= MAX_FAILS:
             history["failed"]      = True
             history["fail_reason"] = (
                 f"solver failed {consecutive_solver_failures} consecutive steps at step {step}"

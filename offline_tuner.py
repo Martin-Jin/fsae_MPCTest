@@ -102,8 +102,30 @@ from scipy.interpolate import CubicSpline
 import signal
 from model_utils import curvature_estimate, adaptive_R_rate, adaptive_R_scaling
 import subprocess
+from settings import (
+    SCORE_WEIGHTS,
+    PATH_N_POINTS,
+    DNF_OFFTRACK_PENALTY,
+    TIME_BONUS_WEIGHT,
+    COMPLETION_BONUS_WEIGHT,
+    USE_PLANNER,
+    DELAY_STEPS,
+    DNF_PENALTY,
+    ROLLOUT_EPS,
+    ROLLOUT_MAX_ITER,
+    MAX_EVALS,
+    N_HORIZON,
+    OFFTRACK_LIMIT,
+    MAX_FAILS
+)
 
-from vehicle_physics import VehicleParams, step_nonlinear_plant, init_plant_state, plant_to_tracking_error, find_closest_reference_bounded
+from vehicle_physics import (
+    VehicleParams,
+    step_nonlinear_plant,
+    init_plant_state,
+    plant_to_tracking_error,
+    find_closest_reference_bounded,
+)
 from bicycle_model import get_8state_discrete_model
 from optimiser import solve_mpc
 import speed_profile as sp
@@ -114,7 +136,6 @@ from sim_track import (
     SimPerception,
     SimPlanner,
     calculate_dynamic_max_steps,
-    TRACK_HALF_WIDTH,
 )
 import math
 import datetime
@@ -150,6 +171,9 @@ R_RATE_BOUNDS = {
     1: (0.1, 10.0),
 }
 
+# Graceful shutdown flag: set by SIGINT handler; checked each CMA generation.
+_stop_requested = False
+
 # Build the flat bounds list in the same order as the parameter vector
 # [Q_0, Q_1, Q_2, Q_3, Q_4, R_0, R_1, R_rate_0, R_rate_1]
 bounds = []
@@ -159,82 +183,6 @@ for idx in TUNABLE_R_IDX:
     bounds.append(R_BOUNDS.get(idx))
 for idx in TUNABLE_R_RATE_IDX:
     bounds.append(R_RATE_BOUNDS.get(idx))
-
-# MPC horizon: must match N_horizon in simulation.py exactly so that the weights
-# tuned here are valid when transferred to the live simulator.
-N_HORIZON = 25
-
-# Whether to use perception and planner in tuner
-USE_PLANNER = False
-# How steps of delay to simulate between controller commands
-DELAY_STEPS = 2
-
-# ==========================================
-# DNF (DID-NOT-FINISH) PENALTY
-# ==========================================
-# Penalty for not completing the track, used to discourage
-# stationary vehicle behaviour
-DNF_PENALTY = 3.0
-# Penalty if the vehicle went off track
-DNF_OFFTRACK_PENALTY = 3.0
-
-# ==========================================
-# SOLVER SETTINGS FOR HEADLESS ROLLOUTS
-# ==========================================
-# Looser than the live simulator (1e-5) for ~2× faster rollouts at negligible
-# accuracy cost. These are passed to solve_mpc() in run_headless_rollout().
-ROLLOUT_EPS = 1e-4
-ROLLOUT_MAX_ITER = 5000 
-
-# Graceful shutdown flag: set by SIGINT handler; checked each CMA generation.
-_stop_requested = False
-# Total true-evaluation budget (surrogate skips many; this controls wall time).
-MAX_EVALS = 2500
-# Path resampling resolution — independent of CMA-ES budget
-PATH_N_POINTS = 1000
-
-# ==========================================
-# SCORING WEIGHTS
-# ==========================================
-# One array, one place to edit. Shared with performance_stats.py via import.
-# Indices correspond to the metrics array built in run_headless_rollout():
-#   0: rmse               — primary lateral tracking error (combined RMSE)
-#   1: yaw_rms            — yaw rate stability (damps oscillations)
-#   2: smooth_rms         — control smoothness (Δu RMS; penalises jitter)
-#   3: steer_rms          — steering effort (RMS magnitude)
-#   4: accel_rms          — acceleration effort (RMS magnitude)
-#   5: max_steering       — peak steering command (prevents saturation events)
-#   6: steering_sat_ratio — fraction of steps where steering hit 95% of limit
-#   7: jerk_rms           — control jerk (Δ²u RMS; penalises rapid changes)
-#   8: max_yaw_rate       — peak yaw rate (limits cornering aggression)
-#   9: steering_reversals — count of steering sign reversals (penalises hunting)
-#  10: peak_lateral_error — worst single-step lateral deviation (safety margin)
-#  11: speed_rmse         - difference between current and planner speed
-#
-# Design note: steer_rms (3), max_steering (5), and steering_sat_ratio (6)
-# are correlated (all measure the same signal at different aggregation levels).
-# Weight was redistributed to rmse and peak_lateral_error which are the primary
-# tracking quality signals and previously under-weighted.
-SCORE_WEIGHTS = np.array(
-    [
-        0.505,  # 0  rmse               (lateral + heading + speed tracking; primary)
-        0.04,  # 1  yaw_rms
-        0.06,  # 2  smooth_rms
-        0.02,  # 3  steer_rms
-        0.005,  # 4  accel_rms
-        0.03,  # 5  max_steering
-        0.06,  # 6  steering_sat_ratio
-        0.06,  # 7  jerk_rms
-        0.02,  # 8  max_yaw_rate
-        0.06,  # 9  steering_reversals
-        0.13,  # 10 peak_lateral_error
-        0.01,  # 11 speed_rmse
-    ],
-    dtype=float,
-)
-
-COMPLETION_BONUS_WEIGHT = 0.50  # Subtracted from score when vehicle finishes path
-TIME_BONUS_WEIGHT = 0.45  # Subtracted from score for fast completion
 
 # Sanity check: weights must sum to 1 so the composite score is interpretable
 assert (
@@ -278,6 +226,7 @@ def get_cached_model(vx, dt):
     if key not in _model_cache:
         _model_cache[key] = get_8state_discrete_model(key, dt)
     return _model_cache[key]
+
 
 # ==========================================
 # SYNTHETIC PATH LIBRARY — INTERNAL HELPERS
@@ -638,6 +587,7 @@ def _normalize_angle(angle):
     """
     return np.arctan2(np.sin(angle), np.cos(angle))
 
+
 # ==========================================
 # WORKER INITIALIZER
 # ==========================================
@@ -723,7 +673,7 @@ def compute_composite_score(
             max_yaw_rate,
             float(steering_reversals),
             peak_lateral_error,
-            speed_rmse
+            speed_rmse,
         ]
     )
     score = float(SCORE_WEIGHTS @ metrics)
@@ -853,7 +803,9 @@ def run_headless_rollout(
 
     state = init_plant_state(X0, Y0, psi0, vx0=vx0)
     # ── NEW: Transport Delay Queue ────────────────────────────────────────
-    command_queue = deque([np.zeros(2) for _ in range(DELAY_STEPS + 1)], maxlen=DELAY_STEPS + 1)
+    command_queue = deque(
+        [np.zeros(2) for _ in range(DELAY_STEPS + 1)], maxlen=DELAY_STEPS + 1
+    )
 
     # ── Metric accumulators ────────────────────────────────────────────────────
     error_cost = 0.0  # Σ(e_y² + 0.4*e_psi²): combined tracking cost
@@ -879,9 +831,6 @@ def run_headless_rollout(
     last_idx = idx
     dnf = False
     offtrack = False  # Whether the vehicle went off track
-
-    MAX_FAILS = 5  # Consecutive solve failures before DNF
-    OFFTRACK_LIMIT = TRACK_HALF_WIDTH * 2.0  # Lateral error threshold for DNF (m)
 
     # Pre-compute arc-length segments for progress tracking
     path_seg_dist = np.hypot(np.diff(path_X), np.diff(path_Y))
@@ -911,10 +860,7 @@ def run_headless_rollout(
                 cl_psi[-1] = cl_psi[-2] if len(cl_psi) > 1 else state[2]
 
                 e_y, _, e_psi, _, _, _, _ = plant_to_tracking_error(
-                    state, 
-                    path_x=cl_x, 
-                    path_y=cl_y, 
-                    path_psi=cl_psi
+                    state, path_x=cl_x, path_y=cl_y, path_psi=cl_psi
                 )
 
                 # Find closest index for target velocity profiling
@@ -935,25 +881,21 @@ def run_headless_rollout(
             else:
                 # Planner not yet ready — fall back to global reference path
                 e_y, _, e_psi, _, _, _, _ = plant_to_tracking_error(
-                    state, 
-                    path_x=path_X, 
-                    path_y=path_Y, 
-                    path_psi=path_Psi
+                    state, path_x=path_X, path_y=path_Y, path_psi=path_Psi
                 )
                 v_target = float(path_v[idx])
         else:
             # Oracle mode: directly track the global reference track layout
             e_y, _, e_psi, _, _, _, _ = plant_to_tracking_error(
-                state, 
-                path_x=path_X, 
-                path_y=path_Y, 
-                path_psi=path_Psi
+                state, path_x=path_X, path_y=path_Y, path_psi=path_Psi
             )
             v_target = float(path_v[idx])
 
         # ── Progress tracking — Find current reference index ──────────────────
         # Find the index of the closest point on the global path to update progress metrics
-        idx_ref, _, _, _ = find_closest_reference_bounded(path_X, path_Y, path_Psi, state[0], state[1], idx)
+        idx_ref, _, _, _ = find_closest_reference_bounded(
+            path_X, path_Y, path_Psi, state[0], state[1], idx
+        )
 
         if idx_ref > last_idx:
             cumulative_distance += np.sum(path_seg_dist[last_idx:idx_ref])
@@ -1085,9 +1027,6 @@ def run_headless_rollout(
         u_prev = u_opt.copy()
         # Feed the delayed command to the nonlinear plant
         state = step_nonlinear_plant(state, delayed_u_cmd, dt, p)
-    
-    if path_name == "PATH_SUDDEN_TURN":
-        print(peak_lateral_error)
 
     # ── Normalise metrics to RMS values ───────────────────────────────────────
     n = max(num_steps, 1)
@@ -1168,9 +1107,8 @@ def evaluate_all_paths(weights_vector, n_repeats=3, ey0=0.0, epsi0=0.0):
         path_scores = []
         for _ in range(n_repeats):
             path_scores.append(
-                run_headless_rollout(weights_vector, path_name=path_name,
-                    ey0=ey0,      
-                    epsi0=epsi0   
+                run_headless_rollout(
+                    weights_vector, path_name=path_name, ey0=ey0, epsi0=epsi0
                 )
             )
 
@@ -1190,9 +1128,8 @@ VALIDATION_SUITE = [
     # "PATH_OFFSET_CHICANE",
     "PATH_SPIRAL",
     "PATH_SUDDEN_TURN",
-    "PATH_SUDDEN_TURN",
     # "PATH_SKIDPAD",
-    "PATH_S_BEND",
+    # "PATH_S_BEND",
     # "PATH_MIXED",
     "PATH_HAIRPIN",
     # "PATH_CHICANE",
@@ -1205,7 +1142,7 @@ VALIDATION_SUITE = [
 # (ey0, epsi0): lateral offset (m), heading offset (rad).
 INITIAL_CONDITIONS = [
     (0.00, 0.00),  # Nominal: start exactly on path
-    (0.2, 0.05),   # Perturbed: slight lateral/heading offset
+    (0.2, 0.05),  # Perturbed: slight lateral/heading offset
 ]
 
 

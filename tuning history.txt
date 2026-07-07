@@ -179,7 +179,8 @@ Overall score (avged from all testing scenarios)  = Haven't been tested.
 Tuner score (tuning scenarios / validation suite) = -0.41336576903790373
 Commit hash = b2a44e7827068c667bfd07610ada7e3a3afb715c
 
-# 07/07/26 13:46 - [Pending Description: yet to be tested]
+# 07/07/26 13:46 - Turns out using only one IC is a bad idea, ended up with too much weight on acceleration. Tuner figured out it could
+max lateral error and rely on that only to move the vehicle.
 Q_diag      = [1.4482916189576558, 0.16539909909593875, 7.138551774447528, 0.6632281818539646, 0.13704868282639, 0.0, 0.0, 0.0]
 R_diag      = [0.1320783333275749, 2.087105936571688]
 R_rate_diag = [0.5759349191385124, 1.8621582289019547]
@@ -187,3 +188,12 @@ Duration    = 56.50 minutes
 Overall score (avged from all testing scenarios)  = Haven't been tested.
 Tuner score (tuning scenarios / validation suite) = -0.2652409852518931
 Commit hash = 345b149cb3449286c0e1db88225f1ff7c72766d2
+
+# 07/07/26 22:57 - [Pending Description: yet to be tested]
+Q_diag      = [4.862897948643164, 2.565690209935078, 0.11234423293371426, 0.5026546537125534, 1.7428762995982183, 0.0, 0.0, 0.0]
+R_diag      = [0.5278120665088281, 0.9763938446521605]
+R_rate_diag = [0.5681013919015826, 1.1430494711330141]
+Duration    = 14.85 minutes
+Overall score (avged from all testing scenarios)  = Haven't been tested.
+Tuner score (tuning scenarios / validation suite) = 0.16296475869874538
+Commit hash = 16b425a51fdac00d760f520c4df8769e45b33a92

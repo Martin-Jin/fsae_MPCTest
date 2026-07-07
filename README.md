@@ -149,7 +149,7 @@ dt         = 0.05 s     (20 Hz control rate)
 N_horizon  = 25 steps   (1.25 s look-ahead)
 V_MAX      = 20.0 m/s   (planner + profiler cap)
 V_MIN      = 1.5 m/s    (planner floor speed)
-OFFTRACK_LIMIT = around 3 m  (lateral error failure threshold)
+OFFTRACK_LIMIT = around 2 m  (lateral error failure threshold)
 MAX_CONSECUTIVE_FAILURES = 5  (solver failures before DNF)
 ```
 

@@ -126,8 +126,8 @@ class VehicleParams:
 
     def __init__(self):
         # ── Tuning Constants (Modify these to change car behavior) ────
-        GRIP_SCALE    = 0.85  # Scales tyre stiffness and Pacejka slope
-        INERTIA_SCALE = 1.05  # Scales yaw inertia and wheel rotational mass
+        GRIP_SCALE    = 0.95  # Scales tyre stiffness and Pacejka slope
+        INERTIA_SCALE = 0.3  # Scales yaw inertia and wheel rotational mass
         COASTING_SCALE = 0.6 # < 1.0 = Rolls further, > 1.0 = Stops faster
 
         # ── Geometry ────────────────────────────────────────────────────────
