@@ -66,7 +66,7 @@ from optimiser import solve_mpc
 from vehicle_physics import VehicleParams, step_nonlinear_plant, init_plant_state, plant_to_tracking_error, find_closest_reference_bounded
 from performance_stats import benchmark_weights, report_performance_metrics
 import speed_profile
-from offline_tuner import SYNTHETIC_PATHS, PATH_NAMES
+from offline_tuner import SYNTHETIC_PATHS, PATH_NAMES, get_cached_model
 from sim_track import place_cones, SimPerception, SimPlanner, calculate_dynamic_max_steps
 from model_utils import curvature_estimate, adaptive_R_rate, adaptive_R_scaling
 import math
@@ -77,7 +77,9 @@ from settings import (
     DELAY_STEPS,
     OFFTRACK_LIMIT,
     MAX_FAILS,
-    DT
+    DT,
+    ROLLOUT_EPS,
+    ROLLOUT_MAX_ITER
 )
 
 
@@ -633,11 +635,12 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
     consecutive_solver_failures = 0
 
     history = {
-        "X": [], "Y": [], "psi": [], "v": [], "v_target": [],
+        "X": [], "Y": [], "psi": [], "v": [], "r": [], "v_target": [],
         "u_steer": [], "u_accel": [],
         "e_y": [], "e_psi": [],
         "pred_X": [], "pred_Y": [],
         "failed": False,
+        "solver_failed": [],
         "fail_reason": None,
     }
 
@@ -648,6 +651,9 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
     u_prev = np.zeros(2)
     inaccurate_count = 0  # Steps where OSQP returned OPTIMAL_INACCURATE
 
+    cumulative_distance = 0.0
+    last_idx = idx
+    path_seg_dist = np.hypot(np.diff(path_X), np.diff(path_Y))
     for step in range(max_steps):
 
         # ── 1. Record current plant state ─────────────────────────────────────
@@ -655,6 +661,7 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
         history["Y"].append(plant_state[1])
         history["psi"].append(plant_state[2])
         history["v"].append(plant_state[3])
+        history["r"].append(plant_state[5])
 
         # ── 2. Update state and perception/planning ────────────────────────────
         X_g, Y_g, psi_g = plant_state[0], plant_state[1], plant_state[2]
@@ -706,6 +713,10 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
             )
             v_target = float(path_v_profile[idx])
 
+        if idx > last_idx:
+            cumulative_distance += np.sum(path_seg_dist[last_idx:idx])
+            last_idx = idx
+
         history["v_target"].append(v_target)
         history["e_y"].append(e_y)
         history["e_psi"].append(e_psi)
@@ -726,17 +737,18 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
         ])
 
         # ── 5. Early-exit checks ───────────────────────────────────────────────
-        failed = False
         if consecutive_solver_failures >= MAX_FAILS:
             history["failed"]      = True
             history["fail_reason"] = (
                 f"solver failed {consecutive_solver_failures} consecutive steps at step {step}"
             )
+            break
 
         if abs(e_y) > OFFTRACK_LIMIT:
             history["failed"]      = True
             history["offtrack"]    = True
             history["fail_reason"] = f"off-track (|e_y|={abs(e_y):.2f} m) at step {step}"
+            break
 
         dist_to_finish = math.hypot(X_g - path_X[-1], Y_g - path_Y[-1])
         if idx >= len(path_X) - 2 or dist_to_finish <= 3.0:
@@ -744,12 +756,10 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
             history["remaining_steps"]   = max_steps - step
             break
 
-        if history.get("failed"): break
-
         # ── 6. MPC solve ───────────────────────────────────────────────────────
-        # Linearise the bicycle model at the current speed
+        # Linearise the bicycle model at the current speed (using cached/rounded model to match tuner)
         current_v    = plant_state[3]
-        Ad, Bd       = get_8state_discrete_model(max(current_v, 0.5), DT)
+        Ad, Bd       = get_cached_model(max(current_v, 0.5), DT)
 
         # Adaptive gain scheduling (model_utils.py)
         kappa         = curvature_estimate(plant_state)     # Instantaneous κ = r/vx
@@ -757,7 +767,6 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
         R_scaled      = adaptive_R_scaling(current_v, R_w)  # Stiffen steering cost at speed
 
         # warm_start=False on step 0 prevents carrying stale OSQP state
-        # from a previous simulation or benchmark into the first solve.
         mpc_result = solve_mpc(
             x_current, Ad, Bd, N_horizon,
             Q_w, R_scaled,
@@ -766,17 +775,22 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
             u_prev=u_prev,
             return_status=True,
             warm_start=(step != 0),
+            eps_abs=ROLLOUT_EPS,
+            eps_rel=ROLLOUT_EPS,
+            max_iter=ROLLOUT_MAX_ITER,
         )
 
         if mpc_result is not None:
             u_opt, mpc_status = mpc_result
             consecutive_solver_failures = 0
+            history["solver_failed"].append(False)
             if mpc_status in (cp.OPTIMAL_INACCURATE, "optimal_inaccurate"):
                 inaccurate_count += 1
         else:
             # Hold previous command on failure; increment failure counter
             consecutive_solver_failures += 1
             u_opt = u_prev.copy()
+            history["solver_failed"].append(True)
 
         u_prev = u_opt.copy()
         history["u_steer"].append(u_opt[0])
@@ -818,32 +832,24 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=400, R_r
     history.setdefault("reached_end", False)
     history["peak_lateral_error"] = float(np.max(np.abs(history["e_y"]))) if history["e_y"] else 0.0
 
-    # Compute arc-length progress along the reference path (same method as offline_tuner)
-    _path_X_arr = np.asarray(path_X)
-    _path_Y_arr = np.asarray(path_Y)
-    _path_total_len = float(np.sum(np.hypot(np.diff(_path_X_arr), np.diff(_path_Y_arr))))
-    if _path_total_len > 0 and len(history["X"]) > 0:
-        # Find closest reference index at final vehicle position
-        _final_dists = np.hypot(_path_X_arr - history["X"][-1], _path_Y_arr - history["Y"][-1])
-        _final_idx   = int(np.argmin(_final_dists))
-        _travelled   = float(np.sum(np.hypot(np.diff(_path_X_arr[:_final_idx + 1]),
-                                             np.diff(_path_Y_arr[:_final_idx + 1]))))
-        _progress    = float(np.clip(_travelled / _path_total_len, 0.0, 1.0))
+    # Match tuner completion using cumulative distance explicitly
+    _path_total_len = float(np.sum(np.hypot(np.diff(path_X), np.diff(path_Y))))
+    if _path_total_len > 0:
+        history["completion_frac"] = float(np.clip(cumulative_distance / _path_total_len, 0.0, 1.0))
     else:
-        history["reached_end"] = False
-        _progress = 0.0
+        history["completion_frac"] = 0.0
 
     if history["reached_end"]:
-        history["completion_frac"] = 1.0
-        # Time bonus: how much earlier than max_steps did the vehicle finish?
-        expected_time = max_steps * DT
+        # Time bonus: Explicitly match offline_tuner's dynamic expected time
+        dynamic_expected_steps = calculate_dynamic_max_steps(path_X, path_Y, dt=DT)
+        expected_time = dynamic_expected_steps * DT
         sim_time      = len(history["X"]) * DT
         history["time_bonus"] = max(0.0, 1.0 - (sim_time / expected_time))
+        history["completion_frac"] = 1
     else:
-        # Partial completion: arc-length fraction actually travelled along the path
         history["failed"]      = True
-        history["completion_frac"] = _progress
-        history["time_bonus"]      = 0.0
+        history["time_bonus"]  = 0.0
+        history["completion_frac"] = 0
 
     history["inaccurate_count"] = inaccurate_count
     return history
@@ -875,11 +881,19 @@ def run_simulation(event):
 
     # Dynamic step budget: based on path length at a conservative fallback speed
     dynamic_steps = calculate_dynamic_max_steps(path_X, path_Y, dt=DT)
+    mean_v_profile = float(np.mean(path_v_profile)) if len(path_v_profile) > 0 else 1.5
+    path_length = float(np.sum(np.hypot(np.diff(path_X), np.diff(path_Y))))
+    
+    profile_max_steps = int(
+        math.ceil((path_length / max(mean_v_profile * 0.6, 1.5)) * 1.5 / DT)
+    )
+    final_max_steps = max(dynamic_steps, profile_max_steps)
 
     history = simulate_closed_loop(
         Q, R, slider_ey0.val, slider_epsi0.val,
-        rng_seed=None, max_steps=dynamic_steps, R_rate_w=R_rate,
+        rng_seed=None, max_steps=final_max_steps, R_rate_w=R_rate,
     )
+
     sim_history = history
 
     ax_map.set_title(

@@ -17,8 +17,7 @@ simulation.py so that:
 PARITY WITH offline_tuner.py
 ------------------------------
 All metric computations mirror the accumulation loop in run_headless_rollout()
-exactly, with one exception: yaw_rms and max_yaw_rate are approximated here
-from diff(e_psi)/dt (a proxy for yaw rate) rather than directly reading
+exactly.
 plant state[5] (the actual yaw rate), because the simulation history dict
 does not record the raw plant state vector. The difference is small for smooth
 trajectories but may diverge in highly dynamic cornering. All other terms are
@@ -56,14 +55,14 @@ from settings import DT
 
 # Metric index constants — must stay in sync with SCORE_WEIGHTS order in offline_tuner.py
 _IDX_RMSE               = 0   # Combined tracking RMSE (e_y² + 0.4*e_psi²)
-_IDX_YAW_RMS            = 1   # Yaw rate RMS (approximated from diff(e_psi)/dt)
+_IDX_YAW_RMS            = 1   # Yaw rate RMS
 _IDX_SMOOTH_RMS         = 2   # Control smoothness RMS (Δu)
 _IDX_STEER_RMS          = 3   # Steering effort RMS
 _IDX_ACCEL_RMS          = 4   # Acceleration effort RMS
 _IDX_MAX_STEERING       = 5   # Peak steering command magnitude
 _IDX_STEER_SAT_RATIO    = 6   # Fraction of steps near steering saturation
 _IDX_JERK_RMS           = 7   # Control jerk RMS (Δ²u)
-_IDX_MAX_YAW_RATE       = 8   # Peak yaw rate (approximated from diff(e_psi)/dt)
+_IDX_MAX_YAW_RATE       = 8   # Peak yaw rate
 _IDX_STEER_REVERSALS    = 9   # Count of steering direction reversals
 _IDX_PEAK_LATERAL_ERROR = 10  # Worst single-step lateral error
 _IDX_SPEED_RMSE         = 11
@@ -153,16 +152,13 @@ def report_performance_metrics(history, log_fn=print):
     error_cost = float(np.sum(1.2 * e_y**2 + 0.4 * e_psi**2))
     rmse       = float(np.sqrt(error_cost / n))
 
-    # ── Yaw rate (proxy from diff(e_psi)/dt) ──────────────────────────────────
-    # Exact computation in offline_tuner uses plant state[5] (actual yaw rate r).
-    # Here we approximate: r_proxy ≈ Δe_psi / dt.
-    # This is close for smooth trajectories but may differ in tight corners where
-    # the path heading changes rapidly (Δe_psi conflates vehicle yaw with path curvature).
-    if len(e_psi) > 1:
-        r_proxy       = np.diff(e_psi) / DT             # Approximate yaw rate (rad/s)
-        yaw_rate_cost = 0.8 * float(np.sum(r_proxy**2))   # 0.8 weighting matches offline_tuner
+    # ── Yaw rate (True plant state) ──────────────────────────────────────────
+    r_arr = np.asarray(history.get("r", []), dtype=float)
+    
+    if len(r_arr) > 0:
+        yaw_rate_cost = 0.8 * float(np.sum(r_arr**2))   # 0.8 weighting matches offline_tuner
         yaw_rms       = float(np.sqrt(yaw_rate_cost / n))
-        max_yaw_rate  = float(np.max(np.abs(r_proxy)))
+        max_yaw_rate  = float(np.max(np.abs(r_arr)))
     else:
         yaw_rms = max_yaw_rate = 0.0
 
@@ -174,10 +170,10 @@ def report_performance_metrics(history, log_fn=print):
     # du_prev=0 initialisations. Without this, np.diff gives n-1 smoothness
     # terms and n-2 jerk terms, missing the initial jump from standstill.
     if len(u_steer) > 0 and len(u_accel) > 0:
-        # First difference including initial Δu from zero → n terms each
         du_steer = np.diff(np.concatenate([[0.0], u_steer]))
         du_accel = np.diff(np.concatenate([[0.0], u_accel]))
-        control_smooth = float(np.sum(du_steer**2 + du_accel**2))
+        solver_fails = sum(history.get("solver_failed", []))
+        control_smooth = float(np.sum(du_steer**2 + du_accel**2)) + (5.0 * solver_fails)
         smooth_rms     = float(np.sqrt(control_smooth / n))
 
         # Second difference including initial jerk from zero → n terms each
