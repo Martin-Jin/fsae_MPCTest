@@ -57,7 +57,6 @@ DOES NOT USE
 """
 
 import numpy as np
-from collections import deque
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button, Slider
 from scipy.interpolate import CubicSpline
@@ -65,7 +64,7 @@ from vehicle_physics import VehicleParams
 from performance_stats import benchmark_weights, report_performance_metrics
 import speed_profile
 from offline_tuner import SYNTHETIC_PATHS, PATH_NAMES, get_cached_model
-from sim_track import place_cones, calculate_dynamic_max_steps
+from sim_track import place_cones
 from rollout_core import run_core_rollout, compute_step_budget
 
 from settings import (
@@ -73,8 +72,6 @@ from settings import (
     ROLLOUT_MAX_ITER,
     ROLLOUT_EPS
 )
-
-
 
 # ==========================================
 # SETUP AND CONFIGURATION

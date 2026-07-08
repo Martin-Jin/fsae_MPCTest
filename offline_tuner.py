@@ -35,9 +35,10 @@ BIPOP + lq-CMA-ES (via the `cma` library's fmin_lq_surr2):
 
 HOW SCORING WORKS
 -----------------
-Each rollout produces 11 performance metrics (RMSE, yaw stability, control
-smoothness, etc.). These are combined into a single scalar "composite score"
-via a weighted dot product (SCORE_WEIGHTS). Lower is better.
+Each rollout produces 12 performance metrics (RMSE, yaw stability, control
+smoothness, etc. — see scoring.py's IDX_* constants). These are combined
+into a single scalar "composite score" via a weighted dot product
+(SCORE_WEIGHTS). Lower is better.
 
   Completion bonus: subtracted if the vehicle finishes the path.
   Time bonus:       subtracted if the vehicle finishes quickly.
@@ -97,7 +98,7 @@ DOES NOT USE (as module)
 import numpy as np
 import multiprocessing as mp
 import time
-from collections import Counter, deque
+from collections import Counter
 from scipy.interpolate import CubicSpline
 import signal
 from rollout_core import run_core_rollout, compute_step_budget
@@ -105,40 +106,23 @@ import subprocess
 from settings import (
     SCORE_WEIGHTS,
     PATH_N_POINTS,
-    DNF_OFFTRACK_PENALTY,
-    TIME_BONUS_WEIGHT,
-    COMPLETION_BONUS_WEIGHT,
     USE_PLANNER,
-    DELAY_STEPS,
-    DNF_PENALTY,
     ROLLOUT_EPS,
     ROLLOUT_MAX_ITER,
     MAX_EVALS,
     N_HORIZON,
-    OFFTRACK_LIMIT,
-    MAX_FAILS,
     DT
 )
 
 from vehicle_physics import (
     VehicleParams,
-    step_nonlinear_plant,
-    init_plant_state,
-    plant_to_tracking_error,
-    find_closest_reference_bounded,
 )
 from bicycle_model import get_8state_discrete_model
-from optimiser import solve_mpc
 import speed_profile as sp
-import cvxpy as cp
 import cma
 from sim_track import (
     place_cones,
-    SimPerception,
-    SimPlanner,
-    calculate_dynamic_max_steps,
 )
-import math
 import datetime
 
 # ==========================================
@@ -634,63 +618,6 @@ def init_worker(Q_init, R_init, R_rate_init):
 # ==========================================
 # HEADLESS SIMULATION ROLLOUT
 # ==========================================
-def compute_composite_score(
-    rmse,
-    yaw_rms,
-    smooth_rms,
-    steer_rms,
-    accel_rms,
-    max_steering,
-    steering_sat_ratio,
-    jerk_rms,
-    max_yaw_rate,
-    steering_reversals,
-    peak_lateral_error,
-    speed_rmse,
-    progress,
-    time_bonus=0.0,
-    dnf=False,
-    offtrack=False,
-    inaccurate_count=0,
-):
-    """
-    Single source of truth for the composite performance score.
-    Combines the 12 metrics with SCORE_WEIGHTS, applies completion/time
-    bonuses, DNF penalties, and the inaccurate-solver factor.
-    Lower is better. Shared by run_headless_rollout() and
-    performance_stats.report_performance_metrics().
-    """
-    metrics = np.array(
-        [
-            rmse,
-            yaw_rms,
-            smooth_rms,
-            steer_rms,
-            accel_rms,
-            max_steering,
-            steering_sat_ratio,
-            jerk_rms,
-            max_yaw_rate,
-            float(steering_reversals),
-            peak_lateral_error,
-            speed_rmse,
-        ]
-    )
-    score = float(SCORE_WEIGHTS @ metrics)
-
-    progress = float(np.clip(progress, 0.0, 1.0))
-    score -= COMPLETION_BONUS_WEIGHT * progress + TIME_BONUS_WEIGHT * time_bonus
-
-    if dnf:
-        score += DNF_PENALTY
-    if offtrack:
-        score += DNF_OFFTRACK_PENALTY
-    if inaccurate_count > 0:
-        factor = min(5, inaccurate_count) * 0.1
-        score = score + abs(score) * factor
-
-    return score
-
 
 def run_headless_rollout(
     weights_vector,

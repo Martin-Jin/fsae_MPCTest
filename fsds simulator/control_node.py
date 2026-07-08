@@ -1,7 +1,3 @@
-# Title: control_node.py
-
-# control_node.py — ROS 2 MPC Control Loop for FSDS
-
 import csv
 import math
 import time
@@ -27,7 +23,7 @@ CONE_BRAKE_WIDTH = 0.18  # m    — lateral half-width of braking corridor (36 c
 TARGET_TIMEOUT   = 0.5   # s    — brake if no fresh path received within this window
 
 # Minimum duration (s) the cone proximity brake must be active continuously
-# before reset() is called on the MPC. 
+# before reset() is called on the MPC.
 CONE_RESET_THRESHOLD = 0.3   # s  (~6 consecutive 50 ms ticks)
 
 # ── Logging ─────────────────────────────────────────────────────────────────
@@ -45,11 +41,11 @@ class ControlNode(Node):
     ROS 2 Node responsible for handling sensor data, maintaining vehicle state,
     and running the MPC control loop at a fixed frequency (20 Hz).
     """
-    
+
     def __init__(self):
         super().__init__('controller')
 
-        # Best effort QoS ensures we don't build up a latency-inducing backlog 
+        # Best effort QoS ensures we don't build up a latency-inducing backlog
         # of stale odometry frames if CPU loads momentarily spike.
         sensor_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -70,7 +66,7 @@ class ControlNode(Node):
         # ── Internal state ─────────────────────────────────────────────
         self._go_received    = False
         self._path_pts:  np.ndarray = np.empty((0, 2))
-        self._path_stamp = None           
+        self._path_stamp = None
         self._desired_speed: float = V_FALLBACK
         self._car_pos        = np.zeros(2)
         self._car_yaw        = 0.0
@@ -78,7 +74,7 @@ class ControlNode(Node):
         self._car_yaw_rate   = 0.0
         self._blue_cones:   np.ndarray = np.empty((0, 2))
         self._yellow_cones: np.ndarray = np.empty((0, 2))
-        self._cone_brake_duration: float = 0.0   
+        self._cone_brake_duration: float = 0.0
 
         # ── MPC controller ─────────────────────────────────────────────
         self._mpc = MPCController(dt=0.05, N=25)
@@ -150,7 +146,7 @@ class ControlNode(Node):
         """
         Transforms visible cones into the car-relative frame to check if any
         obstruct the dynamic braking corridor ahead of the vehicle.
-        
+
         Returns True if a cone collision is imminent.
         """
         cone_parts = [c for c in (self._blue_cones, self._yellow_cones) if len(c) > 0]
@@ -174,8 +170,20 @@ class ControlNode(Node):
             (x_car < dynamic_brake_dist) &
             (np.abs(y_car) < CONE_BRAKE_WIDTH)
         ))
-        
+
         return too_close
+
+    def _publish(self, cmd: ControlCommand) -> None:
+        """
+        Stamp and publish a ControlCommand.
+
+        Centralised so every exit path of _control_loop (GO-wait, stale-path
+        estop, and normal operation) publishes with a valid, current stamp —
+        previously only the normal-operation path at the end of the loop
+        set cmd.header.stamp, leaving early-return messages unstamped.
+        """
+        cmd.header.stamp = self.get_clock().now().to_msg()
+        self.pub_cmd.publish(cmd)
 
     # ------------------------------------------------------------------
     # Core MPC control loop (50 ms / 20 Hz)
@@ -184,7 +192,7 @@ class ControlNode(Node):
     def _control_loop(self) -> None:
         """
         Main execution loop running at 20 Hz.
-        Handles startup wait, trajectory loss fail-safes, MPC optimization, 
+        Handles startup wait, trajectory loss fail-safes, MPC optimization,
         and the safety cone-brake override.
         """
         cmd = ControlCommand()
@@ -192,7 +200,7 @@ class ControlNode(Node):
         # ── Phase 1: Hold at start line until GO signal ────────────────
         if not self._go_received:
             cmd.throttle, cmd.steering, cmd.brake = 0.0, 0.0, 1.0
-            self.pub_cmd.publish(cmd)
+            self._publish(cmd)
             self.get_logger().info('Waiting for GO signal...', throttle_duration_sec=2.0)
             return
 
@@ -204,8 +212,8 @@ class ControlNode(Node):
         )
         if path_stale:
             cmd.throttle, cmd.steering, cmd.brake = 0.0, 0.0, 1.0
-            self._mpc.reset()   
-            self.pub_cmd.publish(cmd)
+            self._mpc.reset()
+            self._publish(cmd)
             self.get_logger().warn('Trajectory path lost or stale — emergency braking.', throttle_duration_sec=1.0)
             return
 
@@ -223,34 +231,10 @@ class ControlNode(Node):
         cmd.throttle = throttle_out
         cmd.brake    = brake_out
 
-        # ── Telemetry log (pre-override) ──────────────────────────────
-        if self._log_writer is not None:
-            tel = self._mpc.last_telemetry
-            try:
-                self._log_writer.writerow({
-                    'ros_time': self.get_clock().now().nanoseconds * 1e-9,
-                    'car_speed': self._car_speed,
-                    'desired_speed': self._desired_speed,
-                    'e_y': tel.get('e_y', ''),
-                    'e_psi': tel.get('e_psi', ''),
-                    'e_v': tel.get('e_v', ''),
-                    'kappa': tel.get('kappa', ''),
-                    'steering': steer_out,
-                    'throttle': throttle_out,
-                    'brake': brake_out,
-                    'delta_cmd': tel.get('delta_cmd', ''),
-                    'a_cmd': tel.get('a_cmd', ''),
-                    'delta_act': tel.get('delta_act', ''),
-                    'a_act': tel.get('a_act', ''),
-                    'car_x': self._car_pos[0],
-                    'car_y': self._car_pos[1],
-                    'car_yaw': self._car_yaw,
-                })
-                self._log_file.flush()
-            except Exception as exc:
-                self.get_logger().warn(f'Telemetry log write failed: {exc!r}', throttle_duration_sec=5.0)
-
         # ── Phase 4: Cone proximity brake override ────────────────────
+        # This must run BEFORE telemetry logging (Phase 4a below) so the
+        # logged throttle/brake reflect what is actually published, not
+        # the pre-override MPC output.
         if self._check_cone_proximity():
             cmd.throttle = 0.0
             cmd.brake    = 1.0
@@ -266,10 +250,36 @@ class ControlNode(Node):
         else:
             self._cone_brake_duration = 0.0
 
-        # ── Phase 5: Timestamp and publish ────────────────────────────
-        cmd.header.stamp = self.get_clock().now().to_msg()
-        self.pub_cmd.publish(cmd)
-        
+        # ── Phase 4a: Telemetry log (post-override, reflects final cmd) ─
+        if self._log_writer is not None:
+            tel = self._mpc.last_telemetry
+            try:
+                self._log_writer.writerow({
+                    'ros_time': self.get_clock().now().nanoseconds * 1e-9,
+                    'car_speed': self._car_speed,
+                    'desired_speed': self._desired_speed,
+                    'e_y': tel.get('e_y', ''),
+                    'e_psi': tel.get('e_psi', ''),
+                    'e_v': tel.get('e_v', ''),
+                    'kappa': tel.get('kappa', ''),
+                    'steering': cmd.steering,
+                    'throttle': cmd.throttle,
+                    'brake': cmd.brake,
+                    'delta_cmd': tel.get('delta_cmd', ''),
+                    'a_cmd': tel.get('a_cmd', ''),
+                    'delta_act': tel.get('delta_act', ''),
+                    'a_act': tel.get('a_act', ''),
+                    'car_x': self._car_pos[0],
+                    'car_y': self._car_pos[1],
+                    'car_yaw': self._car_yaw,
+                })
+                self._log_file.flush()
+            except Exception as exc:
+                self.get_logger().warn(f'Telemetry log write failed: {exc!r}', throttle_duration_sec=5.0)
+
+        # ── Phase 5: Publish ───────────────────────────────────────────
+        self._publish(cmd)
+
         self.get_logger().debug(
             f'MPC thr={cmd.throttle:.2f} brk={cmd.brake:.2f} steer={cmd.steering:.3f} | '
             f'v={self._car_speed:.1f}/{self._desired_speed:.1f} m/s'

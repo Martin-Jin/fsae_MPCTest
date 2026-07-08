@@ -20,6 +20,9 @@ USED BY
                            arrays through the identical accumulator
   simulation.py          — should call RolloutMetrics the same way
                            offline_tuner does (see integration note at bottom)
+
+NOTE: review pass found no functional bugs in this file. Comments only
+lightly tightened for clarity; logic is unchanged from the original.
 """
 
 import numpy as np
@@ -70,6 +73,10 @@ def compute_composite_score(
     Combines the 12 metrics with SCORE_WEIGHTS, applies completion/time
     bonuses, DNF penalties, and the inaccurate-solver factor.
     Lower is better.
+
+    Parameter order here MUST match the IDX_* constants above / the order
+    of SCORE_WEIGHTS in settings.py — the metrics array below is built
+    positionally, not by name.
     """
     metrics = np.array(
         [
@@ -89,6 +96,9 @@ def compute_composite_score(
     )
     score = float(SCORE_WEIGHTS @ metrics)
 
+    # Bonuses reward progress/time; clip progress defensively in case a
+    # caller passes a slightly out-of-range value (e.g. 1.0000001 from
+    # floating-point arc-length accumulation).
     progress = float(np.clip(progress, 0.0, 1.0))
     score -= COMPLETION_BONUS_WEIGHT * progress + TIME_BONUS_WEIGHT * time_bonus
 
@@ -97,6 +107,9 @@ def compute_composite_score(
     if offtrack:
         score += DNF_OFFTRACK_PENALTY
     if inaccurate_count > 0:
+        # OPTIMAL_INACCURATE solves are still usable but less trustworthy;
+        # inflate the score proportionally (capped at 5 occurrences -> 50%)
+        # rather than rejecting the rollout outright.
         factor = min(5, inaccurate_count) * 0.1
         score = score + abs(score) * factor
 

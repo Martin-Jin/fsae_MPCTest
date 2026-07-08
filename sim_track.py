@@ -293,9 +293,9 @@ def calculate_dynamic_max_steps(path_X, path_Y, dt=0.05, fallback_speed=2.50, bu
         max_time  = (arc_length / fallback_speed) * buffer
         max_steps = ceil(max_time / dt)
 
-    The fallback_speed is intentionally conservative (3 m/s by default) to
+    The fallback_speed is intentionally conservative (2.5 m/s by default) to
     ensure the budget is sufficient even if the vehicle is slow (e.g. after
-    a bad initial condition or near-DNF recovery). The buffer (1.5×) adds
+    a bad initial condition or near-DNF recovery). The buffer (1.5x) adds
     additional margin for transient slow periods.
 
     Parameters
@@ -307,9 +307,9 @@ def calculate_dynamic_max_steps(path_X, path_Y, dt=0.05, fallback_speed=2.50, bu
     dt : float
         Simulation timestep (s). Default 0.05 s (20 Hz).
     fallback_speed : float
-        Conservative speed estimate for time calculation (m/s). Default 3.0 m/s.
+        Conservative speed estimate for time calculation (m/s). Default 2.5 m/s.
     buffer : float
-        Safety multiplier on the time estimate. Default 1.5×.
+        Safety multiplier on the time estimate. Default 1.5x.
 
     Returns
     -------

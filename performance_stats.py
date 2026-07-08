@@ -10,22 +10,25 @@ button output in simulation.py.
 
 The scoring is deliberately kept in a separate file rather than inlined into
 simulation.py so that:
-  1. Weights and metric definitions have a single source of truth in settings.py
+  1. Weights and metric definitions have a single source of truth in scoring.py
+     (which itself sources the weight values from settings.py)
   2. The console report can be updated without touching the simulation engine
   3. The returned dict can be used programmatically (e.g. logging, plotting)
 
-PARITY WITH offline_tuner.py
-------------------------------
-All metric computations mirror the accumulation loop in run_headless_rollout()
-exactly.
-plant state[5] (the actual yaw rate), because the simulation history dict
-does not record the raw plant state vector. The difference is small for smooth
-trajectories but may diverge in highly dynamic cornering. All other terms are
-mathematically identical.
+PARITY WITH offline_tuner.py / rollout_core.py
+------------------------------------------------
+All metric computations mirror the accumulation loop in
+rollout_core.run_core_rollout() exactly, by replaying the stored history
+through the identical scoring.RolloutMetrics accumulator that
+run_core_rollout() itself uses (see the "single source of truth" comment
+above rm = RolloutMetrics() below).
 
-SCORE_WEIGHTS, COMPLETION_BONUS_WEIGHT, TIME_BONUS_WEIGHT, and DNF_PENALTY
-are defined in settings.py and re-exported via offline_tuner.py, so any change
-to the scoring formula in settings.py automatically propagates to this report.
+SCORE_WEIGHTS, COMPLETION_BONUS_WEIGHT, and TIME_BONUS_WEIGHT are defined in
+settings.py and re-exported via scoring.py (imported directly from scoring.py
+below, not from offline_tuner.py), so any change to the scoring formula in
+settings.py automatically propagates to this report. DNF_PENALTY is not used
+in this file — failure is instead signalled via the `dnf`/`offtrack` booleans
+already recorded in the history dict.
 
 USED BY
 -------
@@ -34,7 +37,8 @@ USED BY
 
 DOES NOT USE
 ------------
-  vehicle_physics.py, bicycle_model.py, optimiser.py, speed_profile.py, sim_track.py
+  vehicle_physics.py (beyond VehicleParams for u_max_steer), bicycle_model.py,
+  optimiser.py, speed_profile.py, sim_track.py
 """
 
 from vehicle_physics import VehicleParams
