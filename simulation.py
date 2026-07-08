@@ -47,13 +47,17 @@ step. This closed-loop feedback is what makes the MPC robust to model mismatch.
 USED BY
 -------
   Standalone: run with `python simulation.py`
-  Imports from: bicycle_model, optimiser, vehicle_physics, performance_stats,
-                speed_profile, offline_tuner, sim_track, model_utils
+  Imports from: vehicle_physics, performance_stats, speed_profile, offline_tuner
+                (SYNTHETIC_PATHS/PATH_NAMES at import time, get_cached_model at
+                runtime), sim_track, rollout_core, settings.
 
-DOES NOT USE
-------------
-  offline_tuner.py (at runtime — only imports pre-computed SYNTHETIC_PATHS
-  and PATH_NAMES constants at import time; no tuner logic runs during simulation)
+DOES NOT USE (at runtime, beyond what's listed above)
+-------------------------------------------------------
+  No tuner/CMA-ES optimisation logic from offline_tuner.py runs during
+  simulation. Note: this file does call offline_tuner.get_cached_model() every
+  simulation step (via rollout_core's model_lookup parameter) — a plain
+  model-cache lookup, not tuning logic, but a genuine runtime dependency,
+  unlike SYNTHETIC_PATHS/PATH_NAMES which are read once at import.
 """
 
 import numpy as np
@@ -681,9 +685,8 @@ def run_optimize(event):
 
     No rollouts are re-run and no weights are modified. All scoring uses
     performance_stats.report_performance_metrics(), which imports SCORE_WEIGHTS
-    and bonus constants directly from offline_tuner.py, ensuring live and
-    offline scores are computed with the same formula and are directly
-    comparable.
+    and bonus constants directly from scoring.py, ensuring live and offline scores are computed
+    with the same formula and are directly comparable.
 
     After scoring, the plot title is updated with a summary line showing the
     composite score, lateral RMSE, heading RMSE, and completion percentage.

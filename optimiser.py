@@ -187,6 +187,13 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max):
         'sqrtR_rate': sqrtR_rate_param,
         'weighted_u_prev': weighted_u_prev_param,
         'u': u,
+        # u_min/u_max are baked into the constraints above as plain numpy
+        # constants (not cp.Parameters), so they can't be updated later the
+        # way Q/R/R_rate can. Stashing the values the cache was built with so
+        # solve_mpc() can detect a caller requesting different bounds and
+        # rebuild, instead of silently keeping stale bounds.
+        'u_min': np.array(u_min, dtype=float),
+        'u_max': np.array(u_max, dtype=float),
     }
 
 
@@ -294,7 +301,21 @@ def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max, R_rate=None, u_prev=None,
 
     # ── Build or rebuild cache if horizon N has changed ───────────────────────
     # In normal operation the cache is built once; N is fixed across the session.
-    if _mpc_cache is None or _mpc_cache['u'].shape[1] != N:
+    # Rebuild cache if horizon N changed, OR if u_min/u_max differ from what
+    # the cache was built with. u_min/u_max are baked into the cached QP as
+    # plain constants (see init_parameterized_mpc), so — unlike Q/R/R_rate,
+    # which flow through cp.Parameters every call — a caller passing
+    # different bounds with the same N would otherwise silently keep getting
+    # the stale, originally-cached bounds enforced. 
+    u_min_arr = np.asarray(u_min, dtype=float)
+    u_max_arr = np.asarray(u_max, dtype=float)
+    needs_rebuild = (
+        _mpc_cache is None
+        or _mpc_cache['u'].shape[1] != N
+        or not np.array_equal(_mpc_cache['u_min'], u_min_arr)
+        or not np.array_equal(_mpc_cache['u_max'], u_max_arr)
+    )
+    if needs_rebuild:
         _mpc_cache = init_parameterized_mpc(nx, nu, N, u_min, u_max)
 
     # ── Inject dynamics matrices (change every timestep as vx changes) ────────

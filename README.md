@@ -22,12 +22,13 @@ fsae planning repo: https://github.com/UOA-FSAE/fsae_planning (current implement
 2. [Module Reference](#module-reference)
 3. [Simulator Deep-Dive](#simulator-deep-dive)
 4. [Offline Tuner Deep-Dive](#offline-tuner-deep-dive)
-5. [Running the Simulator](#running-the-simulator)
-6. [Running the Offline Tuner](#running-the-offline-tuner)
-7. [Tuning Guide](#tuning-guide)
-8. [Tuning History](#tuning-history)
-9. [ROS 2 Integration (fsds)](#ros-2-integration-fsds)
-10. [Dependencies](#dependencies)
+5. [Manual Drive Mode](#manual-drive-mode)
+6. [Running the Simulator](#running-the-simulator)
+7. [Running the Offline Tuner](#running-the-offline-tuner)
+8. [Tuning Guide](#tuning-guide)
+9. [Tuning History](#tuning-history)
+10. [ROS 2 Integration (fsds)](#ros-2-integration-fsds)
+11. [Dependencies](#dependencies)
 
 ---
 
@@ -392,6 +393,21 @@ Since `simulation.py`'s history dict now records the plant's true yaw rate (`sta
 
 ---
 
+### `manual_drive.py`
+**Purpose:** Standalone keyboard/mouse drive mode — lets a human drive the 24-state nonlinear plant directly with WASD + Space instead of the MPC controller. Useful for feeling out the plant's handling limits, sanity-checking cone placement/track geometry by eye, and producing a "how would a human drive this" reference trace to compare against MPC runs.
+
+This is a companion to `simulation.py`, not a replacement: `simulation.py` owns the MPC/offline-tuner integration; `manual_drive.py` owns the human-in-the-loop path only. It reuses the same synthetic path library (`offline_tuner.SYNTHETIC_PATHS`/`PATH_NAMES`), cone placement (`sim_track.place_cones`), and 24-state nonlinear plant (`vehicle_physics.step_nonlinear_plant`) so a manually-driven run is physically comparable to an MPC-driven one — but it does **not** run the MPC solver, adaptive gain scheduling, or the `rollout_core`/`scoring` pipeline. Driving is open-loop from the human's perspective: no tracking error is computed or scored.
+
+**Controls:** `W`/`S` throttle/brake, `A`/`D` steer left/right, `SPACE` full brake (overrides throttle). Steering and throttle/brake commands are rate-limited toward the key-driven target (`STEER_RATE`, `ACCEL_RATE`) each tick so key taps feel analog rather than an on/off step input, and don't slam the actuator lag filter with step changes.
+
+**Function:** `update_frame(_frame)` — the `FuncAnimation` drive-loop tick: reads held keys, ramps `delta_cmd`/`a_cmd` toward their targets, steps the plant one `DT`, redraws the trail/vehicle marker/telemetry panel, and re-centres the camera if the car nears the visible edge.
+
+**Dependencies:** `vehicle_physics` (`VehicleParams`, `step_nonlinear_plant`, `init_plant_state`), `offline_tuner` (`SYNTHETIC_PATHS`, `PATH_NAMES` — read at import time only), `sim_track` (`place_cones`), `settings` (`DT`), `matplotlib`, `numpy`. Does **not** import `optimiser.py`, `bicycle_model.py`, `rollout_core.py`, `scoring.py`, or `model_utils.py`.
+
+**Run it:** `python manual_drive.py`
+
+---
+
 ## Simulator Deep-Dive
 
 ### Startup and Path Input
@@ -522,6 +538,19 @@ If OSQP returned `OPTIMAL_INACCURATE` on any steps, the final score is scaled by
 After all evaluations, both `xbest` (lowest score observed across all true evaluations) and `xfavorite` (the distribution mean — more robust to noise) are freshly evaluated serially. Whichever scores lower is selected and printed as copy-paste arrays. Results are appended to `tuning history.txt` with timestamp, duration, and git commit hash.
 
 ---
+
+## Manual Drive Mode
+
+`manual_drive.py` is a small standalone app for driving the nonlinear plant yourself instead of the MPC — useful for building intuition for the vehicle's handling limits, eyeballing track/cone geometry, and generating a human reference trace to compare against MPC runs on the same path.
+
+**Run it:**
+```
+python manual_drive.py
+```
+
+**Workflow:** click **Load Test Path** to cycle through the synthetic path library and place cones (same `sim_track.place_cones()` used by the simulator) → click **Start Driving** to spawn the plant at the path's start pose → drive with `W`/`S` (throttle/brake), `A`/`D` (steer), `SPACE` (full brake) → **Reset** to stop and clear the trail.
+
+It shares the same 24-state nonlinear plant (`vehicle_physics.step_nonlinear_plant`) as the simulator and offline tuner, so a manually-driven run is physically comparable to an MPC-driven one on the same path — but it's entirely open-loop: no tracking error is computed, no MPC solve happens, and nothing is scored. See the [Module Reference](#module-reference) entry above for details.
 
 ## Running the Simulator
 

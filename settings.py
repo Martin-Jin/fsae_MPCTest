@@ -77,11 +77,6 @@ PATH_N_POINTS = 1000
 #   9: steering_reversals — count of steering sign reversals (penalises hunting)
 #  10: peak_lateral_error — worst single-step lateral deviation (safety margin)
 #  11: speed_rmse         - difference between current and planner speed
-#
-# Design note: steer_rms (3), max_steering (5), and steering_sat_ratio (6)
-# are correlated (all measure the same signal at different aggregation levels).
-# Weight was redistributed to rmse and peak_lateral_error which are the primary
-# tracking quality signals and previously under-weighted.
 SCORE_WEIGHTS = np.array(
     [
         0.505,  # 0  rmse               (lateral + heading tracking; primary)
