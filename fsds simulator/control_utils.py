@@ -1,13 +1,66 @@
 # Title: control_utils.py
 
 """
-control_utils.py — MPC path-tracking controller for FSDS.
+control_utils.py — Live MPC Path-Tracking Controller for FSDS
 
-Linear time-varying MPC built on an 8-state bicycle model with first-order
-actuator lag. Designed for 100% parity with the offline tuner pipeline.
+PURPOSE
+-------
+Provides MPCController, the single class control_node.py uses to turn a
+planner path + current vehicle state into a ControlCommand at 20 Hz. It is
+a self-contained, "live-solve" re-implementation of the same linear
+time-varying MPC formulated generically in optimiser.py / bicycle_model.py
+for the offline tuner and simulator, designed for 100% numerical parity
+with that offline pipeline so that weights tuned by offline_tuner.py
+(see tuning_history.txt) transfer directly to the real/simulated vehicle.
 
-  States  x : [e_y, e_yd, e_psi, r, e_v, e_a, delta_act, a_act]
-  Inputs  u : [delta_cmd (rad), a_cmd (m/s2)]
+  States  x : [e_y, e_yd, e_psi, r, e_v, e_a, delta_act, a_act]   (8,)
+  Inputs  u : [delta_cmd (rad), a_cmd (m/s2)]                      (2,)
+
+HOW IT WORKS
+------------
+Each call to MPCController.compute() runs the full MPC pipeline:
+  1. Low-pass filter the incoming desired_speed (_v_des_filtered) to avoid
+     feeding step changes into the MPC's speed-error state.
+  2. _error_state() — project the vehicle's front axle onto the nearest
+     path segment to get Frenet-style tracking errors (e_y, e_psi, e_v) and
+     a short-lookahead curvature estimate (kappa), then assemble the 8-state
+     vector x0 (reusing the controller's own actuator-lag memory for the
+     delta_act/a_act entries, since those aren't directly measurable).
+  3. _discrete_model() — build the speed-blended kinematic/dynamic bicycle
+     model and ZOH-discretise it (mirrors bicycle_model.get_8state_discrete_model,
+     duplicated locally so the live controller has no simulation dependencies).
+  4. Gain-schedule R and R_rate via the module-level _adaptive_R_scaling /
+     _adaptive_R_rate helpers (mirrors model_utils.py's adaptive_R_scaling /
+     adaptive_R_rate — duplicated here for the same reason).
+  5. _solve_qp() — inject the above into a persistent, parameterised CVXPY
+     problem (built once in _build_qp, reused via warm-start) and solve with
+     OSQP, falling back to Clarabel, then to a full-brake command (holding
+     the last steering angle) if both solvers fail.
+  6. Integrate the actuator lag states exactly (ZOH, not Euler) so
+     delta_act/a_act stay consistent even though dt (0.05s) is comparable
+     to tau_a (0.02s).
+  7. Convert [delta_cmd, a_cmd] into FSDS's normalised
+     [steering, throttle, brake] command triple and populate
+     self.last_telemetry for control_node.py's CSV logger.
+
+PARITY WITH THE OFFLINE PIPELINE
+---------------------------------
+_adaptive_R_scaling/_adaptive_R_rate/_discrete_model here are intentionally
+near-identical duplicates of model_utils.py / bicycle_model.py, and
+_build_qp's cost/constraint formulation is a near-identical duplicate of
+optimiser.py's init_parameterized_mpc (same +/-3.5 m soft lane bound, same
+W_slack=10000, same step-0/subsequent rate-cost split), plus a hard
+per-step slew-rate constraint on [delta_cmd, a_cmd] (self.du_max) enforced
+in addition to the soft R_rate cost. Any change to the cost/constraint
+structure in one location should be mirrored in the other, or the weights
+tuned by offline_tuner.py will no longer transfer faithfully to the live
+controller.
+
+USED BY
+-------
+  control_node.py — ControlNode.__init__ constructs one MPCController(dt=0.05,
+                    N=25) and calls .compute() every 20 Hz tick, .reset()
+                    on stale path / cone-brake fail-safes.
 """
 
 import math
@@ -77,6 +130,23 @@ class MPCController:
         dt: float = 0.05, 
         N:  int   = 25, 
     ) -> None:
+        """
+        Parameters
+        ----------
+        dt : float
+            Control/prediction timestep (s). Must equal the node's control
+            timer period (0.05 s / 20 Hz in control_node.py) so the
+            discretised model's predictions align with real elapsed time.
+        N : int
+            MPC horizon length in steps (25 -> 1.25 s lookahead at dt=0.05).
+            Must match settings.N_HORIZON for tuned weights to transfer.
+
+        Vehicle geometry/dynamics constants (lf, lr, m, Iz, Cf, Cr,
+        tau_delta, tau_a) are hardcoded here rather than imported from
+        vehicle_physics.VehicleParams — keep these in sync manually if the
+        plant model is retuned, since this is the "live" copy used on the
+        real/simulated vehicle.
+        """
         self.dt = dt
         self.N  = N
 
@@ -109,13 +179,15 @@ class MPCController:
         self.u_min = np.array([-MAX_STEER_RAD, -self.a_max_brake]) 
         self.u_max = np.array([ MAX_STEER_RAD,  self.a_max])
         
+        # Hard per-step slew-rate limit on [delta_cmd, a_cmd], enforced in
+        # _build_qp in addition to the soft R_rate cost.
         self.du_max = np.array([math.radians(4.0), 0.6]) 
 
         # ── Continuity memory ─────────────────────────────────────────
         self._delta_act:      float      = 0.0
         self._a_act:          float      = 0.0
         self._u_prev:         np.ndarray = np.zeros(self.nu)
-        self._v_des_filtered: float      = 0.0
+        self._v_des_filtered: float | None = None
 
         self.last_telemetry: dict = {}
         self._qp: dict | None = None
@@ -151,7 +223,16 @@ class MPCController:
             u <= self.u_max[:, None],
             x[0, :-1] <=  3.5 + slack,
             x[0, :-1] >= -3.5 - slack,
+            u[:, 0] - uprev_p <=  self.du_max,
+            u[:, 0] - uprev_p >= -self.du_max,
         ]
+
+        if N > 1:
+            du_hard = cp.diff(u, axis=1)
+            constraints += [
+                du_hard <=  self.du_max[:, None],
+                du_hard >= -self.du_max[:, None],
+            ]
 
         # Cost Formulation (Exact match to optimiser.py)
         cost  = cp.sum(cp.sum_squares(cp.multiply(sqrtQ_param, x)))
@@ -173,6 +254,7 @@ class MPCController:
             "Ad":    Ad_p,
             "Bd":    Bd_p,
             "x0":    x0_p,
+            "u_prev": uprev_p,
             "sqrtQ": sqrtQ_param,
             "sqrtR": sqrtR_param,
             "sqrtRr": sqrtRr_param,
@@ -319,6 +401,7 @@ class MPCController:
         qp["Ad"].value = Ad
         qp["Bd"].value = Bd
         qp["x0"].value = x0
+        qp["u_prev"].value = self._u_prev
 
         # Format arrays for cp.sum_squares element-wise multiplication
         sqrtQ  = np.sqrt(np.clip(np.diag(self.Q), 1e-6, 1e6))
@@ -361,7 +444,7 @@ class MPCController:
         except cp.error.SolverError as exc:
             print(f"[MPC] Warning: Clarabel also failed: {exc!r}")
 
-        return np.array([self._u_prev[0], 0.0])
+        return np.array([self._u_prev[0], -self.a_max_brake])
 
     def compute(
         self,
@@ -373,14 +456,45 @@ class MPCController:
         car_yaw_rate:  float = 0.0,
     ) -> tuple[float, float, float]:
         """
-        Executes pipeline: Extract error -> Discretize -> Solve QP -> Output.
+        Run one full MPC control step: extract tracking error -> discretise
+        the plant model at the current speed -> gain-schedule R/R_rate ->
+        solve the QP -> integrate actuator lag -> convert to FSDS units.
+
+        Parameters
+        ----------
+        path : np.ndarray, shape (n, 2)
+            Planner centreline waypoints [x, y] in the global frame.
+        car_pos : np.ndarray, shape (2,)
+            Vehicle rear-axle-reference position [x, y] (global frame);
+            front axle position is derived inside _error_state via self.lf.
+        car_yaw : float
+            Vehicle heading (rad, global frame).
+        car_speed : float
+            Vehicle forward speed magnitude (m/s); see _odom_cb note on how
+            this is measured upstream.
+        desired_speed : float
+            Planner's requested speed (m/s); low-pass filtered internally.
+        car_yaw_rate : float, optional
+            Measured yaw rate (rad/s), defaults to 0.0 if unavailable.
+
+        Returns
+        -------
+        (steering, throttle, brake) : tuple of float
+            steering in [-1, 1] (FSDS ControlCommand convention),
+            throttle in [0, 1], brake in [0, 1] (throttle/brake mutually
+            exclusive, split by the sign of a_cmd).
+
+        Guard: if the path has fewer than 2 points, immediately returns a
+        neutral/mild-braking command (0.0, 0.0, 0.5) without touching the
+        QP or any internal state — control_node.py's own path-staleness
+        check (Phase 2) is expected to normally catch this first.
         """
         if len(path) < 2:
             return 0.0, 0.0, 0.5   
 
-        # Filter target speed to prevent impulse requests
+        # Filter target speed to prevent impulse requests.
         alpha = 0.08
-        if self._v_des_filtered == 0.0:
+        if self._v_des_filtered is None:
             self._v_des_filtered = desired_speed
         self._v_des_filtered += alpha * (desired_speed - self._v_des_filtered)
         desired_speed = self._v_des_filtered
@@ -441,4 +555,4 @@ class MPCController:
         self._delta_act       = 0.0
         self._a_act           = 0.0
         self._u_prev          = np.zeros(self.nu)
-        self._v_des_filtered  = 0.0
+        self._v_des_filtered  = None

@@ -1,3 +1,52 @@
+"""
+control_node.py — ROS 2 Real-Time Control Node for FSDS
+
+PURPOSE
+-------
+The live, in-sim ROS 2 node that wraps MPCController
+(control_utils.py) in a 20 Hz control loop. It is the only place in the
+codebase where the MPC is driven by real sensor topics rather than the
+offline simulator (simulation.py) or the tuner (offline_tuner.py).
+
+Responsibilities:
+  1. Subscribe to planner path, planner speed, odometry, fused cone map,
+     and the race "GO" signal.
+  2. Maintain the latest vehicle state (position, yaw, speed, yaw rate)
+     and the latest planned path / desired speed.
+  3. Run a fixed 20 Hz timer that calls MPCController.compute() and
+     publishes a ControlCommand.
+  4. Apply two independent safety overrides on top of the MPC output:
+       a. GO-wait hold (Phase 1) — full brake until the race start signal.
+       b. Stale-path emergency brake (Phase 2) — full brake + MPC reset if
+          no fresh path has been received within TARGET_TIMEOUT.
+       c. Cone-proximity brake (Phase 4) — full brake if any fused cone is
+          inside a dynamic corridor directly ahead of the car.
+  5. Optionally log per-step telemetry (state, error terms, and the final
+     published command) to CSV for offline analysis, mirroring the
+     LOG_FIELDS also produced by scoring.py / performance_stats.py.
+
+CONTROL LOOP PHASES (see _control_loop)
+----------------------------------------------------------------------------
+  Phase 1 — Hold at start line until GO signal received.
+  Phase 2 — Emergency brake if the planner path is missing/stale (>TARGET_TIMEOUT
+            old) or has fewer than 2 points; also resets the MPC so it doesn't
+            warm-start from a stale trajectory once the path returns.
+  Phase 3 — Normal MPC solve via MPCController.compute().
+  Phase 4 — Cone-proximity brake override: hard-overrides the MPC's
+            throttle/brake (not steering) if a cone is inside the dynamic
+            braking corridor. After CONE_RESET_THRESHOLD seconds of
+            continuous braking, the MPC is reset exactly once (edge-triggered
+            on the rising duration threshold, re-armed once the brake clears).
+  Phase 4a — Telemetry logging of the *final* (post-override) command.
+  Phase 5 — Publish.
+
+USED BY
+-------
+  Launched as the `controller` ROS 2 node entry point (see main()). Depends
+  on MPCController from control_utils.py for all optimal-control computation;
+  the node itself contains no MPC/optimisation logic.
+"""
+
 import csv
 import math
 import time
@@ -19,6 +68,13 @@ from fsae_planning.cone_sorting import separate_cones_by_color
 
 V_FALLBACK       = 2.0   # m/s  — desired speed used until planner publishes one
 CONE_BRAKE_DIST  = 2.0   # m    — forward corridor depth for cone proximity brake
+                         # NOTE: this is also the *ceiling* on the dynamic
+                         # corridor computed in _check_cone_proximity() (car_speed
+                         # * 0.25, clipped to [0.6, CONE_BRAKE_DIST]). At and above
+                         # 8 m/s the corridor is capped at 2.0 m of forward look-ahead
+                         # regardless of speed, i.e. well under 1 stopping second —
+                         # worth reviewing against the car's real braking distance
+                         # at top speed.
 CONE_BRAKE_WIDTH = 0.18  # m    — lateral half-width of braking corridor (36 cm total)
 TARGET_TIMEOUT   = 0.5   # s    — brake if no fresh path received within this window
 
@@ -75,6 +131,7 @@ class ControlNode(Node):
         self._blue_cones:   np.ndarray = np.empty((0, 2))
         self._yellow_cones: np.ndarray = np.empty((0, 2))
         self._cone_brake_duration: float = 0.0
+        self._cone_reset_done: bool = False
 
         # ── MPC controller ─────────────────────────────────────────────
         self._mpc = MPCController(dt=0.05, N=25)
@@ -103,13 +160,30 @@ class ControlNode(Node):
     # ------------------------------------------------------------------
 
     def _go_cb(self, msg: GoSignal) -> None:
-        """Unlocks the vehicle to begin following the path."""
+        """
+        Latch the race "GO" signal.
+
+        Once True, self._go_received is never reset, so the vehicle cannot
+        be re-locked mid-run by a repeated/duplicate GoSignal message. Only
+        the first GO message has any effect (subsequent ones are ignored).
+        """
         if not self._go_received:
             self._go_received = True
             self.get_logger().info('GO signal received. Launching control loop.')
 
     def _path_cb(self, msg: Path) -> None:
-        """Converts the incoming Path poses into a 2D numpy array [x, y]."""
+        """
+        Convert the incoming planner Path poses into a 2D numpy array [x, y]
+        and record the wall-clock arrival time.
+
+        self._path_stamp is used by _control_loop's staleness check
+        (TARGET_TIMEOUT) — note it is stamped with node-clock "now" at
+        message arrival, not the Path message's own header stamp, so this
+        measures ROS-callback latency/dropout rather than sensor age.
+        An empty poses list degrades gracefully to an empty (0, 2) array,
+        which subsequently trips the `len(self._path_pts) < 2` staleness
+        condition in _control_loop.
+        """
         self._path_pts = np.array(
             [[ps.pose.position.x, ps.pose.position.y] for ps in msg.poses],
             dtype=np.float64,
@@ -117,11 +191,28 @@ class ControlNode(Node):
         self._path_stamp = self.get_clock().now()
 
     def _speed_cb(self, msg: Float32) -> None:
-        """Updates the desired target speed published by the planner."""
+        """
+        Update the desired target speed published by the planner.
+
+        No staleness tracking here (unlike _path_cb) — a planner that stops
+        publishing speed but keeps publishing path will silently keep the
+        last received desired_speed forever rather than triggering a brake.
+        """
         self._desired_speed = float(msg.data)
 
     def _odom_cb(self, msg: Odometry) -> None:
-        """Extracts position, speed, and yaw rate from Odometry."""
+        """
+        Extract position, forward speed, yaw rate, and yaw from Odometry.
+
+        car_speed is computed as hypot(vx, vy) of the *linear* twist, i.e.
+        vehicle-frame planar speed magnitude, not projected onto the car's
+        forward axis — this only equals true forward speed if lateral twist
+        (side-slip) is negligible, which is the standard MPC small-slip
+        assumption but can under/overstate speed during a slide.
+        Yaw is recovered from the quaternion via the standard planar
+        (roll/pitch-ignoring) atan2 formula, valid because FSDS operates on
+        a flat track.
+        """
         p = msg.pose.pose.position
         self._car_pos = np.array([p.x, p.y])
 
@@ -135,7 +226,12 @@ class ControlNode(Node):
         self._car_yaw = math.atan2(siny_cosp, cosy_cosp)
 
     def _track_cb(self, msg: Track) -> None:
-        """Separates the incoming cone map into blue and yellow arrays."""
+        """
+        Split the fused perception Track message into blue/yellow numpy
+        cone arrays via fsae_planning.cone_sorting.separate_cones_by_color().
+        Used only by the Phase 4 cone-proximity brake, not by the MPC path
+        tracking itself (path already comes pre-planned from the planner).
+        """
         self._blue_cones, self._yellow_cones = separate_cones_by_color(msg)
 
     # ------------------------------------------------------------------
@@ -240,8 +336,9 @@ class ControlNode(Node):
             cmd.brake    = 1.0
             self._cone_brake_duration += 0.05
 
-            if self._cone_brake_duration >= CONE_RESET_THRESHOLD:
+            if self._cone_brake_duration >= CONE_RESET_THRESHOLD and not self._cone_reset_done:
                 self._mpc.reset()
+                self._cone_reset_done = True
 
             self.get_logger().warn(
                 f'Cone proximity brake active ({self._cone_brake_duration:.2f} s).',
@@ -249,6 +346,7 @@ class ControlNode(Node):
             )
         else:
             self._cone_brake_duration = 0.0
+            self._cone_reset_done = False
 
         # ── Phase 4a: Telemetry log (post-override, reflects final cmd) ─
         if self._log_writer is not None:
@@ -296,6 +394,11 @@ class ControlNode(Node):
         super().destroy_node()
 
 def main(args=None):
+    """
+    ROS 2 entry point: initialise rclpy, spin ControlNode until Ctrl-C, then
+    cleanly destroy the node (flushing/closing the telemetry CSV via
+    ControlNode.destroy_node()) and shut down rclpy.
+    """
     rclpy.init(args=args)
     node = ControlNode()
     try:
