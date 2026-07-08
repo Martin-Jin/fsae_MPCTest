@@ -126,9 +126,9 @@ class VehicleParams:
 
     def __init__(self):
         # ── Tuning Constants (Modify these to change car behavior) ────
-        GRIP_SCALE    = 0.95  # Scales tyre stiffness and Pacejka slope
-        INERTIA_SCALE = 0.3  # Scales yaw inertia and wheel rotational mass
-        COASTING_SCALE = 0.5 # < 1.0 = Rolls further, > 1.0 = Stops faster
+        GRIP_SCALE    = 1.1  # Scales tyre stiffness and Pacejka slope
+        INERTIA_SCALE = 0.8  # Scales yaw inertia and wheel rotational mass
+        COASTING_SCALE = 3.0 # < 1.0 = Rolls further, > 1.0 = Stops faster
 
         # ── Geometry ────────────────────────────────────────────────────────
         self.lf    = 0.85     # Distance from CoM to front axle (m)

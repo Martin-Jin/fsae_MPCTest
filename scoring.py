@@ -20,9 +20,6 @@ USED BY
                            arrays through the identical accumulator
   simulation.py          — should call RolloutMetrics the same way
                            offline_tuner does (see integration note at bottom)
-
-NOTE: review pass found no functional bugs in this file. Comments only
-lightly tightened for clarity; logic is unchanged from the original.
 """
 
 import numpy as np
