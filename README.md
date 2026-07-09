@@ -36,7 +36,7 @@ fsae planning repo: https://github.com/UOA-FSAE/fsae_planning (current implement
 6. [How the MPC Works](#how-the-mpc-works)
 7. [How the Offline Tuner Works](#how-the-offline-tuner-works)
 8. [Module Reference](#module-reference)
-9. [ROS 2 Integration (fsds)](#ros-2-integration-fsds)
+9. [Fsds simulator integration](#simulator-integration)
 10. [Manual Drive Mode](#manual-drive-mode)
 11. [Dependencies](#dependencies)
 12. [Developer Guide](#developer-guide)
@@ -1333,9 +1333,9 @@ not here.
 
 ---
 
-## ROS 2 Integration (fsds)
+## Simulator integration
 
-To run the controller against the FSDS simulator, first obtain the
+To run the controller against the FSDS simulator in ros2, first obtain the
 `fsae_planning` repo, then paste the contents of `control_node.py` and
 `control_utils.py` into the matching files in its `track_utils` package.
 (If you already have the simulator set up with the `fsae_planning` repo. Scroll down for installing from scratch on windows.)
@@ -1380,36 +1380,144 @@ To run the controller against the FSDS simulator, first obtain the
    vehicle.
 6. **Publish.**
 
-### Launching nodes with FSDS on Windows
-1. Install the windows release (exe) on the fsds repo, follow the instructions on to clone and setup airsim and the ros2 bridge.
+### Launching nodes with FSDS on Windows (WSL + Docker)
 
-Cloning the repo:
+This sets up the ROS 2 bridge and planning/control stack from scratch on a
+Windows machine, using the precompiled Windows FSDS `.exe` alongside a
+Dockerised ROS 2 Jazzy environment running inside WSL. Do the cloning step
+in your WSL **home directory**, not inside an existing project folder.
+
+**1. Clone the repo and start a ROS 2 Jazzy container**
 
 ```bash
+# In WSL Ubuntu, from your home directory
 GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/FS-Driverless/Formula-Student-Driverless-Simulator.git --recurse-submodules
+
+docker run -it \
+  --name fsds_ros2_bridge \
+  --net=host \
+  --privileged \
+  -v "$(pwd)":/root/Formula-Student-Driverless-Simulator \
+  osrf/ros:jazzy-desktop \
+  bash
 ```
 
-2. Configure the WSL IP in the ROS 2 bridge launch file:
+`--net=host` is what makes the WSL-IP handshake in step 3 work — the
+container shares WSL's network namespace rather than getting its own.
+
+**2. Build the workspace inside the container**
+
+Install the ROS 2 build tooling and message dependencies the bridge needs:
 
 ```bash
-# Get WSL network interface IP:
-ip route | grep default | awk '{print $3}'
+apt-get update && apt-get install -y \
+  python3-colcon-common-extensions \
+  ros-jazzy-cv-bridge \
+  ros-jazzy-image-transport \
+  ros-jazzy-tf2-geometry-msgs \
+  libyaml-cpp-dev
+```
 
-# In fsds_ros2_bridge.launch.py, set the default_value to your IP:
+FSDS's Windows `.exe` is built on AirSim, and the `/ros2` bridge package
+in this repo depends on AirSim's client headers, so AirSim's own external
+dependencies need fetching before the bridge will compile:
+
+```bash
+apt-get update && apt-get install -y eigen3-devel || apt-get install -y libeigen3-dev
+apt-get update && apt-get install -y wget
+
+cd /root/Formula-Student-Driverless-Simulator/AirSim
+./setup.sh
+```
+
+Then build the ROS 2 workspace.
+
+```bash
+cd /root/Formula-Student-Driverless-Simulator/ros2
+source /opt/ros/jazzy/setup.bash
+colcon build --symlink-install
+```
+
+**3. Point the bridge at the Windows-side simulator**
+
+The bridge runs in the Linux/Docker side; the simulator `.exe` runs on
+Windows. They talk over AirSim's RPC protocol (port `41451` by default),
+so the bridge needs your WSL host's IP address to reach across that
+boundary.
+
+Get the IP (run this in a **WSL terminal**, not inside Docker):
+
+```bash
+ip route | grep default | awk '{print $3}'
+```
+
+Set that IP as the `host` launch argument default in
+`fsds_ros2_bridge.launch.py`:
+
+```python
 launch.actions.DeclareLaunchArgument(
     'host',
-    default_value='xxx.xx.xxx.x',
+    default_value='xxx.xx.xxx.x',  # your WSL_IP from above
     description='IP address of the Windows host running the simulator'
 ),
 ```
 
-3. Clone the `fsae_planning` repo into /home/Formula-Student-Driverless-Simulator/ros2/src.
+On the **Windows side**, open (or create)
+`C:\Users\<Your-Username>\Documents\AirSim\settings.json` and make sure
+`"ApiServerPort": 41451` is set — this is the port the bridge will connect
+to once the simulator is running.
 
-4. Paste the contents of `control_node.py` and `control_utils.py` into the matching files in its `track_utils` package (of the planning repo).
+**Execution order matters:** always start the Windows `.exe` first (it
+opens the RPC port), *then* launch the ROS 2 bridge — launching the bridge
+before the simulator is up will fail to connect. (or use the launch file)
 
-5. Build the package.
+```bash
+source /opt/ros/jazzy/setup.bash
+source install/local_setup.bash
+ros2 launch fsds_ros2_bridge fsds_ros2_bridge.launch.py
+```
 
-6. Use the provided launch script to launch in wsl:
+Once connected, `ros2 topic list` (in a second container terminal) should
+show live vehicle telemetry, image, and sensor topics streaming from the
+simulator.
+
+**4. Add the `fsae_planning` repo and this project's controller**
+
+```bash
+cd /root/Formula-Student-Driverless-Simulator/ros2/src
+git clone https://github.com/UOA-FSAE/fsae_planning.git
+```
+
+Paste the contents of `control_node.py` and `control_utils.py` from this
+repo into the matching files in `fsae_planning`'s `track_utils` package,
+then resolve dependencies and build:
+
+```bash
+cd /root/Formula-Student-Driverless-Simulator/ros2
+rosdep update
+rosdep install --from-paths src --ignore-src -r -y
+colcon build --symlink-install
+```
+
+**5. Run the closed loop**
+
+With the Windows `.exe` and the bridge already running (steps 3), open a
+third terminal into the same container and launch the planning stack:
+
+```bash
+docker exec -it fsds_ros2_bridge bash
+source /opt/ros/jazzy/setup.bash
+cd /root/Formula-Student-Driverless-Simulator/ros2
+source install/local_setup.bash
+
+ros2 launch fsae_planning launch_planning.py
+
+# Prevents core-dump files from being written on crashes:
+ulimit -c 0
+```
+
+Alternatively, use the provided launch script to bring up the bridge and
+planning nodes together:
 
 ```bash
 cd /home/Formula-Student-Driverless-Simulator/ros2/
@@ -1417,12 +1525,52 @@ chmod +x launch_all.sh
 ./launch_all.sh
 ```
 
-**Building and editing the ROS 2 packages:**
-When setting up for the first time, you need to build the ros2 package.
-You can use the custom docker file provided to do this.
+**Installing solver dependencies (MPC controller) inside the container**
+
+The base `osrf/ros:jazzy-desktop` image doesn't ship the QP solver stack
+this controller needs (see [The solver](#the-solver)). Install it manually
+inside a running container:
 
 ```bash
-cd /home/Formula-Student-Driverless-Simulator/ros2
+apt update && apt install -y python3-pip
+pip3 install cvxpy osqp --no-deps --break-system-packages
+pip3 install qdldl scs clarabel highspy sparsediffpy jinja2 joblib markupsafe cffi pycparser --no-deps --break-system-packages
+pip3 install cvxpy osqp --ignore-installed --break-system-packages
+pip3 install "setuptools<80" --break-system-packages
+pip3 install matplotlib kiwisolver --ignore-installed --break-system-packages
+pip3 install "sparsediffpy<0.4.0" --break-system-packages
+```
+
+...or bake all of the above into a reusable custom image instead of
+repeating it by hand every time the container is recreated:
+
+```bash
+cat << 'EOF' > fsds_ros2_custom.Dockerfile
+FROM osrf/ros:jazzy-desktop
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+RUN pip3 install cvxpy osqp --no-deps --break-system-packages
+RUN pip3 install qdldl scs clarabel highspy sparsediffpy jinja2 joblib markupsafe cffi pycparser --no-deps --break-system-packages
+RUN pip3 install cvxpy osqp --ignore-installed --break-system-packages
+RUN pip3 install "setuptools<80" --break-system-packages
+RUN pip3 install matplotlib kiwisolver --ignore-installed --break-system-packages
+RUN pip3 install "sparsediffpy<0.4.0" --break-system-packages
+EOF
+
+docker build --no-cache -f fsds_ros2_custom.Dockerfile -t fsds_ros2_custom .
+```
+
+**Reopening after a reboot / rebuilding a single package:**
+
+The container itself doesn't persist across a host reboot (only the
+volume-mapped repo folder does), so it needs recreating from the custom
+image:
+
+```bash
+cd /home/Formula-Student-Driverless-Simulator
+docker rm -f fsds_ros2_bridge
 
 docker run -it \
     --name fsds_ros2_bridge \
@@ -1431,18 +1579,24 @@ docker run -it \
     -v "$(pwd)":/root/Formula-Student-Driverless-Simulator \
     fsds_ros2_custom \
     bash
+```
 
+To rebuild just the `fsae_planning` package after editing it (e.g. after
+re-pasting an updated `control_node.py`/`control_utils.py`):
+
+```bash
 cd /root/Formula-Student-Driverless-Simulator/ros2
+rm -rf build/fsae_planning/ install/fsae_planning/
 colcon build --packages-select fsae_planning --symlink-install
 ```
-To edit it, simply run vscode in the wsl directory:
+
+To edit the workspace files from Windows, open VS Code directly against
+the WSL folder rather than editing inside the container:
 
 ```bash
 cd /home/Formula-Student-Driverless-Simulator/ros2
-
 code .
 ```
----
 
 ## Manual Drive Mode
 
