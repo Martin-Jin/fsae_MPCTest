@@ -74,7 +74,10 @@ from rollout_core import run_core_rollout, compute_step_budget
 from settings import (
     USE_PLANNER,
     ROLLOUT_MAX_ITER,
-    ROLLOUT_EPS
+    ROLLOUT_EPS,
+    Q_diag,
+    R_diag,
+    R_rate_diag
 )
 
 # ==========================================
@@ -84,14 +87,6 @@ N_horizon = 25      # MPC prediction horizon (steps = 1.25 s of look-ahead at 20
 v_ref     = 7.0     # Fallback constant speed (m/s); only used if path_v_profile is empty
 
 # ── MPC Cost Weight Matrices ───────────────────────────────────────────────────
-# States penalised by Q: [e_y, ė_y, e_ψ, ψ̇, e_v, e_a, δ_act, a_act]
-# The last three entries are zero: actuator states are not penalised here;
-# R_rate handles smoothness indirectly through Δu costs.
-# These values are the output of the most recent offline_tuner.py run.
-# To update: paste Q_diag, R_diag, R_rate_diag printed by offline_tuner.py.
-Q_diag      = [0.9638529433528358, 0.16917546433555822, 0.8412084423109519, 0.6719136934634028, 1.3722642626759542, 0.0, 0.0, 0.0]
-R_diag      = [1.0732323890203437, 0.6986142210105707]
-R_rate_diag = [2.2731056206565956, 3.8354972983644497]
 
 Q      = np.diag(Q_diag)       # State cost matrix (8×8 diagonal)
 R      = np.diag(R_diag)       # Input cost matrix (2×2 diagonal)

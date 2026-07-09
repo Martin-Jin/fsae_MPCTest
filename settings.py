@@ -21,6 +21,15 @@ OFFTRACK_LIMIT = TRACK_HALF_WIDTH * 1.3  # Lateral error threshold for DNF (m)
 
 DT        = 0.05    # Simulation timestep (s) — 20 Hz, matches vehicle_physics sub-stepping
 
+# ------------------------------------------------------------------------------
+# Cost function weights (for simulator only)
+# ------------------------------------------------------------------------------
+# These values are the output of the most recent offline_tuner.py run.
+# To update: paste Q_diag, R_diag, R_rate_diag printed by offline_tuner.py.
+Q_diag      = [0.9638529433528358, 0.16917546433555822, 0.8412084423109519, 0.6719136934634028, 1.3722642626759542, 0.0, 0.0, 0.0]
+R_diag      = [1.0732323890203437, 0.6986142210105707]
+R_rate_diag = [2.2731056206565956, 3.8354972983644497]
+
 
 # ==============================================================================
 # TUNER ENGINE & CONSTRAINT SETTINGS
