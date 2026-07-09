@@ -84,11 +84,11 @@ manual testing.
 USED BY
 -------
   Standalone script: run with `python offline_tuner.py` to start optimisation.
-  simulation.py: imports SYNTHETIC_PATHS, PATH_NAMES, curvature_estimate,
-                 adaptive_R_rate, adaptive_R_scaling, SCORE_WEIGHTS,
-                 COMPLETION_BONUS_WEIGHT, TIME_BONUS_WEIGHT, DNF_PENALTY
-  performance_stats.py: imports SCORE_WEIGHTS, COMPLETION_BONUS_WEIGHT,
-                         TIME_BONUS_WEIGHT, DNF_PENALTY
+  simulation.py: imports SYNTHETIC_PATHS, PATH_NAMES, get_cached_model.
+                 Scoring/weight constants (SCORE_WEIGHTS, COMPLETION_BONUS_WEIGHT,
+                 TIME_BONUS_WEIGHT, DNF_PENALTY) now live in settings.py / scoring.py.
+  performance_stats.py: imports PATH_NAMES, INITIAL_CONDITIONS, evaluate_all_paths,
+                         _init_context, get_cached_model, tunable-index lists.
 
 DOES NOT USE (as module)
 -----------------------
