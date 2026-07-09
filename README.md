@@ -616,13 +616,6 @@ In `offline_tuner.py`:
 MAX_EVALS     = 1000   # Total true rollout budget (surrogate reduces actual count ~3-10×)
 sigma0        = 0.65    # CMA-ES initial step size
 max_restarts  = 7      # BIPOP restart budget
-VALIDATION_SUITE = [   # Paths used for scoring — add/remove to change coverage
-    "PATH_MICRO_SLALOM",
-    "PATH_SUDDEN_TURN",
-    "PATH_SKIDPAD",
-    "PATH_S_BEND",
-    "PATH_CHICANE",
-]
 ```
 
 ### Reading the output
@@ -691,7 +684,7 @@ Tightening the tuner's limit produces more conservative weights. Loosening it al
 
 ### Synthetic path diversity
 
-`VALIDATION_SUITE` in `offline_tuner.py` lists which paths score each candidate. Adding a path to both `build_synthetic_paths()` and `VALIDATION_SUITE` forces the optimiser to generalise to it. Removing paths from the suite speeds up each evaluation at the cost of reduced generalisation. Currently PATH_MIXED and PATH_HAIRPIN are commented out of the suite to reduce evaluation time; re-enable them if the tuned weights struggle on compound corners.
+`VALIDATION_SUITE` in `settings.py` lists which paths score each candidate in the offline tuner. Adding a path to both `build_synthetic_paths()` and `VALIDATION_SUITE` forces the optimiser to generalise to it. Removing paths from the suite speeds up each evaluation at the cost of reduced generalisation. Currently PATH_MIXED and PATH_HAIRPIN are commented out of the suite to reduce evaluation time; re-enable them if the tuned weights struggle on compound corners.
 
 ---
 

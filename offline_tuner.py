@@ -77,7 +77,7 @@ cover representative corner types:
   PATH_FS_CORNER    — classic single 90° corner
   PATH_MIXED        — combined sequence: corner + link + corner + hairpin
 
-Only the VALIDATION_SUITE subset is used for evaluation
+Only the VALIDATION_SUITE subset is used for evaluation (in settings.py)
 to balance coverage vs. computation time. The full library is available for
 manual testing.
 
@@ -111,7 +111,8 @@ from settings import (
     ROLLOUT_MAX_ITER,
     MAX_EVALS,
     N_HORIZON,
-    DT
+    DT,
+    VALIDATION_SUITE
 )
 
 from vehicle_physics import (
@@ -766,22 +767,6 @@ def evaluate_all_paths(weights_vector, n_repeats=3, ey0=0.0, epsi0=0.0):
         "all_scores": all_scores,
     }
 
-
-# Active validation suite: subset of paths used for CMA-ES evaluation.
-# Commented-out paths are available but excluded to balance coverage vs. speed.
-VALIDATION_SUITE = [
-    "PATH_SPIRAL",
-    "PATH_SUDDEN_TURN",
-    "PATH_HAIRPIN",
-    "PATH_FS_CORNER",
-    "PATH_MICRO_SLALOM",
-    # "PATH_OFFSET_CHICANE",
-    # "PATH_SKIDPAD",
-    # "PATH_S_BEND",
-    # "PATH_MIXED",
-    # "PATH_CHICANE",
-    # "PATH_ACCELERATION"
-]
 
 # Initial condition perturbations tested for each path.
 # (ey0, epsi0): lateral offset (m), heading offset (rad).

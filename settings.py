@@ -96,6 +96,21 @@ SCORE_WEIGHTS = np.array(
 )
 assert len(SCORE_WEIGHTS) == 12
 
+# Active validation suite: subset of paths used for CMA-ES evaluation.
+# Commented-out paths are available but excluded to balance coverage vs. speed.
+VALIDATION_SUITE = [
+    "PATH_SPIRAL",
+    "PATH_SUDDEN_TURN",
+    "PATH_HAIRPIN",
+    "PATH_FS_CORNER",
+    "PATH_MICRO_SLALOM",
+    # "PATH_OFFSET_CHICANE",
+    # "PATH_SKIDPAD",
+    # "PATH_S_BEND",
+    # "PATH_MIXED",
+    # "PATH_CHICANE",
+    # "PATH_ACCELERATION"
+]
 
 # ------------------------------------------------------------------------------
 # PERFORMANCE BONUS WEIGHTS
