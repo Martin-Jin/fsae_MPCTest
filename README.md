@@ -562,6 +562,36 @@ correctly predict how the car will really move over the horizon.
 State 5 is purely for consistency, there is a rate of change for each state.
 Currently there is no acceleration profile so there is no acceleration error.
 
+#### How the error vector is actually measured (Frenet-frame projection)
+
+The error states above (`e_y`, `e_psi`, etc.) aren't things the car can
+read off a sensor directly — they only make sense *relative to a point on
+the path*. Every control tick, `vehicle_physics.plant_to_tracking_error()`
+has to answer: "of all the points along the reference path, which one is
+the car currently 'at', and how far off is it from that point?"
+
+This is a **Frenet-frame** conversion: instead of describing the car's
+position in the usual global (X, Y) map coordinates, it's re-described
+relative to the path itself — as a longitudinal position *along* the path
+plus a lateral offset *perpendicular* to it. Concretely, the code:
+
+1. Finds the nearest reference point on the path to the car's current
+   (X, Y) position (`get_interpolated_ref_point()`), giving a reference
+   `(ref_x, ref_y, ref_psi)` — the path's position and tangent heading at
+   that point.
+2. Projects the car's offset from that point onto the direction
+   perpendicular to the path's tangent, which gives the signed lateral
+   error `e_y` (positive/negative = left/right of the centreline).
+3. Takes the difference between the car's heading and the path's tangent
+   heading at that point, giving `e_psi`.
+
+This is the same idea used throughout path-tracking control (and in the
+planner's centreline/curvature calculations — see
+[Architecture Overview](#architecture-overview)): re-expressing "where am
+I" as "how far along the path, and how far off to the side," which is a
+much more useful frame for a controller whose whole job is to stay close
+to a curve, rather than reaching a specific (X, Y) point.
+
 ### The 2-input control vector
 
 ```
@@ -574,38 +604,107 @@ themselves (those are states 6 and 7 above, which lag behind `u`).
 
 ### Building the prediction model (`bicycle_model.py`)
 
-The MPC's internal model of "how does the error state change if I apply
-this control input" is a linearised **bicycle model** — the vehicle is
-approximated as having one front wheel and one rear wheel on the
-centreline, rather than four separate corners. Two different linearisations
-are blended together based on speed, because a single linear model can't
-represent vehicle behaviour accurately across the full speed range.
+Before the MPC can plan anything, it needs a way to answer the question:
+*"if the car is currently in error state `x`, and I apply steering/throttle
+command `u`, what will the error state be a tiny fraction of a second
+later?"* That question, answered mathematically, is the **prediction
+model**. This section builds it up from scratch — the general form, the two
+physical models that get blended into it, and finally how it's converted
+into the exact numbers the solver uses.
+
+The car itself is approximated as a **bicycle model** — instead of four
+separate wheels, it's treated as one wheel on the front axle and one wheel
+on the rear axle, both sitting on the car's centreline. This is a standard
+simplification in vehicle control: it captures the two things that matter
+most for path tracking (how the front wheel steers, and how the whole car
+rotates and slides sideways) while staying simple enough to solve fast,
+20 times a second.
+
+#### The general continuous-time form
+
+Every linear model in control theory is written the same way:
+
+```
+ẋ = A·x + B·u
+```
+
+Read this as: **"the rate of change of the state vector (ẋ) is some fixed
+mixture of the current state (x) plus some fixed mixture of the current
+command (u)."** `A` and `B` are just tables of numbers (matrices) that say
+*how much* of each state and each command feeds into the rate of change of
+every other state. This is "continuous-time" because `ẋ` is a true
+instantaneous rate of change (like a speedometer reading), not a per-tick
+step — that comes later.
+
+Recall the 8-state error vector and 2-input command vector from above:
+
+```
+x = [e_y, e_y_dot, e_psi, e_psi_dot, e_v, e_a, delta_act, a_act]ᵀ
+u = [delta_cmd, a_cmd]ᵀ
+```
+
+So `A` is an **8×8** grid of numbers and `B` is an **8×2** grid of numbers.
+Reading the grid: **entry `A[row, col]` is a multiplier saying "how much
+does the current value of state `col` contribute to the rate of change of
+state `row`."** Most entries are zero, because most states have no direct
+physical influence on most other states — only a handful of meaningful
+physical relationships exist, and those are the only non-zero numbers in
+the grid. Two different physical assumptions produce two different sets of
+numbers for `A` (`B` turns out to be the same in both), described next.
 
 #### 1. Kinematic model (used below ~1 m/s)
 
-At very low speed, tyres haven't built up meaningful lateral (cornering)
-force yet, so the car turns purely by geometry — like pushing a shopping
-trolley. The relevant continuous-time equations are:
+At very low speed, the tyres haven't built up any real sideways
+(cornering) grip yet — the car turns purely by geometry, the same way
+pushing a shopping trolley by its handle makes it pivot. The physical
+relationships are:
 
 ```
 ė_y   = v_x · e_psi
 ė_psi = v_x · delta_act / L        (L = wheelbase = lf + lr)
 ```
 
-In code (`A_kin`, an 8×8 matrix — entry `[row, col]` means "this much of
-`col`'s value feeds into `row`'s rate of change"):
+In plain words: *"how fast the car drifts sideways off the path depends on
+how much it's currently pointing the wrong way, scaled by speed"* (turn
+your wheels while stationary and nothing happens — sideways drift needs
+forward motion to convert into it), and *"how fast the car's heading is
+changing depends on the current steering angle and speed, via the
+wheelbase"* (standard Ackermann steering geometry — a longer car turns more
+slowly for the same steering angle).
+
+Every other state either isn't affected in this simple model, or follows
+the same "shared" behaviour described in section 3 below (actuator lag,
+speed error). Written out as the full 8×8 matrix `A_kin` (blank cells are
+zero):
+
+```
+        e_y   e_y_dot  e_psi  e_psi_dot   e_v    e_a   delta_act  a_act
+e_y   [  0      0      v_x       0         0      0        0        0   ]
+e_y_dot[ 0      0       0        0         0      0        0        0   ]
+e_psi [  0      0       0        0         0      0      v_x/L      0   ]
+e_psi_dot[0     0       0        0         0      0        0        0   ]
+e_v   [  0      0       0        0         0      1        0        0   ]
+e_a   [  0      0       0        0         0      0        0        1   ]
+delta_act[0     0       0        0         0      0     -1/tau_δ    0   ]
+a_act [  0      0       0        0         0      0        0    -1/tau_a]
+```
+
+In code:
 
 ```python
 A_kin[0, 2] = v_x_safe          # ė_y = v_x * e_psi
 A_kin[2, 6] = v_x_safe / L      # ė_psi = v_x/L * delta_act  (Ackermann geometry)
 ```
 
+(rows 4-7 are the shared rows, covered in section 3.)
+
 #### 2. Dynamic model (used above ~2.5 m/s)
 
-At higher speed, tyre lateral force (cornering stiffness × slip angle)
-dominates over pure geometry. This is the standard linearised bicycle model
-derived from Newton/Euler planar rigid-body equations under the small
-slip-angle approximation:
+At higher speed, tyre grip (cornering stiffness × slip angle) dominates
+over pure geometry — this is the regime a real car spends most of its time
+in. It's the standard linearised bicycle model, derived from Newton's laws
+for a rigid body sliding and rotating in a plane, assuming small slip
+angles:
 
 ```
 ë_y   = -(2Cf+2Cr)/(m·vx) · ė_y  +  (2Cf+2Cr)/m · e_psi
@@ -615,14 +714,31 @@ slip-angle approximation:
         - (2Cf·lf²+2Cr·lr²)/(Iz·vx) · e_psi_dot  +  (2Cf·lf)/Iz · delta_act
 ```
 
-Where `Cf`/`Cr` are the front/rear linear cornering stiffnesses (N/rad,
-from `VehicleParams`), `lf`/`lr` are the CoM-to-axle distances, `m` is mass,
-and `Iz` is yaw inertia. The `1/vx` terms exist because at higher speed, the
-same lateral velocity produces a *smaller* slip angle (the tyre has less
-time to "notice" the sideways motion relative to how far it's rolled
-forward), so cornering force builds more slowly per unit of lateral drift.
+`Cf`/`Cr` are the front/rear cornering stiffnesses (N/rad, from
+`VehicleParams` — how much sideways force a tyre generates per radian of
+slip angle), `lf`/`lr` are the distances from the car's centre of mass to
+each axle, `m` is mass, and `Iz` is yaw inertia (how hard it is to make the
+car spin, similar to how a figure skater with arms out spins slower). The
+`1/vx` terms exist because at higher speed, the same sideways drift
+produces a *smaller* slip angle — the tyre has rolled further forward for
+the same amount of sideways motion, so it "notices" the slide less, and
+grip builds up more gradually rather than instantly.
 
-In code (`A_dyn`):
+As the full 8×8 matrix `A_dyn`:
+
+```
+         e_y  e_y_dot          e_psi           e_psi_dot         e_v  e_a  delta_act    a_act
+e_y     [ 0     1                0                 0              0   0       0           0   ]
+e_y_dot [ 0  -(2Cf+2Cr)/(m·vx) (2Cf+2Cr)/m  (-2Cf·lf+2Cr·lr)/(m·vx) 0   0    (2Cf)/m        0   ]
+e_psi   [ 0     0                0                 1              0   0       0           0   ]
+e_psi_dot[0 (-2Cf·lf+2Cr·lr)/(Iz·vx) (2Cf·lf-2Cr·lr)/Iz -(2Cf·lf²+2Cr·lr²)/(Iz·vx) 0 0  (2Cf·lf)/Iz  0 ]
+e_v     [ 0     0                0                 0              0   1       0           0   ]
+e_a     [ 0     0                0                 0              0   0       0           1   ]
+delta_act[0     0                0                 0              0   0    -1/tau_δ       0   ]
+a_act   [ 0     0                0                 0              0   0       0        -1/tau_a]
+```
+
+In code:
 
 ```python
 A_dyn[0, 1] = 1.0                                          # ė_y = e_y_dot
@@ -637,10 +753,21 @@ A_dyn[3, 3] = -(2*Cf*lf**2 + 2*Cr*lr**2) / (Iz * v_x_safe)  # Yaw damping (both 
 A_dyn[3, 6] = (2*Cf * lf) / Iz                               # Steering → yaw moment
 ```
 
+Notice row 1 (`e_y_dot`) here isn't just `ė_y = ...` like the kinematic
+model — it's a *second-order* relationship (`ë_y`, acceleration of lateral
+error), so the state `e_y_dot` itself needs its own row saying `ė_y = 
+e_y_dot` (row 0, entry `[0,1] = 1`) before row 1 can describe how
+`e_y_dot` itself accelerates. This is the standard trick for turning a
+second-order physical equation into two coupled first-order ones, which is
+why the dynamic model needs both `e_y` *and* `e_y_dot` as genuinely
+separate states, while the kinematic model above barely used `e_y_dot` at
+all.
+
 #### 3. Shared rows (identical in both models)
 
-Regardless of which regime is active, the speed-error and actuator-lag rows
-are the same:
+Four rows don't depend on which physical regime is active — they're either
+structural bookkeeping or simple decay behaviour, so both `A_kin` and
+`A_dyn` set them identically:
 
 ```python
 A_kin[4, 5] = A_dyn[4, 5] = 1.0             # ė_v = e_a
@@ -649,47 +776,119 @@ A_kin[6, 6] = A_dyn[6, 6] = -1.0 / tau_delta  # dδ_act/dt = -δ_act/tau_delta (
 A_kin[7, 7] = A_dyn[7, 7] = -1.0 / tau_a      # da_act/dt = -a_act/tau_a
 ```
 
-...and the input matrix `B` (how commands `u` drive the actuator lag states)
-is identical for both models:
+The last two rows describe **actuator lag**: a real steering rack or
+throttle doesn't jump instantly to a commanded value, it eases toward it.
+Left alone (no new command), `delta_act` and `a_act` naturally decay back
+toward zero over a time constant `tau_delta`/`tau_a` — like a stretched
+spring relaxing. What actually *drives* them toward the commanded value is
+the input matrix `B` (8×2 — one column per command, `delta_cmd` and
+`a_cmd`), which is identical for both the kinematic and dynamic models:
+
+```
+           delta_cmd   a_cmd
+e_y       [   0          0   ]
+e_y_dot   [   0          0   ]
+e_psi     [   0          0   ]
+e_psi_dot [   0          0   ]
+e_v       [   0          0   ]
+e_a       [   0          0   ]
+delta_act [ 1/tau_δ       0   ]
+a_act     [   0        1/tau_a]
+```
 
 ```python
 B[6, 0] = 1.0 / tau_delta   # delta_cmd drives the steering lag integrator
 B[7, 1] = 1.0 / tau_a       # a_cmd drives the acceleration lag integrator
 ```
 
-This is the first-order lag ODE `dδ_act/dt = (delta_cmd − δ_act)/tau_delta`
-split across the two matrices: the `-δ_act/tau_delta` self-decay term lives
-in `A[6,6]`, and the `+delta_cmd/tau_delta` drive term lives in `B[6,0]`.
+Together, row 6 of `A` and row 6 of `B` combine into the classic
+first-order lag equation `dδ_act/dt = (delta_cmd − δ_act) / tau_delta` —
+the actuator moves toward the command, at a rate proportional to how far
+away it still is (the `-δ_act/tau_delta` self-decay term lives in `A`,
+the `+delta_cmd/tau_delta` "pull toward the target" term lives in `B`).
+
+#### What the matrix multiplication actually produces
+
+Putting `A` and `B` together, `ẋ = A·x + B·u` means: multiply each row of
+`A` by the entire state vector `x` (a dot product), add the matching row of
+`B` multiplied by `u`, and that gives you the rate of change of that one
+state. Spelling out just the two most important rows — using the dynamic
+model's `e_y_dot` row and the kinematic model's `e_psi` row as concrete
+examples — the matrix multiplication `A·x` expands into exactly the
+physical equations from sections 1 and 2:
+
+```
+Row 1 (e_y_dot) of A_dyn · x  =
+    0·e_y + [-(2Cf+2Cr)/(m·vx)]·e_y_dot + [(2Cf+2Cr)/m]·e_psi
+    + [(-2Cf·lf+2Cr·lr)/(m·vx)]·e_psi_dot + 0·e_v + 0·e_a
+    + [(2Cf)/m]·delta_act + 0·a_act
+
+  = -(2Cf+2Cr)/(m·vx)·e_y_dot + (2Cf+2Cr)/m·e_psi
+    + (-2Cf·lf+2Cr·lr)/(m·vx)·e_psi_dot + (2Cf)/m·delta_act
+
+  = ë_y      ← exactly the dynamic-model equation from section 2
+```
+
+```
+Row 2 (e_psi) of A_kin · x  =  [v_x/L]·delta_act  =  ė_psi
+  ← exactly the kinematic-model equation from section 1
+```
+
+Every zero entry in the row simply means "this state has no effect here" —
+the dot product just drops those terms out. This is the whole point of
+writing the physics as a matrix: instead of writing eight separate
+equations by hand, `Ad @ x + Bd @ u` (one line of code) computes all eight
+rates of change at once, which is exactly what lets the solver evaluate the
+model quickly, thousands of times, while searching for the best control
+sequence.
 
 #### 4. Blending kinematic and dynamic models
+
+A single linear model can't represent the car well across its whole speed
+range — the kinematic model breaks down once tyres start sliding, and the
+dynamic model's `1/vx` terms blow up as speed approaches zero. Rather than
+switching abruptly between the two (which would cause a visible jump/jerk
+in the car's predicted behaviour right at the switch-over speed), the two
+matrices are blended smoothly:
 
 ```python
 alpha = clip((v_x - 1.0) / (2.5 - 1.0), 0.0, 1.0)
 A_c   = (1.0 - alpha) * A_kin + alpha * A_dyn
 ```
 
-`alpha` ramps linearly from 0 to 1 as speed goes from 1 m/s to 2.5 m/s: pure
-kinematic model below 1 m/s, pure dynamic model above 2.5 m/s, and a smooth
-linear blend of the two matrices in between. This avoids a discontinuous
-jump in the model's predicted behaviour as the car accelerates away from a
-standstill — which would otherwise show up as a sudden jerk in commanded
-steering right around walking pace.
+`alpha` ramps linearly from 0 to 1 as speed goes from 1 m/s to 2.5 m/s:
+pure kinematic model below 1 m/s, pure dynamic model above 2.5 m/s, and a
+proportional mix of the two matrices' numbers in between (e.g. at
+`alpha = 0.5`, every entry of `A_c` is exactly halfway between the
+matching entry of `A_kin` and `A_dyn`). `B` is identical in both models, so
+it doesn't need blending — it's used unchanged regardless of `alpha`.
 
-`B` is identical for both models, so it's used unchanged regardless of `alpha`.
+#### 5. From continuous to discrete: Zero-Order Hold (ZOH)
 
-#### 5. Discretisation: Zero-Order Hold (ZOH)
+Everything above describes `ẋ = A_c·x + B_c·u` — an instantaneous,
+continuous-time rate of change. But the MPC doesn't operate continuously;
+it makes one decision every `dt = 0.05 s` and holds that decision fixed
+until the next tick. What it actually needs is a **discrete** one-step
+prediction:
 
-The equations above are continuous-time (`ẋ = A_c·x + B_c·u`), but the MPC
-needs a **discrete** one-step prediction `x[k+1] = Ad·x[k] + Bd·u[k]` at
-`dt = 0.05 s` to build its QP. ZOH is the exact discretisation for a linear
-system driven by a piecewise-constant input — which is precisely what MPC
-does, since it holds each `u` constant for one 0.05 s tick. This is more
-accurate than simple Euler discretisation, which introduces `O(dt²)` error
-per step.
+```
+x[k+1] = Ad·x[k] + Bd·u[k]
+```
 
-Both `Ad` and `Bd` are computed simultaneously via one matrix exponential on
-an augmented matrix, avoiding an explicit (and potentially ill-conditioned)
-inversion of `A_c`:
+— "given the state right now (`x[k]`) and the command I'm about to hold for
+the next 0.05 s (`u[k]`), what will the state be exactly one tick later
+(`x[k+1]`)?" Converting the continuous equation into this discrete one is
+called **discretisation**, and the method used here is **Zero-Order Hold
+(ZOH)** — the exact, mathematically correct discretisation for a system
+where the input is held constant between updates (a "zero-order hold" on
+the input), which is precisely how MPC applies its commands. This is more
+accurate than a simpler method like Euler's approximation, which introduces
+compounding error at every step.
+
+Both `Ad` and `Bd` are computed together via one matrix exponential (`expm`
+— the matrix equivalent of `e^x`) on an augmented matrix, which sidesteps
+having to directly invert `A_c` (a numerically risky operation if `A_c` is
+close to singular):
 
 ```
 exp( [A_c  B_c] · dt )  =  [Ad  Bd]
@@ -703,17 +902,30 @@ Md = scipy.linalg.expm(M * dt)
 Ad, Bd = Md[:8, :8], Md[:8, 8:]
 ```
 
+`Ad` and `Bd` are what actually get handed to the solver — the continuous
+matrices `A_c`/`B_c` above exist only as an intermediate step to build them
+correctly.
+
 #### Note on OSQP sparsity
+
+`Ad` and `Bd` are consumed a few sections down by **OSQP**, the QP
+(Quadratic Program — see [The solver](#the-solver) below) solver that
+actually computes the steering/throttle command every tick. OSQP has a
+quirk that affects how these matrices must be initialised, explained here
+since it's decided at model-construction time even though it only matters
+once the solver is involved.
 
 All matrices start as `1e-12` (not exact `0.0`) rather than `np.zeros(...)`.
 OSQP analyses which matrix entries are nonzero on its *first* solve and
-caches that pattern for speed. If a later solve produces an entry that
-rounds exactly to zero where it was previously nonzero (which can happen as
-`vx` changes and terms like `1/vx` shrink), OSQP's cached factorisation
-becomes invalid and it throws a reallocation error. Filling every entry
-with a tiny nonzero epsilon keeps the sparsity pattern — the *set* of
-nonzero locations — identical at every speed, so OSQP never needs to
-re-analyse it mid-run.
+caches that pattern (the "sparsity pattern" — the *set* of matrix
+positions holding a nonzero value) for speed. If a later solve produces an
+entry that rounds exactly to zero where it was previously nonzero (which
+can happen as `vx` changes and terms like `1/vx` shrink), OSQP's cached
+factorisation becomes invalid and it throws a reallocation error. Filling
+every entry with a tiny nonzero epsilon keeps the sparsity pattern
+identical at every speed, so OSQP never needs to re-analyse it mid-run. See
+[The solver](#the-solver) for what OSQP is doing with these matrices and
+why sparsity matters to it in the first place.
 
 ### The cost function and QP (`optimiser.py`)
 
@@ -788,28 +1000,59 @@ only the numbers plugged into it.
 
 ### The solver
 
-**Primary: OSQP.** Exploits the QP's sparsity, supports warm-starting
-(reusing the previous tick's solution as the starting guess — since
-consecutive MPC solves differ by only one step in a receding horizon, this
-converges in ~50-200 iterations instead of 500-2000 cold), and typically
-solves in 1-5 ms at `N=25`.
+**What kind of problem is being solved?** The cost function above (state
+error + control effort + smoothness, all squared) is a **quadratic**
+function of the unknowns (`x` and `u` over the whole horizon), and every
+constraint (dynamics, actuator limits, lane boundary) is **linear**. A
+quadratic cost with linear constraints is called a **Quadratic Program
+(QP)** — a well-studied category of optimisation problem for which fast,
+reliable, purpose-built solvers exist. This is precisely why the cost
+function was built the way it was (squared errors, not e.g. absolute
+values or something more exotic) — it's what keeps the whole problem inside
+this fast-to-solve category rather than needing a slower, more general
+optimiser.
 
-**Fallback: Clarabel.** A slower but more numerically robust interior-point
-solver, used only if OSQP returns a non-optimal status (infeasible,
-unbounded, numerical trouble, or hit its iteration cap).
+**What does "solving" it actually mean?** The solver is handed the fully
+built-out cost expression and constraint list from the previous section,
+and searches for the one sequence of steering/throttle values (`u[0]`
+through `u[N-1]`) that makes the total cost as small as possible, while
+never violating a hard constraint (actuator limits) and only softly
+violating the lane boundary if truly necessary. It does this by starting
+from a guess, checking whether nudging that guess in some direction reduces
+the cost while respecting the constraints, and repeating until no further
+nudge helps — this iterative process is what OSQP's `max_iter`/`eps_abs`
+settings control (how many nudges it's allowed, and how small a nudge
+counts as "close enough" to stop).
+
+**Primary: OSQP.** Exploits the QP's sparsity (most matrix entries are
+zero, so the solver skips work on them) and supports warm-starting —
+reusing the *previous* tick's solution as this tick's starting guess. Since
+consecutive MPC solves in a receding horizon differ by only one step (the
+horizon just slides forward by 0.05 s each time), the previous answer is
+already an excellent starting guess, so warm-started solves typically
+converge in ~50-200 nudges instead of 500-2000 from a cold start — this is
+what makes solving a QP fast enough to happen 20 times per second. Typical
+solve time is 1-5 ms at `N=25`.
+
+**Fallback: Clarabel.** A different (interior-point) solving strategy that
+is generally slower per solve but more numerically robust on
+poorly-behaved problems. It's only invoked if OSQP itself fails to reach a
+usable answer — returning infeasible, unbounded, or hitting numerical
+trouble or its iteration cap.
 
 **If both fail**, the simulator/tuner returns `None` and the caller holds
 the previous command; the live `control_utils.MPCController` instead
 returns a full-brake command (`[u_prev[0], -a_max_brake]`) — braking is the
 safer default for a real vehicle than continuing to coast on a stale plan.
 
-**`OPTIMAL_INACCURATE`** (OSQP converged, but not to full tolerance) is
-still accepted and used — refusing it and holding the previous command
-would generally be worse than using a slightly-under-converged-but-still-
-reasonable solution at 20 Hz. The offline tuner counts these occurrences and
-applies a scoring penalty (see [The Composite Score](#the-composite-score))
-so weight sets that cause frequent `OPTIMAL_INACCURATE` are still
-discouraged, without discarding the run outright.
+**`OPTIMAL_INACCURATE`** (OSQP found an answer, but not to its full
+precision tolerance) is still accepted and used — refusing it and holding
+the previous command would generally be worse than using a
+slightly-under-converged-but-still-reasonable solution at 20 Hz. The
+offline tuner counts these occurrences and applies a scoring penalty (see
+[The Composite Score](#the-composite-score)) so weight sets that cause
+frequent `OPTIMAL_INACCURATE` are still discouraged, without discarding the
+run outright.
 
 ### Adaptive gain scheduling (`model_utils.py`)
 
