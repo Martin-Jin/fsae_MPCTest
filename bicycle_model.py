@@ -136,8 +136,8 @@ def get_8state_discrete_model(v_x, dt):
     #   ȧ_act     = −a_act / tau_a            (first-order lag toward commanded a)
     A_kin[0, 2] = v_x_safe           # ė_y = v_x * e_psi
     A_kin[2, 6] = v_x_safe / L       # ė_psi = v_x/L * delta_act  (Ackermann geometry)
-    A_kin[4, 5] = 1.0                 # ė_v = e_a  (acceleration integrates to speed error)
-    A_kin[5, 7] = 1.0                 # ė_a = a_act (unused but structurally present)
+    A_kin[4, 5] = 1.0                # ė_v = e_a  (acceleration integrates to speed error)
+    A_kin[5, 7] = 1.0                # ė_a = a_act (unused but structurally present)
     A_kin[6, 6] = -1.0 / tau_delta   # First-order lag: dδ/dt = -δ/tau (self-decay)
     A_kin[7, 7] = -1.0 / tau_a       # First-order lag: da/dt = -a/tau (self-decay)
 
@@ -159,14 +159,14 @@ def get_8state_discrete_model(v_x, dt):
     # The 1/vx terms reflect that at higher speeds, each unit of lateral
     # velocity produces a smaller slip angle, so cornering forces build more slowly.
     A_dyn[0, 1] = 1.0                                              # ė_y = e_y_dot
-    A_dyn[1, 1] = -(2*Cf + 2*Cr) / (m * v_x_safe)                # Lateral damping: cornering forces damp e_y_dot
-    A_dyn[1, 2] = (2*Cf + 2*Cr) / m                               # Lateral restoring: heading error → lateral accel
-    A_dyn[1, 3] = (-2*Cf*lf + 2*Cr*lr) / (m * v_x_safe)          # Coupling: yaw rate → lateral accel (understeer gradient)
+    A_dyn[1, 1] = -(2*Cf + 2*Cr) / (m * v_x_safe)                  # Lateral damping: cornering forces damp e_y_dot
+    A_dyn[1, 2] = (2*Cf + 2*Cr) / m                                # Lateral restoring: heading error → lateral accel
+    A_dyn[1, 3] = (-2*Cf*lf + 2*Cr*lr) / (m * v_x_safe)            # Coupling: yaw rate → lateral accel (understeer gradient)
     A_dyn[1, 6] = (2*Cf) / m                                       # Steering → lateral force: delta_act drives e_y_dot
     A_dyn[2, 3] = 1.0                                              # ė_psi = e_psi_dot (yaw rate is derivative of heading error)
-    A_dyn[3, 1] = (-2*Cf*lf + 2*Cr*lr) / (Iz * v_x_safe)         # Coupling: lateral velocity → yaw moment
-    A_dyn[3, 2] = (2*Cf*lf - 2*Cr*lr) / Iz                        # Yaw restoring: heading error → yaw moment
-    A_dyn[3, 3] = -(2*Cf*lf**2 + 2*Cr*lr**2) / (Iz * v_x_safe)   # Yaw damping: yaw rate → opposing moment (both axles)
+    A_dyn[3, 1] = (-2*Cf*lf + 2*Cr*lr) / (Iz * v_x_safe)           # Coupling: lateral velocity → yaw moment
+    A_dyn[3, 2] = (2*Cf*lf - 2*Cr*lr) / Iz                         # Yaw restoring: heading error → yaw moment
+    A_dyn[3, 3] = -(2*Cf*lf**2 + 2*Cr*lr**2) / (Iz * v_x_safe)     # Yaw damping: yaw rate → opposing moment (both axles)
     A_dyn[3, 6] = (2*Cf * lf) / Iz                                 # Steering → yaw moment: front force × moment arm
     A_dyn[4, 5] = 1.0                                              # ė_v = e_a
     A_dyn[5, 7] = 1.0                                              # ė_a = a_act

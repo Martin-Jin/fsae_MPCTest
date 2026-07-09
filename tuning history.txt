@@ -197,3 +197,12 @@ Duration    = 43.10 minutes
 Overall score (avged from all testing scenarios)  = Haven't been tested.
 Tuner score (tuning scenarios / validation suite) = -0.3210404317670047
 Commit hash = d5f8c9b9fc0e8a7bb7d1a166d89dab09e16a573d
+
+# 10/07/26 10:23 - For some reason in fsds simulator the braking seems to occur alot later than in the mpc simulator.
+Q_diag      = [0.6076038410420214, 0.7018612760165229, 7.107357922239617, 0.1016639549356476, 0.44488278317637964, 0.0, 0.0, 0.0]
+R_diag      = [7.869443219377219, 0.28548521974060515]
+R_rate_diag = [5.580499945962179, 9.993633621755315]
+Duration    = 86.43 minutes
+Overall score (avged from all testing scenarios)  = Haven't been tested.
+Tuner score (tuning scenarios / validation suite) = -0.3640769502652999
+Commit hash = 6c424224e9da2245693f4642dd7bf63603d3c209
