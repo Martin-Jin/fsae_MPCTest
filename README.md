@@ -465,6 +465,37 @@ propagates to the MPC's hard QP constraints in `optimiser.py` and
 will never be asked to command something the (simulated) vehicle physically
 can't do.
 
+### The Pacejka Tyre Model
+
+The plant computes tyre grip using the Pacejka **MF94** "Magic Formula" —
+an empirical curve fit to real tyre test data, rather than a physics-derived
+equation. The same shape function is used for both lateral (cornering) and
+longitudinal (acceleration/braking) force, with separate coefficient sets
+per axle (`B_f/C_f/D_f/E_f` for front, `B_r/C_r/D_r/E_r` for rear):
+Fy = mu · Fz · sin(C · atan(B·α − E·(B·α − atan(B·α))))
+
+Where `α` is slip angle (lateral) or slip ratio (longitudinal), and `Fz` is
+the tyre's current normal load. What each coefficient physically means:
+
+| Coefficient | Meaning | Effect of increasing it |
+|---|---|---|
+| `B` (stiffness) | How sharply grip builds up as slip starts from zero | Grip ramps up faster for small slip angles — more responsive, twitchier steering feel |
+| `C` (shape) | How rounded vs. peaked the grip curve is | Lower = sharper, narrower peak; higher (→2) = flatter, more forgiving peak |
+| `D` (peak) | The maximum grip multiplier at the ideal slip angle | Directly scales peak available grip — higher = more overall traction |
+| `E` (curvature) | Shape of the curve past its peak | More negative = grip falls off more sharply after peak (typical for a racing slick); values near 1 give a rounder, more gradual fall-off |
+| `Sv`, `Sh` | Small vertical/horizontal offsets | Model minor real-tyre asymmetries (construction imperfections); usually left near zero |
+
+`mu` is the peak friction coefficient, further reduced by **load
+sensitivity** (`k_sens`) — real tyres get proportionally less grip per unit
+of load as that load increases, so a heavily-loaded tyre (e.g. the outside
+front tyre mid-corner) doesn't grip as well as its `Fz` alone would suggest.
+
+**Tyre relaxation** (`sigma_y_f`, `sigma_y_r`) adds a first-order lag
+between a slip angle change and the resulting force — a tyre's contact
+patch needs to physically travel roughly one "relaxation length" before its
+grip fully catches up, which matters at 20 Hz where this lag is a
+non-negligible fraction of one control step.
+
 ---
 ## How the MPC Works
 
@@ -528,6 +559,8 @@ instantly to a commanded value — there's a first-order lag (see
 `tau_delta`, `tau_a` in `vehicle_physics.py`). Tracking the *actual*
 (lagged) actuator state, not just the commanded value, lets the model
 correctly predict how the car will really move over the horizon.
+State 5 is purely for consistency, there is a rate of change for each state.
+Currently there is no acceleration profile so there is no acceleration error.
 
 ### The 2-input control vector
 

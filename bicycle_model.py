@@ -31,7 +31,7 @@ STATE VECTOR (8 states) — same as MPC's internal prediction horizon
   [2] e_psi     Heading error relative to path tangent (rad)
   [3] e_psi_dot Yaw rate (rad/s)
   [4] e_v       Speed error: vx − v_target (m/s)
-  [5] e_a       Unused acceleration error (held at zero)
+  [5] e_a       Unused acceleration error (held at zero, exists for consistency only)
   [6] delta_act Actual steering angle after first-order lag (rad)
   [7] a_act     Actual acceleration command after first-order lag (m/s²)
 
