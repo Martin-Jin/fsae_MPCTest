@@ -58,7 +58,10 @@ USE_PLANNER = True
 #     compensate for pretend lag — good for testing robustness.
 #   - Adjustment: change by 1 step (0.05 s) at a time; 2-4 steps
 #     (0.1-0.2 s) is a realistic amount of lag for most small robots.
-DELAY_STEPS = 0
+DELAY_STEPS = 0 
+# Note, currently the delay appears to be too big and adding any delay results in
+# large oscillations. Best to leave to 0 for now. Tuned values still perform well
+# in fsds simulator at least with 0 delay.
 
 # MAX_FAILS — "How many times in a row can the maths solver fail before we
 # give up on this test run?"

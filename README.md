@@ -358,7 +358,9 @@ and roughly how much to change it by — this section is a quick-reference
 summary; **read the comments in `settings.py` before changing anything.**
 
 ### General system configuration
-
+Note, currently the delay appears to be too big and adding any delay results in
+large oscillations. Best to leave to 0 for now. Tuned values still perform well
+in fsds simulator at least with 0 delay.
 | Setting | What it controls |
 |---|---|
 | `N_HORIZON` | How many 0.05 s steps ahead the MPC plans each solve (25 = 1.25 s look-ahead). Must match `N_horizon` in `simulation.py` and `N` in `control_utils.py`. |
@@ -1336,6 +1338,7 @@ not here.
 To run the controller against the FSDS simulator, first obtain the
 `fsae_planning` repo, then paste the contents of `control_node.py` and
 `control_utils.py` into the matching files in its `track_utils` package.
+(If you already have the simulator set up with the `fsae_planning` repo. Scroll down for installing from scratch on windows.)
 
 **Topic map for the control node:**
 
@@ -1377,13 +1380,16 @@ To run the controller against the FSDS simulator, first obtain the
    vehicle.
 6. **Publish.**
 
-**Launching nodes with FSDS on Windows, bridged via WSL:**
+### Launching nodes with FSDS on Windows
+1. Install the windows release (exe) on the fsds repo, follow the instructions on to clone and setup airsim and the ros2 bridge.
+
+Cloning the repo:
 
 ```bash
 GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/FS-Driverless/Formula-Student-Driverless-Simulator.git --recurse-submodules
 ```
 
-Configure the WSL IP in the ROS 2 bridge launch file:
+2. Configure the WSL IP in the ROS 2 bridge launch file:
 
 ```bash
 # Get WSL network interface IP:
@@ -1397,7 +1403,13 @@ launch.actions.DeclareLaunchArgument(
 ),
 ```
 
-Use the provided launch script:
+3. Clone the `fsae_planning` repo into /home/Formula-Student-Driverless-Simulator/ros2/src.
+
+4. Paste the contents of `control_node.py` and `control_utils.py` into the matching files in its `track_utils` package (of the planning repo).
+
+5. Build the package.
+
+6. Use the provided launch script to launch in wsl:
 
 ```bash
 cd /home/Formula-Student-Driverless-Simulator/ros2/
@@ -1405,11 +1417,12 @@ chmod +x launch_all.sh
 ./launch_all.sh
 ```
 
-**Building the ROS 2 nodes:**
+**Building and editing the ROS 2 packages:**
+When setting up for the first time, you need to build the ros2 package.
+You can use the custom docker file provided to do this.
 
 ```bash
-cd /root/Formula-Student-Driverless-Simulator/ros2
-colcon build --packages-select fsae_planning --symlink-install
+cd /home/Formula-Student-Driverless-Simulator/ros2
 
 docker run -it \
     --name fsds_ros2_bridge \
@@ -1422,7 +1435,13 @@ docker run -it \
 cd /root/Formula-Student-Driverless-Simulator/ros2
 colcon build --packages-select fsae_planning --symlink-install
 ```
+To edit it, simply run vscode in the wsl directory:
 
+```bash
+cd /home/Formula-Student-Driverless-Simulator/ros2
+
+code .
+```
 ---
 
 ## Manual Drive Mode
