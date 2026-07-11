@@ -1462,11 +1462,6 @@ launch.actions.DeclareLaunchArgument(
 ),
 ```
 
-On the **Windows side**, open (or create)
-`C:\Users\<Your-Username>\Documents\AirSim\settings.json` and make sure
-`"ApiServerPort": 41451` is set — this is the port the bridge will connect
-to once the simulator is running.
-
 **Execution order matters:** always start the Windows `.exe` first (it
 opens the RPC port), *then* launch the ROS 2 bridge — launching the bridge
 before the simulator is up will fail to connect. (or use the launch file)
@@ -1517,7 +1512,8 @@ ulimit -c 0
 ```
 
 Alternatively, use the provided launch script to bring up the bridge and
-planning nodes together:
+planning nodes together: (note you need to change the paths in the launch file 
+to where you installed your fsds simulator)
 
 ```bash
 cd /home/Formula-Student-Driverless-Simulator/ros2/
