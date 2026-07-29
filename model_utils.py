@@ -38,12 +38,9 @@ adaptive_R_scaling (speed-based):
 
 USED BY
 -------
-  offline_tuner.py — called inside run_headless_rollout() before each MPC solve
-  simulation.py    — called inside simulate_closed_loop() before each MPC solve
-
-Note: curvature_estimate() is also defined directly in offline_tuner.py and
-simulation.py for historical reasons; model_utils.py is the single canonical
-source and those copies should be removed when refactoring is complete.
+  rollout_core.py — called once per step inside run_core_rollout(), the
+                    single shared rollout loop used by both simulation.py
+                    and offline_tuner.py.
 
 DOES NOT USE
 ------------
@@ -155,7 +152,7 @@ def adaptive_R_scaling(vx, R_base):
 
     At vx = 0.5 m/s:  steer_scale ≈ 1.11  (barely changed from base)
     At vx = 6.0 m/s:  steer_scale = 1.75  (half-maximum: 75% increase)
-    At vx = 15.0 m/s: steer_scale ≈ 2.33  (near asymptote: 133% increase)
+    At vx = 15.0 m/s: steer_scale ≈ 2.07  (71% of the way to the 2.5 asymptote)
 
     The Hill function was chosen over a linear ramp because:
       1. It saturates at high speeds, preventing the steering cost from

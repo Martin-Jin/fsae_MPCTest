@@ -1181,11 +1181,11 @@ if __name__ == "__main__":
         evals_arr = [e["evals"] for e in generation_log]
         best_arr = [e["best"] for e in generation_log]
         running_best = np.minimum.accumulate(best_arr)
-        print("\nImprovement milestones (true-eval count → score):")
+        print("\nImprovement milestones (true-eval count -> score):")
         last_reported = None
         for ev, rb in zip(evals_arr, running_best):
             if last_reported is None or rb < last_reported * 0.99:
-                print(f"  evals={ev:5d}  →  {rb:.5f}")
+                print(f"  evals={ev:5d}  ->  {rb:.5f}")
                 last_reported = rb
 
     try:

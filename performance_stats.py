@@ -74,7 +74,9 @@ def report_performance_metrics(history, log_fn=print):
     breakdown to the console. Returns the same metrics dict for programmatic use.
 
     All cost terms are computed to match offline_tuner.run_headless_rollout()
-    exactly (see module docstring for the one approximation on yaw terms).
+    exactly — both replay through the identical scoring.RolloutMetrics
+    accumulator, including the true plant yaw rate (history["r"]), not an
+    approximation.
 
     METRIC COMPUTATION PIPELINE
     ----------------------------
@@ -82,14 +84,14 @@ def report_performance_metrics(history, log_fn=print):
     step-by-step, but operates on the already-stored history arrays:
 
       rmse:               sqrt( Σ(e_y² + 0.4*e_psi²) / n )
-      yaw_rms:            sqrt( 0.8 * Σ(r_proxy²) / n )         [proxy: Δe_psi/dt]
+      yaw_rms:            sqrt( 0.8 * Σ(r²) / n )                [r = true plant yaw rate, history["r"]]
       smooth_rms:         sqrt( Σ(Δu_steer² + Δu_accel²) / n )   [Δu from u[-1]=0]
       steer_rms:          sqrt( Σ(u_steer²) / n )
       accel_rms:          sqrt( Σ(u_accel²) / n )
       max_steering:       max(|u_steer|)
       steering_sat_ratio: count(|u_steer| > 0.95 * max steer) / n
       jerk_rms:           sqrt( Σ(Δ²u_steer² + Δ²u_accel²) / n ) [Δ²u from u[-1]=du[-1]=0]
-      max_yaw_rate:       max(|r_proxy|)                          [proxy: Δe_psi/dt]
+      max_yaw_rate:       max(|r|)                                [r = true plant yaw rate, history["r"]]
       steering_reversals: count of sign changes > 0.02 rad threshold
       peak_lateral_error: max(|e_y|)
 
@@ -121,7 +123,7 @@ def report_performance_metrics(history, log_fn=print):
           "lateral_rmse_m"       : float — RMS lateral error (m)
           "heading_rmse_deg"     : float — RMS heading error (deg)
           "speed_rmse_mps"       : float — RMS speed error (m/s), NaN if unavailable
-          "yaw_rms_radps"        : float — RMS yaw rate proxy (rad/s)
+          "yaw_rms_radps"        : float — RMS yaw rate (rad/s)
           "control_smooth_rms"   : float — RMS control rate-of-change
           "steering_rms_deg"     : float — RMS steering command (deg)
           "accel_rms_mps2"       : float — RMS acceleration command (m/s²)
@@ -217,14 +219,14 @@ def report_performance_metrics(history, log_fn=print):
            (f"{speed_rmse:8.4f} m/s" if not np.isnan(speed_rmse) else "     n/a"))
     log_fn("-" * 60)
     log_fn(f"  rmse               : {rmse:8.4f}        (x{W[_IDX_RMSE]:.2f})")
-    log_fn(f"  Yaw-rate RMS       : {yaw_rms:8.4f} rad/s  (x{W[_IDX_YAW_RMS]:.2f}) [approx]")
+    log_fn(f"  Yaw-rate RMS       : {yaw_rms:8.4f} rad/s  (x{W[_IDX_YAW_RMS]:.2f})")
     log_fn(f"  Control smooth RMS : {smooth_rms:8.4f}        (x{W[_IDX_SMOOTH_RMS]:.2f})")
     log_fn(f"  Steering RMS       : {np.degrees(steer_rms):8.4f} deg    (x{W[_IDX_STEER_RMS]:.2f})")
     log_fn(f"  Accel RMS          : {accel_rms:8.4f} m/s²   (x{W[_IDX_ACCEL_RMS]:.2f})")
     log_fn(f"  Max steering cmd   : {np.degrees(max_steering):8.4f} deg    (x{W[_IDX_MAX_STEERING]:.2f})")
     log_fn(f"  Steer Sat Ratio    : {steering_sat_ratio*100:8.2f} %      (x{W[_IDX_STEER_SAT_RATIO]:.2f})")
     log_fn(f"  Jerk RMS           : {jerk_rms:8.4f}        (x{W[_IDX_JERK_RMS]:.2f})")
-    log_fn(f"  Max yaw rate       : {max_yaw_rate:8.4f} rad/s  (x{W[_IDX_MAX_YAW_RATE]:.2f}) [approx]")
+    log_fn(f"  Max yaw rate       : {max_yaw_rate:8.4f} rad/s  (x{W[_IDX_MAX_YAW_RATE]:.2f})")
     log_fn(f"  Steer Reversals    : {steering_reversals:8d}           (x{W[_IDX_STEER_REVERSALS]:.2f})")
     log_fn(f"  Peak Lateral Error : {peak_lateral_error:8.4f} m        (x{W[_IDX_PEAK_LATERAL_ERROR]:.2f})")
     log_fn(f"  Speed RMS          : {speed_rmse:8.4f} m/s        (x{W[_IDX_SPEED_RMSE]:.2f})")

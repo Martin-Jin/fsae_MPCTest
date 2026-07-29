@@ -151,14 +151,19 @@ class MPCController:
         self.N  = N
 
         # ── Vehicle geometry & dynamics  ─────
-        self.lf = 0.85   
-        self.lr = 0.70   
-        self.m  = 255.0  
-        self.Iz = 110.0  
-        self.Cf = 15000.0
-        self.Cr = 14000.0  
-        self.tau_delta = 0.08  
-        self.tau_a     = 0.02  
+        self.lf = 0.85
+        self.lr = 0.70
+        self.m  = 255.0
+        self.Iz = 110.0
+        # Cf/Cr mirror vehicle_physics.VehicleParams.Cf/Cr — the linear
+        # cornering stiffness matched to the Pacejka curve's initial slope
+        # (C_eff = mu_eff * Fz_nominal * B * C * D). If the tyre model in
+        # vehicle_physics.py changes, recompute these from VehicleParams()
+        # and paste the new values here; don't hand-edit them independently.
+        self.Cf = 24390.42770690137
+        self.Cr = 23324.382135371874
+        self.tau_delta = 0.08
+        self.tau_a     = 0.02
 
         self.nx = 8
         self.nu = 2

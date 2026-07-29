@@ -436,7 +436,7 @@ heavier-feeling, or coast further:
 ```python
 GRIP_SCALE     = 1.1   # Scales tyre stiffness (B) and peak grip (D) together
 INERTIA_SCALE  = 0.8   # Scales yaw inertia and wheel rotational mass together
-COASTING_SCALE = 3.0   # Scales drag + rolling resistance together (< 1.0 = rolls further, > 1.0 = stops faster)
+COASTING_SCALE = 3.0   # Scales rolling resistance / drivetrain drag only, NOT aero drag (Cd_A is a fixed physical value) — < 1.0 = rolls further, > 1.0 = stops faster
 ```
 
 Prefer adjusting these three over individual Pacejka/inertia constants

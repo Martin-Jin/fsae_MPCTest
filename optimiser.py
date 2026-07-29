@@ -234,10 +234,15 @@ def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max, R_rate=None, u_prev=None,
     SOLVER TOLERANCES
     -----------------
     eps_abs / eps_rel: OSQP convergence criteria. Tighter = more accurate but
-    slower. The live simulator uses the default 1e-5; offline_tuner.py uses
-    1e-4 (ROLLOUT_EPS) for ~2× faster rollouts at negligible accuracy cost.
+    slower. Both simulation.py and offline_tuner.py pass settings.ROLLOUT_EPS
+    (currently 1e-4) rather than this function's 1e-5 default, trading a
+    small amount of accuracy for faster rollouts — the same value is shared
+    by live and offline runs so tuned weights stay comparable to what the
+    simulator actually sees.
 
-    max_iter: OSQP iteration cap. 8000 for live use; 5000 in offline tuner.
+    max_iter: OSQP iteration cap. settings.ROLLOUT_MAX_ITER (8000) is used by
+    both simulation.py and offline_tuner.py; this function's own default
+    (8000) only applies to callers that don't pass max_iter explicitly.
 
     Parameters
     ----------

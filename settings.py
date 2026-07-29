@@ -163,9 +163,9 @@ DNF_OFFTRACK_PENALTY = 3.0
 #     car's simulated driving in the tuner may not match how it actually
 #     drives.
 #   - Typical adjustment: change by a factor of 2-10x at a time (e.g. from
-#     1e-5 to 5e-5), since this value works on an exponential/scientific
+#     1e-4 to 5e-4), since this value works on an exponential/scientific
 #     scale, not a simple linear one.
-ROLLOUT_EPS = 1e-5
+ROLLOUT_EPS = 1e-4
 
 # ROLLOUT_MAX_ITER — "How many attempts does the solver get to find an
 # answer before giving up for this step, during tuning?"
@@ -334,3 +334,31 @@ COMPLETION_BONUS_WEIGHT = 0.5
 #     than raw speed.
 #   - Typical adjustment: change by 0.05-0.1 at a time.
 TIME_BONUS_WEIGHT = 0.25
+
+
+# ==============================================================================
+# FAST TEST MODE (for validating tuner/benchmark code changes quickly)
+# ==============================================================================
+# FAST_TEST_MODE — "Am I checking that a code change to the tuner/benchmark
+# still runs correctly, or am I actually trying to find good driving weights?"
+# A real offline_tuner.py run (MAX_EVALS=2500 across a 5-path validation
+# suite) or a full performance_stats.py benchmark (11 paths x multiple
+# initial conditions/repeats) takes minutes to hours. That cost is fine when
+# the result is meant to be used, but wasteful when you only need to confirm
+# "does this still import/run/converge" after an unrelated code change.
+#   - Leave False for any run whose output you intend to actually use (a real
+#     tuning session, or a benchmark compared against tuning history.txt).
+#   - Set True only for quick development smoke-tests: cuts a tuning run down
+#     to roughly a minute by shrinking the eval budget, path count, track
+#     resolution, and solver precision. Never paste weights produced with
+#     this on into settings.py's Q_diag/R_diag/R_rate_diag — they're a
+#     correctness check, not a tuned result.
+FAST_TEST_MODE = False
+
+if FAST_TEST_MODE:
+    MAX_EVALS = 150                                        # was 2500
+    VALIDATION_SUITE = ["PATH_SUDDEN_TURN", "PATH_HAIRPIN"]  # was 5 paths
+    ROLLOUT_EPS = 1e-3                                      # was 1e-4, looser/faster OSQP
+    ROLLOUT_MAX_ITER = 2000                                 # was 8000
+    PATH_N_POINTS = 300                                     # was 1000
+    USE_PLANNER = False                                     # skip perception/planner overhead

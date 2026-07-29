@@ -137,19 +137,23 @@ class VehicleParams:
         self.Iz    = 110.0    # Yaw moment of inertia about CoM (kg·m²)
         self.tf    = 1.25     # Front track width between tyre contact patches (m)
         self.tr    = 1.20     # Rear  track width between tyre contact patches (m)
-        self.h_cg  = 0.30     # Centre-of-gravity height (m); drives load transfer
-        # Linear cornering stiffness — used only by the MPC's linear model
-        # not by this nonlinear plant which uses Pacejka curves directly.
-        # Effective linearised cornering stiffness matched to Pacejka initial slope:
-        # C_eff ≈ mu * Fz_nominal * B * C * D.  Front: 1.9*600*15*1.45*1.0 ≈ 24,800 N/rad.
-        self.Cf = 15000.0     # Front cornering stiffness (N/rad)
-        self.Cr = 14000.0     # Rear  cornering stiffness (N/rad)
+        # FSDS's own docs state 25 cm CoG height (stationary) for its vehicle
+        # model; matched here rather than an independently-guessed value.
+        # (FSDS's collision bounding box dimensions are explicitly documented
+        # as unrelated to the real vehicle geometry, so tf/tr/lf/lr above are
+        # NOT derived from it — only this CoG height figure is used.)
+        self.h_cg  = 0.25     # Centre-of-gravity height (m); drives load transfer
+        self.g     = 9.81     # Gravitational acceleration (m/s²); set early —
+                               # needed by static_fz_per_corner() for the Cf/Cr
+                               # slope-matching calc further below.
         # Actuator limits: enforced as hard bounds in optimiser.py's QP constraints.
         self.max_steer       = np.radians(35.0)  # Max rack-limited steering angle (rad)
-        # FS EV peak acceleration ~12 m/s² (0→17 m/s in ~2 s); braking ~10 m/s² (~1g).
+        # FS EV peak acceleration ~12 m/s² (0→17 m/s in ~2 s); braking ~9 m/s² (~0.9g).
         self.max_accel       = 12.0              # Max longitudinal acceleration (m/s²)
         self.max_accel_brake = -9.0             # Max longitudinal braking (m/s²)
-        self.max_v = 17.0 # Maximum possible speed the vehicle can go
+        # This project's real car tops out at ~60 km/h (16.7 m/s) — a slower
+        # autonomous test platform, not FSDS's own ~27 m/s simulator ceiling.
+        self.max_v = 16.7 # Maximum possible speed the vehicle can go
 
         # ── Unsprung Mass ────────────────────────────────────────────────────
         self.m_us  = 7.5      # Unsprung mass per corner: wheel + upright + hub (kg)
@@ -218,17 +222,44 @@ class VehicleParams:
         self.sigma_y_r = 0.40      # Rear  lateral relaxation length (m)
 
         # ── Friction and Load Sensitivity ────────────────────────────────────
-        # Peak friction coefficient for a dry racing slick.
-        self.mu     = 1.75 * GRIP_SCALE # Peak friction coefficient (dimensionless)
+        # Peak friction coefficient for a dry racing slick. FSDS deliberately
+        # doesn't publish its own tyre friction model (to stop teams
+        # reverse-engineering/overfitting to the sim), so this is sanity-
+        # checked against published FSAE 13" slick data instead: typical peak
+        # mu ~1.4-1.8 on a good surface. Base value picked near the middle of
+        # that range so GRIP_SCALE's default 1.1x still lands inside it
+        # rather than compounding past it (mu * GRIP_SCALE = 1.76).
+        self.mu     = 1.6 * GRIP_SCALE # Peak friction coefficient (dimensionless)
         # Reduced load sensitivity: slicks show less degradation than road tyres.
-        # At nominal Fz~600 N: mu_eff = 1.9*(1 - 0.00012*600) = 1.76 — still strong.
+        # At nominal Fz~600 N: mu_eff = 1.76*(1 - 0.00012*600) ≈ 1.63 — still strong.
         self.k_sens = 0.00012      # Load sensitivity (1/N)
+
+        # ── Linear cornering stiffness (MPC internal model only) ─────────────
+        # bicycle_model.py's linear MPC model uses Cf/Cr, not these Pacejka
+        # curves directly — but they MUST match the Pacejka curve's initial
+        # slope (C_eff ≈ mu_eff * Fz_nominal * B * C * D) or the MPC's internal
+        # prediction silently diverges from the plant it's actually
+        # controlling (see README "If you import new tyre data"). Computed
+        # here from the coefficients above — rather than hardcoded — so this
+        # can never silently drift out of sync with them again.
+        Fz_f_nom, Fz_r_nom = self.static_fz_per_corner()  # Static per-corner load (N)
+        mu_f_eff = self.mu * (1.0 - self.k_sens * Fz_f_nom)
+        mu_r_eff = self.mu * (1.0 - self.k_sens * Fz_r_nom)
+        self.Cf = mu_f_eff * Fz_f_nom * self.B_f * self.C_f * self.D_f  # Front cornering stiffness (N/rad)
+        self.Cr = mu_r_eff * Fz_r_nom * self.B_r * self.C_r * self.D_r  # Rear  cornering stiffness (N/rad)
 
         # ── Aerodynamics ─────────────────────────────────────────────────────
         # Total downforce coefficient Cl_A split 43/57 front/rear for
         # neutral balance: more rear downforce than front is typical FS tuning.
         self.rho       = 1.225     # Air density at sea level (kg/m³)
-        self.Cd_A      = 0.9 * COASTING_SCALE # Drag area (drag coefficient × frontal area, m²)
+        # Drag area (Cd * frontal area). FSDS documents Cd=0.3 for its vehicle
+        # model but doesn't publish a frontal area; ~1.1 m² is a reasonable
+        # estimate for a small open-wheel FS car, giving Cd_A ≈ 0.33 m².
+        # Deliberately NOT scaled by COASTING_SCALE (see Crr below) — aero
+        # drag is a well-defined physical quantity that shouldn't be inflated
+        # just to tune coast-down feel. At max_v=16.7 m/s this contributes
+        # only ~56 N of drag, appropriately small for this speed range.
+        self.Cd_A      = 0.33      # Drag area (m²)
         self.Cl_A_f    = 0.645     # Front wing downforce area (m²)
         self.Cl_A_r    = 0.855     # Rear  wing downforce area (m²)
         # Under braking the nose dips (pitch forward), increasing front downforce
@@ -237,6 +268,16 @@ class VehicleParams:
         self.Cl_pitch_sens = 0.03  # Fractional Cl change per unit (a/g)
 
         # ── Rolling Resistance and Stiction ──────────────────────────────────
+        # Crr is a lumped, constant-magnitude force standing in for both true
+        # rolling resistance and the drivetrain/motor cogging drag that isn't
+        # modelled anywhere else in this plant (there's no explicit motor-
+        # braking/regen term). Unlike Cd_A above, this IS the deliberate
+        # non-physical tuning knob for "how hard does the car coast to a stop
+        # with no throttle/brake input" — COASTING_SCALE=3.0 gives ~61.5 N
+        # total, the same order of magnitude as a real rolling-resistance-only
+        # estimate (Crr_coeff*m*g ≈ 0.015*255*9.81 ≈ 38 N) with headroom for
+        # the missing cogging/regen effect. Reduce COASTING_SCALE if coast-down
+        # feels too aggressive; Cd_A stays physically fixed regardless.
         self.Crr        = 20.5  * COASTING_SCALE # Constant rolling drag force at speed (N)
         self.F_stiction = 600.0 # Static breakaway force (N); (From the four wheels in total, so / 4 for a single wheel)
 
@@ -246,8 +287,6 @@ class VehicleParams:
         # a small but non-negligible lag (~80 ms) compared to a hydraulic system.
         self.tau_delta = 0.08      # Steering actuator time constant (s)
         self.tau_a     = 0.02      # Acceleration (torque) time constant (s)
-
-        self.g = 9.81              # Gravitational acceleration (m/s²)
 
     @property
     def L(self):
