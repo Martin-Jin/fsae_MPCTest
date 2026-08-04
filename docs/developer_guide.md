@@ -225,21 +225,27 @@ repo's frozen Stanley reference implementation).
 **Choosing the controller and planner:**
 
 `fsae_bringup`'s `sim.launch.py` takes `controller` and `planner` as launch
-arguments — it doesn't need editing to switch between them:
+arguments — it doesn't need editing to switch between them. It also launches
+`cone_recorder` alongside the stack by default (see
+[Recording a track from FSDS](#recording-a-track-from-fsds) below), so
+`launch_all.sh` / a bare `ros2 launch fsae_bringup sim.launch.py` gives you
+MPC + cone recording in one command, no second terminal needed:
 
 ```bash
-ros2 launch fsae_bringup sim.launch.py                              # stanley (default)
+ros2 launch fsae_bringup sim.launch.py                              # mpc_standalone (default), cone_recorder on
+ros2 launch fsae_bringup sim.launch.py controller:=stanley
 ros2 launch fsae_bringup sim.launch.py controller:=mpc
-ros2 launch fsae_bringup sim.launch.py controller:=mpc_standalone
 ros2 launch fsae_bringup sim.launch.py planner:=skidpad_planner controller:=mpc
+ros2 launch fsae_bringup sim.launch.py record_cones:=false          # skip cone_recorder
 ```
 
-- `stanley` (default) and `mpc` both publish the shared `cmd_vel` interface;
+- `stanley` and `mpc` both publish the shared `cmd_vel` interface;
   `fsds_bridge` converts it to `fs_msgs/ControlCommand` and owns GO-gating +
   cone e-braking for either one.
-- `mpc_standalone` is this repo's `mpc_controller_standalone.py` — see above
-  for its control-loop phases. It publishes `ControlCommand` directly and
-  skips `fsds_bridge` (the launch file handles that automatically).
+- `mpc_standalone` (default) is this repo's `mpc_controller_standalone.py` —
+  see above for its control-loop phases. It publishes `ControlCommand`
+  directly and skips `fsds_bridge` (the launch file handles that
+  automatically).
 
 **Topic map for the control node:**
 
@@ -302,14 +308,25 @@ FSDS run and writes them to a JSON file this repo can load — see
 `sim/track_io.py` and the **Load Recorded Track** button in
 [Get a path onto the map](#3-get-a-path-onto-the-map) above.
 
-Launch it alongside a normal run (any planner/controller — it only
-subscribes, it doesn't affect the pipeline):
+`sim.launch.py` launches `cone_recorder` automatically (`record_cones:=true`
+is the default), so a normal `ros2 launch fsae_bringup sim.launch.py` —
+or running `launch_all.sh` — is already recording; no second terminal or
+separate launch command needed. Pass an explicit output path or opt out with:
+
+```bash
+ros2 launch fsae_bringup sim.launch.py cone_out_path:=/path/to/cone_map.json
+ros2 launch fsae_bringup sim.launch.py record_cones:=false
+```
+
+(`cone_recorder.launch.py` still exists standalone if you want to attach a
+recorder to a stack that's already running — any planner/controller works,
+since it only subscribes and doesn't affect the pipeline:
 
 ```bash
 ros2 launch fsae_bringup cone_recorder.launch.py
-# or, with an explicit output path:
 ros2 launch fsae_bringup cone_recorder.launch.py out_path:=/path/to/cone_map.json
 ```
+)
 
 It starts recording on the first `/fsds/signal/go`, accumulates cones the
 same way `centerline_planner.py`'s `ConeMap` does, and writes the file once
