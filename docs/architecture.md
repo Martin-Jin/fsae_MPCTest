@@ -23,8 +23,10 @@ system, that one explains how to operate/extend it.
 
 This is the closed loop the simulator runs at 20 Hz. It's the same loop
 `tuner/offline_tuner.py` runs headless (no plotting) thousands of times
-during tuning, and the same loop `control_node.py` runs live against the
-real/FSDS vehicle. All three share one implementation
+during tuning, and the same loop `mpc_controller_standalone.py` (staged
+under `fsds_simulator/`, pasted into `fsae_planning` — see
+[docs/planning_control_sync.md](planning_control_sync.md)) runs live against
+the real/FSDS vehicle. All three share one implementation
 (`sim/rollout_core.run_core_rollout()` for the first two;
 `mpc_core.MPCController` for the live node, kept in numeric parity with
 `rollout_core`).
@@ -135,7 +137,7 @@ boundary.py                     │  planning/boundary.py             (shared)
 path_utils.py                   │  planning/path_utils.py           (shared)
 cone_sorting.py                 │  planning/cone_sorting.py         (shared)
 mpc_core.py                     │  gui/simulation.py / mpc_core.py               (shared)
-mpc_controller_standalone.py    │  gui/simulation.py / control_node.py           (shared design, not shared file — see docs/planning_control_sync.md)
+mpc_controller_standalone.py    │  gui/simulation.py's rollout loop              (shared design — see docs/planning_control_sync.md)
 cone_recorder.py                │  sim/track_io.py + gui/simulation.py's Load Recorded Track  (recorder writes what the loader reads)
 ```
 
@@ -143,7 +145,8 @@ The `stanley_control.py` / `stanely_control_utils.py` files under
 `fsds_simulator/stanley_controller/` are the **previous** controller
 implementation (a Stanley path-tracking controller), kept only as a reference
 for how a ROS 2 control node in this project is structured. The active
-controller is the MPC in `control_node.py` / `mpc_core.py`.
+controller is the MPC in `mpc_controller_standalone.py` / `mpc_core.py`
+(staged under `fsds_simulator/control/fsae_control/fsae_control/`).
 
 ---
 ## Configuring the Project (`settings.py`)
@@ -1146,4 +1149,4 @@ not here.
 | `tuner/performance_stats.py` | Scores a completed simulator run for the **Show Metrics** button by replaying its stored history through the exact same `scoring.RolloutMetrics` accumulator the tuner uses. Also exposes `benchmark_weights()` for **Benchmark All Paths**. |
 | `gui/manual_drive.py` | Standalone WASD/mouse drive mode against the 24-state nonlinear plant — no MPC, no scoring, purely open-loop human control for building intuition or sanity-checking a track. See [Manual Drive Mode](developer_guide.md#manual-drive-mode). |
 | `settings.py` | All project-level tuning/scoring/DNF configuration. See [Configuring the Project](#configuring-the-project-settingspy). |
-| `control_node.py` / `mpc_core.py` / `control_utils.py` | The live ROS 2 MPC controller for FSDS. See [Simulator Integration](developer_guide.md#simulator-integration). |
+| `mpc_controller_standalone.py` / `mpc_core.py` / `control_utils.py` (staged under `fsds_simulator/control/fsae_control/fsae_control/`) | The live ROS 2 MPC controller for FSDS. See [Simulator Integration](developer_guide.md#simulator-integration). |

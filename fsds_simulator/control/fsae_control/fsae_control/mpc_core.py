@@ -1,17 +1,29 @@
 # Title: mpc_core.py
 
+# NOTE (fsae_control port): this is a near-verbatim copy of
+# fsae_MPCTest/"fsds simulator"/control_utils.py, kept byte-for-byte in the MPC
+# math so the offline-tuned weights (Q/R/R_rate) still transfer.  The ONLY
+# intentional change is MAX_STEER_RAD 35deg -> 25deg to match this stack's
+# physical steering limit (see fsae_control.control_utils.MAX_STEER_RAD and
+# fsds_bridge.MAX_STEER_RAD); the MPC now plans steering the car can actually
+# deliver.  If you re-sync from upstream, re-apply that one change.
+
 """
 mpc_core.py — Live MPC Path-Tracking Controller for FSDS
 
 PURPOSE
 -------
-Provides MPCController, the single class control_node.py uses to turn a
-planner path + current vehicle state into a ControlCommand at 20 Hz. It is
-a self-contained, "live-solve" re-implementation of the same linear
-time-varying MPC formulated generically in optimiser.py / bicycle_model.py
-for the offline tuner and simulator, designed for 100% numerical parity
-with that offline pipeline so that weights tuned by offline_tuner.py
-(see tuning_history.txt) transfer directly to the real/simulated vehicle.
+Provides MPCController, the single class both mpc_controller.py and
+mpc_controller_standalone.py use to turn a planner path + current vehicle
+state into steering/throttle/brake at 20 Hz (mpc_controller.py forwards only
+steering through the shared cmd_vel interface; mpc_controller_standalone.py
+uses the full (steering, throttle, brake) triple directly — see that file's
+own docstring for why). It is a self-contained, "live-solve" re-implementation
+of the same linear time-varying MPC formulated generically in optimiser.py /
+bicycle_model.py for the offline tuner and simulator (both in the
+fsae_MPCTest repo), designed for 100% numerical parity with that offline
+pipeline so that weights tuned there transfer directly to the real/simulated
+vehicle.
 
   States  x : [e_y, e_yd, e_psi, r, e_v, e_a, delta_act, a_act]   (8,)
   Inputs  u : [delta_cmd (rad), a_cmd (m/s2)]                      (2,)
@@ -41,7 +53,7 @@ Each call to MPCController.compute() runs the full MPC pipeline:
      to tau_a (0.02s).
   7. Convert [delta_cmd, a_cmd] into FSDS's normalised
      [steering, throttle, brake] command triple and populate
-     self.last_telemetry for control_node.py's CSV logger.
+     self.last_telemetry for the caller's telemetry logging.
 
 PARITY WITH THE OFFLINE PIPELINE
 ---------------------------------
@@ -58,9 +70,10 @@ controller.
 
 USED BY
 -------
-  control_node.py — ControlNode.__init__ constructs one MPCController(dt=0.05,
-                    N=25) and calls .compute() every 20 Hz tick, .reset()
-                    on stale path / cone-brake fail-safes.
+  mpc_controller.py and mpc_controller_standalone.py — each constructs its
+                    own MPCController(dt=0.05, N=25) in __init__ and calls
+                    .compute() every 20 Hz tick, .reset() on stale path /
+                    cone-brake fail-safes.
 """
 
 import math
@@ -68,8 +81,9 @@ import cvxpy as cp
 import numpy as np
 from scipy.linalg import expm
 
-# FSDS: maximum physical steering deflection
-MAX_STEER_RAD: float = math.radians(35.0)
+# Maximum physical steering deflection.  25deg matches this stack's limit
+# (fsae_control.control_utils / fsds_bridge); upstream used 35deg.
+MAX_STEER_RAD: float = math.radians(25.0)
 MAX_ACCEL: float = 12.0
 MAX_BRAKE: float = 9.0
 
@@ -134,9 +148,10 @@ class MPCController:
         Parameters
         ----------
         dt : float
-            Control/prediction timestep (s). Must equal the node's control
-            timer period (0.05 s / 20 Hz in control_node.py) so the
-            discretised model's predictions align with real elapsed time.
+            Control/prediction timestep (s). Must equal the calling node's
+            control timer period (0.05 s / 20 Hz in both mpc_controller.py
+            and mpc_controller_standalone.py) so the discretised model's
+            predictions align with real elapsed time.
         N : int
             MPC horizon length in steps (25 -> 1.25 s lookahead at dt=0.05).
             Must match settings.N_HORIZON for tuned weights to transfer.
@@ -151,10 +166,25 @@ class MPCController:
         self.N  = N
 
         # ── Vehicle geometry & dynamics  ─────
-        self.lf = 0.85
-        self.lr = 0.70
+        # FSDS-matched values.  Mass 255 kg is confirmed from the sim
+        # (docs/vehicle_model.md).  The true lf/lr, Iz and Cf/Cr are NOT in the
+        # FSDS repo (they live in git-LFS .uasset binaries), so these are chosen
+        # from physical reasoning rather than read off:
+        #   - lf < lr (CoG biased toward the front axle) makes the bicycle model
+        #     UNDERSTEER (understeer gradient K_us > 0), i.e. stable at every
+        #     speed.  The upstream lf=0.85 > lr=0.70 was oversteer-prone
+        #     (K_us < 0, v_crit ~35 m/s) — a needless stability risk on a car
+        #     whose real balance we can't measure.  Swapped for margin.
+        #   - Iz ~= m*lf*lr (~152) is the standard yaw-inertia estimate; the
+        #     upstream 110 under-estimated it, making the model expect a twitchier
+        #     car than reality.
+        # Wheelbase L = lf + lr = 1.55 m is an estimate for a FS car (the FSDS
+        # collision box is 1.80 m long — an upper bound on car length, not the
+        # wheelbase).  Refine all of these via system-ID on the running sim.
+        self.lf = 0.70
+        self.lr = 0.85
         self.m  = 255.0
-        self.Iz = 110.0
+        self.Iz = 150.0
         # Cf/Cr mirror vehicle_physics.VehicleParams.Cf/Cr — the linear
         # cornering stiffness matched to the Pacejka curve's initial slope
         # (C_eff = mu_eff * Fz_nominal * B * C * D). If the tyre model in
@@ -168,10 +198,14 @@ class MPCController:
         self.nx = 8
         self.nu = 2
 
-        # Tuned parameters
-        Q_diag      = [0.6076038410420214, 0.7018612760165229, 7.107357922239617, 0.1016639549356476, 0.44488278317637964, 0.0, 0.0, 0.0]
-        R_diag      = [7.869443219377219, 0.28548521974060515]
-        R_rate_diag = [5.580499945962179, 9.993633621755315]
+        # Tuned parameters — offline-tuner run of 08/07/26 11:16 (see
+        # fsae_MPCTest/"tuning history.txt"): "Retuned with unified scoring and
+        # simulation. Decent tracking performance and speed, just not the best at
+        # sudden corners."  Chosen over the later 10/07/26 set, whose own note
+        # flagged braking triggering much later in FSDS than in the MPC sim.
+        Q_diag      = [0.9638529433528358, 0.16917546433555822, 0.8412084423109519, 0.6719136934634028, 1.3722642626759542, 0.0, 0.0, 0.0]
+        R_diag      = [1.0732323890203437, 0.6986142210105707]
+        R_rate_diag = [2.2731056206565956, 3.8354972983644497]
 
         self.Q      = np.diag(Q_diag)
         self.R      = np.diag(R_diag)
@@ -491,8 +525,10 @@ class MPCController:
 
         Guard: if the path has fewer than 2 points, immediately returns a
         neutral/mild-braking command (0.0, 0.0, 0.5) without touching the
-        QP or any internal state — control_node.py's own path-staleness
-        check (Phase 2) is expected to normally catch this first.
+        QP or any internal state — the calling node's own path-staleness
+        check is expected to normally catch this first
+        (mpc_controller_standalone.py's Phase 2, or mpc_controller.py's
+        equivalent stale-path guard).
         """
         if len(path) < 2:
             return 0.0, 0.0, 0.5   

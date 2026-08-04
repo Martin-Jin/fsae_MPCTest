@@ -334,8 +334,9 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
     live planner branch (a real cone-vision planner has no oracle path to
     pre-profile, so the target speed is recomputed each tick from whatever
     centreline is currently available). This is a numeric-parity port of
-    fsds_simulator/control_utils.py's curvature_speed() (the live ROS node's
-    own re-implementation, used so that node has no cross-package import) —
+    fsds_simulator/control/fsae_control/fsae_control/control_utils.py's
+    curvature_speed() (the live ROS node's own re-implementation, used so
+    that node has no cross-package import) —
     a_lat_max=4.0 matches that live default, NOT compute_speed_profile()'s
     mu*g=5.886 convention: the two functions serve different paths (oracle
     per-point profile vs. on-demand live/offline-planner scalar) and only the

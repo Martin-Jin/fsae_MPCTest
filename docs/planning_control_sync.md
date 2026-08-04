@@ -1,23 +1,39 @@
 # Planning/Control Upstream Sync
 
 Reference for re-syncing this repo's `planning/` package and `fsds_simulator/`
-ROS 2 node files against a newer clone of the upstream
+staging files against a newer clone of the upstream
 [`fsae_planning`](https://github.com/UOA-FSAE/fsae_planning) repo. Read this
 before touching either directory during a resync — it records which files
 mirror which upstream files, which pieces are deliberately *not* mirrored (and
 why), and the numeric-parity constants that must stay matched across the
 offline/live boundary.
 
-**Last resynced:** `planning/` (`boundary.py`, `cone_sorting.py`,
-`path_utils.py`) brought to parity with the `fsae_planning` checkout in
-`ros2/src/fsae_planning/` in this repo's sibling directory. This dropped the
-`build_path_trace` ft-fsd trace-sort planner (upstream removed it — see
-"Deliberately not mirrored" below for what's still true and what changed),
-renamed `_build_wall_segments` → `build_wall_segments` and added
-`segment_crosses_walls` (both now public), and added `roll_loop_to_car` (a
-skidpad-support helper — see its own note below). `cone_sorting.py` also lost
-some already-dead commented-out code (`separate_cones_by_color`, an unused
-`Cone` import) that upstream had already cleaned up.
+**`fsds_simulator/` is a staging area, not a live module.** Its subfolders
+(`control/fsae_control/fsae_control/`, `perception/fsae_sim_perception/
+fsae_sim_perception/`, `common/fsae_bringup/launch/`) mirror `fsae_planning`'s
+own ROS 2 package hierarchy exactly, so a file can be copied straight across
+at the same relative path with no manual re-pathing. Nothing under
+`fsds_simulator/` is imported by `gui/simulation.py`, `tuner/offline_tuner.py`,
+or anything else in this repo — those all live under `planning/`, `sim/`,
+`model/`, `controller/` instead. `fsds_simulator/` exists purely so this repo
+can hold, version, and hand off a ready-to-paste copy of the ROS 2 side.
+
+**Last resynced:**
+- `planning/` (`boundary.py`, `cone_sorting.py`, `path_utils.py`) brought to
+  parity with the `fsae_planning` checkout in `ros2/src/fsae_planning/` in
+  this repo's sibling directory. This dropped the `build_path_trace` ft-fsd
+  trace-sort planner (upstream removed it — see "Deliberately not mirrored"
+  below), renamed `_build_wall_segments` → `build_wall_segments` and added
+  `segment_crosses_walls` (both now public), and added `roll_loop_to_car` (a
+  skidpad-support helper — see its own note below). `cone_sorting.py` also
+  lost some already-dead commented-out code (`separate_cones_by_color`, an
+  unused `Cone` import) that upstream had already cleaned up.
+- `fsds_simulator/` reorganised from a flat folder (`control_node.py`,
+  `mpc_core.py`, `control_utils.py` all directly inside `fsds_simulator/`)
+  into the mirrored hierarchy described above, and its old `control_node.py`
+  was retired entirely in favour of upstream's `mpc_controller_standalone.py`
+  (see "What replaced `control_node.py`" below — this is a same-design,
+  different-file swap, not a like-for-like rename).
 
 ## File mapping
 
@@ -28,41 +44,57 @@ some already-dead commented-out code (`separate_cones_by_color`, an unused
 | `planning/cone_sorting.py` | `planning/fsae_planning/fsae_planning/cone_sorting.py` | Direct mirror |
 | `planning/path_utils.py` | `planning/fsae_planning/fsae_planning/path_utils.py` | Direct mirror |
 | — (no file counterpart) | `planning/fsae_planning/fsae_planning/centerline_planner.py` | The ROS 2 planner node itself. Its behaviour (temporal centreline blending via `blend_paths()`, called every planning tick) is reproduced inline by `sim/sim_track.py`'s `SimPlanner.update()` rather than as a ported file — the simulator has no separate planner *node*, `SimPlanner` plays that role directly. |
-| `fsds_simulator/mpc_core.py` | `control/fsae_control/fsae_control/mpc_core.py` | The `MPCController` class — QP-based MPC, kept in byte-for-byte parity with `sim/rollout_core.py`/`controller/optimiser.py` per this repo's own numeric-parity rule (see `CLAUDE.md`). |
-| `fsds_simulator/control_utils.py` | `control/fsae_control/fsae_control/control_utils.py` | **Partial mirror.** This repo's copy contains only `curvature_speed()`. Upstream's file also contains `StanleyController` — deliberately not ported here (see below). |
-| `fsds_simulator/control_node.py` | `control/fsae_control/fsae_control/mpc_controller_standalone.py` | **Pattern mirror, not a 1:1 file mirror.** Mirrors `control_node.py`'s own design (publishes `fs_msgs/ControlCommand` directly, using the MPC's own throttle/brake, plus GO-hold/stale-path/cone-brake safety phases and CSV telemetry) — this is a **different upstream file** than it used to map to; see "Which upstream file this maps to" below for why. |
+| `fsds_simulator/control/fsae_control/fsae_control/mpc_core.py` | `control/fsae_control/fsae_control/mpc_core.py` | Direct mirror. The `MPCController` class — QP-based MPC, kept in byte-for-byte parity with `sim/rollout_core.py`/`controller/optimiser.py` per this repo's own numeric-parity rule (see `CLAUDE.md`). |
+| `fsds_simulator/control/fsae_control/fsae_control/control_utils.py` | `control/fsae_control/fsae_control/control_utils.py` | **Partial mirror.** Upstream's file also contains `StanleyController` — deliberately not ported here (see below). |
+| `fsds_simulator/control/fsae_control/fsae_control/mpc_controller_standalone.py` | `control/fsae_control/fsae_control/mpc_controller_standalone.py` | Direct mirror (as of the reorganisation above). See "What replaced `control_node.py`" for the history. |
+| `fsds_simulator/control/fsae_control/setup.py` | `control/fsae_control/setup.py` | Direct mirror. Registers the `mpc_controller_standalone` console-script entry point. |
+| `fsds_simulator/perception/fsae_sim_perception/fsae_sim_perception/cone_recorder.py` | `perception/fsae_sim_perception/fsae_sim_perception/cone_recorder.py` | Direct mirror. Records one lap of cones for `sim/track_io.py` to load — see [Recording a track from FSDS](developer_guide.md#recording-a-track-from-fsds). |
+| `fsds_simulator/perception/fsae_sim_perception/setup.py` | `perception/fsae_sim_perception/setup.py` | Direct mirror. Registers the `cone_recorder` console-script entry point. |
+| `fsds_simulator/common/fsae_bringup/launch/control.launch.py` | `common/fsae_bringup/launch/control.launch.py` | Direct mirror. Adds the `controller:=mpc_standalone` launch option. |
+| `fsds_simulator/common/fsae_bringup/launch/cone_recorder.launch.py` | `common/fsae_bringup/launch/cone_recorder.launch.py` | Direct mirror. Launches `cone_recorder` standalone. |
 
-`planning/` and the `MPCController` half of `fsds_simulator/mpc_core.py` are
-shared algorithm code and should track upstream closely. `control_node.py` is
-this repo's own integration layer built around that shared algorithm and is
-expected to diverge.
+`planning/` and the `MPCController` half of `mpc_core.py` are shared
+algorithm code and should track upstream closely. `mpc_controller_standalone.py`
+is this repo's own integration pattern, ported upstream and then kept in the
+mirror going forward — it's expected to diverge in upstream-specific ways
+(topic names, message types) while keeping the same behavioural design.
 
-### Which upstream file `control_node.py` maps to
+### What replaced `control_node.py`
 
-Upstream (`fsae_planning`) actually has **two** MPC-controller node files,
-and they are not interchangeable:
+This repo used to have its own `fsds_simulator/control_node.py`, targeting an
+older ROS 2 topic/message interface (`/fsds/planned_path` as `nav_msgs/Path`,
+`/FusionCones` as `fs_msgs/Track`) that no longer exists in current
+`fsae_planning`. It has been retired and its design ported into upstream's
+package as a new file, **`mpc_controller_standalone.py`**, updated for the
+current topics (`/fsae/planning/selected_trajectory`, `/fsae/slam/
+car_position`, `/fsae/perception/cone_detection`). The mirror in this repo
+now holds that upstream file directly — there is no separate
+`control_node.py` anymore, in either repo.
 
-- **`mpc_controller.py`** — upstream's default `controller:=mpc` node.
+This matters because `fsae_planning` actually has **two** MPC-controller node
+files, and they are not interchangeable:
+
+- **`mpc_controller.py`** — upstream's original `controller:=mpc` node.
   Publishes `ackermann_msgs/AckermannDriveStamped` (steering + target speed)
   on the shared `cmd_vel` interface and lets `fsds_bridge.py`'s simple
   speed-error P-loop compute throttle/brake, and own GO-gating/cone-braking,
   identically to the Stanley controller. It **discards** the MPC's own
-  throttle/brake output.
-- **`mpc_controller_standalone.py`** — a second node upstream added
-  specifically to mirror `control_node.py`'s own design: it publishes
-  `fs_msgs/ControlCommand` directly, using `MPCController.compute()`'s
-  `(steering, throttle, brake)` output unchanged (preserving the
-  offline-tuned longitudinal behaviour this repo's tuner produces), and
-  re-implements GO-hold/stale-path-brake/cone-proximity-brake itself instead
-  of relying on `fsds_bridge.py`. Selected via `controller:=mpc_standalone`
-  in upstream's `control.launch.py`, which skips `fsds_bridge` for that mode.
+  throttle/brake output. Unchanged, still exists, still the default.
+- **`mpc_controller_standalone.py`** — the new node this repo's old
+  `control_node.py` was ported into. Publishes `fs_msgs/ControlCommand`
+  directly, using `MPCController.compute()`'s `(steering, throttle, brake)`
+  output unchanged (preserving the offline-tuned longitudinal behaviour this
+  repo's tuner produces), and re-implements GO-hold/stale-path-brake/
+  cone-proximity-brake itself instead of relying on `fsds_bridge.py`.
+  Selected via `controller:=mpc_standalone` in `control.launch.py`, which
+  skips `fsds_bridge` for that mode.
 
-**`control_node.py` maps to `mpc_controller_standalone.py`, not
-`mpc_controller.py`.** If you're resyncing `control_node.py`'s core loop
-structure, diff against `mpc_controller_standalone.py`. `mpc_controller.py`'s
-accel-discarding design has no counterpart in this repo at all — don't try to
-reconcile the two, they're deliberately different controllers reusing the
-same `MPCController` QP core.
+If you're resyncing this repo's mirror against a newer `fsae_planning`,
+diff `mpc_controller_standalone.py` against `mpc_controller_standalone.py` —
+**not** against `mpc_controller.py`. `mpc_controller.py`'s accel-discarding
+design has no counterpart in this repo at all; don't try to reconcile the
+two, they're deliberately different controllers reusing the same
+`MPCController` QP core.
 
 ## Deliberately not mirrored
 
@@ -72,16 +104,7 @@ same `MPCController` QP core.
   `stanley_control.py`, documented (in `README.md` and in-code) as a
   previous-controller reference only, not the active controller and not kept
   in sync with upstream. Do not port upstream's `StanleyController` into
-  `fsds_simulator/control_utils.py`.
-- **`control_node.py`'s extra safety phases** (GO-signal hold, stale-path
-  emergency brake, cone-proximity braking, telemetry logging) — these are
-  this repo's own additions on top of the shared MPC pattern. Upstream's
-  `mpc_controller_standalone.py` now has its own (independently written, not
-  ported) version of the same phases for the same reason (it also bypasses
-  `fsds_bridge.py`) — the two aren't expected to stay byte-identical, but
-  should keep the same *behaviour* (GO-hold, stale-path/pose brake, dynamic
-  cone-proximity corridor, edge-triggered reset). Preserve
-  `control_node.py`'s phases across any resync of its core loop structure.
+  `fsds_simulator/control/fsae_control/fsae_control/control_utils.py`.
 - **`roll_loop_to_car`** (added to upstream's `path_utils.py`) — a
   closed-loop-reordering helper upstream's skidpad planner uses to follow a
   known figure-8. Ported here for parity (see "Last resynced" above) but
@@ -118,17 +141,17 @@ writing — re-confirm before relying on them, since a resync can move them.
 
 | Constant | Offline copy | Live copy | Current value |
 |---|---|---|---|
-| `curvature_speed()`'s `a_lat_max` | `sim/speed_profile.py:328` (function default) | `fsds_simulator/control_utils.py:37` (function default) | `4.0` |
-| Planner top/bottom speed clamp | `sim/rollout_core.py:55-56` (`PLANNER_V_MAX`, `PLANNER_V_MIN`) | `fsds_simulator/control_node.py` (`V_MAX`, `V_MIN` — declared as the `v_max`/`v_min` ROS parameters, default `20.0`/`1.5`) | `20.0` / `1.5` |
+| `curvature_speed()`'s `a_lat_max` | `sim/speed_profile.py:328` (function default) | `fsds_simulator/control/fsae_control/fsae_control/control_utils.py:37` (function default) | `4.0` |
+| Planner top/bottom speed clamp | `sim/rollout_core.py:55-56` (`PLANNER_V_MAX`, `PLANNER_V_MIN`) | `fsds_simulator/control/fsae_control/fsae_control/mpc_controller_standalone.py` (declared as the `v_max`/`v_min` ROS parameters, default `20.0`/`1.5`) | `20.0` / `1.5` |
 
 Notes on how these are actually used:
 
 - `sim/speed_profile.py`'s `curvature_speed()` (the offline mirror of
-  `fsds_simulator/control_utils.py`'s `curvature_speed()`) is called by
-  `sim/rollout_core.py`'s `use_planner=True` branch at `sim/rollout_core.py:232-234`,
-  which passes `v_max=PLANNER_V_MAX, v_min=PLANNER_V_MIN` explicitly —
-  overriding that function's own `v_max=15.0, v_min=1.5` defaults. The live
-  side calls the same function the same way: `control_node.py`'s
+  `control_utils.py`'s `curvature_speed()`) is called by `sim/rollout_core.py`'s
+  `use_planner=True` branch at `sim/rollout_core.py:232-234`, which passes
+  `v_max=PLANNER_V_MAX, v_min=PLANNER_V_MIN` explicitly — overriding that
+  function's own `v_max=15.0, v_min=1.5` defaults. The live side calls the
+  same function the same way: `mpc_controller_standalone.py`'s
   `_control_loop` passes `v_max=self._v_max, v_min=self._v_min` (also
   overriding `control_utils.py`'s function defaults) — sourced from the
   `v_max`/`v_min` ROS parameters, which default to the same `20.0`/`1.5`. So
@@ -138,12 +161,11 @@ Notes on how these are actually used:
   never hit in either the offline or live path.
 - `a_lat_max=4.0` is the value actually used (as each function's default,
   not overridden at either call site) and must stay identical between
-  `sim/speed_profile.py`'s and `fsds_simulator/control_utils.py`'s
-  `curvature_speed()` — see the explicit callout in
-  `sim/speed_profile.py`'s `curvature_speed()` docstring, which also notes this
-  is deliberately *different* from `compute_speed_profile()`'s own
-  `a_lat_max = mu * g` (≈5.886) convention, since that function has no live
-  counterpart to stay matched to.
+  `sim/speed_profile.py`'s and `control_utils.py`'s `curvature_speed()` — see
+  the explicit callout in `sim/speed_profile.py`'s `curvature_speed()`
+  docstring, which also notes this is deliberately *different* from
+  `compute_speed_profile()`'s own `a_lat_max = mu * g` (≈5.886) convention,
+  since that function has no live counterpart to stay matched to.
 
 If a resync changes any of these values or call sites, update both sides in
 the same change and re-grep this table's line numbers.
@@ -170,36 +192,33 @@ horizon") for the full explanation; not repeated here to avoid duplication.
    `fsae_planning`); this repo's package is named `planning`, so every ported
    file needs its intra-package imports rewritten from `fsae_planning.xxx` to
    `planning.xxx` — a one-line-per-import search/replace, not a content
-   change. `fsds_simulator/mpc_core.py` and `control_utils.py` have no such
-   rewrite to do: both are standalone with zero cross-package imports by
-   design (see each file's own docstring), so those two are already a literal
-   copy-paste once you've re-applied the `control_utils.py`/`mpc_core.py`
-   filename split documented in the mapping table above.
+   change. Everything under `fsds_simulator/` has no such rewrite to do: it's
+   a byte-for-byte staging mirror of upstream's own package hierarchy (see
+   the file mapping table above — "Direct mirror" for every row except
+   `control_utils.py`), so those files are already a literal copy-paste at
+   the matching path.
 3. Port algorithm changes only, preserving this repo's existing import style
    and the deliberate non-mirrors listed above (don't reintroduce
-   `StanleyController` into `control_utils.py`, don't strip
-   `control_node.py`'s extra safety phases, don't restore a `.v_profile` on
-   `SimPlanner`). Remember `control_node.py` resyncs against
-   `mpc_controller_standalone.py`, **not** `mpc_controller.py` — see "Which
-   upstream file this maps to" above.
-4. If the change touches `planning/` or `fsds_simulator/mpc_core.py`, check
-   per `CLAUDE.md`'s numeric-parity rule whether `sim/rollout_core.py` needs a
-   mirrored change — `rollout_core.run_core_rollout()` and
-   `fsds_simulator/mpc_core.MPCController` (formerly `control_utils.py`) are
-   two implementations of the same control loop kept in deliberate numeric
+   `StanleyController` into `control_utils.py`, don't restore a `.v_profile`
+   on `SimPlanner`). Remember the mirror tracks `mpc_controller_standalone.py`,
+   **not** `mpc_controller.py` — see "What replaced `control_node.py`" above.
+4. If the change touches `planning/` or `mpc_core.py`, check per `CLAUDE.md`'s
+   numeric-parity rule whether `sim/rollout_core.py` needs a mirrored change —
+   `rollout_core.run_core_rollout()` and `mpc_core.MPCController` are two
+   implementations of the same control loop kept in deliberate numeric
    parity. Call this out explicitly in the resync notes if a mirrored change
    is or isn't needed.
 5. Re-check the numeric-parity constants table above — if upstream changed
    `curvature_speed()`'s `a_lat_max` or the planner speed clamp values, both
    the offline (`sim/speed_profile.py`, `sim/rollout_core.py`) and live
-   (`fsds_simulator/control_utils.py`, `fsds_simulator/control_node.py`)
-   copies need the same update.
+   (`control_utils.py`, `mpc_controller_standalone.py`) copies need the same
+   update.
 6. Run the smoke-test pattern from `CLAUDE.md`'s Testing section: confirm
    changed files import cleanly, then run `python -m gui.simulation` (or a
    short `python -m tuner.offline_tuner` run with `FAST_TEST_MODE = True` in
    `settings.py`) against one synthetic path and check the rollout still
-   converges and tracks correctly. For any change touching
-   `fsds_simulator/mpc_core.py` or `control_node.py`, there is no way to test
-   against the real/FSDS car from this repo directly — reason through the
-   change against `sim/rollout_core.py` instead and flag it for live testing
-   by a human.
+   converges and tracks correctly. There is no way to test the
+   `fsds_simulator/` mirror's ROS 2 files against the real/FSDS car from this
+   repo directly — reason through the change against `sim/rollout_core.py`
+   instead and flag it for live testing by a human once actually pasted into
+   `fsae_planning`.

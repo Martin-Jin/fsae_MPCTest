@@ -6,17 +6,25 @@ with a linear time-varying Model Predictive Controller (MPC), and provides
 CMA-ES-based automated weight optimisation so the controller's cost weights
 don't have to be hand-tuned by trial and error.
 
-This repository also includes a ROS 2 control node (`control_node.py` /
-`mpc_core.py`) that runs the same MPC live inside the
+This repository also includes a ROS 2 control node (`mpc_controller_standalone.py`
+/ `mpc_core.py`, staged under `fsds_simulator/` — see below) that runs the
+same MPC live inside the
 [FSDS](https://github.com/FS-Driverless/Formula-Student-Driverless-Simulator)
 simulator, by pasting it into the matching file in the
 [fsae_planning](https://github.com/UOA-FSAE/fsae_planning) repo (see
-[docs/planning_control_sync.md](docs/planning_control_sync.md) for exactly
-which upstream file — `control_node.py` maps to `mpc_controller_standalone.py`,
-a distinct node from upstream's default `mpc_controller.py`). Weights tuned
-offline in this project transfer directly to that live controller, because
-both preserve the MPC's own throttle/brake output rather than routing speed
-through `fsds_bridge.py`'s separate P-loop.
+[docs/planning_control_sync.md](docs/planning_control_sync.md) for the exact
+file mapping — `mpc_controller_standalone.py` is a distinct node from
+upstream's default `mpc_controller.py`). Weights tuned offline in this
+project transfer directly to that live controller, because both preserve the
+MPC's own throttle/brake output rather than routing speed through
+`fsds_bridge.py`'s separate P-loop.
+
+`fsds_simulator/` is a staging area, not a live module of this repo: its
+subfolders mirror `fsae_planning`'s own ROS 2 package hierarchy exactly (e.g.
+`fsds_simulator/control/fsae_control/fsae_control/mpc_core.py`), so a file
+can be copied straight across to the matching path with no manual re-pathing.
+Nothing under `fsds_simulator/` is imported by the simulator or tuner —
+those live under `planning/`, `sim/`, `model/`, `controller/` instead.
 
 The 2D simulator can optionally simulate the full perception + planning
 pipeline (`USE_PLANNER` in `settings.py`) by placing cones along a path
@@ -83,7 +91,7 @@ for how to run the CMA-ES weight tuner instead.
 | `model/bicycle_model.py` / `controller/optimiser.py` / `controller/model_utils.py` | The MPC's linear prediction model, QP formulation/solve, and adaptive gain scheduling. |
 | `settings.py` | All project-level tuning/scoring/DNF configuration. |
 | `gui/manual_drive.py` | Standalone keyboard-driven test mode against the nonlinear plant. |
-| `control_node.py` / `mpc_core.py` / `control_utils.py` (under `fsds_simulator/`) | The live ROS 2 MPC controller for FSDS. |
+| `mpc_controller_standalone.py` / `mpc_core.py` / `control_utils.py` (staged under `fsds_simulator/control/fsae_control/fsae_control/`) | The live ROS 2 MPC controller for FSDS. |
 
 See [docs/architecture.md#module-reference](docs/architecture.md#module-reference)
 for the complete per-file index.

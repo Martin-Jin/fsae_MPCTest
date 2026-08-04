@@ -208,17 +208,18 @@ for what they control.
 
 ## Simulator integration
 
-To run the controller against the FSDS simulator in ros2, first obtain the
-`fsae_planning` repo, then paste the contents of `control_node.py`,
-`mpc_core.py`, and `control_utils.py` (all under `fsds_simulator/` in this
-repo) into the matching files under `fsae_planning`'s `control/fsae_control/
-fsae_control/` package: `control_node.py` → `mpc_controller_standalone.py`,
-`mpc_core.py` → `mpc_core.py`, `control_utils.py` → `control_utils.py`.
-See [docs/planning_control_sync.md](planning_control_sync.md) for exactly
-which upstream file each of this repo's files maps to (`control_node.py`
-maps to `mpc_controller_standalone.py`, **not** `mpc_controller.py` — the
-two are different controllers that happen to share the same `MPCController`
-QP core, see that doc for why).
+`fsds_simulator/` in this repo is a staging area that mirrors `fsae_planning`'s
+own ROS 2 package hierarchy — e.g. `fsds_simulator/control/fsae_control/
+fsae_control/mpc_core.py` sits at the exact relative path it needs to land at
+inside a `fsae_planning` checkout. To run the controller against the FSDS
+simulator in ros2, obtain the `fsae_planning` repo, then copy everything
+under `fsds_simulator/control/`, `fsds_simulator/perception/`, and
+`fsds_simulator/common/` in this repo over the matching paths inside
+`fsae_planning` (same relative structure, so it's a straight directory copy,
+not a manual file-by-file paste). See
+[docs/planning_control_sync.md](planning_control_sync.md) for the full file
+mapping and what's a direct mirror vs. deliberately not ported (e.g. this
+repo's frozen Stanley reference implementation).
 (If you already have the simulator set up with the `fsae_planning` repo. Scroll down for installing from scratch on windows.)
 
 **Topic map for the control node:**
@@ -229,31 +230,33 @@ QP core, see that doc for why).
                                                    → /fsae/perception/cone_detection
 /fsds/testing_only/odom        → sim_perception
                                   centerline_planner (via car_position)
-                                  control_node
+                                  mpc_controller_standalone
 
 /fsae/slam/left_track,
 /fsae/slam/right_track,
 /fsae/slam/car_position        → centerline_planner → /fsae/planning/selected_trajectory
 
-/fsae/planning/selected_trajectory  → control_node   → /fsds/control_command
-/fsae/slam/car_position             → control_node
-/fsds/testing_only/odom             → control_node
-/fsae/perception/cone_detection     → control_node  (cone proximity brake)
+/fsae/planning/selected_trajectory  → mpc_controller_standalone   → /fsds/control_command
+/fsae/slam/car_position             → mpc_controller_standalone
+/fsds/testing_only/odom             → mpc_controller_standalone
+/fsae/perception/cone_detection     → mpc_controller_standalone  (cone proximity brake)
 
-/fsds/signal/go                → control_node  (unlock)
+/fsds/signal/go                → mpc_controller_standalone  (unlock)
 ```
 
-Note: `control_node` does not subscribe to a desired-speed topic — it
-computes `desired_speed` itself every tick from the current path via
-`control_utils.curvature_speed()` (see the `v_max`/`v_min` ROS parameters
-in `control_node.py`, which default to `V_MAX`/`V_MIN`). Also note
-`control_node` publishes `fs_msgs/ControlCommand` **directly** — it does
-*not* go through `fsds_bridge.py` (upstream's shared GO-gating/cone-brake/
-throttle-conversion layer that Stanley and upstream's default `mpc`
-controller both use). Don't launch `fsds_bridge` alongside `control_node` —
-they would both publish to `/fsds/control_command`.
+Note: `mpc_controller_standalone` does not subscribe to a desired-speed
+topic — it computes `desired_speed` itself every tick from the current path
+via `control_utils.curvature_speed()` (see the `v_max`/`v_min` ROS
+parameters it declares, which default to `V_MAX`/`V_MIN`). Also note
+`mpc_controller_standalone` publishes `fs_msgs/ControlCommand` **directly** —
+it does *not* go through `fsds_bridge.py` (upstream's shared GO-gating/
+cone-brake/throttle-conversion layer that Stanley and upstream's default
+`mpc_controller.py` both use). Don't launch `fsds_bridge` alongside
+`mpc_controller_standalone` — they would both publish to
+`/fsds/control_command`. (`control.launch.py`'s `controller:=mpc_standalone`
+option already handles this — it skips `fsds_bridge` automatically.)
 
-**Control loop phases** (see `control_node.py::_control_loop`):
+**Control loop phases** (see `mpc_controller_standalone.py`'s `_control_loop`):
 
 1. **Hold at start line** — full brake until the `/fsds/signal/go` signal is
    received.
@@ -404,13 +407,13 @@ cd /root/Formula-Student-Driverless-Simulator/ros2/src
 git clone https://github.com/UOA-FSAE/fsae_planning.git
 ```
 
-Paste the contents of `control_node.py`, `mpc_core.py`, and `control_utils.py`
-(under `fsds_simulator/` in this repo) into `fsae_planning`'s
-`control/fsae_control/fsae_control/` package as `mpc_controller_standalone.py`,
-`mpc_core.py`, and `control_utils.py` respectively (see
+Copy everything under `fsds_simulator/control/`, `fsds_simulator/perception/`,
+and `fsds_simulator/common/` (in this repo) over the matching paths inside
+the freshly-cloned `fsae_planning` checkout — the hierarchy already matches,
+so this is a straight directory copy (see
 [docs/planning_control_sync.md](planning_control_sync.md) for the exact file
-mapping — `control_node.py` becomes `mpc_controller_standalone.py`, not
-`mpc_controller.py`), then resolve dependencies and build:
+mapping if you want to copy file-by-file instead), then resolve dependencies
+and build:
 
 ```bash
 cd /root/Formula-Student-Driverless-Simulator/ros2
@@ -503,7 +506,8 @@ docker run -it \
 ```
 
 To rebuild just the `fsae_planning` package after editing it (e.g. after
-re-pasting an updated `control_node.py`/`mpc_core.py`/`control_utils.py`):
+re-copying an updated `mpc_controller_standalone.py`/`mpc_core.py`/
+`control_utils.py` from this repo's `fsds_simulator/` staging mirror):
 
 ```bash
 cd /root/Formula-Student-Driverless-Simulator/ros2

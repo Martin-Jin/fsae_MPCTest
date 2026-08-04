@@ -49,8 +49,9 @@ STALL_CHECK_INTERVAL = 60   # Steps between rolling stall checks (3 s at 20 Hz)
 STALL_MIN_DISTANCE = 3.0    # Minimum distance (m) expected per interval
 
 # v_max/v_min for the live-planner branch's speed_profile.curvature_speed() call.
-# Mirror fsds_simulator/control_node.py's V_MAX/V_MIN (and the old SimPlanner
-# defaults these replace) so offline-tuned weights see the same speed targets
+# Mirror fsds_simulator/control/fsae_control/fsae_control/mpc_controller_standalone.py's
+# v_max/v_min ROS parameters (default V_MAX/V_MIN) — and the old SimPlanner
+# defaults these replace — so offline-tuned weights see the same speed targets
 # the live node will command.
 PLANNER_V_MAX = 20.0
 PLANNER_V_MIN = 1.5
