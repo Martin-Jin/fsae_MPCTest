@@ -1,5 +1,5 @@
 """
-manual_drive.py — Keyboard/Mouse Manual Drive Mode
+gui/manual_drive.py — Keyboard/Mouse Manual Drive Mode
 
 PURPOSE
 -------
@@ -9,7 +9,7 @@ handling limits, sanity-checking cone placement/track geometry by feel, and
 generating a reference "how would a human drive this" trace to compare
 against MPC runs.
 
-This is a companion to simulation.py, not a replacement: simulation.py owns
+This is a companion to gui/simulation.py, not a replacement: gui/simulation.py owns
 the MPC/offline-tuner integration; this file owns the human-in-the-loop path.
 It reuses the same synthetic path library, cone placement, and 24-state
 nonlinear plant so a manually-driven run is physically comparable to an
@@ -31,20 +31,20 @@ ARCHITECTURE WITHIN THIS FILE
 ------------------------------
   1. Configuration      — dt, plant params, control rate limits
   2. GUI Layout          — matplotlib figure, map axes, telemetry panel
-  3. Helper Mathematics  — triangle renderer (mirrors simulation.py)
-  4. Path Loading        — cycle synthetic paths, place cones (mirrors simulation.py)
+  3. Helper Mathematics  — triangle renderer (mirrors gui/simulation.py)
+  4. Path Loading        — cycle synthetic paths, place cones (mirrors gui/simulation.py)
   5. Keyboard State      — key-down/key-up handlers → held-key set
   6. Drive Loop          — FuncAnimation callback: read keys, step plant, redraw
 
 USED BY
 -------
-  Standalone: run with `python manual_drive.py`
+  Standalone: run with `python gui/manual_drive.py`
   Imports from: vehicle_physics, offline_tuner (SYNTHETIC_PATHS/PATH_NAMES),
                 sim_track (place_cones), settings (DT)
 
 DOES NOT USE
 ------------
-  optimiser.py, bicycle_model.py, rollout_core.py, scoring.py, model_utils.py
+  controller/optimiser.py, model/bicycle_model.py, sim/rollout_core.py, sim/scoring.py, controller/model_utils.py
   (no MPC solve, no adaptive gains, no scoring — this is open-loop human control)
 """
 
@@ -54,9 +54,9 @@ import matplotlib.pyplot as plt
 from matplotlib.widgets import Button
 from matplotlib.animation import FuncAnimation
 
-from vehicle_physics import VehicleParams, step_nonlinear_plant, init_plant_state
-from offline_tuner import SYNTHETIC_PATHS, PATH_NAMES
-from sim_track import place_cones
+from model.vehicle_physics import VehicleParams, step_nonlinear_plant, init_plant_state
+from tuner.offline_tuner import SYNTHETIC_PATHS, PATH_NAMES
+from sim.sim_track import place_cones
 from settings import DT
 
 # ==========================================
@@ -156,7 +156,7 @@ def get_car_triangle(x, y, heading, size=2.2):
     Compute the (X, Y) vertices of a triangle representing the vehicle at a
     given position and heading, for rendering on the map axes.
 
-    Mirrors simulation.py's get_car_triangle() exactly so manually-driven
+    Mirrors gui/simulation.py's get_car_triangle() exactly so manually-driven
     and MPC-driven runs render identically.
 
     Called by: update_frame(), load_test_path()
@@ -185,7 +185,7 @@ def load_test_path(event):
 
     The path is drawn only as a visual reference for the human driver — no
     tracking error against it is computed. Cones are placed exactly as in
-    simulation.py so track boundaries look and behave the same.
+    gui/simulation.py so track boundaries look and behave the same.
 
     Does nothing while a drive is in progress (path locked mid-drive).
 

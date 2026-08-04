@@ -1,5 +1,5 @@
 """
-model_utils.py — Adaptive MPC Gain Helpers
+controller/model_utils.py — Adaptive MPC Gain Helpers
 
 PURPOSE
 -------
@@ -10,7 +10,7 @@ in corners versus straights, and at low speed versus high speed, without
 requiring a separate set of tuned weights for each regime.
 
 These functions implement a form of gain scheduling: the base weights (Q, R,
-R_rate) are tuned offline by offline_tuner.py as if for a single operating
+R_rate) are tuned offline by tuner/offline_tuner.py as if for a single operating
 point, then these helpers scale them at runtime to compensate for the known
 nonlinear dependence of required control authority on speed and curvature.
 
@@ -38,14 +38,14 @@ adaptive_R_scaling (speed-based):
 
 USED BY
 -------
-  rollout_core.py — called once per step inside run_core_rollout(), the
-                    single shared rollout loop used by both simulation.py
-                    and offline_tuner.py.
+  sim/rollout_core.py — called once per step inside run_core_rollout(), the
+                    single shared rollout loop used by both gui/simulation.py
+                    and tuner/offline_tuner.py.
 
 DOES NOT USE
 ------------
-  vehicle_physics.py, model.py, optimiser.py, speed_profile.py,
-  sim_track.py, performance_stats.py
+  model/vehicle_physics.py, model.py, controller/optimiser.py, sim/speed_profile.py,
+  sim/sim_track.py, tuner/performance_stats.py
 """
 
 import numpy as np
@@ -77,8 +77,8 @@ def curvature_estimate(state):
         Estimated path curvature magnitude (1/m = rad/m). Always non-negative.
         Minimum effective vx of 0.5 m/s prevents division by near-zero speed.
 
-    Called by: offline_tuner.py (run_headless_rollout),
-               simulation.py (simulate_closed_loop)
+    Called by: tuner/offline_tuner.py (run_headless_rollout),
+               gui/simulation.py (simulate_closed_loop)
     """
     vx = max(state[3], 0.5)   # Guard: avoid division by near-zero speed
     r  = state[5]              # Yaw rate (rad/s)
@@ -116,7 +116,7 @@ def adaptive_R_rate(kappa, R_rate_base):
         Current path curvature estimate from curvature_estimate() (1/m).
     R_rate_base : np.ndarray, shape (2, 2)
         Base rate-of-change cost matrix, typically the tuned R_rate from
-        offline_tuner.py or simulation.py. Not modified in-place.
+        tuner/offline_tuner.py or gui/simulation.py. Not modified in-place.
 
     Returns
     -------
@@ -124,8 +124,8 @@ def adaptive_R_rate(kappa, R_rate_base):
         Modified R_rate with R[0,0] scaled by the curvature factor.
         A copy of R_rate_base — the original is not mutated.
 
-    Called by: offline_tuner.py (run_headless_rollout),
-               simulation.py (simulate_closed_loop)
+    Called by: tuner/offline_tuner.py (run_headless_rollout),
+               gui/simulation.py (simulate_closed_loop)
     """
     R     = np.array(R_rate_base, copy=True)          # Never mutate the caller's matrix
     scale = max(0.35, 1.0 / (1.0 + 3.0 * kappa))     # Saturating softening: 1.0 at κ=0, floor at 0.35
@@ -175,8 +175,8 @@ def adaptive_R_scaling(vx, R_base):
         Current longitudinal vehicle speed (m/s). Floored at 0.5 m/s
         internally to avoid undefined behaviour at exact zero.
     R_base : np.ndarray, shape (2, 2)
-        Base input cost matrix, typically the tuned R from offline_tuner.py
-        or simulation.py. Not modified in-place.
+        Base input cost matrix, typically the tuned R from tuner/offline_tuner.py
+        or gui/simulation.py. Not modified in-place.
 
     Returns
     -------
@@ -184,8 +184,8 @@ def adaptive_R_scaling(vx, R_base):
         Modified R with R[0,0] scaled by steer_scale and R[1,1] scaled by
         accel_scale. A copy of R_base — the original is not mutated.
 
-    Called by: offline_tuner.py (run_headless_rollout),
-               simulation.py (simulate_closed_loop)
+    Called by: tuner/offline_tuner.py (run_headless_rollout),
+               gui/simulation.py (simulate_closed_loop)
     """
     vx = max(vx, 0.5)              # Guard: avoid undefined behaviour at zero speed
 

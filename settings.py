@@ -13,7 +13,7 @@ how the *controller* is scored, tuned, and configured to drive.
 """
 
 import numpy as np
-from sim_track import TRACK_HALF_WIDTH
+from sim.sim_track import TRACK_HALF_WIDTH
 
 # ==============================================================================
 # GENERAL SYSTEM CONFIGURATION (TUNER + SIMULATOR)

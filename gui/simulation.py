@@ -1,5 +1,5 @@
 """
-simulation.py — Interactive Closed-Loop MPC Simulator (v6)
+gui/simulation.py — Interactive Closed-Loop MPC Simulator (v6)
 
 PURPOSE
 -------
@@ -27,7 +27,7 @@ SIMULATION LOOP SUMMARY (simulate_closed_loop)
 At each 20 Hz step:
   1.  Record current plant state to history
   2.  Filter visible cones via SimPerception
-  3.  Update SimPlanner (centreline + speed profile rebuild)
+  3.  Update SimPlanner (centreline rebuild + temporal blend)
   4.  Compute tracking errors (e_y, e_psi) 
   5.  Assemble 8-state MPC error vector
   6.  Check early-exit conditions (off-track, solver failure, path end)
@@ -46,16 +46,16 @@ step. This closed-loop feedback is what makes the MPC robust to model mismatch.
 
 USED BY
 -------
-  Standalone: run with `python simulation.py`
+  Standalone: run with `python gui/simulation.py`
   Imports from: vehicle_physics, performance_stats, speed_profile, offline_tuner
                 (SYNTHETIC_PATHS/PATH_NAMES at import time, get_cached_model at
                 runtime), sim_track, rollout_core, settings.
 
 DOES NOT USE (at runtime, beyond what's listed above)
 -------------------------------------------------------
-  No tuner/CMA-ES optimisation logic from offline_tuner.py runs during
-  simulation. Note: this file does call offline_tuner.get_cached_model() every
-  simulation step (via rollout_core's model_lookup parameter) — a plain
+  No tuner/CMA-ES optimisation logic from tuner/offline_tuner.py runs during
+  simulation. Note: this file does call tuner/offline_tuner.get_cached_model() every
+  simulation step (via sim/rollout_core's model_lookup parameter) — a plain
   model-cache lookup, not tuning logic, but a genuine runtime dependency,
   unlike SYNTHETIC_PATHS/PATH_NAMES which are read once at import.
 """
@@ -64,12 +64,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button, Slider
 from scipy.interpolate import CubicSpline
-from vehicle_physics import VehicleParams
-from performance_stats import benchmark_weights, report_performance_metrics
-import speed_profile
-from offline_tuner import SYNTHETIC_PATHS, PATH_NAMES, get_cached_model
-from sim_track import place_cones
-from rollout_core import run_core_rollout, compute_step_budget
+from model.vehicle_physics import VehicleParams
+from tuner.performance_stats import benchmark_weights, report_performance_metrics
+import sim.speed_profile as speed_profile
+from tuner.offline_tuner import SYNTHETIC_PATHS, PATH_NAMES, get_cached_model
+from sim.sim_track import place_cones
+from sim.rollout_core import run_core_rollout, compute_step_budget
 
 from settings import (
     USE_PLANNER,
@@ -97,7 +97,7 @@ is_drawing          = False          # True while user is dragging a path
 is_simulated        = False          # True after a simulation has been run
 drawn_points        = []             # Raw mouse points before spline fitting
 path_X, path_Y, path_Psi = [], [], []  # Resampled path arrays (after spline fit)
-path_v_profile      = np.array([])   # Per-point target speed from speed_profile.py
+path_v_profile      = np.array([])   # Per-point target speed from sim/speed_profile.py
 sim_history         = {}             # Result dict from the most recent simulation
 
 # Full static cone arrays (populated by place_cones after path creation/load)
@@ -321,7 +321,7 @@ def load_test_path(event):
 
     Each click advances current_test_path_idx by 1, wrapping around after
     the last path. The path is read from SYNTHETIC_PATHS (pre-computed at
-    import time in offline_tuner.py), cones are placed, and the camera is
+    import time in tuner/offline_tuner.py), cones are placed, and the camera is
     framed around the new path with a 15 m margin.
 
     Does nothing if a simulation is already running (is_simulated = True).
@@ -516,7 +516,7 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=None, R_
 
     ADAPTIVE GAIN SCHEDULING
     ------------------------
-    Before each MPC solve, two gain-scheduling functions from model_utils.py
+    Before each MPC solve, two gain-scheduling functions from controller/model_utils.py
     modify the weight matrices:
       - adaptive_R_scaling(vx, R): increases steering cost at high speed
         (Hill function, saturates at ~2.5× base) to prevent destabilising
@@ -589,7 +589,7 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=None, R_
         R_rate_w = R_rate
 
     # Optional initial condition jitter (for multi-rollout averaging) —
-    # this is a simulation.py-only feature; offline_tuner always runs
+    # this is a gui/simulation.py-only feature; tuner/offline_tuner always runs
     # deterministic ICs, so the jitter stays here rather than in rollout_core.
     rng         = np.random.default_rng(rng_seed)
     jitter_ey   = rng.normal(0, 0.05) if rng_seed is not None else 0.0
@@ -599,7 +599,7 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=None, R_
     epsi0_eff = epsi0 + jitter_epsi   # degrees
 
     if max_steps is None:
-        # Match offline_tuner.py exactly: compute the budget internally
+        # Match tuner/offline_tuner.py exactly: compute the budget internally
         # rather than requiring the caller to duplicate the formula.
         dynamic_max_steps, max_steps = compute_step_budget(path_X, path_Y, path_v_profile)
     else:
@@ -680,7 +680,7 @@ def run_optimize(event):
 
     No rollouts are re-run and no weights are modified. All scoring uses
     performance_stats.report_performance_metrics(), which imports SCORE_WEIGHTS
-    and bonus constants directly from scoring.py, ensuring live and offline scores are computed
+    and bonus constants directly from sim/scoring.py, ensuring live and offline scores are computed
     with the same formula and are directly comparable.
 
     After scoring, the plot title is updated with a summary line showing the

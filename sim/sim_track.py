@@ -1,5 +1,5 @@
 """
-sim_track.py — Cone Placement and Sim-Side Perception/Planning
+sim/sim_track.py — Cone Placement and Sim-Side Perception/Planning
 
 PURPOSE
 -------
@@ -12,37 +12,37 @@ tuned MPC weights transfer cleanly.
 The three public classes/functions serve distinct pipeline stages:
   1. place_cones()    — Generate a static cone map from a path (track layout)
   2. SimPerception    — Filter visible cones from the car's current position/FOV
-  3. SimPlanner       — Accumulate cone observations, build centreline + speed profile
+  3. SimPlanner       — Accumulate cone observations, build + temporally blend centreline
 
 RELATIONSHIP TO ROS2 STACK
 ---------------------------
   place_cones()   →  static track layout (not in ROS2; the real track has real cones)
   SimPerception   →  mirrors perception_node.py._publish_visible_cones()
-  SimPlanner      →  mirrors planner_node.py._planning_loop()
+  SimPlanner      →  mirrors centerline_planner.py's CenterlinePlanner._planning_loop()
 
 Both SimPerception and SimPlanner are stateful: SimPerception holds the full
-cone map and filters it; SimPlanner accumulates a ConeMap and rebuilds the
-centreline+speed profile on every update.
+cone map and filters it; SimPlanner accumulates a ConeMap and rebuilds +
+blends the centreline on every update. SimPlanner emits path only (no speed
+field) — the use_planner branch in rollout_core.run_core_rollout() derives
+its speed target on-demand from the centreline via speed_profile.curvature_speed().
 
 USED BY
 -------
-  simulation.py    — instantiates SimPerception and SimPlanner inside
+  gui/simulation.py    — instantiates SimPerception and SimPlanner inside
                      simulate_closed_loop(); calls place_cones() after path creation.
-  offline_tuner.py — instantiates both inside run_headless_rollout(); uses
+  tuner/offline_tuner.py — instantiates both inside run_headless_rollout(); uses
                      calculate_dynamic_max_steps() to size the step budget.
 
 DOES NOT USE (directly)
 -----------------------
-  vehicle_physics.py, bicycle_model.py, optimiser.py, performance_stats.py
-  (uses speed_profile.py indirectly via SimPlanner.update)
+  model/vehicle_physics.py, model/bicycle_model.py, controller/optimiser.py, tuner/performance_stats.py, sim/speed_profile.py
 """
 
 import math
 import numpy as np
 from planning.cone_map import ConeMap
 from planning.boundary import build_path_walls
-from planning.path_utils import build_local_path
-import speed_profile as sp
+from planning.path_utils import blend_paths, build_local_path
 
 # ── Track geometry constants (FSG / FSUK specification) ─────────────────────
 CONE_SPACING      = 3.0    # Distance between cones along each boundary (m)
@@ -78,8 +78,8 @@ def place_cones(path_X, path_Y):
     Note: m < n because cones are placed at CONE_SPACING intervals along the
     arc, not at every path point.
 
-    Called by: simulation.py (on_release, load_test_path),
-               offline_tuner.py (_resample_path)
+    Called by: gui/simulation.py (on_release, load_test_path),
+               tuner/offline_tuner.py (_resample_path)
     """
     px = np.asarray(path_X)
     py = np.asarray(path_Y)
@@ -127,8 +127,8 @@ class SimPerception:
       - Transform cones from global frame to vehicle frame (rotation by -yaw)
       - Keep cones with:  MIN_AHEAD < x_local < LOOK_AHEAD  and  |y_local| < LOOK_WIDE
 
-    Used by: simulation.py (simulate_closed_loop),
-             offline_tuner.py (run_headless_rollout)
+    Used by: gui/simulation.py (simulate_closed_loop),
+             tuner/offline_tuner.py (run_headless_rollout)
     """
 
     def __init__(self, blue_all, yellow_all):
@@ -162,8 +162,8 @@ class SimPerception:
             Subsets of the blue and yellow cone arrays that fall within the FOV.
             May be empty arrays if no cones are visible.
 
-        Called by: simulation.py (simulate_closed_loop),
-                   offline_tuner.py (run_headless_rollout)
+        Called by: gui/simulation.py (simulate_closed_loop),
+                   tuner/offline_tuner.py (run_headless_rollout)
         """
         cos_y = math.cos(car_yaw)
         sin_y = math.sin(car_yaw)
@@ -186,40 +186,35 @@ class SimPerception:
 class SimPlanner:
     """
     Accumulates cone observations from SimPerception and builds a centreline
-    path and speed profile, mirroring planner_node.py._planning_loop().
+    path, mirroring planner_node.py._planning_loop().
 
     On each update() call, the planner:
       1. Adds the new visible cones to its persistent ConeMap
       2. Attempts to rebuild the boundary walls and centreline
-      3. Computes a curvature-based speed profile along the new centreline
+      3. Temporally blends the fresh centreline with the previous one
 
     The stateful accumulation (ConeMap) means the planner's centreline improves
     as the vehicle moves forward and more cones enter the FOV — matching the
     behaviour of the real ROS2 planner which also accumulates observations.
 
-    Used by: simulation.py (simulate_closed_loop),
-             offline_tuner.py (run_headless_rollout)
+    Planning emits path only (no speed field) — matching the upstream
+    CenterlinePlanner ROS node, which publishes x,y waypoints and leaves speed
+    targeting to the controller (see rollout_core.run_core_rollout()'s
+    use_planner branch, which calls speed_profile.curvature_speed() on this
+    centreline each step).
+
+    Used by: gui/simulation.py (simulate_closed_loop),
+             tuner/offline_tuner.py (run_headless_rollout)
     """
 
-    def __init__(self, v_max=20.0, v_min=1.5, lookahead_dist=4.0):
-        """
-        Parameters
-        ----------
-        v_max : float
-            Maximum speed cap for the speed profile (m/s).
-            Passed to speed_profile.compute_speed_profile().
-        v_min : float
-            Minimum speed floor for the speed profile (m/s).
-        """
-        self._cone_map      = ConeMap()       # Persistent accumulator for cone observations
-        self._v_max         = v_max
-        self._v_min         = v_min
-        self.centreline     = None            # Current best-estimate centreline (n, 2) or None
-        self.v_profile      = np.array([])   # Speed profile along centreline (n,) or empty
+    def __init__(self):
+        self._cone_map        = ConeMap()   # Persistent accumulator for cone observations
+        self.centreline        = None       # Current best-estimate centreline (n, 2) or None
+        self._prev_centreline  = None       # Last blended centreline, for next update()'s blend
 
     def update(self, blue_obs, yellow_obs, car_pos, car_yaw):
         """
-        Ingest new cone observations and rebuild the centreline + speed profile.
+        Ingest new cone observations and rebuild the centreline.
 
         Called every simulation step with the cones currently visible to
         SimPerception. The ConeMap de-duplicates repeated cone observations,
@@ -229,7 +224,10 @@ class SimPlanner:
         cone-to-cone boundary matching). If that fails (e.g. too few cones),
         it falls back to build_local_path() which uses a simpler heuristic.
 
-        Speed profile is computed only if the centreline has ≥ 3 points.
+        The planner rebuilds the centreline from scratch every step, so
+        successive raw centrelines can jump; blend_paths() (an EMA in the map
+        frame) eases the published centreline between steps instead of jumping,
+        mirroring centerline_planner.py's _planning_loop() in the ROS2 stack.
 
         Parameters
         ----------
@@ -242,8 +240,8 @@ class SimPlanner:
         car_yaw : float
             Vehicle yaw angle (rad).
 
-        Called by: simulation.py (simulate_closed_loop),
-                   offline_tuner.py (run_headless_rollout)
+        Called by: gui/simulation.py (simulate_closed_loop),
+                   tuner/offline_tuner.py (run_headless_rollout)
         """
         self._cone_map.update(blue_obs, yellow_obs)
 
@@ -260,25 +258,22 @@ class SimPlanner:
 
         self.centreline = cl
 
-        if cl is not None and len(cl) >= 3:
-            # Compute curvature-based speed profile along the new centreline
-            raw = sp.compute_speed_profile(
-                cl[:, 0], cl[:, 1], v_max=self._v_max, v_min=self._v_min
-            )
-            self.v_profile = sp.smooth_profile(raw, window=9)
+        if self.centreline is not None and len(self.centreline) >= 2:
+            self.centreline = blend_paths(self._prev_centreline, self.centreline, car_pos)
+            self._prev_centreline = self.centreline
         else:
-            self.v_profile = np.array([])   # Insufficient points; use v_min fallback
+            self._prev_centreline = None
 
     def reset(self):
         """
-        Clear accumulated cone map and reset centreline/profile.
+        Clear accumulated cone map and reset the centreline.
 
         Called when the simulation environment is reset (new path drawn or
-        Reset button pressed in simulation.py).
+        Reset button pressed in gui/simulation.py).
         """
         self._cone_map.reset()
-        self.centreline = None
-        self.v_profile  = np.array([])
+        self.centreline       = None
+        self._prev_centreline = None
 
 
 def calculate_dynamic_max_steps(path_X, path_Y, dt=0.05, fallback_speed=2.50, buffer=1.5):
@@ -317,7 +312,7 @@ def calculate_dynamic_max_steps(path_X, path_Y, dt=0.05, fallback_speed=2.50, bu
         Maximum simulation steps. Returns 400 as a default if the path has
         fewer than 2 points.
 
-    Called by: offline_tuner.py (run_headless_rollout)
+    Called by: tuner/offline_tuner.py (run_headless_rollout)
     """
     px = np.asarray(path_X)
     py = np.asarray(path_Y)

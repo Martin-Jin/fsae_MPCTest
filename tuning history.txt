@@ -206,3 +206,12 @@ Duration    = 86.43 minutes
 Overall score (avged from all testing scenarios)  = Haven't been tested.
 Tuner score (tuning scenarios / validation suite) = -0.3640769502652999
 Commit hash = 6c424224e9da2245693f4642dd7bf63603d3c209
+
+# 30/07/26 12:07 - [Pending Description: yet to be tested]
+Q_diag      = [1.3296418561069885, 0.11192757258159575, 0.4559427236936694, 0.33195969315349505, 0.3250527014447652, 0.0, 0.0, 0.0]
+R_diag      = [2.6033212934806294, 0.15280066241902365]
+R_rate_diag = [3.173803362220944, 4.566929190577098]
+Duration    = 100.48 minutes
+Overall score (avged from all testing scenarios)  = Haven't been tested.
+Tuner score (tuning scenarios / validation suite) = -0.3497565714550697
+Commit hash = d25dde1f77217ba5f35a9587acd6ab45aa2f58fd

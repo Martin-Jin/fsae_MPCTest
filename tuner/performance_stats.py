@@ -1,50 +1,50 @@
 """
-performance_stats.py — Live Simulator Performance Metric Reporter
+tuner/performance_stats.py — Live Simulator Performance Metric Reporter
 
 PURPOSE
 -------
 Scores a completed simulation history dict using the same cost decomposition
-as offline_tuner.run_headless_rollout(), allowing direct comparison between
+as tuner/offline_tuner.run_headless_rollout(), allowing direct comparison between
 offline tuning scores and live simulator results. This is the "Show Metrics"
-button output in simulation.py.
+button output in gui/simulation.py.
 
 The scoring is deliberately kept in a separate file rather than inlined into
-simulation.py so that:
-  1. Weights and metric definitions have a single source of truth in scoring.py
+gui/simulation.py so that:
+  1. Weights and metric definitions have a single source of truth in sim/scoring.py
      (which itself sources the weight values from settings.py)
   2. The console report can be updated without touching the simulation engine
   3. The returned dict can be used programmatically (e.g. logging, plotting)
 
-PARITY WITH offline_tuner.py / rollout_core.py
+PARITY WITH tuner/offline_tuner.py / sim/rollout_core.py
 ------------------------------------------------
 All metric computations mirror the accumulation loop in
-rollout_core.run_core_rollout() exactly, by replaying the stored history
-through the identical scoring.RolloutMetrics accumulator that
+sim/rollout_core.run_core_rollout() exactly, by replaying the stored history
+through the identical sim/scoring.RolloutMetrics accumulator that
 run_core_rollout() itself uses (see the "single source of truth" comment
 above rm = RolloutMetrics() below).
 
 SCORE_WEIGHTS, COMPLETION_BONUS_WEIGHT, and TIME_BONUS_WEIGHT are defined in
-settings.py and re-exported via scoring.py (imported directly from scoring.py
-below, not from offline_tuner.py), so any change to the scoring formula in
+settings.py and re-exported via sim/scoring.py (imported directly from sim/scoring.py
+below, not from tuner/offline_tuner.py), so any change to the scoring formula in
 settings.py automatically propagates to this report. DNF_PENALTY is not used
 in this file — failure is instead signalled via the `dnf`/`offtrack` booleans
 already recorded in the history dict.
 
 USED BY
 -------
-  simulation.py — btn_optimize "Show Metrics" callback calls
+  gui/simulation.py — btn_optimize "Show Metrics" callback calls
                   report_performance_metrics(sim_history, log_fn=print)
 
 DOES NOT USE
 ------------
-  vehicle_physics.py (beyond VehicleParams for u_max_steer), bicycle_model.py,
-  optimiser.py, speed_profile.py, sim_track.py
+  model/vehicle_physics.py (beyond VehicleParams for u_max_steer), model/bicycle_model.py,
+  controller/optimiser.py, sim/speed_profile.py, sim/sim_track.py
 """
 
-from vehicle_physics import VehicleParams
+from model.vehicle_physics import VehicleParams
 import numpy as np
-from scoring import SCORE_WEIGHTS, COMPLETION_BONUS_WEIGHT, TIME_BONUS_WEIGHT, RolloutMetrics
-from offline_tuner import (
+from sim.scoring import SCORE_WEIGHTS, COMPLETION_BONUS_WEIGHT, TIME_BONUS_WEIGHT, RolloutMetrics
+from tuner.offline_tuner import (
     PATH_NAMES,
     INITIAL_CONDITIONS,
     evaluate_all_paths,
@@ -54,7 +54,7 @@ from offline_tuner import (
 )
 from settings import DT
 
-# Metric index constants — must stay in sync with SCORE_WEIGHTS order in offline_tuner.py
+# Metric index constants — must stay in sync with SCORE_WEIGHTS order in tuner/offline_tuner.py
 _IDX_RMSE               = 0   # Combined tracking RMSE (e_y² + 0.4*e_psi²)
 _IDX_YAW_RMS            = 1   # Yaw rate RMS
 _IDX_SMOOTH_RMS         = 2   # Control smoothness RMS (Δu)
@@ -101,7 +101,7 @@ def report_performance_metrics(history, log_fn=print):
     ----------
     history : dict
         Simulation history dict as populated by simulate_closed_loop() in
-        simulation.py. Expected keys:
+        gui/simulation.py. Expected keys:
           "e_y"             : list of float — lateral error at each step (m)
           "e_psi"           : list of float — heading error at each step (rad)
           "v"               : list of float — vehicle speed at each step (m/s)
@@ -136,7 +136,7 @@ def report_performance_metrics(history, log_fn=print):
           "failed"               : bool  — Whether the run ended in a failure
           "n_steps"              : int   — Total steps completed
 
-    Called by: simulation.py (btn_optimize "Show Metrics" callback)
+    Called by: gui/simulation.py (btn_optimize "Show Metrics" callback)
     """
     e_y     = np.asarray(history.get("e_y",     []), dtype=float)
     e_psi   = np.asarray(history.get("e_psi",   []), dtype=float)
@@ -268,7 +268,7 @@ def benchmark_weights(Q_w, R_w, R_rate_w, n_repeats=3, log_fn=print):
 
     Parameters
     ----------
-    Q_w : np.ndarray, shape (8, 8)     State cost matrix from simulation.py.
+    Q_w : np.ndarray, shape (8, 8)     State cost matrix from gui/simulation.py.
     R_w : np.ndarray, shape (2, 2)     Input cost matrix.
     R_rate_w : np.ndarray, shape (2, 2) Rate-of-change cost matrix.
     n_repeats : int
@@ -283,7 +283,7 @@ def benchmark_weights(Q_w, R_w, R_rate_w, n_repeats=3, log_fn=print):
         'per_path'   : dict   — {path_name: mean_score}
         'all_scores' : list   — every individual rollout score
 
-    Called by: simulation.py (btn_benchmark "Benchmark All Paths" callback)
+    Called by: gui/simulation.py (btn_benchmark "Benchmark All Paths" callback)
     """
     # Populate _init_context in this process so evaluate_all_paths() can call
     # run_headless_rollout() without a worker pool.

@@ -1,26 +1,26 @@
 """
-rollout_core.py — Single Source of Truth for the MPC Closed-Loop Rollout
+sim/rollout_core.py — Single Source of Truth for the MPC Closed-Loop Rollout
 
 PURPOSE
 -------
-offline_tuner.run_headless_rollout() and simulation.simulate_closed_loop() used
+tuner/offline_tuner.run_headless_rollout() and gui/simulation.simulate_closed_loop() used
 to independently reimplement the exact same per-step logic: tracking-error
 computation, progress tracking, MPC solve with adaptive gains, delay queue,
 termination checks, and metric accumulation. Any tweak to one silently drifted
 from the other — which is exactly why offline-tuner scores and the live
 simulator's "Show Metrics" scores stopped matching (e.g. the planner-fallback
-branch existed in offline_tuner but was missing in simulation.py).
+branch existed in tuner/offline_tuner but was missing in gui/simulation.py).
 
 This module is now the ONLY place that runs the actual rollout loop. Both
-offline_tuner.py and simulation.py call run_core_rollout() and only differ in
+tuner/offline_tuner.py and gui/simulation.py call run_core_rollout() and only differ in
 what they do with the result:
-  - offline_tuner.py:  want_history=False → just the composite score
-  - simulation.py:      want_history=True  → full step history for the GUI
+  - tuner/offline_tuner.py:  want_history=False → just the composite score
+  - gui/simulation.py:      want_history=True  → full step history for the GUI
 
-WHY NOT IN simulation.py
+WHY NOT IN gui/simulation.py
 -------------------------
-simulation.py builds a matplotlib GUI at import time. offline_tuner.py runs
-rollouts inside multiprocessing worker processes — importing simulation.py
+gui/simulation.py builds a matplotlib GUI at import time. tuner/offline_tuner.py runs
+rollouts inside multiprocessing worker processes — importing gui/simulation.py
 there would try to open a GUI window in every worker. This module imports
 nothing GUI-related, so it's safe to import from anywhere.
 """
@@ -29,14 +29,15 @@ import math
 import numpy as np
 from collections import deque
 
-from vehicle_physics import (
+from model.vehicle_physics import (
     step_nonlinear_plant, init_plant_state, plant_to_tracking_error,
     find_closest_reference_bounded,
 )
-from optimiser import solve_mpc
-from sim_track import SimPerception, SimPlanner, calculate_dynamic_max_steps
-from model_utils import curvature_estimate, adaptive_R_rate, adaptive_R_scaling
-from scoring import RolloutMetrics
+from controller.optimiser import solve_mpc
+from sim.sim_track import SimPerception, SimPlanner, calculate_dynamic_max_steps
+from controller.model_utils import curvature_estimate, adaptive_R_rate, adaptive_R_scaling
+from sim.scoring import RolloutMetrics
+import sim.speed_profile as sp
 import cvxpy as cp
 
 from settings import (
@@ -46,6 +47,13 @@ from settings import (
 
 STALL_CHECK_INTERVAL = 60   # Steps between rolling stall checks (3 s at 20 Hz)
 STALL_MIN_DISTANCE = 3.0    # Minimum distance (m) expected per interval
+
+# v_max/v_min for the live-planner branch's speed_profile.curvature_speed() call.
+# Mirror fsds_simulator/control_node.py's V_MAX/V_MIN (and the old SimPlanner
+# defaults these replace) so offline-tuned weights see the same speed targets
+# the live node will command.
+PLANNER_V_MAX = 20.0
+PLANNER_V_MIN = 1.5
 
 
 def _normalize_angle(angle):
@@ -106,7 +114,7 @@ def run_core_rollout(
     ey0 : float
         Initial lateral offset (m), Frenet frame.
     epsi0 : float
-        Initial heading offset in **radians**. (simulation.py's slider is in
+        Initial heading offset in **radians**. (gui/simulation.py's slider is in
         degrees — convert with np.radians() before calling this function.)
     max_steps : int
         Step budget for the loop (use compute_step_budget()'s second value).
@@ -130,7 +138,7 @@ def run_core_rollout(
     Returns
     -------
     dict with keys:
-        "composite_score" : float — final score (see scoring.py)
+        "composite_score" : float — final score (see sim/scoring.py)
         "metrics_result"  : dict  — full RolloutMetrics.finalize() output
         "progress"        : float — continuous completion fraction [0,1]
         "reached_end"     : bool
@@ -154,7 +162,7 @@ def run_core_rollout(
 
     if use_planner:
         perception = SimPerception(blue_cones, yellow_cones)
-        planner = SimPlanner(v_max=20.0, v_min=1.5)
+        planner = SimPlanner()
         _b0, _y0 = perception.visible_cones(float(X0), float(Y0), float(psi0))
         planner.update(_b0, _y0, np.array([X0, Y0]), float(psi0))
 
@@ -215,18 +223,18 @@ def run_core_rollout(
                 )
                 rpsi = psi_g - e_psi
 
+                # No pre-computed profile exists for a live-built centreline (see
+                # SimPlanner) — derive the target speed on-demand each step from
+                # the sub-path ahead of the car, exactly as the live ROS node does
+                # via control_utils.curvature_speed().
                 dists = np.linalg.norm(cl - car_pos_np, axis=1)
                 cl_idx = int(np.argmin(dists))
-                v_target = (
-                    float(np.interp(
-                        float(cl_idx), np.arange(len(planner.v_profile)), planner.v_profile,
-                    ))
-                    if len(planner.v_profile) > 0
-                    else float(path_v_profile[idx])
+                v_target = sp.curvature_speed(
+                    cl[cl_idx:], v_max=PLANNER_V_MAX, v_min=PLANNER_V_MIN
                 )
             else:
                 # Planner not yet ready — fall back to the global reference path.
-                # (This fallback was previously missing in simulation.py, which
+                # (This fallback was previously missing in gui/simulation.py, which
                 # meant e_y/e_psi/v_target silently reused stale values from
                 # the previous step whenever the planner wasn't ready.)
                 e_y, _, e_psi, _, _, _, _ = plant_to_tracking_error(
@@ -389,7 +397,7 @@ def run_core_rollout(
         if not reached_end and not history["failed"]:
             # Ran out of steps without reaching the end or triggering a DNF
             # condition — treat as a failure for scoring/labelling purposes,
-            # matching the previous simulation.py behaviour.
+            # matching the previous gui/simulation.py behaviour.
             history["failed"] = True
 
     return {

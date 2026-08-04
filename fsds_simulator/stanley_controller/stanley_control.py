@@ -9,8 +9,8 @@ from fs_msgs.msg import ControlCommand, GoSignal, Track
 from nav_msgs.msg import Odometry, Path
 from std_msgs.msg import Float32
 
-from control_utils import StanleyController
-from cone_sorting import separate_cones_by_color
+from stanely_control_utils import StanleyController
+from cone_sorting import separate_cones_by_color  # NOTE: not defined anywhere in this repo or fsae_planning/ — pre-existing, unrelated to this task
 
 KP_THROTTLE      = 0.06  # throttle P-gain  (throttle per m/s of under-speed)
 KP_BRAKE         = 0.40  # brake P-gain     (brake    per m/s of over-speed)

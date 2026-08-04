@@ -1,7 +1,7 @@
-# Title: control_utils.py
+# Title: mpc_core.py
 
 """
-control_utils.py — Live MPC Path-Tracking Controller for FSDS
+mpc_core.py — Live MPC Path-Tracking Controller for FSDS
 
 PURPOSE
 -------

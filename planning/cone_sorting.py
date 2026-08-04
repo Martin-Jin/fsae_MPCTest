@@ -94,3 +94,27 @@ def filter_cones_forward(cones, car_pos, car_yaw,
     y_car = -rel[:, 0] * sin_y + rel[:, 1] * cos_y
     mask = (x_car > min_ahead) & (x_car < max_ahead) & (np.abs(y_car) < max_lateral)
     return cones[mask]
+
+
+def filter_cones_window(cones, car_pos, car_yaw, radius=18.0,
+                        min_ahead=0.5, max_ahead=25.0, max_lateral=8.0):
+    """
+    Keep cones within `radius` of the car (omni-directional) OR inside the
+    forward preview box.
+
+    A heading-aligned forward box alone truncates the path at corners: the track
+    curves out of the box, so the cones around the bend are dropped even though
+    the map still holds them.  The radius keeps those corner cones (they stay
+    close to the car), while the box preserves long-range preview straight ahead
+    on straights.  The union of the two is corner-robust without losing reach.
+    """
+    if len(cones) == 0:
+        return cones.copy()
+    rel  = cones - car_pos
+    dist = np.hypot(rel[:, 0], rel[:, 1])
+    cos_y = math.cos(car_yaw)
+    sin_y = math.sin(car_yaw)
+    x_car =  rel[:, 0] * cos_y + rel[:, 1] * sin_y
+    y_car = -rel[:, 0] * sin_y + rel[:, 1] * cos_y
+    box  = (x_car > min_ahead) & (x_car < max_ahead) & (np.abs(y_car) < max_lateral)
+    return cones[(dist < radius) | box]

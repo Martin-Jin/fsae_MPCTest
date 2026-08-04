@@ -1,12 +1,12 @@
 """
-offline_tuner.py — Offline MPC Weight Optimisation via Surrogate-Assisted CMA-ES
+tuner/offline_tuner.py — Offline MPC Weight Optimisation via Surrogate-Assisted CMA-ES
 
 PURPOSE
 -------
 Automatically searches for the best MPC cost weight matrices (Q, R, R_rate) by
 running thousands of headless closed-loop simulations and minimising a composite
 performance score. The result is a set of weight diagonals that can be pasted
-directly into simulation.py to improve live simulator performance.
+directly into gui/simulation.py to improve live simulator performance.
 
 HOW IT WORKS — THE OPTIMISATION LOOP
 --------------------------------------
@@ -36,7 +36,7 @@ BIPOP + lq-CMA-ES (via the `cma` library's fmin_lq_surr2):
 HOW SCORING WORKS
 -----------------
 Each rollout produces 12 performance metrics (RMSE, yaw stability, control
-smoothness, etc. — see scoring.py's IDX_* constants). These are combined
+smoothness, etc. — see sim/scoring.py's IDX_* constants). These are combined
 into a single scalar "composite score" via a weighted dot product
 (SCORE_WEIGHTS). Lower is better.
 
@@ -83,16 +83,16 @@ manual testing.
 
 USED BY
 -------
-  Standalone script: run with `python offline_tuner.py` to start optimisation.
-  simulation.py: imports SYNTHETIC_PATHS, PATH_NAMES, get_cached_model.
+  Standalone script: run with `python tuner/offline_tuner.py` to start optimisation.
+  gui/simulation.py: imports SYNTHETIC_PATHS, PATH_NAMES, get_cached_model.
                  Scoring/weight constants (SCORE_WEIGHTS, COMPLETION_BONUS_WEIGHT,
-                 TIME_BONUS_WEIGHT, DNF_PENALTY) now live in settings.py / scoring.py.
-  performance_stats.py: imports PATH_NAMES, INITIAL_CONDITIONS, evaluate_all_paths,
+                 TIME_BONUS_WEIGHT, DNF_PENALTY) now live in settings.py / sim/scoring.py.
+  tuner/performance_stats.py: imports PATH_NAMES, INITIAL_CONDITIONS, evaluate_all_paths,
                          _init_context, get_cached_model, tunable-index lists.
 
 DOES NOT USE (as module)
 -----------------------
-  performance_stats.py (performance_stats imports from this file, not vice versa)
+  tuner/performance_stats.py (tuner/performance_stats imports from this file, not vice versa)
 """
 
 import numpy as np
@@ -101,7 +101,7 @@ import time
 from collections import Counter
 from scipy.interpolate import CubicSpline
 import signal
-from rollout_core import run_core_rollout, compute_step_budget
+from sim.rollout_core import run_core_rollout, compute_step_budget
 import subprocess
 from settings import (
     SCORE_WEIGHTS,
@@ -115,13 +115,13 @@ from settings import (
     VALIDATION_SUITE
 )
 
-from vehicle_physics import (
+from model.vehicle_physics import (
     VehicleParams,
 )
-from bicycle_model import get_8state_discrete_model
-import speed_profile as sp
+from model.bicycle_model import get_8state_discrete_model
+import sim.speed_profile as sp
 import cma
-from sim_track import (
+from sim.sim_track import (
     place_cones,
 )
 import datetime
@@ -363,7 +363,7 @@ def build_synthetic_paths():
 
     Each path is resampled to n_points=MAX_EVALS dense points with:
       - A clamped cubic spline (smooth, no end-point artefacts)
-      - A curvature-based speed profile (from speed_profile.py)
+      - A curvature-based speed profile (from sim/speed_profile.py)
       - Cone placement (from sim_track.place_cones)
 
     Returns
@@ -374,7 +374,7 @@ def build_synthetic_paths():
 
     Called at module import time: SYNTHETIC_PATHS = build_synthetic_paths()
     Used by: run_headless_rollout() (looks up path by name),
-             simulation.py (load_test_path cycles through PATH_NAMES)
+             gui/simulation.py (load_test_path cycles through PATH_NAMES)
     """
     paths = {}
 
@@ -633,14 +633,14 @@ def run_headless_rollout(
     a scalar performance score.
 
     This is the innermost function that CMA-ES's objective evaluates.
-    It mirrors simulate_closed_loop() from simulation.py but without any
+    It mirrors simulate_closed_loop() from gui/simulation.py but without any
     matplotlib rendering, with looser solver tolerances (ROLLOUT_EPS) for
     speed, and with deterministic initial conditions (no rng jitter, unlike
     the live simulator's noise option).
 
     ROLLOUT PIPELINE (per step):
       1.  Get visible cones from SimPerception (FOV filter)
-      2.  Update SimPlanner (cone accumulation → centreline + speed profile)
+      2.  Update SimPlanner (cone accumulation → centreline + temporal blend)
       3.  Compute tracking errors
       4.  Track progress along the reference path (for completion scoring)
       5.  Build MPC state vector x0_mpc from tracking errors + plant state
@@ -672,9 +672,10 @@ def run_headless_rollout(
     epsi0 : float
         Initial heading offset from path tangent (rad).
     use_planner : bool, optional
-        If True, use SimPerception + SimPlanner for errors/speed profile,
-        matching the real ROS2 pipeline. If False (default), use the true
-        reference path directly for faster, noise-free tuning rollouts.
+        If True, use SimPerception + SimPlanner for errors/speed target
+        (speed_profile.curvature_speed() on the live centreline), matching the
+        real ROS2 pipeline. If False (default), use the true reference path
+        directly for faster, noise-free tuning rollouts.
 
     Returns
     -------
@@ -726,7 +727,7 @@ def evaluate_all_paths(weights_vector, n_repeats=3, ey0=0.0, epsi0=0.0):
     VALIDATION_SUITE), repeated n_repeats times, and return the mean
     composite score and per-path breakdown.
 
-    Intended for post-tuning benchmarking from performance_stats.py.
+    Intended for post-tuning benchmarking from tuner/performance_stats.py.
     Must be called after init_worker() has populated _init_context, or
     after manually setting _init_context in the calling process.
 
@@ -932,7 +933,7 @@ def log_results_to_history(Q, R, R_rate, duration, score):
     Append the best-found weight matrices and metadata to tuning history.txt.
 
     The log file provides a persistent record of all tuning runs. Each entry
-    includes a timestamp, the weight diagonals (copy-pasteable into simulation.py),
+    includes a timestamp, the weight diagonals (copy-pasteable into gui/simulation.py),
     the run duration, and the git commit hash so results can be reproduced.
     The "Score" field is left as a placeholder — it is filled in manually after
     the weights have been tested in FSDS (the real simulator), since the offline
@@ -1170,7 +1171,7 @@ if __name__ == "__main__":
         f"Selected:              {'xbest' if score_best <= score_mean else 'xfavorite'}"
     )
     print("=" * 60)
-    print("\nReplace your simulation.py weights with:")
+    print("\nReplace your gui/simulation.py weights with:")
     print("Q_diag      =", np.diag(best_Q).tolist())
     print("R_diag      =", np.diag(best_R).tolist())
     print("R_rate_diag =", np.diag(best_R_rate).tolist())

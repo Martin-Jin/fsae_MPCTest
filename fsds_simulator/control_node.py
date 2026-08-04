@@ -4,15 +4,18 @@ control_node.py — ROS 2 Real-Time Control Node for FSDS
 PURPOSE
 -------
 The live, in-sim ROS 2 node that wraps MPCController
-(control_utils.py) in a 20 Hz control loop. It is the only place in the
+(mpc_core.py) in a 20 Hz control loop. It is the only place in the
 codebase where the MPC is driven by real sensor topics rather than the
 offline simulator (simulation.py) or the tuner (offline_tuner.py).
 
 Responsibilities:
-  1. Subscribe to planner path, planner speed, odometry, fused cone map,
-     and the race "GO" signal.
+  1. Subscribe to planner path, odometry, fused cone map, and the race
+     "GO" signal. Desired speed is not subscribed from a topic — it is
+     computed locally every tick from the current path via
+     control_utils.curvature_speed(), mirroring sim_track.SimPlanner's
+     offline speed profile.
   2. Maintain the latest vehicle state (position, yaw, speed, yaw rate)
-     and the latest planned path / desired speed.
+     and the latest planned path.
   3. Run a fixed 20 Hz timer that calls MPCController.compute() and
      publishes a ControlCommand.
   4. Apply two independent safety overrides on top of the MPC output:
@@ -43,7 +46,7 @@ CONTROL LOOP PHASES (see _control_loop)
 USED BY
 -------
   Launched as the `controller` ROS 2 node entry point (see main()). Depends
-  on MPCController from control_utils.py for all optimal-control computation;
+  on MPCController from mpc_core.py for all optimal-control computation;
   the node itself contains no MPC/optimisation logic.
 """
 
@@ -59,14 +62,19 @@ from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 
 from fs_msgs.msg import ControlCommand, GoSignal, Track
 from nav_msgs.msg import Odometry, Path
-from std_msgs.msg import Float32
 
-from .control_utils import MPCController
+from .control_utils import curvature_speed
+from .mpc_core import MPCController
 from fsae_planning.cone_sorting import separate_cones_by_color
 
 # ── Tuneable constants ─────────────────────────────────────────────────────────
 
-V_FALLBACK       = 2.0   # m/s  — desired speed used until planner publishes one
+# v_max/v_min mirror sim_track.SimPlanner's defaults (the offline
+# simulator/tuner's speed-profile source) rather than curvature_speed()'s own
+# generic defaults (15.0/1.5) — keeping these matched to the offline pipeline
+# is what makes offline-tuned weights transfer to the live desired_speed.
+V_MAX            = 20.0  # m/s  — curvature_speed() top speed on straights
+V_MIN            = 1.5   # m/s  — curvature_speed() minimum speed through corners
 CONE_BRAKE_DIST  = 2.0   # m    — forward corridor depth for cone proximity brake
                          # NOTE: this is also the *ceiling* on the dynamic
                          # corridor computed in _check_cone_proximity() (car_speed
@@ -111,7 +119,6 @@ class ControlNode(Node):
 
         # ── Subscriptions ──────────────────────────────────────────────
         self.create_subscription(Path,     '/fsds/planned_path',      self._path_cb,  10)
-        self.create_subscription(Float32,  '/fsds/desired_speed',     self._speed_cb, 10)
         self.create_subscription(Odometry, '/fsds/testing_only/odom', self._odom_cb,  sensor_qos)
         self.create_subscription(Track,    '/FusionCones',            self._track_cb, 10)
         self.create_subscription(GoSignal, '/fsds/signal/go',         self._go_cb,    10)
@@ -123,7 +130,7 @@ class ControlNode(Node):
         self._go_received    = False
         self._path_pts:  np.ndarray = np.empty((0, 2))
         self._path_stamp = None
-        self._desired_speed: float = V_FALLBACK
+        self._desired_speed: float = 0.0  # recomputed via curvature_speed() every Phase 3 tick
         self._car_pos        = np.zeros(2)
         self._car_yaw        = 0.0
         self._car_speed      = 0.0
@@ -189,16 +196,6 @@ class ControlNode(Node):
             dtype=np.float64,
         ) if msg.poses else np.empty((0, 2))
         self._path_stamp = self.get_clock().now()
-
-    def _speed_cb(self, msg: Float32) -> None:
-        """
-        Update the desired target speed published by the planner.
-
-        No staleness tracking here (unlike _path_cb) — a planner that stops
-        publishing speed but keeps publishing path will silently keep the
-        last received desired_speed forever rather than triggering a brake.
-        """
-        self._desired_speed = float(msg.data)
 
     def _odom_cb(self, msg: Odometry) -> None:
         """
@@ -314,6 +311,10 @@ class ControlNode(Node):
             return
 
         # ── Phase 3: MPC optimal control ──────────────────────────────
+        # Desired speed is computed fresh each tick from the current path
+        # (no external speed topic) — see module docstring.
+        self._desired_speed = curvature_speed(self._path_pts, v_max=V_MAX, v_min=V_MIN)
+
         steer_out, throttle_out, brake_out = self._mpc.compute(
             path=self._path_pts,
             car_pos=self._car_pos,

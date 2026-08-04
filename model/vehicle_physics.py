@@ -1,11 +1,11 @@
 """
-vehicle_physics.py — High-Fidelity Nonlinear Vehicle Plant Model
+model/vehicle_physics.py — High-Fidelity Nonlinear Vehicle Plant Model
 
 PURPOSE
 -------
 Implements a 24-state nonlinear vehicle dynamics simulation plant intended to
 match the fidelity of Nvidia PhysX (used by FSDS/AirSim). This is the "truth"
-model that drives the vehicle in simulation; the MPC controller (optimiser.py)
+model that drives the vehicle in simulation; the MPC controller (controller/optimiser.py)
 uses a much simpler 8-state linear model internally, creating a deliberate
 plant-model mismatch that mirrors the real-world situation.
 
@@ -16,7 +16,7 @@ dynamics and tyre relaxation lag.
 STATE VECTOR (24 elements)
 --------------------------
 Indices 0-7 are identical to the MPC's 8-state linear model so that
-simulation.py and offline_tuner.py can read positions/velocities/actuator
+gui/simulation.py and tuner/offline_tuner.py can read positions/velocities/actuator
 states without any index remapping.
 
   [0]  X            Global position X (m)
@@ -65,14 +65,14 @@ PHYSICS FEATURES
 
 USED BY
 -------
-  simulation.py   — calls step_nonlinear_plant() at every simulation timestep;
-                    calls init_plant_state() to initialise the vehicle.
-  offline_tuner.py — calls step_nonlinear_plant() and init_plant_state() in
-                    run_headless_rollout() for each CMA-ES candidate evaluation.
+  gui/simulation.py   — calls step_nonlinear_plant() at every simulation timestep;
+                        calls init_plant_state() to initialise the vehicle.
+  tuner/offline_tuner.py — calls step_nonlinear_plant() and init_plant_state() in
+                           run_headless_rollout() for each CMA-ES candidate evaluation.
 
 DOES NOT USE
 ------------
-  bicycle_model.py, optimiser.py, speed_profile.py, sim_track.py, performance_stats.py
+  model/bicycle_model.py, controller/optimiser.py, sim/speed_profile.py, sim/sim_track.py, tuner/performance_stats.py
 """
 
 import numpy as np
@@ -121,7 +121,7 @@ class VehicleParams:
     passed by reference to avoid re-allocation overhead during inner loops.
 
     Used by: step_nonlinear_plant(), init_plant_state(), plant_to_tracking_error()
-    Instantiated in: simulation.py, offline_tuner.py (init_worker, run_headless_rollout)
+    Instantiated in: gui/simulation.py, tuner/offline_tuner.py (init_worker, run_headless_rollout)
     """
 
     def __init__(self):
@@ -146,7 +146,7 @@ class VehicleParams:
         self.g     = 9.81     # Gravitational acceleration (m/s²); set early —
                                # needed by static_fz_per_corner() for the Cf/Cr
                                # slope-matching calc further below.
-        # Actuator limits: enforced as hard bounds in optimiser.py's QP constraints.
+        # Actuator limits: enforced as hard bounds in controller/optimiser.py's QP constraints.
         self.max_steer       = np.radians(35.0)  # Max rack-limited steering angle (rad)
         # FS EV peak acceleration ~12 m/s² (0→17 m/s in ~2 s); braking ~9 m/s² (~0.9g).
         self.max_accel       = 12.0              # Max longitudinal acceleration (m/s²)
@@ -235,7 +235,7 @@ class VehicleParams:
         self.k_sens = 0.00012      # Load sensitivity (1/N)
 
         # ── Linear cornering stiffness (MPC internal model only) ─────────────
-        # bicycle_model.py's linear MPC model uses Cf/Cr, not these Pacejka
+        # model/bicycle_model.py's linear MPC model uses Cf/Cr, not these Pacejka
         # curves directly — but they MUST match the Pacejka curve's initial
         # slope (C_eff ≈ mu_eff * Fz_nominal * B * C * D) or the MPC's internal
         # prediction silently diverges from the plant it's actually
@@ -535,8 +535,8 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
     np.ndarray, shape (24,)
         New state vector after dt seconds.
 
-    Called by: simulation.py (simulate_closed_loop),
-               offline_tuner.py (run_headless_rollout)
+    Called by: gui/simulation.py (simulate_closed_loop),
+               tuner/offline_tuner.py (run_headless_rollout)
     """
     p         = params
     sub_steps = 4           # Number of Euler sub-steps per control timestep
@@ -1001,8 +1001,8 @@ def init_plant_state(X0, Y0, psi0, vx0=10.0):
     np.ndarray, shape (24,)
         Initial state vector, ready to pass to step_nonlinear_plant().
 
-    Called by: simulation.py (simulate_closed_loop),
-               offline_tuner.py (run_headless_rollout)
+    Called by: gui/simulation.py (simulate_closed_loop),
+               tuner/offline_tuner.py (run_headless_rollout)
     """
     s = np.zeros(N_STATES)
     p = VehicleParams()

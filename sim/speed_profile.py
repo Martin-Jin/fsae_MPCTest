@@ -1,5 +1,5 @@
 """
-speed_profile.py — Curvature-Based Speed Profiler
+sim/speed_profile.py — Curvature-Based Speed Profiler
 
 PURPOSE
 -------
@@ -13,7 +13,7 @@ The result is a smooth speed profile that:
   - Goes fast on straights (up to v_max)
   - Slows appropriately before corners (proportional to curvature)
   - Respects the vehicle's longitudinal acceleration and braking limits
-  - Provides the MPC's speed reference via simulation.py and offline_tuner.py
+  - Provides the MPC's speed reference via gui/simulation.py and tuner/offline_tuner.py
 
 HOW THE PROFILING WORKS
 -----------------------
@@ -38,14 +38,18 @@ acceleration limits.
 
 USED BY
 -------
-  simulation.py    — on_release() and load_test_path() call compute_speed_profile()
-                     + smooth_profile() to build path_v_profile for the simulator.
-  offline_tuner.py — _resample_path() calls both functions to build path_v for
+  gui/simulation.py    — on_release() and load_test_path() call compute_speed_profile()
+                     + smooth_profile() to build path_v_profile for the simulator
+                     (oracle/offline reference path only).
+  tuner/offline_tuner.py — _resample_path() calls both functions to build path_v for
                      every synthetic test path; also used in scoring time bonus.
+  sim/rollout_core.py  — run_core_rollout()'s use_planner=True branch calls
+                     curvature_speed() each step on the live planner's centreline
+                     (no oracle profile exists for a planner-built path).
 
 DOES NOT USE
 ------------
-  vehicle_physics.py, bicycle_model.py, optimiser.py, sim_track.py, performance_stats.py
+  model/vehicle_physics.py, model/bicycle_model.py, controller/optimiser.py, sim/sim_track.py, tuner/performance_stats.py
 """
 
 import numpy as np
@@ -136,7 +140,7 @@ def compute_path_curvature(path_X, path_Y):
 #         At mu=0.6 and R=9 m: v_corner = sqrt(0.6*9.81/0.111) ≈ 7.3 m/s.
 
 #     a_accel_max=4.0 / a_brake_max=−5.0:
-#         Match the vehicle's actuator bounds in optimiser.py (u_max[1]=5.0,
+#         Match the vehicle's actuator bounds in controller/optimiser.py (u_max[1]=5.0,
 #         u_min[1]=−5.0) so the profiler doesn't request speeds that the
 #         controller's own limits prevent it from achieving.
 
@@ -161,7 +165,7 @@ def compute_path_curvature(path_X, path_Y):
 #         Absolute speed cap (m/s). Applied after curvature and path length checks.
 #     mu : float
 #         Friction coefficient for planning-level corner speed limit. Intentionally
-#         conservative relative to vehicle_physics.py's peak mu=1.6.
+#         conservative relative to model/vehicle_physics.py's peak mu=1.6.
 #     g : float
 #         Gravitational acceleration (m/s²).
 #     a_accel_max : float
@@ -181,8 +185,8 @@ def compute_path_curvature(path_X, path_Y):
 #     v_profile : np.ndarray, shape (n,)
 #         Target speed at each path point (m/s), in range [v_min, v_max_eff].
 
-#     Called by: simulation.py (on_release, load_test_path),
-#                offline_tuner.py (_resample_path)
+#     Called by: gui/simulation.py (on_release, load_test_path),
+#                tuner/offline_tuner.py (_resample_path)
 #     """
 #     path_X = np.asarray(path_X)
 #     path_Y = np.asarray(path_Y)
@@ -321,6 +325,84 @@ def compute_speed_profile(
     return v_profile
 
 
+def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
+                    scan_start=1.5, scan_end=14.0, step=2.0, safety=1.0):
+    """
+    Curvature-limited target speed over the next scan_end metres of the path.
+
+    On-demand single-scalar counterpart to compute_speed_profile(), used by the
+    live planner branch (a real cone-vision planner has no oracle path to
+    pre-profile, so the target speed is recomputed each tick from whatever
+    centreline is currently available). This is a numeric-parity port of
+    fsds_simulator/control_utils.py's curvature_speed() (the live ROS node's
+    own re-implementation, used so that node has no cross-package import) —
+    a_lat_max=4.0 matches that live default, NOT compute_speed_profile()'s
+    mu*g=5.886 convention: the two functions serve different paths (oracle
+    per-point profile vs. on-demand live/offline-planner scalar) and only the
+    latter has a live counterpart that must match bit-for-bit for tuned
+    weights to transfer.
+
+    v_target = safety*sqrt(a_lat_max / kappa_peak), with a short-path cap that
+    scales v_max down when the visible path is shorter than scan_end.
+
+    waypoints[0] is assumed to be the car's current position.
+    """
+    n = len(waypoints)
+    if n < 3:
+        return float(v_max)
+
+    segs  = np.linalg.norm(np.diff(waypoints, axis=0), axis=1)
+    arc   = np.concatenate([[0.0], np.cumsum(segs)])
+    total = arc[-1]
+
+    v_max_eff = max(v_min, v_max * min(1.0, total / scan_end))
+    if total < scan_start + step:
+        return float(v_max_eff)
+
+    hi = min(scan_end, total)
+    # Densely resample + moving-average denoise before measuring curvature, so
+    # per-point replanning jitter on straights doesn't read as spurious curvature.
+    pts = None
+    dense = np.arange(scan_start, hi, 1.0)
+    if len(dense) >= 7:
+        dx = np.interp(dense, arc, waypoints[:, 0])
+        dy = np.interp(dense, arc, waypoints[:, 1])
+        w  = min(5, len(dense) - 4)
+        ker = np.ones(w) / w
+        sx = np.convolve(dx, ker, mode='valid')
+        sy = np.convolve(dy, ker, mode='valid')
+        pts = np.column_stack([sx, sy])[::2]
+    if pts is None or len(pts) < 3:
+        sample_arcs = np.arange(scan_start, hi, step)
+        if len(sample_arcs) < 3:
+            return float(v_max_eff)
+        sx  = np.interp(sample_arcs, arc, waypoints[:, 0])
+        sy  = np.interp(sample_arcs, arc, waypoints[:, 1])
+        pts = np.column_stack([sx, sy])
+
+    max_kappa = 0.0
+    for i in range(1, len(pts) - 1):
+        p1, p2, p3 = pts[i - 1], pts[i], pts[i + 1]
+        d12 = float(np.linalg.norm(p2 - p1))
+        d23 = float(np.linalg.norm(p3 - p2))
+        d31 = float(np.linalg.norm(p1 - p3))
+        denom = d12 * d23 * d31
+        if denom < 1e-9:
+            continue
+        v1    = p2 - p1
+        v2    = p3 - p1
+        cross = abs(float(v1[0] * v2[1] - v1[1] * v2[0]))
+        kappa = 2.0 * cross / denom
+        if kappa > max_kappa:
+            max_kappa = kappa
+
+    if max_kappa < 1e-4:
+        return float(v_max_eff)
+
+    v_target = safety * math.sqrt(a_lat_max / max_kappa)
+    return float(max(v_min, min(v_max_eff, v_target)))
+
+
 def smooth_profile(v_profile, window=9):
     """
     Apply a light moving-average smoothing pass to the speed profile.
@@ -352,8 +434,8 @@ def smooth_profile(v_profile, window=9):
     smoothed : np.ndarray, shape (n,)
         Smoothed speed profile, same shape as input.
 
-    Called by: simulation.py (on_release, load_test_path),
-               offline_tuner.py (_resample_path)
+    Called by: gui/simulation.py (on_release, load_test_path),
+               tuner/offline_tuner.py (_resample_path)
     """
     if window < 2 or len(v_profile) < window:
         return v_profile   # Too short to smooth; return unchanged

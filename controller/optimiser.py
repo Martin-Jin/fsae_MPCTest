@@ -1,5 +1,5 @@
 """
-optimiser.py — Parameterized MPC QP Solver
+controller/optimiser.py — Parameterized MPC QP Solver
 
 PURPOSE
 -------
@@ -46,14 +46,14 @@ numerically stable than passing Q directly.
 
 USED BY
 -------
-  simulation.py    — calls solve_mpc() at every simulation step
-  offline_tuner.py — calls solve_mpc() inside run_headless_rollout()
+  gui/simulation.py    — calls solve_mpc() at every simulation step
+  tuner/offline_tuner.py — calls solve_mpc() inside run_headless_rollout()
                      with relaxed tolerances (ROLLOUT_EPS) for speed
 
 DOES NOT USE
 ------------
-  vehicle_physics.py (directly), bicycle_model.py (receives Ad/Bd as arguments),
-  speed_profile.py, sim_track.py, performance_stats.py
+  model/vehicle_physics.py (directly), model/bicycle_model.py (receives Ad/Bd as arguments),
+  sim/speed_profile.py, sim/sim_track.py, tuner/performance_stats.py
 """
 
 import cvxpy as cp
@@ -87,8 +87,8 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max):
 
     PARAMETERS (updated each solve without recompilation)
     ---------
-    A_param            : (nx, nx)  Discrete-time A matrix from bicycle_model.py
-    B_param            : (nx, nu)  Discrete-time B matrix from bicycle_model.py
+    A_param            : (nx, nx)  Discrete-time A matrix from model/bicycle_model.py
+    B_param            : (nx, nu)  Discrete-time B matrix from model/bicycle_model.py
     x0_param           : (nx,)     Current state (MPC initial condition)
     sqrtQ_param        : (nx, 1)   Element-wise sqrt of diagonal Q weights
     sqrtR_param        : (nu, 1)   Element-wise sqrt of diagonal R weights
@@ -116,8 +116,8 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max):
     Called by: solve_mpc() — on first call or when N changes
     """
     # ── CVXPY Parameters (updated each solve, not recompiled) ────────────────
-    A_param = cp.Parameter((nx, nx))            # Discrete-time A from bicycle_model.py
-    B_param = cp.Parameter((nx, nu))            # Discrete-time B from bicycle_model.py
+    A_param = cp.Parameter((nx, nx))            # Discrete-time A from model/bicycle_model.py
+    B_param = cp.Parameter((nx, nu))            # Discrete-time B from model/bicycle_model.py
     x0_param = cp.Parameter(nx)                 # Current MPC state
 
     # (nx,1) and (nu,1) shapes allow broadcasting across N horizon columns
@@ -234,21 +234,21 @@ def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max, R_rate=None, u_prev=None,
     SOLVER TOLERANCES
     -----------------
     eps_abs / eps_rel: OSQP convergence criteria. Tighter = more accurate but
-    slower. Both simulation.py and offline_tuner.py pass settings.ROLLOUT_EPS
+    slower. Both gui/simulation.py and tuner/offline_tuner.py pass settings.ROLLOUT_EPS
     (currently 1e-4) rather than this function's 1e-5 default, trading a
     small amount of accuracy for faster rollouts — the same value is shared
     by live and offline runs so tuned weights stay comparable to what the
     simulator actually sees.
 
     max_iter: OSQP iteration cap. settings.ROLLOUT_MAX_ITER (8000) is used by
-    both simulation.py and offline_tuner.py; this function's own default
+    both gui/simulation.py and tuner/offline_tuner.py; this function's own default
     (8000) only applies to callers that don't pass max_iter explicitly.
 
     Parameters
     ----------
     x0 : np.ndarray, shape (8,)
         Current MPC state vector [e_y, e_y_dot, e_psi, e_psi_dot, e_v, 0,
-        delta_act, a_act]. Built in simulation.py or offline_tuner.py
+        delta_act, a_act]. Built in gui/simulation.py or tuner/offline_tuner.py
         from the plant's current state and tracking errors.
     Ad : np.ndarray, shape (8, 8)
         Discrete-time A matrix from get_8state_discrete_model(vx, dt).
@@ -276,7 +276,7 @@ def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max, R_rate=None, u_prev=None,
         where warning noise would flood the console during mass rollouts.
     return_status : bool, optional
         If True, return (u_sol, status) tuple instead of just u_sol.
-        Used by offline_tuner.py to count OPTIMAL_INACCURATE occurrences.
+        Used by tuner/offline_tuner.py to count OPTIMAL_INACCURATE occurrences.
     eps_abs, eps_rel : float, optional
         OSQP absolute and relative convergence tolerances.
     max_iter : int, optional
@@ -292,8 +292,8 @@ def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max, R_rate=None, u_prev=None,
         the previous command.
     (u_sol, status) if return_status=True.
 
-    Called by: simulation.py (simulate_closed_loop),
-               offline_tuner.py (run_headless_rollout)
+    Called by: gui/simulation.py (simulate_closed_loop),
+               tuner/offline_tuner.py (run_headless_rollout)
     """
     global _mpc_cache
 

@@ -1,5 +1,5 @@
 """
-scoring.py — Single Source of Truth for MPC Rollout Scoring
+sim/scoring.py — Single Source of Truth for MPC Rollout Scoring
 
 PURPOSE
 -------
@@ -15,11 +15,11 @@ This module is now the ONLY place that defines:
 
 USED BY
 -------
-  offline_tuner.py      — run_headless_rollout() accumulates live, step-by-step
-  performance_stats.py  — report_performance_metrics() replays stored history
+  tuner/offline_tuner.py      — run_headless_rollout() accumulates live, step-by-step
+  tuner/performance_stats.py  — report_performance_metrics() replays stored history
                            arrays through the identical accumulator
-  simulation.py          — should call RolloutMetrics the same way
-                           offline_tuner does (see integration note at bottom)
+  gui/simulation.py          — should call RolloutMetrics the same way
+                           tuner/offline_tuner does (see integration note at bottom)
 """
 
 import numpy as np

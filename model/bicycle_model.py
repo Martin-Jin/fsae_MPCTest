@@ -1,11 +1,11 @@
 """
-bicycle_model.py — 8-State Linear Discrete-Time Vehicle Model for MPC
+model/bicycle_model.py — 8-State Linear Discrete-Time Vehicle Model for MPC
 
 PURPOSE
 -------
 Builds the linearised, discretised vehicle model that the MPC optimiser
-(optimiser.py) uses for its horizon predictions. This is deliberately simpler
-than the nonlinear plant (vehicle_physics.py): it is a linearised bicycle
+(controller/optimiser.py) uses for its horizon predictions. This is deliberately simpler
+than the nonlinear plant (model/vehicle_physics.py): it is a linearised bicycle
 model that can be solved as a convex QP. The gap between this model and the
 real plant (model-plant mismatch) is what makes the closed-loop feedback
 controller necessary.
@@ -42,20 +42,20 @@ CONTROL INPUTS (2 inputs)
 
 USED BY
 -------
-  optimiser.py  — solve_mpc() calls get_8state_discrete_model() each step
+  controller/optimiser.py  — solve_mpc() calls get_8state_discrete_model() each step
                   to populate the QP's A and B matrices.
-  offline_tuner.py — get_cached_model() wraps this to avoid redundant calls
+  tuner/offline_tuner.py — get_cached_model() wraps this to avoid redundant calls
                      during mass parallel rollouts.
 
 DOES NOT USE
 ------------
-  simulation.py, vehicle_physics.py, speed_profile.py, sim_track.py,
-  performance_stats.py
+  gui/simulation.py, model/vehicle_physics.py, sim/speed_profile.py, sim/sim_track.py,
+  tuner/performance_stats.py
 """
 
 import numpy as np
 from scipy.linalg import expm
-import vehicle_physics as vp
+import model.vehicle_physics as vp
 
 
 def get_8state_discrete_model(v_x, dt):
@@ -67,7 +67,7 @@ def get_8state_discrete_model(v_x, dt):
     The output matrices satisfy the one-step prediction:
         x[k+1] = Ad @ x[k] + Bd @ u[k]
 
-    These are passed directly to the QP in optimiser.py as the prediction
+    These are passed directly to the QP in controller/optimiser.py as the prediction
     model for the N-step horizon rollout.
 
     Parameters
@@ -91,14 +91,14 @@ def get_8state_discrete_model(v_x, dt):
 
     Notes on OSQP sparsity
     ----------------------
-    OSQP (the QP solver used by optimiser.py) pre-analyses the sparsity pattern
+    OSQP (the QP solver used by controller/optimiser.py) pre-analyses the sparsity pattern
     of the problem matrices on the first solve and caches it. If a subsequent
     solve presents a different sparsity pattern — e.g. a zero that was previously
     nonzero — OSQP throws a reallocation error. To prevent this, all matrices are
     initialised with epsilon (1e-12) rather than exact zeros, forcing a consistent
     "dense" sparsity pattern at every speed.
 
-    Called by: optimiser.py (solve_mpc), offline_tuner.py (get_cached_model)
+    Called by: controller/optimiser.py (solve_mpc), tuner/offline_tuner.py (get_cached_model)
     """
     # Load vehicle parameters — same source of truth as the nonlinear plant
     vehicle_parameters = vp.VehicleParams()
