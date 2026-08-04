@@ -7,6 +7,8 @@ CONTAINER_NAME="fsds_ros2_bridge"
 WINDOWS_SIM_PATH="/mnt/c/Users/Martin/Downloads/fsds-v2.2.0-windows/FSDS.exe"
 HOST_ROS2_DIR="/home/Formula-Student-Driverless-Simulator/ros2"
 CONTAINER_ROS2_DIR="/root/Formula-Student-Driverless-Simulator/ros2"
+HOST_REPO_ROOT="$(dirname "$HOST_ROS2_DIR")"
+CONTAINER_REPO_ROOT="$(dirname "$CONTAINER_ROS2_DIR")"
 
 # Use the host's native ROS 2 install when available; otherwise fall back to Docker.
 if command -v ros2 >/dev/null 2>&1 && [ -f "$HOST_ROS2_DIR/install/local_setup.bash" ]; then
@@ -103,20 +105,23 @@ BRIDGE_PID=$!
 sleep 2
 
 # 3. Launch Planning Stack in the foreground
-echo "[3/3] Launching Autonomous Stack (Perception, Planner, Control)..."
+# sim.launch.py defaults to controller:=mpc_standalone and record_cones:=true,
+# so cone recording starts automatically alongside the stack (no separate
+# terminal needed).
+echo "[3/3] Launching Autonomous Stack (Perception, Planner, Control, Cone Recorder)..."
 if [ "$USE_DOCKER" = true ]; then
     docker exec -it "$CONTAINER_NAME" bash -c "
         source /opt/ros/jazzy/setup.bash && \
         cd $CONTAINER_ROS2_DIR && \
         source install/local_setup.bash && \
-        ros2 launch fsae_bringup sim.launch.py
+        ros2 launch fsae_bringup sim.launch.py cone_out_path:=$CONTAINER_REPO_ROOT/cone_map.json
     "
 else
     bash -c "
         source /opt/ros/jazzy/setup.bash && \
         cd '$HOST_ROS2_DIR' && \
         source install/local_setup.bash && \
-        ros2 launch fsae_bringup sim.launch.py
+        ros2 launch fsae_bringup sim.launch.py cone_out_path:='$HOST_REPO_ROOT/cone_map.json'
     "
 fi
 
