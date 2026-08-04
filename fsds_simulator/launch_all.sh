@@ -9,6 +9,9 @@ HOST_ROS2_DIR="/home/Formula-Student-Driverless-Simulator/ros2"
 CONTAINER_ROS2_DIR="/root/Formula-Student-Driverless-Simulator/ros2"
 HOST_REPO_ROOT="$(dirname "$HOST_ROS2_DIR")"
 CONTAINER_REPO_ROOT="$(dirname "$CONTAINER_ROS2_DIR")"
+# This script itself lives in <mpcTest repo root>/fsds_simulator/, so its own
+# directory is where gui/simulation.py's RECORDED_TRACK_DIR looks for cone maps.
+MPCTEST_CONE_MAPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/cone_maps"
 
 # Use the host's native ROS 2 install when available; otherwise fall back to Docker.
 if command -v ros2 >/dev/null 2>&1 && [ -f "$HOST_ROS2_DIR/install/local_setup.bash" ]; then
@@ -110,6 +113,10 @@ sleep 2
 # terminal needed).
 echo "[3/3] Launching Autonomous Stack (Perception, Planner, Control, Cone Recorder)..."
 if [ "$USE_DOCKER" = true ]; then
+    # No volume mount ties the container to this repo, so we can't write
+    # straight into $MPCTEST_CONE_MAPS_DIR here — falls back to the FSDS
+    # repo root; copy the file into fsds_simulator/cone_maps manually to pick
+    # it up from Load Recorded Track.
     docker exec -it "$CONTAINER_NAME" bash -c "
         source /opt/ros/jazzy/setup.bash && \
         cd $CONTAINER_ROS2_DIR && \
@@ -121,7 +128,7 @@ else
         source /opt/ros/jazzy/setup.bash && \
         cd '$HOST_ROS2_DIR' && \
         source install/local_setup.bash && \
-        ros2 launch fsae_bringup sim.launch.py cone_out_path:='$HOST_REPO_ROOT/cone_map.json'
+        ros2 launch fsae_bringup sim.launch.py cone_out_path:='$MPCTEST_CONE_MAPS_DIR/cone_map_$(date +%s).json'
     "
 fi
 

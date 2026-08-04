@@ -117,9 +117,12 @@ u_bounds_max   = [ vehicle_params.max_steer, vehicle_params.max_accel]
 current_test_path_idx = -1
 
 # Recorded-track loading (see sim/track_io.py + fsae_planning's cone_recorder
-# node). Directory matches that node's default out_path, so no extra config
-# is needed to find files it wrote.
-RECORDED_TRACK_DIR = os.path.expanduser('~/fsae_logs')
+# node). Points at this repo's fsds_simulator/cone_maps/, where launch_all.sh
+# points the cone_recorder node's out_path.
+RECORDED_TRACK_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    'fsds_simulator', 'cone_maps',
+)
 current_recorded_track_idx = -1   # -1 = none loaded yet
 
 

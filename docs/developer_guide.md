@@ -51,9 +51,9 @@ Either:
   advances to the next path; the camera auto-frames around it with a 15 m
   margin.
 - **Load a recorded track** — click **Load Recorded Track** to cycle
-  (newest-first) through `*.json` files in `~/fsae_logs`, the cone maps
-  written by `fsae_planning`'s `cone_recorder` ROS 2 node after a live FSDS
-  lap (see [Recording a track from FSDS](#recording-a-track-from-fsds)
+  (newest-first) through `*.json` files in `fsds_simulator/cone_maps/`, the
+  cone maps written by `fsae_planning`'s `cone_recorder` ROS 2 node after a
+  live FSDS lap (see [Recording a track from FSDS](#recording-a-track-from-fsds)
   below). Unlike the synthetic paths, the blue/yellow cones rendered are the
   *actual recorded cones*, not `place_cones()` output — a real perception
   recording, resimulated exactly as `SimPerception`/`SimPlanner` would drive
@@ -335,16 +335,17 @@ the car returns near its start pose after having driven at least
 never closes (e.g. a DNF) it writes anyway after `max_record_time` (default
 300 s) and marks the file `"lap_closed": false`, so a partial/failed
 recording is still usable but distinguishable from a clean lap.
-`sim.launch.py`'s default output location is `~/fsae_logs/cone_map_<timestamp>.json`
-— the same directory **Load Recorded Track** cycles through, so no extra
-copying is needed as long as you don't override `cone_out_path`. (Note:
-`launch_all.sh` in the `fsae_planning` repo passes its own
-`cone_out_path:=<repo_root>/cone_map.json` rather than using this default —
-if you're recording via that script, look for `cone_map.json` at that
-repo's root instead, or point **Load Recorded Track** / `sim/track_io.py`
-at it directly.) Either way, no extra copying is needed between the two
-repos as long as both read/write the same filesystem (e.g. the same
-WSL/Docker volume mount).
+`sim.launch.py`'s default output location is `~/fsae_logs/cone_map_<timestamp>.json`,
+but **Load Recorded Track** (`gui/simulation.py`'s `RECORDED_TRACK_DIR`) now
+cycles through this repo's `fsds_simulator/cone_maps/` instead — pass an
+explicit `cone_out_path` into that directory (or move/copy the file there)
+to pick a recording up in the GUI. `launch_all.sh` (in this repo's
+`fsds_simulator/`) does this automatically on its native/non-Docker path,
+writing straight to `fsds_simulator/cone_maps/cone_map_<timestamp>.json`. Its
+Docker path can't reach that directory directly (no volume mount ties the
+container to this repo), so it still falls back to
+`<FSDS repo root>/cone_map.json` — copy that file into
+`fsds_simulator/cone_maps/` manually to load it.
 
 ### Launching nodes with FSDS on Windows (WSL + Docker)
 
