@@ -50,6 +50,18 @@ Either:
   `PATH_HAIRPIN`, `PATH_CHICANE`, `PATH_FS_CORNER`, `PATH_MIXED`). Each click
   advances to the next path; the camera auto-frames around it with a 15 m
   margin.
+- **Load a recorded track** — click **Load Recorded Track** to cycle
+  (newest-first) through `*.json` files in `~/fsae_logs`, the cone maps
+  written by `fsae_planning`'s `cone_recorder` ROS 2 node after a live FSDS
+  lap (see [Recording a track from FSDS](#recording-a-track-from-fsds)
+  below). Unlike the synthetic paths, the blue/yellow cones rendered are the
+  *actual recorded cones*, not `place_cones()` output — a real perception
+  recording, resimulated exactly as `SimPerception`/`SimPlanner` would drive
+  it live. The centreline drawn on load is only a reconstruction for the
+  oracle-mode reference path and initial camera framing (see
+  `sim/track_io.py`); with `USE_PLANNER = True` (the default), the actual
+  driving line during the rollout still comes from `SimPlanner` rebuilding
+  it cone-by-cone, exactly as for a synthetic path.
 
 ### 4. (Optional) set initial conditions
 
@@ -198,32 +210,48 @@ for what they control.
 
 To run the controller against the FSDS simulator in ros2, first obtain the
 `fsae_planning` repo, then paste the contents of `control_node.py`,
-`mpc_core.py`, and `control_utils.py` into the matching files in its
-`track_utils` package.
+`mpc_core.py`, and `control_utils.py` (all under `fsds_simulator/` in this
+repo) into the matching files under `fsae_planning`'s `control/fsae_control/
+fsae_control/` package: `control_node.py` → `mpc_controller_standalone.py`,
+`mpc_core.py` → `mpc_core.py`, `control_utils.py` → `control_utils.py`.
+See [docs/planning_control_sync.md](planning_control_sync.md) for exactly
+which upstream file each of this repo's files maps to (`control_node.py`
+maps to `mpc_controller_standalone.py`, **not** `mpc_controller.py` — the
+two are different controllers that happen to share the same `MPCController`
+QP core, see that doc for why).
 (If you already have the simulator set up with the `fsae_planning` repo. Scroll down for installing from scratch on windows.)
 
 **Topic map for the control node:**
 
 ```
-/fsds/testing_only/track   → perception_node  → /FusionCones
-/fsds/testing_only/odom    → perception_node
-                             planner_node
-                             control_node
+/fsds/testing_only/track       → sim_perception   → /fsae/slam/left_track
+                                                   → /fsae/slam/right_track
+                                                   → /fsae/perception/cone_detection
+/fsds/testing_only/odom        → sim_perception
+                                  centerline_planner (via car_position)
+                                  control_node
 
-/FusionCones               → planner_node     → /fsds/planned_path
-                                              → /fsds/lookahead_target
+/fsae/slam/left_track,
+/fsae/slam/right_track,
+/fsae/slam/car_position        → centerline_planner → /fsae/planning/selected_trajectory
 
-/fsds/planned_path         → control_node     → /fsds/control_command
-/fsds/testing_only/odom    → control_node
-/FusionCones               → control_node  (cone proximity brake)
+/fsae/planning/selected_trajectory  → control_node   → /fsds/control_command
+/fsae/slam/car_position             → control_node
+/fsds/testing_only/odom             → control_node
+/fsae/perception/cone_detection     → control_node  (cone proximity brake)
 
-/fsds/signal/go            → planner_node  (unlock)
-                           → control_node  (unlock)
+/fsds/signal/go                → control_node  (unlock)
 ```
 
 Note: `control_node` does not subscribe to a desired-speed topic — it
 computes `desired_speed` itself every tick from the current path via
-`control_utils.curvature_speed()` (see `V_MAX`/`V_MIN` in `control_node.py`).
+`control_utils.curvature_speed()` (see the `v_max`/`v_min` ROS parameters
+in `control_node.py`, which default to `V_MAX`/`V_MIN`). Also note
+`control_node` publishes `fs_msgs/ControlCommand` **directly** — it does
+*not* go through `fsds_bridge.py` (upstream's shared GO-gating/cone-brake/
+throttle-conversion layer that Stanley and upstream's default `mpc`
+controller both use). Don't launch `fsds_bridge` alongside `control_node` —
+they would both publish to `/fsds/control_command`.
 
 **Control loop phases** (see `control_node.py::_control_loop`):
 
@@ -243,6 +271,35 @@ computes `desired_speed` itself every tick from the current path via
    post-override command, so the CSV reflects what was actually sent to the
    vehicle.
 6. **Publish.**
+
+### Recording a track from FSDS
+
+`fsae_planning`'s `cone_recorder` ROS 2 node (in the `fsae_sim_perception`
+package) records one lap's worth of accumulated boundary cones from a live
+FSDS run and writes them to a JSON file this repo can load — see
+`sim/track_io.py` and the **Load Recorded Track** button in
+[Get a path onto the map](#3-get-a-path-onto-the-map) above.
+
+Launch it alongside a normal run (any planner/controller — it only
+subscribes, it doesn't affect the pipeline):
+
+```bash
+ros2 launch fsae_bringup cone_recorder.launch.py
+# or, with an explicit output path:
+ros2 launch fsae_bringup cone_recorder.launch.py out_path:=/path/to/cone_map.json
+```
+
+It starts recording on the first `/fsds/signal/go`, accumulates cones the
+same way `centerline_planner.py`'s `ConeMap` does, and writes the file once
+the car returns near its start pose after having driven at least
+`min_lap_dist` (default 8 m) away from it — i.e. one closed lap. If the lap
+never closes (e.g. a DNF) it writes anyway after `max_record_time` (default
+300 s) and marks the file `"lap_closed": false`, so a partial/failed
+recording is still usable but distinguishable from a clean lap. Default
+output location is `~/fsae_logs/cone_map_<timestamp>.json` — the same
+directory **Load Recorded Track** cycles through, so no extra copying is
+needed between the two repos as long as both read/write the same
+filesystem (e.g. the same WSL/Docker volume mount).
 
 ### Launching nodes with FSDS on Windows (WSL + Docker)
 
@@ -348,8 +405,12 @@ git clone https://github.com/UOA-FSAE/fsae_planning.git
 ```
 
 Paste the contents of `control_node.py`, `mpc_core.py`, and `control_utils.py`
-from this repo into the matching files in `fsae_planning`'s `track_utils`
-package, then resolve dependencies and build:
+(under `fsds_simulator/` in this repo) into `fsae_planning`'s
+`control/fsae_control/fsae_control/` package as `mpc_controller_standalone.py`,
+`mpc_core.py`, and `control_utils.py` respectively (see
+[docs/planning_control_sync.md](planning_control_sync.md) for the exact file
+mapping — `control_node.py` becomes `mpc_controller_standalone.py`, not
+`mpc_controller.py`), then resolve dependencies and build:
 
 ```bash
 cd /root/Formula-Student-Driverless-Simulator/ros2
@@ -496,9 +557,10 @@ path's start pose → drive → **Reset** to stop and clear the trail.
 | `clarabel` | ≥0.6 | Fallback QP solver (via CVXPY) |
 | `cma` | ≥3.3 | CMA-ES optimiser (`fmin_lq_surr2`, BIPOP+surrogate) |
 | `rclpy` | ROS 2 Humble+ | ROS 2 nodes only |
-| `fs_msgs` | FSDS | `Track`, `ControlCommand`, `GoSignal` message types |
-| `nav_msgs` | ROS 2 | `Odometry`, `Path` |
-| `geometry_msgs` | ROS 2 | `PoseStamped`, `PointStamped` |
+| `fs_msgs` | FSDS | `ControlCommand`, `GoSignal` message types |
+| `fsae_interfaces` | `fsae_planning` | `ConeDetection` (cone-proximity brake input) |
+| `nav_msgs` | ROS 2 | `Odometry` |
+| `geometry_msgs` | ROS 2 | `Pose`, `PoseArray` |
 
 ```bash
 pip install numpy scipy matplotlib cvxpy cma

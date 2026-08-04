@@ -20,7 +20,7 @@ class ConeMap:
     Usage
     -----
     map = ConeMap()
-    map.update(blue_obs, yellow_obs)   # called on each /FusionCones message
+    map.update(blue_obs, yellow_obs)   # called on each boundary-track frame
     plan_with(map.blue, map.yellow)    # always returns the full accumulated set
     """
 

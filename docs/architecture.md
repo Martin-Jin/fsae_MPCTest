@@ -126,16 +126,17 @@ in the live simulator and the same path benchmarked offline produce
 How each component maps to its ROS 2 equivalent in the `fsae_planning` package:
 
 ```
-ROS 2 Node              │  Simulator Equivalent
-────────────────────────┼─────────────────────────────────────
-perception_node.py      │  sim_track.SimPerception  (active when USE_PLANNER=True)
-planner_node.py         │  sim_track.SimPlanner     (active when USE_PLANNER=True)
-cone_map.py             │  planning/cone_map.ConeMap        (shared)
-boundary.py             │  planning/boundary.py             (shared)
-path_utils.py           │  planning/path_utils.py           (shared)
-cone_sorting.py         │  planning/cone_sorting.py         (shared)
-mpc_core.py             │  gui/simulation.py / mpc_core.py      (shared)
-control_node.py         │  gui/simulation.py / control_node.py  (shared)
+ROS 2 Node (fsae_planning)      │  Simulator Equivalent
+─────────────────────────────────┼─────────────────────────────────────
+sim_perception.py               │  sim_track.SimPerception  (active when USE_PLANNER=True)
+centerline_planner.py           │  sim_track.SimPlanner     (active when USE_PLANNER=True)
+cone_map.py                     │  planning/cone_map.ConeMap        (shared)
+boundary.py                     │  planning/boundary.py             (shared)
+path_utils.py                   │  planning/path_utils.py           (shared)
+cone_sorting.py                 │  planning/cone_sorting.py         (shared)
+mpc_core.py                     │  gui/simulation.py / mpc_core.py               (shared)
+mpc_controller_standalone.py    │  gui/simulation.py / control_node.py           (shared design, not shared file — see docs/planning_control_sync.md)
+cone_recorder.py                │  sim/track_io.py + gui/simulation.py's Load Recorded Track  (recorder writes what the loader reads)
 ```
 
 The `stanley_control.py` / `stanely_control_utils.py` files under
@@ -1141,6 +1142,7 @@ not here.
 | `tuner/offline_tuner.py` | Headless CMA-ES weight search. See [How the Offline Tuner Works](#how-the-offline-tuner-works). Also exports the synthetic path library (`SYNTHETIC_PATHS`, `PATH_NAMES`) and the speed-keyed model cache (`get_cached_model`) used by both the tuner and the simulator. |
 | `sim/speed_profile.py` | Curvature-based per-point target speed (`compute_speed_profile`), with a moving-average smoothing pass (`smooth_profile`). Uses the friction-circle approximation `v = sqrt(a_lat_max / κ)` over a forward look-ahead window. |
 | `sim/sim_track.py` | Simulator-side mirrors of the real perception/planner nodes: `place_cones()` (static track layout), `SimPerception` (FOV filter), `SimPlanner` (cone accumulation → centreline + speed profile). |
+| `sim/track_io.py` | Loads a `fsae_planning` `cone_recorder` JSON cone map into the same `(path_X, path_Y, path_Psi, path_v, blue, yellow)` tuple shape as a synthetic path — see [Recording a track from FSDS](developer_guide.md#recording-a-track-from-fsds). |
 | `tuner/performance_stats.py` | Scores a completed simulator run for the **Show Metrics** button by replaying its stored history through the exact same `scoring.RolloutMetrics` accumulator the tuner uses. Also exposes `benchmark_weights()` for **Benchmark All Paths**. |
 | `gui/manual_drive.py` | Standalone WASD/mouse drive mode against the 24-state nonlinear plant — no MPC, no scoring, purely open-loop human control for building intuition or sanity-checking a track. See [Manual Drive Mode](developer_guide.md#manual-drive-mode). |
 | `settings.py` | All project-level tuning/scoring/DNF configuration. See [Configuring the Project](#configuring-the-project-settingspy). |

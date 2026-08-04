@@ -4,10 +4,10 @@ sim/sim_track.py — Cone Placement and Sim-Side Perception/Planning
 PURPOSE
 -------
 Provides the simulator-side implementations of the perception and planning
-pipeline, mirroring the behaviour of perception_node.py and planner_node.py
-from the ROS2 stack. This allows the offline 2-D simulator to use the same
-cone-based path building logic that runs on the real vehicle, ensuring that
-tuned MPC weights transfer cleanly.
+pipeline, mirroring the behaviour of fsae_planning's sim_perception.py and
+centerline_planner.py ROS 2 nodes. This allows the offline 2-D simulator to
+use the same cone-based path building logic that runs on the real vehicle,
+ensuring that tuned MPC weights transfer cleanly.
 
 The three public classes/functions serve distinct pipeline stages:
   1. place_cones()    — Generate a static cone map from a path (track layout)
@@ -17,7 +17,7 @@ The three public classes/functions serve distinct pipeline stages:
 RELATIONSHIP TO ROS2 STACK
 ---------------------------
   place_cones()   →  static track layout (not in ROS2; the real track has real cones)
-  SimPerception   →  mirrors perception_node.py._publish_visible_cones()
+  SimPerception   →  mirrors sim_perception.py's SimPerception._visible() + _publish()
   SimPlanner      →  mirrors centerline_planner.py's CenterlinePlanner._planning_loop()
 
 Both SimPerception and SimPlanner are stateful: SimPerception holds the full
@@ -119,9 +119,10 @@ class SimPerception:
     Simulates the vehicle's cone perception by filtering the full static
     cone map to only those cones within the vehicle's forward field of view.
 
-    Mirrors perception_node.py._publish_visible_cones() from the ROS2 stack:
-    the real perception node filters LiDAR/camera detections to a forward cone;
-    this class does the same on the pre-placed static cone map.
+    Mirrors sim_perception.py's SimPerception._visible() from the ROS2 stack
+    (fsae_sim_perception package): the real node filters the oracle cone map
+    to a forward window + omni radius; this class does the same on the
+    pre-placed static cone map.
 
     The filtering is done in the vehicle's local body frame:
       - Transform cones from global frame to vehicle frame (rotation by -yaw)
@@ -186,7 +187,7 @@ class SimPerception:
 class SimPlanner:
     """
     Accumulates cone observations from SimPerception and builds a centreline
-    path, mirroring planner_node.py._planning_loop().
+    path, mirroring centerline_planner.py's CenterlinePlanner._planning_loop().
 
     On each update() call, the planner:
       1. Adds the new visible cones to its persistent ConeMap

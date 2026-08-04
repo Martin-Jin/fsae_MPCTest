@@ -8,26 +8,8 @@ import math
 
 import numpy as np
 
-# from fs_msgs.msg import Cone
-
 # Typical FS track width upper bound used to reject implausible pairs
 MAX_PAIR_DIST = 7.0  # metres
-
-
-# def separate_cones_by_color(track_msg):
-    # """
-    # Split a Track message into blue (left boundary) and yellow (right boundary)
-    # cone arrays, discarding orange and unknown cones.
-    # Returns (blue_cones, yellow_cones) as float64 arrays of shape (N, 2).
-    # """
-    # blue, yellow = [], []
-    # for cone in track_msg.track:
-    #     pt = [cone.location.x, cone.location.y]
-    #     if cone.color == Cone.BLUE:
-    #         blue.append(pt)
-    #     elif cone.color == Cone.YELLOW:
-    #         yellow.append(pt)
-    # return np.array(blue, dtype=np.float64), np.array(yellow, dtype=np.float64)
 
 
 def sort_cones_nn(cones, start=None):

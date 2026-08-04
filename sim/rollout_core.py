@@ -191,6 +191,12 @@ def run_core_rollout(
             "pred_X": [], "pred_Y": [], "solver_failed": [],
             "failed": False, "offtrack": False, "fail_reason": None,
         }
+        if use_planner:
+            # Per-step snapshot of SimPlanner's live centreline (distinct from
+            # the true reference path_X/path_Y) — GUI-only, cosmetic, for
+            # visualising what the planner actually built vs. the ground truth.
+            history["planner_X"] = []
+            history["planner_Y"] = []
 
     n_ran = max_steps
 
@@ -232,6 +238,10 @@ def run_core_rollout(
                 v_target = sp.curvature_speed(
                     cl[cl_idx:], v_max=PLANNER_V_MAX, v_min=PLANNER_V_MIN
                 )
+
+                if want_history:
+                    history["planner_X"].append(cl_x)
+                    history["planner_Y"].append(cl_y)
             else:
                 # Planner not yet ready — fall back to the global reference path.
                 # (This fallback was previously missing in gui/simulation.py, which
@@ -241,6 +251,13 @@ def run_core_rollout(
                     state, path_x=path_X, path_y=path_Y, path_psi=path_Psi
                 )
                 v_target = float(path_v_profile[idx])
+
+                if want_history:
+                    # No planner centreline yet this step — record an empty
+                    # snapshot rather than skipping the index, so history["planner_X"]
+                    # stays aligned index-for-index with history["X"]/pred_X.
+                    history["planner_X"].append(np.empty(0))
+                    history["planner_Y"].append(np.empty(0))
         else:
             e_y, _, e_psi, _, _, _, _ = plant_to_tracking_error(
                 state, path_x=path_X, path_y=path_Y, path_psi=path_Psi

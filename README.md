@@ -9,9 +9,14 @@ don't have to be hand-tuned by trial and error.
 This repository also includes a ROS 2 control node (`control_node.py` /
 `mpc_core.py`) that runs the same MPC live inside the
 [FSDS](https://github.com/FS-Driverless/Formula-Student-Driverless-Simulator)
-simulator, by replacing the corresponding controller node file in the
-[fsae_planning](https://github.com/UOA-FSAE/fsae_planning) repo. Weights tuned
-offline in this project transfer directly to that live controller.
+simulator, by pasting it into the matching file in the
+[fsae_planning](https://github.com/UOA-FSAE/fsae_planning) repo (see
+[docs/planning_control_sync.md](docs/planning_control_sync.md) for exactly
+which upstream file — `control_node.py` maps to `mpc_controller_standalone.py`,
+a distinct node from upstream's default `mpc_controller.py`). Weights tuned
+offline in this project transfer directly to that live controller, because
+both preserve the MPC's own throttle/brake output rather than routing speed
+through `fsds_bridge.py`'s separate P-loop.
 
 The 2D simulator can optionally simulate the full perception + planning
 pipeline (`USE_PLANNER` in `settings.py`) by placing cones along a path
@@ -19,7 +24,10 @@ pipeline (`USE_PLANNER` in `settings.py`) by placing cones along a path
 the shared planning code in the `planning/` folder (taken from the
 `fsae_planning` repo). When `USE_PLANNER` is off, the simulator instead tracks
 the true reference path directly — faster, and useful for isolating driving
-behaviour from planner behaviour.
+behaviour from planner behaviour. **Load Recorded Track** in `gui/simulation.py`
+loads a real cone map recorded from a live FSDS lap (via `fsae_planning`'s
+`cone_recorder` node) instead of a synthetic one — see
+[Recording a track from FSDS](docs/developer_guide.md#recording-a-track-from-fsds).
 
 fsds simulator repo: https://github.com/FS-Driverless/Formula-Student-Driverless-Simulator (current implementation uses commit 59f03fa, and the V2.20 release)
 fsae planning repo: https://github.com/UOA-FSAE/fsae_planning (current implementation uses commit 28dcd4d)
@@ -42,8 +50,9 @@ cd /path/to/project
 python -m gui.simulation
 ```
 
-Click **Load Test Path** to cycle through the built-in synthetic paths, then
-**Start Sim** to run a closed-loop MPC rollout. See
+Click **Load Test Path** to cycle through the built-in synthetic paths (or
+**Load Recorded Track** to load a real cone map recorded from FSDS — see
+below), then **Start Sim** to run a closed-loop MPC rollout. See
 [docs/developer_guide.md](docs/developer_guide.md#running-the-simulator) for
 the full walkthrough (drawing a path, initial-condition sliders, scoring a
 run), and [docs/developer_guide.md](docs/developer_guide.md#running-the-offline-tuner)
@@ -66,7 +75,8 @@ for how to run the CMA-ES weight tuner instead.
 
 | File | Purpose |
 |---|---|
-| `gui/simulation.py` | Interactive matplotlib GUI — draw/load a path, run one closed-loop rollout, scrub through history, view metrics. |
+| `gui/simulation.py` | Interactive matplotlib GUI — draw/load a path, run one closed-loop rollout, scrub through history, view metrics. Also renders the live planner centreline (magenta) alongside the true target path when `USE_PLANNER=True`. |
+| `sim/track_io.py` | Loads a recorded cone map (JSON, from `fsae_planning`'s `cone_recorder` node) into the same path/cones tuple shape as a synthetic path, for **Load Recorded Track**. |
 | `tuner/offline_tuner.py` | Headless CMA-ES weight search across a library of synthetic corner shapes. |
 | `sim/rollout_core.py` | The single shared closed-loop rollout loop used by both `gui/simulation.py` and `tuner/offline_tuner.py`. |
 | `model/vehicle_physics.py` | `VehicleParams` — the single source of truth for vehicle physics (mass, geometry, tyres, suspension, aero, actuator limits). |

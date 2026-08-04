@@ -60,6 +60,9 @@ DOES NOT USE (at runtime, beyond what's listed above)
   unlike SYNTHETIC_PATHS/PATH_NAMES which are read once at import.
 """
 
+import glob
+import os
+
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button, Slider
@@ -70,6 +73,7 @@ import sim.speed_profile as speed_profile
 from tuner.offline_tuner import SYNTHETIC_PATHS, PATH_NAMES, get_cached_model
 from sim.sim_track import place_cones
 from sim.rollout_core import run_core_rollout, compute_step_budget
+from sim.track_io import load_recorded_track
 
 from settings import (
     USE_PLANNER,
@@ -112,6 +116,12 @@ u_bounds_max   = [ vehicle_params.max_steer, vehicle_params.max_accel]
 # Tracks which synthetic path is currently loaded (-1 = none)
 current_test_path_idx = -1
 
+# Recorded-track loading (see sim/track_io.py + fsae_planning's cone_recorder
+# node). Directory matches that node's default out_path, so no extra config
+# is needed to find files it wrote.
+RECORDED_TRACK_DIR = os.path.expanduser('~/fsae_logs')
+current_recorded_track_idx = -1   # -1 = none loaded yet
+
 
 # ==========================================
 # INTERACTIVE GUI LAYOUT
@@ -144,6 +154,7 @@ ax_map = fig.add_subplot(gs[0:6, 0])   # Map spans rows 0-5 of left column
 (path_line,)         = ax_map.plot([], [], "r--",  label="Target Path",            linewidth=2)
 (trail_line,)        = ax_map.plot([], [], "b-",   label="Actual Vehicle Trail",   alpha=0.6)
 (pred_line,)         = ax_map.plot([], [], "c-o",  label="MPC Horizon Prediction", markersize=3, alpha=0.8)
+(planner_line,)      = ax_map.plot([], [], "m-",   label="Planner Centreline",     linewidth=1.5, alpha=0.85)
 (vehicle_marker,)    = ax_map.plot([], [], "g-",   linewidth=2.0,                  label="Vehicle")
 (blue_cones_line,)   = ax_map.plot([], [], color="blue", marker="o", linestyle="None", markersize=4, label="Blue Cones")
 (yellow_cones_line,) = ax_map.plot([], [], color="gold", marker="o", linestyle="None", markersize=4, label="Yellow Cones")
@@ -180,23 +191,25 @@ ax_ey0.set_visible(False)
 ax_epsi0.set_visible(False)
 ax_scrub.set_visible(False)
 
-# ── Buttons — right column rows 0-4 (one per row, equal height) ───────────────
-ax_btn_load      = fig.add_subplot(gs[0, 1])
-ax_btn_start     = fig.add_subplot(gs[1, 1])
-ax_btn_reset     = fig.add_subplot(gs[2, 1])
-ax_btn_optimize  = fig.add_subplot(gs[3, 1])
-ax_btn_benchmark = fig.add_subplot(gs[4, 1])
+# ── Buttons — right column rows 0-5 (one per row, equal height) ───────────────
+ax_btn_load          = fig.add_subplot(gs[0, 1])
+ax_btn_load_recorded = fig.add_subplot(gs[1, 1])
+ax_btn_start         = fig.add_subplot(gs[2, 1])
+ax_btn_reset         = fig.add_subplot(gs[3, 1])
+ax_btn_optimize      = fig.add_subplot(gs[4, 1])
+ax_btn_benchmark     = fig.add_subplot(gs[5, 1])
 
-btn_load      = Button(ax_btn_load,      "Load Test Path",      color="thistle",    hovercolor="plum")
-btn_start     = Button(ax_btn_start,     "Start Sim",           color="lightgreen", hovercolor="limegreen")
-btn_reset     = Button(ax_btn_reset,     "Reset Environment",   color="tomato",     hovercolor="crimson")
-btn_optimize  = Button(ax_btn_optimize,  "Show Metrics",        color="lightblue",  hovercolor="deepskyblue")
-btn_benchmark = Button(ax_btn_benchmark, "Benchmark All Paths", color="lightyellow",hovercolor="gold")
+btn_load          = Button(ax_btn_load,          "Load Test Path",      color="thistle",     hovercolor="plum")
+btn_load_recorded = Button(ax_btn_load_recorded, "Load Recorded Track", color="lightpink",   hovercolor="palevioletred")
+btn_start         = Button(ax_btn_start,         "Start Sim",           color="lightgreen",  hovercolor="limegreen")
+btn_reset         = Button(ax_btn_reset,         "Reset Environment",   color="tomato",      hovercolor="crimson")
+btn_optimize      = Button(ax_btn_optimize,      "Show Metrics",        color="lightblue",   hovercolor="deepskyblue")
+btn_benchmark     = Button(ax_btn_benchmark,     "Benchmark All Paths", color="lightyellow", hovercolor="gold")
 
-# ── Telemetry panel — right column rows 5-8 (top-anchored below buttons) ──────
-# Spans four rows; text is top-anchored so it fills downward from just below
+# ── Telemetry panel — right column rows 6-8 (top-anchored below buttons) ──────
+# Spans three rows; text is top-anchored so it fills downward from just below
 # the last button, matching the map's vertical extent on the left.
-ax_info = fig.add_subplot(gs[5:9, 1])
+ax_info = fig.add_subplot(gs[6:9, 1])
 ax_info.axis("off")
 
 # Telemetry text — full axes width, top-anchored, centred horizontally
@@ -278,7 +291,8 @@ def reset_environment(event):
     Called by: btn_reset ("Reset Environment" button)
     """
     global is_simulated, drawn_points, path_X, path_Y, \
-           path_Psi, path_v_profile, sim_history, current_test_path_idx
+           path_Psi, path_v_profile, sim_history, current_test_path_idx, \
+           current_recorded_track_idx
 
     is_simulated          = False
     drawn_points          = []
@@ -286,10 +300,12 @@ def reset_environment(event):
     path_v_profile        = np.array([])
     sim_history           = {}
     current_test_path_idx = -1
+    current_recorded_track_idx = -1
 
     path_line.set_data([], [])
     trail_line.set_data([], [])
     pred_line.set_data([], [])
+    planner_line.set_data([], [])
     vehicle_marker.set_data([], [])
     telemetry_text.set_text("")
     blue_cones_line.set_data([], [])
@@ -304,6 +320,7 @@ def reset_environment(event):
     ax_scrub.set_visible(False)
 
     btn_load.set_active(True)
+    btn_load_recorded.set_active(True)
     btn_start.set_active(True)
     btn_optimize.set_active(True)
     slider_ey0.set_val(0.0)
@@ -360,6 +377,80 @@ def load_test_path(event):
     ax_map.set_title(f"Loaded: {path_name} | Click 'Start Sim'", fontweight="bold", color="blue")
 
     # Frame camera around path with margin
+    margin = 15.0
+    ax_map.set_xlim(np.min(path_X) - margin, np.max(path_X) + margin)
+    ax_map.set_ylim(np.min(path_Y) - margin, np.max(path_Y) + margin)
+    fig.canvas.draw_idle()
+
+
+def load_recorded_track_cb(event):
+    """
+    Cycle through recorded cone-map JSON files in RECORDED_TRACK_DIR (newest
+    first) and load the next one, mirroring load_test_path()'s cycling UX but
+    reading real recorded cones (see fsae_planning's cone_recorder node and
+    sim/track_io.py) instead of the synthetic path library.
+
+    The recorded cones (not synthetic place_cones() output) become
+    _blue_cones_all / _yellow_cones_all — this is real perception data, so it
+    is rendered and used for SimPerception/SimPlanner exactly as-is. The
+    reconstructed centreline (see track_io.load_recorded_track) is used only
+    as path_X/path_Y/path_Psi/path_v_profile — the oracle-mode reference path
+    and the initial camera framing; with USE_PLANNER=True (the default) the
+    actual driving line still comes from SimPlanner rebuilding it cone-by-cone
+    during the rollout, same as for a synthetic path.
+
+    Does nothing if a simulation is already running, or if RECORDED_TRACK_DIR
+    has no *.json files yet (title explains why instead of silently no-op'ing).
+
+    Called by: btn_load_recorded ("Load Recorded Track" button)
+    """
+    global path_X, path_Y, path_Psi, path_v_profile, \
+           current_recorded_track_idx, _blue_cones_all, _yellow_cones_all
+
+    if is_simulated:
+        return
+
+    files = sorted(
+        glob.glob(os.path.join(RECORDED_TRACK_DIR, '*.json')),
+        key=os.path.getmtime, reverse=True,
+    )
+    if not files:
+        ax_map.set_title(
+            f"No recorded tracks found in {RECORDED_TRACK_DIR}",
+            fontweight="bold", color="red",
+        )
+        fig.canvas.draw_idle()
+        return
+
+    current_recorded_track_idx = (current_recorded_track_idx + 1) % len(files)
+    track_path = files[current_recorded_track_idx]
+
+    try:
+        path_X, path_Y, path_Psi, path_v_profile, _blue_cones_all, _yellow_cones_all = \
+            load_recorded_track(track_path)
+    except (ValueError, OSError) as exc:
+        ax_map.set_title(f"Failed to load {os.path.basename(track_path)}: {exc}",
+                          fontweight="bold", color="red")
+        fig.canvas.draw_idle()
+        return
+
+    if len(_blue_cones_all) > 0:
+        blue_cones_line.set_data(_blue_cones_all[:, 0], _blue_cones_all[:, 1])
+    if len(_yellow_cones_all) > 0:
+        yellow_cones_line.set_data(_yellow_cones_all[:, 0], _yellow_cones_all[:, 1])
+
+    path_line.set_data(path_X, path_Y)
+
+    car_x, car_y = get_car_triangle(path_X[0], path_Y[0], path_Psi[0])
+    vehicle_marker.set_data(car_x, car_y)
+
+    ax_ey0.set_visible(True)
+    ax_epsi0.set_visible(True)
+
+    track_name = os.path.basename(track_path)
+    ax_map.set_title(f"Loaded recorded track: {track_name} | Click 'Start Sim'",
+                      fontweight="bold", color="blue")
+
     margin = 15.0
     ax_map.set_xlim(np.min(path_X) - margin, np.max(path_X) + margin)
     ax_map.set_ylim(np.min(path_Y) - margin, np.max(path_Y) + margin)
@@ -480,6 +571,7 @@ fig.canvas.mpl_connect("button_press_event",   on_press)
 fig.canvas.mpl_connect("motion_notify_event",  on_motion)
 fig.canvas.mpl_connect("button_release_event", on_release)
 btn_load.on_clicked(load_test_path)
+btn_load_recorded.on_clicked(load_recorded_track_cb)
 btn_reset.on_clicked(reset_environment)
 
 
@@ -759,11 +851,15 @@ def update_scrub_frame(val):
     Called every time the scrub slider is moved. Updates:
       - trail_line:      full vehicle trail up to (and including) `frame`
       - pred_line:       MPC horizon prediction at `frame`
+      - planner_line:    SimPlanner's live centreline snapshot at `frame`
+                         (only present when the rollout ran with use_planner=True)
       - vehicle_marker:  triangle marker at (X[frame], Y[frame], psi[frame])
       - telemetry_text:  speed, position, heading, errors, and commands at `frame`
 
     Handles the case where pred_X/pred_Y may be shorter than the full trail
     (e.g. if the simulation failed before the last step produced a prediction).
+    planner_X/planner_Y are absent entirely when the rollout used the oracle
+    path (use_planner=False) rather than the live planner — see rollout_core.py.
 
     Parameters
     ----------
@@ -782,6 +878,12 @@ def update_scrub_frame(val):
         pred_line.set_data(h["pred_X"][safe_frame_post], h["pred_Y"][safe_frame_post])
     else:
         pred_line.set_data([], [])
+
+    planner_x_hist = h.get("planner_X")
+    if planner_x_hist and frame < len(planner_x_hist) and len(planner_x_hist[frame]) >= 2:
+        planner_line.set_data(planner_x_hist[frame], h["planner_Y"][frame])
+    else:
+        planner_line.set_data([], [])
 
     car_x, car_y = get_car_triangle(h["X"][frame], h["Y"][frame], h["psi"][frame])
     vehicle_marker.set_data(car_x, car_y)

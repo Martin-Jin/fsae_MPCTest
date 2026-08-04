@@ -8,11 +8,35 @@ The live, in-sim ROS 2 node that wraps MPCController
 codebase where the MPC is driven by real sensor topics rather than the
 offline simulator (simulation.py) or the tuner (offline_tuner.py).
 
+INTERFACE (matches the current fsae_planning car stack)
+----------------------------------------------------------------------------
+    in   /fsae/planning/selected_trajectory  geometry_msgs/PoseArray        planner centreline
+    in   /fsae/slam/car_position             geometry_msgs/Pose             x,y in position; yaw in orientation.w
+    in   /fsds/testing_only/odom             nav_msgs/Odometry              speed + yaw-rate feedback
+    in   /fsds/signal/go                     fs_msgs/GoSignal               race start
+    in   /fsae/perception/cone_detection     fsae_interfaces/ConeDetection  proximity e-brake (car-local frame)
+    out  /fsds/control_command                fs_msgs/ControlCommand
+
+DELIBERATE DEVIATION FROM fsae_planning's mpc_controller.py
+----------------------------------------------------------------------------
+fsae_planning's mpc_controller.py forwards only the MPC's steering command and
+lets fsds_bridge.py's simple speed-error P-loop compute throttle/brake against
+a curvature-limited target speed. This node instead publishes ControlCommand
+directly and uses MPCController.compute()'s own (steering, throttle, brake)
+output unchanged, preserving the offline-tuned longitudinal behaviour from
+tuner/offline_tuner.py (which also drives the plant with the MPC's own a_cmd —
+see sim/rollout_core.py). Consequently this node does NOT go through
+fsds_bridge.py: GO-gating, stale-command braking, and cone-proximity braking
+are re-implemented here instead of relying on the bridge, matching this
+repo's previous control_node.py design. Don't launch fsds_bridge.py alongside
+this node — its output would be published but never used, and it would fight
+this node for the /fsds/control_command topic.
+
 Responsibilities:
-  1. Subscribe to planner path, odometry, fused cone map, and the race
-     "GO" signal. Desired speed is not subscribed from a topic — it is
-     computed locally every tick from the current path via
-     control_utils.curvature_speed(), mirroring sim_track.SimPlanner's
+  1. Subscribe to the planner path, SLAM car pose, odometry, fused cone
+     detections, and the race "GO" signal. Desired speed is not subscribed
+     from a topic — it is computed locally every tick from the current path
+     via control_utils.curvature_speed(), mirroring sim_track.SimPlanner's
      offline speed profile.
   2. Maintain the latest vehicle state (position, yaw, speed, yaw rate)
      and the latest planned path.
@@ -32,8 +56,9 @@ CONTROL LOOP PHASES (see _control_loop)
 ----------------------------------------------------------------------------
   Phase 1 — Hold at start line until GO signal received.
   Phase 2 — Emergency brake if the planner path is missing/stale (>TARGET_TIMEOUT
-            old) or has fewer than 2 points; also resets the MPC so it doesn't
-            warm-start from a stale trajectory once the path returns.
+            old) or has fewer than 2 points, or the SLAM pose hasn't arrived yet;
+            also resets the MPC so it doesn't warm-start from a stale trajectory
+            once the path returns.
   Phase 3 — Normal MPC solve via MPCController.compute().
   Phase 4 — Cone-proximity brake override: hard-overrides the MPC's
             throttle/brake (not steering) if a cone is inside the dynamic
@@ -60,12 +85,13 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 
-from fs_msgs.msg import ControlCommand, GoSignal, Track
-from nav_msgs.msg import Odometry, Path
+from fs_msgs.msg import ControlCommand, GoSignal
+from fsae_interfaces.msg import ConeDetection
+from geometry_msgs.msg import Pose, PoseArray
+from nav_msgs.msg import Odometry
 
 from .control_utils import curvature_speed
 from .mpc_core import MPCController
-from fsae_planning.cone_sorting import separate_cones_by_color
 
 # ── Tuneable constants ─────────────────────────────────────────────────────────
 
@@ -118,10 +144,16 @@ class ControlNode(Node):
         )
 
         # ── Subscriptions ──────────────────────────────────────────────
-        self.create_subscription(Path,     '/fsds/planned_path',      self._path_cb,  10)
-        self.create_subscription(Odometry, '/fsds/testing_only/odom', self._odom_cb,  sensor_qos)
-        self.create_subscription(Track,    '/FusionCones',            self._track_cb, 10)
-        self.create_subscription(GoSignal, '/fsds/signal/go',         self._go_cb,    10)
+        self.create_subscription(
+            PoseArray, '/fsae/planning/selected_trajectory', self._path_cb, 10)
+        self.create_subscription(
+            Pose, '/fsae/slam/car_position', self._pose_cb, 10)
+        self.create_subscription(
+            Odometry, '/fsds/testing_only/odom', self._odom_cb, sensor_qos)
+        self.create_subscription(
+            GoSignal, '/fsds/signal/go', self._go_cb, 10)
+        self.create_subscription(
+            ConeDetection, '/fsae/perception/cone_detection', self._cone_cb, 10)
 
         # ── Publisher ──────────────────────────────────────────────────
         self.pub_cmd = self.create_publisher(ControlCommand, '/fsds/control_command', 10)
@@ -135,8 +167,11 @@ class ControlNode(Node):
         self._car_yaw        = 0.0
         self._car_speed      = 0.0
         self._car_yaw_rate   = 0.0
-        self._blue_cones:   np.ndarray = np.empty((0, 2))
-        self._yellow_cones: np.ndarray = np.empty((0, 2))
+        self._have_pose       = False
+        # Cones arrive already in the car-LOCAL frame (see ConeDetection.msg /
+        # fsae_sim_perception/sim_perception.py), so the proximity check below
+        # needs no car_pos/car_yaw transform.
+        self._cones_local: np.ndarray = np.empty((0, 2))
         self._cone_brake_duration: float = 0.0
         self._cone_reset_done: bool = False
 
@@ -178,58 +213,60 @@ class ControlNode(Node):
             self._go_received = True
             self.get_logger().info('GO signal received. Launching control loop.')
 
-    def _path_cb(self, msg: Path) -> None:
+    def _path_cb(self, msg: PoseArray) -> None:
         """
-        Convert the incoming planner Path poses into a 2D numpy array [x, y]
+        Convert the incoming planner PoseArray into a 2D numpy array [x, y]
         and record the wall-clock arrival time.
 
         self._path_stamp is used by _control_loop's staleness check
         (TARGET_TIMEOUT) — note it is stamped with node-clock "now" at
-        message arrival, not the Path message's own header stamp, so this
-        measures ROS-callback latency/dropout rather than sensor age.
+        message arrival, not the PoseArray message's own header stamp, so
+        this measures ROS-callback latency/dropout rather than sensor age.
         An empty poses list degrades gracefully to an empty (0, 2) array,
         which subsequently trips the `len(self._path_pts) < 2` staleness
         condition in _control_loop.
         """
         self._path_pts = np.array(
-            [[ps.pose.position.x, ps.pose.position.y] for ps in msg.poses],
+            [[p.position.x, p.position.y] for p in msg.poses],
             dtype=np.float64,
         ) if msg.poses else np.empty((0, 2))
         self._path_stamp = self.get_clock().now()
 
+    def _pose_cb(self, msg: Pose) -> None:
+        """
+        Car pose from SLAM. Upstream convention: x,y in position; yaw (rad)
+        is stuffed into orientation.w rather than a proper quaternion — see
+        fsae_sim_perception/sim_perception.py's _car_pose_msg().
+        """
+        self._car_pos   = np.array([msg.position.x, msg.position.y])
+        self._car_yaw   = float(msg.orientation.w)
+        self._have_pose = True
+
     def _odom_cb(self, msg: Odometry) -> None:
         """
-        Extract position, forward speed, yaw rate, and yaw from Odometry.
+        Extract forward speed and yaw rate from Odometry. Position/yaw come
+        from _pose_cb (the SLAM car_position topic) instead, matching the
+        fsae_planning stack's pose/twist split.
 
         car_speed is computed as hypot(vx, vy) of the *linear* twist, i.e.
         vehicle-frame planar speed magnitude, not projected onto the car's
         forward axis — this only equals true forward speed if lateral twist
         (side-slip) is negligible, which is the standard MPC small-slip
         assumption but can under/overstate speed during a slide.
-        Yaw is recovered from the quaternion via the standard planar
-        (roll/pitch-ignoring) atan2 formula, valid because FSDS operates on
-        a flat track.
         """
-        p = msg.pose.pose.position
-        self._car_pos = np.array([p.x, p.y])
-
         v = msg.twist.twist.linear
         self._car_speed    = math.hypot(v.x, v.y)
         self._car_yaw_rate = msg.twist.twist.angular.z
 
-        q = msg.pose.pose.orientation
-        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
-        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
-        self._car_yaw = math.atan2(siny_cosp, cosy_cosp)
-
-    def _track_cb(self, msg: Track) -> None:
+    def _cone_cb(self, msg: ConeDetection) -> None:
         """
-        Split the fused perception Track message into blue/yellow numpy
-        cone arrays via fsae_planning.cone_sorting.separate_cones_by_color().
-        Used only by the Phase 4 cone-proximity brake, not by the MPC path
-        tracking itself (path already comes pre-planned from the planner).
+        Cache the fused blue+yellow cones (already car-local, see
+        ConeDetection.msg) for the Phase 4 cone-proximity brake. Used only by
+        that safety override, not by the MPC path tracking itself (path
+        already comes pre-planned from the planner).
         """
-        self._blue_cones, self._yellow_cones = separate_cones_by_color(msg)
+        pts = [[p.x, p.y] for p in msg.blue] + [[p.x, p.y] for p in msg.yellow]
+        self._cones_local = np.array(pts, dtype=np.float64) if pts else np.empty((0, 2))
 
     # ------------------------------------------------------------------
     # Helpers
@@ -237,22 +274,16 @@ class ControlNode(Node):
 
     def _check_cone_proximity(self) -> bool:
         """
-        Transforms visible cones into the car-relative frame to check if any
-        obstruct the dynamic braking corridor ahead of the vehicle.
+        Checks the already car-local cone cache for any cone obstructing the
+        dynamic braking corridor directly ahead of the vehicle.
 
         Returns True if a cone collision is imminent.
         """
-        cone_parts = [c for c in (self._blue_cones, self._yellow_cones) if len(c) > 0]
-        if not cone_parts:
+        if len(self._cones_local) == 0:
             return False
 
-        all_cones = np.vstack(cone_parts)
-        cos_y = math.cos(self._car_yaw)
-        sin_y = math.sin(self._car_yaw)
-        rel   = all_cones - self._car_pos
-
-        x_car =  rel[:, 0] * cos_y + rel[:, 1] * sin_y   # forward (+)
-        y_car = -rel[:, 0] * sin_y + rel[:, 1] * cos_y   # left    (+)
+        x_car = self._cones_local[:, 0]   # forward (+)
+        y_car = self._cones_local[:, 1]   # left    (+)
 
         dynamic_brake_dist = float(np.clip(
             self._car_speed * 0.25, 0.6, CONE_BRAKE_DIST
@@ -297,13 +328,13 @@ class ControlNode(Node):
             self.get_logger().info('Waiting for GO signal...', throttle_duration_sec=2.0)
             return
 
-        # ── Phase 2: Emergency brake on stale / missing path ──────────
+        # ── Phase 2: Emergency brake on stale / missing path or pose ───
         path_stale = (
             self._path_stamp is None
             or (self.get_clock().now() - self._path_stamp).nanoseconds * 1e-9 > TARGET_TIMEOUT
             or len(self._path_pts) < 2
         )
-        if path_stale:
+        if not self._have_pose or path_stale:
             cmd.throttle, cmd.steering, cmd.brake = 0.0, 0.0, 1.0
             self._mpc.reset()
             self._publish(cmd)

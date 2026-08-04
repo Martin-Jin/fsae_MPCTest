@@ -1,26 +1,20 @@
 """
-Boundary detection: cone-wall mesh planner and ft-fsd trace-sort planner.
+Boundary detection: cone-wall mesh centreline planner.
 
-Two public planners are provided:
-
-build_path_walls  — active planner.  Connects same-colour cones into a wall
-                    mesh, generates candidate midpoints between valid
-                    blue-yellow pairs, then chains them with a greedy walk
-                    that penalises steps crossing the wall mesh.
-
-build_path_trace  — ft-fsd-inspired planner (reference / fallback).  Sorts
-                    each boundary via a same-colour adjacency graph with a
-                    cross-track guard, then matches pairs using an oriented
-                    ellipse gate with monotonicity.
+build_path_walls  — the planner.  Connects same-colour cones into a wall mesh,
+                    generates one midpoint per anchor-side cone via exclusive
+                    nearest-neighbour matching, then chains them with a greedy
+                    walk that penalises steps crossing the wall mesh.  The chain
+                    is clamped to a fixed arc-length horizon and smoothed into a
+                    centreline.
 """
 import math
 
 import numpy as np
 
-from planning.cone_sorting import filter_cones_forward, filter_cones_window, pair_cones_nn
+from planning.cone_sorting import filter_cones_window
 from planning.path_utils import (
     build_local_path,
-    compute_centreline,
     DEFAULT_SMOOTH_PER_PT,
     smooth_centreline,
 )
@@ -31,7 +25,7 @@ from planning.path_utils import (
 
 _WALL_MAX_DIST      = 7.0      # metres — max dist to link same-colour cones into wall
 _WALL_MID_DIST      = 4.0      # metres — max blue-yellow dist for midpoint candidates
-_WALL_CROSS_PENALTY = 100000.0 # cost per wall segment crossed by a path step
+_WALL_CROSS_PENALTY = 100000.0   # cost per wall segment crossed by a path step
 _WALL_PATH_MAX_STEP = 10.0     # metres — max step between consecutive path midpoints
 _WALL_PATH_MAX_WALK = 18       # max midpoints in the constructed path
 # Softest per-step turn the walk will accept, as cos(max turn).  The old walk
@@ -44,11 +38,11 @@ _WALL_MAX_TURN_COS  = -0.5
 # Default arc-length horizon (m) the published centreline is clamped to before
 # smoothing.  Far midpoints beyond this are dropped so the near path in front of
 # the car does not change as the lookahead grows, and the global spline is not
-# dragged by distant apex points.  Kept >= the controller's ~14 m speed scan.
+# dragged by distant apex points.  Kept ≥ the controller's ~14 m speed scan.
 _WALL_PLAN_HORIZON  = 15.0
 
 
-def _build_wall_segments(
+def build_wall_segments(
     cones: np.ndarray,
     max_dist: float = _WALL_MAX_DIST,
 ) -> list[tuple[np.ndarray, np.ndarray]]:
@@ -60,6 +54,15 @@ def _build_wall_segments(
             if float(np.linalg.norm(cones[i] - cones[j])) <= max_dist:
                 segs.append((cones[i], cones[j]))
     return segs
+
+
+def segment_crosses_walls(
+    p1: np.ndarray,
+    p2: np.ndarray,
+    wall_segs: list[tuple[np.ndarray, np.ndarray]],
+) -> bool:
+    """True if the segment p1→p2 crosses any cone-wall segment."""
+    return any(_seg_intersect(p1, p2, w1, w2) for (w1, w2) in wall_segs)
 
 
 def _seg_intersect(
@@ -337,8 +340,8 @@ def build_path_walls(
         min_ahead=0.5, max_ahead=max_ahead, max_lateral=max_lateral,
     )
 
-    blue_segs   = _build_wall_segments(blue_wall)
-    yellow_segs = _build_wall_segments(yellow_wall)
+    blue_segs   = build_wall_segments(blue_wall)
+    yellow_segs = build_wall_segments(yellow_wall)
     all_segs    = blue_segs + yellow_segs
 
     midpoints = _gen_midpoints(blue_fwd, yellow_fwd, car_pos, car_yaw)
@@ -381,243 +384,3 @@ def build_path_walls(
     cl = smooth_centreline(anchored, n_out=max(20, (len(anchored) - 1) * 5),
                            smooth_per_pt=smooth_per_pt)
     return cl, blue_segs, yellow_segs, midpoints
-
-
-# ---------------------------------------------------------------------------
-# ft-fsd-inspired trace-sort planner (reference / fallback)
-# ---------------------------------------------------------------------------
-
-_TS_K_NEIGHBOURS  = 5      # max k-NN per cone (same colour only)
-_TS_MAX_EDGE_M    = 6.5    # metres — max edge length in the adjacency graph
-_TS_MAX_WALK      = 14     # max cones to chain per boundary
-_TS_ELLIPSE_MAJOR = 7.5    # metres — major axis along inward direction
-_TS_ELLIPSE_MINOR = 3.0    # metres — minor axis ⊥ inward (≈ min track width)
-
-
-def _build_same_color_adj(cones: np.ndarray) -> list[list[int]]:
-    """
-    Build a k-NN same-colour adjacency list restricted to _TS_MAX_EDGE_M.
-
-    Only same-colour cones are in the graph so opposite-colour cones (and
-    adjacent-track cones that are too far away) can never be reached through
-    graph edges.
-    """
-    n = len(cones)
-    adj: list[list[int]] = [[] for _ in range(n)]
-    if n < 2:
-        return adj
-    diff  = cones[:, None, :] - cones[None, :, :]
-    dists = np.linalg.norm(diff, axis=2)
-    np.fill_diagonal(dists, np.inf)
-    for i in range(n):
-        within = np.where(dists[i] <= _TS_MAX_EDGE_M)[0]
-        if len(within):
-            adj[i] = within[np.argsort(dists[i, within])][:_TS_K_NEIGHBOURS].tolist()
-    return adj
-
-
-def _local_tangent(wall: np.ndarray, idx: int) -> np.ndarray:
-    """Unit tangent at wall[idx] via chord between its immediate neighbours."""
-    n = len(wall)
-    if n < 2:
-        return np.array([1.0, 0.0])
-    if idx == 0:
-        t = wall[1] - wall[0]
-    elif idx == n - 1:
-        t = wall[-1] - wall[-2]
-    else:
-        t = wall[idx + 1] - wall[idx - 1]
-    length = float(np.linalg.norm(t))
-    return t / length if length > 1e-6 else np.array([1.0, 0.0])
-
-
-def _sort_boundary(
-    cones: np.ndarray,
-    car_pos: np.ndarray,
-    car_yaw: float,
-    opposite_cones: np.ndarray,
-    is_left: bool,
-) -> np.ndarray:
-    """
-    Order same-colour boundary cones with a greedy walk on the same-colour
-    adjacency graph.
-
-    Step cost: angle_cost + 2 × cross_cost
-
-    cross_cost penalises steps where opposite-colour cones appear on the
-    geometrically wrong lateral side, which happens when the walk starts
-    drifting toward an adjacent track's boundary.
-    """
-    n = len(cones)
-    if n == 0:
-        return cones.copy()
-
-    adj   = _build_same_color_adj(cones)
-    cos_y = math.cos(car_yaw)
-    sin_y = math.sin(car_yaw)
-
-    def x_fwd(pt: np.ndarray) -> float:
-        rel = pt - car_pos
-        return float(rel[0] * cos_y + rel[1] * sin_y)
-
-    fwd  = np.array([x_fwd(cones[i]) for i in range(n)])
-    pool = np.where(fwd > 0.5)[0]
-    if not len(pool):
-        pool = np.arange(n)
-    seed = int(pool[np.argmin(np.linalg.norm(cones[pool] - car_pos, axis=1))])
-
-    ordered = [seed]
-    visited = {seed}
-    d0      = cones[seed] - car_pos
-    cur_dir = d0 / (np.linalg.norm(d0) + 1e-9)
-
-    for _ in range(_TS_MAX_WALK - 1):
-        current    = ordered[-1]
-        candidates = [nb for nb in adj[current] if nb not in visited]
-        if not candidates:
-            break
-
-        best_nb, best_score = None, math.inf
-        for nb in candidates:
-            step     = cones[nb] - cones[current]
-            step_len = float(np.linalg.norm(step))
-            if step_len < 1e-6:
-                continue
-            step_dir = step / step_len
-
-            if float(np.dot(step_dir, cur_dir)) < -0.3:
-                continue
-
-            angle_cost = math.acos(float(np.clip(np.dot(cur_dir, step_dir), -1.0, 1.0)))
-
-            cross_cost = 0.0
-            if len(opposite_cones):
-                right_dir = np.array([step_dir[1], -step_dir[0]])
-                rel_opp   = opposite_cones - cones[nb]
-                near      = rel_opp[np.linalg.norm(rel_opp, axis=1) < 6.0]
-                if len(near):
-                    lat   = np.dot(near, right_dir)
-                    wrong = int(np.sum(lat < 0)) if is_left else int(np.sum(lat > 0))
-                    cross_cost = wrong / len(near)
-
-            score = angle_cost + 2.0 * cross_cost
-            if score < best_score:
-                best_score = score
-                best_nb    = nb
-
-        if best_nb is None:
-            break
-
-        step    = cones[best_nb] - cones[ordered[-1]]
-        cur_dir = step / (np.linalg.norm(step) + 1e-9)
-        ordered.append(best_nb)
-        visited.add(best_nb)
-
-    return cones[ordered]
-
-
-def _match_cones_ellipse(
-    left_wall: np.ndarray,
-    right_wall: np.ndarray,
-) -> list[tuple[np.ndarray, np.ndarray]]:
-    """
-    Match ordered left (blue) to right (yellow) cones with an oriented ellipse
-    gate and a strict monotonicity constraint.
-
-    For each left cone: inward direction = rightward perpendicular to the local
-    tangent; major axis = _TS_ELLIPSE_MAJOR along inward; minor axis =
-    _TS_ELLIPSE_MINOR along-track (≈ min track width).  Only candidates in the
-    inward half-space AND inside the ellipse are considered; the closest wins.
-    The matched right-cone index must not decrease (monotonicity).
-    """
-    if not len(left_wall) or not len(right_wall):
-        return []
-
-    n_right = len(right_wall)
-    pairs   = []
-    last_ri = 0
-
-    for li in range(len(left_wall)):
-        lc      = left_wall[li]
-        tang    = _local_tangent(left_wall, li)
-        inward  = np.array([ tang[1], -tang[0]])
-        perp_in = np.array([-inward[1], inward[0]])
-
-        best_dist, best_ri = math.inf, None
-
-        for ri in range(last_ri, n_right):
-            rel    = right_wall[ri] - lc
-            along  = float(np.dot(rel, inward))
-            if along <= 0.0:
-                continue
-            across = float(np.dot(rel, perp_in))
-            if (along  / _TS_ELLIPSE_MAJOR) ** 2 + \
-               (across / _TS_ELLIPSE_MINOR) ** 2 > 1.0:
-                continue
-
-            dist = float(np.linalg.norm(rel))
-            if dist < best_dist:
-                best_dist = dist
-                best_ri   = ri
-
-        if best_ri is not None:
-            pairs.append((lc.copy(), right_wall[best_ri].copy()))
-            last_ri = best_ri
-
-    return pairs
-
-
-def build_path_trace(
-    blue_cones: np.ndarray,
-    yellow_cones: np.ndarray,
-    car_pos: np.ndarray,
-    car_yaw: float,
-    max_ahead: float = 25.0,
-    max_lateral: float = 10.0,
-) -> np.ndarray | None:
-    """
-    Build a centreline using the ft-fsd trace-sort approach.
-
-    1. Forward-filter cones to the planning window.
-    2. Sort each boundary via a same-colour adjacency graph with an integrated
-       cross-track guard.
-    3. Match left↔right with an oriented ellipse gate + monotonicity.
-    4. Midpoints of matched pairs → cubic spline centreline.
-
-    Falls back to build_local_path() if sorting or matching fails.
-    """
-    blue_fwd = filter_cones_forward(
-        blue_cones, car_pos, car_yaw,
-        min_ahead=0.5, max_ahead=max_ahead, max_lateral=max_lateral,
-    )
-    yellow_fwd = filter_cones_forward(
-        yellow_cones, car_pos, car_yaw,
-        min_ahead=0.5, max_ahead=max_ahead, max_lateral=max_lateral,
-    )
-
-    if len(blue_fwd) < 1 or len(yellow_fwd) < 1:
-        return build_local_path(
-            blue_cones, yellow_cones, car_pos, car_yaw, max_ahead, max_lateral
-        )
-
-    blue_sorted   = _sort_boundary(blue_fwd,   car_pos, car_yaw, yellow_fwd, is_left=True)
-    yellow_sorted = _sort_boundary(yellow_fwd, car_pos, car_yaw, blue_fwd,   is_left=False)
-
-    if not len(blue_sorted) or not len(yellow_sorted):
-        return build_local_path(
-            blue_cones, yellow_cones, car_pos, car_yaw, max_ahead, max_lateral
-        )
-
-    pairs = _match_cones_ellipse(blue_sorted, yellow_sorted)
-
-    if not pairs:
-        pairs = pair_cones_nn(blue_sorted, yellow_sorted)
-
-    if not pairs:
-        return build_local_path(
-            blue_cones, yellow_cones, car_pos, car_yaw, max_ahead, max_lateral
-        )
-
-    raw      = compute_centreline(pairs)
-    anchored = np.vstack([car_pos.reshape(1, 2), raw])
-    return smooth_centreline(anchored, n_out=max(20, len(raw) * 5))
