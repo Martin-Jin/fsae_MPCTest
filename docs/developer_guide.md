@@ -433,7 +433,7 @@ source /opt/ros/jazzy/setup.bash
 cd /root/Formula-Student-Driverless-Simulator/ros2
 source install/local_setup.bash
 
-ros2 launch fsae_planning launch_planning.py
+ros2 launch fsae_bringup sim.launch.py
 
 # Prevents core-dump files from being written on crashes:
 ulimit -c 0
@@ -474,6 +474,7 @@ FROM osrf/ros:jazzy-desktop
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
+    ros-jazzy-ackermann-msgs \
     && rm -rf /var/lib/apt/lists/*
 RUN pip3 install cvxpy osqp --no-deps --break-system-packages
 RUN pip3 install qdldl scs clarabel highspy sparsediffpy jinja2 joblib markupsafe cffi pycparser --no-deps --break-system-packages
