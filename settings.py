@@ -261,10 +261,10 @@ SCORE_WEIGHTS = np.array(
     [
         0.505,  # 0  rmse               (lateral + heading tracking; primary)
         0.06,   # 1  yaw_rms
-        0.07,   # 2  smooth_rms
+        0.1,    # 2  smooth_rms
         0.02,   # 3  steer_rms
         0.005,  # 4  accel_rms
-        0.06,   # 5  max_steering
+        0.03,   # 5  max_steering
         0.09,   # 6  steering_sat_ratio
         0.06,   # 7  jerk_rms
         0.02,   # 8  max_yaw_rate
