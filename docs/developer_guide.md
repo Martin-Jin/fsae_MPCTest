@@ -222,6 +222,25 @@ mapping and what's a direct mirror vs. deliberately not ported (e.g. this
 repo's frozen Stanley reference implementation).
 (If you already have the simulator set up with the `fsae_planning` repo. Scroll down for installing from scratch on windows.)
 
+**Choosing the controller and planner:**
+
+`fsae_bringup`'s `sim.launch.py` takes `controller` and `planner` as launch
+arguments — it doesn't need editing to switch between them:
+
+```bash
+ros2 launch fsae_bringup sim.launch.py                              # stanley (default)
+ros2 launch fsae_bringup sim.launch.py controller:=mpc
+ros2 launch fsae_bringup sim.launch.py controller:=mpc_standalone
+ros2 launch fsae_bringup sim.launch.py planner:=skidpad_planner controller:=mpc
+```
+
+- `stanley` (default) and `mpc` both publish the shared `cmd_vel` interface;
+  `fsds_bridge` converts it to `fs_msgs/ControlCommand` and owns GO-gating +
+  cone e-braking for either one.
+- `mpc_standalone` is this repo's `mpc_controller_standalone.py` — see above
+  for its control-loop phases. It publishes `ControlCommand` directly and
+  skips `fsds_bridge` (the launch file handles that automatically).
+
 **Topic map for the control node:**
 
 ```
