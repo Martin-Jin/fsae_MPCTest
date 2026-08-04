@@ -309,9 +309,9 @@ FSDS run and writes them to a JSON file this repo can load — see
 [Get a path onto the map](#3-get-a-path-onto-the-map) above.
 
 `sim.launch.py` launches `cone_recorder` automatically (`record_cones:=true`
-is the default), so a normal `ros2 launch fsae_bringup sim.launch.py` —
-or running `launch_all.sh` — is already recording; no second terminal or
-separate launch command needed. Pass an explicit output path or opt out with:
+is the default), so a normal `ros2 launch fsae_bringup sim.launch.py` is
+already recording; no second terminal or separate launch command needed.
+Pass an explicit output path or opt out with:
 
 ```bash
 ros2 launch fsae_bringup sim.launch.py cone_out_path:=/path/to/cone_map.json
@@ -334,11 +334,17 @@ the car returns near its start pose after having driven at least
 `min_lap_dist` (default 8 m) away from it — i.e. one closed lap. If the lap
 never closes (e.g. a DNF) it writes anyway after `max_record_time` (default
 300 s) and marks the file `"lap_closed": false`, so a partial/failed
-recording is still usable but distinguishable from a clean lap. Default
-output location is `~/fsae_logs/cone_map_<timestamp>.json` — the same
-directory **Load Recorded Track** cycles through, so no extra copying is
-needed between the two repos as long as both read/write the same
-filesystem (e.g. the same WSL/Docker volume mount).
+recording is still usable but distinguishable from a clean lap.
+`sim.launch.py`'s default output location is `~/fsae_logs/cone_map_<timestamp>.json`
+— the same directory **Load Recorded Track** cycles through, so no extra
+copying is needed as long as you don't override `cone_out_path`. (Note:
+`launch_all.sh` in the `fsae_planning` repo passes its own
+`cone_out_path:=<repo_root>/cone_map.json` rather than using this default —
+if you're recording via that script, look for `cone_map.json` at that
+repo's root instead, or point **Load Recorded Track** / `sim/track_io.py`
+at it directly.) Either way, no extra copying is needed between the two
+repos as long as both read/write the same filesystem (e.g. the same
+WSL/Docker volume mount).
 
 ### Launching nodes with FSDS on Windows (WSL + Docker)
 
