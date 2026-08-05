@@ -78,6 +78,18 @@ _MARCH_MIN_ARC = 20.0
 _MARCH_MIN_COVERAGE = 0.9
 # Distance within which a cone counts as "passed" by an accepted march chunk.
 _MARCH_VISIT_DIST = 4.0
+# Minimum straight-line gap to leave between the reconstructed path's first
+# and last point (see the tail-trim in _reconstruct_centreline). A recorded
+# lap is a closed loop, so without any trim the march's last point sits right
+# on top of its first — rollout_core.find_closest_reference_bounded() (a
+# forward-bounded nearest-index search) would then immediately snap idx to
+# the array's tail on step one, since the closest point to a near-duplicate
+# start IS the end. This just needs to be enough to give idx somewhere
+# unambiguous to start; it does not need to (and in general cannot, on a lap
+# that runs close to itself elsewhere) guarantee the tail is clear of every
+# other point on the lap — see rollout_core.run_core_rollout's near_end-gated
+# finish check for how that is actually handled.
+_MARCH_TAIL_GAP = 5.0
 
 
 def load_cone_map(json_path: str) -> tuple[np.ndarray, np.ndarray]:
@@ -103,9 +115,16 @@ def _seed_pose(blue: np.ndarray, yellow: np.ndarray) -> tuple[np.ndarray, float]
     car started).
 
     car_pos is the midpoint of the nearest blue and nearest yellow cone to the
-    origin (approximates the start line). car_yaw points from that midpoint
-    toward the near-side midpoint of the *next*-nearest same-colour cones, so
-    the march starts walking along the track rather than across it.
+    origin (approximates the start line). The two cones flanking a start/
+    finish line are typically almost equidistant in BOTH directions along the
+    track, so picking car_yaw from "whichever neighbour is marginally closer"
+    is a near coin-flip that can point the march backwards around the loop —
+    silently reversing the whole reconstructed path's direction of travel
+    (and the car's starting orientation on the static preview, and the pose
+    handed to the MPC rollout). Instead, try both opposite headings and keep
+    whichever one build_path_walls() actually extends forward from — the same
+    planner the march itself uses, so "is this direction drivable" is judged
+    by the real cone-wall/topology check rather than a raw-distance guess.
     """
     origin = np.zeros(2)
     b0 = blue[int(np.argmin(np.linalg.norm(blue - origin, axis=1)))]
@@ -121,7 +140,19 @@ def _seed_pose(blue: np.ndarray, yellow: np.ndarray) -> tuple[np.ndarray, float]
     ahead = (b1 + y1) * 0.5
 
     direction = ahead - start
-    yaw = math.atan2(direction[1], direction[0]) if np.linalg.norm(direction) > 1e-6 else 0.0
+    if np.linalg.norm(direction) < 1e-6:
+        return start, 0.0
+    yaw = math.atan2(direction[1], direction[0])
+
+    def _forward_reach(candidate_yaw):
+        cl, _, _, _ = build_path_walls(blue, yellow, start, candidate_yaw)
+        if cl is None or len(cl) < 2:
+            return 0.0
+        return float(np.sum(np.linalg.norm(np.diff(cl, axis=0), axis=1)))
+
+    if _forward_reach(yaw + math.pi) > _forward_reach(yaw):
+        yaw += math.pi
+
     return start, yaw
 
 
@@ -206,6 +237,18 @@ def _reconstruct_centreline(blue: np.ndarray, yellow: np.ndarray) -> np.ndarray:
             'Could not march a centreline around this recording — '
             'build_path_walls produced no usable path from the seed pose.'
         )
+
+    # A recorded lap is a closed loop, so the march above stops once it has
+    # come back within _MARCH_CLOSE_DIST of its own start — meaning raw[-1]
+    # sits right next to raw[0]. Trim the tail back to the last point that is
+    # still _MARCH_TAIL_GAP clear of the start, so the path's own two ends are
+    # unambiguous (see _MARCH_TAIL_GAP for why, and run_core_rollout's
+    # near_end-gated finish check for how a lap that runs close to itself
+    # elsewhere is handled — this trim does not need to solve that).
+    dist_to_seed = np.linalg.norm(raw - seed_pos, axis=1)
+    clear_of_start = np.where(dist_to_seed > _MARCH_TAIL_GAP)[0]
+    if len(clear_of_start) > 1:
+        raw = raw[:clear_of_start[-1] + 1]
 
     return smooth_centreline(raw, n_out=max(20, len(raw) * 5), pin_start=False)
 

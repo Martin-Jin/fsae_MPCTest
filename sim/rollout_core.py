@@ -379,8 +379,22 @@ def run_core_rollout(
             history["pred_Y"].append(py)
 
         # ── Termination checks ──────────────────────────────────────────────
+        # idx (from find_closest_reference_bounded's forward-bounded search,
+        # above) only ever advances through nearby array indices — it cannot
+        # jump to a spatially-close-but-far-away-in-the-path point, so
+        # idx >= len(path_X) - 2 alone is a reliable "reached the end of the
+        # reference array" signal regardless of the path's shape.
+        #
+        # The raw-distance fallback below exists only to close out the last
+        # stretch when idx's bounded search hasn't quite caught up to the
+        # tail (e.g. the car cuts a corner near the very end). Gating it on
+        # idx already being near the end keeps it from firing anywhere else
+        # the path happens to pass close to its own last point — which a
+        # closed-loop recorded lap does routinely (a start/finish straight,
+        # a figure-eight crossing) well before the lap is actually done.
+        near_end = idx >= len(path_X) - int(0.1 * len(path_X)) - 2
         dist_to_finish = math.hypot(state[0] - path_X[-1], state[1] - path_Y[-1])
-        if idx >= len(path_X) - 2 or dist_to_finish <= 3.0:
+        if idx >= len(path_X) - 2 or (near_end and dist_to_finish <= 3.0):
             reached_end = True
             n_ran = step + 1
             break
