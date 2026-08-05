@@ -62,19 +62,31 @@ _MARCH_STEP = 3.0
 # loop (e.g. a malformed recording) spinning forever; a real lap closes in a
 # few hundred steps at most given _MARCH_STEP.
 _MARCH_MAX_STEPS = 2000
-# Distance to the seed position below which the march is considered to have
-# completed the loop and closed back on its start.
+# Distance below which the march is considered to have looped back onto
+# itself — either its own start (closing the loop) or any earlier point once
+# full coverage has been reached (see _MARCH_MIN_COVERAGE).
 _MARCH_CLOSE_DIST = 3.0
 # Minimum arc-length marched before loop-closure is checked, so the march
 # doesn't immediately "close" one step after starting.
 _MARCH_MIN_ARC = 20.0
-# Fraction of each colour's cones that must have been passed (see _MARCH_VISIT_DIST)
-# before proximity to the seed is allowed to close the loop. A track that
-# crosses itself (a figure-eight) passes near the start's neighbourhood again
-# mid-lap, before the far lobe has been driven — closing on proximity alone
-# there would cut the lap short. Requiring near-full coverage first means the
-# march only stops once it has actually been all the way around, at the cost
-# of not tolerating an unrecorded gap larger than (1 - this) of the cones.
+# Fraction of each colour's cones that must have been passed (see
+# _MARCH_VISIT_DIST) before the march is allowed to stop. A track that
+# crosses itself (a figure-eight) passes near its own start again mid-lap,
+# before the far lobe has been driven — stopping on proximity to the start
+# alone there would cut the lap short. Requiring near-full coverage first
+# means the march only stops once it has actually been all the way around,
+# at the cost of not tolerating an unrecorded gap larger than (1 - this) of
+# the cones.
+#
+# Once coverage IS reached, the march stops at the first point it comes near
+# ANY earlier point in the loop, not specifically the seed (see
+# _reconstruct_centreline) — build_path_walls has no memory of what the march
+# has already covered, so after coverage completes it can keep making the
+# same locally-cheap greedy choice at a crossing and re-drive an
+# already-covered loop rather than heading back to the start; forcing it to
+# wait for proximity to the seed specifically can cost an entire extra,
+# unnecessary lap through the crossing, which is where a wrong fork can get
+# taken.
 _MARCH_MIN_COVERAGE = 0.9
 # Distance within which a cone counts as "passed" by an accepted march chunk.
 _MARCH_VISIT_DIST = 4.0
@@ -226,10 +238,16 @@ def _reconstruct_centreline(blue: np.ndarray, yellow: np.ndarray) -> np.ndarray:
         car_pos = chunk[-1]
 
         coverage = min(blue_visited.mean(), yellow_visited.mean())
-        if (total_arc > _MARCH_MIN_ARC
-                and coverage >= _MARCH_MIN_COVERAGE
-                and float(np.linalg.norm(car_pos - seed_pos)) < _MARCH_CLOSE_DIST):
-            break
+        if total_arc > _MARCH_MIN_ARC and coverage >= _MARCH_MIN_COVERAGE:
+            # See _MARCH_MIN_COVERAGE for why this checks proximity to any
+            # earlier loop point rather than just the seed. Exclude a
+            # trailing window of recent points — consecutive points on a
+            # smooth curve are always close to each other, which would
+            # trigger this immediately.
+            trailing_window = int(math.ceil(_MARCH_CLOSE_DIST / _MARCH_STEP)) + 2
+            earlier = np.asarray(loop[:-trailing_window], dtype=np.float64) if len(loop) > trailing_window else np.empty((0, 2))
+            if len(earlier) > 0 and float(np.linalg.norm(earlier - car_pos, axis=1).min()) < _MARCH_CLOSE_DIST:
+                break
 
     raw = np.array(loop, dtype=np.float64)
     if len(raw) < 2:
