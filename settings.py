@@ -463,7 +463,7 @@ TIME_BONUS_WEIGHT = 0.25
 #     resolution, and solver precision. Never paste weights produced with
 #     this on into settings.py's Q_diag/R_diag/R_rate_diag — they're a
 #     correctness check, not a tuned result.
-FAST_TEST_MODE = True
+FAST_TEST_MODE = False
 
 if FAST_TEST_MODE:
     MAX_EVALS = 150                                        # was 2500
