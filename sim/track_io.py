@@ -88,6 +88,14 @@ _MARCH_MIN_ARC = 20.0
 # unnecessary lap through the crossing, which is where a wrong fork can get
 # taken.
 _MARCH_MIN_COVERAGE = 0.9
+# Arc length (measured backward from the march's current position) excluded
+# from the "has the loop closed on itself" proximity check above. Must be
+# comfortably larger than the tightest hairpin/U-turn on any real track: a
+# tight corner brings the path back within _MARCH_CLOSE_DIST of itself after
+# only a few metres of arc length, which would otherwise be misread as the
+# lap having closed mid-corner, cutting the reconstruction off after driving
+# only a small fraction of the actual lap.
+_MARCH_SELF_CLOSE_EXCLUSION_ARC = 40.0
 # Distance within which a cone counts as "passed" by an accepted march chunk.
 _MARCH_VISIT_DIST = 4.0
 # Minimum straight-line gap to leave between the reconstructed path's first
@@ -203,6 +211,7 @@ def _reconstruct_centreline(blue: np.ndarray, yellow: np.ndarray) -> np.ndarray:
     car_pos = seed_pos
 
     loop = [car_pos]
+    loop_arc = [0.0]   # cumulative arc length at each loop[] point
     total_arc = 0.0
     blue_visited   = np.zeros(len(blue), dtype=bool)
     yellow_visited = np.zeros(len(yellow), dtype=bool)
@@ -230,6 +239,8 @@ def _reconstruct_centreline(blue: np.ndarray, yellow: np.ndarray) -> np.ndarray:
             break
 
         loop.extend(chunk)
+        for d in arc[1:cut + 1]:
+            loop_arc.append(total_arc + float(d))
         total_arc += float(arc[cut])
         for pt in chunk:
             _mark_visited(pt)
@@ -245,11 +256,15 @@ def _reconstruct_centreline(blue: np.ndarray, yellow: np.ndarray) -> np.ndarray:
         if total_arc > _MARCH_MIN_ARC and coverage >= _MARCH_MIN_COVERAGE:
             # See _MARCH_MIN_COVERAGE for why this checks proximity to any
             # earlier loop point rather than just the seed. Exclude a
-            # trailing window of recent points — consecutive points on a
-            # smooth curve are always close to each other, which would
-            # trigger this immediately.
-            trailing_window = int(math.ceil(_MARCH_CLOSE_DIST / _MARCH_STEP)) + 2
-            earlier = np.asarray(loop[:-trailing_window], dtype=np.float64) if len(loop) > trailing_window else np.empty((0, 2))
+            # trailing window measured in ARC LENGTH, not point count: a
+            # tight hairpin/U-turn (this track has several) can bring
+            # consecutive-in-arc-length points back within _MARCH_CLOSE_DIST
+            # of each other after only a few points, which would otherwise
+            # read as "the loop closed" mid-corner and truncate the march
+            # long before it actually returns to the start.
+            cutoff_arc = total_arc - _MARCH_SELF_CLOSE_EXCLUSION_ARC
+            keep = np.asarray(loop_arc[:-1]) <= cutoff_arc
+            earlier = np.asarray(loop, dtype=np.float64)[:-1][keep]
             if len(earlier) > 0 and float(np.linalg.norm(earlier - car_pos, axis=1).min()) < _MARCH_CLOSE_DIST:
                 break
 
