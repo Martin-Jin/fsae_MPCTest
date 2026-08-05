@@ -1025,7 +1025,7 @@ replaced by the Optuna pre-pass's best result instead.
 
 `USE_OPTUNA_PRESEARCH` in `settings.py` (default `False`) runs a short
 Optuna TPE (Tree-structured Parzen Estimator) search *before* CMA-ES starts,
-using `OPTUNA_PRE_PASS_EVALS` true rollouts (default 15% of `MAX_EVALS`) out
+using `OPTUNA_PRE_PASS_EVALS` true rollouts (default 10% of `MAX_EVALS`) out
 of a separate mini-budget — this phase's cost is in addition to, not carved
 out of, the main `MAX_EVALS` budget. TPE is a cheaper, less precise
 global search method than CMA-ES; the idea is to spend a small budget
@@ -1162,7 +1162,7 @@ normalised (mostly to RMS values) at the end via `.finalize()`:
 | 6 | `steering_sat_ratio` | Fraction of steps where steering was within 95% of `max_steer` — how often the controller is pinned at its limit. |
 | 7 | `jerk_rms` | RMS of the *second* difference of control (`Δ²u`) — smoothness of the smoothness, catches abrupt changes in how fast commands are changing. |
 | 8 | `max_yaw_rate` | The single fastest yaw rate reached — cornering aggressiveness ceiling. |
-| 9 | `steering_reversal_rate` | Times the steering sign flips (beyond a 0.02 rad noise threshold), *per step* — penalises "hunting"/indecisive steering. Normalised (count / n steps) like the other 11 metrics, since an unnormalised count would mechanically grow with a longer rollout or shrink with a smaller DT regardless of actual driving quality; the raw count is still reported separately as an informational-only field (`steering_reversals` in the returned dict) alongside it. |
+| 9 | `steering_reversal_rms` | Magnitude-weighted RMS of steering sign-flip swings (beyond a 0.02 rad noise gate): `sqrt(Σ swing² / n steps)`, where `swing = |u_steer| + |u_steer_prev|` at the moment of the flip. A tiny back-and-forth trim wiggle contributes almost nothing while a large aggressive swing dominates (squared), which is what distinguishes controller hunting/dithering from a twisty path (S-bends, slaloms) legitimately demanding more frequent-but-small direction changes — a flat per-flip count couldn't tell those apart. The raw reversal count and its per-step rate are still reported separately as informational-only fields (`steering_reversals`, `steering_reversal_rate` in the returned dict) alongside it. |
 | 10 | `peak_lateral_error` | The single worst `|e_y|` reached at any point — a safety-margin measure independent of the average. |
 | 11 | `speed_rmse` | RMS of `v_actual - v_target` — how well the car tracks the planner's requested speed. |
 

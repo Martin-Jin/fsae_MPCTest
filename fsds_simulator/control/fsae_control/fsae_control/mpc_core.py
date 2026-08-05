@@ -141,9 +141,14 @@ def _adaptive_R_scaling(vx: float, R_base: np.ndarray) -> np.ndarray:
 def _adaptive_R_rate(kappa: float, R_rate_base: np.ndarray) -> np.ndarray:
     """
     Curvature-dependent steering-jerk softening.
-    Softens slew penalty in sharp corners (floor at 0.35).
+    Softens slew penalty in sharp corners (floor at 0.55 — raised from 0.35
+    on 2026-08-05, mirroring model_utils.adaptive_R_rate in fsae_MPCTest: the
+    old floor relaxed the rate-of-change cost — the one term that directly
+    discourages rapid steer-sign-flipping — exactly where live standalone-ROS
+    test data showed reversal chatter getting worse. See that function's
+    docstring for the full rationale; keep both floors in sync manually).
     """
-    scale = max(0.35, 1.0 / (1.0 + 3.0 * abs(kappa)))
+    scale = max(0.55, 1.0 / (1.0 + 3.0 * abs(kappa)))
     R = R_rate_base.copy()
     R[0, 0] *= scale
     return R
@@ -236,7 +241,17 @@ class MPCController:
         # simulation. Decent tracking performance and speed, just not the best at
         # sudden corners."  Chosen over the later 10/07/26 set, whose own note
         # flagged braking triggering much later in FSDS than in the MPC sim.
-        Q_diag      = [3.453726085690303, 2.4068449985797766, 4.2737838673329325, 0.1009634460945348, 6.647778080173016, 0.0, 0.0, 0.0]
+        # Q_diag[3] (yaw-rate/e_psi_dot damping) manually corrected 2026-08-05,
+        # mirroring the same fix in fsae_MPCTest/settings.py: live standalone-ROS
+        # test data (mpc_standalone_control_*.csv, this file's own output) showed
+        # steering sign-reversal chatter almost every ~0.05s tick, worst in
+        # corners. The old value (0.1009...) was ~42:1 smaller than Q_diag[2]
+        # (heading error), giving the controller almost no cost on the yaw rate
+        # it uses to correct heading — a classic recipe for oscillation. Raised
+        # to 2.5 (just above Q_diag[1]=2.4068) so it's no longer the smallest of
+        # the five active Q entries. See settings.py's Q_diag comment for the
+        # full rationale — keep these two values in sync manually.
+        Q_diag      = [3.453726085690303, 2.4068449985797766, 4.2737838673329325, 2.5, 6.647778080173016, 0.0, 0.0, 0.0]
         R_diag      = [9.627551492038648, 6.800106107654756]
         R_rate_diag = [6.463838428622283, 7.80854969942995]
 

@@ -21,9 +21,10 @@ adaptive_R_rate (curvature-based):
     track the path, so penalising steering rate-of-change (R_rate[0,0]) too
     heavily would prevent the needed responsiveness. The scale factor
     1/(1 + 3*κ) is a saturating function: at zero curvature (straight) it
-    equals 1.0 (no softening); at high curvature it approaches 0.33 (floors
-    at 0.35). This lets the controller be more aggressive with steering
-    changes when the path demands it.
+    equals 1.0 (no softening); at high curvature it approaches 0.33 (floored
+    at 0.55 — see below). This lets the controller be more aggressive with
+    steering changes when the path demands it, without softening the rate
+    cost so far that it stops damping oscillation.
 
 adaptive_R_scaling (speed-based):
     At higher speeds, a unit of steering angle produces a much larger lateral
@@ -95,14 +96,23 @@ def adaptive_R_rate(kappa, R_rate_base):
     changes needed to track the curve.
 
     Scaling formula:
-        scale = max(0.35, 1 / (1 + 3 * κ))
+        scale = max(0.55, 1 / (1 + 3 * κ))
 
     At κ = 0.0 (straight):         scale = 1.00 → no change to R_rate
     At κ = 0.1 (R=10 m corner):    scale = 0.77 → moderate softening
     At κ = 0.2 (R=5 m tight turn): scale = 0.63 → more softening
-    At κ → ∞:                       scale → 0.35 → floor (35% of base)
+    At κ → ∞:                       scale → 0.55 → floor (55% of base)
 
-    The floor at 0.35 ensures the rate cost never fully vanishes, which would
+    Floor raised from 0.35 to 0.55 on 2026-08-05: live standalone-ROS test
+    data (mpc_standalone_control_*.csv) showed steering sign-reversal chatter
+    getting measurably worse in corners (steer swinging +-40-57 deg, near-
+    continuous reversals) — this floor was relaxing the one cost term that
+    directly discourages rapid steer-sign-flipping exactly where the data
+    showed reversals getting worse, working against damping instead of with
+    it. 0.55 keeps some softening available in genuinely tight corners (where
+    the vehicle does need to change steering direction quickly) while no
+    longer cutting the rate penalty by nearly two-thirds at high curvature.
+    The floor still ensures the rate cost never fully vanishes, which would
     allow arbitrarily rapid steering oscillations.
 
     Only R_rate[0,0] (steering rate penalty) is modified. R_rate[1,1]
@@ -128,7 +138,7 @@ def adaptive_R_rate(kappa, R_rate_base):
                gui/simulation.py (simulate_closed_loop)
     """
     R     = np.array(R_rate_base, copy=True)          # Never mutate the caller's matrix
-    scale = max(0.35, 1.0 / (1.0 + 3.0 * kappa))     # Saturating softening: 1.0 at κ=0, floor at 0.35
+    scale = max(0.55, 1.0 / (1.0 + 3.0 * kappa))     # Saturating softening: 1.0 at κ=0, floor at 0.55
     R[0, 0] *= scale                                    # Apply only to steering rate cost
     return R
 

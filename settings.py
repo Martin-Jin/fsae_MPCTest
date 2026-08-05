@@ -116,7 +116,24 @@ DT = 0.05
 # fix that particular error, at the cost of everything else. Change any
 # single number by no more than 20-30% at a time and re-test — small changes
 # can have surprisingly large effects because they interact with each other.
-Q_diag      = [3.453726085690303, 2.4068449985797766, 4.2737838673329325, 0.1009634460945348, 6.647778080173016, 0.0, 0.0, 0.0]
+# Q_diag[3] (yaw-rate/e_psi_dot damping) manually corrected 2026-08-05: live
+# standalone-ROS test data (mpc_standalone_control_*.csv) showed steering
+# sign-reversal chatter almost every ~0.05s tick, worst in corners (steer
+# swinging +-40-57 deg, yaw_rate swinging +0.9/-1.1 rad/s within a few
+# hundred ms), but present even on near-straight sections with e_psi ~0-3 deg.
+# The old value (0.1009...) was ~42:1 smaller than Q_diag[2] (heading error)
+# and ~65:1 smaller than Q_diag[4] (speed error) — by far the smallest of the
+# five active Q entries, so the controller had almost no cost on the yaw rate
+# it uses to correct heading, a classic recipe for state-feedback overshoot/
+# oscillation. This is a large jump rather than the usual 20-30% nudge
+# because the prior value was disproportionately small, not just mistuned —
+# a small nudge would have left the same qualitative imbalance. Raised to
+# 2.5: just above Q_diag[1] (e_y_dot, 2.4068) so yaw-rate damping is no
+# longer the smallest term, while staying below Q_diag[2]/Q_diag[4] so
+# heading/speed tracking aren't sacrificed outright. CMA-ES should still
+# re-tune this properly in a full run — this is a manual corrective starting
+# point, not a final value.
+Q_diag      = [3.453726085690303, 2.4068449985797766, 4.2737838673329325, 2.5, 6.647778080173016, 0.0, 0.0, 0.0]
 R_diag      = [9.627551492038648, 6.800106107654756]
 R_rate_diag = [6.463838428622283, 7.80854969942995]
 
@@ -255,7 +272,7 @@ USE_OPTUNA_PRESEARCH = True
 #   - Decrease it: faster pre-pass, but a noisier/less-informed starting
 #     point (CMA-ES may need to do more of the coarse-search work itself).
 #   - Typical adjustment: keep it in the 10-20% of MAX_EVALS range; the
-#     default below is 15%.
+#     default below is 10%.
 OPTUNA_PRE_PASS_EVALS = max(10, int(0.1 * MAX_EVALS))
 
 
@@ -306,14 +323,21 @@ OPTUNA_PRE_PASS_EVALS = max(10, int(0.1 * MAX_EVALS))
 #                            measure)
 #   8: max_yaw_rate         — the fastest the car's direction ever spun
 #                            during the run
-#   9: steering_reversal_rate — how often (per step) the car flips from
-#                            steering left to steering right or vice versa
-#                            (a "hunting"/indecisiveness measure). This is a
-#                            rate (reversal count / n steps), not a raw
-#                            count, so it doesn't mechanically grow with a
-#                            longer rollout or a smaller DT — the raw count
-#                            is still reported separately (informational
-#                            only) alongside this in performance_stats.py.
+#   9: steering_reversal_rms — how large the car's steering direction
+#                            flips are, magnitude-weighted (an RMS of each
+#                            reversal's swing size, sqrt(Σ swing² / n
+#                            steps)), not a flat per-flip count. A tiny
+#                            back-and-forth trim wiggle (e.g. ±1.5deg on a
+#                            straight) contributes almost nothing, while a
+#                            large aggressive swing (e.g. ±40deg) dominates
+#                            — this is what actually distinguishes
+#                            controller hunting/dithering from a twisty
+#                            path (S-bends, slaloms) legitimately demanding
+#                            more frequent-but-small direction changes,
+#                            which a flat count could not tell apart. The
+#                            raw reversal count and its per-step rate are
+#                            still reported separately (informational only)
+#                            alongside this in performance_stats.py.
 #  10: peak_lateral_error   — the single worst moment the car was off the
 #                            racing line, even briefly
 #  11: speed_rmse           — how far off the intended speed the car drives
@@ -326,18 +350,35 @@ OPTUNA_PRE_PASS_EVALS = max(10, int(0.1 * MAX_EVALS))
 SCORE_WEIGHTS = np.array(
     [
         0.505,  # 0  rmse                    (lateral + heading tracking; primary)
-        0.06,   # 1  yaw_rms
-        0.085,  # 2  smooth_rms
+        0.09,   # 1  yaw_rms                 (was 0.06 — live standalone-ROS test data
+                #    2026-08-05 showed yaw_rate swinging +0.9/-1.1 rad/s within a few
+                #    hundred ms in corners; CMA-ES had too little pressure to avoid
+                #    this via the composite score, raised so oscillatory yaw actually
+                #    costs the tuner something. Offset below.)
+        0.065,  # 2  smooth_rms               (was 0.085 — trimmed to offset the yaw_rms/
+                #    steering_reversal_rate raise; already has partial overlap with
+                #    those two as a general jerkiness measure)
         0.02,   # 3  steer_rms
         0.015,  # 4  accel_rms               (was 0.005 — too small to give CMA-ES
                 #    any real gradient on throttle/brake effort; nudged up)
         0.03,   # 5  max_steering
-        0.075,  # 6  steering_sat_ratio
+        0.045,  # 6  steering_sat_ratio       (was 0.075 — trimmed to offset the
+                #    yaw_rms/steering_reversal_rate raise; less directly related to
+                #    the oscillation/chatter symptom than the two raised terms)
         0.045,  # 7  jerk_rms
         0.02,   # 8  max_yaw_rate
-        0.03,   # 9  steering_reversal_rate  (was 0.005 on a raw count of ~0-30;
-                #    now applied to a per-step rate of ~0-0.15, so the weight was
-                #    scaled up to keep this a minor-but-present "hunting" term)
+        0.05,   # 9  steering_reversal_rms  (was 0.03 on the old flat-count-based
+                #    "steering_reversal_rate", originally 0.005 on a raw count of
+                #    ~0-30; live standalone-ROS test data 2026-08-05 showed steering
+                #    sign reversals almost every ~0.05s tick, worst in corners — this
+                #    metric directly measures that "hunting" behaviour and had almost
+                #    no weight to discourage it, so raised further. Offset below.
+                #    2026-08-06: the metric itself was replaced with a magnitude-
+                #    weighted RMS (see sim/scoring.py) so a tiny trim wiggle and a
+                #    path-demanded direction change no longer score the same as an
+                #    aggressive hunting swing; this weight value carries over as-is
+                #    since the two metrics are both O(reversal-related, per-step-
+                #    normalised) in scale, but re-tuning may want to revisit it.)
         0.10,   # 10 peak_lateral_error
         0.015,  # 11 speed_rmse              (was 0.005 — same issue as accel_rms)
     ],
@@ -422,7 +463,7 @@ TIME_BONUS_WEIGHT = 0.25
 #     resolution, and solver precision. Never paste weights produced with
 #     this on into settings.py's Q_diag/R_diag/R_rate_diag — they're a
 #     correctness check, not a tuned result.
-FAST_TEST_MODE = False
+FAST_TEST_MODE = True
 
 if FAST_TEST_MODE:
     MAX_EVALS = 150                                        # was 2500
@@ -431,4 +472,4 @@ if FAST_TEST_MODE:
     ROLLOUT_MAX_ITER = 2000                                 # was 8000
     PATH_N_POINTS = 300                                     # was 1000
     USE_PLANNER = False                                     # skip perception/planner overhead
-    OPTUNA_PRE_PASS_EVALS = max(5, int(0.15 * MAX_EVALS))  # keep pre-pass proportionally tiny too
+    OPTUNA_PRE_PASS_EVALS = max(5, int(0.1 * MAX_EVALS))  # match the 0.1 ratio above, keep pre-pass proportionally tiny too

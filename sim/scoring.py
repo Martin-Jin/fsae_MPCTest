@@ -41,7 +41,7 @@ IDX_MAX_STEERING       = 5
 IDX_STEER_SAT_RATIO    = 6
 IDX_JERK_RMS           = 7
 IDX_MAX_YAW_RATE       = 8
-IDX_STEER_REVERSAL_RATE = 9
+IDX_STEER_REVERSAL_RMS = 9
 IDX_PEAK_LATERAL_ERROR = 10
 IDX_SPEED_RMSE         = 11
 
@@ -56,7 +56,7 @@ def compute_composite_score(
     steering_sat_ratio,
     jerk_rms,
     max_yaw_rate,
-    steering_reversal_rate,
+    steering_reversal_rms,
     peak_lateral_error,
     speed_rmse,
     progress,
@@ -75,10 +75,20 @@ def compute_composite_score(
     of SCORE_WEIGHTS in settings.py — the metrics array below is built
     positionally, not by name.
 
-    steering_reversal_rate is reversals-per-step (raw reversal count / n
-    steps), not a raw count — see RolloutMetrics.finalize(). This keeps it
-    on a comparable per-step scale to the other normalised metrics instead
-    of mechanically growing with rollout length or shrinking with DT.
+    steering_reversal_rms is an RMS, magnitude-weighted measure of steering
+    direction reversals (sqrt(Σ swing² / n steps)) — see
+    RolloutMetrics.finalize(). A reversal's "swing" is how far the steering
+    command travelled from its previous value before flipping sign, so a
+    tiny back-and-forth trim correction near zero contributes almost nothing
+    while a large aggressive swing contributes proportionally (squared) more.
+    This also keeps a twistier path (which legitimately needs more direction
+    changes) from being penalised the same as controller-induced dithering,
+    since a path-demanded reversal is typically a small, deliberate swing
+    while hunting/chatter tends to produce many small-to-moderate swings that
+    still individually average out much lower than one genuine large
+    correction. Normalising by n steps keeps it on a comparable per-step
+    scale to the other RMS metrics instead of mechanically growing with
+    rollout length or shrinking with DT.
     """
     metrics = np.array(
         [
@@ -91,7 +101,7 @@ def compute_composite_score(
             steering_sat_ratio,
             jerk_rms,
             max_yaw_rate,
-            float(steering_reversal_rate),
+            float(steering_reversal_rms),
             peak_lateral_error,
             speed_rmse,
         ]
@@ -147,6 +157,7 @@ class RolloutMetrics:
         self.accel_effort = 0.0
         self.steering_saturation = 0.0
         self.steering_reversals = 0
+        self.steering_reversal_cost = 0.0
         self._last_sign = 0
         self.max_yaw_rate = 0.0
         self.max_steering = 0.0
@@ -186,7 +197,22 @@ class RolloutMetrics:
         if current_sign != 0:
             if (self._last_sign != 0 and current_sign != self._last_sign
                     and abs(u_opt[0]) > 0.02):
+                # Magnitude-weighted reversal cost: a flat +1 per sign flip
+                # can't tell a ±1.5deg trim wiggle apart from a ±40deg swing,
+                # and can't tell a path-demanded direction change (S-bends,
+                # slaloms) apart from controller hunting/dithering. Weight by
+                # how far the steering command actually swung (previous value
+                # -> current value, both magnitudes since they're opposite
+                # sign) and square it, consistent with this file's other RMS
+                # accumulators (error_cost, yaw_rate_cost, jerk_cost) — a tiny
+                # wiggle then contributes almost nothing while a large swing
+                # dominates. The 0.02 rad gate is kept only to reject float
+                # noise as a sign flip (see docstring below); it is not doing
+                # the small-magnitude suppression anymore, that's now the
+                # squared weighting's job.
                 self.steering_reversals += 1
+                delta_swing = abs(u_opt[0]) + abs(self.u_prev[0])
+                self.steering_reversal_cost += delta_swing ** 2
             self._last_sign = current_sign
 
         self.max_yaw_rate = max(self.max_yaw_rate, abs(r))
@@ -227,15 +253,22 @@ class RolloutMetrics:
         jerk_rms = float(np.sqrt(self.jerk_cost / n))
         steering_sat_ratio = self.steering_saturation / n
         speed_rmse = float(np.sqrt(self.speed_cost / n))
-        # Reversals-per-step, not a raw count — see compute_composite_score's
-        # docstring for why (otherwise longer rollouts / smaller DT mechanically
-        # inflate this term regardless of actual driving quality).
+        # RMS of magnitude-weighted reversal swings, not a raw count — see
+        # compute_composite_score's docstring for why (a raw count can't
+        # distinguish a harmless trim wiggle from an aggressive swing, or a
+        # path-demanded direction change from controller hunting; and an
+        # unnormalised sum would mechanically inflate with rollout length /
+        # shrink with DT).
+        steering_reversal_rms = float(np.sqrt(self.steering_reversal_cost / n))
+        # Reversals-per-step raw-count rate, kept informational only (not
+        # scored) — see the "steering_reversals" raw count below for the
+        # unnormalised version.
         steering_reversal_rate = self.steering_reversals / n
 
         score = compute_composite_score(
             rmse, yaw_rms, smooth_rms, steer_rms, accel_rms,
             self.max_steering, steering_sat_ratio, jerk_rms, self.max_yaw_rate,
-            steering_reversal_rate, self.peak_lateral_error, speed_rmse,
+            steering_reversal_rms, self.peak_lateral_error, speed_rmse,
             progress=progress, time_bonus=time_bonus, dnf=dnf, offtrack=offtrack,
             inaccurate_count=self.inaccurate_count,
         )
@@ -251,7 +284,8 @@ class RolloutMetrics:
             "max_steering_rad": self.max_steering,
             "max_accel_mps2": self.max_accel,
             "steering_sat_ratio": steering_sat_ratio,
-            "steering_reversal_rate": steering_reversal_rate,
+            "steering_reversal_rms": steering_reversal_rms,
+            "steering_reversal_rate": steering_reversal_rate,  # informational-only rate
             "steering_reversals": self.steering_reversals,  # informational-only raw count
             "peak_lateral_error_m": self.peak_lateral_error,
             "speed_rmse_mps": speed_rmse,

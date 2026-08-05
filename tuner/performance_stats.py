@@ -64,7 +64,7 @@ _IDX_MAX_STEERING       = 5   # Peak steering command magnitude
 _IDX_STEER_SAT_RATIO    = 6   # Fraction of steps near steering saturation
 _IDX_JERK_RMS           = 7   # Control jerk RMS (Δ²u)
 _IDX_MAX_YAW_RATE       = 8   # Peak yaw rate
-_IDX_STEER_REVERSAL_RATE = 9  # Steering direction reversals per step
+_IDX_STEER_REVERSAL_RMS = 9   # Magnitude-weighted RMS of steering reversal swings
 _IDX_PEAK_LATERAL_ERROR = 10  # Worst single-step lateral error
 _IDX_SPEED_RMSE         = 11
 
@@ -92,12 +92,18 @@ def report_performance_metrics(history, log_fn=print):
       steering_sat_ratio: count(|u_steer| > 0.95 * max steer) / n
       jerk_rms:           sqrt( Σ(Δ²u_steer² + Δ²u_accel²) / n ) [Δ²u from u[-1]=du[-1]=0]
       max_yaw_rate:       max(|r|)                                [r = true plant yaw rate, history["r"]]
-      steering_reversal_rate: count(sign changes > 0.02 rad threshold) / n
-                          [fed into the composite score; raw count also
-                          reported separately as "steering_reversals",
-                          informational only — not scored directly, since
-                          an unnormalised count mechanically grows with
-                          rollout length / shrinks with DT]
+      steering_reversal_rms: sqrt( Σ swing² / n ) for each sign change > 0.02
+                          rad threshold, where swing = |u_steer| + |u_steer_prev|
+                          [fed into the composite score; magnitude-weighted so a
+                          tiny trim wiggle contributes almost nothing while a
+                          large swing dominates — this is what distinguishes
+                          controller hunting from a twisty path legitimately
+                          needing more frequent small direction changes. The raw
+                          reversal count and its per-step rate are also reported
+                          separately as "steering_reversals"/"steering_reversal_rate",
+                          informational only — not scored directly, since an
+                          unnormalised count mechanically grows with rollout
+                          length / shrinks with DT and can't tell swing size apart]
       peak_lateral_error: max(|e_y|)
 
     These 12 metrics are then combined.
@@ -135,7 +141,10 @@ def report_performance_metrics(history, log_fn=print):
           "jerk_rms"             : float — RMS control jerk
           "max_steering_deg"     : float — Peak steering command (deg)
           "steering_sat_ratio"   : float — Fraction of steps at saturation
-          "steering_reversal_rate": float — Reversals per step (scored metric)
+          "steering_reversal_rms": float — Magnitude-weighted RMS of steering
+                                    reversal swings (scored metric)
+          "steering_reversal_rate": float — Reversals per step, informational
+                                    only (not scored)
           "steering_reversals"   : int   — Raw count of steering direction
                                     changes, informational only (not scored)
           "peak_lateral_error_m" : float — Worst lateral error (m)
@@ -204,7 +213,8 @@ def report_performance_metrics(history, log_fn=print):
     steering_sat_ratio  = result["steering_sat_ratio"]
     jerk_rms            = result["jerk_rms"]
     max_yaw_rate        = result["max_yaw_rate_radps"]
-    steering_reversal_rate = result["steering_reversal_rate"]
+    steering_reversal_rms  = result["steering_reversal_rms"]
+    steering_reversal_rate = result["steering_reversal_rate"]  # raw rate, informational only
     steering_reversals  = result["steering_reversals"]  # raw count, informational only
     peak_lateral_error  = result["peak_lateral_error_m"]
     speed_rmse          = result["speed_rmse_mps"]
@@ -235,7 +245,7 @@ def report_performance_metrics(history, log_fn=print):
     log_fn(f"  Steer Sat Ratio    : {steering_sat_ratio*100:8.2f} %      (x{W[_IDX_STEER_SAT_RATIO]:.2f})")
     log_fn(f"  Jerk RMS           : {jerk_rms:8.4f}        (x{W[_IDX_JERK_RMS]:.2f})")
     log_fn(f"  Max yaw rate       : {max_yaw_rate:8.4f} rad/s  (x{W[_IDX_MAX_YAW_RATE]:.2f})")
-    log_fn(f"  Steer Reversals    : {steering_reversals:8d} (raw)  {steering_reversal_rate:8.4f} /step (x{W[_IDX_STEER_REVERSAL_RATE]:.2f})")
+    log_fn(f"  Steer Reversals    : {steering_reversals:8d} (raw)  {steering_reversal_rate:8.4f} /step  {steering_reversal_rms:8.4f} rms (x{W[_IDX_STEER_REVERSAL_RMS]:.2f})")
     log_fn(f"  Peak Lateral Error : {peak_lateral_error:8.4f} m        (x{W[_IDX_PEAK_LATERAL_ERROR]:.2f})")
     log_fn(f"  Speed RMS          : {speed_rmse:8.4f} m/s        (x{W[_IDX_SPEED_RMSE]:.2f})")
     log_fn("-" * 60)
@@ -255,7 +265,8 @@ def report_performance_metrics(history, log_fn=print):
         "jerk_rms":             jerk_rms,
         "max_steering_deg":     np.degrees(max_steering),
         "steering_sat_ratio":   steering_sat_ratio,
-        "steering_reversal_rate": steering_reversal_rate,
+        "steering_reversal_rms": steering_reversal_rms,
+        "steering_reversal_rate": steering_reversal_rate,  # raw rate, informational only
         "steering_reversals":   steering_reversals,  # raw count, informational only
         "peak_lateral_error_m": peak_lateral_error,
         "completion_pct":       completion_frac * 100.0,

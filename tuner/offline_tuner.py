@@ -1058,7 +1058,7 @@ _SCORE_METRIC_NAMES = [
     "steering_sat_ratio",
     "jerk_rms",
     "max_yaw_rate",
-    "steering_reversal_rate",
+    "steering_reversal_rms",
     "peak_lateral_error",
     "speed_rmse",
 ]

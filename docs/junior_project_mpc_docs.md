@@ -369,7 +369,7 @@ Every rollout, whether from the tuner, or from **Show Metrics**/**Benchmark All 
 | 6 | `steering_sat_ratio` | How often steering was pinned within 95% of its max limit |
 | 7 | `jerk_rms` | Smoothness *of the smoothness*, how abruptly the rate of change itself changed |
 | 8 | `max_yaw_rate` | The fastest the car's heading was ever spinning |
-| 9 | `steering_reversal_rate` | How often the steering direction flip-flopped, as a per-step rate rather than a raw count, so it stays comparable across runs of different lengths, a sign of "hunting"/indecisive control |
+| 9 | `steering_reversal_rms` | How large the car's steering direction flip-flops were, magnitude-weighted (RMS of each reversal's swing size) rather than a flat per-flip count — a tiny trim wiggle counts for almost nothing while a large aggressive swing dominates, so a twisty path needing lots of small direction changes isn't scored the same as genuine "hunting"/indecisive control. The raw flip-flop count and its per-step rate are still reported separately, informational only |
 | 10 | `peak_lateral_error` | The single worst sideways error at any point, a safety-margin check, independent of the average |
 | 11 | `speed_rmse` | How well actual speed tracked the target speed |
 
