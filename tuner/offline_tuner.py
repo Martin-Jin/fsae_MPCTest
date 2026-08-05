@@ -125,6 +125,9 @@ from settings import (
     VALIDATION_SUITE,
     USE_OPTUNA_PRESEARCH,
     OPTUNA_PRE_PASS_EVALS,
+    COMPLETION_BONUS_WEIGHT,
+    TIME_BONUS_WEIGHT,
+    DNF_PENALTY,
 )
 
 from model.vehicle_physics import (
@@ -1041,16 +1044,38 @@ def get_git_revision_hash():
         return "Unknown (not a git repository)"
 
 
+# Metric names in SCORE_WEIGHTS order — used only to label the weights when
+# logging, so a tuning history entry stays self-contained even if settings.py's
+# SCORE_WEIGHTS values change later. Must stay in sync with sim/scoring.py's
+# IDX_* constants.
+_SCORE_METRIC_NAMES = [
+    "rmse",
+    "yaw_rms",
+    "smooth_rms",
+    "steer_rms",
+    "accel_rms",
+    "max_steering",
+    "steering_sat_ratio",
+    "jerk_rms",
+    "max_yaw_rate",
+    "steering_reversal_rate",
+    "peak_lateral_error",
+    "speed_rmse",
+]
+
+
 def log_results_to_history(Q, R, R_rate, duration, score, optuna_info=None):
     """
     Append the best-found weight matrices and metadata to tuning history.txt.
 
     The log file provides a persistent record of all tuning runs. Each entry
     includes a timestamp, the weight diagonals (copy-pasteable into gui/simulation.py),
-    the run duration, and the git commit hash so results can be reproduced.
-    The "Score" field is left as a placeholder — it is filled in manually after
-    the weights have been tested in FSDS (the real simulator), since the offline
-    score does not perfectly correlate with FSDS performance.
+    the scoring function's SCORE_WEIGHTS/bonus/penalty config active for this run
+    (so the run stays interpretable even after settings.py changes later), the
+    run duration, and the git commit hash so results can be reproduced.
+    The "Overall score" field is left as a placeholder — it is filled in manually
+    after the weights have been tested in FSDS (the real simulator), since the
+    offline score does not perfectly correlate with FSDS performance.
 
     Parameters
     ----------
@@ -1073,11 +1098,21 @@ def log_results_to_history(Q, R, R_rate, duration, score, optuna_info=None):
         f.write(f"Q_diag      = {np.diag(Q).tolist()}\n")
         f.write(f"R_diag      = {np.diag(R).tolist()}\n")
         f.write(f"R_rate_diag = {np.diag(R_rate).tolist()}\n")
-        f.write(f"Duration    = {duration / 60:.2f} minutes\n")
         f.write(
-            f"Overall score (avged from all testing scenarios)  = Haven't been tested.\n"
+            "Score weights = "
+            + ", ".join(
+                f"{name}={w:g}"
+                for name, w in zip(_SCORE_METRIC_NAMES, SCORE_WEIGHTS.tolist())
+            )
+            + "\n"
         )
-        f.write(f"Tuner score (tuning scenarios / validation suite) = {score}\n")
+        f.write(
+            f"Bonus/penalty weights = completion_bonus={COMPLETION_BONUS_WEIGHT:g}, "
+            f"time_bonus={TIME_BONUS_WEIGHT:g}, dnf_penalty={DNF_PENALTY:g}\n"
+        )
+        f.write(f"Duration    = {duration / 60:.2f} minutes\n")
+        f.write("Overall score (avged from all testing scenarios)  = Haven't been tested.\n")
+        f.write(f"Tuner score (tuning scenarios / validation suite) = {score:.4f}\n")
         if optuna_info is not None:
             f.write(
                 f"Optuna TPE pre-pass = Yes ({optuna_info['n_trials']} trials, "

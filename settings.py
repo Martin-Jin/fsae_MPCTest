@@ -241,7 +241,7 @@ PATH_N_POINTS = 1000
 # repo's own code, only installed if you actually use this feature. Defaults
 # to False so a fresh checkout behaves exactly as before this feature existed
 # until you deliberately opt in (and confirm `optuna` is installed).
-USE_OPTUNA_PRESEARCH = False
+USE_OPTUNA_PRESEARCH = True
 
 # OPTUNA_PRE_PASS_EVALS — "How many test-drives does the Optuna pre-pass get
 # to use, out of the tuner's total budget?"
