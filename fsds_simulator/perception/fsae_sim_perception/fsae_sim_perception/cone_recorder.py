@@ -18,7 +18,7 @@ update this copy too.
 
     in   /fsae/slam/left_track    fsae_interfaces/Track     blue (left) boundary, global frame
     in   /fsae/slam/right_track   fsae_interfaces/Track     yellow (right) boundary, global frame
-    in   /fsae/slam/car_position  geometry_msgs/Pose        x,y in position; yaw in orientation.w
+    in   /fsae/slam/car_position  geometry_msgs/PoseStamped x,y in position; yaw in orientation.w
     in   /fsds/signal/go          fs_msgs/GoSignal          race start -> begins recording
 
 Subscribing directly to the left/right boundary-track topics (rather than
@@ -57,7 +57,7 @@ from rclpy.node import Node
 
 from fs_msgs.msg import GoSignal
 from fsae_interfaces.msg import Track
-from geometry_msgs.msg import Pose
+from geometry_msgs.msg import PoseStamped
 
 MERGE_DIST = 0.8   # metres — two detections closer than this → same cone (see planning/cone_map.py)
 
@@ -125,7 +125,7 @@ class ConeRecorder(Node):
 
         self.create_subscription(Track, '/fsae/slam/left_track',   self._left_cb,  10)
         self.create_subscription(Track, '/fsae/slam/right_track',  self._right_cb, 10)
-        self.create_subscription(Pose,  '/fsae/slam/car_position', self._pose_cb,  10)
+        self.create_subscription(PoseStamped, '/fsae/slam/car_position', self._pose_cb,  10)
         self.create_subscription(GoSignal, '/fsds/signal/go',      self._go_cb,    10)
 
         self._blue_map:   np.ndarray = np.empty((0, 2), dtype=np.float64)
@@ -159,11 +159,11 @@ class ConeRecorder(Node):
             self._record_start_time = time.time()
             self.get_logger().info('GO received — recording cone map for one lap.')
 
-    def _pose_cb(self, msg: Pose) -> None:
+    def _pose_cb(self, msg: PoseStamped) -> None:
         if self._done:
             return
 
-        car_pos = np.array([msg.position.x, msg.position.y])
+        car_pos = np.array([msg.pose.position.x, msg.pose.position.y])
 
         if not self._recording:
             return

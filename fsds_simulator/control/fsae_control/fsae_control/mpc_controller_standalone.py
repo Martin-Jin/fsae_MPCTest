@@ -23,7 +23,7 @@ ROS 2 topic/message interface; this is that same node updated for the
 current fsae_planning topics/messages.
 
     in   /fsae/planning/selected_trajectory  geometry_msgs/PoseArray        planner centreline
-    in   /fsae/slam/car_position             geometry_msgs/Pose             x,y in position; yaw in orientation.w
+    in   /fsae/slam/car_position             geometry_msgs/PoseStamped      x,y in position; yaw in orientation.w
     in   /fsds/testing_only/odom             nav_msgs/Odometry              speed + yaw-rate feedback
     in   /fsds/signal/go                     fs_msgs/GoSignal               race start
     in   /fsae/perception/cone_detection     fsae_interfaces/ConeDetection  proximity e-brake (car-local frame)
@@ -59,8 +59,9 @@ from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 
 from fs_msgs.msg import ControlCommand, GoSignal
 from fsae_interfaces.msg import ConeDetection
-from geometry_msgs.msg import Pose, PoseArray
+from geometry_msgs.msg import PoseArray, PoseStamped
 from nav_msgs.msg import Odometry
+from rclpy.time import Time
 
 from fsae_control.control_utils import curvature_speed
 from fsae_control.mpc_core import MPCController
@@ -107,7 +108,7 @@ class MPCControllerStandaloneNode(Node):
         self.create_subscription(
             PoseArray, '/fsae/planning/selected_trajectory', self._path_cb, 10)
         self.create_subscription(
-            Pose, '/fsae/slam/car_position', self._pose_cb, 10)
+            PoseStamped, '/fsae/slam/car_position', self._pose_cb, 10)
         self.create_subscription(
             Odometry, '/fsds/testing_only/odom', self._odom_cb, sensor_qos)
         self.create_subscription(
@@ -125,6 +126,7 @@ class MPCControllerStandaloneNode(Node):
         self._car_yaw = 0.0
         self._car_speed = 0.0
         self._car_yaw_rate = 0.0
+        self._pose_stamp = None
         self._desired_speed = 0.0
 
         # Cones arrive already in the car-LOCAL frame (see ConeDetection.msg /
@@ -158,10 +160,11 @@ class MPCControllerStandaloneNode(Node):
         ) if msg.poses else np.empty((0, 2))
         self._path_stamp = self.get_clock().now()
 
-    def _pose_cb(self, msg: Pose) -> None:
+    def _pose_cb(self, msg: PoseStamped) -> None:
         # x,y in position; yaw (rad) is stuffed into orientation.w (upstream convention).
-        self._car_pos = np.array([msg.position.x, msg.position.y])
-        self._car_yaw = float(msg.orientation.w)
+        self._car_pos = np.array([msg.pose.position.x, msg.pose.position.y])
+        self._car_yaw = float(msg.pose.orientation.w)
+        self._pose_stamp = msg.header.stamp
         self._have_pose = True
 
     def _odom_cb(self, msg: Odometry) -> None:
@@ -222,6 +225,8 @@ class MPCControllerStandaloneNode(Node):
         # ── Phase 3: MPC solve ───────────────────────────────────────────
         self._desired_speed = curvature_speed(self._path_pts, v_max=self._v_max, v_min=self._v_min)
 
+        pose_age_s = (self.get_clock().now() - Time.from_msg(self._pose_stamp)).nanoseconds * 1e-9
+
         steering, throttle, brake = self._mpc.compute(
             path=self._path_pts,
             car_pos=self._car_pos,
@@ -229,6 +234,7 @@ class MPCControllerStandaloneNode(Node):
             car_speed=self._car_speed,
             desired_speed=self._desired_speed,
             car_yaw_rate=self._car_yaw_rate,
+            pose_age_s=pose_age_s,
         )
         cmd.steering, cmd.throttle, cmd.brake = steering, throttle, brake
 
