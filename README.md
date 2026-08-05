@@ -49,6 +49,7 @@ fsae planning repo: https://github.com/UOA-FSAE/fsae_planning (current implement
 ```bash
 pip install numpy scipy matplotlib cvxpy cma
 pip install cvxpy[osqp] cvxpy[clarabel]
+pip install optuna  # optional: only needed for USE_OPTUNA_PRESEARCH in settings.py
 ```
 
 ### 2. Launch the simulator
@@ -101,7 +102,9 @@ for the complete per-file index.
 ## Dependencies
 
 Core stack: `numpy`, `scipy`, `matplotlib`, `cvxpy` (with `osqp` and
-`clarabel` solvers), and `cma`. ROS 2 nodes additionally need `rclpy`,
+`clarabel` solvers), and `cma`. `optuna` is optional, only needed for the
+offline tuner's TPE pre-search (`USE_OPTUNA_PRESEARCH` in `settings.py`).
+ROS 2 nodes additionally need `rclpy`,
 `fs_msgs`, `nav_msgs`, and `geometry_msgs`. See
 [docs/developer_guide.md#dependencies](docs/developer_guide.md#dependencies)
 for the full version/purpose table and FSDS/ROS 2 setup instructions.

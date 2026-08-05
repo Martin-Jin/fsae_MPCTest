@@ -41,7 +41,7 @@ IDX_MAX_STEERING       = 5
 IDX_STEER_SAT_RATIO    = 6
 IDX_JERK_RMS           = 7
 IDX_MAX_YAW_RATE       = 8
-IDX_STEER_REVERSALS    = 9
+IDX_STEER_REVERSAL_RATE = 9
 IDX_PEAK_LATERAL_ERROR = 10
 IDX_SPEED_RMSE         = 11
 
@@ -56,7 +56,7 @@ def compute_composite_score(
     steering_sat_ratio,
     jerk_rms,
     max_yaw_rate,
-    steering_reversals,
+    steering_reversal_rate,
     peak_lateral_error,
     speed_rmse,
     progress,
@@ -74,6 +74,11 @@ def compute_composite_score(
     Parameter order here MUST match the IDX_* constants above / the order
     of SCORE_WEIGHTS in settings.py — the metrics array below is built
     positionally, not by name.
+
+    steering_reversal_rate is reversals-per-step (raw reversal count / n
+    steps), not a raw count — see RolloutMetrics.finalize(). This keeps it
+    on a comparable per-step scale to the other normalised metrics instead
+    of mechanically growing with rollout length or shrinking with DT.
     """
     metrics = np.array(
         [
@@ -86,7 +91,7 @@ def compute_composite_score(
             steering_sat_ratio,
             jerk_rms,
             max_yaw_rate,
-            float(steering_reversals),
+            float(steering_reversal_rate),
             peak_lateral_error,
             speed_rmse,
         ]
@@ -222,11 +227,15 @@ class RolloutMetrics:
         jerk_rms = float(np.sqrt(self.jerk_cost / n))
         steering_sat_ratio = self.steering_saturation / n
         speed_rmse = float(np.sqrt(self.speed_cost / n))
+        # Reversals-per-step, not a raw count — see compute_composite_score's
+        # docstring for why (otherwise longer rollouts / smaller DT mechanically
+        # inflate this term regardless of actual driving quality).
+        steering_reversal_rate = self.steering_reversals / n
 
         score = compute_composite_score(
             rmse, yaw_rms, smooth_rms, steer_rms, accel_rms,
             self.max_steering, steering_sat_ratio, jerk_rms, self.max_yaw_rate,
-            self.steering_reversals, self.peak_lateral_error, speed_rmse,
+            steering_reversal_rate, self.peak_lateral_error, speed_rmse,
             progress=progress, time_bonus=time_bonus, dnf=dnf, offtrack=offtrack,
             inaccurate_count=self.inaccurate_count,
         )
@@ -242,7 +251,8 @@ class RolloutMetrics:
             "max_steering_rad": self.max_steering,
             "max_accel_mps2": self.max_accel,
             "steering_sat_ratio": steering_sat_ratio,
-            "steering_reversals": self.steering_reversals,
+            "steering_reversal_rate": steering_reversal_rate,
+            "steering_reversals": self.steering_reversals,  # informational-only raw count
             "peak_lateral_error_m": self.peak_lateral_error,
             "speed_rmse_mps": speed_rmse,
             "max_yaw_rate_radps": self.max_yaw_rate,

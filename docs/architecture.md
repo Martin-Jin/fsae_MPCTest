@@ -194,15 +194,22 @@ cap used only during offline tuning rollouts (looser than the live
 simulator's defaults for faster mass evaluation, at negligible accuracy
 cost). `MAX_EVALS` — total true-rollout budget for one tuning run.
 `PATH_N_POINTS` — how many points each synthetic test track is resampled to.
+`USE_OPTUNA_PRESEARCH` / `OPTUNA_PRE_PASS_EVALS` — optional TPE pre-search
+that seeds CMA-ES's starting point; see
+[Optional Optuna TPE pre-search](#optional-optuna-tpe-pre-search).
 
 ### Scoring weights
 
 `SCORE_WEIGHTS` — the 12-entry array defining what "good driving" means:
 how much each of the 12 measured aspects of a rollout (tracking error,
 smoothness, steering effort, saturation, jerk, etc.) contributes to the
-final composite score the tuner minimises. Must sum to 1.0 (enforced by an
-assertion). See [The Composite Score](#the-composite-score) for exactly what
-each of the 12 metrics measures and how they combine.
+final composite score the tuner minimises. `tuner/offline_tuner.py` asserts
+these sum to ~1.0, but since the 12 metrics are on very different natural
+scales (mixed m²/rad² RMS terms, radians, m/s², unitless ratios, a per-step
+rate), relative priority is actually set by weight × typical magnitude, not
+the weight alone — see [The Composite Score](#the-composite-score) for
+exactly what each of the 12 metrics measures, its rough typical magnitude,
+and how they combine.
 
 `VALIDATION_SUITE` — which of the synthetic corner-shape paths (defined in
 `tuner/offline_tuner.build_synthetic_paths()`) the tuner actually evaluates
@@ -968,7 +975,35 @@ The starting point `x0 = sqrt(lower · upper) = 1.0` for every parameter is
 the geometric (log-scale) midpoint of `[0.1, 10.0]` — i.e. "start the search
 exactly at the current template weights, unscaled," which is the natural
 neutral point for a multiplicative search space (the arithmetic mean would
-be biased toward the larger bound).
+be biased toward the larger bound). This fixed midpoint is CMA-ES's default
+starting point; if `USE_OPTUNA_PRESEARCH` is enabled (see below), `x0` is
+replaced by the Optuna pre-pass's best result instead.
+
+### Optional Optuna TPE pre-search
+
+`USE_OPTUNA_PRESEARCH` in `settings.py` (default `False`) runs a short
+Optuna TPE (Tree-structured Parzen Estimator) search *before* CMA-ES starts,
+using `OPTUNA_PRE_PASS_EVALS` true rollouts (default 15% of `MAX_EVALS`) out
+of a separate mini-budget — this phase's cost is in addition to, not carved
+out of, the main `MAX_EVALS` budget. TPE is a cheaper, less precise
+global search method than CMA-ES; the idea is to spend a small budget
+finding a promising general region of the 9-dimensional search space, then
+start CMA-ES there instead of at the fixed geometric midpoint, so more of
+CMA-ES's own budget goes toward local refinement instead of coarse search.
+
+The pre-pass reuses the exact same objective (`parallel_evaluate_candidate`)
+and worker pool as the CMA-ES phase — no rollout logic is duplicated —
+running trials sequentially (`n_jobs=1`) since each trial already fans a
+single candidate out across every core via the pool; a second layer of
+Optuna-level parallelism would only oversubscribe the same cores. It
+respects the same Ctrl+C graceful-shutdown flag (`_stop_requested`) as the
+CMA-ES phase, and its result (trial count, best score, seeded x0) is logged
+to `tuning history.txt` alongside the run's weights so it's traceable which
+runs used it.
+
+Requires the optional `optuna` package (see
+[Dependencies](developer_guide.md#dependencies)) — only needed if this flag
+is enabled.
 
 ### CMA-ES: what it's doing and why
 
@@ -1085,7 +1120,7 @@ normalised (mostly to RMS values) at the end via `.finalize()`:
 | 6 | `steering_sat_ratio` | Fraction of steps where steering was within 95% of `max_steer` — how often the controller is pinned at its limit. |
 | 7 | `jerk_rms` | RMS of the *second* difference of control (`Δ²u`) — smoothness of the smoothness, catches abrupt changes in how fast commands are changing. |
 | 8 | `max_yaw_rate` | The single fastest yaw rate reached — cornering aggressiveness ceiling. |
-| 9 | `steering_reversals` | Count of times the steering sign flips (beyond a 0.02 rad noise threshold) — penalises "hunting"/indecisive steering. |
+| 9 | `steering_reversal_rate` | Times the steering sign flips (beyond a 0.02 rad noise threshold), *per step* — penalises "hunting"/indecisive steering. Normalised (count / n steps) like the other 11 metrics, since an unnormalised count would mechanically grow with a longer rollout or shrink with a smaller DT regardless of actual driving quality; the raw count is still reported separately as an informational-only field (`steering_reversals` in the returned dict) alongside it. |
 | 10 | `peak_lateral_error` | The single worst `|e_y|` reached at any point — a safety-margin measure independent of the average. |
 | 11 | `speed_rmse` | RMS of `v_actual - v_target` — how well the car tracks the planner's requested speed. |
 
@@ -1104,10 +1139,14 @@ if inaccurate_count > 0:
 **Lower is always better.** A good finishing run typically scores in
 `[-0.5, -0.3]` — negative because the completion/time bonuses usually
 outweigh the (small, well-tuned) metric costs. `SCORE_WEIGHTS` is defined
-once in `settings.py` and must sum to exactly `1.0` (enforced by an
-assertion) so the relative weighting between metrics stays interpretable —
-see [Configuring the Project](#configuring-the-project-settingspy) for
-guidance on adjusting individual weights.
+once in `settings.py`; `tuner/offline_tuner.py` still asserts the 12
+weights sum to ~1.0 for a stable overall score scale, but what actually
+determines each metric's influence is weight × the metric's typical
+magnitude ("effective contribution"), not the weight alone — the 12
+metrics have very different natural units (mixed m²/rad² RMS terms,
+radians, m/s², unitless ratios, a per-step rate). See
+[Configuring the Project](#configuring-the-project-settingspy) for
+guidance on adjusting individual weights with that in mind.
 
 The inaccurate-solver penalty (up to +50% at 5 or more
 `OPTIMAL_INACCURATE` occurrences in one rollout) uses

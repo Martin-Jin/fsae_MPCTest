@@ -126,6 +126,13 @@ Before running, confirm:
 - `USE_PLANNER` reflects whether you want the tuner testing the full
   perception/planning pipeline (`True`, default) or driving on the perfect
   reference line (`False`, faster).
+- `USE_OPTUNA_PRESEARCH` (default `False`) — set `True` to run a short
+  Optuna TPE search before CMA-ES starts, which seeds CMA-ES's starting
+  point instead of the fixed geometric midpoint (see
+  [Optional Optuna TPE pre-search](architecture.md#optional-optuna-tpe-pre-search)).
+  Requires `optuna` to be installed (see
+  [Dependencies](#dependencies)). Leave `False` for the exact previous
+  behaviour.
 
 ### 3. Launch
 
@@ -135,6 +142,16 @@ python -m tuner.offline_tuner
 ```
 
 This uses all available CPU cores minus one (one is left free for the OS).
+If `USE_OPTUNA_PRESEARCH` is enabled, the Optuna TPE pre-pass runs first and
+prints one line per trial, then a short summary before CMA-ES begins:
+
+```
+[Optuna TPE] trial   12/ 375 | score 0.3120 | best 0.1896
+[Offline Tuner] Optuna pre-pass done in 8.42 min | trials run: 375/375 | best score: 0.1896
+  x0 (Optuna-seeded): [2.451, 0.873, 4.201, 1.05, 0.612, 3.31, 0.774, 2.9, 5.14]
+```
+
+CMA-ES then starts from that seeded point instead of the fixed midpoint.
 Progress prints once per CMA-ES generation:
 
 ```
@@ -604,6 +621,7 @@ path's start pose → drive → **Reset** to stop and clear the trail.
 | `osqp` | ≥0.6 | Primary QP solver (via CVXPY) |
 | `clarabel` | ≥0.6 | Fallback QP solver (via CVXPY) |
 | `cma` | ≥3.3 | CMA-ES optimiser (`fmin_lq_surr2`, BIPOP+surrogate) |
+| `optuna` | ≥4.0 | Optional TPE pre-search that seeds CMA-ES's starting point (`tuner/offline_tuner.py`, only needed if `USE_OPTUNA_PRESEARCH = True` in `settings.py`) |
 | `rclpy` | ROS 2 Humble+ | ROS 2 nodes only |
 | `fs_msgs` | FSDS | `ControlCommand`, `GoSignal` message types |
 | `fsae_interfaces` | `fsae_planning` | `ConeDetection` (cone-proximity brake input) |
@@ -613,6 +631,7 @@ path's start pose → drive → **Reset** to stop and clear the trail.
 ```bash
 pip install numpy scipy matplotlib cvxpy cma
 pip install cvxpy[osqp] cvxpy[clarabel]
+pip install optuna  # optional: only needed for USE_OPTUNA_PRESEARCH in settings.py
 ```
 
 ---
