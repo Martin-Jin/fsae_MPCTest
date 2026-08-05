@@ -22,14 +22,19 @@
 
 ## Overview
 
-At the start of this project, the car only had a Stanley controller. It worked, but it's a "reactive" controller, it only steers based on the car's current heading error and lateral error, right now, at this exact instant. It never looks ahead. That has two real consequences:
+At the start of this project, the car only had a Stanley controller — a "reactive" controller that steers based only on the car's heading/lateral error right now, at this exact instant. It never looks ahead. That has two real consequences:
 
-- **It can't go as fast**, because it doesn't know what's coming up, so it has to drive conservatively everywhere just in case.
-- **It can't turn early into a sudden corner**, because it only reacts once the error already exists, not before.
+- **It can't go as fast** — it doesn't know what's coming up, so it has to drive conservatively everywhere just in case.
+- **It can't turn early into a sudden corner** — it only reacts once the error already exists, not before.
 
-An MPC (Model Predictive Control) controller fixes this by planning ahead. Every tick, it asks "if I did X for the next second or so, where would I end up, and how well would that track the path?", for lots of possible X, and picks the best one. This lets it brake before a corner it can see coming, and carry more speed on a straight it knows stays straight.
+An MPC (Model Predictive Control) controller fixes this by planning ahead. Every tick, it asks "if I did X for the next second or so, where would I end up, and how well would that track the path?" for lots of possible X, and picks the best one. This lets it brake before a corner it can see coming, and carry more speed on a straight it knows stays straight.
 
-MPC also handles the car's physical limits properly (it will never ask for more steering angle than the rack can physically provide), and lets us define exactly what "good driving" means through a tunable cost function, rather than a fixed set of reactive rules. The trade-off is complexity and computation cost, it's solving an optimisation problem 20 times a second instead of doing simple trigonometry.
+MPC also has two other advantages over Stanley:
+
+- **Respects physical limits properly** — it will never ask for more steering angle than the rack can physically provide.
+- **"Good driving" is tunable, not hard-coded** — defined through a cost function's weights, rather than a fixed set of reactive rules.
+
+The trade-off is complexity and computation cost: solving an optimisation problem 20 times a second, instead of simple trigonometry.
 
 ### What this project delivers
 
@@ -89,7 +94,9 @@ graph LR
     E --> A
 ```
 
-The key trick is step D and E: even though the controller plans a whole 1.25-second sequence, it only ever uses the very first command from that plan, then immediately re-plans from scratch next tick. This is called **receding horizon control**, and it's what makes MPC robust even though its internal model of the car is a simplification of the real physics, any prediction error gets caught and corrected on the very next tick, 20 times a second.
+The key trick is steps D and E: even though the controller plans a whole 1.25-second sequence, it only ever uses the very first command from that plan, then immediately re-plans from scratch next tick. This is called **receding horizon control**.
+
+Why this matters: the controller's internal model of the car is a simplification of the real physics (see [Section 4](#4-the-two-vehicle-models-mpcs-model-vs-the-simulators-plant)). Replanning every tick is what makes MPC robust to that — any prediction error gets caught and corrected on the very next tick, 20 times a second.
 
 ### 1.2 What the Controller Tracks (The State Vector)
 
@@ -110,9 +117,13 @@ $$
 | 6 | $\delta_{act}$ | Where the steering actuator has *actually* reached so far (it lags behind commands) | rad |
 | 7 | $a_{act}$ | Where the throttle/brake actuator has *actually* reached so far | m/s² |
 
-States 6 and 7 exist because a real steering rack or throttle doesn't snap instantly to a new value, it eases toward it (a "first-order lag"). Tracking the actuator's actual current position, not just the last command sent, lets the model predict the car's motion more accurately.
+States 6 and 7 exist because a real steering rack or throttle doesn't snap instantly to a new value — it eases toward it (a "first-order lag"). Tracking the actuator's actual current position, not just the last command sent, lets the model predict the car's motion more accurately.
 
-**How the error is actually measured:** every tick, the code finds the closest point on the path to the car's current position, then measures the sideways distance and heading difference from there. This is called a **Frenet-frame** conversion, describing "where am I" as "how far along the path, and how far off to the side" instead of raw map coordinates. It's the standard approach for any controller whose whole job is staying close to a curve.
+**How the error is actually measured — the Frenet frame:**
+
+- Every tick, the code finds the closest point on the path to the car's current position.
+- It then measures the sideways distance and heading difference from there.
+- This "how far along the path, how far off to the side" framing is called a **Frenet-frame** conversion — the standard approach for any controller whose whole job is staying close to a curve.
 
 ### 1.3 The Prediction Model
 
@@ -134,7 +145,7 @@ $$
 \dot{e}_y = v_x \cdot e_\psi \qquad\qquad \dot{e}_\psi = \frac{v_x \cdot \delta_{act}}{L}
 $$
 
-At very low speed the tyres haven't built up real cornering grip yet, so the car turns purely by geometry (standard Ackermann steering), a longer wheelbase $L$ turns more slowly for the same steering angle.
+At very low speed the tyres haven't built up real cornering grip yet, so the car turns purely by geometry (standard Ackermann steering) — a longer wheelbase $L$ turns more slowly for the same steering angle.
 
 **Above 2.5 m/s, dynamic model** (tyre grip dominates):
 
@@ -146,7 +157,14 @@ $$
 \ddot{e}_\psi = \frac{-2C_f l_f+2C_r l_r}{I_z v_x}\dot{e}_y + \frac{2C_f l_f-2C_r l_r}{I_z}e_\psi - \frac{2C_f l_f^2+2C_r l_r^2}{I_z v_x}\dot{e}_\psi + \frac{2C_f l_f}{I_z}\delta_{act}
 $$
 
-Where $C_f$/$C_r$ are front/rear cornering stiffness (how much sideways force a tyre makes per radian of slip), $l_f$/$l_r$ are the distances from the car's centre of mass to each axle, $m$ is mass, and $I_z$ is yaw inertia (resistance to spinning, like a figure skater's arms out vs. in). The $1/v_x$ terms exist because at higher speed the same amount of sideways drift produces a *smaller* slip angle, so grip builds up more gradually.
+Where:
+
+- $C_f$/$C_r$ — front/rear cornering stiffness (how much sideways force a tyre makes per radian of slip)
+- $l_f$/$l_r$ — distance from the car's centre of mass to each axle
+- $m$ — mass
+- $I_z$ — yaw inertia (resistance to spinning, like a figure skater's arms out vs. in)
+
+The $1/v_x$ terms exist because at higher speed the same amount of sideways drift produces a *smaller* slip angle, so grip builds up more gradually.
 
 **Blending the two:**
 
@@ -156,13 +174,15 @@ $$
 
 $\alpha$ ramps linearly from 0 to 1 between 1 m/s and 2.5 m/s. Below 1 m/s it's pure kinematic, above 2.5 m/s it's pure dynamic, in between it's a proportional mix. This avoids a sudden jump in predicted behaviour right at the switch-over speed.
 
-**From continuous to discrete:** the equation above describes an instant rate of change, but the controller only makes one decision every $dt = 0.05\text{s}$ and holds it. Converting $\dot{x}=A_c x + B_c u$ into the one-step form $x[k{+}1] = A_d x[k] + B_d u[k]$ is done via **Zero-Order Hold (ZOH)**, the mathematically exact discretisation for a system where the input is held constant between updates (exactly how MPC applies its commands):
+**From continuous to discrete (Zero-Order Hold):** the equation above, $\dot{x}=A_c x + B_c u$, describes an instant rate of change — a speedometer reading, not a per-tick step. But the controller only makes one decision every $dt = 0.05\text{s}$ and holds the command fixed until the next tick ("zero-order hold" on the input — it holds at a constant value, order zero, between updates, rather than ramping or curving). What the solver actually needs is the one-step version, $x[k{+}1] = A_d x[k] + B_d u[k]$: given the state and the (held-constant) command, what state does that produce exactly $dt$ seconds later?
+
+**Zero-Order Hold (ZOH)** answers that by solving the continuous equation exactly, assuming $u$ is frozen for the whole $dt$ window, which produces new matrices $A_d$/$B_d$ folding in that time step:
 
 $$
 \exp\!\left(\begin{bmatrix}A_c & B_c\\0&0\end{bmatrix}dt\right)=\begin{bmatrix}A_d & B_d\\0&I\end{bmatrix}
 $$
 
-This is more accurate than a simpler method like Euler integration, which builds up error at every step.
+This matrix exponential is the standard closed-form trick for solving a linear ODE exactly over a fixed interval — the code doesn't approximate it step-by-step, it computes $A_d$/$B_d$ directly from $A_c$/$B_c$/$dt$ once per tick (`scipy.linalg.expm` under the hood). Because the input actually *is* held constant by the controller between ticks (it only issues one command per $dt$), ZOH isn't an approximation here — it's exact. That makes it more accurate than a simpler method like Euler integration, which assumes the rate of change stays constant over the step and builds up error every tick.
 
 ### 1.4 The Cost Function
 
@@ -189,7 +209,7 @@ $$
 
 $Q$, $R$, and $R_{rate}$ are diagonal matrices, one number per state/input, controlling how much the solver cares about minimising that particular thing relative to the others. **These are exactly the numbers the tuner searches for** (see [Section 2](#2-tuning-the-controller)).
 
-**What's actually inside each `∑‖√Q ⊙ x‖²` term.** Because $Q$, $R$, and $R_{rate}$ are diagonal (one weight per state/input, no cross-terms), the `⊙` (elementwise multiply) followed by squaring the norm just means: take each state, multiply it by its own weight, square it, and add up all 8 (or 2, for the input terms). Written out per step $i$, with $x_i = [e_y, \dot{e}_y, e_\psi, \dot{e}_\psi, e_v, e_a, \delta_{act}, a_{act}]$:
+**What's actually inside each `∑‖√Q ⊙ x‖²` term.** $Q$, $R$, and $R_{rate}$ are diagonal (one weight per state/input, no cross-terms), so `⊙` (elementwise multiply) followed by squaring the norm just means: take each state, multiply it by its own weight, square it, and add up all 8 (or 2, for the input terms). Written out per step $i$, with $x_i = [e_y, \dot{e}_y, e_\psi, \dot{e}_\psi, e_v, e_a, \delta_{act}, a_{act}]$:
 
 $$
 \lVert\sqrt{Q}\odot x_i\rVert^2 = Q_0 e_y^2 + Q_1 \dot{e}_y^2 + Q_2 e_\psi^2 + Q_3 \dot{e}_\psi^2 + Q_4 e_v^2 + Q_5 e_a^2 + Q_6 \delta_{act}^2 + Q_7 a_{act}^2
@@ -201,13 +221,26 @@ $$
 \lVert\sqrt{R}\odot u_i\rVert^2 = R_0\,\text{steer}_i^2 + R_1\,\text{accel}_i^2 \qquad\qquad \lVert\sqrt{R_{rate}}\odot \Delta u_i\rVert^2 = R_{rate,0}(\Delta\text{steer}_i)^2 + R_{rate,1}(\Delta\text{accel}_i)^2
 $$
 
-**Why the cost can only ever go up as errors grow, never down:** every one of these terms is a non-negative weight times a *squared* quantity. Squaring means the sign of the error doesn't matter, drifting 2 m left of the path costs exactly the same as drifting 2 m right of it, and it also means the number itself only gets bigger the further from zero you go. Since every weight in `Q_diag`/`R_diag`/`R_rate_diag`/`W_slack` is non-negative (the tuner only ever searches multiplicative scale factors on top of a non-negative starting template, see [Section 2.2](#22-how-the-tuner-works-cma-es)), adding a non-negative weight times a non-negative square to a running total can only push that total up, never down. So more tracking error, more control effort, or jerkier commands always costs more, never less. This "sum of non-negative squares" shape is also exactly what makes the whole thing convex, and convex is what lets a QP solver find the guaranteed best answer instead of getting stuck on a locally-good-but-not-actually-best one (see [Section 1.5](#15-the-solver)).
+**Why the cost can only ever go up as errors grow, never down:**
+
+- Every term is a non-negative weight times a *squared* quantity.
+- Squaring removes the sign — drifting 2 m left of the path costs exactly the same as drifting 2 m right — and makes the term grow the further from zero you go.
+- Every weight in `Q_diag`/`R_diag`/`R_rate_diag`/`W_slack` is non-negative (the tuner only ever searches multiplicative scale factors on top of a non-negative starting template, see [Section 2.2](#22-how-the-tuner-works-cma-es)), so adding a non-negative weight times a non-negative square to a running total can only push it up, never down.
+- Net effect: more tracking error, more control effort, or jerkier commands always costs more, never less.
+- This "sum of non-negative squares" shape is also exactly what makes the whole problem convex — and convex is what lets a QP solver find the guaranteed best answer instead of getting stuck on a locally-good-but-not-actually-best one (see [Section 1.5](#15-the-solver)).
 
 ### 1.5 The Solver
 
-The cost function above is **quadratic** (everything is squared), and every constraint is **linear**. A quadratic cost with linear constraints is called a **Quadratic Program (QP)**, a well-studied category of problem with fast, purpose-built, off-the-shelf solvers already available. This is deliberate: it's *why* the cost function is built with squared terms rather than something more exotic, it's what keeps the whole problem inside this fast-to-solve category.
+The cost function above is **quadratic** (everything is squared), and every constraint is **linear**. A quadratic cost with linear constraints is called a **Quadratic Program (QP)** — a well-studied category of problem with fast, purpose-built, off-the-shelf solvers already available. This is deliberate: it's *why* the cost function is built with squared terms rather than something more exotic, and it's what keeps the whole problem inside this fast-to-solve category.
 
-**This is exactly where the model's linearity earns its keep.** The constraint $x_{i+1} = A_d x_i + B_d u_i$ is only linear because $A_d$/$B_d$ come from the linear bicycle model in [Section 1.3](#13-the-prediction-model), not the nonlinear 24-state plant. If that constraint used the plant's real Pacejka tyre curves instead, the whole problem would stop being a QP and would become a much harder **nonlinear program (NLP)**, no guaranteed global optimum, slower general-purpose solvers (think tens to hundreds of milliseconds rather than 1-5ms), and a real risk of the solver not converging in time for the next 50ms tick. Using a linear model is what makes it possible to solve this problem fast enough, and predictably enough, to run 20 times a second on modest hardware, see [Section 4](#4-the-two-vehicle-models-mpcs-model-vs-the-simulators-plant) for the full linear-vs-nonlinear tradeoff this buys.
+**This is exactly where the model's linearity earns its keep.** The constraint $x_{i+1} = A_d x_i + B_d u_i$ is only linear because $A_d$/$B_d$ come from the linear bicycle model in [Section 1.3](#13-the-prediction-model), not the nonlinear 24-state plant. If that constraint used the plant's real Pacejka tyre curves instead:
+
+- The problem would stop being a QP and become a much harder **nonlinear program (NLP)**.
+- No guaranteed global optimum.
+- Slower general-purpose solvers — tens to hundreds of milliseconds, rather than 1-5ms.
+- A real risk of the solver not converging in time for the next 50ms tick.
+
+Using a linear model is what makes it possible to solve this problem fast enough, and predictably enough, to run 20 times a second on modest hardware — see [Section 4](#4-the-two-vehicle-models-mpcs-model-vs-the-simulators-plant) for the full linear-vs-nonlinear tradeoff this buys.
 
 You do not need to write a solver yourself. This repo uses:
 
@@ -222,7 +255,13 @@ prob = cp.Problem(cp.Minimize(cost), constraints)
 prob.solve(solver=cp.OSQP, warm_start=True, eps_abs=1e-5, max_iter=8000)
 ```
 
-**The "parameterised" trick:** rebuilding this whole expression from scratch every tick would be ~10x slower than necessary. Instead, the problem is built **once** using `cp.Parameter` placeholders instead of plain numbers; every subsequent tick just updates the parameter *values* (new $A_d$, $B_d$, $x_0$, weights) and re-solves the same compiled problem. See `controller/optimiser.py`'s `init_parameterized_mpc()` / `solve_mpc()` for the exact implementation.
+**The "parameterised" trick:** rebuilding this whole expression from scratch every tick would be ~10x slower than necessary. Instead:
+
+1. The problem is built **once**, using `cp.Parameter` placeholders instead of plain numbers.
+2. Every subsequent tick just updates the parameter *values* (new $A_d$, $B_d$, $x_0$, weights).
+3. The same compiled problem is re-solved with those new values.
+
+See `controller/optimiser.py`'s `init_parameterized_mpc()` / `solve_mpc()` for the exact implementation.
 
 > Note the `eps_abs=1e-5, max_iter=8000` above is the default used for interactive/GUI solves.
 > The offline tuner runs with a separate, deliberately looser tolerance
@@ -259,11 +298,11 @@ In a straight, the full smoothness penalty applies (discourage unnecessary jitte
 
 ### 2.1 Why an Automatic Tuner?
 
-$Q$, $R$, and $R_{rate}$ have 9 tunable numbers between them (`Q_diag[0:5]`, `R_diag[0:2]`, `R_rate_diag[0:2]`). Hand-tuning 9 interacting numbers by trial and error, across multiple different corner shapes, is slow and doesn't scale, a change that helps one corner type can hurt another. `tuner/offline_tuner.py` searches for good values automatically by running thousands of simulated laps and minimising a single composite score.
+$Q$, $R$, and $R_{rate}$ have 9 tunable numbers between them (`Q_diag[0:5]`, `R_diag[0:2]`, `R_rate_diag[0:2]`). Hand-tuning 9 interacting numbers by trial and error, across multiple corner shapes, is slow and doesn't scale — a change that helps one corner type can hurt another. `tuner/offline_tuner.py` searches for good values automatically instead, by running thousands of simulated laps and minimising a single composite score.
 
 ### 2.2 How the Tuner Works (CMA-ES)
 
-**CMA-ES** (Covariance Matrix Adaptation Evolution Strategy) is a derivative-free, black-box optimiser. It was chosen because the objective here, "how well did the car drive?", is noisy, non-convex, and has no usable gradient; you can't analytically differentiate "how smooth did the steering feel" with respect to a cost weight the way you could with, say, a simple curve-fitting problem.
+**CMA-ES** (Covariance Matrix Adaptation Evolution Strategy) is a derivative-free, black-box optimiser. It's the right tool here because the objective, "how well did the car drive?", is noisy, non-convex, and has no usable gradient — you can't analytically differentiate "how smooth did the steering feel" with respect to a cost weight, the way you could with a simple curve-fitting problem.
 
 ```mermaid
 graph TD
@@ -273,7 +312,7 @@ graph TD
     D --> A
 ```
 
-Rather than searching raw weight values, it searches **multiplicative scale factors** in `[0.1, 10.0]` applied to a starting template, this keeps the search well-behaved regardless of the template's starting magnitude, and specifically allows a weight to be turned *down* below its starting point, not just up.
+Rather than searching raw weight values, it searches **multiplicative scale factors** in `[0.1, 10.0]` applied to a starting template. This keeps the search well-behaved regardless of the template's starting magnitude, and specifically allows a weight to be turned *down* below its starting point, not just up.
 
 This project specifically uses `cma.fmin_lq_surr2`, layering two extra techniques on top of plain CMA-ES:
 
@@ -282,19 +321,24 @@ This project specifically uses `cma.fmin_lq_surr2`, layering two extra technique
 | **BIPOP restarts** | Alternates "large" restarts (bigger population, broad exploration) with "small" restarts (local refinement) | Escapes local minima while still exploiting promising regions |
 | **Surrogate assistance** ("lq" = local quadratic) | Fits a cheap approximate model to recent candidates; only genuinely promising ones get a real, expensive rollout | Roughly 3-10x more effective search coverage for the same rollout budget |
 
-Every candidate is tested across a library of synthetic corner shapes (hairpins, chicanes, slaloms, etc, see `VALIDATION_SUITE` in `settings.py`), from both a perfect starting position and a slightly-off starting position (to also test recovery, not just perfect tracking). The final objective for one candidate combines all of these tests as:
+Every candidate is tested across a library of synthetic corner shapes (hairpins, chicanes, slaloms, etc — see `VALIDATION_SUITE` in `settings.py`), from both a perfect starting position and a slightly-off starting position (to also test recovery, not just perfect tracking). The final objective for one candidate combines all of these tests as:
 
 $$
 \text{objective} = 0.7 \times \text{weighted\_mean(scores)} + 0.3 \times \max(\text{scores})
 $$
 
-The 30% worst-case term exists specifically so the tuner can't find a setting that looks great *on average* by driving one corner shape perfectly and another one badly, every corner shape in the suite has to be reasonably good, not just the average.
+The 30% worst-case term exists so the tuner can't find a setting that looks great *on average* by driving one corner shape perfectly and another badly — every shape in the suite has to be reasonably good, not just the average.
 
 ### 2.3 The Optuna Pre-Search Warm Start
 
-CMA-ES on its own always starts its search from the same fixed point, the geometric midpoint of each weight's allowed range, and has to spend part of its own budget just figuring out which general area of the 9-dimensional search space looks promising before it can start refining within it.
+CMA-ES on its own always starts its search from the same fixed point: the geometric midpoint of each weight's allowed range. It then has to spend part of its own budget just figuring out which general area of the 9-dimensional search space looks promising, before it can start refining within it.
 
-`tuner/offline_tuner.py` now has an optional pre-search step that runs first: a short pass using **Optuna's TPE sampler** (Tree-structured Parzen Estimator), a cheaper, more sample-efficient method for narrowing down "which general area is promising", though it doesn't refine as precisely as CMA-ES does. CMA-ES then starts from the Optuna pass's best result instead of the fixed midpoint, which tends to leave more of CMA-ES's own budget free for fine refinement instead of coarse search.
+`tuner/offline_tuner.py` now has an optional pre-search step that runs first:
+
+1. A short pass using **Optuna's TPE sampler** (Tree-structured Parzen Estimator) — a cheaper, more sample-efficient method for narrowing down "which general area is promising", though it doesn't refine as precisely as CMA-ES does.
+2. CMA-ES then starts from the Optuna pass's best result instead of the fixed midpoint.
+
+This tends to leave more of CMA-ES's own budget free for fine refinement instead of coarse search.
 
 ```mermaid
 graph LR
@@ -304,9 +348,9 @@ graph LR
 
 - Controlled by `USE_OPTUNA_PRESEARCH` in `settings.py` (defaults to `True`). Set it `False` to skip the pre-pass entirely and fall back to the original fixed-midpoint start.
 - The pre-pass gets its own separate mini-budget, `OPTUNA_PRE_PASS_EVALS`, computed as roughly 10% of `MAX_EVALS`, not carved out of `MAX_EVALS` itself. The two phases run one after another, so total wall-clock time is roughly the sum of both.
-- Requires the `optuna` package (`pip install optuna`), it isn't otherwise a dependency of this repo.
-- When running, you'll see extra lines in the tuner's console output covering the pre-pass's own trial count, its best score, and how long it took, followed by the usual CMA-ES generation-by-generation progress. The final summary at the end breaks out Optuna vs. CMA-ES timing separately.
-- `tuning history.txt` also now records whether a given run used the Optuna pre-pass, and if so, how many trials it ran and what its best result was, alongside the tuned weights, see [Section 2.4](#24-how-a-run-gets-scored) for the rest of what gets logged.
+- Requires the `optuna` package (`pip install optuna`) — it isn't otherwise a dependency of this repo.
+- Console output shows the pre-pass's trial count, best score, and duration first, then the usual CMA-ES generation-by-generation progress. The final summary breaks out Optuna vs. CMA-ES timing separately.
+- `tuning history.txt` records whether a run used the Optuna pre-pass, and if so, its trial count and best result, alongside the tuned weights — see [Section 2.4](#24-how-a-run-gets-scored) for the rest of what gets logged.
 
 ### 2.4 How a Run Gets Scored
 
@@ -341,14 +385,19 @@ if inaccurate_count > 0:
     score += abs(score) * factor
 ```
 
-- **`SCORE_WEIGHTS`** (in `settings.py`) is the 12-entry array of how much each metric above matters. It's kept summing to roughly `1.0` so the composite score's overall scale stays stable and comparable across tuning runs, though it's a convention enforced by the code's comments rather than a hard runtime check, the only runtime assertion is that the array has exactly 12 entries.
+- **`SCORE_WEIGHTS`** (in `settings.py`) is the 12-entry array of how much each metric above matters. By convention it's kept summing to roughly `1.0`, so the composite score's overall scale stays stable and comparable across tuning runs — this is enforced by the code's comments, not a hard runtime check; the only runtime assertion is that the array has exactly 12 entries.
 - **Completion/time bonuses** are subtracted (i.e. improve the score) for finishing the track at all, and for finishing it quickly.
-- **DNF penalties** are added if the car didn't finish, with an extra penalty specifically if it left the track, so the tuner can't "cheat" by driving slowly and carefully forever without ever actually finishing.
-- **The inaccurate-solver penalty** inflates an already-computed score proportionally (up to +50% at 5+ occurrences) if the solver returned a not-fully-converged answer too often, still usable, but penalised, rather than thrown out outright.
+- **DNF penalties** are added if the car didn't finish, with an extra penalty if it left the track — so the tuner can't "cheat" by driving slowly and carefully forever without ever finishing.
+- **The inaccurate-solver penalty** inflates an already-computed score proportionally (up to +50% at 5+ occurrences) if the solver returned a not-fully-converged answer too often — still usable, but penalised, rather than thrown out outright.
 
-**Lower is always better.** A good finishing run typically scores around **-0.5 to -0.3** - negative because the bonuses usually outweigh the (small, well-tuned) metric costs.
+**Lower is always better.** A good finishing run typically scores around **-0.5 to -0.3** — negative because the bonuses usually outweigh the (small, well-tuned) metric costs.
 
-**Where to find results:** every tuning run automatically appends to `tuning history.txt`, timestamp, the three weight arrays (copy-pasteable), duration, the tuner's own score, and the git commit hash, plus, as of a more recent change, the score weights and bonus/penalty weights actually used for that run, and whether the Optuna pre-pass ran (and if so, its trial count and best result). Recording the weights alongside the score means an older logged run stays interpretable even after `SCORE_WEIGHTS` itself changes later. The `Overall score` field is left blank for you to fill in by hand once you've actually tested those weights in FSDS, the offline score is a good guide but doesn't perfectly predict real-world performance, so this file is where the two get reconciled over time.
+**Where to find results — `tuning history.txt`.** Every tuning run automatically appends:
+
+- Timestamp, the three weight arrays (copy-pasteable), duration, the tuner's own score, and the git commit hash.
+- The score weights and bonus/penalty weights actually used for that run — recording these alongside the score means an older logged run stays interpretable even after `SCORE_WEIGHTS` itself changes later.
+- Whether the Optuna pre-pass ran, and if so, its trial count and best result.
+- An `Overall score` field, left blank for you to fill in by hand once you've actually tested those weights in FSDS — the offline score is a good guide but doesn't perfectly predict real-world performance, so this file is where the two get reconciled over time.
 
 ### 2.5 Running the Tuner
 
@@ -369,7 +418,7 @@ It uses all CPU cores minus one, and prints progress once per generation. With t
 [lq-CMA-ES] gen    5 | true_evals    90 | gen_best 0.2341 | overall_best 0.1892 | sigma 6.123e-01
 ```
 
-You can safely stop early with **Ctrl+C**, it finishes the current generation, then reports the best weights found so far rather than exiting uncleanly. On completion it prints:
+You can safely stop early with **Ctrl+C** — it finishes the current generation, then reports the best weights found so far rather than exiting uncleanly. On completion it prints:
 
 ```
 Replace your gui/simulation.py weights with:
@@ -385,7 +434,7 @@ R_rate_diag = [50.0, 49.6]
 
 ### 2.6 Manual Tuning Guide
 
-You generally shouldn't hand-edit individual `Q`/`R`/`R_rate` entries, they interact with each other, so a change that looks like an improvement for one corner can quietly break another. Prefer running the tuner. If you do need to nudge something by hand:
+You generally shouldn't hand-edit individual `Q`/`R`/`R_rate` entries — they interact with each other, so a change that looks like an improvement for one corner can quietly break another. Prefer running the tuner. If you do need to nudge something by hand:
 
 - **Change one number at a time**, by no more than 20-30%, then re-test. Small changes can have surprisingly large effects because they interact.
 - **Test against multiple corner shapes**, not just the one you're currently looking at, use **Benchmark All Paths** in the GUI, not just **Show Metrics** on a single run.
@@ -433,7 +482,7 @@ All of these live in `settings.py`, with a full plain-English explanation as a c
 
 ## 3. FSDS vs. This Repo's Simulator
 
-These are **two different simulators** used for two different jobs, it's easy to conflate them, so here's the direct comparison:
+These are **two different simulators** used for two different jobs — easy to conflate, so here's the direct comparison:
 
 | | **This repo's 2D simulator** (`gui/simulation.py`) | **FSDS** (Formula Student Driverless Simulator) |
 |---|---|---|
@@ -450,7 +499,7 @@ The important guarantee: both the 2D simulator and the live FSDS-connected contr
 
 ## 4. The Two Vehicle Models: MPC's Model vs. the Simulator's Plant
 
-This project deliberately runs **two different vehicle models at once**, and this mismatch is not a bug, it's the whole point.
+This project deliberately runs **two different vehicle models at once** — this mismatch is not a bug, it's the whole point.
 
 ```mermaid
 graph LR
@@ -465,20 +514,35 @@ graph LR
 ```
 
 - **The MPC's internal model** (Section [1.3](#13-the-prediction-model)) is a simplified, linear 8-state bicycle model. It has to be simple, because the solver evaluates it many times per second inside an optimisation loop.
-- **The plant** (`model/vehicle_physics.py`) is the detailed, nonlinear 24-state "ground truth" - real tyre curves, suspension, weight transfer, aerodynamics. This is what the car "actually" does in the simulation.
+- **The plant** (`model/vehicle_physics.py`) is the detailed, nonlinear 24-state "ground truth" — real tyre curves, suspension, weight transfer, aerodynamics. This is what the car "actually" does in the simulation.
 
 ### Why a linear model, when the real car is nonlinear?
 
-Every real vehicle is nonlinear, tyre grip saturates, weight shifts under braking, drag scales with speed squared. None of that is a straight-line relationship. So it's fair to ask why the controller's internal model throws all of that away and pretends the car behaves linearly. The short answer: a linear model is not more *accurate*, it's what makes the optimisation problem solvable fast enough to be useful at all. Here's the actual tradeoff:
+Every real vehicle is nonlinear — tyre grip saturates, weight shifts under braking, drag scales with speed squared. None of that is a straight-line relationship. So it's fair to ask why the controller's internal model throws all of that away and pretends the car behaves linearly. The short answer: a linear model is not more *accurate*, it's what makes the optimisation problem solvable fast enough to be useful at all.
+
+**What "linear" and "nonlinear" mean here, for the MPC's own model:**
+
+- The MPC's internal prediction model (`Ad`, `Bd` from [Section 1.3](#13-the-prediction-model)) is **linear** because every entry of those matrices is a single fixed number — the next state is always "this state times a fixed multiplier, plus that state times a fixed multiplier, ..." added up.
+- Double the current heading error, and its contribution to the predicted lateral error exactly doubles, no matter what speed or slip angle the car happens to be at.
+- That rigid, fixed-multiplier structure is exactly what a Quadratic Program (QP) solver requires — and exactly what the real plant doesn't have (see [Section 5.2](#52-tyres-and-slip-explained) for a concrete example of the plant's own curved, nonlinear tyre behaviour).
+- If the MPC instead tried to plan against equations whose multipliers depend on the current state — e.g. tyre force that bends and saturates as slip angle grows — the relationship connecting state `x_{i+1}` to `x_i` and `u_i` would no longer be a fixed-multiplier sum, and the optimisation would stop being a QP and become a much harder **nonlinear program (NLP)**.
+
+Here's the actual tradeoff this buys:
 
 | | **Linear model** (what the MPC uses to plan) | **Nonlinear model** (what the plant actually is) |
 |---|---|---|
-| **Pros** | Solvable as a convex QP with a guaranteed global optimum, see [Section 1.5](#15-the-solver). Fast and predictable, 1-5ms per solve, so it reliably fits inside the 50ms control budget. Can be "parameterised" once and just re-solved with new numbers each tick (see the parameterised-problem trick in 1.5), which is a large chunk of why it's fast enough at all. | Captures the real physics: tyre saturation, load-dependent grip, weight transfer, drag. Far more accurate far from the model's small-signal assumptions, e.g. at the edge of grip, hard braking into a corner, or very low/very high speed. |
-| **Cons** | Only accurate near the operating point it was linearised around, it quietly gets worse the further the car strays from "normal" driving (very low speed, very high slip, near the tyre's grip limit). This project works around the worst of it with the kinematic/dynamic blend in [Section 1.3](#13-the-prediction-model), but that's a patch, not a full fix. | Turns the optimisation into a nonlinear program (NLP), no guaranteed global optimum, no standard fast off-the-shelf solver, and solve times that can balloon unpredictably, exactly the property you don't want when a fresh answer is due every 50ms no matter what. |
+| **Pros** | Solvable as a convex QP with a guaranteed global optimum (see [Section 1.5](#15-the-solver)). Fast and predictable, 1-5ms per solve, so it reliably fits inside the 50ms control budget. Can be "parameterised" once and re-solved with new numbers each tick (see [Section 1.5](#15-the-solver)'s parameterised-problem trick), a large chunk of why it's fast enough at all. | Captures the real physics: tyre saturation, load-dependent grip, weight transfer, drag. Far more accurate far from the model's small-signal assumptions, e.g. at the edge of grip, hard braking into a corner, or very low/very high speed. |
+| **Cons** | Only accurate near the operating point it was linearised around — quietly gets worse the further the car strays from "normal" driving (very low speed, very high slip, near the tyre's grip limit). This project works around the worst of it with the kinematic/dynamic blend in [Section 1.3](#13-the-prediction-model), but that's a patch, not a full fix. | Turns the optimisation into an NLP: no guaranteed global optimum, no standard fast off-the-shelf solver, and solve times that can balloon unpredictably — exactly the property you don't want when a fresh answer is due every 50ms no matter what. |
 
-**Why this project picked linear anyway:** MPC's whole safety net is re-planning from scratch every single tick (the receding-horizon idea from [Section 1.1](#11-the-big-idea-receding-horizon-control)). Because of that, the model doesn't need to be perfectly accurate over the full 1.25s horizon, any prediction error the linear model makes just shows up as a bit of extra tracking error on the *next* measurement, and gets corrected again next tick. What the model absolutely cannot do is fail to produce an answer, or produce one too slowly, since a missed deadline means driving blind for that tick. A linear model trades a small, bounded loss of prediction accuracy for a large, guaranteed win in solve speed and solve reliability, and given the re-planning safety net already forgives the accuracy loss, that trade is a clear win here. This is also exactly why the 24-state nonlinear plant still exists, it's used as the simulated "real car" to test against, not as something the controller ever tries to solve against directly.
+**Why this project picked linear anyway:**
 
-**Critically, the controller never sees the plant's 24 internal states directly.** It only receives the tracking error computed from the plant's global position each tick, exactly like a real controller only has GPS/odometry, not X-ray vision into the tyres. This closed-loop feedback loop, re-planning every 50ms, is what makes MPC robust to the gap between its simple internal model and the much more complex real car, any misprediction just shows up as tracking error next tick and gets corrected.
+- MPC's whole safety net is re-planning from scratch every single tick (the receding-horizon idea from [Section 1.1](#11-the-big-idea-receding-horizon-control)).
+- Because of that, the model doesn't need to be perfectly accurate over the full 1.25s horizon — any prediction error the linear model makes just shows up as extra tracking error on the *next* measurement, and gets corrected again next tick.
+- What the model absolutely cannot do is fail to produce an answer, or produce one too slowly — a missed deadline means driving blind for that tick.
+- Net trade: a small, bounded loss of prediction accuracy for a large, guaranteed win in solve speed and reliability. Given the re-planning safety net already forgives the accuracy loss, that trade is a clear win here.
+- This is also exactly why the 24-state nonlinear plant still exists — it's used as the simulated "real car" to test against, not as something the controller ever tries to solve against directly.
+
+**Critically, the controller never sees the plant's 24 internal states directly.** It only receives the tracking error computed from the plant's global position each tick — exactly like a real controller only has GPS/odometry, not X-ray vision into the tyres. This closed-loop feedback, re-planning every 50ms, is what makes MPC robust to the gap between its simple internal model and the much more complex real car: any misprediction just shows up as tracking error next tick and gets corrected.
 
 > If you ever import new real tyre test data into `vehicle_physics.py`, you **must** also
 > recompute `Cf`/`Cr` (used by the MPC's *internal* model) to match the new curve's initial slope
@@ -513,12 +577,12 @@ The plant tracks 24 numbers describing the car's complete physical situation at 
 
 ### 5.2 Tyres and Slip, Explained
 
-A tyre doesn't grip like a rigid block on sandpaper, its rubber contact patch physically deforms before it actually slides. Because of that, grip force isn't a simple constant x weight; it depends on **how much the tyre is being asked to slip**, in a curved, non-linear way.
+A tyre doesn't grip like a rigid block on sandpaper — its rubber contact patch physically deforms before it actually slides. Because of that, grip force isn't a simple constant × weight; it depends on **how much the tyre is being asked to slip**, in a curved, nonlinear way.
 
 There are two kinds of slip:
 
-- **Slip angle ($\alpha$)**, the angle between where the tyre is *pointed* and where it's actually *travelling*. This produces **sideways** grip force, the force that turns the car. In plain terms: the more the car is sliding sideways relative to where the tyre points, the more (up to a point) sideways grip it generates, but push past the tyre's limit and **it stops turning as effectively as the steering angle alone would suggest**, because the tyre is now sliding rather than gripping.
-- **Slip ratio ($\kappa$)**, the mismatch between wheel spin speed and actual ground speed (spinning faster = wheelspin under power, spinning slower = lockup under braking). This produces **forward/backward** grip force, the force that accelerates or brakes the car.
+- **Slip angle ($\alpha$)** — the angle between where the tyre is *pointed* and where it's actually *travelling*. Produces **sideways** grip force (the force that turns the car). The more the car slides sideways relative to where the tyre points, the more sideways grip it generates, up to a point. Push past the tyre's limit and **it stops turning as effectively as the steering angle alone would suggest**, because the tyre is now sliding rather than gripping.
+- **Slip ratio ($\kappa$)** — the mismatch between wheel spin speed and actual ground speed (spinning faster = wheelspin under power, spinning slower = lockup under braking). Produces **forward/backward** grip force (the force that accelerates or brakes the car).
 
 This project uses the **Pacejka "Magic Formula" (MF94)** curve, a formula fitted to real tyre test-rig data, to convert slip into force:
 
@@ -534,11 +598,18 @@ $$
 | $E$ (curvature) | Shape past the peak | More negative = grip falls off more sharply once past the limit (typical for a racing slick) |
 | $S_v$, $S_h$ | Small real-tyre construction offsets | Minor asymmetry, usually near zero |
 
-$\mu$ (peak friction) is further reduced by **load sensitivity**, a heavily loaded tyre (like the outside front tyre mid-corner) doesn't grip proportionally as well as its extra weight alone would suggest.
+$\mu$ (peak friction) is further reduced by **load sensitivity** — a heavily loaded tyre (like the outside front tyre mid-corner) doesn't grip proportionally as well as its extra weight alone would suggest.
 
-**Tyre relaxation**, real grip doesn't appear instantly when slip angle changes; the contact patch needs to physically travel roughly one "relaxation length" before the force catches up. This shows up as states 18-21 above, the actual, lagged force, chasing a freshly-computed target each sub-step. In practice this means: **a very sudden steering input doesn't produce full grip immediately**, there's a small, physically realistic delay before the car actually responds.
+**This is the concrete "nonlinear" in "nonlinear plant":**
 
-**The friction ellipse**, a tyre has one shared, finite grip budget, not two separate pools for sideways and forward/backward force. Using grip for braking leaves less available for cornering, and vice versa, this is why braking hard *while* cornering hard is a classic way to lose the car, and it's modelled explicitly: whatever fraction of grip is spent on `Fx` directly reduces how much `Fy` is still available that instant.
+- Near $\alpha = 0$, the Pacejka curve above is *approximately* a straight line through the origin — its slope there is exactly the linear cornering-stiffness ($C_f$/$C_r$) the MPC's own internal model assumes holds everywhere (see [Section 4](#4-the-two-vehicle-models-mpcs-model-vs-the-simulators-plant)).
+- Push slip angle out past roughly 5-8° (typical of a car near its cornering limit), and the real curve visibly bends over: each extra degree of slip buys noticeably less extra grip than the last.
+- Past its peak ($D$), the tyre saturates and can even lose force — the classic "sliding" feeling of a tyre that's broken traction.
+- A fixed-multiplier (linear) model has no way to represent that bend — it just keeps extrapolating the same straight line forever, which is exactly why the MPC's internal picture of the car quietly stops matching reality at high slip.
+
+**Tyre relaxation:** real grip doesn't appear instantly when slip angle changes — the contact patch needs to physically travel roughly one "relaxation length" before the force catches up. This shows up as states 18-21 above: the actual, lagged force chasing a freshly-computed target each sub-step. In practice: **a very sudden steering input doesn't produce full grip immediately** — there's a small, physically realistic delay before the car actually responds.
+
+**The friction ellipse:** a tyre has one shared, finite grip budget, not two separate pools for sideways and forward/backward force. Using grip for braking leaves less available for cornering, and vice versa — this is why braking hard *while* cornering hard is a classic way to lose the car. It's modelled explicitly: whatever fraction of grip is spent on `Fx` directly reduces how much `Fy` is still available that instant.
 
 ### 5.3 Suspension and Weight Transfer, Explained
 
@@ -548,14 +619,14 @@ Each corner of the car has a simulated spring + damper + anti-roll bar:
 - **Dampers** resist how *fast* the suspension moves (this is what stops the car bouncing forever after a bump).
 - **Anti-roll bars (ARBs)** link the left and right sides together, resisting the car leaning in a corner by transferring load from the compressing (outside) wheel to the extending (inside) wheel.
 
-**Why this matters for driving performance:** under braking or hard cornering, weight physically shifts between corners of the car (braking shifts weight forward; cornering shifts it to the outside). Since tyre grip depends on how much weight (`Fz`) is on that tyre, this weight transfer directly changes how much grip is available at each corner, moment to moment, which is exactly what makes braking-while-cornering, or trail-braking into a corner, behave realistically rather than just being a fixed "the car turns this well" number.
+**Why this matters for driving performance:** under braking or hard cornering, weight physically shifts between corners of the car (braking shifts weight forward; cornering shifts it to the outside). Tyre grip depends on how much weight (`Fz`) is on that tyre, so this weight transfer directly changes how much grip is available at each corner, moment to moment. That's exactly what makes braking-while-cornering, or trail-braking into a corner, behave realistically — rather than the car just having one fixed "turns this well" number.
 
 ### 5.4 Aerodynamics, Rolling Resistance, and Actuator Lag
 
-- **Aerodynamic drag** opposes forward motion, scaling with speed squared, this is what caps top speed on a long straight.
-- **Downforce** (front/rear split) pushes the car down into the road at speed, which, via the weight-transfer/grip relationship above, increases available cornering grip at higher speed. Braking pitches the nose down, shifting some of this downforce forward.
-- **Rolling resistance** is a small constant drag force always present while moving, this is why the car coasts to a stop with no throttle/brake input, rather than rolling forever.
-- **Actuator lag**, a real steering rack or throttle doesn't reach a commanded value instantly; it eases toward it over a short time constant. This is the same lag tracked in states 6/7 above, and it's why the MPC's model (Section [1.3](#13-the-prediction-model)) explicitly includes `delta_act`/`a_act` as their own states rather than assuming commands take effect immediately.
+- **Aerodynamic drag** opposes forward motion, scaling with speed squared — this is what caps top speed on a long straight.
+- **Downforce** (front/rear split) pushes the car down into the road at speed, which — via the weight-transfer/grip relationship above — increases available cornering grip at higher speed. Braking pitches the nose down, shifting some of this downforce forward.
+- **Rolling resistance** is a small constant drag force always present while moving — this is why the car coasts to a stop with no throttle/brake input, rather than rolling forever.
+- **Actuator lag** — a real steering rack or throttle doesn't reach a commanded value instantly; it eases toward it over a short time constant. This is the same lag tracked in states 6/7 above, and it's why the MPC's model (Section [1.3](#13-the-prediction-model)) explicitly includes `delta_act`/`a_act` as their own states rather than assuming commands take effect immediately.
 
 ---
 
@@ -600,15 +671,15 @@ python -m gui.manual_drive
 
 ## 8. Running Against the Real FSDS Simulator
 
-The live ROS 2 side of this project now lives as a proper ROS 2 package, `fsae_control`, under `fsds_simulator/control/fsae_control/`, rather than the old set of loose files this section used to describe. It ships three selectable console-script controllers plus a shared bridge node, wired together in `fsds_simulator/common/fsae_bringup/launch/control.launch.py`:
+The live ROS 2 side of this project lives as a proper ROS 2 package, `fsae_control`, under `fsds_simulator/control/fsae_control/`, rather than the old set of loose files this section used to describe. It ships three selectable console-script controllers plus a shared bridge node, wired together in `fsds_simulator/common/fsae_bringup/launch/control.launch.py`:
 
 | Executable | Backing file | What it does |
 |---|---|---|
 | `controller` (`controller:=stanley`, the default) | `stanley_controller.py` | The original reactive Stanley controller, kept as a structural reference |
 | `mpc_controller` (`controller:=mpc`) | `mpc_controller.py` (uses `mpc_core.MPCController`) | Publishes only steering through the shared `cmd_vel` interface; `fsds_bridge` computes throttle/brake itself from a simple speed-error loop, the same way it does for Stanley |
-| `mpc_controller_standalone` (`controller:=mpc_standalone`) | `mpc_controller_standalone.py` (also uses `mpc_core.MPCController`) | Publishes `fs_msgs/ControlCommand` directly using the MPC's own throttle/brake output unchanged, this is the one that preserves the offline-tuned longitudinal behaviour from `tuner/offline_tuner.py`/`gui/simulation.py`, since both of those also drive the plant with the MPC's own commanded acceleration (see `sim/rollout_core.py`) |
+| `mpc_controller_standalone` (`controller:=mpc_standalone`) | `mpc_controller_standalone.py` (also uses `mpc_core.MPCController`) | Publishes `fs_msgs/ControlCommand` directly using the MPC's own throttle/brake output unchanged — the one that preserves the offline-tuned longitudinal behaviour from `tuner/offline_tuner.py`/`gui/simulation.py`, since both of those also drive the plant with the MPC's own commanded acceleration (see `sim/rollout_core.py`) |
 
-`fsds_bridge` converts the shared `cmd_vel` interface into `fs_msgs/ControlCommand` and owns GO-gating plus cone-proximity e-braking for both `stanley` and `mpc` modes. The `mpc_standalone` controller owns all of that itself instead, since it talks to FSDS directly, so `fsds_bridge` is skipped automatically when `controller:=mpc_standalone` is selected (running both would just have `fsds_bridge`'s output go unused, and race the standalone node for the same output topic).
+`fsds_bridge` converts the shared `cmd_vel` interface into `fs_msgs/ControlCommand`, and owns GO-gating plus cone-proximity e-braking for both `stanley` and `mpc` modes. The `mpc_standalone` controller owns all of that itself instead, since it talks to FSDS directly — so `fsds_bridge` is skipped automatically when `controller:=mpc_standalone` is selected (running both would leave `fsds_bridge`'s output unused, and race the standalone node for the same output topic).
 
 **Topic map** (for `mpc_controller_standalone`, the mode that matches this repo's offline-tuned behaviour):
 
@@ -621,18 +692,18 @@ The live ROS 2 side of this project now lives as a proper ROS 2 package, `fsae_c
 mpc_controller_standalone           -> /fsds/control_command       (fs_msgs/ControlCommand)
 ```
 
-Note: like the old setup, the controller does **not** subscribe to a separate desired-speed topic, it computes `desired_speed` itself every tick from the current path via `control_utils.curvature_speed()`.
+Note: like the old setup, the controller does **not** subscribe to a separate desired-speed topic — it computes `desired_speed` itself every tick from the current path via `control_utils.curvature_speed()`.
 
 **Control loop phases** (`mpc_controller_standalone.py`'s `_control_loop`):
 
-1. **Hold at start line**, full brake until `/fsds/signal/go` is received.
-2. **Stale-path/pose emergency brake**, full brake + controller reset if no fresh trajectory has arrived within the timeout, the trajectory has fewer than 2 points, or a SLAM pose hasn't arrived yet.
-3. **Normal MPC solve**, `MPCController.compute()`.
-4. **Cone-proximity brake override**, hard-overrides throttle/brake (not steering) if a fused cone is inside a dynamic corridor directly ahead. Resets the controller once after a short duration of continuous braking, re-arming once the brake clears.
-5. **Telemetry logging** (optional), logs the *final*, post-override command.
+1. **Hold at start line** — full brake until `/fsds/signal/go` is received.
+2. **Stale-path/pose emergency brake** — full brake + controller reset if no fresh trajectory has arrived within the timeout, the trajectory has fewer than 2 points, or a SLAM pose hasn't arrived yet.
+3. **Normal MPC solve** — `MPCController.compute()`.
+4. **Cone-proximity brake override** — hard-overrides throttle/brake (not steering) if a fused cone is inside a dynamic corridor directly ahead. Resets the controller once after a short duration of continuous braking, re-arming once the brake clears.
+5. **Telemetry logging** (optional) — logs the *final*, post-override command.
 6. **Publish.**
 
-For the full from-scratch Windows/WSL/Docker setup (cloning FSDS, building the ROS 2 bridge, installing the solver stack inside the container, rebuilding after edits, etc.), see `docs/developer_guide.md#simulator-integration` in the repo, it's a long, mechanical set of steps and is kept there rather than duplicated here.
+For the full from-scratch Windows/WSL/Docker setup (cloning FSDS, building the ROS 2 bridge, installing the solver stack inside the container, rebuilding after edits, etc.), see `docs/developer_guide.md#simulator-integration` in the repo — it's a long, mechanical set of steps kept there rather than duplicated here.
 
 ---
 

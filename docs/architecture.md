@@ -300,6 +300,18 @@ sensitivity** (`k_sens`) — real tyres get proportionally less grip per unit
 of load as that load increases, so a heavily-loaded tyre (e.g. the outside
 front tyre mid-corner) doesn't grip as well as its `Fz` alone would suggest.
 
+This curve is where the plant's nonlinearity actually shows up numerically.
+Near `α = 0` it's *approximately* a straight line through the origin —
+that local slope is exactly the linear cornering-stiffness `Cf`/`Cr` the
+MPC's internal model assumes holds everywhere (see "Linear vs nonlinear" in
+[How the MPC Works](#how-the-mpc-works)). Push `α` out past roughly 5-8° of
+slip, though, and the real curve visibly bends over: each extra degree of
+slip buys noticeably less extra force than the last, until it saturates at
+`D` and can even fall past that (a tyre that's broken traction). Doubling
+the slip angle out here does **not** double the force — it might only add
+20% more, or none at all — which is exactly the behaviour a fixed-multiplier
+linear model cannot represent.
+
 **Tyre relaxation** (`sigma_y_f`, `sigma_y_r`) adds a first-order lag
 between a slip angle change and the resulting force — a tyre's contact
 patch needs to physically travel roughly one "relaxation length" before its
@@ -316,6 +328,36 @@ three files that must be kept in numeric agreement — `model/bicycle_model.py`
 (the prediction model), `controller/optimiser.py` (the QP formulation, used
 by the simulator/tuner), and `mpc_core.py` (a self-contained duplicate of
 both, used by the live ROS 2 node so it has no simulator dependencies).
+
+### Linear vs nonlinear, in plain English
+
+Before going further, it's worth being precise about what "linear" means
+for the MPC's own model, since the word gets used constantly below. A
+model is **linear** if every output is just a fixed multiple of each input,
+added together — double an input and its contribution exactly doubles, and
+no input's effect depends on the current value of another input. Every
+matrix (`A`, `B`, `Ad`, `Bd`) built in the sections below is exactly this: a
+table of fixed multipliers, so `x_{k+1} = Ad·x_k + Bd·u_k` is always "this
+state times a fixed number, plus that state times a fixed number, ...",
+never anything that bends or saturates depending on where the car currently
+is. That rigid structure is what lets the solver treat "find the best
+control sequence" as a Quadratic Program (QP) — see below — with a fast,
+predictable solve and a guaranteed global optimum every tick.
+
+The real plant (`model/vehicle_physics.py`) has no such structure — its
+tyre forces, weight transfer, and heading kinematics genuinely curve and
+saturate (see the tyre section above for concrete numbers). If the MPC
+tried to plan against those equations directly, the relationship between
+`x_{k+1}` and `(x_k, u_k)` would no longer reduce to a fixed multiplier
+table, and the problem would stop being a QP and become a much harder
+nonlinear program (NLP) — no guaranteed optimum, no fast off-the-shelf
+solver, and solve times that can balloon unpredictably. That's exactly why
+the MPC doesn't try to plan against the real nonlinear plant directly: it
+builds a much simpler **linear** approximation of the car's behaviour (good
+near the car's *current* operating point) and re-linearises it fresh every
+single tick as speed and conditions change — see the kinematic/dynamic
+blend below. The nonlinear plant is reserved for simulating what actually
+happens to the "real" car in response to a command.
 
 ### What "MPC" means here
 

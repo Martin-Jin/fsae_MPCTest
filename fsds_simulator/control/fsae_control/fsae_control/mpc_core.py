@@ -236,9 +236,9 @@ class MPCController:
         # simulation. Decent tracking performance and speed, just not the best at
         # sudden corners."  Chosen over the later 10/07/26 set, whose own note
         # flagged braking triggering much later in FSDS than in the MPC sim.
-        Q_diag      = [0.9638529433528358, 0.16917546433555822, 0.8412084423109519, 0.6719136934634028, 1.3722642626759542, 0.0, 0.0, 0.0]
-        R_diag      = [1.0732323890203437, 0.6986142210105707]
-        R_rate_diag = [2.2731056206565956, 3.8354972983644497]
+        Q_diag      = [3.453726085690303, 2.4068449985797766, 4.2737838673329325, 0.1009634460945348, 6.647778080173016, 0.0, 0.0, 0.0]
+        R_diag      = [9.627551492038648, 6.800106107654756]
+        R_rate_diag = [6.463838428622283, 7.80854969942995]
 
         self.Q      = np.diag(Q_diag)
         self.R      = np.diag(R_diag)
