@@ -256,7 +256,7 @@ USE_OPTUNA_PRESEARCH = True
 #     point (CMA-ES may need to do more of the coarse-search work itself).
 #   - Typical adjustment: keep it in the 10-20% of MAX_EVALS range; the
 #     default below is 15%.
-OPTUNA_PRE_PASS_EVALS = max(10, int(0.15 * MAX_EVALS))
+OPTUNA_PRE_PASS_EVALS = max(10, int(0.1 * MAX_EVALS))
 
 
 # ------------------------------------------------------------------------------
