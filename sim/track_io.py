@@ -133,10 +133,16 @@ def _seed_pose(blue: np.ndarray, yellow: np.ndarray) -> tuple[np.ndarray, float]
     is a near coin-flip that can point the march backwards around the loop —
     silently reversing the whole reconstructed path's direction of travel
     (and the car's starting orientation on the static preview, and the pose
-    handed to the MPC rollout). Instead, try both opposite headings and keep
-    whichever one build_path_walls() actually extends forward from — the same
-    planner the march itself uses, so "is this direction drivable" is judged
-    by the real cone-wall/topology check rather than a raw-distance guess.
+    handed to the MPC rollout).
+
+    Instead, use FS convention directly: blue cones mark the LEFT boundary
+    and yellow the RIGHT, relative to the direction of travel (see
+    sim.sim_track.place_cones and planning.boundary's blue-left/yellow-right
+    validity check). Of the two opposite candidate headings, keep whichever
+    one actually puts the nearest blue cone on the left and the nearest
+    yellow cone on the right — that is the true recorded driving direction,
+    not just "whichever way build_path_walls happens to reach further,"
+    which picks the locally denser side rather than the correct one.
     """
     origin = np.zeros(2)
     b0 = blue[int(np.argmin(np.linalg.norm(blue - origin, axis=1)))]
@@ -156,13 +162,11 @@ def _seed_pose(blue: np.ndarray, yellow: np.ndarray) -> tuple[np.ndarray, float]
         return start, 0.0
     yaw = math.atan2(direction[1], direction[0])
 
-    def _forward_reach(candidate_yaw):
-        cl, _, _, _ = build_path_walls(blue, yellow, start, candidate_yaw)
-        if cl is None or len(cl) < 2:
-            return 0.0
-        return float(np.sum(np.linalg.norm(np.diff(cl, axis=0), axis=1)))
-
-    if _forward_reach(yaw + math.pi) > _forward_reach(yaw):
+    # Left normal of the candidate heading (90° CCW, standard ENU x=forward/
+    # y=left frame — see planning.boundary._gen_midpoints' identical check).
+    left_n = np.array([-math.sin(yaw), math.cos(yaw)])
+    blue_is_left = np.dot(b0 - start, left_n) > 0.0
+    if not blue_is_left:
         yaw += math.pi
 
     return start, yaw
