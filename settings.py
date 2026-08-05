@@ -58,7 +58,7 @@ USE_PLANNER = True
 #     compensate for pretend lag — good for testing robustness.
 #   - Adjustment: change by 1 step (0.05 s) at a time; 2-4 steps
 #     (0.1-0.2 s) is a realistic amount of lag for most small robots.
-DELAY_STEPS = 0
+DELAY_STEPS = 1
 # Note: rollout_core.py now predicts the state forward through the commands
 # already queued (predict_ahead()) before solving, so the MPC no longer
 # reacts to a stale x0 at DELAY_STEPS > 0 — the large-oscillation/DNF
