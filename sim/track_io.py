@@ -15,11 +15,21 @@ RECONSTRUCTION APPROACH
 ------------------------
 A recorded cone map has no path — only cones. To get a reference centreline
 (needed for path_v_profile, camera framing, and the oracle/use_planner=False
-tracking mode), this module globally NN-sorts each boundary and NN-pairs them
-into a single loop, the same primitives planning/path_utils.build_local_path
-uses for its live per-tick window, but WITHOUT that function's forward-window
-restriction — a static recorded map is the whole lap at once, not a live
-partial view, so there is no "forward of the car" to restrict to.
+tracking mode), this module marches a virtual car around the whole lap,
+calling planning/boundary.build_path_walls() at each step exactly as the live
+SimPlanner does per tick, and stitches the near-field chunk each call returns
+into one continuous loop.
+
+A single global nearest-neighbour sort+pair over all cones at once (the
+approach this used to take) breaks down wherever the lap crosses near itself
+(a figure-eight/pinch): cones from two different, spatially-close-but-
+topologically-distant legs get sorted/paired together, producing a centreline
+that cuts across the track. build_path_walls() avoids this because it only
+ever looks at a local window around a car pose and penalises steps that cross
+the existing cone-wall mesh — the same reason it's safe to use live. Walking
+that local planner around the recorded lap reuses that safety for the static
+reconstruction too, keeping this path consistent with what SimPlanner actually
+drives (see CLAUDE.md: sim and live planning must stay numerically identical).
 
 This reconstructed centreline is a fallback/reference path only. When the GUI
 loads a recorded track with use_planner=True (the normal mode — see
@@ -33,15 +43,41 @@ dependency) — the resampling here is a standalone copy of that module's
 _resample_path(), using only planning/ and sim/speed_profile.py.
 """
 import json
+import math
 
 import numpy as np
 from scipy.interpolate import CubicSpline
 
-from planning.cone_sorting import pair_cones_nn, sort_cones_nn
-from planning.path_utils import compute_centreline, smooth_centreline
+from planning.boundary import build_path_walls
+from planning.path_utils import smooth_centreline
 import sim.speed_profile as speed_profile
 
 PATH_N_POINTS = 1000   # dense resample count, matches offline_tuner.PATH_N_POINTS default
+# Arc-length advanced per build_path_walls() call while marching the virtual
+# car around the recorded lap.  Small enough that the accepted chunk of each
+# call's centreline (see _reconstruct_centreline) stays within its near-field,
+# well before the horizon where the windowed planner's chain becomes unreliable.
+_MARCH_STEP = 3.0
+# Hard cap on march steps — a safety backstop against an unexpected non-closing
+# loop (e.g. a malformed recording) spinning forever; a real lap closes in a
+# few hundred steps at most given _MARCH_STEP.
+_MARCH_MAX_STEPS = 2000
+# Distance to the seed position below which the march is considered to have
+# completed the loop and closed back on its start.
+_MARCH_CLOSE_DIST = 3.0
+# Minimum arc-length marched before loop-closure is checked, so the march
+# doesn't immediately "close" one step after starting.
+_MARCH_MIN_ARC = 20.0
+# Fraction of each colour's cones that must have been passed (see _MARCH_VISIT_DIST)
+# before proximity to the seed is allowed to close the loop. A track that
+# crosses itself (a figure-eight) passes near the start's neighbourhood again
+# mid-lap, before the far lobe has been driven — closing on proximity alone
+# there would cut the lap short. Requiring near-full coverage first means the
+# march only stops once it has actually been all the way around, at the cost
+# of not tolerating an unrecorded gap larger than (1 - this) of the cones.
+_MARCH_MIN_COVERAGE = 0.9
+# Distance within which a cone counts as "passed" by an accepted march chunk.
+_MARCH_VISIT_DIST = 4.0
 
 
 def load_cone_map(json_path: str) -> tuple[np.ndarray, np.ndarray]:
@@ -59,17 +95,56 @@ def load_cone_map(json_path: str) -> tuple[np.ndarray, np.ndarray]:
     return blue, yellow
 
 
+def _seed_pose(blue: np.ndarray, yellow: np.ndarray) -> tuple[np.ndarray, float]:
+    """
+    Estimate a starting (car_pos, car_yaw) for the march, from the map origin
+    (the recorded map's frame — cone_recorder writes cones in the same global
+    frame car_position used during recording, so the origin is wherever the
+    car started).
+
+    car_pos is the midpoint of the nearest blue and nearest yellow cone to the
+    origin (approximates the start line). car_yaw points from that midpoint
+    toward the near-side midpoint of the *next*-nearest same-colour cones, so
+    the march starts walking along the track rather than across it.
+    """
+    origin = np.zeros(2)
+    b0 = blue[int(np.argmin(np.linalg.norm(blue - origin, axis=1)))]
+    y0 = yellow[int(np.argmin(np.linalg.norm(yellow - origin, axis=1)))]
+    start = (b0 + y0) * 0.5
+
+    b_dists = np.linalg.norm(blue - b0, axis=1)
+    y_dists = np.linalg.norm(yellow - y0, axis=1)
+    b_dists[np.argmin(b_dists)] = np.inf
+    y_dists[np.argmin(y_dists)] = np.inf
+    b1 = blue[int(np.argmin(b_dists))]
+    y1 = yellow[int(np.argmin(y_dists))]
+    ahead = (b1 + y1) * 0.5
+
+    direction = ahead - start
+    yaw = math.atan2(direction[1], direction[0]) if np.linalg.norm(direction) > 1e-6 else 0.0
+    return start, yaw
+
+
 def _reconstruct_centreline(blue: np.ndarray, yellow: np.ndarray) -> np.ndarray:
     """
-    Build a single reference loop from a full recorded cone map.
+    Build a single reference loop from a full recorded cone map by marching a
+    virtual car around the whole lap, exactly as sim.sim_track.SimPlanner does
+    per tick while actually driving. See module docstring for why this — not a
+    single global nearest-neighbour sort+pair — is needed to survive a lap that
+    crosses near itself.
 
-    Globally NN-sorts each boundary from the origin (the recorded map's
-    frame — cone_recorder writes cones in the same global frame car_position
-    used during recording, so the origin is wherever the car started) then
-    NN-pairs the two sorted boundaries into cone-pair midpoints, and smooths
-    them into a dense centreline. See module docstring for why this doesn't
-    reuse build_local_path (its forward-window filtering assumes a live
-    partial view, not a complete static map).
+    Each step calls planning.boundary.build_path_walls() at the current virtual
+    pose (using the *entire* recorded map, matching SimPlanner's fully-
+    accumulated ConeMap), keeps only the near-field chunk of the returned
+    centreline up to _MARCH_STEP metres of arc-length, appends it to the loop,
+    and advances the virtual pose to the chunk's end (position + heading of the
+    last segment).
+
+    Stops once the march is back near its own start AND has covered at least
+    _MARCH_MIN_COVERAGE of both colours' cones (see _MARCH_MIN_COVERAGE) — a
+    track that crosses itself passes near the start's neighbourhood again
+    mid-lap, before the far side of the crossing has been driven, so proximity
+    to the seed alone is not sufficient to detect a genuine lap completion.
     """
     if len(blue) < 2 or len(yellow) < 2:
         raise ValueError(
@@ -77,17 +152,61 @@ def _reconstruct_centreline(blue: np.ndarray, yellow: np.ndarray) -> np.ndarray:
             'need at least 2 of each colour.'
         )
 
-    blue_sorted   = sort_cones_nn(blue)
-    yellow_sorted = sort_cones_nn(yellow)
-    pairs = pair_cones_nn(blue_sorted, yellow_sorted)
+    seed_pos, car_yaw = _seed_pose(blue, yellow)
+    car_pos = seed_pos
 
-    if len(pairs) < 2:
+    loop = [car_pos]
+    total_arc = 0.0
+    blue_visited   = np.zeros(len(blue), dtype=bool)
+    yellow_visited = np.zeros(len(yellow), dtype=bool)
+
+    def _mark_visited(pt):
+        blue_visited[np.linalg.norm(blue - pt, axis=1) < _MARCH_VISIT_DIST]     = True
+        yellow_visited[np.linalg.norm(yellow - pt, axis=1) < _MARCH_VISIT_DIST] = True
+
+    _mark_visited(car_pos)
+
+    for _ in range(_MARCH_MAX_STEPS):
+        cl, _, _, _ = build_path_walls(blue, yellow, car_pos, car_yaw)
+        if cl is None or len(cl) < 2:
+            break
+
+        seg = np.linalg.norm(np.diff(cl, axis=0), axis=1)
+        arc = np.concatenate([[0.0], np.cumsum(seg)])
+        cut = int(np.searchsorted(arc, _MARCH_STEP)) + 1
+        cut = min(cut, len(cl) - 1)
+        if cut < 1:
+            break
+
+        chunk = cl[1:cut + 1]   # drop cl[0], which duplicates the car anchor
+        if len(chunk) == 0:
+            break
+
+        loop.extend(chunk)
+        total_arc += float(arc[cut])
+        for pt in chunk:
+            _mark_visited(pt)
+
+        step_dir = chunk[-1] - car_pos
+        step_len = float(np.linalg.norm(step_dir))
+        if step_len < 1e-6:
+            break
+        car_yaw = math.atan2(step_dir[1], step_dir[0])
+        car_pos = chunk[-1]
+
+        coverage = min(blue_visited.mean(), yellow_visited.mean())
+        if (total_arc > _MARCH_MIN_ARC
+                and coverage >= _MARCH_MIN_COVERAGE
+                and float(np.linalg.norm(car_pos - seed_pos)) < _MARCH_CLOSE_DIST):
+            break
+
+    raw = np.array(loop, dtype=np.float64)
+    if len(raw) < 2:
         raise ValueError(
-            f'Only {len(pairs)} blue/yellow cone pairs matched within range — '
-            'cannot reconstruct a centreline from this recording.'
+            'Could not march a centreline around this recording — '
+            'build_path_walls produced no usable path from the seed pose.'
         )
 
-    raw = compute_centreline(pairs)
     return smooth_centreline(raw, n_out=max(20, len(raw) * 5), pin_start=False)
 
 
