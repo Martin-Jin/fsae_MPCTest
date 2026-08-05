@@ -10,7 +10,17 @@ directly into gui/simulation.py to improve live simulator performance.
 
 HOW IT WORKS — THE OPTIMISATION LOOP
 --------------------------------------
-The tuner uses CMA-ES (Covariance Matrix Adaptation Evolution Strategy), a
+Optionally (USE_OPTUNA_PRESEARCH in settings.py), the run starts with a short
+Optuna TPE (Tree-structured Parzen Estimator) pre-search phase: a cheaper,
+more sample-efficient method for finding a promising general region of the
+9-dimensional search space, using a small fraction of the eval budget
+(OPTUNA_PRE_PASS_EVALS). Its best trial then replaces the fixed geometric-
+midpoint x0 as CMA-ES's starting point, so CMA-ES spends more of its own
+budget refining rather than doing coarse search. This phase reuses the exact
+same objective (parallel_evaluate_candidate) and process pool as the main
+search — see run_optuna_presearch().
+
+The tuner then uses CMA-ES (Covariance Matrix Adaptation Evolution Strategy), a
 black-box derivative-free optimiser well-suited to noisy, non-convex objective
 functions like closed-loop vehicle performance. The specific variant used is
 BIPOP + lq-CMA-ES (via the `cma` library's fmin_lq_surr2):
@@ -112,7 +122,9 @@ from settings import (
     MAX_EVALS,
     N_HORIZON,
     DT,
-    VALIDATION_SUITE
+    VALIDATION_SUITE,
+    USE_OPTUNA_PRESEARCH,
+    OPTUNA_PRE_PASS_EVALS,
 )
 
 from model.vehicle_physics import (
@@ -901,6 +913,107 @@ def parallel_evaluate_candidate(vec):
 
 
 # ==========================================
+# OPTUNA TPE PRE-SEARCH (optional warm-start for CMA-ES)
+# ==========================================
+
+# Parameter names for the Optuna search space, in the exact same order as
+# `bounds` / the CMA-ES parameter vector: [Q_0..Q_4, R_0, R_1, R_rate_0, R_rate_1].
+# Keeping this generated from the same index lists as `bounds` (rather than
+# hardcoded literals) guarantees the two never drift apart if TUNABLE_*_IDX
+# is ever edited.
+_OPTUNA_PARAM_NAMES = (
+    [f"Q_{i}" for i in TUNABLE_Q_IDX]
+    + [f"R_{i}" for i in TUNABLE_R_IDX]
+    + [f"R_rate_{i}" for i in TUNABLE_R_RATE_IDX]
+)
+
+
+def run_optuna_presearch(lower, upper, n_trials):
+    """
+    Run a short Optuna TPE (Tree-structured Parzen Estimator) search over the
+    same 9-parameter, bounded search space CMA-ES uses, to find a promising
+    starting region more sample-efficiently than CMA-ES's own fixed-midpoint
+    start.
+
+    Each trial calls parallel_evaluate_candidate() directly — the same
+    objective and the same _eval_pool-based parallel rollout evaluation used
+    by the CMA-ES phase — so no rollout logic is duplicated here. Trials run
+    sequentially (study.optimize with n_jobs=1): parallel_evaluate_candidate
+    already fans a single candidate out across every CPU core via the pool,
+    so a second layer of Optuna-level parallelism would just oversubscribe
+    the same cores rather than add real throughput.
+
+    Respects the module's graceful-shutdown flag (_stop_requested, set by the
+    SIGINT handler in the main block): the per-trial callback stops the study
+    early (without raising) once the flag is set, so Ctrl+C during this phase
+    behaves the same way it does during the CMA-ES phase — finish the
+    in-flight trial, then stop cleanly with whatever best result exists so far.
+
+    Parameters
+    ----------
+    lower, upper : np.ndarray, shape (9,)
+        Per-parameter lower/upper bounds (same arrays used to build
+        cma_options["bounds"]).
+    n_trials : int
+        Number of trials to run (OPTUNA_PRE_PASS_EVALS from settings.py).
+
+    Returns
+    -------
+    (best_vec, study) : tuple
+        best_vec : np.ndarray, shape (9,) — best trial's parameter vector,
+            already clipped to [lower, upper] (defensive; TPE suggestions are
+            drawn from within bounds already, but the clip guards against
+            any future sampler/precision edge case before this is used as
+            CMA-ES's x0).
+        study : optuna.Study — the completed (or early-stopped) study, kept
+            for reporting (best value, number of trials actually run).
+
+    Called by: main block, only when USE_OPTUNA_PRESEARCH is True.
+    """
+    import optuna
+
+    # Quiet Optuna's own per-trial logging; the callback below prints a
+    # concise one-line summary per trial instead, matching this file's
+    # existing console-output style (_log_callback for the CMA-ES phase).
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    sampler = optuna.samplers.TPESampler(seed=42)
+    study = optuna.create_study(direction="minimize", sampler=sampler)
+
+    def _objective(trial):
+        vec = np.array(
+            [
+                trial.suggest_float(name, float(lo), float(hi))
+                for name, lo, hi in zip(_OPTUNA_PARAM_NAMES, lower, upper)
+            ]
+        )
+        return parallel_evaluate_candidate(vec)
+
+    def _optuna_trial_callback(study, trial):
+        print(
+            f"[Optuna TPE] trial {trial.number + 1:4d}/{n_trials} | "
+            f"score {trial.value:.4f} | best {study.best_value:.4f}"
+        )
+        if _stop_requested:
+            study.stop()  # Finish current trial, then stop early — no exception raised
+
+    # n_jobs=1: trials run sequentially in the main process. Each trial's
+    # objective (parallel_evaluate_candidate) already saturates every worker
+    # in _eval_pool for that one candidate, so this is the correct choice
+    # given the existing pool-per-candidate parallelism (see module docstring).
+    study.optimize(
+        _objective,
+        n_trials=n_trials,
+        n_jobs=1,
+        callbacks=[_optuna_trial_callback],
+    )
+
+    best_vec = np.array([study.best_params[name] for name in _OPTUNA_PARAM_NAMES])
+    best_vec = np.clip(best_vec, lower, upper)
+    return best_vec, study
+
+
+# ==========================================
 # LOGGING
 # ==========================================
 def get_git_revision_hash():
@@ -928,7 +1041,7 @@ def get_git_revision_hash():
         return "Unknown (not a git repository)"
 
 
-def log_results_to_history(Q, R, R_rate, duration, score):
+def log_results_to_history(Q, R, R_rate, duration, score, optuna_info=None):
     """
     Append the best-found weight matrices and metadata to tuning history.txt.
 
@@ -945,12 +1058,17 @@ def log_results_to_history(Q, R, R_rate, duration, score):
     R : np.ndarray, shape (2,2)       Best-found R matrix.
     R_rate : np.ndarray, shape (2,2)  Best-found R_rate matrix.
     duration : float                  Total optimisation wall time (seconds).
+    optuna_info : dict or None
+        If the Optuna TPE pre-pass was used, a dict with keys 'n_trials' and
+        'best_score' describing that phase, so the log stays traceable back
+        to whether x0 was the fixed midpoint or an Optuna-seeded point. None
+        if USE_OPTUNA_PRESEARCH was False for this run.
 
     Called by: main block (after optimisation completes or is interrupted)
     """
     timestamp = datetime.datetime.now().strftime("%d/%m/%y %H:%M")
     commit_hash = get_git_revision_hash()
-    with open("tuning history.txt", "a") as f:
+    with open("tuning history.txt", "a", encoding="utf-8") as f:
         f.write(f"\n# {timestamp} - [Pending Description: yet to be tested]\n")
         f.write(f"Q_diag      = {np.diag(Q).tolist()}\n")
         f.write(f"R_diag      = {np.diag(R).tolist()}\n")
@@ -960,6 +1078,13 @@ def log_results_to_history(Q, R, R_rate, duration, score):
             f"Overall score (avged from all testing scenarios)  = Haven't been tested.\n"
         )
         f.write(f"Tuner score (tuning scenarios / validation suite) = {score}\n")
+        if optuna_info is not None:
+            f.write(
+                f"Optuna TPE pre-pass = Yes ({optuna_info['n_trials']} trials, "
+                f"best {optuna_info['best_score']:.4f}) — CMA-ES x0 seeded from best trial\n"
+            )
+        else:
+            f.write("Optuna TPE pre-pass = No (fixed geometric-midpoint x0)\n")
         f.write(f"Commit hash = {commit_hash}\n")
 
 
@@ -996,8 +1121,11 @@ if __name__ == "__main__":
 
     # Start at geometric (log-scale) midpoint: sqrt(lower * upper) = 1.0 for [0.1, 10.0].
     # This is the correct neutral point for a multiplicative search space — it means
-    # "start with the template weights unscaled."
+    # "start with the template weights unscaled." Replaced below by the Optuna
+    # pre-pass result if USE_OPTUNA_PRESEARCH is True; otherwise this fixed
+    # midpoint is exactly the original (pre-Optuna) behaviour.
     x0 = np.sqrt(lower * upper)
+    optuna_info = None  # Populated below if the pre-pass runs; logged to history.txt
 
     # sigma0: initial CMA-ES step size.
     # Too small → slow exploration (stagnates in local minimum near x0).
@@ -1016,6 +1144,11 @@ if __name__ == "__main__":
     num_cores = max(1, mp.cpu_count() - 1)  # Leave one core for the OS
 
     print("\n[Offline Tuner] Strategy: BIPOP + lq-CMA-ES (surrogate-assisted)")
+    if USE_OPTUNA_PRESEARCH:
+        print(
+            f"  Optuna TPE pre-pass: ENABLED ({OPTUNA_PRE_PASS_EVALS} trials) — "
+            f"x0 below is the fixed-midpoint fallback, replaced once the pre-pass completes"
+        )
     print(f"  Parameters:    {num_params}")
     print(f"  x0 (midpoint): {np.round(x0, 2).tolist()}")
     print(
@@ -1078,18 +1211,61 @@ if __name__ == "__main__":
         def _handle_sigint(sig, frame):
             """
             SIGINT (Ctrl+C) handler for the main process.
-            Sets _stop_requested, which _log_callback() checks each generation.
-            The current generation completes before stopping, ensuring the best
-            found solution is available for post-processing.
+            Sets _stop_requested, which both the Optuna pre-pass callback and
+            _log_callback() (CMA-ES phase) check. Registered before either
+            phase runs so Ctrl+C is caught regardless of which phase is active.
+            The current trial/generation completes before stopping, ensuring
+            the best found solution is available for post-processing.
             """
             global _stop_requested
             if not _stop_requested:
                 print(
-                    "\n[Tuner] Ctrl+C caught — finishing current generation then stopping..."
+                    "\n[Tuner] Ctrl+C caught — finishing current trial/generation then stopping..."
                 )
                 _stop_requested = True
 
         signal.signal(signal.SIGINT, _handle_sigint)
+
+        # ── Optional Optuna TPE pre-pass ────────────────────────────────────────
+        # Runs before CMA-ES, reusing the same pool (_eval_pool/_n_tasks are
+        # already set above) via parallel_evaluate_candidate. See
+        # run_optuna_presearch()'s docstring for why trials run sequentially
+        # (n_jobs=1) rather than adding a second layer of parallelism on top
+        # of the pool's per-candidate fan-out.
+        optuna_start = time.time()
+        if USE_OPTUNA_PRESEARCH and not _stop_requested:
+            print(
+                f"\n[Offline Tuner] Optuna TPE pre-pass: {OPTUNA_PRE_PASS_EVALS} trials..."
+            )
+            optuna_vec, optuna_study = run_optuna_presearch(
+                lower, upper, OPTUNA_PRE_PASS_EVALS
+            )
+            optuna_duration = time.time() - optuna_start
+            n_trials_run = len(optuna_study.trials)
+            optuna_info = {
+                "n_trials": n_trials_run,
+                "best_score": optuna_study.best_value,
+            }
+            print(
+                f"[Offline Tuner] Optuna pre-pass done in {optuna_duration / 60:.2f} min "
+                f"| trials run: {n_trials_run}/{OPTUNA_PRE_PASS_EVALS} "
+                f"| best score: {optuna_study.best_value:.4f}"
+            )
+            # Seed CMA-ES's x0 from the best trial found. sigma0 is left as-is
+            # (0.65): the Optuna result narrows down *where* to start, not how
+            # confident CMA-ES should be in that point, and 0.65 already gives
+            # CMA-ES room to correct if TPE's estimate was slightly off.
+            x0 = optuna_vec
+            print(f"  x0 (Optuna-seeded): {np.round(x0, 3).tolist()}")
+        elif _stop_requested:
+            # Ctrl+C landed during the Optuna phase itself (before any trial
+            # completed). CMA-ES still runs below, but _log_callback will see
+            # _stop_requested and stop it after its first generation — the
+            # same graceful-shutdown path used everywhere else in this file.
+            print(
+                "\n[Tuner] Stop requested during Optuna phase; "
+                "CMA-ES will run one generation then stop."
+            )
 
         generation_log = []
 
@@ -1163,6 +1339,18 @@ if __name__ == "__main__":
 
     print("\n" + "=" * 60)
     print(f"OPTIMIZATION COMPLETE in {(end_time - start_time) / 60:.2f} min")
+    if optuna_info is not None:
+        print(
+            f"  Optuna pre-pass: {optuna_info['n_trials']} trials, "
+            f"best score {optuna_info['best_score']:.4f} "
+            f"({optuna_duration / 60:.2f} min)"
+        )
+        print(
+            f"  CMA-ES phase:    {(end_time - start_time - optuna_duration) / 60:.2f} min "
+            f"(started from Optuna-seeded x0)"
+        )
+    else:
+        print("  Optuna pre-pass: not used (fixed geometric-midpoint x0)")
     print(f"True evaluations used: {total_true_evals}  (budget: {max_evals})")
     print(f"Restarts completed:    {es.result.stop.get('maxrestarts', '?')}")
     print(f"Best score (xbest):    {score_best:.4f}")
@@ -1193,7 +1381,9 @@ if __name__ == "__main__":
         print("\n" + "=" * 60)
         print("Optimization finished or interrupted. Saving results...")
         duration = end_time - start_time
-        log_results_to_history(best_Q, best_R, best_R_rate, duration, score_best)
+        log_results_to_history(
+            best_Q, best_R, best_R_rate, duration, score_best, optuna_info=optuna_info
+        )
         print("Results successfully appended to tuning history.txt")
         print("=" * 60)
     except KeyboardInterrupt:

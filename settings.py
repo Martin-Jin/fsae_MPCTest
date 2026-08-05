@@ -217,6 +217,49 @@ PATH_N_POINTS = 1000
 
 
 # ------------------------------------------------------------------------------
+# OPTUNA TPE PRE-SEARCH (optional warm-start for CMA-ES)
+# ------------------------------------------------------------------------------
+
+# USE_OPTUNA_PRESEARCH — "Should the tuner spend a short exploratory phase
+# with a different search algorithm (Optuna's TPE sampler) before handing
+# off to CMA-ES?"
+# CMA-ES currently always starts its search at a fixed point (the geometric
+# midpoint of each weight's allowed range) and has to spend some of its own
+# budget finding out which general area of the 9-dimensional search space is
+# promising before it can start refining within it. TPE (Tree-structured
+# Parzen Estimator) is a cheaper, more sample-efficient method for narrowing
+# down "which general area is promising" — it doesn't refine as precisely as
+# CMA-ES, but gets there in fewer evaluations. Running it first and handing
+# CMA-ES a better starting point (instead of the fixed midpoint) can mean
+# CMA-ES spends more of its budget on fine refinement instead of coarse
+# search.
+#   True  = run the Optuna pre-pass, then start CMA-ES from its best result.
+#   False = skip it entirely and use the original fixed-midpoint start —
+#           the exact previous behaviour, useful for a clean before/after
+#           comparison.
+# Requires the `optuna` package (`pip install optuna`) — not part of this
+# repo's own code, only installed if you actually use this feature. Defaults
+# to False so a fresh checkout behaves exactly as before this feature existed
+# until you deliberately opt in (and confirm `optuna` is installed).
+USE_OPTUNA_PRESEARCH = False
+
+# OPTUNA_PRE_PASS_EVALS — "How many test-drives does the Optuna pre-pass get
+# to use, out of the tuner's total budget?"
+# This comes out of a separate mini-budget, not out of MAX_EVALS — the two
+# phases run one after another, so total wall-clock time is roughly the sum
+# of both. Keeping this meaningfully smaller than MAX_EVALS is what keeps
+# the pre-pass "cheap": it only needs to find a good general area, not the
+# precise optimum (that's still CMA-ES's job afterwards).
+#   - Increase it: better/more reliable starting point for CMA-ES, at the
+#     cost of extra wall-clock time before CMA-ES even begins.
+#   - Decrease it: faster pre-pass, but a noisier/less-informed starting
+#     point (CMA-ES may need to do more of the coarse-search work itself).
+#   - Typical adjustment: keep it in the 10-20% of MAX_EVALS range; the
+#     default below is 15%.
+OPTUNA_PRE_PASS_EVALS = max(10, int(0.15 * MAX_EVALS))
+
+
+# ------------------------------------------------------------------------------
 # COST FUNCTION SCORING WEIGHTS
 # ------------------------------------------------------------------------------
 
@@ -226,9 +269,23 @@ PATH_N_POINTS = 1000
 # each grade is multiplied by its corresponding weight here, then added
 # together into one final score (lower is better). This list is what the
 # automated tuner is actually trying to minimise — it is the definition of
-# "good driving" for this whole project. All 12 numbers must add up to
-# exactly 1.0 (there's a check below that enforces this), so if you increase
-# one weight you must decrease others by the same total amount to compensate.
+# "good driving" for this whole project.
+#
+# These weights are applied directly to each metric's *raw* value, and the
+# 12 metrics have very different natural units/magnitudes (mixed m²/rad² RMS
+# terms, radians, m/s², unitless ratios, a per-step rate). What actually
+# determines a metric's influence on the score is weight x typical magnitude
+# ("effective contribution"), not the weight in isolation — so a small weight
+# next to a large-magnitude metric can still dominate, and vice versa.
+# offline_tuner.py still asserts these 12 numbers sum to ~1.0, kept mainly so
+# the composite score's overall scale stays stable/comparable across tuning
+# runs — but summing to 1.0 does NOT by itself make relative priority
+# "correct"; that comes from weight x typical magnitude as above. If you
+# adjust one weight, prefer taking the offsetting change from a metric with
+# a similar effective-contribution size (not just any metric) so the
+# relative priority ordering below is preserved (rmse and peak_lateral_error
+# should stay the two largest effective contributions; steer_rms/jerk_rms/
+# reversal rate are meant to stay minor/secondary terms).
 #
 # What each of the 12 numbers grades, in order:
 #   0: rmse               — how far off the racing line the car drives on
@@ -249,9 +306,14 @@ PATH_N_POINTS = 1000
 #                            measure)
 #   8: max_yaw_rate         — the fastest the car's direction ever spun
 #                            during the run
-#   9: steering_reversals   — how many times the car flips from steering
-#                            left to steering right or vice versa
-#                            (a "hunting"/indecisiveness measure)
+#   9: steering_reversal_rate — how often (per step) the car flips from
+#                            steering left to steering right or vice versa
+#                            (a "hunting"/indecisiveness measure). This is a
+#                            rate (reversal count / n steps), not a raw
+#                            count, so it doesn't mechanically grow with a
+#                            longer rollout or a smaller DT — the raw count
+#                            is still reported separately (informational
+#                            only) alongside this in performance_stats.py.
 #  10: peak_lateral_error   — the single worst moment the car was off the
 #                            racing line, even briefly
 #  11: speed_rmse           — how far off the intended speed the car drives
@@ -259,23 +321,25 @@ PATH_N_POINTS = 1000
 #
 # Increasing any one weight makes the tuner prioritise fixing that aspect
 # of driving more, even if it makes other aspects slightly worse.
-#   - Typical adjustment: move 0.01-0.03 from one weight to another at a
-#     time, then re-tune and compare — because everything must sum to 1.0,
-#     even small shifts noticeably change priorities.
+#   - Typical adjustment: change a weight by roughly 20-30% of its own value
+#     at a time, then re-tune and compare.
 SCORE_WEIGHTS = np.array(
     [
-        0.505,  # 0  rmse               (lateral + heading tracking; primary)
+        0.505,  # 0  rmse                    (lateral + heading tracking; primary)
         0.06,   # 1  yaw_rms
-        0.1,    # 2  smooth_rms
+        0.085,  # 2  smooth_rms
         0.02,   # 3  steer_rms
-        0.005,  # 4  accel_rms
+        0.015,  # 4  accel_rms               (was 0.005 — too small to give CMA-ES
+                #    any real gradient on throttle/brake effort; nudged up)
         0.03,   # 5  max_steering
-        0.09,   # 6  steering_sat_ratio
-        0.06,   # 7  jerk_rms
+        0.075,  # 6  steering_sat_ratio
+        0.045,  # 7  jerk_rms
         0.02,   # 8  max_yaw_rate
-        0.005,  # 9  steering_reversals
+        0.03,   # 9  steering_reversal_rate  (was 0.005 on a raw count of ~0-30;
+                #    now applied to a per-step rate of ~0-0.15, so the weight was
+                #    scaled up to keep this a minor-but-present "hunting" term)
         0.10,   # 10 peak_lateral_error
-        0.005,  # 11 speed_rmse
+        0.015,  # 11 speed_rmse              (was 0.005 — same issue as accel_rms)
     ],
     dtype=float,
 )
@@ -367,3 +431,4 @@ if FAST_TEST_MODE:
     ROLLOUT_MAX_ITER = 2000                                 # was 8000
     PATH_N_POINTS = 300                                     # was 1000
     USE_PLANNER = False                                     # skip perception/planner overhead
+    OPTUNA_PRE_PASS_EVALS = max(5, int(0.15 * MAX_EVALS))  # keep pre-pass proportionally tiny too
