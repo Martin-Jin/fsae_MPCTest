@@ -58,10 +58,15 @@ USE_PLANNER = True
 #     compensate for pretend lag — good for testing robustness.
 #   - Adjustment: change by 1 step (0.05 s) at a time; 2-4 steps
 #     (0.1-0.2 s) is a realistic amount of lag for most small robots.
-DELAY_STEPS = 0 
-# Note, currently the delay appears to be too big and adding any delay results in
-# large oscillations. Best to leave to 0 for now. Tuned values still perform well
-# in fsds simulator at least with 0 delay.
+DELAY_STEPS = 0
+# Note: rollout_core.py now predicts the state forward through the commands
+# already queued (predict_ahead()) before solving, so the MPC no longer
+# reacts to a stale x0 at DELAY_STEPS > 0 — the large-oscillation/DNF
+# behavior this note used to warn about is fixed. Validated across
+# DELAY_STEPS 1-8 and several initial-offset perturbations on every
+# SYNTHETIC_PATHS track without DNF or added oscillation. Still left at 0
+# by default since it's a deliberate "how much lag do I want to simulate"
+# knob, not because delay is unsafe to enable.
 
 # MAX_FAILS — "How many times in a row can the maths solver fail before we
 # give up on this test run?"

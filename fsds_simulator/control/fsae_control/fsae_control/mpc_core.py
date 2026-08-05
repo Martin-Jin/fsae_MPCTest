@@ -77,6 +77,8 @@ USED BY
 """
 
 import math
+from collections import deque
+
 import cvxpy as cp
 import numpy as np
 from scipy.linalg import expm
@@ -86,6 +88,37 @@ from scipy.linalg import expm
 MAX_STEER_RAD: float = math.radians(25.0)
 MAX_ACCEL: float = 12.0
 MAX_BRAKE: float = 9.0
+
+# ── Delay compensation ──────────────────────────────────────────────────────
+# Real delay (perception + planning + control + actuation latency) is
+# unknown and time-varying, unlike fsae_MPCTest's simulator-only fixed
+# DELAY_STEPS. compute() is instead told how OLD the pose it's solving
+# against is (pose_age_s, measured from the pose message's own timestamp —
+# see mpc_controller.py/_pose_cb) and converts that into a step count itself.
+# See predict_ahead() below for the same small-angle-clip rollforward
+# validated in fsae_MPCTest/sim/rollout_core.py.
+MAX_DELAY_COMPENSATION_STEPS: int = 6   # cap: a bigger measured age is clamped, not trusted blindly
+_PREDICT_EPSI_CLIP: float = 0.5         # rad (~28.6°) — small-angle bound, see predict_ahead
+
+
+def predict_ahead(x0: np.ndarray, Ad: np.ndarray, Bd: np.ndarray, pending_cmds) -> np.ndarray:
+    """
+    Roll the linear error-state model forward through commands already
+    issued but not yet reflected in the measured pose, so the MPC solves
+    against the state it will actually face instead of a stale x0.
+
+    pending_cmds must be ordered oldest-first (the order they were issued).
+    Mirrors fsae_MPCTest/sim/rollout_core.py's predict_ahead() exactly,
+    including the e_psi clip — see that function's docstring for why the
+    clip is needed (the e_psi -> e_y_dot coupling in Ad is only valid for
+    small angles, and this rollforward has no per-step ground-truth
+    correction the way the closed-loop MPC horizon does).
+    """
+    x_p = x0.copy()
+    for u in pending_cmds:
+        x_p[2] = np.clip(x_p[2], -_PREDICT_EPSI_CLIP, _PREDICT_EPSI_CLIP)
+        x_p = Ad @ x_p + Bd @ u
+    return x_p
 
 # ---------------------------------------------------------------------------
 # Adaptive gain helpers
@@ -227,6 +260,12 @@ class MPCController:
         self._a_act:          float      = 0.0
         self._u_prev:         np.ndarray = np.zeros(self.nu)
         self._v_des_filtered: float | None = None
+
+        # Rolling history of recently issued u_opt, oldest-first, used by
+        # predict_ahead() to roll x0 forward through however many steps the
+        # measured pose_age_s indicates (see compute()). Sized to the delay
+        # cap since older entries are never needed.
+        self._u_history: deque = deque(maxlen=MAX_DELAY_COMPENSATION_STEPS)
 
         self.last_telemetry: dict = {}
         self._qp: dict | None = None
@@ -493,6 +532,7 @@ class MPCController:
         car_speed:     float,
         desired_speed: float,
         car_yaw_rate:  float = 0.0,
+        pose_age_s:    float = 0.0,
     ) -> tuple[float, float, float]:
         """
         Run one full MPC control step: extract tracking error -> discretise
@@ -515,6 +555,15 @@ class MPCController:
             Planner's requested speed (m/s); low-pass filtered internally.
         car_yaw_rate : float, optional
             Measured yaw rate (rad/s), defaults to 0.0 if unavailable.
+        pose_age_s : float, optional
+            How long ago (s) the pose above was actually measured (from the
+            pose message's own timestamp, not callback receipt time — see
+            mpc_controller.py's _pose_cb/_control_step). Converted to a step
+            count and used to roll x0 forward through the commands already
+            issued but not yet reflected in this pose (predict_ahead()),
+            compensating for real, unknown/time-varying delay instead of
+            assuming the measured state is current. Defaults to 0.0 (no
+            compensation) for callers that don't measure it.
 
         Returns
         -------
@@ -546,10 +595,23 @@ class MPCController:
 
         Ad, Bd = self._discrete_model(car_speed)
 
+        # ── Delay compensation ───────────────────────────────────────────
+        # x0 reflects the pose as measured pose_age_s seconds ago. Roll it
+        # forward through however many of the recently-issued commands
+        # (_u_history) fall within that window, so the QP solves against
+        # the state it will actually face rather than a stale one. Clamp
+        # the step count rather than trusting an arbitrarily large measured
+        # age blindly (e.g. a perception hiccup) — see MAX_DELAY_COMPENSATION_STEPS.
+        n_delay = int(np.clip(round(pose_age_s / self.dt), 0, MAX_DELAY_COMPENSATION_STEPS))
+        if n_delay > 0 and len(self._u_history) > 0:
+            pending_cmds = list(self._u_history)[-n_delay:]
+            x0 = predict_ahead(x0, Ad, Bd, pending_cmds)
+
         R_scaled      = _adaptive_R_scaling(car_speed, self.R)
         R_rate_scaled = _adaptive_R_rate(kappa, self.R_rate)
 
         u_opt = self._solve_qp(x0, Ad, Bd, R_scaled, R_rate_scaled)
+        self._u_history.append(u_opt.copy())
 
         # ── EXACT ZOH ACTUATOR INTEGRATION ────────────────────────────
         # Prevents explicit Euler instability when dt > tau_a
@@ -597,3 +659,4 @@ class MPCController:
         self._a_act           = 0.0
         self._u_prev          = np.zeros(self.nu)
         self._v_des_filtered  = None
+        self._u_history.clear()

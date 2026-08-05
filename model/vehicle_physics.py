@@ -147,7 +147,12 @@ class VehicleParams:
                                # needed by static_fz_per_corner() for the Cf/Cr
                                # slope-matching calc further below.
         # Actuator limits: enforced as hard bounds in controller/optimiser.py's QP constraints.
-        self.max_steer       = np.radians(35.0)  # Max rack-limited steering angle (rad)
+        # 25deg matches the live stack's physical steering limit (see
+        # ros2/src/fsae_planning/control/fsae_control/fsae_control/mpc_core.py's
+        # MAX_STEER_RAD and fsae_control.control_utils/fsds_bridge) — this used
+        # to be 35deg, which let the offline tuner plan steering the real/sim
+        # car can't actually deliver.
+        self.max_steer       = np.radians(25.0)  # Max rack-limited steering angle (rad)
         # FS EV peak acceleration ~12 m/s² (0→17 m/s in ~2 s); braking ~9 m/s² (~0.9g).
         self.max_accel       = 12.0              # Max longitudinal acceleration (m/s²)
         self.max_accel_brake = -9.0             # Max longitudinal braking (m/s²)

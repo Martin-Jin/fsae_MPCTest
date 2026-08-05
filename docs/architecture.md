@@ -162,14 +162,11 @@ and roughly how much to change it by — this section is a quick-reference
 summary; **read the comments in `settings.py` before changing anything.**
 
 ### General system configuration
-Note, currently the delay appears to be too big and adding any delay results in
-large oscillations. Best to leave to 0 for now. Tuned values still perform well
-in fsds simulator at least with 0 delay.
 | Setting | What it controls |
 |---|---|
 | `N_HORIZON` | How many 0.05 s steps ahead the MPC plans each solve (25 = 1.25 s look-ahead). Must match `N_horizon` in `gui/simulation.py` and `N` in `mpc_core.py`. |
 | `USE_PLANNER` | Whether the tuner drives using the full simulated perception/planning pipeline (`True`) or the perfect reference path (`False`). |
-| `DELAY_STEPS` | Simulated lag (in 0.05 s steps) between a command being decided and applied — for testing robustness to real actuator/network delay. |
+| `DELAY_STEPS` | Simulated lag (in 0.05 s steps) between a command being decided and applied — for testing robustness to real actuator/network delay. `sim/rollout_core.py`'s `predict_ahead()` forward-simulates the MPC's state through the commands already queued before each solve, so nonzero values no longer cause the oscillation/DNF behavior seen before that fix — validated across `DELAY_STEPS` 1-8. |
 | `MAX_FAILS` | Consecutive MPC solver failures before a rollout is abandoned as a DNF. |
 | `OFFTRACK_LIMIT` | Lateral error (m) beyond which the car is considered off-track. Derived from `TRACK_HALF_WIDTH` in `sim/sim_track.py` — change that instead if you want to adjust it. |
 | `DT` | Control/simulation timestep (s), 0.05 = 20 Hz. Must match the real controller's timer rate. |

@@ -62,6 +62,39 @@ def _normalize_angle(angle):
     return np.arctan2(np.sin(angle), np.cos(angle))
 
 
+_PREDICT_EPSI_CLIP = 0.5   # rad (~28.6°) — small-angle bound, see predict_ahead below
+
+
+def predict_ahead(x0, Ad, Bd, pending_cmds):
+    """
+    Roll the linear error-state model forward through commands already
+    committed but not yet applied to the plant, so the MPC solves against
+    the state it will actually face when its new output takes effect
+    instead of the stale current state (delay compensation).
+
+    pending_cmds must be ordered oldest-first (the order they will be
+    applied to the plant). Same x_p = Ad @ x_p + Bd @ u mechanics as the
+    horizon-prediction preview below.
+
+    Ad's e_psi -> e_y_dot coupling is the kinematic relation e_y_dot ~= vx *
+    sin(e_psi), linearised to vx * e_psi (bicycle_model.py). That's only
+    valid for small e_psi (sin(x) ~= x). Unlike the closed-loop MPC horizon
+    (which re-measures every real step), this rollforward is open-loop over
+    several steps with no ground-truth correction in between, so a large
+    e_psi here (sharp corner + a perturbed initial heading) compounds every
+    step instead of getting corrected — observed to blow up e_y_dot and
+    saturate steering on PATH_SUDDEN_TURN. Clip e_psi to a small-angle range
+    before each step's matrix multiply so the rollforward can't leave the
+    regime the linear model is actually valid in; the real (unclipped) e_psi
+    is still what the QP solves against afterwards via x0_mpc.
+    """
+    x_p = x0.copy()
+    for u in pending_cmds:
+        x_p[2] = np.clip(x_p[2], -_PREDICT_EPSI_CLIP, _PREDICT_EPSI_CLIP)
+        x_p = Ad @ x_p + Bd @ u
+    return x_p
+
+
 def compute_step_budget(path_X, path_Y, path_v_profile):
     """
     Single source of truth for the dynamic step budget. Both callers used to
@@ -293,6 +326,16 @@ def run_core_rollout(
         R_rate_scaled = adaptive_R_rate(kappa, R_rate)
         R_scaled = adaptive_R_scaling(vx, R)
         Ad, Bd = model_lookup(vx, DT)
+
+        # ── Delay compensation ───────────────────────────────────────────────
+        # command_queue[0] is applied to the plant THIS step; everything after
+        # it (DELAY_STEPS commands) is already committed but still in transit
+        # and will land before the u_opt computed below ever reaches the
+        # plant. Predict the state forward through those so the solve isn't
+        # reacting to a stale x0 (see settings.py DELAY_STEPS note).
+        pending_cmds = list(command_queue)[1:]
+        if pending_cmds:
+            x0_mpc = predict_ahead(x0_mpc, Ad, Bd, pending_cmds)
 
         # ── MPC solve ─────────────────────────────────────────────────────────
         mpc_result = solve_mpc(
