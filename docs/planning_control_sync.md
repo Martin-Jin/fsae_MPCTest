@@ -855,11 +855,44 @@ hits the 25° stop → the 21% saturation seen on every lap.
 
 > **Not yet acted on.** The fix is to model the cap in the offline plant, not
 > to bend tyre parameters to imitate it (which would also wreck the plant's
-> genuine 14.5 m/s² grip). The exact FSDS mechanism — a hard yaw-rate limit, a
-> speed-dependent steering-authority curve, or a damping torque — is still
-> unidentified; the three produce similar steady-state data but differ in
-> transients, so distinguishing them needs a step-input test rather than the
-> settled-circle protocol used here.
+> genuine 14.5 m/s² grip).
+
+##### Which mechanism? Step-input test (built, not yet run)
+
+Three mechanisms fit the steady-state data about equally: a **hard yaw-rate
+limit**, a **speed-scaled steering authority**, or **active damping**. They
+differ in the transient after a sudden steering input:
+
+| mechanism | transient signature | how to model it |
+|---|---|---|
+| A hard yaw limit | rises, then **clips**; different angles settle to the *same* yaw rate | clip yaw rate in the plant |
+| B scaled authority | smooth rise to a **lower plateau**, angles stay proportional | scale steering by `f(v)` |
+| C active damping | **overshoots**, then decays | add a yaw-damping torque |
+
+Overshoot is the discriminator: neither A nor B can produce it.
+
+- **Node:** `fsae_control/steering_step.py` — settles straight at zero
+  steering, then steps and holds, sampling at **50 Hz** (20 Hz would smear a
+  rise completing in a few hundred ms). 12 trials, ~2–3 min.
+- **Harness:** `ros2/run_steering_step.sh` (same one-command pattern).
+- **Analysis:** `tuner/steering_step_analysis.py`.
+
+Validated against synthetic logs with each mechanism injected: all three
+identified correctly, A's limit recovered exactly (0.75 rad/s) and B's time
+constant to within 0.01 s.
+
+**Preliminary evidence already points at C.** The sweep's `HOLD_STEER` windows
+are themselves step inputs, and 15 of 16 show **25–75% overshoot** before
+settling — peaks of 1.03–1.18 rad/s at 8–14 m/s decaying to 0.59–0.81. The car
+*can* briefly exceed the ceiling; it just is not allowed to hold it. That rules
+out a hard clip.
+
+Two caveats, which is why the dedicated test exists:
+- Those windows did **not** start from zero steering (the previous point's
+  angle was often still applied), so the transients are contaminated.
+- One window showed 243% overshoot from a single 4.533 rad/s sample amid
+  ~1.0 rad/s neighbours — a telemetry glitch, not physics. The analyser
+  median-filters before peak-finding for exactly this reason.
 
 ##### Earlier partial data (superseded by the result above)
 

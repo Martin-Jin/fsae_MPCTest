@@ -372,7 +372,7 @@ explanation was checking the wrong number. Fixed.)*
 | item | status |
 |---|---|
 | **Model the yaw cap offline** | Not started — the actual fix |
-| Identify the exact FSDS mechanism | Hard yaw limit vs speed-scaled authority vs damping torque all fit the steady-state data; needs a **step-input test** |
+| Identify the exact FSDS mechanism | **Test built, awaiting a run.** `run_steering_step.sh` + `tuner/steering_step_analysis.py`, validated against all three injected mechanisms. Preliminary evidence (25–75% overshoot in the sweep's HOLD_STEER windows) points at **active damping**, which would rule out a hard clip |
 | Objective rebalancing | Deferred (§1) — `QUALITY_WEIGHT` 0.35 → ~0.8, saturation as near-constraint |
 | Step 4: held-out tracks | 5 of 10 tracks unused |
 | Live scorer reports `13.0` | Every live run scores `CONSTRAINT_FLOOR + DNF_PENALTY` — the car has no known path end |
