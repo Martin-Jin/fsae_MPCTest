@@ -171,6 +171,10 @@ summary; **read the comments in `settings.py` before changing anything.**
 | `DELAY_STEPS` | Simulated lag (in 0.05 s steps) between a command being decided and applied — for testing robustness to real actuator/network delay. `sim/rollout_core.py`'s `predict_ahead()` forward-simulates the MPC's state through the commands already queued before each solve, so nonzero values no longer cause the oscillation/DNF behavior seen before that fix — validated across `DELAY_STEPS` 1-8. |
 | `DELAY_JITTER_STEPS` | Std-dev (in steps) of the error between the *true* delay applied to the plant and the delay the controller *believes* it has. `DELAY_STEPS` alone is compensated exactly by `predict_ahead()`, which the real car can never do — it estimates lag from a jittering pose timestamp. Default `0.2` matches measured live loop jitter (σ ≈ 0.0092 s). `0.0` restores the old optimistic behaviour. |
 | `DELAY_JITTER_SEED` | Fixed seed for the above, so rollouts stay reproducible and CMA-ES compares candidates fairly. Change only to check a tuned result isn't overfitted to one jitter sequence. |
+| `SLAM_NOISE_ENABLED` | **Default off.** Adds jitter + slow drift to the pose the controller/planner *see*, leaving the plant and the score on ground truth. Models the REAL car's ZED-odometry/`cone_mapper` error, which FSDS does not have (its `sim_perception` republishes ground-truth odom). Turn on when tuning for the car, not for FSDS. See [`planning_control_sync.md`](planning_control_sync.md)'s "Simulator fidelity limits". |
+| `SLAM_POS_JITTER_STD` / `SLAM_YAW_JITTER_STD` | Per-step white noise on the estimated pose (2 cm / 0.3°). This is the component that provokes chatter. |
+| `SLAM_POS_DRIFT_STD` / `SLAM_YAW_DRIFT_STD` / `SLAM_DRIFT_TAU` | Slow Ornstein–Uhlenbeck drift (5 cm / 0.5°, 5 s time constant) — wanders and self-corrects like SLAM between loop closures, rather than random-walking away. |
+| `SLAM_NOISE_SEED` | Fixed seed, same fairness rationale as `DELAY_JITTER_SEED`. |
 | `MAX_FAILS` | Consecutive MPC solver failures before a rollout is abandoned as a DNF. |
 | `OFFTRACK_LIMIT` | Lateral error (m) beyond which the car is considered off-track. Derived from `TRACK_HALF_WIDTH` in `sim/sim_track.py` — change that instead if you want to adjust it. |
 | `DT` | Control/simulation timestep (s), 0.05 = 20 Hz. Must match the real controller's timer rate. |
@@ -1052,6 +1056,13 @@ respects the same Ctrl+C graceful-shutdown flag (`_stop_requested`) as the
 CMA-ES phase, and its result (trial count, best score, seeded x0) is logged
 to `tuning history.txt` alongside the run's weights so it's traceable which
 runs used it.
+
+> **Closed book before 2026-08-06.** The Optuna pre-pass is one of several
+> things that changed partway through the recorded tuning history (alongside
+> `SCORE_WEIGHTS` edits and the scoring/simulation unification), which is why
+> entries above the `COMPARABLE HISTORY RESUMES HERE` marker in
+> `tuning history.txt` are not comparable to each other or to later runs.
+> See the header of that file for the full list and consequences.
 
 Requires the optional `optuna` package (see
 [Dependencies](developer_guide.md#dependencies)) — only needed if this flag

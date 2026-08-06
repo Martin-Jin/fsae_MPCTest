@@ -20,6 +20,40 @@ republishes it on the exact topics/messages the car stack expects.
 Set the `full_track` parameter true to publish the entire map every frame (used by
 the skidpad planner, which reconstructs the whole figure-8 up front); the default
 (false) publishes only the forward window, matching normal driving.
+
+Two publish rates (`pose_rate` 20 Hz, `cone_rate` 10 Hz)
+--------------------------------------------------------
+Pose and cones are published on SEPARATE timers, and this matters.
+
+`pose_rate` must be >= the controller's rate (`CONTROL_HZ = 20` in
+mpc_controller_standalone.py).  Both used to share one 10 Hz timer, which meant
+the 20 Hz MPC re-solved against an unchanged pose on every second tick.
+Measured in `mpc_standalone_control_1785976976.csv`: `car_x`/`car_y` were
+byte-identical to the previous row on **50.5%** of control steps (effective
+pose rate 9.9 Hz), and freeze runs were almost all exactly one tick long
+(766 of 829) — the signature of a 2:1 rate mismatch.
+
+That produced real steering oscillation.  On a frozen tick the car had actually
+travelled a median 0.33 m (max 0.63 m) and rotated a median 0.84 deg, but `e_y`
+did not move, so the controller read its own correction as having failed and
+pushed harder; the next tick the pose jumped two steps' worth at once and it
+over-corrected back.  24 steps in that log show `|de_y|` exceeding `v*dt` —
+lateral error changing faster than the car could physically move, i.e. catch-up
+jumps rather than motion.  Note the underlying data was never the limit: the
+FSDS bridge publishes odom at 250 Hz (`update_odom_every_n_sec: 0.004`); this
+node was the bottleneck.
+
+Cones stay at 10 Hz on purpose.  Cropping the oracle map and building three
+messages is the expensive part of this node, and the planner gains nothing from
+it running at the control rate.
+
+KNOWN LIMITATION — this node is not a SLAM stand-in for accuracy, only for
+range.  The pose it publishes is FSDS ground truth, copied verbatim: no noise,
+no drift, no estimation lag.  The real car's pose comes from ZED visual
+odometry + `cone_mapper` and has all three.  Anything tuned against this node
+is therefore optimistic about localisation quality.  The offline tuner models
+this gap explicitly via `SLAM_NOISE_ENABLED` in fsae_MPCTest/settings.py
+(default off, precisely because FSDS has no such error).
 """
 import math
 
@@ -49,6 +83,11 @@ class SimPerception(Node):
                 # far enough out to detect and brake for it in time.
                 ('look_radius', 25.0),  # m: omni-directional visibility radius
                 ('full_track', False),  # publish the whole map instead of the window
+                # Publish rates (Hz). Split deliberately — see the module
+                # docstring. pose_rate MUST be >= the controller's rate
+                # (CONTROL_HZ = 20) or the MPC re-solves against stale poses.
+                ('pose_rate', 20.0),
+                ('cone_rate', 10.0),
             ],
         )
         self._look_ahead  = self.get_parameter('look_ahead').get_parameter_value().double_value
@@ -56,6 +95,12 @@ class SimPerception(Node):
         self._min_ahead   = self.get_parameter('min_ahead').get_parameter_value().double_value
         self._look_radius = self.get_parameter('look_radius').get_parameter_value().double_value
         self._full_track  = self.get_parameter('full_track').get_parameter_value().bool_value
+        self._pose_rate   = self.get_parameter('pose_rate').get_parameter_value().double_value
+        self._cone_rate   = self.get_parameter('cone_rate').get_parameter_value().double_value
+        # Guard against a zero/negative rate turning into a divide-by-zero or
+        # a timer that never fires.
+        self._pose_rate = self._pose_rate if self._pose_rate > 0.0 else 20.0
+        self._cone_rate = self._cone_rate if self._cone_rate > 0.0 else 10.0
 
         latched_qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
@@ -87,11 +132,24 @@ class SimPerception(Node):
         self._car_yaw = 0.0
         self._odom_stamp = None
 
-        self.create_timer(0.1, self._publish)  # 10 Hz
+        # Two timers, deliberately at different rates — see the module
+        # docstring's "Two publish rates" note. Pose must keep up with the
+        # controller; the cone map does not need to.
+        self.create_timer(1.0 / self._pose_rate, self._publish_pose)
+        self.create_timer(1.0 / self._cone_rate, self._publish_cones)
 
         mode = ('full map' if self._full_track else
                 f'radius {self._look_radius} m ∪ box {self._look_ahead}×{2 * self._look_wide} m')
-        self.get_logger().info(f'sim_perception ready ({mode}).')
+        self.get_logger().info(
+            f'sim_perception ready ({mode}); '
+            f'pose @ {self._pose_rate:g} Hz, cones @ {self._cone_rate:g} Hz.'
+        )
+        if self._pose_rate < 20.0:
+            self.get_logger().warn(
+                f'pose_rate is {self._pose_rate:g} Hz but the MPC controller runs at 20 Hz — '
+                'some control steps will re-solve against an unchanged pose, which can '
+                'induce steering oscillation. See this node\'s docstring.'
+            )
 
     # ------------------------------------------------------------------
     # Subscribers
@@ -180,16 +238,31 @@ class SimPerception(Node):
             pts.append(Point(x=float(x_local), y=float(y_local), z=0.0))
         return pts
 
-    def _publish(self) -> None:
-        # Publish the car pose as soon as odometry is available — it does not
-        # depend on the cone map, and the planners' loop is triggered by it.
+    def _publish_pose(self) -> None:
+        """
+        Pose-only tick, run at pose_rate (default 20 Hz to match the
+        controller).  Deliberately does NOT touch the cone map — see the
+        class docstring's "Two publish rates" note for why these are split.
+        """
         if not self._have_odom:
             return
-        pose = self._car_pose_msg()
-        self.pub_pose.publish(pose)
+        self.pub_pose.publish(self._car_pose_msg())
 
-        if not self._have_map:
+    def _publish_cones(self) -> None:
+        """
+        Cone/track tick, run at cone_rate (default 10 Hz).  Cropping the
+        oracle map and building three messages is the expensive part of this
+        node, and the planner gains nothing from it running at the control
+        rate.
+        """
+        if not self._have_odom or not self._have_map:
             return
+
+        # ConeDetection embeds the pose the detections were taken from, so
+        # this tick builds its own (current) pose rather than reusing one
+        # from the faster pose timer — the two must be consistent with the
+        # cone transforms computed immediately below.
+        pose = self._car_pose_msg()
 
         blue_vis   = self._visible(self._blue_all)
         yellow_vis = self._visible(self._yellow_all)

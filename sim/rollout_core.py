@@ -82,9 +82,15 @@ class SlamNoise:
 
     Localisation error matters here specifically because it lands directly in
     e_y/e_psi — the signals the MPC steers on. A pose that jitters makes the
-    measured error jitter, and an under-damped controller chases it. That is
-    the suspected remaining cause of the live/offline chatter gap (~1441
-    reversals live vs ~6-12 offline).
+    measured error jitter, and an under-damped controller chases it.
+
+    NOT the cause of the observed FSDS chatter. mpc_standalone_control_
+    1785976976.csv came from FSDS, where the pose is already exact, so pose
+    noise cannot explain it. That log's ~1441 reversals were caused by (a) the
+    steering slew limit binding on 41% of steps and (b) sim_perception
+    publishing the pose at 10 Hz against a 20 Hz control loop, so half of all
+    MPC solves re-used an unchanged pose. Both are fixed elsewhere; this class
+    is for the REAL car's localisation error, and defaults to off.
 
     Model
     -----
@@ -429,13 +435,28 @@ def run_core_rollout(
             v_target = float(path_v_profile[idx])
 
         # ── TRUE tracking error, for scoring only ──────────────────────────
-        # e_y/e_psi above are what the CONTROLLER perceives, and under SLAM
-        # noise they are not where the car actually is. Scoring and the
-        # off-track check must use ground truth, otherwise a badly-localised
-        # car could score well by tracking its own wrong belief — the exact
-        # asymmetry real localisation error has. Always measured against the
-        # true reference path, never the planner's estimated centreline.
-        if slam_noise is not None:
+        # e_y/e_psi above are what the CONTROLLER perceives, and they are not
+        # where the car actually is whenever its reference differs from the
+        # true path. Scoring and the off-track check must use ground truth,
+        # otherwise a car could score well by tracking its own wrong belief —
+        # the exact asymmetry real perception/localisation error has. Always
+        # measured against the true reference path, never the planner's
+        # estimated centreline.
+        #
+        # TWO independent sources make the controller's view diverge from
+        # ground truth, and both must trigger this:
+        #   1. SLAM noise      — the pose fed to the tracking-error helper is
+        #                        corrupted (state_est != state).
+        #   2. USE_PLANNER     — the REFERENCE is the planner's cone-derived,
+        #                        FOV-limited, EMA-blended centreline rather
+        #                        than path_X/path_Y, so e_y is a distance to
+        #                        an estimated line even with a perfect pose.
+        # Case 2 was previously missed: with SLAM noise off (the default),
+        # e_y_true aliased the planner-relative error, so ~60% of the score
+        # (rmse + peak_lateral_error) measured controller-vs-planner
+        # agreement with no ground-truth anchor, and a drifting planner read
+        # as good tracking while also suppressing the off-track trigger.
+        if slam_noise is not None or use_planner:
             e_y_true, _, e_psi_true, _, _, _, _ = plant_to_tracking_error(
                 state, path_x=path_X, path_y=path_Y, path_psi=path_Psi
             )

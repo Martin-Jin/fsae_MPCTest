@@ -16,6 +16,17 @@ sim_perception:
     # own comment for the full derivation).
     look_radius: 25.0   # m; omni-directional visibility radius (corner-robust)
     full_track: false   # publish the whole map (set true for skidpad by sim.launch.py)
+    # Pose and cones publish on SEPARATE timers.
+    # pose_rate MUST be >= the controller rate (CONTROL_HZ = 20 Hz). Both used
+    # to share one 10 Hz timer, so the 20 Hz MPC re-solved against an unchanged
+    # pose on half its ticks (measured: 50.5% of control steps had a
+    # byte-identical car_x/car_y), which drove steering oscillation. FSDS
+    # publishes odom at 250 Hz, so 20 Hz here costs nothing.
+    pose_rate: 20.0     # Hz; car_position. Keep >= controller rate.
+    # Cones stay slower on purpose: cropping the map and building three
+    # messages is this node's expensive path, and the planner gains nothing
+    # from it running at the control rate.
+    cone_rate: 10.0     # Hz; left/right_track + cone_detection
 
 # --- planning (one planner runs at a time; node name == executable) ---
 # `smooth` is the per-point spline smoothing budget (splprep s = smooth * n_pts,

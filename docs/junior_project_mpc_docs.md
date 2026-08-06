@@ -401,6 +401,29 @@ if inaccurate_count > 0:
 - Whether the Optuna pre-pass ran, and if so, its trial count and best result.
 - An `Overall score` field, left blank for you to fill in by hand once you've actually tested those weights in FSDS — the offline score is a good guide but doesn't perfectly predict real-world performance, so this file is where the two get reconciled over time.
 
+> **⚠️ Entries before 2026-08-06 are a closed book.** Everything logged above
+> the `COMPARABLE HISTORY RESUMES HERE` marker in `tuning history.txt` was
+> produced under a different combination of planner, scoring function and
+> tuner configuration, so:
+>
+> - **Tuner scores are not comparable across those entries** — they measure
+>   different functions. The apparent improving trend is partly the ruler
+>   changing, not better driving.
+> - **Those Q/R gain sets can't be used as validation data**, because a gain
+>   set tuned against a different objective is a sample from a different
+>   problem.
+> - **Every one of those entries has `Overall score = Haven't been tested`** —
+>   none was ever reconciled against FSDS, which is what the field above was
+>   for. That reconciliation is the single most valuable thing you can do.
+>
+> Note the bullet above this box promises recorded score weights keep old runs
+> interpretable. That only works if they're recorded *every* run — in practice
+> only the last two entries have them, which is a large part of why the rest
+> are closed. When you log a run, also record the planner mode
+> (`USE_PLANNER`) and the tuner configuration, not just the commit hash: the
+> hash identifies the code but doesn't make it visible at a glance what
+> changed underneath.
+
 ### 2.5 Running the Tuner
 
 ```bash

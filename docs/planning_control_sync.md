@@ -263,6 +263,66 @@ vehicle setup lives in git-LFS `.uasset` binaries), so 180 deg/s is a measured
 lower-bound estimate, not a datasheet figure. Refine it via system-ID on the
 running sim and update both sides together.
 
+## Simulator fidelity limits (what FSDS does NOT model)
+
+Read this before trusting any offline or FSDS result as a prediction of
+real-car behaviour. These are the known ways both simulators are *easier* than
+reality.
+
+| Aspect | FSDS / this rollout | Real car | Modelled? |
+|---|---|---|---|
+| **Localisation accuracy** | Perfect. `sim_perception` copies ground-truth `/fsds/testing_only/odom` verbatim onto `/fsae/slam/car_position`. No noise, no drift, no estimation lag. | ZED visual odometry + `cone_mapper` SLAM: jitters, drifts, lags. | Offline only, via `SLAM_NOISE_ENABLED` (**default off** — FSDS has no such error, so defaulting it on would make offline scores pessimistic against the very runs they're compared to). |
+| **Cone map** | Latched *oracle* map of exact cone positions, cropped to a forward window + radius. Only **range** is limited. | Real detections: false positives/negatives, position error, colour confusion, range-dependent noise. | **No.** Not modelled anywhere. |
+| **Pose rate** | 20 Hz (`pose_rate`), matching the controller. Was 10 Hz — see the section below. | Bounded by the perception pipeline's real throughput. | Live-only concern; the offline rollout always uses a fresh pose per step. |
+| **Actuation delay** | Fixed `DELAY_STEPS`, compensated exactly by `predict_ahead()`. | Variable, estimated from a timestamp, never exactly known. | Partly — `DELAY_JITTER_STEPS` perturbs the controller's *belief* about the lag. |
+| **Steering slew** | Hard `du_max`, now on both sides. | Real rack limit, measured ≥ ~200 deg/s. | Yes, at 180 deg/s (a measured lower bound, not a datasheet figure). |
+| **Tyre/plant model** | Bicycle model with estimated `lf`/`lr`/`Iz`/`Cf`/`Cr` — the true values live in git-LFS `.uasset` binaries and are not readable from the repo. | Actual vehicle dynamics. | Approximated; refine via system-ID. |
+
+The practical consequence: **a clean FSDS run does not certify the real car**,
+most of all because both localisation and cone detection are oracles there.
+The cone-map gap in particular has no model at all today — if perception
+quality becomes the limiting factor, that's the next thing to build.
+
+## Measurement rate: pose must keep up with the controller
+
+`sim_perception` used to publish pose **and** cones on one 10 Hz timer while
+the MPC ran at 20 Hz, so every second control step re-solved against a pose
+that had not changed. Measured in `mpc_standalone_control_1785976976.csv`:
+`car_x`/`car_y` were byte-identical to the previous row on **50.5%** of control
+steps (effective pose rate 9.9 Hz), and the freeze runs were almost all exactly
+one tick long (766 of 829) — the signature of a 2:1 rate mismatch rather than
+random dropouts.
+
+This caused real steering oscillation, and it is a *different* failure from
+either the slew limit or delay jitter. On a frozen tick the car had actually
+travelled a median 0.33 m (max 0.63 m) and rotated a median 0.84 deg, but `e_y`
+did not move — so the controller read its own correction as having failed and
+pushed harder, then over-corrected when the pose jumped two steps' worth at
+once. 24 steps in that log show `|de_y|` exceeding `v*dt`: lateral error
+changing faster than the car could physically move, i.e. catch-up jumps.
+Reversal rates on fresh-pose (0.792) versus stale-pose (0.810) ticks are
+near-identical, confirming `predict_ahead()` was *not* bridging the gap — it
+compensates actuation lag, not a missing measurement.
+
+Data availability was never the constraint: the FSDS bridge publishes odom at
+250 Hz (`update_odom_every_n_sec: 0.004`). `sim_perception` was the bottleneck.
+
+**Fixed** by splitting into two timers — `pose_rate` (default 20 Hz, must be
+>= the controller's `CONTROL_HZ`) and `cone_rate` (default 10 Hz). Cones stay
+slower deliberately: cropping the oracle map and building three messages is
+that node's expensive path, and the planner gains nothing from running it at
+the control rate. The node logs a warning if `pose_rate < 20`.
+
+Note the offline rollout never modelled this at all — it calls
+`perception.visible_cones()` and `planner.update()` every step with a fresh
+pose, i.e. it always assumed the 20 Hz behaviour the fix now delivers. So this
+was a live-only defect, and the sim needs no mirrored change. If you ever want
+to reproduce a slow-pose regime offline, the correct model is a **pose
+zero-order hold at a configurable rate**, not more `DELAY_JITTER_STEPS` —
+jitter models a *varying* delay, whereas this was a *systematically halved
+measurement rate*. Those are different failure modes and the jitter knob will
+not reproduce it.
+
 ## Delay realism: why the tuner under-reproduces live chatter
 
 The offline rollout applies a fixed `DELAY_STEPS` lag and `predict_ahead()`
@@ -293,13 +353,22 @@ on its own moves composite scores by <0.002.
 steering reversals per run; the live log has ~1441 (≈8 Hz). Delay jitter and
 the slew limit together do not close that gap. Note also that `use_planner`
 matters far more than either: with `use_planner=False` the peak commanded slew
-is 88 deg/s, with `use_planner=True` it is 397 deg/s. The remaining
-live-only error sources are most likely SLAM pose noise (the sim feeds back
-exact plant state) and per-frame replanning jitter in the real perception
-path, neither of which is modelled. **Treat a clean offline score as
-necessary but not sufficient** — until an offline run reproduces live reversal
-counts, weights must still be confirmed on the car. Adding pose noise to the
-rollout is the obvious next step if this matters more.
+is 88 deg/s, with `use_planner=True` it is 397 deg/s.
+
+The dominant missing factor turned out to be the **10 Hz pose against a 20 Hz
+controller** described in the section above — not modelled offline because the
+rollout always used a fresh pose every step. That is a live-only defect and is
+now fixed in `sim_perception` rather than modelled here.
+
+An earlier revision of this section guessed SLAM pose noise was the likely
+remaining cause. **That was wrong** and is corrected here: the log came from
+FSDS, where `sim_perception` republishes ground-truth odom, so the pose was
+exact — just stale. Staleness is not noise. `SLAM_NOISE_ENABLED` exists for the
+real car's localisation error and defaults to off for exactly this reason.
+
+**Treat a clean offline score as necessary but not sufficient** — re-measure
+the live reversal count after the pose-rate fix before assuming the remaining
+gap is still open, then confirm weights on the car regardless.
 
 ## Live/offline score parity
 
