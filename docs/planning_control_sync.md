@@ -857,7 +857,51 @@ hits the 25° stop → the 21% saturation seen on every lap.
 > to bend tyre parameters to imitate it (which would also wreck the plant's
 > genuine 14.5 m/s² grip).
 
-##### Which mechanism? Step-input test (built, not yet run)
+##### MECHANISM (2026-08-06): a dynamically-enforced *lateral-acceleration*
+##### ceiling, ~7.5 m/s²
+
+Step-input test, 12 trials —
+`fsae_logs/steering_step_1786015706.csv`.
+
+**Two signatures appear together, and neither alone explains it.**
+
+1. **It is a cap.** At 8 m/s, 0.60 and 1.00 steering settle to the *same* yaw
+   rate (0.93–0.96 vs 0.90–0.94 rad/s) despite a 67% larger command. A scaled
+   authority would keep them proportional.
+2. **It overshoots.** Mean **30%** above the settled value before decaying
+   (peaks 10.9 m/s² lateral against a ~7.5 ceiling). A static clip cannot
+   overshoot.
+
+So the ceiling is enforced by a term that **takes time to build**, not by a
+hard clip.
+
+**What is held constant is lateral acceleration, not yaw rate** — the
+discriminating measurement, and it needed two capped speeds to answer:
+
+| v | settled yaw | settled a_lat |
+|---|---|---|
+| 8 m/s | 0.949 rad/s | **7.80 m/s²** |
+| 12 m/s | 0.609 rad/s | **7.29 m/s²** |
+| spread | **1.56×** | **1.07×** |
+
+Yaw rate varies 1.56× across speeds while lateral acceleration is flat to
+within 7%. At 4 m/s the car sits at 4.15 m/s², below the ceiling, so it is
+unconstrained there — and yaw duly scales with steering (1.76× spread vs 1.10×
+at 8 m/s). That is why the sweep saw `s ≈ 1.0` below ~6 m/s: **the cap has not
+engaged, not that the steering behaves differently.**
+
+**Not yet acted on — how to model it.** A first-order lag toward a
+lateral-acceleration ceiling of ~7.5 m/s², *not* a clip: a clip reproduces
+steady state but removes the turn-in transient, which is precisely what the
+MPC reacts to.
+
+> **The decay time constant is NOT yet reliably measured.** Fitting
+> peak→settled across the 8 capped trials gives a median of 0.08 s but a range
+> of 0.04–1.06 s — too scattered to use. The rise is a cleaner 0.40 s. Before
+> committing a time constant, either fit the full transient shape rather than a
+> 63% crossing, or re-run with a longer `step_s` and more repeats.
+
+##### The test that produced this (reusable)
 
 Three mechanisms fit the steady-state data about equally: a **hard yaw-rate
 limit**, a **speed-scaled steering authority**, or **active damping**. They
@@ -881,18 +925,11 @@ Validated against synthetic logs with each mechanism injected: all three
 identified correctly, A's limit recovered exactly (0.75 rad/s) and B's time
 constant to within 0.01 s.
 
-**Preliminary evidence already points at C.** The sweep's `HOLD_STEER` windows
-are themselves step inputs, and 15 of 16 show **25–75% overshoot** before
-settling — peaks of 1.03–1.18 rad/s at 8–14 m/s decaying to 0.59–0.81. The car
-*can* briefly exceed the ceiling; it just is not allowed to hold it. That rules
-out a hard clip.
-
-Two caveats, which is why the dedicated test exists:
-- Those windows did **not** start from zero steering (the previous point's
-  angle was often still applied), so the transients are contaminated.
-- One window showed 243% overshoot from a single 4.533 rad/s sample amid
-  ~1.0 rad/s neighbours — a telemetry glitch, not physics. The analyser
-  median-filters before peak-finding for exactly this reason.
+The sweep's `HOLD_STEER` windows had already hinted at this (15 of 16 showed
+25–75% overshoot), but they did not start from zero steering, and one showed
+243% overshoot from a single 4.533 rad/s telemetry glitch amid ~1.0 rad/s
+neighbours. The dedicated test starts from a genuinely straight car and the
+analyser median-filters before peak-finding.
 
 ##### Earlier partial data (superseded by the result above)
 

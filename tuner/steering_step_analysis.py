@@ -155,8 +155,9 @@ def main(argv):
     # every mechanism and discriminates nothing.
     exceeds = float(np.mean(pk / np.maximum(fi, 1e-6))) > 1.15
 
-    # A hard clip pins DIFFERENT steering angles to the SAME yaw rate; a scaled
-    # authority keeps them proportional. This is what separates A from B.
+    # A cap pins DIFFERENT steering angles to the SAME settled response; a
+    # scaled authority keeps them proportional. This is what separates a
+    # ceiling from a gain reduction.
     hi_by_speed = {}
     for x in hi:
         hi_by_speed.setdefault(round(x['v']), []).append(x)
@@ -168,10 +169,56 @@ def main(argv):
         steers = np.array([x['steer'] for x in xs])
         if steers.max() / max(steers.min(), 1e-6) < 1.3:
             continue        # angles too close to tell apart
-        spread = finals.max() / max(finals.min(), 1e-6)
-        clip_evidence.append(spread)
+        clip_evidence.append(finals.max() / max(finals.min(), 1e-6))
+    # Median, not mean: one weak trial (FSDS occasionally under-delivers a
+    # step) inflates a single speed's spread and would mask a real cap.
     pinned = (len(clip_evidence) > 0
-              and float(np.mean(clip_evidence)) < 1.15)
+              and float(np.median(clip_evidence)) < 1.30)
+
+    # WHAT is being held constant? A yaw-rate ceiling holds `final` equal
+    # across speeds; a lateral-acceleration ceiling holds `final * v` equal.
+    # These are the same thing at one speed and diverge across a sweep, so
+    # this needs at least two capped speeds to answer.
+    speeds_hi = sorted(hi_by_speed)
+    ceiling_kind = None
+    if len(speeds_hi) >= 2:
+        r_by_v = np.array([np.mean([x['final'] for x in hi_by_speed[s]])
+                           for s in speeds_hi])
+        a_by_v = np.array([np.mean([x['final_alat'] for x in hi_by_speed[s]])
+                           for s in speeds_hi])
+        r_spread = r_by_v.max() / max(r_by_v.min(), 1e-6)
+        a_spread = a_by_v.max() / max(a_by_v.min(), 1e-6)
+        ceiling_kind = ('lateral acceleration' if a_spread < r_spread
+                        else 'yaw rate')
+        print(f"\n  settled response across capped speeds:")
+        for s, rr, aa in zip(speeds_hi, r_by_v, a_by_v):
+            print(f"    v={s:5.1f}  r={rr:.3f} rad/s   a_lat={aa:.2f} m/s2")
+        print(f"    yaw-rate spread {r_spread:.2f}x vs "
+              f"lateral-accel spread {a_spread:.2f}x")
+        print(f"    -> the cap holds {ceiling_kind.upper()} constant")
+
+    if pinned and ov.mean() > 10.0:
+        # Both signatures at once: the response is capped (different angles
+        # give the same settled value) AND it overshoots on the way in.
+        # A static clip cannot overshoot, so the cap is enforced by a
+        # DYNAMIC term that takes time to build.
+        kind = ceiling_kind or 'lateral acceleration'
+        lvl = float(np.mean(fi)) if kind.startswith('lateral') else float(np.mean([x['final'] for x in hi]))
+        unit = 'm/s2' if kind.startswith('lateral') else 'rad/s'
+        print("\n=== VERDICT ===")
+        print(f"  DYNAMICALLY-ENFORCED {kind.upper()} CEILING (~{lvl:.1f} {unit}).")
+        print(f"  Two signatures together: different steering angles settle to")
+        print(f"  the same response (a cap), but yaw first OVERSHOOTS it by")
+        print(f"  {ov.mean():.0f}% and then decays (not a static clip).")
+        print()
+        print("  So it is neither a pure hard limit nor pure damping: a")
+        print("  restoring term builds over ~the observed decay time and pulls")
+        print("  the car back to the ceiling once yaw exceeds it.")
+        print()
+        print("  TO MODEL: a first-order lag toward the ceiling, not a clip.")
+        print("  A clip would match steady state but remove the turn-in")
+        print("  transient the MPC actually reacts to.")
+        return 0
 
     if ov.mean() > 10.0:
         print(f"  ACTIVE DAMPING (mechanism C). Yaw overshoots by "
