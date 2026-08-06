@@ -43,6 +43,7 @@ import cvxpy as cp
 from settings import (
     USE_PLANNER, DELAY_STEPS, OFFTRACK_LIMIT, MAX_FAILS, DT,
     ROLLOUT_EPS, ROLLOUT_MAX_ITER, N_HORIZON,
+    DELAY_JITTER_STEPS, DELAY_JITTER_SEED,
 )
 
 STALL_CHECK_INTERVAL = 60   # Steps between rolling stall checks (3 s at 20 Hz)
@@ -203,6 +204,27 @@ def run_core_rollout(
     command_queue = deque([np.zeros(2) for _ in range(DELAY_STEPS + 1)], maxlen=DELAY_STEPS + 1)
     u_prev = np.zeros(2)
 
+    # Hard per-step slew-rate limit handed to the MPC, mirroring the live
+    # mpc_core.py's du_max so offline-tuned weights transfer. Derived from the
+    # vehicle's physical steering rate rather than hardcoded, and scaled by DT
+    # so it stays a rate. The acceleration entry (0.6 per step at DT=0.05 =
+    # 12 m/s^3) matches the live controller's second du_max element.
+    du_max = np.array([
+        vehicle_params.max_steer_rate * DT,
+        0.6,
+    ])
+
+    # ── Delay-estimation error ────────────────────────────────────────────
+    # The plant always applies the true DELAY_STEPS lag. What varies is how
+    # many pending commands the CONTROLLER believes it must roll forward
+    # through. Live, that count comes from a noisy pose timestamp divided by
+    # a jittering loop period, so it is regularly wrong by a step; offline it
+    # used to be exactly right on every tick, which made predict_ahead()
+    # strictly more effective in the tuner than it can ever be on the car.
+    # Seeded so each rollout is reproducible and CMA-ES still gets a stable
+    # score per candidate (see settings.DELAY_JITTER_SEED).
+    delay_rng = np.random.default_rng(DELAY_JITTER_SEED)
+
     metrics = RolloutMetrics()
     idx = 0
     last_idx = 0
@@ -334,6 +356,27 @@ def run_core_rollout(
         # plant. Predict the state forward through those so the solve isn't
         # reacting to a stale x0 (see settings.py DELAY_STEPS note).
         pending_cmds = list(command_queue)[1:]
+        if DELAY_JITTER_STEPS > 0.0:
+            # Perturb only the controller's BELIEF about how many commands are
+            # in flight — the queue itself (and so the plant's real lag) is
+            # untouched. Rounding a Gaussian gives the live failure mode: the
+            # estimate is usually right, occasionally off by a step, which is
+            # what makes x0 jump between rollforward depths on the real car.
+            n_true = len(pending_cmds)
+            n_believed = int(round(n_true + delay_rng.normal(0.0, DELAY_JITTER_STEPS)))
+            # Cap over-estimates at the live MAX_DELAY_COMPENSATION_STEPS
+            # equivalent so a tail draw can't roll forward absurdly far.
+            n_believed = int(np.clip(n_believed, 0, max(n_true, 0) + 2))
+            if n_believed <= n_true:
+                pending_cmds = pending_cmds[n_true - n_believed:] if n_believed else []
+            else:
+                # Over-estimating: the controller thinks more commands are in
+                # flight than there are, so it rolls forward through the
+                # oldest one extra times — the same over-compensation a
+                # too-large pose_age_s produces live.
+                pad = n_believed - n_true
+                oldest = pending_cmds[0] if pending_cmds else u_prev
+                pending_cmds = [oldest] * pad + pending_cmds
         if pending_cmds:
             x0_mpc = predict_ahead(x0_mpc, Ad, Bd, pending_cmds)
 
@@ -343,6 +386,7 @@ def run_core_rollout(
             R_rate=R_rate_scaled, u_prev=u_prev, silent=True,
             return_status=True, eps_abs=eps, eps_rel=eps,
             max_iter=max_iter, warm_start=(step != 0),
+            du_max=du_max,
         )
 
         solver_failed = mpc_result is None

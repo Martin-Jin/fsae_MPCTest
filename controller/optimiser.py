@@ -64,7 +64,7 @@ import numpy as np
 _mpc_cache = None
 
 
-def init_parameterized_mpc(nx, nu, N, u_min, u_max):
+def init_parameterized_mpc(nx, nu, N, u_min, u_max, du_max=None):
     """
     Build and compile a parameterized CVXPY MPC problem.
 
@@ -102,6 +102,10 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max):
     N  : int      Prediction horizon (number of steps)
     u_min : array-like, shape (nu,)   Lower input bounds
     u_max : array-like, shape (nu,)   Upper input bounds
+    du_max : array-like, shape (nu,), optional
+        Hard per-step slew-rate limit on u. None disables the constraint
+        (legacy behaviour). Must match the live mpc_core.py du_max for
+        offline-tuned weights to transfer.
 
     Returns
     -------
@@ -179,6 +183,24 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max):
         x[0, :-1] >= -3.5 - slack,
     ]
 
+    # Hard per-step slew-rate limit on [delta_cmd, a_cmd].
+    #
+    # PARITY FIX: this constraint previously existed ONLY in the live
+    # mpc_core.py, so the offline tuner was optimising against a plant that
+    # could change steering arbitrarily fast while the real car was clamped —
+    # weights tuned here did not transfer faithfully. Mirrors mpc_core.py's
+    # du_max (see that file for how the 180 deg/s figure was measured).
+    #
+    # Only the step-0 constraint against u_prev is omitted here: solve_mpc()
+    # already anchors step 0 through weighted_u_prev in the cost, and u_prev
+    # is not available as a constraint parameter in this cached formulation.
+    if du_max is not None and N > 1:
+        du_hard = cp.diff(u, axis=1)
+        constraints += [
+            du_hard <=  np.array(du_max)[:, None],
+            du_hard >= -np.array(du_max)[:, None],
+        ]
+
     prob = cp.Problem(cp.Minimize(cost), constraints)
 
     return {
@@ -194,12 +216,14 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max):
         # rebuild, instead of silently keeping stale bounds.
         'u_min': np.array(u_min, dtype=float),
         'u_max': np.array(u_max, dtype=float),
+        'du_max': None if du_max is None else np.array(du_max, dtype=float),
     }
 
 
 def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max, R_rate=None, u_prev=None,
               silent=False, return_status=False,
-              eps_abs=1e-5, eps_rel=1e-5, max_iter=8000, warm_start=True):
+              eps_abs=1e-5, eps_rel=1e-5, max_iter=8000, warm_start=True,
+              du_max=None):
     """
     Execute the parameterized MPC solve for the current timestep.
 
@@ -312,16 +336,24 @@ def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max, R_rate=None, u_prev=None,
     # which flow through cp.Parameters every call — a caller passing
     # different bounds with the same N would otherwise silently keep getting
     # the stale, originally-cached bounds enforced. 
+    # du_max is baked in the same way and needs the same staleness check.
     u_min_arr = np.asarray(u_min, dtype=float)
     u_max_arr = np.asarray(u_max, dtype=float)
+    du_max_arr = None if du_max is None else np.asarray(du_max, dtype=float)
+    cached_du = None if _mpc_cache is None else _mpc_cache.get('du_max')
+    du_changed = (
+        (cached_du is None) != (du_max_arr is None)
+        or (du_max_arr is not None and not np.array_equal(cached_du, du_max_arr))
+    )
     needs_rebuild = (
         _mpc_cache is None
         or _mpc_cache['u'].shape[1] != N
         or not np.array_equal(_mpc_cache['u_min'], u_min_arr)
         or not np.array_equal(_mpc_cache['u_max'], u_max_arr)
+        or du_changed
     )
     if needs_rebuild:
-        _mpc_cache = init_parameterized_mpc(nx, nu, N, u_min, u_max)
+        _mpc_cache = init_parameterized_mpc(nx, nu, N, u_min, u_max, du_max)
 
     # ── Inject dynamics matrices (change every timestep as vx changes) ────────
     _mpc_cache['A'].value  = Ad

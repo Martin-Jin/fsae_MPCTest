@@ -169,10 +169,14 @@ class MPCControllerNode(Node):
         if self._telemetry is not None:
             tel = self._mpc.last_telemetry
             t = self.get_clock().now().nanoseconds * 1e-9
+            # steering is already the roadwheel angle in radians here (this
+            # node publishes an Ackermann steering_angle, not a normalised
+            # FSDS command), so it is both the logged steer and delta_cmd.
             self._telemetry.log_control(
                 t, self._car_pos[0], self._car_pos[1], self._car_yaw,
                 self._car_speed, desired_speed, steering,
-                tel.get('e_y', 0.0), tel.get('e_psi', 0.0), self._car_yaw_rate)
+                tel.get('e_y', 0.0), tel.get('e_psi', 0.0), self._car_yaw_rate,
+                delta_cmd=steering, a_cmd=tel.get('a_cmd', 0.0))
             self._telemetry.log_path(t, self._path)
 
         self.get_logger().info(

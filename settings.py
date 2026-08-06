@@ -59,6 +59,34 @@ USE_PLANNER = True
 #   - Adjustment: change by 1 step (0.05 s) at a time; 2-4 steps
 #     (0.1-0.2 s) is a realistic amount of lag for most small robots.
 DELAY_STEPS = 1
+
+# DELAY_JITTER_STEPS — "Is the lag always exactly the same, or does it vary?"
+# DELAY_STEPS above is a single fixed number, and predict_ahead() compensates
+# for it EXACTLY — the simulated controller knows the lag perfectly. The real
+# car never does: it estimates the lag from a pose timestamp, and its control
+# loop jitters. Measured on live standalone-ROS telemetry
+# (mpc_standalone_control_1785976976.csv): loop period median 0.0498 s but
+# p99 0.0741 s and max 0.1205 s, i.e. jitter std ~0.0092 s = ~0.18 steps.
+# With this at 0 the tuner is optimising against a delay model that is
+# strictly easier than reality, which is exactly how a set of weights can
+# score well offline and still wobble on the car.
+# This value is the standard deviation, in steps, of the error between the
+# TRUE delay applied to the plant and the delay the controller THINKS it has
+# (i.e. how many commands predict_ahead() rolls forward). The plant's own
+# delay stays DELAY_STEPS; only the controller's belief is perturbed.
+#   - 0.0 : perfect knowledge (previous behaviour, optimistic).
+#   - 0.2 : roughly matches the measured live loop jitter. Recommended.
+#   - >0.5: pessimistic; useful for robustness testing.
+# Rollouts stay deterministic — the perturbation is drawn from a seeded RNG
+# (DELAY_JITTER_SEED) so CMA-ES still sees a repeatable score per candidate.
+DELAY_JITTER_STEPS = 0.2
+
+# DELAY_JITTER_SEED — fixed seed for the delay-jitter draw above. Keeping it
+# fixed is what lets the tuner compare two candidate weight sets fairly: both
+# see the identical sequence of delay perturbations, so a score difference is
+# attributable to the weights and not to luck. Change it only to check that a
+# tuned result isn't overfitted to one particular jitter sequence.
+DELAY_JITTER_SEED = 12345
 # Note: rollout_core.py now predicts the state forward through the commands
 # already queued (predict_ahead()) before solving, so the MPC no longer
 # reacts to a stale x0 at DELAY_STEPS > 0 — the large-oscillation/DNF

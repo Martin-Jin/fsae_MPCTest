@@ -86,7 +86,8 @@ offline tuner cares about:
 | `control/fsae_control/fsae_control/mpc_controller.py` | `control/fsae_control/fsae_control/mpc_controller.py` | Direct mirror. Upstream's default `controller:=mpc` node — steering only through `cmd_vel`/`fsds_bridge`, discards the MPC's own throttle/brake. See "Two MPC-controller nodes" below. |
 | `control/fsae_control/fsae_control/mpc_controller_standalone.py` | `control/fsae_control/fsae_control/mpc_controller_standalone.py` | Direct mirror. See "What replaced `control_node.py`" for the history. |
 | `control/fsae_control/fsae_control/fsds_bridge.py` | `control/fsae_control/fsae_control/fsds_bridge.py` | Direct mirror. Needed by both `stanley_controller.py` and `mpc_controller.py` (not `mpc_controller_standalone.py`, which bypasses it). |
-| `control/fsae_control/fsae_control/telemetry_logger.py` | `control/fsae_control/fsae_control/telemetry_logger.py` | Direct mirror. CSV telemetry shared by all three controller nodes. |
+| `control/fsae_control/fsae_control/telemetry_logger.py` | `control/fsae_control/fsae_control/telemetry_logger.py` | Direct mirror. CSV telemetry shared by all three controller nodes. Also computes the run's composite score (via `scoring.py`) and prepends it to the control CSV as a `#`-commented header on `close()`. |
+| `control/fsae_control/fsae_control/scoring.py` | `control/fsae_control/fsae_control/scoring.py` | Direct mirror **and** a verbatim copy of this repo's own `sim/scoring.py` — see "Live/offline score parity" below. Changes must be made in `sim/scoring.py` first, then re-copied. |
 | `control/fsae_control/setup.py` | `control/fsae_control/setup.py` | Direct mirror. Registers all four console-script entry points (`controller`, `mpc_controller`, `mpc_controller_standalone`, `fsds_bridge`). |
 
 `planning/` (root) and the `MPCController` half of `mpc_core.py` are shared
@@ -184,6 +185,9 @@ writing — re-confirm before relying on them, since a resync can move them.
 |---|---|---|---|
 | `curvature_speed()`'s `a_lat_max` | `sim/speed_profile.py:328` (function default) | `fsds_simulator/control/fsae_control/fsae_control/control_utils.py:37` (function default) | `4.0` |
 | Planner top/bottom speed clamp | `sim/rollout_core.py:55-56` (`PLANNER_V_MAX`, `PLANNER_V_MIN`) | `fsds_simulator/control/fsae_control/fsae_control/mpc_controller_standalone.py` (declared as the `v_max`/`v_min` ROS parameters, default `20.0`/`1.5`) | `20.0` / `1.5` |
+| Steering slew-rate limit (`du_max[0]`) | `model/vehicle_physics.py` (`VehicleParams.max_steer_rate`), applied as `max_steer_rate * DT` in `sim/rollout_core.py` and passed to `controller/optimiser.py`'s `du_max` | `fsds_simulator/control/fsae_control/fsae_control/mpc_core.py` (`MAX_STEER_RATE_RAD_S`, applied as `* self.dt`) | `radians(180.0)` rad/s |
+| Accel slew-rate limit (`du_max[1]`) | `sim/rollout_core.py` (`du_max` second element) | `fsds_simulator/control/fsae_control/fsae_control/mpc_core.py` (`self.du_max` second element) | `0.6` per step |
+| Score weights / bonuses / penalties | `settings.py` (`SCORE_WEIGHTS`, `COMPLETION_BONUS_WEIGHT`, `TIME_BONUS_WEIGHT`, `DNF_PENALTY`, `DNF_OFFTRACK_PENALTY`) | `fsds_simulator/control/fsae_control/fsae_control/scoring.py` (inlined as module constants) | weights sum to `1.0`; `0.5` / `0.25` / `3.0` / `3.0` |
 
 Notes on how these are actually used:
 
@@ -210,6 +214,118 @@ Notes on how these are actually used:
 
 If a resync changes any of these values or call sites, update both sides in
 the same change and re-grep this table's line numbers.
+
+## Slew-rate limit (`du_max`): was live-only, now on both sides
+
+Until 2026-08-06 the hard per-step slew-rate constraint on
+`[delta_cmd, a_cmd]` existed **only** in the live `mpc_core.py`.
+`controller/optimiser.py` had no such constraint at all, so the offline tuner
+was optimising against a plant that could change steering arbitrarily fast
+while the real car was clamped to `radians(4.0)`/step (= 80 deg/s at
+`DT = 0.05`). Weights tuned offline therefore did not transfer faithfully —
+independent of any weight choice.
+
+Two changes fixed this:
+
+1. `init_parameterized_mpc()` / `solve_mpc()` in `controller/optimiser.py`
+   gained an optional `du_max`, mirroring the live formulation. It is baked
+   into the cached QP the same way `u_min`/`u_max` are, so it participates in
+   the same cache-staleness check (passing a different `du_max` rebuilds the
+   problem instead of silently reusing stale constraints). Only the step-0
+   constraint against `u_prev` is omitted offline — step 0 is already anchored
+   through `weighted_u_prev` in the cost, and `u_prev` isn't a constraint
+   parameter in the cached formulation.
+2. The limit itself was raised from 80 deg/s to **180 deg/s**, and is now
+   expressed as a *rate* (`max_steer_rate * DT`) rather than a fixed per-step
+   angle, so its physical meaning survives a change of `DT`.
+
+**Why it was raised.** Live telemetry
+(`mpc_standalone_control_1785976976.csv`) showed the steering command pinned
+exactly on the 80 deg/s limit for **41% of all control steps**, reversing sign
+at ~8 Hz — a rate-limit-induced limit cycle, not a weight-tuning problem.
+Inverting the logged yaw rate through the kinematic bicycle
+(`delta = atan(L*r/v)`) put the *achieved* roadwheel rate at p99 ≈ 138 deg/s
+and max ≈ 218 deg/s, so the real actuator is at least ~200 deg/s. 180 deg/s
+sits just under that measured floor.
+
+**Why the offline sim didn't catch it.** With the same weights and the same
+80 deg/s limit, an offline rollout on `PATH_MICRO_SLALOM` hits the limit on
+only **0.5%** of steps versus the live car's 41%, and composite scores at
+80 vs 180 deg/s differ by <0.002 across `PATH_S_BEND`, `PATH_SUDDEN_TURN` and
+`PATH_SPIRAL`. The offline sim uses a fixed `DELAY_STEPS = 1` and a smooth
+synthetic path, so it simply never enters the saturated regime the live car
+lives in (jittery measured delay, replanned/noisy perception path). Do not
+read "the offline score barely moved" as "the change doesn't matter" — the
+constraint is there to stop the live controller sitting on its limit.
+
+The true FSDS steering rate is **not recoverable from this repo** (the PhysX
+vehicle setup lives in git-LFS `.uasset` binaries), so 180 deg/s is a measured
+lower-bound estimate, not a datasheet figure. Refine it via system-ID on the
+running sim and update both sides together.
+
+## Delay realism: why the tuner under-reproduces live chatter
+
+The offline rollout applies a fixed `DELAY_STEPS` lag and `predict_ahead()`
+compensates for it **exactly** — the simulated controller knows its own lag
+perfectly. The live controller never does: it estimates the lag from a pose
+timestamp divided by a jittering loop period. Measured live, that loop period
+is median 0.0498 s but p99 0.0741 s and max 0.1205 s (jitter σ ≈ 0.0092 s ≈
+0.18 steps), so the live step count is regularly wrong by one — and each wrong
+value changes how far `x0` is rolled forward, feeding a step disturbance into
+the QP at the control rate.
+
+`settings.DELAY_JITTER_STEPS` (default `0.2`, matching the measured σ) closes
+part of that gap: it perturbs **only the controller's belief** about how many
+commands are in flight, leaving the plant's true lag at `DELAY_STEPS`. The
+draw is seeded (`DELAY_JITTER_SEED`) so rollouts stay reproducible and CMA-ES
+still gets a stable score per candidate. The error is deliberately two-sided —
+over-estimating re-rolls the oldest pending command, mirroring what a
+too-large `pose_age_s` does live.
+
+**How much this actually recovers — measured, not assumed.** With
+`USE_PLANNER=True` (the real configuration), raising the slew limit from
+80 → 180 deg/s drops the fraction of steps pinned on the limit from 1.6–4.3%
+to ~0.5% across `PATH_MICRO_SLALOM`/`PATH_S_BEND`/`PATH_SUDDEN_TURN`, so the
+constraint is now visibly active in the tuner rather than inert. Delay jitter
+on its own moves composite scores by <0.002.
+
+**What it still does not reproduce.** The offline rollout produces ~6–12
+steering reversals per run; the live log has ~1441 (≈8 Hz). Delay jitter and
+the slew limit together do not close that gap. Note also that `use_planner`
+matters far more than either: with `use_planner=False` the peak commanded slew
+is 88 deg/s, with `use_planner=True` it is 397 deg/s. The remaining
+live-only error sources are most likely SLAM pose noise (the sim feeds back
+exact plant state) and per-frame replanning jitter in the real perception
+path, neither of which is modelled. **Treat a clean offline score as
+necessary but not sufficient** — until an offline run reproduces live reversal
+counts, weights must still be confirmed on the car. Adding pose noise to the
+rollout is the obvious next step if this matters more.
+
+## Live/offline score parity
+
+`fsds_simulator/control/fsae_control/fsae_control/scoring.py` is a **verbatim
+copy** of `sim/scoring.py` — `compute_composite_score()`, `RolloutMetrics.
+add_step()` and `RolloutMetrics.finalize()` are identical, so a score produced
+on the live car is directly comparable to one produced by
+`tuner/offline_tuner.py`. This was verified by running both implementations
+over 500 identical synthetic steps: all 18 returned fields matched to within
+1e-12 (bit-identical composite score).
+
+The one intentional difference is the settings import. `sim/scoring.py` pulls
+`SCORE_WEIGHTS` and the bonus/penalty constants from `settings.py`, which is
+not on the live car's `PYTHONPATH`; the live copy inlines them as module
+constants. **These must be kept numerically identical** — they're listed in
+the numeric-parity table above.
+
+Two inputs have no faithful live equivalent and default to `0.0`/`False`:
+
+- `time_bonus` — needs a known expected lap time / step budget.
+- `offtrack` — the offline rollout knows ground-truth track edges.
+
+The emitted CSV header records this as `score_is_partial=1` so a reader can't
+mistake a partial live score for a full offline one. The weighted-metric
+component (the 12 metrics × `SCORE_WEIGHTS`) is directly comparable either
+way; only the bonus/penalty terms differ.
 
 ## MPC prediction horizon: frozen target speed
 

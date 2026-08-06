@@ -354,7 +354,9 @@ graph LR
 
 ### 2.4 How a Run Gets Scored
 
-Every rollout, whether from the tuner, or from **Show Metrics**/**Benchmark All Paths** in the GUI, is scored through the exact same code (`sim/scoring.py`), so a live run and an offline tuning run always produce comparable numbers.
+Every rollout, whether from the tuner, or from **Show Metrics**/**Benchmark All Paths** in the GUI, is scored through the exact same code (`sim/scoring.py`), so a GUI run and an offline tuning run always produce comparable numbers.
+
+This now extends to the **real car** too. The ROS 2 control package carries a verbatim copy of `sim/scoring.py` (`fsae_control/scoring.py`), and `telemetry_logger.py` accumulates the same 12 metrics every control step, writing the finished score as a `#`-commented header on top of the run's CSV. So a number off the car is directly comparable to a number out of the tuner. Two caveats: the car can't measure `time_bonus` or `offtrack`, so those terms are zero and the header records `score_is_partial=1`; and see [`planning_control_sync.md`](planning_control_sync.md) for the delay/perception differences that still make the simulator easier than reality.
 
 **The 12 raw metrics**, accumulated every simulation step:
 
@@ -457,6 +459,8 @@ All of these live in `settings.py`, with a full plain-English explanation as a c
 | `N_HORIZON` | How many 0.05s steps ahead the MPC plans (25 = 1.25s look-ahead). Must match `N_horizon` in `gui/simulation.py` and `N` in `mpc_core.py` | ±5 steps at a time |
 | `USE_PLANNER` | Test with the full simulated cone-perception pipeline (`True`), or the perfect reference path (`False`, faster) | Leave `True` unless you specifically want faster driving-feel-only iteration |
 | `DELAY_STEPS` | Simulated command lag, for robustness testing. `rollout_core.py` now predicts the state forward through the commands already queued (`predict_ahead()`) before solving, so the large-oscillation behaviour that used to make this unsafe to raise is fixed, it's been validated across a range of delay values | Adjust as needed for the robustness scenario you're testing |
+| `DELAY_JITTER_STEPS` | How *wrong* the car's guess about its own lag is allowed to be. `DELAY_STEPS` on its own is compensated perfectly, which the real car can never manage — it works the lag out from a timestamp, and its control loop doesn't tick perfectly evenly. Default `0.2` matches what was measured on the real car | Leave at `0.2`. Set `0.0` only if you want the old, optimistic behaviour |
+| `DELAY_JITTER_SEED` | Keeps the above repeatable, so two candidate weight sets are graded against the identical run of bad luck | Leave alone |
 | `MAX_FAILS` | Consecutive solver failures before a run is abandoned as DNF | 1-2 at a time, default 5 |
 | `OFFTRACK_LIMIT` | Lateral error beyond which the car is "off track" | Don't edit directly, change `TRACK_HALF_WIDTH` in `sim/sim_track.py` instead |
 | `DT` | Simulation timestep, 0.05s = 20Hz | Don't change unless the real controller's timer rate changes too |

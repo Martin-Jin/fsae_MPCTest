@@ -169,6 +169,8 @@ summary; **read the comments in `settings.py` before changing anything.**
 | `N_HORIZON` | How many 0.05 s steps ahead the MPC plans each solve (25 = 1.25 s look-ahead). Must match `N_horizon` in `gui/simulation.py` and `N` in `mpc_core.py`. |
 | `USE_PLANNER` | Whether the tuner drives using the full simulated perception/planning pipeline (`True`) or the perfect reference path (`False`). |
 | `DELAY_STEPS` | Simulated lag (in 0.05 s steps) between a command being decided and applied — for testing robustness to real actuator/network delay. `sim/rollout_core.py`'s `predict_ahead()` forward-simulates the MPC's state through the commands already queued before each solve, so nonzero values no longer cause the oscillation/DNF behavior seen before that fix — validated across `DELAY_STEPS` 1-8. |
+| `DELAY_JITTER_STEPS` | Std-dev (in steps) of the error between the *true* delay applied to the plant and the delay the controller *believes* it has. `DELAY_STEPS` alone is compensated exactly by `predict_ahead()`, which the real car can never do — it estimates lag from a jittering pose timestamp. Default `0.2` matches measured live loop jitter (σ ≈ 0.0092 s). `0.0` restores the old optimistic behaviour. |
+| `DELAY_JITTER_SEED` | Fixed seed for the above, so rollouts stay reproducible and CMA-ES compares candidates fairly. Change only to check a tuned result isn't overfitted to one jitter sequence. |
 | `MAX_FAILS` | Consecutive MPC solver failures before a rollout is abandoned as a DNF. |
 | `OFFTRACK_LIMIT` | Lateral error (m) beyond which the car is considered off-track. Derived from `TRACK_HALF_WIDTH` in `sim/sim_track.py` — change that instead if you want to adjust it. |
 | `DT` | Control/simulation timestep (s), 0.05 = 20 Hz. Must match the real controller's timer rate. |
@@ -980,11 +982,17 @@ local copies, rather than importing the shared modules. This is deliberate:
 must have zero simulator dependencies. **Any change to the cost/constraint
 structure in one location must be mirrored in the other**, or weights tuned
 by `tuner/offline_tuner.py` will not transfer faithfully to the live controller.
-`mpc_core.py` additionally enforces a hard per-step slew-rate limit
-(`self.du_max`) on top of the soft `R_rate` cost — a hardware-safety measure
-not present in the simulator's QP, since the simulator's nonlinear plant
-doesn't model an actuator that could be damaged by too-fast commands the way
-real hardware could.
+Both QPs enforce a hard per-step slew-rate limit (`du_max`) on top of the soft
+`R_rate` cost. This used to be a live-only constraint, which meant the tuner
+was optimising against a plant that could change steering arbitrarily fast
+while the real car was clamped — a silent parity break independent of any
+weight choice. `controller/optimiser.py` now takes a `du_max` too (baked into
+the cached QP alongside `u_min`/`u_max`, and participating in the same
+cache-staleness check), and `sim/rollout_core.py` derives it from
+`VehicleParams.max_steer_rate * DT` so both sides agree. See
+[`planning_control_sync.md`](planning_control_sync.md)'s "Slew-rate limit"
+section for the measurement behind the current 180 deg/s value and why the
+previous 80 deg/s was the direct cause of live steering chatter.
 
 ---
 ## How the Offline Tuner Works

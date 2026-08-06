@@ -153,6 +153,15 @@ class VehicleParams:
         # to be 35deg, which let the offline tuner plan steering the real/sim
         # car can't actually deliver.
         self.max_steer       = np.radians(25.0)  # Max rack-limited steering angle (rad)
+        # Max steering SLEW rate (rad/s) — how fast the rack can move, as
+        # opposed to how far.  Feeds the MPC's hard du_max constraint (see
+        # optimiser.init_parameterized_mpc and the live mpc_core.py, which
+        # must agree).  Measured from live FSDS telemetry by inverting the
+        # logged yaw rate through the kinematic bicycle (delta = atan(L*r/v)):
+        # achieved roadwheel rate reached p99 ~138 deg/s and max ~218 deg/s,
+        # so the actuator is at least ~200 deg/s.  180 deg/s sits just under
+        # that measured floor.  Refine via system-ID on the running sim.
+        self.max_steer_rate  = np.radians(180.0)
         # FS EV peak acceleration ~12 m/s² (0→17 m/s in ~2 s); braking ~9 m/s² (~0.9g).
         self.max_accel       = 12.0              # Max longitudinal acceleration (m/s²)
         self.max_accel_brake = -9.0             # Max longitudinal braking (m/s²)

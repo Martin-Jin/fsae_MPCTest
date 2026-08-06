@@ -100,6 +100,21 @@ MAX_BRAKE: float = 9.0
 MAX_DELAY_COMPENSATION_STEPS: int = 6   # cap: a bigger measured age is clamped, not trusted blindly
 _PREDICT_EPSI_CLIP: float = 0.5         # rad (~28.6°) — small-angle bound, see predict_ahead
 
+# ── n_delay stabilisation ───────────────────────────────────────────────────
+# pose_age_s is noisy: the control loop's own jitter (measured dt median
+# 0.050 s but max 0.121 s in mpc_standalone_control_1785976976.csv) makes a
+# raw round(pose_age_s / dt) flip between adjacent step counts tick to tick.
+# Each flip changes how many commands predict_ahead() rolls x0 through, so x0
+# jumps discontinuously between rollforward depths on consecutive solves —
+# injecting step changes into the state the QP sees at exactly the frequency
+# of the observed steering chatter. Two guards, applied in compute():
+#   1. Low-pass pose_age_s so a single late message can't move the step count.
+#   2. Hysteresis on the resulting integer: only change n_delay when the
+#      filtered estimate is clearly past the midpoint of the current bin, so
+#      an age hovering near a boundary doesn't dither.
+_POSE_AGE_LP_ALPHA: float = 0.15   # per-tick low-pass on pose_age_s (~0.3 s settle at 20 Hz)
+_N_DELAY_HYSTERESIS: float = 0.25  # steps of deadband either side of a bin boundary
+
 
 def predict_ahead(x0: np.ndarray, Ad: np.ndarray, Bd: np.ndarray, pending_cmds) -> np.ndarray:
     """
@@ -268,7 +283,23 @@ class MPCController:
         
         # Hard per-step slew-rate limit on [delta_cmd, a_cmd], enforced in
         # _build_qp in addition to the soft R_rate cost.
-        self.du_max = np.array([math.radians(4.0), 0.6]) 
+        #
+        # Steering: expressed as a RATE (deg/s) x dt rather than a fixed
+        # per-step angle, so the physical meaning survives a change of dt.
+        # The old value was a bare radians(4.0)/step = 80 deg/s at dt=0.05,
+        # which was far below what the plant can actually do and became the
+        # binding constraint: analysis of mpc_standalone_control_1785976976.csv
+        # showed 41% of steps pinned exactly on this limit, with the command
+        # reversing sign at ~8 Hz — a rate-limit-induced limit cycle, not a
+        # weight-tuning problem. Inverting the logged yaw rate through the
+        # kinematic bicycle (delta = atan(L*r/v)) puts the ACHIEVED roadwheel
+        # rate at p99 ~138 deg/s and max ~218 deg/s, so the true actuator is
+        # at least ~200 deg/s. 180 deg/s is set just under that measured
+        # floor: enough headroom that the constraint stops binding in normal
+        # driving, while still bounding the commanded jerk. Re-measure via
+        # system-ID on the running sim to tighten this estimate.
+        MAX_STEER_RATE_RAD_S: float = math.radians(180.0)
+        self.du_max = np.array([MAX_STEER_RATE_RAD_S * self.dt, 0.6])
 
         # ── Continuity memory ─────────────────────────────────────────
         self._delta_act:      float      = 0.0
@@ -281,6 +312,11 @@ class MPCController:
         # measured pose_age_s indicates (see compute()). Sized to the delay
         # cap since older entries are never needed.
         self._u_history: deque = deque(maxlen=MAX_DELAY_COMPENSATION_STEPS)
+
+        # Filtered pose age and the currently-committed rollforward depth.
+        # See the _POSE_AGE_LP_ALPHA / _N_DELAY_HYSTERESIS notes above.
+        self._pose_age_filtered: float | None = None
+        self._n_delay: int = 0
 
         self.last_telemetry: dict = {}
         self._qp: dict | None = None
@@ -476,6 +512,40 @@ class MPCController:
         }
         return x0, kappa, dbg
 
+    def _update_n_delay(self, pose_age_s: float) -> int:
+        """
+        Convert a noisy measured pose age into a stable rollforward depth.
+
+        Low-passes pose_age_s, then moves the committed integer step count
+        only when the filtered estimate has clearly crossed a bin boundary
+        (by more than _N_DELAY_HYSTERESIS steps). Without this, ordinary
+        control-loop jitter flips n_delay between adjacent values every few
+        ticks, and each flip discontinuously changes how far predict_ahead()
+        rolls x0 forward — feeding a step disturbance into the QP at the
+        control rate. Returns the step count to use this tick.
+        """
+        age = max(0.0, float(pose_age_s))
+
+        if self._pose_age_filtered is None:
+            # First sample: adopt it outright rather than easing up from zero,
+            # so startup doesn't spend ~0.3 s under-compensating.
+            self._pose_age_filtered = age
+            self._n_delay = int(np.clip(
+                round(age / self.dt), 0, MAX_DELAY_COMPENSATION_STEPS))
+            return self._n_delay
+
+        self._pose_age_filtered += _POSE_AGE_LP_ALPHA * (age - self._pose_age_filtered)
+
+        steps_f = self._pose_age_filtered / self.dt
+        # Only leave the current bin once the estimate is past its edge plus
+        # the deadband; otherwise hold, so an age sitting near a boundary
+        # produces a constant n_delay instead of dithering.
+        if abs(steps_f - self._n_delay) > 0.5 + _N_DELAY_HYSTERESIS:
+            self._n_delay = int(np.clip(
+                round(steps_f), 0, MAX_DELAY_COMPENSATION_STEPS))
+
+        return self._n_delay
+
     def _solve_qp(
         self,
         x0: np.ndarray,
@@ -617,7 +687,11 @@ class MPCController:
         # the state it will actually face rather than a stale one. Clamp
         # the step count rather than trusting an arbitrarily large measured
         # age blindly (e.g. a perception hiccup) — see MAX_DELAY_COMPENSATION_STEPS.
-        n_delay = int(np.clip(round(pose_age_s / self.dt), 0, MAX_DELAY_COMPENSATION_STEPS))
+        # The step count is filtered and hysteresis-gated rather than taken
+        # raw from this tick's pose_age_s — see the _POSE_AGE_LP_ALPHA /
+        # _N_DELAY_HYSTERESIS notes at module scope for why a jittering
+        # n_delay is itself a source of oscillation.
+        n_delay = self._update_n_delay(pose_age_s)
         if n_delay > 0 and len(self._u_history) > 0:
             pending_cmds = list(self._u_history)[-n_delay:]
             x0 = predict_ahead(x0, Ad, Bd, pending_cmds)
@@ -675,3 +749,5 @@ class MPCController:
         self._u_prev          = np.zeros(self.nu)
         self._v_des_filtered  = None
         self._u_history.clear()
+        self._pose_age_filtered = None
+        self._n_delay           = 0

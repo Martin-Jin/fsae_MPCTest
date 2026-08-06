@@ -64,7 +64,7 @@ from nav_msgs.msg import Odometry
 from rclpy.time import Time
 
 from fsae_control.control_utils import curvature_speed
-from fsae_control.mpc_core import MPCController
+from fsae_control.mpc_core import MAX_STEER_RAD, MPCController
 from fsae_control.telemetry_logger import ControlLogger
 
 CONTROL_HZ = 20.0   # must match MPCController(dt=0.05); dt = 1 / CONTROL_HZ
@@ -255,13 +255,29 @@ class MPCControllerStandaloneNode(Node):
             self._cone_reset_done = False
 
         # ── Phase 4a: telemetry (post-override, reflects the final cmd) ─
+        # log_control's steer argument is RADIANS of roadwheel angle. cmd.steering
+        # is the normalised FSDS [-1, 1] command, so it must be scaled back by
+        # MAX_STEER_RAD (and un-negated — mpc_core flips sign for the FSDS
+        # convention) before logging. Passing cmd.steering directly made the
+        # logger's math.degrees() emit a meaningless number ~2.3x the real angle,
+        # which masked the fact that the controller was sitting on its slew limit.
         if self._telemetry is not None:
             tel = self._mpc.last_telemetry
             t = self.get_clock().now().nanoseconds * 1e-9
+            steer_rad = -float(cmd.steering) * MAX_STEER_RAD
+            # delta_cmd/a_cmd come from the MPC's own telemetry so the logged
+            # score is computed on the solver's real [rad, m/s^2] command pair.
+            # They fall back to the published command when a fail-safe (cone
+            # brake / no solve) overrode the MPC, so the score reflects what
+            # the car actually did, not what the MPC wanted.
+            a_cmd = tel.get('a_cmd', 0.0)
+            if cmd.brake > 0.0 and cmd.throttle == 0.0:
+                a_cmd = min(a_cmd, -float(cmd.brake) * self._mpc.a_max_brake)
             self._telemetry.log_control(
                 t, self._car_pos[0], self._car_pos[1], self._car_yaw,
-                self._car_speed, self._desired_speed, cmd.steering,
-                tel.get('e_y', 0.0), tel.get('e_psi', 0.0), self._car_yaw_rate)
+                self._car_speed, self._desired_speed, steer_rad,
+                tel.get('e_y', 0.0), tel.get('e_psi', 0.0), self._car_yaw_rate,
+                delta_cmd=steer_rad, a_cmd=a_cmd)
             self._telemetry.log_path(t, self._path_pts)
 
         # ── Phase 5: publish ─────────────────────────────────────────────
