@@ -525,6 +525,17 @@ arrives in sustained episodes (median 0.47 s, up to 2.44 s, 96% of energy below
 | planner update rate (1 Hz vs 20 Hz) | No — throttling *improved* the sim |
 | **pose-feed hold** | **No** — model added and verified firing; 3.4% → 4.4% only |
 | **tyre grip / understeer** | **No** — fitted and validated, see below |
+| **`MAX_STEER_RAD` command scaling** | **No** — refuted; deficit is speed-dependent, not constant |
+| **actuator lag** | **No** — `s` does not degrade with command rate |
+| **yaw_rate / speed telemetry error** | **No** — channels validated against pose derivatives |
+| **tyre front/rear balance** | **No** — needs C_f at 10% of physical to reach live K_us |
+
+**Root cause is now localised** (2026-08-06): the car's yaw response to a
+steering command is ~3× weaker than commanded, in a *speed-dependent* way the
+offline plant does not reproduce at all (characteristic speed 6 m/s live vs
+52 m/s offline). Grip is roughly right; the rotation is not. The mechanism
+inside FSDS is still unidentified — see "MEASURED: the car's yaw response is
+~3× weaker than commanded" below.
 
 The pose-feed hold is real (see `PoseFeedHold`) and is now modelled, but it
 accounts for almost none of the gap.
@@ -581,27 +592,94 @@ The car does something else: it holds full lock for sustained periods (21
 episodes, median 0.75 s, up to 2.5 s) at only 4.14 m/s² lateral, which is well
 inside any plausible grip limit.
 
-### Next hypothesis: a speed-INDEPENDENT steering deficit
+### MEASURED: the car's yaw response is ~3× weaker than commanded
 
-The two understeer numbers reconcile if the car's steering deficit is roughly
-constant with speed rather than load-dependent. That points at the command
-path, not the tyres:
+Measured 2026-08-06 from `fsae_logs/mpc_standalone_control_1786007642.csv` and
+`…_1786005274.csv` (two independent one-lap runs, same tuned weights) by
+inverting the kinematic bicycle on logged `yaw_rate` and `delta_cmd`:
 
-1. **Steering command scaling.** `MAX_STEER_RAD = 25°` normalises the FSDS
-   command (`cmd.steering = -delta / MAX_STEER_RAD`). If the FSDS vehicle's
-   actual rack limit is not 25°, every commanded angle is scaled wrong by a
-   constant factor and the car under-turns at all speeds. This is the leading
-   candidate: it explains both the ×2.03 full-lock deficit and the modest
-   gradient in one mechanism. It is also precisely the class of bug that the
-   telemetry units error (logged steering inflated ~2.3×) previously hid.
-2. **Steering offset / deadband** in FSDS not modelled offline.
-3. **Wheelbase or geometry mismatch** — `VehicleParams` uses L=1.55 m; the FSDS
-   vehicle's true wheelbase has not been verified against it.
+    delta_achieved = atan(L · yaw_rate / v)      L = 1.55 m
 
-FSDS's steering configuration is not in this repo (it lives in git-LFS
-`.uasset` binaries), so (1) must be measured from telemetry: command a known
-steering angle at a known speed and compare the achieved yaw rate against
-`delta = atan(L·r/v)`.
+**Headline: at full lock the car delivers well under half the commanded angle.**
+
+| | run 1786007642 | run 1786005274 |
+|---|---|---|
+| samples at full lock (\|δ_cmd\| ≥ 24.9°) | 281 | 313 |
+| mean speed there | 6.82 m/s | 5.97 m/s |
+| mean \|yaw rate\| | 0.739 rad/s | 0.734 rad/s |
+| **implied achieved steer** | **9.54°** | **10.79°** |
+| deficit vs commanded 25° | **×2.62** | **×2.32** |
+
+This happens at ~5 m/s² lateral — nowhere near the ~12 m/s² the same car
+demonstrably reaches — so it is *not* tyre saturation.
+
+#### The deficit is speed-dependent, not a constant scale
+
+Candidate models fitted to achieved yaw rate (common target, so R² is directly
+comparable). `A` is what the offline plant does today:
+
+| model | run 1 R² | run 2 R² |
+|---|---|---|
+| A neutral steer — *the offline plant* | **−1.81** | **−1.02** |
+| B constant command scale (`MAX_STEER_RAD` error) | 0.655 | 0.606 |
+| C understeer, `r = vδ/(L + K_us v²)` | **0.759** | **0.705** |
+| D yaw-rate ceiling, `r_max·tanh(...)` | 0.751 | 0.638 |
+| C+D combined | 0.774 | 0.706 |
+
+Fitted `K_us ≈ 0.038–0.045 s²` → **characteristic speed 5.9–6.4 m/s**. The
+offline plant measures `K_us ≈ 0.0006` → **52 m/s**, i.e. essentially neutral.
+A *negative* R² for A means the offline plant predicts the car's yaw worse than
+guessing the mean. This is the sim-to-real gap in one number.
+
+#### Eliminated by this measurement
+
+- **`MAX_STEER_RAD` scaling (the previous leading hypothesis) — REFUTED.**
+  A constant scale error predicts a flat `s = δ_ach/δ_cmd` across speed. The
+  measured `s` collapses with speed (0.85 → 0.42 → 0.31 → 0.28 across speed
+  quartiles), and model B loses to C decisively.
+- **Actuator lag — REFUTED.** Within a fixed 7–10 m/s band, `s` does *not*
+  degrade as command rate rises (0.30/0.43/0.28 and 0.37/0.40/0.42 across
+  \|δ̇\| terciles); lag requires the opposite. `K_us` is also stable as the
+  quasi-steady filter tightens from 30°/s to 10°/s.
+- **Telemetry error — REFUTED.** `yaw_rate` matches `d(car_yaw)/dt` at
+  slope 0.95 / corr 0.95; logged speed matches position-derived speed
+  (slope 1.08–1.18). The channels are sound.
+- **Tyre front/rear balance — CANNOT REACH IT.** Sweeping front stiffness
+  `B_f` from 16.5 down to 5.0 (an implausibly soft front) moves `K_us` only
+  0.000 → 0.0047 — an order of magnitude short of 0.040. Analytically,
+  `K_us = (m/L)(l_r/C_f − l_f/C_r) = 0.040` requires **C_f at 10% of current**
+  (2 500 N/rad vs 24 390), i.e. 43 N per degree of front slip. Not a physical
+  tyre.
+
+#### What this leaves
+
+Grip and yaw response are **decoupled**: the car reaches ~12 m/s² lateral
+(sim 14.5, so grip is roughly right) yet rotates as if it had almost no front
+axle. No tyre model does that, which is why scaling `mu` never worked — and
+confirms the earlier μ=1.455 fit was fitting the wrong basis (`a_lat` rather
+than `v²`; on a lap the two are confounded, and that fit returned a physically
+backwards *negative* understeer gradient, the tell that it was mis-specified).
+
+Remaining candidates, none yet tested:
+
+1. **Steering geometry / rack ratio inside FSDS** — a nonlinear or
+   speed-scaled rack (some driving sims reduce lock with speed for
+   controllability) would produce exactly this signature. Most likely.
+2. **Wheelbase mismatch** — `VehicleParams` uses L = 1.55 m unverified against
+   the FSDS vehicle. Note this cannot be the whole story: L would have to be
+   ~3.9 m to explain the full-lock number alone.
+3. **A yaw-damping or stability-control term in FSDS** not modelled offline.
+
+FSDS's vehicle configuration lives in git-LFS `.uasset` binaries and is not
+readable from this repo, so these must be separated by **open-loop
+experiment**: command fixed steering angles at fixed speeds on an empty map
+and record the achieved yaw rate. That isolates the plant from the controller,
+which no lap log can do.
+
+> **Not yet acted on.** No plant change is recommended from this measurement
+> alone. Reproducing `K_us ≈ 0.04` by bending tyre parameters would match the
+> symptom while keeping the physics wrong, and would corrupt every downstream
+> grip-dependent result. Identify the mechanism first.
 
 **Consequence:** offline scores are not yet predictive of live behaviour. A
 tuning run that scores well offline can still produce a car that saturates
