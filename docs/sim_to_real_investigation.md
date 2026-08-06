@@ -862,15 +862,52 @@ cone-map clutter would cross it.
 mechanism (blend-defeat-by-divergence) as the explanation for the
 recorded-map gap. It does not rule out the planner more broadly — the
 reference-heading lead itself (§12.8) is still open and unexplained; this
-only closes off one candidate mechanism within it. The still-untested part of
-§12.8 is whether the *blended* path itself (the 97.3%+ of cycles that do
-*not* hit the reset) nonetheless carries a heading rate exceeding what the
-car can yaw, i.e. whether `alpha=0.4` blending is insufficient rather than
-bypassed. That is directly measurable offline from the same instrumentation
-and is the natural next step.
+only closes off one candidate mechanism within it.
 
 **Reproduce with:** `python3 -m tuner.blend_reset_diagnostics` (needs
 `MPLBACKEND=Agg`, same `cma`/matplotlib import issue as §13's ledger).
+
+### 14.1 Does rebuild magnitude explain the blended path's heading rate? Mostly no.
+
+The remaining part of §12.8's lead is whether the *blended* path — what
+actually gets published on all 1037/1038 recorded-map ticks that don't hit
+the reset — nonetheless carries a heading rate exceeding what the car can
+yaw, i.e. whether `alpha=0.4` is itself insufficient rather than bypassed.
+Measured with `tuner/reference_heading_vs_rebuild.py` (new): per-tick rebuild
+distance (same statistic as §14, but recorded for every tick, not just
+above-threshold ones) against the blended path's own reference-heading rate,
+reconstructed the same way as §12.8 (`ref_psi = car_yaw − e_psi`).
+
+| | value |
+|---|---|
+| \|d(ref_psi)/dt\| mean / p90 / p99 / max | 26.4 / 63.1 / 140.0 / 265.0 °/s |
+| rebuild distance mean / p90 / p99 / max | 0.14 / 0.25 / 1.00 / 1.98 m |
+| raw correlation(rebuild distance, \|d(ref_psi)/dt\|) | **0.149** |
+| partial correlation, controlling for \|yaw_rate\| and speed | **0.101** |
+| top-10%-rebuild-distance ticks (>0.25 m), mean \|d(ref_psi)/dt\| | 40.1 °/s |
+| bottom-90% ticks, mean \|d(ref_psi)/dt\| | 24.8 °/s |
+
+A real but weak effect: the top-decile-rebuild ticks run 62% hotter than the
+rest, and controlling for corner severity (`|yaw_rate|`, speed — a proxy for
+"this is just a tight corner, not planner noise") barely moves the
+correlation (0.149 → 0.101), so it is not purely a severity confound. But
+r≈0.10–0.15 means rebuild magnitude explains at most ~1–2% of the variance
+in reference-heading rate (r²) — nowhere near enough to be the dominant
+driver of the 78–100% reference-driven heading-error growth in §12.8. **Most
+of the reference-heading swing on this map is not explained by
+rebuild-to-rebuild planner instability**, blended or bypassed. It is more
+likely intrinsic to the geometry the centreline is fitting (a genuinely
+tight corner has a fast-changing tangent on its own) — which loops back to
+the *curvature-spike* defect this section set out to distinguish from: not
+as a temporal-consistency problem, but as the original spatial one after
+all, just measured in heading rather than curvature terms for the first
+time. That reopens the planner's actual smoothing/fitting logic
+(`centerline_planner.py`, `boundary.py`) as the place to look — not
+`blend_paths`, which is now checked on both fronts (reset-bypass in §14,
+blended-magnitude correlation here) and cleared each time.
+
+**Reproduce with:** `python3 -m tuner.reference_heading_vs_rebuild` (same
+`MPLBACKEND=Agg` requirement).
 
 ## What generalises
 
@@ -944,7 +981,8 @@ and is the natural next step.
 | Ceiling is speed-dependent | **New, unmodelled (§12.4).** Measured sustained a_lat rises with speed — 6.45 @ 8 m/s, 7.54 @ 11, 9.26 @ 14 — while the model pins it flat at 7.5. Residuals +1.0 / ~0 / −1.76. Deliberately not fitted: 16 points, one run |
 | Step vs sweep disagree on level | **Open.** Step's 3 s settle says 7.5 @ 8 m/s; the sweep's long orbit says 6.45. A longer `step_s` resolves whether sustained a_lat keeps decaying past 3 s — same experiment as the `tau` re-measurement |
 | Planner reference heading | **Open, narrowed (§12.8, §14).** In *both* stacks the reference heading swings faster than the car can yaw, and drives 78–100% of heading-error growth. Live's is 15–34% worse in the tail. Distinct from the *curvature* comparison §3 eliminated |
-| `blend_paths` reset-bypass discontinuity | **Eliminated for the recorded map (§14).** Real, parity-correct mechanism, can jump the reference up to 166° on other geometries (PATH_SPIRAL) — but fires 0/1038 times on the recorded map (max trigger-distance 1.98 m, just under the 2.0 m threshold). Cannot explain 21.1% saturation with 0 events. Still open: whether the *blended* (non-bypassed) path itself swings faster than the car can yaw |
+| `blend_paths` reset-bypass discontinuity | **Eliminated for the recorded map (§14).** Real, parity-correct mechanism, can jump the reference up to 166° on other geometries (PATH_SPIRAL) — but fires 0/1038 times on the recorded map (max trigger-distance 1.98 m, just under the 2.0 m threshold). Cannot explain 21.1% saturation with 0 events |
+| `blend_paths` blended-magnitude vs heading rate | **Mostly eliminated (§14.1).** Rebuild distance vs. blended path's own reference-heading rate: r=0.15 raw, r=0.10 controlling for corner severity — explains ~1-2% of variance, not the 78–100% reference-driven growth in §12.8. Points back at the planner's spatial fit itself (curvature-spike defect), not `blend_paths`, as the likely source of the heading-rate symptom |
 | Identify the exact FSDS mechanism | **Done** — step test run (§9–10): a *dynamically enforced lateral-acceleration* ceiling. Both signatures present: different steering angles settle to the same response (a cap), yet yaw overshoots ~30% first (not a static clip) |
 | Ceiling decay time constant | **Done — see `alat_ceiling_tau` above (§12.12).** Superseded the original 0.04–1.06 s scattered fit from the 3 s hold |
 | Speed profile | **Closed, not a discrepancy** — see the correction below. Achieved speeds differ by 2% |
