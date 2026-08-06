@@ -337,3 +337,15 @@ Commit hash = 1d9036ca799883b45c1e0dd8857ecb8280f362c7
 # a future tuned run can be sanity-checked against "did tuning beat doing
 # nothing", which no entry above this line can answer.
 # =============================================================================
+
+# 06/08/26 18:08 - [Pending Description: yet to be tested]
+Q_diag      = [3.7571243052985706, 0.9136451433989563, 3.646988318007195, 4.2568655128643655, 5.7401223832435395, 0.0, 0.0, 0.0]
+R_diag      = [8.83897778390359, 6.459783748169738]
+R_rate_diag = [3.4163241974652605, 9.096039475718385]
+Score weights = rmse=0.505, yaw_rms=0.09, smooth_rms=0.065, steer_rms=0.02, accel_rms=0.015, max_steering=0.03, steering_sat_ratio=0.045, jerk_rms=0.045, max_yaw_rate=0.02, steering_reversal_rms=0.05, peak_lateral_error=0.1, speed_rmse=0.015
+Bonus/penalty weights = completion_bonus=0.5, time_bonus=0.25, dnf_penalty=3
+Duration    = 67.81 minutes
+Overall score (avged from all testing scenarios)  = Haven't been tested.
+Tuner score (tuning scenarios / validation suite) = 0.1845
+Optuna TPE pre-pass = Yes (250 trials, best 0.1709) — CMA-ES x0 seeded from best trial
+Commit hash = 7a0d794dfc31c4785ff9e5dc2525879bb1125558

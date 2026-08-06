@@ -1115,10 +1115,11 @@ def log_results_to_history(Q, R, R_rate, duration, score, optuna_info=None):
     R_rate : np.ndarray, shape (2,2)  Best-found R_rate matrix.
     duration : float                  Total optimisation wall time (seconds).
     optuna_info : dict or None
-        If the Optuna TPE pre-pass was used, a dict with keys 'n_trials' and
-        'best_score' describing that phase, so the log stays traceable back
-        to whether x0 was the fixed midpoint or an Optuna-seeded point. None
-        if USE_OPTUNA_PRESEARCH was False for this run.
+        If the Optuna TPE pre-pass was used, a dict with keys 'n_trials',
+        'best_score', and the pre-pass's own best-found 'Q'/'R'/'R_rate'
+        matrices, so the log stays traceable back to whether x0 was the
+        fixed midpoint or an Optuna-seeded point, and what that seed point
+        actually was. None if USE_OPTUNA_PRESEARCH was False for this run.
 
     Called by: main block (after optimisation completes or is interrupted)
     """
@@ -1149,6 +1150,9 @@ def log_results_to_history(Q, R, R_rate, duration, score, optuna_info=None):
                 f"Optuna TPE pre-pass = Yes ({optuna_info['n_trials']} trials, "
                 f"best {optuna_info['best_score']:.4f}) — CMA-ES x0 seeded from best trial\n"
             )
+            f.write(f"  Optuna Q_diag      = {np.diag(optuna_info['Q']).tolist()}\n")
+            f.write(f"  Optuna R_diag      = {np.diag(optuna_info['R']).tolist()}\n")
+            f.write(f"  Optuna R_rate_diag = {np.diag(optuna_info['R_rate']).tolist()}\n")
         else:
             f.write("Optuna TPE pre-pass = No (fixed geometric-midpoint x0)\n")
         f.write(f"Commit hash = {commit_hash}\n")
@@ -1308,9 +1312,15 @@ if __name__ == "__main__":
             )
             optuna_duration = time.time() - optuna_start
             n_trials_run = len(optuna_study.trials)
+            optuna_Q, optuna_R, optuna_R_rate = vector_to_weights(
+                optuna_vec, Q_init, R_init, R_rate_init
+            )
             optuna_info = {
                 "n_trials": n_trials_run,
                 "best_score": optuna_study.best_value,
+                "Q": optuna_Q,
+                "R": optuna_R,
+                "R_rate": optuna_R_rate,
             }
             print(
                 f"[Offline Tuner] Optuna pre-pass done in {optuna_duration / 60:.2f} min "
