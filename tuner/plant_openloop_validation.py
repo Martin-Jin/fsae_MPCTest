@@ -49,7 +49,11 @@ from model.vehicle_physics import (  # noqa: E402
     IDX_R, IDX_VX, VehicleParams, init_plant_state, step_nonlinear_plant,
 )
 
-LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(_HERE)), "fsae_logs")
+# The harnesses (ros2/run_steering_*.sh) always write to $HOME/fsae_logs, never
+# to a repo-relative path. A one-off manual copy previously left stale
+# duplicates in <repo_root>/fsae_logs; point at the real source so this always
+# picks up the newest run.
+LOG_DIR = os.path.join(os.path.expanduser("~"), "fsae_logs")
 MAX_STEER_RAD = np.radians(25.0)
 NOMINAL_STEERS = (0.5, 0.65, 0.8, 1.0)
 # Below this speed the measurements show the ceiling never engages, so these

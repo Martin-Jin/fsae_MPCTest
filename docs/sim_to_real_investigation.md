@@ -594,6 +594,9 @@ behaviourally; the measured decay ranged 0.04–1.06 s). Under the integral law
 transient — which makes it both more identifiable and more clearly the next
 thing to measure, with a longer `step_s`.
 
+> **Measured 2026-08-07 (§12.12a).** `tau` is now **0.40 s** (was 0.25,
+> behavioural). Fixing `tau` did **not** close the saturation gap — see below.
+
 ### 12.10 Tooling added (the loop that was missing)
 
 `steering_sysid_analysis.py` and `steering_step_analysis.py` answer "what does
@@ -629,12 +632,68 @@ low-speed under-cornering is a rig confound and is *not* reported as a finding.
   dash on `set -o pipefail`. Fixed in both; `ros2/launch_all.sh` and its
   `fsds_simulator/` mirror have the same defect, left alone as out of scope.
 
-### 12.12 Not measured this session
+### 12.12 `alat_ceiling_tau` measured — tight, but does not close the gap
 
-The longer step test (`step_s = 8.0`) could not be run: launching FSDS requires
-WSL→Windows process spawning (`cmd.exe`, `taskkill.exe`), which this
-environment terminates. `--no-sim` against an already-running FSDS avoids that
-entirely and is the way to run it.
+*(2026-08-07, continued.)* The longer step test could not be run from this
+environment (launching FSDS requires WSL→Windows process spawning that it
+terminates — even `--no-sim` against an already-running FSDS still needs
+`ros2 launch`/`ros2 run`, which was killed at dispatch every time it was tried,
+sandbox-disabled or not). The user ran it directly:
+
+    ros2/run_steering_step.sh --no-sim \
+      -p 'speeds:=[5.0,8.0,12.0]' -p 'steer_cmds:=[0.6,1.0]' \
+      -p 'step_s:=8.0' -p 'repeats:=2' -p 'require_go:=false'
+
+That surfaced a **second, more fundamental** harness bug behind the one fixed in
+§12.11: `"${EXTRA_ARGS[@]}"` was being expanded *outside* the quoted `bash -c
+"..."` string that contained the actual script, so the array elements never
+became part of the inner command at all — they landed as extra positional
+arguments to the outer `bash -c`, and `ros2` saw a bare trailing `-p` with
+nothing after it ("Couldn't parse trailing -p flag"). Quoting the array
+correctly (§12.11) fixed word-splitting but could not fix this, because the
+array was never inside the string to begin with. Fixed in both harnesses by
+passing `EXTRA_ARGS` as real positional parameters to `bash -c '...' _ "$@"`
+instead of string-interpolating them, and verified with a dry run before asking
+for another live attempt.
+
+**Result — `fsae_logs/steering_step_1786047535.csv`, 12 trials, 8 s hold:**
+
+| v | steer | tau (fit) |
+|---|---|---|
+| 5.0 | 0.60 / 1.00 | 0.28, 0.88, 0.44, 0.46 |
+| 8.0 | 0.60 / 1.00 | 0.32, 0.40, 0.38, 0.36 |
+| 12.0 | 0.60 / 1.00 | 0.30, 0.34, 0.30, 0.28 |
+
+Median **0.35 s**, 11/12 trials within 0.28–0.46 s (the one 0.88 s outlier is at
+5.1 m/s, right at the cap's speed threshold). Compare the old 3 s test's
+0.04–1.06 s range — the longer hold resolved it decisively, exactly as
+predicted.
+
+**Refit:** under the integral law the settled value is pinned regardless of
+`tau` (confirmed: 7.50 across a 0.25→0.45 sweep), so `tau` was fit to this
+run's peak alone. `0.40` takes peak error from −0.45 to −0.04 m/s²
+(measured 10.82, old model 10.37, new model 10.78). The SWEEP validation is
+unchanged (it measures only steady state, which `tau` cannot affect).
+
+**Also checked: does a_lat keep decaying past 3 s?** No — flat within noise at
+the 3 s/5 s/8 s marks across all 12 trials. The step test's short-hold settle
+(~7.5–7.9) and the sweep's long-orbit sustained value (6.1–8.1, lower at every
+matched speed) are **not** reconciled by slow decay inside a single hold. That
+disagreement stays open — see the table in `planning_control_sync.md`.
+
+**Closed-loop check (recorded map, `tau=0.40`):** no DNF, saturation actually
+**dropped** slightly (6.74% → 4.80%) rather than rising toward live's 21.1%.
+Ship it anyway — this is a plant-fidelity fit to a direct FSDS measurement, not
+a saturation-tuning knob, and §12.9 already established the residual gap is a
+planner/reference problem, not this parameter. Re-verify after any planner
+change that shortens corner-entry time, per the standing DNF risk noted in §10.
+
+**So the top-priority parameter from §12.9 is now measured, and it was not the
+answer.** The residual saturation gap is still open. The reference-heading lead
+(§12.8 — both stacks chase a reference swinging faster than either car can yaw,
+78–100% of heading-error growth is reference-driven) is the next thing to
+pursue, and it is testable **offline**: planner republish rate, centreline
+smoothing parameters, no FSDS session required.
 
 ## What generalises
 
@@ -683,6 +742,17 @@ entirely and is the way to run it.
 14. **Separate rate from duration.** "21% of ticks" hid the actual finding: the
     durations match (1.3×) and only the *entry rate* differs (2.6×). That
     reframes the search from steady-state capability to turn-in transients.
+15. **A parameter matching the mechanism is not a guarantee it's the whole
+    story.** `tau` was the single most implicated unmeasured parameter — it
+    directly controls the transient, and the residual gap is specifically a
+    transient. It was measured, refit, and validated (§12.12) and the
+    saturation gap did not move. Localising *what kind* of thing is wrong
+    (transient vs steady-state) narrows the search; it does not name the cause.
+16. **A quoting fix can be incomplete.** `[*]` → `[@]` (§12.11) fixed
+    word-splitting but the array was still expanding *outside* the string that
+    contained the command — a different bug with the same symptom (broken
+    arguments), only caught by an actual failed run, not by reasoning about the
+    fix in isolation.
 
 ---
 
@@ -692,12 +762,12 @@ entirely and is the way to run it.
 |---|---|
 | **Model the yaw cap offline** | **Done** — `alat_ceiling*` in `model/vehicle_physics.py`. Moves every metric toward the car (saturation 4.4→6.3%, a_lat max 14.06→10.53) but closes only part of the gap; live is still 21.1% saturation |
 | Remaining saturation gap | **Open, but narrowed (§12).** Not capability (§12.6) and not `a_cmd` (§12.7). Localised to the *entry rate* into the high-heading-error state (2.6×) with matching in-state behaviour — i.e. a turn-in transient property |
-| **`alat_ceiling_tau`** | **Top priority (§12.9).** Never measured; the only ceiling parameter still behavioural. Now controls *only* the transient under the integral law, and the residual gap is *specifically* a transient. Re-measure with `step_s = 8.0` |
+| **`alat_ceiling_tau`** | **Done (§12.12).** Measured 0.35 s median (0.28–0.46, 11/12 trials) with `step_s=8.0`; model set to 0.40. Fixing it did **not** close the saturation gap — the residual is elsewhere |
 | Ceiling is speed-dependent | **New, unmodelled (§12.4).** Measured sustained a_lat rises with speed — 6.45 @ 8 m/s, 7.54 @ 11, 9.26 @ 14 — while the model pins it flat at 7.5. Residuals +1.0 / ~0 / −1.76. Deliberately not fitted: 16 points, one run |
 | Step vs sweep disagree on level | **Open.** Step's 3 s settle says 7.5 @ 8 m/s; the sweep's long orbit says 6.45. A longer `step_s` resolves whether sustained a_lat keeps decaying past 3 s — same experiment as the `tau` re-measurement |
 | Planner reference heading | **New lead (§12.8).** In *both* stacks the reference heading swings faster than the car can yaw, and drives 78–100% of heading-error growth. Live's is 15–34% worse in the tail. Distinct from the *curvature* comparison §3 eliminated |
 | Identify the exact FSDS mechanism | **Done** — step test run (§9–10): a *dynamically enforced lateral-acceleration* ceiling. Both signatures present: different steering angles settle to the same response (a cap), yet yaw overshoots ~30% first (not a static clip) |
-| Ceiling decay time constant | **Not reliably measured.** Fitting peak→settled gave median 0.08 s over a 0.04–1.06 s range (rise a cleaner 0.40 s). `alat_ceiling_tau = 0.25` was chosen to match peak a_lat and act in time, not from this fit. Needs a longer `step_s` and more repeats |
+| Ceiling decay time constant | **Done — see `alat_ceiling_tau` above (§12.12).** Superseded the original 0.04–1.06 s scattered fit from the 3 s hold |
 | Speed profile | **Closed, not a discrepancy** — see the correction below. Achieved speeds differ by 2% |
 | Objective rebalancing | Deferred (§1) — `QUALITY_WEIGHT` 0.35 → ~0.8, saturation as near-constraint |
 | Step 4: held-out tracks | 5 of 10 tracks unused |

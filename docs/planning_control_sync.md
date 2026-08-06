@@ -906,7 +906,7 @@ removes the turn-in transient the MPC reacts to):
 | `alat_ceiling` | 7.5 m/s² | measured settled a_lat (7.80 @ 8 m/s, 7.29 @ 12) |
 | `alat_ceiling_mode` | `'pi'` | **corrected 2026-08-07** — see below |
 | `alat_ceiling_gain` | 450 N·m | fitted to measured PEAK only; settled falls out by structure |
-| `alat_ceiling_tau` | 0.25 s | **behavioural, still not measured** — top-priority re-measurement |
+| `alat_ceiling_tau` | 0.40 s | **measured 2026-08-07**, 8 s hold (was 0.25, behavioural) — did NOT close the saturation gap |
 | `alat_ceiling_enabled` | `True` | models **FSDS**, not the physical car — disable for real-vehicle work |
 
 > **CORRECTED 2026-08-07: the law was proportional, and a proportional law
@@ -1001,31 +1001,35 @@ value (700) reproduces that behaviour and completes the lap.
 
 Same map, same tuned gains:
 
-| | before (no ceiling) | P law (700) | **PI law (450)** | live |
-|---|---|---|---|---|
-| steering saturation | 4.4% | 6.3% | **6.7%** | **21.1%** |
-| reversals/s | 0.84 | 0.82 | 0.93 | 1.62 |
-| \|e_psi\| mean / p90 | 6.3 / 14.2 | 7.3 / 19.2 | 7.5 / 20.0 | **15.9 / 42.0** |
-| a_lat max | 14.06 | 10.53 | 10.80 | 12.34 |
-| a_lat > 7.5 | 14.2% | 14.2% | **8.9%** | 9.8% |
-| composite score | — | 0.675 | 0.700 | — |
+| | before (no ceiling) | P law (700) | PI, tau=0.25 (450) | **PI, tau=0.40 (450)** | live |
+|---|---|---|---|---|---|
+| steering saturation | 4.4% | 6.3% | 6.7% | **4.8%** | **21.1%** |
+| reversals/s | 0.84 | 0.82 | 0.93 | 0.80 | 1.62 |
+| \|e_psi\| mean / p90 | 6.3 / 14.2 | 7.3 / 19.2 | 7.5 / 20.0 | 6.9 / 18.5 | **15.9 / 42.0** |
+| a_lat max | 14.06 | 10.53 | 10.80 | 11.24 | 12.34 |
+| a_lat > 7.5 | 14.2% | 14.2% | 8.9% | **10.9%** | 9.8% |
+| composite score | — | 0.675 | 0.700 | 0.627 | — |
 
 Reproduce any column with
-`python3 -m tuner.recorded_map_rollout [--mode p --gain 700 | --no-ceiling]`.
+`python3 -m tuner.recorded_map_rollout [--mode p --gain 700 | --tau 0.25 | --no-ceiling]`.
+`tau=0.40` is the shipped, measured value (see below); saturation moving
+*further* from live under it is expected — it's a plant-fidelity fit to a
+direct FSDS measurement, not a saturation-tuning knob.
 
 Every metric moves toward the car, and peak lateral acceleration is now
-realistic. **But the gap is only partly closed** — live still saturates 3×
+realistic. **But the gap is only partly closed** — live still saturates 4×
 more often and carries 2× the heading error. The yaw cap was a real and
 necessary fix; it is not the whole story.
 
-The PI column reproduces the car's **lateral-acceleration distribution** well
-(time-above-ceiling within 9%, previously 45% too high) while barely moving
-**steering saturation**. Those are now known to be separate problems:
-`sim_to_real_investigation.md` §12 eliminates cornering capability (§12.6) and
-the `a_cmd` divergence (§12.7) as causes of the saturation gap, and narrows it to
-the *rate of entry* into the high-heading-error state (2.6×, with matching
-in-state behaviour) — a turn-in transient, which makes the unmeasured
-`alat_ceiling_tau` the top priority.
+The PI columns reproduce the car's **lateral-acceleration distribution** well
+(time-above-ceiling within 11–9% of live, vs 45% too high before) while barely
+moving, or moving the wrong way on, **steering saturation**. Those are now
+known to be separate problems: `sim_to_real_investigation.md` §12 eliminates
+cornering capability (§12.6), the `a_cmd` divergence (§12.7), AND
+`alat_ceiling_tau` (§12.12 — measured, refit, still no saturation improvement)
+as causes of the saturation gap, and narrows it to the *rate of entry* into the
+high-heading-error state (2.6×, with matching in-state behaviour). The
+reference-heading lead (§12.8) is next, and is testable **offline**.
 
 **Validation tooling** (added 2026-08-07 — this loop was previously missing, and
 its absence is how a 13% sustained-cornering surplus survived a refit):
@@ -1046,30 +1050,33 @@ robust to ±3.5% over the same range and is exactly timestep-independent.
 > better than before but still optimistic. The remaining saturation gap needs
 > its own investigation.
 
-> **The decay time constant is NOT yet reliably measured.** Fitting
-> peak→settled across the 8 capped trials gives a median of 0.08 s but a range
-> of 0.04–1.06 s — too scattered to use. The rise is a cleaner 0.40 s. Before
-> committing a time constant, either fit the full transient shape rather than a
-> 63% crossing, or re-run with a longer `step_s` and more repeats.
+> **MEASURED 2026-08-07** with `step_s=8.0`, `repeats=2` (12 trials,
+> `fsae_logs/steering_step_1786047535.csv`). The original 3 s hold gave a decay
+> too scattered to fit (median 0.08 s over a 0.04–1.06 s range); at 8 s the fit
+> is tight — median **0.35 s**, 11/12 trials within 0.28–0.46 s (one 0.88 s
+> outlier at 5.1 m/s, right at the cap's speed threshold).
 >
-> **This is now the top-priority measurement (2026-08-07).** Two things changed
-> its status. First, under the integral law `tau` no longer affects the settled
-> value at all — it controls *only* the transient, so it is both more
-> identifiable and no longer entangled with the ceiling level. Second, the
-> residual saturation gap has been localised to a *transient* property: the car
-> enters the high-heading-error state 2.6× more often per second than the sim
-> while behaving near-identically once in it (§12.9).
+> Refit to this run's PEAK alone (settled is pinned by structure regardless of
+> `tau` — confirmed flat at 7.50 across a 0.25–0.45 sweep): **`tau = 0.40`**,
+> taking peak error from −0.45 to −0.04 m/s² against this measurement
+> (10.82 measured, 10.37 old model, 10.78 new model). No DNF on the recorded
+> map. Closed-loop saturation moved the *wrong* way (6.74% → 4.80%, away from
+> live's 21.1%) — expected, since §12.9/§12.12 in
+> `sim_to_real_investigation.md` had already localised the residual gap to the
+> planner/reference, not this parameter. Reproduce with
+> `python3 -m tuner.plant_openloop_validation`.
 >
-> Run it as:
+> Also checked: does a_lat keep decaying past 3 s into the hold? No — flat
+> within noise at the 3/5/8 s marks across all 12 trials. The step test's
+> short-hold settle (~7.5–7.9) and the sweep's long-orbit sustained value
+> (6.1–8.1, lower at every matched speed) are **not** reconciled by slow decay
+> within a single hold; that disagreement stays open.
 >
->     # with FSDS already running (avoids the WSL->Windows launch entirely)
->     bash ros2/run_steering_step.sh --no-sim \
->          -p 'speeds:=[5.0,8.0,12.0]' -p 'steer_cmds:=[0.6,1.0]' \
->          -p 'step_s:=8.0' -p 'repeats:=2' -p 'require_go:=false'
->
-> Note there must be no spaces inside the array literals and `require_go:=false`
-> removes the need for anyone to press GO. An 8 s hold also resolves the
-> step-vs-sweep level disagreement (7.5 vs 6.45 @ 8 m/s) in the same run.
+> Getting this measurement required fixing a second harness bug beyond the
+> quoting fix above: `"${EXTRA_ARGS[@]}"` was expanding *outside* the quoted
+> `bash -c "..."` string containing the actual command, so the array never
+> reached the inner script — `ros2` saw a bare trailing `-p`. Fixed by passing
+> the array as real positional parameters: `bash -c '...' _ "$@"`.
 
 ##### The test that produced this (reusable)
 

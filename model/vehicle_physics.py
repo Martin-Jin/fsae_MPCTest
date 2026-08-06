@@ -237,22 +237,37 @@ class VehicleParams:
         # — that lag is what produces the measured overshoot. A memoryless
         # version engages instantly and cannot overshoot at all.
         #
-        # STILL A BEHAVIOURAL FIT, NOT A MEASURED CONSTANT. The measured decay
-        # was too scattered to use (median 0.08 s over a 0.04-1.06 s range; the
-        # rise is a cleaner 0.40 s). This value is chosen to act fast enough to
-        # catch a real corner entry, which is the binding constraint and was
-        # learned the hard way: tau=1.0 reproduced the measured ~30% overshoot
-        # beautifully in a step test, then DNF'd the car at 6.3 s on a lap.
-        # Corners arrive in ~0.4 s, so a term taking ~1 s to build does nothing
-        # during turn-in, lets the car run wide, and engages only once it is
-        # already off line. A ceiling that acts too late is worse than none.
+        # MEASURED 2026-08-07 with a longer step_s=8.0 (repeats=2, 12 trials).
+        # The original 3 s hold gave a decay too scattered to fit (median
+        # 0.08 s over a 0.04-1.06 s range). At 8 s, fitting peak/final decay
+        # gives a tight median 0.35 s (11/12 trials within 0.28-0.46 s; one
+        # 0.88 s outlier at 5.1 m/s, right at the cap's speed threshold).
         #
-        # Under the integral law the settled value no longer depends on tau at
-        # all (structure pins it), so tau now controls ONLY the transient.
-        # That makes it the first parameter to re-measure if the sim's turn-in
-        # looks wrong — with a longer step_s, per the note in
-        # docs/planning_control_sync.md.
-        self.alat_ceiling_tau = 0.25
+        # Under the integral law the settled value does not depend on tau at
+        # all (structure pins it at the ceiling regardless), so tau affects
+        # ONLY the transient peak. Refitting to this measurement's peak alone
+        # (0.25 -> 0.40; 0.35 rounds to a worse peak fit here) takes the model
+        # from -0.45 to -0.04 m/s² peak error, with no change to the settled
+        # fit or to the SWEEP validation (which only measures steady state).
+        #
+        # Confirmed no further decay 3-8 s into the hold (a_lat flat within
+        # noise at the 3/5/8 s marks across all 12 trials) — the step test's
+        # ~7.5 short/medium-term settle and the sweep's lower long-orbit value
+        # (6.1-8.1, see alat_ceiling above) are not the same regime reconciling
+        # via slow decay; that disagreement is still open.
+        #
+        # Re-measure via: ros2/run_steering_step.sh --no-sim
+        #   -p 'speeds:=[5.0,8.0,12.0]' -p 'steer_cmds:=[0.6,1.0]'
+        #   -p 'step_s:=8.0' -p 'repeats:=2' -p 'require_go:=false'
+        # then python3 -m tuner.plant_openloop_validation
+        #
+        # STILL WORTH RE-CHECKING: a term taking too long to build did nothing
+        # during turn-in and DNF'd the car once before (tau=1.0, see the 2026-08
+        # note in docs/sim_to_real_investigation.md §10). 0.40 s is well inside
+        # what corners (~0.4 s to arrive) tolerate and does not DNF the recorded
+        # map, but re-verify after any planner change that shortens corner
+        # entry time.
+        self.alat_ceiling_tau = 0.40
 
         # ── Unsprung Mass ────────────────────────────────────────────────────
         self.m_us  = 7.5      # Unsprung mass per corner: wheel + upright + hub (kg)
