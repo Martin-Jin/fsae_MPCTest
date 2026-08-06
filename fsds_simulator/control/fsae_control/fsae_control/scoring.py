@@ -90,6 +90,21 @@ TIME_BONUS_WEIGHT = 0.25
 DNF_PENALTY = 3.0
 DNF_OFFTRACK_PENALTY = 3.0
 
+# Constrained scoring structure — see fsae_MPCTest/settings.py for the full
+# rationale. Summary: the score is three tiers, not one weighted sum.
+#   1. Hard constraints (crash/off-track/unfinished) -> above CONSTRAINT_FLOOR,
+#      where no amount of good driving in the quality terms can rescue them.
+#   2. Primary objective: lap time vs. the path's physical optimum.
+#   3. Quality group: the 12 metrics as a weighted sum, scaled to shape the
+#      result rather than drive it.
+# A weighted sum alone can only reach the convex hull of the trade-off surface,
+# which is why a deliberately-hunting set of gains kept outscoring a sane one
+# no matter how the weights were set.
+CONSTRAINT_FLOOR = 10.0
+COMPLETION_THRESHOLD = 0.98
+TIME_OBJECTIVE_WEIGHT = 1.0
+QUALITY_WEIGHT = 0.35
+
 # Metric index constants — must stay in sync with SCORE_WEIGHTS order
 IDX_RMSE               = 0
 IDX_YAW_RMS            = 1
@@ -123,6 +138,7 @@ def compute_composite_score(
     dnf=False,
     offtrack=False,
     inaccurate_count=0,
+    reached_end=None,
 ):
     """
     Single source of truth for the composite performance score.
@@ -151,20 +167,46 @@ def compute_composite_score(
         ]
     )
     # Normalise by reference scale before weighting — see METRIC_SCALES above.
-    score = float(SCORE_WEIGHTS @ (metrics / METRIC_SCALES))
+    normalised = metrics / METRIC_SCALES
+    quality = float(SCORE_WEIGHTS @ normalised)
 
     progress = float(np.clip(progress, 0.0, 1.0))
-    score -= COMPLETION_BONUS_WEIGHT * progress + TIME_BONUS_WEIGHT * time_bonus
 
-    if dnf:
-        score += DNF_PENALTY
-    if offtrack:
-        score += DNF_OFFTRACK_PENALTY
+    # ── TIER 1: hard constraints ──────────────────────────────────────────
+    # Infeasible runs are pushed above CONSTRAINT_FLOOR so no quality score
+    # can promote them above a feasible run. Ordering within the band still
+    # rewards getting further before failing, to keep a usable gradient.
+    if dnf or offtrack:
+        severity = DNF_PENALTY + (DNF_OFFTRACK_PENALTY if offtrack else 0.0)
+        return float(CONSTRAINT_FLOOR + severity * (1.0 - progress))
+
+    # `reached_end` is the authoritative "did it finish" signal from the
+    # rollout. progress is NOT usable for this: it comes from a bounded
+    # nearest-index search that stops short of the final path point, so a
+    # fully-completed run typically reports ~0.90, not 1.0. Thresholding on
+    # progress therefore marked every successful run infeasible. Fall back to
+    # the progress threshold only when the caller can't supply reached_end
+    # (e.g. the live car, which has no known path end).
+    finished = reached_end if reached_end is not None else (progress >= COMPLETION_THRESHOLD)
+    if not finished:
+        return float(CONSTRAINT_FLOOR + DNF_PENALTY * (1.0 - progress))
+
+    # ── TIER 2: primary objective — time ──────────────────────────────────
+    # time_bonus is optimal_time / actual_time, so this is "fraction slower
+    # than physically possible". NOTE: live runs have no optimal-lap reference,
+    # so time_bonus defaults to 0.0 and this term saturates at 1.0 — the live
+    # score is flagged score_is_partial=1 for exactly this reason. The quality
+    # component below remains directly comparable to an offline score.
+    time_cost = float(np.clip(1.0 - time_bonus, 0.0, 1.0))
+
+    # ── TIER 3: quality / smoothness ──────────────────────────────────────
+    score = TIME_OBJECTIVE_WEIGHT * time_cost + QUALITY_WEIGHT * quality
+
     if inaccurate_count > 0:
         factor = min(5, inaccurate_count) * 0.1
         score = score + abs(score) * factor
 
-    return score
+    return float(score)
 
 
 class RolloutMetrics:
@@ -251,7 +293,8 @@ class RolloutMetrics:
 
         self.u_prev = u_opt.copy()
 
-    def finalize(self, progress, time_bonus=0.0, dnf=False, offtrack=False):
+    def finalize(self, progress, time_bonus=0.0, dnf=False, offtrack=False,
+                 reached_end=None):
         """
         Normalise accumulated sums to RMS/ratio metrics and compute the
         final composite score.
@@ -273,7 +316,7 @@ class RolloutMetrics:
             self.max_steering, steering_sat_ratio, jerk_rms, self.max_yaw_rate,
             steering_reversal_rms, self.peak_lateral_error, speed_rmse,
             progress=progress, time_bonus=time_bonus, dnf=dnf, offtrack=offtrack,
-            inaccurate_count=self.inaccurate_count,
+            inaccurate_count=self.inaccurate_count, reached_end=reached_end,
         )
 
         return {

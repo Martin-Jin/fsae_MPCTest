@@ -1202,14 +1202,52 @@ normalised (mostly to RMS values) at the end via `.finalize()`:
 ### Combining into one score
 
 ```python
-score = SCORE_WEIGHTS @ (metrics / METRIC_SCALES)               # NORMALISED weighted sum
-score -= COMPLETION_BONUS_WEIGHT * progress + TIME_BONUS_WEIGHT * time_bonus
-if dnf:       score += DNF_PENALTY
-if offtrack:  score += DNF_OFFTRACK_PENALTY
+quality = SCORE_WEIGHTS @ (metrics / METRIC_SCALES)             # normalised weighted sum
+
+# TIER 1 — hard constraints: infeasible runs land above CONSTRAINT_FLOOR
+if dnf or offtrack:
+    return CONSTRAINT_FLOOR + (DNF_PENALTY + offtrack*DNF_OFFTRACK_PENALTY) * (1 - progress)
+if not reached_end:
+    return CONSTRAINT_FLOOR + DNF_PENALTY * (1 - progress)
+
+# TIER 2 — primary objective: how much slower than physically possible
+time_cost = 1.0 - time_bonus            # time_bonus = optimal_lap_time / actual_time
+
+# TIER 3 — quality group, shapes rather than drives
+score = TIME_OBJECTIVE_WEIGHT * time_cost + QUALITY_WEIGHT * quality
 if inaccurate_count > 0:
-    factor = min(5, inaccurate_count) * 0.1                     # capped at 50%
-    score += abs(score) * factor
+    score += abs(score) * min(5, inaccurate_count) * 0.1        # capped at 50%
 ```
+
+**Why three tiers instead of one sum (changed 2026-08-06).** A weighted sum is
+linear scalarisation, and can only reach solutions on the *convex hull* of the
+trade-off surface. Where that surface is non-convex — normal for vehicle
+dynamics — whole regions of good behaviour are unreachable by **any** weight
+vector. Measured: a deliberately-hunting gain set outscored a sane one purely
+by tracking the line more tightly, and kept winning even after `METRIC_SCALES`
+made the smoothness terms bite (normalisation amplifies the tracking terms
+too). Re-weighting cannot fix that, because the hunting set is genuinely better
+on the dominant term.
+
+- **Constraints are no longer prices.** Previously a DNF added a flat `+3.0` on
+  the same axis as the metrics, so a sufficiently tight-tracking run could
+  *buy its way out of a crash*. Now infeasible runs occupy a band strictly
+  above `CONSTRAINT_FLOOR` and no quality score can promote them. Ordering
+  *within* the band still improves with `progress`, so the optimiser keeps a
+  gradient rather than hitting a flat wall.
+- **The objective is time, in real units.** `time_bonus` is
+  `optimal_lap_time / actual_time` (see `speed_profile.optimal_lap_time()`), so
+  `time_cost = 0.15` means the lap took ~18% longer than physically possible.
+  This is what kills the hunting exploit: hunting cannot buy lap time, so it
+  only ever costs.
+- **`reached_end`, not `progress`, decides completion.** `progress` comes from
+  a bounded nearest-index search that stops short of the final path point, so a
+  fully-completed run reports ~0.90. Thresholding on it marked every successful
+  run infeasible. `COMPLETION_THRESHOLD` remains only as a fallback for callers
+  that cannot supply `reached_end` (e.g. the live car).
+- `COMPLETION_BONUS_WEIGHT` is now unused by the score — completion is a
+  precondition, not a reward. The constant is retained for the live copy's
+  header compatibility.
 
 `METRIC_SCALES` (added 2026-08-06) divides each metric by a reference magnitude
 *before* weighting, so `SCORE_WEIGHTS` expresses priority rather than silently

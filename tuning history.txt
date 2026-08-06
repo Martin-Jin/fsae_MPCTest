@@ -54,12 +54,38 @@
 #     shift the objective by ~0.9 — a plausible gain set scored 3rd-worst of
 #     six purely because one of its ten tasks DNF'd.
 #
+#   - sim/scoring.py: the score was RESTRUCTURED from one weighted sum into
+#     three tiers (constrained optimisation). A weighted sum can only reach
+#     the convex hull of the trade-off surface, which is why a deliberately-
+#     hunting gain set kept outscoring a sane one even after normalisation —
+#     it was genuinely better on the dominant tracking term, so no re-weighting
+#     could fix it. Now:
+#       TIER 1  crash / off-track / didn't finish -> scored above
+#               CONSTRAINT_FLOOR (10.0), where no quality score can rescue it.
+#               Previously a flat +3.0 that a tight-tracking run could out-earn.
+#       TIER 2  primary objective = 1 - (optimal_lap_time / actual_time), i.e.
+#               "fraction slower than physically possible". Real units.
+#       TIER 3  the 12 metrics as a weighted sum x QUALITY_WEIGHT (0.35),
+#               shaping the result rather than driving it.
+#     Verified: this reverses the hunting result. In oracle mode a sane gain
+#     set now scores 0.576 against the hunting set's 5.346.
+#   - speed_profile.py + control_utils.py: curvature_speed() now propagates
+#     BRAKING DISTANCE. Previously it took a single max curvature over the
+#     scan window, so a corner 24 m ahead and the same corner 2 m ahead gave
+#     an identical target — it could demand ~273 m/s^2 of braking. Measured
+#     improvement on the 10-path suite: total 4.675 -> 3.880.
+#   - time_bonus is now anchored to speed_profile.optimal_lap_time(), a
+#     quasi-steady-state physical bound, instead of arc_length/2.5 m/s*1.5.
+#     The old anchor was 2.7x-6.7x the real optimum and varied per path, so
+#     the same driving earned wildly different bonuses on different tracks.
+#
 # BECAUSE OF THE ABOVE, scores are not comparable across the 2026-08-06
-# boundary either. The scale changed: normalisation means a run with every
-# metric at its reference magnitude scores 1.0 before bonuses, where
-# previously the raw weighted sum was much smaller. Expect post-fix scores to
-# be numerically LARGER (less negative) than pre-fix ones for the same
-# driving quality. That is a change of units, not a regression.
+# boundary either, and the SCALE HAS CHANGED TWICE. Under the final structure:
+#     ~0.4 - 1.0   a good, completed run (lower is better)
+#     > 10.0       infeasible: crashed, left the track, or didn't finish
+# A pre-2026-08-06 score of "-0.35" and a post-fix score of "0.58" are not
+# comparable in either direction. These are different functions, not a
+# regression.
 #
 # For future entries: record planner mode (USE_PLANNER), the scoring-function
 # version/hash, and the tuner configuration alongside the gains. The commit
@@ -325,13 +351,15 @@ Commit hash = 1d9036ca799883b45c1e0dd8857ecb8280f362c7
 # feasible oracle speed profile) and are comparable to each other, provided
 # the per-entry configuration fields below match.
 #
-# Baseline for reference — untuned unit gains (all nine = 1.0) scored under
-# the post-fix configuration, USE_PLANNER=True, 350 steps, ey0/epsi0 = 0:
-#   PATH_HAIRPIN       -0.3110
-#   PATH_SUDDEN_TURN   -0.3187
-#   PATH_SPIRAL        -0.0967
-#   PATH_FS_CORNER     -0.2499
-#   PATH_MICRO_SLALOM  -0.2794
+# Baseline for reference — untuned unit gains (all nine = 1.0) under the FINAL
+# post-fix configuration (constrained 3-tier score, optimal-lap time anchor,
+# braking propagation), USE_PLANNER=False, ey0/epsi0 = 0:
+#   PATH_HAIRPIN        0.7981   (reached 79.1% of optimal lap time)
+#   PATH_FS_CORNER      0.6012   (86.5%)
+#   PATH_SPIRAL         0.7003   (89.4%)
+# Under the same configuration, the 6-set probe batch scored a sane hand-picked
+# gain set at 0.576 and a deliberately-hunting one at 5.346 (oracle mode) —
+# the ordering that every earlier version of the objective got backwards.
 # These are single-rollout scores, not the tuner's aggregated objective
 # (which is 0.7*weighted_mean + 0.3*max over 5 paths x 2 ICs). They exist so
 # a future tuned run can be sanity-checked against "did tuning beat doing

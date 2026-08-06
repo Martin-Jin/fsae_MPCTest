@@ -573,6 +573,19 @@ PATH_LENGTHS = {
 }
 PATH_NAMES = list(SYNTHETIC_PATHS.keys())
 
+# Quasi-steady-state minimum traversal time per path (s), computed once at
+# import. This is what `time_bonus` is measured against — see
+# speed_profile.optimal_lap_time() for the method and its limitations.
+#
+# The previous anchor was `arc_length / 2.5 m/s * 1.5` (a placeholder step
+# budget), measured to be 2.7x-6.7x the physical optimum and varying by path,
+# which made the second-largest score term a reward against an arbitrary
+# constant AND non-comparable between paths. Each path costs a few ms here.
+PATH_OPTIMAL_TIMES = {
+    name: sp.optimal_lap_time(x, y)
+    for name, (x, y, _, _, _, _) in SYNTHETIC_PATHS.items()
+}
+
 
 # ==========================================
 # TRACKING ERROR HELPERS
@@ -731,6 +744,7 @@ def run_headless_rollout(
         use_planner=use_planner, model_lookup=get_cached_model,
         n_horizon=N_HORIZON, eps=ROLLOUT_EPS, max_iter=ROLLOUT_MAX_ITER,
         want_history=False,
+        optimal_time=PATH_OPTIMAL_TIMES.get(path_name),
     )
     return rollout["composite_score"]
 

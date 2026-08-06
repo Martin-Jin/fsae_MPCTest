@@ -639,6 +639,57 @@ COMPLETION_BONUS_WEIGHT = 0.5
 #     weights that reliably fail one track.
 TAIL_QUANTILE = 0.8
 
+
+# ==============================================================================
+# CONSTRAINED SCORING STRUCTURE (added 2026-08-06)
+# ==============================================================================
+# The score used to be one weighted sum of 12 metrics plus additive bonuses and
+# penalties. That is "linear scalarisation", and it has a structural limit: a
+# weighted sum can only ever reach solutions on the CONVEX HULL of the
+# trade-off surface. If that surface is non-convex — normal for vehicle
+# dynamics — entire regions of good behaviour are unreachable by ANY weight
+# vector, so no amount of weight tuning finds them.
+#
+# Measured evidence: a deliberately-hunting set of gains outscored a sane one
+# because it tracked the line more tightly, and it kept winning even after
+# METRIC_SCALES made the smoothness terms bite (normalisation amplified the
+# tracking terms too). The hunting set is genuinely better on the dominant
+# term, so re-weighting cannot fix it.
+#
+# The score is now three tiers instead of one sum:
+#   1. HARD CONSTRAINTS  — crash / off-track / didn't finish. Infeasible, and
+#      pushed above CONSTRAINT_FLOOR where no quality score can rescue them.
+#   2. PRIMARY OBJECTIVE — lap time vs. the path's physical optimum.
+#   3. QUALITY GROUP     — the 12 metrics, kept as a weighted sum (they really
+#      are preferences), scaled to shape rather than drive the result.
+
+# CONSTRAINT_FLOOR — "the line between a valid run and a failed one."
+# Any run that crashes, leaves the track, or doesn't finish scores at least
+# this much; any run that completes scores less. Set well above the worst
+# realistic feasible score so the two bands can never overlap — that
+# separation is the whole point, and it's what stops a tight-tracking run
+# from buying its way out of a crash.
+#   - Raise it: more headroom if feasible scores ever grow past it.
+#   - Lower it: risks the bands touching. Don't go below ~2.0.
+CONSTRAINT_FLOOR = 10.0
+
+# COMPLETION_THRESHOLD — "how much of the path counts as finishing?"
+# Below this fraction the run is treated as infeasible (tier 1). Slightly
+# below 1.0 because arc-length accumulation can stop a hair short of the end
+# on a completed lap.
+COMPLETION_THRESHOLD = 0.98
+
+# TIME_OBJECTIVE_WEIGHT / QUALITY_WEIGHT — the tier-2 vs tier-3 balance.
+# time_cost is in [0,1] ("fraction slower than physically optimal") and the
+# quality term is ~O(1) when metrics sit at their reference scales, so these
+# are directly comparable. Time leads at 1.0 and quality shapes at 0.35.
+#   - Raise QUALITY_WEIGHT: smoother but slower driving.
+#   - Lower it: faster but rougher; below ~0.15 the smoothness terms stop
+#     mattering again and hunting can creep back in.
+#   - Typical adjustment: 0.05 at a time on QUALITY_WEIGHT.
+TIME_OBJECTIVE_WEIGHT = 1.0
+QUALITY_WEIGHT = 0.35
+
 # TIME_BONUS_WEIGHT — "How much of a reward (score reduction) does the car
 # get for finishing quickly?"
 # Similar to the completion bonus above, but rewards speed specifically —

@@ -211,6 +211,7 @@ def run_core_rollout(
     use_planner=USE_PLANNER, model_lookup=None,
     n_horizon=N_HORIZON, eps=ROLLOUT_EPS, max_iter=ROLLOUT_MAX_ITER,
     want_history=False, want_horizon_pred=False,
+    optimal_time=None,
 ):
     """
     Run one closed-loop MPC rollout: nonlinear plant + MPC controller.
@@ -222,6 +223,12 @@ def run_core_rollout(
     ----------
     path_X, path_Y, path_Psi, path_v_profile : arrays
         Reference path geometry and speed profile.
+    optimal_time : float or None
+        Quasi-steady-state minimum traversal time for this path (s), from
+        speed_profile.optimal_lap_time(). Anchors `time_bonus` to the physical
+        optimum so it means "how close to fastest-possible" and is comparable
+        across paths. None falls back to the old arc_length/2.5 m/s heuristic
+        (kept only so external callers that don't supply it still run).
     blue_cones, yellow_cones : arrays
         Static cone map for SimPerception (used only if use_planner=True).
     Q, R, R_rate : np.ndarray
@@ -664,15 +671,49 @@ def run_core_rollout(
     progress = cumulative_distance / path_length if path_length > 0 else 0.0
     progress = float(np.clip(progress, 0.0, 1.0))
 
+    sim_time = n_ran * DT
     if reached_end:
-        sim_time = n_ran * DT
-        expected_time = dynamic_max_steps * DT
-        time_bonus = max(0.0, 1.0 - (sim_time / expected_time))
+        # Anchor the time bonus to the path's PHYSICAL optimum where available.
+        #
+        # This used to divide by `dynamic_max_steps * DT`, i.e.
+        # arc_length / 2.5 m/s * 1.5 — a placeholder step budget with no
+        # physical meaning, measured to be 2.7x-6.7x the actual optimum and
+        # varying by path. That made TIME_BONUS_WEIGHT (0.25, the
+        # second-largest score term) a reward against an arbitrary constant,
+        # and made the bonus non-comparable BETWEEN paths: the same driving
+        # earned wildly different bonuses depending on which track it was on.
+        #
+        # optimal_lap_time() is a quasi-steady-state bound (corner limit ->
+        # forward accel pass -> backward brake pass -> integrate ds/v), so
+        # time_bonus is now "how close to physically-fastest", in [0, 1] and
+        # directly comparable across paths. Because the bound ignores transient
+        # dynamics it is not quite attainable, so a real run scores below 1.0.
+        # Ratio form, NOT (1 - sim/optimal): sim_time is always >= optimal_time
+        # (it's a lower bound), so that subtraction would clip to 0 on every
+        # run and the term would carry no information at all. optimal/sim is 1.0
+        # at the physical limit and decays toward 0 as the run gets slower —
+        # e.g. taking twice the optimal time scores 0.5.
+        #
+        # optimal_time covers the WHOLE path, but the rollout stops as soon as
+        # the car is within 3 m of the finish and past ~90% of the points (see
+        # the reached_end check above), so it is only timed over `progress` of
+        # the distance. Comparing a 95%-of-the-path run against a 100%-of-the-
+        # path reference makes the car look faster than physically possible —
+        # measured, 7 of 10 paths saturated at exactly 1.000 before this scaling
+        # was applied, destroying all discrimination in the primary objective.
+        # Scale the reference to the distance actually covered.
+        if optimal_time is not None and optimal_time > 0.0 and sim_time > 0.0:
+            ref_time = optimal_time * max(progress, 1e-6)
+            time_bonus = float(np.clip(ref_time / sim_time, 0.0, 1.0))
+        else:
+            expected_time = dynamic_max_steps * DT
+            time_bonus = max(0.0, 1.0 - (sim_time / expected_time))
     else:
         time_bonus = 0.0
 
     metrics_result = metrics.finalize(
         progress=progress, time_bonus=time_bonus, dnf=dnf, offtrack=offtrack,
+        reached_end=reached_end,
     )
     # inaccurate_count from metrics.finalize() only counts steps that made it
     # through add_step(); include steps that were skipped by an early break too.

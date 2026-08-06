@@ -380,14 +380,47 @@ This now extends to the **real car** too. The ROS 2 control package carries a ve
 **Combining into one score:**
 
 ```python
-score = SCORE_WEIGHTS @ (metrics / METRIC_SCALES)                 # NORMALISED weighted sum
-score -= COMPLETION_BONUS_WEIGHT * progress + TIME_BONUS_WEIGHT * time_bonus
-if dnf:       score += DNF_PENALTY
-if offtrack:  score += DNF_OFFTRACK_PENALTY
+quality = SCORE_WEIGHTS @ (metrics / METRIC_SCALES)               # normalised weighted sum
+
+# STEP 1 — did the run even count?  Crash / off-track / didn't finish = FAILED
+if dnf or offtrack:   return CONSTRAINT_FLOOR + penalty * (1 - progress)
+if not reached_end:   return CONSTRAINT_FLOOR + DNF_PENALTY * (1 - progress)
+
+# STEP 2 — main question: how much slower than physically possible was it?
+time_cost = 1.0 - time_bonus          # time_bonus = optimal_lap_time / actual_time
+
+# STEP 3 — tie-breaker: how smoothly did it drive?
+score = TIME_OBJECTIVE_WEIGHT * time_cost + QUALITY_WEIGHT * quality
 if inaccurate_count > 0:
-    factor = min(5, inaccurate_count) * 0.1                        # capped at 50%
-    score += abs(score) * factor
+    score += abs(score) * min(5, inaccurate_count) * 0.1           # capped at 50%
 ```
+
+**Why it's three steps and not one sum (changed 2026-08-06).** Adding
+everything into a single weighted total has a mathematical limit: some good
+behaviours are simply unreachable no matter what weights you pick. We measured
+it — a set of gains that deliberately "hunted" (wobbled the steering constantly)
+still scored *better* than a sensible set, because it hugged the line more
+tightly and that was the biggest term. Changing weights couldn't fix it.
+
+The three steps fix it by asking three different kinds of question:
+
+1. **A crash is not a price.** It used to just add `+3.0`, which meant a run
+   that tracked the line well enough could effectively *pay for* crashing. Now
+   a failed run is put in a separate band above `CONSTRAINT_FLOOR` that no
+   amount of good driving can climb out of. (It still scores slightly better
+   for getting further before failing, so the tuner can tell "crashed at the
+   first corner" from "crashed near the end".)
+2. **Lap time is the real goal**, and it's now in meaningful units:
+   `time_cost = 0.15` means "took about 18% longer than this car could
+   physically manage on this track". This is what stops the hunting cheat —
+   wobbling the steering doesn't make you faster, so now it only costs.
+3. **Smoothness is the tie-breaker**, deciding between two similarly-fast laps
+   rather than deciding the winner outright.
+
+One subtlety: completion is judged by `reached_end`, not `progress`. `progress`
+is computed by a search that stops just short of the final path point, so even
+a perfect lap reports about 0.90 — thresholding on it would have marked every
+successful run a failure.
 
 - **`METRIC_SCALES`** (in `settings.py`) is a 12-entry array of "what counts as a normal amount of this". Each metric is divided by its entry **before** being weighted. This is what makes a weight mean what it says.
 
@@ -400,7 +433,7 @@ if inaccurate_count > 0:
 - **DNF penalties** are added if the car didn't finish, with an extra penalty if it left the track — so the tuner can't "cheat" by driving slowly and carefully forever without ever finishing.
 - **The inaccurate-solver penalty** inflates an already-computed score proportionally (up to +50% at 5+ occurrences) if the solver returned a not-fully-converged answer too often — still usable, but penalised, rather than thrown out outright.
 
-**Lower is always better.** A good finishing run typically scores around **-0.3 to +0.3**.
+**Lower is always better.** A good finishing run typically scores around **0.4 to 1.0**; anything **above 10.0** means the run crashed, left the track, or didn't finish.
 
 > **Note on scale (changed 2026-08-06).** Before `METRIC_SCALES` existed, the raw
 > weighted sum was much smaller than the bonuses, so essentially every finishing

@@ -104,6 +104,36 @@ CURVATURE_SPEED_SCAN_START = 1.5
 CURVATURE_SPEED_SCAN_END = 24.0
 CURVATURE_SPEED_STEP = 2.0
 
+# Planning-level braking capability (m/s^2, positive magnitude) used by
+# curvature_speed()'s braking-distance propagation. Deliberately well below the
+# plant's true limit (VehicleParams.max_accel_brake = -9.0): the target must be
+# achievable with the tyres ALSO generating the lateral force for the corner
+# being braked into (friction circle), and with margin for model error and
+# actuation lag. Planning at the true limit would make the propagation
+# non-binding exactly when it matters most.
+# MUST match control_utils.A_BRAKE_PLAN on the live car.
+A_BRAKE_PLAN = 5.0
+
+# ── optimal_lap_time() limits — PHYSICAL, not planning ────────────────────
+# These are deliberately NOT the CURVATURE_SPEED_* planning values above.
+# Those are conservative on purpose (margin for combined slip, model error and
+# actuation lag), so using them for a "fastest physically possible" reference
+# produces a bound the car routinely BEATS — measured, 7 of 10 paths saturated
+# the time term at exactly 1.0, destroying all discrimination in the primary
+# objective. A lower bound must use what the vehicle can actually do.
+#
+# a_lat: the plant's peak grip is mu=1.76 (vehicle_physics.py: 1.6 * GRIP_SCALE
+# 1.1), i.e. ~17 m/s^2. Using the full figure would assume the tyres generate
+# peak lateral force with zero longitudinal demand, everywhere at once, which
+# even an ideal driver cannot sustain through corner entry/exit. 12.0 (~0.7g of
+# the available 1.76g) is a defensible steady-state cornering figure that stays
+# genuinely unreachable in practice while not being absurdly optimistic.
+# a_long: VehicleParams max_accel 12.0 / max_accel_brake -9.0.
+OPTIMAL_LAP_V_MAX = 20.0        # PLANNER_V_MAX — the fastest the stack commands
+OPTIMAL_LAP_A_LAT_MAX = 12.0
+OPTIMAL_LAP_A_ACCEL = 12.0
+OPTIMAL_LAP_A_BRAKE = -9.0
+
 # Note: not called by the active compute_speed_profile; retained for previous speed profile function
 def compute_path_curvature(path_X, path_Y):
     """
@@ -549,23 +579,176 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
 
     k = np.asarray(kappas, dtype=float)
     # A genuine corner spans several consecutive triples, so it survives a
-    # short running mean; an isolated fit artifact is averaged down.  Take the
-    # max of the smoothed series rather than a percentile of the raw one:
-    # the scan window only yields ~7 triples, so a p75/p90 is both noisy AND
-    # biased upward (measured: p75 pushed v_target to 20 m/s on paths where
+    # short running mean; an isolated fit artifact is averaged down.  Reduce
+    # with a max over the SMOOTHED series rather than a percentile of the raw
+    # one: the scan window only yields ~7 triples, so a p75/p90 is both noisy
+    # AND biased upward (measured: p75 pushed v_target to 20 m/s on paths where
     # the raw max said 5 — dangerously fast, the wrong direction to err).
     # This keeps a sustained bend fully authoritative while refusing to let one
-    # point dominate.  Still a MAX over the smoothed series, so it stays
-    # conservative.
+    # point dominate.
     if len(k) >= 3:
         k = np.convolve(k, np.ones(3) / 3.0, mode='valid')
-    max_kappa = float(k.max())
 
-    if max_kappa < 1e-4:
-        return float(v_max_eff)
+    # ── Braking-distance propagation ──────────────────────────────────────
+    # Taking a single max over the window and returning sqrt(a_lat/kappa)
+    # ignores WHERE the corner is: a hairpin 24 m ahead and the same hairpin
+    # 2 m ahead produce an identical target, so the profile can demand a
+    # deceleration the car cannot physically produce.  Measured on a 60 m
+    # straight into a 5 m hairpin, the equivalent single-max profile implied
+    # ~273 m/s^2 (~28 g) of braking at corner entry.  The car can't do that, so
+    # the speed error is charged to the controller for failing at something
+    # impossible, and it arrives at the corner too fast regardless.
+    # scan_end=24 m was sized so a hairpin is *seen* in time; this makes the
+    # target actually *achievable* from here.
+    #
+    # For each sampled corner at distance d ahead with its own corner-speed
+    # limit v_corner, the fastest we may travel NOW and still brake to it is
+    #     v_allowed = sqrt(v_corner^2 + 2 * a_brake * d)
+    # (from v_f^2 = v_i^2 - 2*a*d).  Take the most restrictive over the window.
+    # A corner far enough away imposes no limit, which falls out naturally
+    # because v_allowed then exceeds v_max_eff.
+    #
+    # NUMERIC PARITY: identical to control_utils.curvature_speed() on the live
+    # car, including A_BRAKE_PLAN. Change both together.
+    k_safe = np.maximum(k, 1e-9)
+    v_corner = safety * np.sqrt(a_lat_max / k_safe)
+    idx = np.arange(len(k)) + 2
+    if len(pts) > 1:
+        pts_arc = np.concatenate(
+            [[0.0], np.cumsum(np.linalg.norm(np.diff(pts, axis=0), axis=1))]
+        )
+        d_ahead = scan_start + pts_arc[np.minimum(idx, len(pts_arc) - 1)]
+    else:
+        d_ahead = np.full(len(k), scan_start)
 
-    v_target = safety * math.sqrt(a_lat_max / max_kappa)
+    v_allowed = np.sqrt(v_corner ** 2 + 2.0 * A_BRAKE_PLAN * d_ahead)
+    v_target = float(np.min(v_allowed))
+
     return float(max(v_min, min(v_max_eff, v_target)))
+
+
+def optimal_lap_time(path_X, path_Y, v_max=None, a_lat_max=None,
+                     a_accel_max=None, a_brake_max=None, v_min=None,
+                     v_start=0.0):
+    """
+    Quasi-steady-state minimum traversal time for a path (seconds).
+
+    WHAT THIS IS FOR
+    ----------------
+    A physically-grounded reference lap time, so `time_bonus` can measure
+    "how close to the fastest this car could physically go" instead of being
+    anchored to a placeholder constant. Previously the time baseline was
+    `arc_length / 2.5 m/s * 1.5` (see sim_track.calculate_dynamic_max_steps),
+    an arbitrary figure with no physical meaning — which made
+    TIME_BONUS_WEIGHT (0.25, the second-largest score term) a reward measured
+    against nothing in particular.
+
+    METHOD
+    ------
+    The standard quasi-steady-state lap simulation used by racing-line tools:
+
+      1. Corner limit at every point from the friction circle,
+         v = sqrt(a_lat_max / |kappa|)
+      2. Forward pass  — cap how fast speed may RISE  (a_accel_max)
+      3. Backward pass — cap how fast speed may FALL  (a_brake_max)
+      4. Integrate t = sum(ds / v_avg) over the resulting profile
+
+    This is the same three-pass algorithm compute_speed_profile() uses, but
+    applied to the TRUE per-point curvature rather than a forward-looking
+    scan, and without the look-ahead/denoising machinery that exists to cope
+    with a noisy live centreline. On a known offline path there is no noise to
+    reject, so using true curvature gives a genuine physical bound.
+
+    "Quasi-steady-state" means it assumes the car is always exactly at some
+    limit (cornering, accelerating or braking) and ignores transient dynamics
+    — load transfer, tyre relaxation, yaw inertia. Real achievable time is
+    therefore somewhat SLOWER than this. That is the right direction for a
+    reference: it is a lower bound the controller approaches but should not
+    beat, so `time_bonus` stays in [0, 1] under normal operation.
+
+    NOT a racing line. This is the fastest traversal of the GIVEN path
+    (the centreline), not the fastest line through the track. A real racing
+    line cuts corners and would be faster still. Computing that needs a proper
+    minimum-time trajectory optimiser (e.g. TUM's
+    global_racetrajectory_optimization) and the track boundaries, not just the
+    centreline.
+
+    Parameters
+    ----------
+    path_X, path_Y : array-like, shape (n,)
+        Path coordinates (m).
+    v_max : float, optional
+        Speed cap (m/s). Defaults to OPTIMAL_LAP_V_MAX.
+    a_lat_max : float, optional
+        Lateral grip limit (m/s^2). Defaults to OPTIMAL_LAP_A_LAT_MAX — the
+        PHYSICAL grip, deliberately not the conservative planning value. Using
+        the planning limit here produced a "bound" the car routinely beat (7 of
+        10 paths saturated the time term at exactly 1.0), which is not a bound
+        at all. See the OPTIMAL_LAP_* constants for the reasoning.
+    a_accel_max : float
+        Longitudinal acceleration limit (m/s^2, positive).
+    a_brake_max : float
+        Longitudinal braking limit (m/s^2, negative).
+    v_min : float, optional
+        Speed floor (m/s), applied after the passes.
+    v_start : float
+        Speed at the first point (m/s). Default 0.0 — rollouts start from rest,
+        so the reference must too, otherwise it is unreachable by construction.
+
+    Returns
+    -------
+    float : traversal time in seconds. `inf`-safe; returns 0.0 for a
+            degenerate path.
+    """
+    if v_max is None:
+        v_max = OPTIMAL_LAP_V_MAX
+    if a_lat_max is None:
+        a_lat_max = OPTIMAL_LAP_A_LAT_MAX
+    if v_min is None:
+        v_min = 0.0
+    if a_accel_max is None:
+        a_accel_max = OPTIMAL_LAP_A_ACCEL
+    if a_brake_max is None:
+        a_brake_max = OPTIMAL_LAP_A_BRAKE
+
+    X = np.asarray(path_X, dtype=float)
+    Y = np.asarray(path_Y, dtype=float)
+    n = len(X)
+    if n < 2:
+        return 0.0
+
+    segs = np.hypot(np.diff(X), np.diff(Y))
+    total = float(segs.sum())
+    if total <= 0.0:
+        return 0.0
+    if n < 3:
+        return total / max(v_max, 1e-9)
+
+    # ── Pass 0: corner-speed limit from true curvature ────────────────────
+    kappa = np.abs(compute_path_curvature(X, Y))
+    kappa = np.maximum(kappa, 1e-9)
+    v = np.minimum(np.sqrt(a_lat_max / kappa), v_max)
+
+    # ── Pass 1: forward (acceleration-limited), anchored at v_start ───────
+    v[0] = min(v[0], max(float(v_start), 0.0))
+    for i in range(1, n):
+        v[i] = min(v[i], math.sqrt(v[i - 1] ** 2 + 2.0 * a_accel_max * segs[i - 1]))
+
+    # ── Pass 2: backward (braking-limited) ────────────────────────────────
+    a_brake_mag = abs(a_brake_max)
+    for i in range(n - 2, -1, -1):
+        v[i] = min(v[i], math.sqrt(v[i + 1] ** 2 + 2.0 * a_brake_mag * segs[i]))
+
+    # The floor must not apply to the standing start — the car genuinely is at
+    # 0 m/s there, and clamping it up would fabricate free speed.
+    v[1:] = np.maximum(v[1:], v_min)
+    v[0] = max(v[0], 0.0)
+
+    # ── Integrate: t = sum(ds / v_avg) over each segment ──────────────────
+    v_avg = 0.5 * (v[:-1] + v[1:])
+    # Guard the standing-start segment, where v_avg can be ~0.
+    v_avg = np.maximum(v_avg, 1e-3)
+    return float(np.sum(segs / v_avg))
 
 
 def smooth_profile(v_profile, window=9):

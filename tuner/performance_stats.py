@@ -43,7 +43,10 @@ DOES NOT USE
 
 from model.vehicle_physics import VehicleParams
 import numpy as np
-from sim.scoring import SCORE_WEIGHTS, METRIC_SCALES, COMPLETION_BONUS_WEIGHT, TIME_BONUS_WEIGHT, RolloutMetrics
+from sim.scoring import (
+    SCORE_WEIGHTS, METRIC_SCALES, COMPLETION_BONUS_WEIGHT, TIME_BONUS_WEIGHT,
+    COMPLETION_THRESHOLD, TIME_OBJECTIVE_WEIGHT, QUALITY_WEIGHT, RolloutMetrics,
+)
 from tuner.offline_tuner import (
     PATH_NAMES,
     INITIAL_CONDITIONS,
@@ -257,8 +260,15 @@ def report_performance_metrics(history, log_fn=print):
     log_fn(f"  Peak Lateral Error : {peak_lateral_error:8.4f} m        (x{W[_IDX_PEAK_LATERAL_ERROR]:.2f})")
     log_fn(f"  Speed RMS          : {speed_rmse:8.4f} m/s        (x{W[_IDX_SPEED_RMSE]:.2f})")
     log_fn("-" * 60)
-    log_fn(f"  Path completion    : {completion_frac*100:8.1f} %      (-{COMPLETION_BONUS_WEIGHT:.2f} bonus)")
-    log_fn(f"  Time bonus         : {time_bonus:8.4f}        (-{TIME_BONUS_WEIGHT:.2f} bonus)")
+    # Completion is now a hard CONSTRAINT, not a bonus: a run below
+    # COMPLETION_THRESHOLD is scored above CONSTRAINT_FLOOR and can't be
+    # rescued by good quality metrics. time_bonus is optimal_lap_time /
+    # actual_time, so 1.0 is the physical limit.
+    log_fn(f"  Path completion    : {completion_frac*100:8.1f} %      "
+           f"(constraint, must be >= {COMPLETION_THRESHOLD*100:.0f}%)")
+    log_fn(f"  Time vs optimal    : {time_bonus:8.4f}        "
+           f"(1.0 = physical limit; cost = {TIME_OBJECTIVE_WEIGHT:.2f} x (1-this))")
+    log_fn(f"  Quality group      : {'':8s}        (x{QUALITY_WEIGHT:.2f} of the metrics below)")
     log_fn("-" * 60)
     # Effective contribution = weight * (metric / reference scale). This is
     # what each metric actually adds to the composite, and it is the number

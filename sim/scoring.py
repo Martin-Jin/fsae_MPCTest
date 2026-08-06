@@ -30,6 +30,10 @@ from settings import (
     TIME_BONUS_WEIGHT,
     DNF_PENALTY,
     DNF_OFFTRACK_PENALTY,
+    CONSTRAINT_FLOOR,
+    COMPLETION_THRESHOLD,
+    TIME_OBJECTIVE_WEIGHT,
+    QUALITY_WEIGHT,
 )
 
 # Metric index constants — must stay in sync with SCORE_WEIGHTS order in settings.py
@@ -65,6 +69,7 @@ def compute_composite_score(
     dnf=False,
     offtrack=False,
     inaccurate_count=0,
+    reached_end=None,
 ):
     """
     Single source of truth for the composite performance score.
@@ -114,18 +119,72 @@ def compute_composite_score(
     # 2-3 orders of magnitude too small to affect the outcome — see
     # settings.METRIC_SCALES for the measurement. A metric sitting exactly at
     # its reference scale now contributes exactly its weight.
-    score = float(SCORE_WEIGHTS @ (metrics / METRIC_SCALES))
+    normalised = metrics / METRIC_SCALES
+    quality = float(SCORE_WEIGHTS @ normalised)
 
-    # Bonuses reward progress/time; clip progress defensively in case a
-    # caller passes a slightly out-of-range value (e.g. 1.0000001 from
-    # floating-point arc-length accumulation).
     progress = float(np.clip(progress, 0.0, 1.0))
-    score -= COMPLETION_BONUS_WEIGHT * progress + TIME_BONUS_WEIGHT * time_bonus
 
-    if dnf:
-        score += DNF_PENALTY
-    if offtrack:
-        score += DNF_OFFTRACK_PENALTY
+    # ── TIER 1: hard constraints ──────────────────────────────────────────
+    # A run that crashed, left the track, or never finished is INFEASIBLE. It
+    # is not a run with a bad score — it is not a valid data point about how
+    # the car drives, because the metrics were accumulated over a trajectory
+    # that ended in failure.
+    #
+    # Previously these were flat additive penalties (+3.0 DNF, +3.0 more for
+    # off-track) competing on the same axis as the twelve continuous metrics.
+    # That is a scalarisation, and it let a run BUY its way out of a crash:
+    # a set of gains that tracked the line tightly enough could out-earn the
+    # penalty on the quality terms. It also made the objective discontinuous
+    # in a way that dominated the tuner — measured, a single DNF in ten tasks
+    # moved the aggregate objective by ~0.9, swamping every quality signal.
+    #
+    # Feasible runs now occupy a band strictly below CONSTRAINT_FLOOR, and
+    # infeasible ones strictly above it, so no amount of good driving in the
+    # quality terms can promote an infeasible run above a feasible one. Within
+    # the infeasible band, ordering still rewards getting further (progress)
+    # before failing, which keeps a gradient for the optimiser to climb
+    # instead of a flat wall of equally-bad scores.
+    if dnf or offtrack:
+        severity = DNF_PENALTY + (DNF_OFFTRACK_PENALTY if offtrack else 0.0)
+        # Deeper progress -> less bad, but never good enough to cross the floor.
+        return float(CONSTRAINT_FLOOR + severity * (1.0 - progress))
+
+    # An unfinished-but-not-DNF run (ran out of steps mid-path) is also not a
+    # valid measurement of a lap. Same treatment, scaled by how far it got.
+    # `reached_end` is the authoritative "did it finish" signal from the
+    # rollout. progress is NOT usable for this: it comes from a bounded
+    # nearest-index search that stops short of the final path point, so a
+    # fully-completed run typically reports ~0.90, not 1.0. Thresholding on
+    # progress therefore marked every successful run infeasible. Fall back to
+    # the progress threshold only when the caller can't supply reached_end
+    # (e.g. the live car, which has no known path end).
+    finished = reached_end if reached_end is not None else (progress >= COMPLETION_THRESHOLD)
+    if not finished:
+        return float(CONSTRAINT_FLOOR + DNF_PENALTY * (1.0 - progress))
+
+    # ── TIER 2: primary objective — time ──────────────────────────────────
+    # time_bonus is optimal_lap_time / actual_time (see rollout_core), so it
+    # is 1.0 at the physical limit and decays as the run gets slower. The
+    # objective is its complement: 0.0 is a perfect lap, 1.0 is infinitely
+    # slow. This is the term that should dominate a FEASIBLE run, and it is
+    # in real units — "0.15" means the lap took ~18% longer than physically
+    # possible, not an arbitrary composite figure.
+    time_cost = float(np.clip(1.0 - time_bonus, 0.0, 1.0))
+
+    # ── TIER 3: quality / smoothness ──────────────────────────────────────
+    # Kept as a weighted sum because these genuinely ARE preferences with no
+    # natural priority ordering among them, which is exactly the case
+    # scalarisation handles well. Scaled down relative to the time objective
+    # so it shapes the solution rather than driving it: it should decide
+    # between two laps of similar speed, not make a slow-but-smooth lap beat
+    # a fast one. This is what kills the hunting exploit — hunting cannot buy
+    # lap time, so it now only costs.
+    score = TIME_OBJECTIVE_WEIGHT * time_cost + QUALITY_WEIGHT * quality
+
+    # Completion is a precondition now (see tier 1), not something to reward,
+    # so the old COMPLETION_BONUS_WEIGHT * progress term is gone: every run
+    # reaching this line has progress >= COMPLETION_THRESHOLD.
+
     if inaccurate_count > 0:
         # OPTIMAL_INACCURATE solves are still usable but less trustworthy;
         # inflate the score proportionally (capped at 5 occurrences -> 50%)
@@ -133,7 +192,7 @@ def compute_composite_score(
         factor = min(5, inaccurate_count) * 0.1
         score = score + abs(score) * factor
 
-    return score
+    return float(score)
 
 
 class RolloutMetrics:
@@ -246,7 +305,8 @@ class RolloutMetrics:
 
         self.u_prev = u_opt.copy()
 
-    def finalize(self, progress, time_bonus=0.0, dnf=False, offtrack=False):
+    def finalize(self, progress, time_bonus=0.0, dnf=False, offtrack=False,
+                 reached_end=None):
         """
         Normalise accumulated sums to RMS/ratio metrics and compute the
         final composite score. Returns a dict usable both for CMA-ES
@@ -278,7 +338,7 @@ class RolloutMetrics:
             self.max_steering, steering_sat_ratio, jerk_rms, self.max_yaw_rate,
             steering_reversal_rms, self.peak_lateral_error, speed_rmse,
             progress=progress, time_bonus=time_bonus, dnf=dnf, offtrack=offtrack,
-            inaccurate_count=self.inaccurate_count,
+            inaccurate_count=self.inaccurate_count, reached_end=reached_end,
         )
 
         return {
