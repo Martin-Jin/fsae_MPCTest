@@ -106,7 +106,13 @@ IDX_FY_RL    = 20  # Rear-left   tyre lateral force after relaxation (N)
 IDX_FY_RR    = 21  # Rear-right  tyre lateral force after relaxation (N)
 IDX_OMEGA_FL = 22  # Front-left  wheel spin (rad/s)
 IDX_OMEGA_FR = 23  # Front-right wheel spin (rad/s)
-N_STATES     = 24  # Total state vector length
+# Lagged state of FSDS's lateral-acceleration ceiling (m/s² of excess).  Held
+# as a state because the measured behaviour is a restoring term that BUILDS
+# over time: yaw overshoots the ceiling by ~30% before being pulled back.  A
+# memoryless function of the current excess engages instantly and cannot
+# overshoot — verified: every (gain, soft) combination gave 0.0% overshoot.
+IDX_ALAT_LIM = 24  # FSDS lateral-accel ceiling restoring term (m/s²)
+N_STATES     = 25  # Total state vector length
 
 
 # ─────────────────────────────────────────────────────────────
@@ -168,6 +174,50 @@ class VehicleParams:
         # This project's real car tops out at ~60 km/h (16.7 m/s) — a slower
         # autonomous test platform, not FSDS's own ~27 m/s simulator ceiling.
         self.max_v = 16.7 # Maximum possible speed the vehicle can go
+
+        # ── FSDS lateral-acceleration ceiling ────────────────────────────────
+        # FSDS caps sustained lateral acceleration at ~7.5 m/s², well below the
+        # ~12.3 m/s² the same car reaches on a lap and the ~14.5 m/s² this
+        # plant produces unaided. Without this, the offline car makes corners
+        # the real one cannot, never saturates its steering, and every weight
+        # set tuned against it assumes authority the car does not have.
+        #
+        # Measured 2026-08-06 by open-loop system-ID and a step-input test;
+        # full derivation in docs/planning_control_sync.md ->
+        # "MECHANISM: a dynamically-enforced lateral-acceleration ceiling".
+        # Investigation history: docs/sim_to_real_investigation.md.
+        #
+        # NOTE this is a model of FSDS's behaviour, NOT of the physical car.
+        # It is enabled because weights are tuned against FSDS and validated on
+        # it. Set alat_ceiling_enabled=False to recover the unconstrained
+        # plant (e.g. when modelling the real vehicle).
+        self.alat_ceiling_enabled = True
+        self.alat_ceiling = 7.5    # Sustained lateral-accel ceiling (m/s²)
+        # Restoring yaw moment per m/s² of excess (N·m per m/s²). Sized so the
+        # cap actually binds without making the car snap back unphysically;
+        # fitted against the measured settled a_lat (7.80 at 8 m/s, 7.29 at 12).
+        self.alat_ceiling_gain = 3000.0
+        # Time constant (s) over which the restoring moment builds. This is
+        # what creates the overshoot: the term lags the excess, so yaw exceeds
+        # the ceiling before being pulled back. A memoryless version engages
+        # instantly and cannot overshoot at all.
+        #
+        # Chosen to match the measured PEAK lateral acceleration (8.44 at
+        # 8 m/s, 9.73 at 12 m/s here, against 9.72 mean / 10.89 max measured)
+        # while still acting fast enough to cap a real corner entry.
+        #
+        # That second constraint is the binding one and was learned the hard
+        # way: tau=1.0 reproduced the measured ~30% overshoot beautifully in a
+        # step test, but on a lap the term took ~1 s to build while corners
+        # arrive in ~0.4 s. The cap therefore did nothing during turn-in, let
+        # the car overshoot into the corner, then engaged once it was already
+        # off line -- DNF at 6.3 s with e_y = -1.97 m. A ceiling that acts too
+        # late is worse than no ceiling.
+        #
+        # The measured decay was too scattered to fit directly (median 0.08 s
+        # over a 0.04-1.06 s range). The settled ceiling is insensitive to tau
+        # across 0.05-1.0, so only transients depend on this value.
+        self.alat_ceiling_tau = 0.25
 
         # ── Unsprung Mass ────────────────────────────────────────────────────
         self.m_us  = 7.5      # Unsprung mass per corner: wheel + upright + hub (kg)
@@ -630,6 +680,7 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
         dz_RL = s[IDX_DZ_RL];  dz_RR = s[IDX_DZ_RR]
         Fy_FL_rlx = s[IDX_FY_FL];  Fy_FR_rlx = s[IDX_FY_FR]
         Fy_RL_rlx = s[IDX_FY_RL];  Fy_RR_rlx = s[IDX_FY_RR]
+        alat_lim  = s[IDX_ALAT_LIM]
 
         # Guard against exact-zero vx to avoid divide-by-zero in slip angle calcs
         vx_safe = max(vx, 0.5)
@@ -908,6 +959,40 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
                + (p.tf / 2.0) * (Fx_FR_b - Fx_FL_b)  # Differential Fx at front
                + (p.tr / 2.0) * (Fx_RR_b - Fx_RL_b)) # Differential Fx at rear (TV)
 
+        # ── 18b. FSDS lateral-acceleration ceiling ────────────────────────────
+        # FSDS enforces a lateral-acceleration ceiling of ~7.5 m/s² that this
+        # plant does not otherwise have — the single largest sim-to-real
+        # discrepancy, and the cause of the 21% steering saturation seen on
+        # every live lap.  Measured 2026-08-06 by open-loop system-ID; see
+        # docs/planning_control_sync.md -> "MECHANISM: a dynamically-enforced
+        # lateral-acceleration ceiling".
+        #
+        # It is modelled as a restoring yaw moment rather than a clip because
+        # the measurements show BOTH signatures:
+        #   - a cap: at 8 m/s, 0.60 and 1.00 steering settle to the same yaw
+        #     rate (0.93-0.96 vs 0.90-0.94 rad/s) despite a 67% larger command
+        #   - an overshoot: yaw peaks ~30% above the settled value, reaching
+        #     10.9 m/s² against the ~7.5 ceiling, then decays
+        # A hard clip reproduces the steady state but removes the turn-in
+        # transient, which is exactly what the MPC reacts to.
+        #
+        # What is held constant is LATERAL ACCELERATION, not yaw rate: settled
+        # a_lat is 7.80 m/s² at 8 m/s and 7.29 at 12 m/s (1.07x spread) while
+        # yaw rate varies 1.56x. Below the ceiling the car is unconstrained,
+        # which is why the sweep measured s ~ 1.0 under ~6 m/s.
+        # The restoring term is a STATE with a first-order lag, not a function
+        # of the instantaneous excess. That is what produces the measured
+        # overshoot: a memoryless term engages the moment the ceiling is
+        # crossed and can never overshoot it (verified — every (gain, soft)
+        # pairing tried gave 0.0% overshoot, against ~30% measured).
+        if p.alat_ceiling_enabled:
+            excess = max(0.0, abs(vx_safe * r) - p.alat_ceiling)
+            # Build toward the current excess with time constant
+            # alat_ceiling_tau; decay back with the same constant once the
+            # car is under the ceiling again.
+            alat_lim = alat_lim + (excess - alat_lim) * (
+                h / max(p.alat_ceiling_tau, 1e-3))
+            M_z = M_z - np.sign(r) * alat_lim * p.alat_ceiling_gain
         # ── 19. Rigid-body equations of motion ────────────────────────────────
         # Newton in body frame; Coriolis terms appear because the frame rotates:
         #   F = m * (a_body + ω × v_body)
@@ -965,6 +1050,7 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
         s_new[IDX_OMEGA_RR] = omega_RR_new
         s_new[IDX_OMEGA_FL] = omega_FL_new
         s_new[IDX_OMEGA_FR] = omega_FR_new
+        s_new[IDX_ALAT_LIM] = alat_lim
         s_new[IDX_Z_FL]     = z_FL_new
         s_new[IDX_Z_FR]     = z_FR_new
         s_new[IDX_Z_RL]     = z_RL_new

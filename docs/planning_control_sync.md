@@ -890,10 +890,57 @@ unconstrained there — and yaw duly scales with steering (1.76× spread vs 1.10
 at 8 m/s). That is why the sweep saw `s ≈ 1.0` below ~6 m/s: **the cap has not
 engaged, not that the steering behaves differently.**
 
-**Not yet acted on — how to model it.** A first-order lag toward a
-lateral-acceleration ceiling of ~7.5 m/s², *not* a clip: a clip reproduces
-steady state but removes the turn-in transient, which is precisely what the
-MPC reacts to.
+**Modelled 2026-08-06** in `model/vehicle_physics.py` as a restoring yaw moment
+with a first-order lag, *not* a clip (a clip reproduces steady state but
+removes the turn-in transient the MPC reacts to):
+
+| parameter | value | basis |
+|---|---|---|
+| `alat_ceiling` | 7.5 m/s² | measured settled a_lat (7.80 @ 8 m/s, 7.29 @ 12) |
+| `alat_ceiling_gain` | 3000 N·m per m/s² | fitted to reproduce those settled values |
+| `alat_ceiling_tau` | 0.25 s | matches measured PEAK a_lat (8.4/9.7 model vs 9.7 mean / 10.9 max measured) |
+| `alat_ceiling_enabled` | `True` | models **FSDS**, not the physical car — disable for real-vehicle work |
+
+Verified: below ~6 m/s the plant is untouched (1.84 / 3.46 m/s² at 3 / 4 m/s,
+identical with the ceiling on or off), matching the measurement that the cap
+does not engage there. Peak a_lat on the recorded map falls 14.06 → 9.05 m/s².
+
+> **`tau` was nearly set wrong, and the failure is instructive.** Fitting it to
+> the measured ~30% *overshoot* gave `tau = 1.0 s`, which reproduced the step
+> test well — and then DNF'd the car at 6.3 s on a real lap. Corners arrive in
+> ~0.4 s, so a term that takes ~1 s to build does nothing during turn-in, lets
+> the car overshoot into the corner, and engages only once it is already off
+> line. **A ceiling that acts too late is worse than no ceiling.** `tau = 0.25`
+> matches peak a_lat instead and acts in time.
+
+##### The ceiling exposed a SECOND discrepancy: corner entry speed
+
+With the ceiling on, the tuned gains still DNF on `comp test map 3` — but for
+a different, pre-existing reason that the over-capable plant had been masking.
+
+| | sim | live |
+|---|---|---|
+| speed entering the saturating corner | **9.56 m/s** | **5.74 m/s** |
+| max \|e_y\| | 2.30 m (off-track) | 1.20 m (recovers) |
+| recorded-track speed profile mean | **12.08 m/s** | actual 8.03 m/s |
+
+Both cars hit the same yaw cap; only the sim car is going too fast to recover.
+The recorded track's stored speed profile averages 12.08 m/s against the car's
+actual 8.03 — a ~50% over-estimate. The uncapped plant could *just* about
+corner at those speeds, so the error never surfaced; with FSDS's real ceiling
+in place it is immediately fatal.
+
+**This is a finding, not a modelling bug.** The ceiling is doing its job: it
+turned a hidden reference error into a visible failure. Two things follow:
+
+- The offline sim has been tuning against a reference ~50% faster than the car
+  ever drives, independently of the yaw cap.
+- Re-tuning must happen **after** both are fixed. Tuning now would just find
+  gains that survive an unrealistically fast reference.
+
+**Not yet acted on** — the speed-profile discrepancy needs its own
+investigation (is the recorded profile wrong, or does the live planner
+override it?).
 
 > **The decay time constant is NOT yet reliably measured.** Fitting
 > peak→settled across the 8 capped trials gives a median of 0.08 s but a range
@@ -1044,3 +1091,24 @@ horizon") for the full explanation; not repeated here to avoid duplication.
    repo directly — reason through the change against `sim/rollout_core.py`
    instead and flag it for live testing by a human once actually pasted into
    `fsae_planning`.
+
+## Cone geometry: verified accurate to FSDS (2026-08-06)
+
+Checked because a track-geometry mismatch would corrupt every planner
+comparison. It is not a source of the sim-to-real gap.
+
+| | recorded map (`comp test map 3`) | sim | FS rules |
+|---|---|---|---|
+| track width | **3.50 m** (zero variance) | `TRACK_HALF_WIDTH = 1.75` → **3.50 m** | ≥ 3.0 m |
+| cone spacing (median) | 3.95 m blue / 4.07 m yellow | — | ≤ 5 m |
+| spacing ≤ 5 m | **98% / 99%** | — | — |
+| spacing max | 5.25 m | — | — |
+
+Width matches *exactly*, and spacing sits within FS limits.
+
+> **Measure spacing along the path, not down the array.** Cones are stored in
+> **recording order** (`source: fsae_sim_perception.cone_recorder`), not sorted
+> around the track, so consecutive entries are not spatially adjacent. Naively
+> differencing the array reports gaps up to 43.7 m and 23–31% of spacings over
+> 10 m — all artifacts. Project each cone onto its nearest centreline index and
+> sort by that first.
