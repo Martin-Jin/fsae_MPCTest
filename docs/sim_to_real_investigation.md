@@ -371,7 +371,8 @@ explanation was checking the wrong number. Fixed.)*
 
 | item | status |
 |---|---|
-| **Model the yaw cap offline** | Not started — the actual fix |
+| **Model the yaw cap offline** | **Done** — `alat_ceiling*` in `model/vehicle_physics.py`. Moves every metric toward the car (saturation 4.4→6.3%, a_lat max 14.06→10.53) but closes only part of the gap; live is still 21.1% saturation |
+| Remaining saturation gap | **Open** — the cap was necessary but not sufficient. Needs its own investigation |
 | Identify the exact FSDS mechanism | **Test built, awaiting a run.** `run_steering_step.sh` + `tuner/steering_step_analysis.py`, validated against all three injected mechanisms. Preliminary evidence (25–75% overshoot in the sweep's HOLD_STEER windows) points at **active damping**, which would rule out a hard clip |
 | Objective rebalancing | Deferred (§1) — `QUALITY_WEIGHT` 0.35 → ~0.8, saturation as near-constraint |
 | Step 4: held-out tracks | 5 of 10 tracks unused |
@@ -379,5 +380,21 @@ explanation was checking the wrong number. Fixed.)*
 | `fsds_bridge` discards `a_cmd` | §7 — real divergence, unmodelled |
 | Planner centreline defect | Pre-existing, documented; controller carries workarounds |
 
-**Do not retune until the cap is modelled.** A good offline score has already
-produced a car saturating steering 21% of the time.
+**Do not retune yet.** The cap is now modelled, which makes the sim materially
+better, but it closes only part of the gap: live still saturates 3x more often
+(21.1% vs 6.3%) and carries 2x the heading error. A good offline score has
+already produced a car saturating steering 21% of the time.
+
+### A correction worth keeping (2026-08-06)
+
+While chasing the DNF that appeared after modelling the cap, I claimed the
+recorded track's speed profile was ~50% faster than the car and that this was a
+second discrepancy. **Both claims were wrong.** The comparison put the stored
+oracle profile (12.08 m/s, used only to size the step budget) against the live
+car's achieved speed (8.03 m/s). Compared correctly, achieved speeds differ by
+2% (8.20 vs 8.03), and the live car is actually *faster* over the first 6 s.
+
+The real cause was my own ceiling gain being too stiff — enforcing 7.5 m/s2 as
+an absolute limit when the live car exceeds it on 9.8% of ticks. The lesson is
+the same one as the mu=1.455 fit: **check that the two numbers you are
+comparing are the same quantity** before concluding anything from their ratio.

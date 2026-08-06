@@ -913,34 +913,64 @@ does not engage there. Peak a_lat on the recorded map falls 14.06 → 9.05 m/s²
 > line. **A ceiling that acts too late is worse than no ceiling.** `tau = 0.25`
 > matches peak a_lat instead and acts in time.
 
-##### The ceiling exposed a SECOND discrepancy: corner entry speed
+##### The speed profile is NOT a discrepancy (investigated and closed)
 
-With the ceiling on, the tuned gains still DNF on `comp test map 3` — but for
-a different, pre-existing reason that the over-capable plant had been masking.
+An earlier revision of this section claimed the recorded track's speed profile
+was ~50% faster than the car and blamed it for a DNF. **That was wrong on both
+counts**, and the correction is worth recording because the mistake is easy to
+repeat.
+
+The error was comparing the **stored oracle profile** (`V`, mean 12.08 m/s)
+against the live car's **achieved speed** (8.03 m/s). Those are different
+quantities. `V` comes from `compute_speed_profile()` in `track_io`'s
+`_resample_dense()` and is used only to size the step budget — **it is never
+the runtime target.** Both stacks compute their target per tick instead.
+
+Compared like with like, they agree closely:
 
 | | sim | live |
 |---|---|---|
-| speed entering the saturating corner | **9.56 m/s** | **5.74 m/s** |
-| max \|e_y\| | 2.30 m (off-track) | 1.20 m (recovers) |
-| recorded-track speed profile mean | **12.08 m/s** | actual 8.03 m/s |
+| runtime `v_target` mean | 10.50 m/s | 12.53 m/s (first 6 s) |
+| **achieved speed mean** | **8.20 m/s** | **8.03 m/s** |
+| achieved max | 10.86 | 12.50 |
 
-Both cars hit the same yaw cap; only the sim car is going too fast to recover.
-The recorded track's stored speed profile averages 12.08 m/s against the car's
-actual 8.03 — a ~50% over-estimate. The uncapped plant could *just* about
-corner at those speeds, so the error never surfaced; with FSDS's real ceiling
-in place it is immediately fatal.
+A 2% difference in achieved speed, not 50%. In the first 6 s the live car is
+in fact *faster* (9.98 mean, 13.87 max vs the sim's 8.30 / 10.86), so "the sim
+enters corners too fast" was backwards.
 
-**This is a finding, not a modelling bug.** The ceiling is doing its job: it
-turned a hidden reference error into a visible failure. Two things follow:
+Parity was also verified in the code: the live node
+(`mpc_controller_standalone.py`) computes `curvature_speed(v_max=20, v_min=1.5,
+scan_end=24, a_lat_max=4.0)`, then applies `tracking_error_speed_gate` and a
+rise-rate limit. `sim/rollout_core.py` applies **both** of those at runtime with
+the same constants.
 
-- The offline sim has been tuning against a reference ~50% faster than the car
-  ever drives, independently of the yaw cap.
-- Re-tuning must happen **after** both are fixed. Tuning now would just find
-  gains that survive an unrealistically fast reference.
+**The actual cause of that DNF was my ceiling being too stiff** — see the gain
+note above. `alat_ceiling_gain = 3000` enforced 7.5 m/s² as a near-absolute
+limit, but 7.5 is a *sustained* ceiling: the live car exceeds it on **9.8% of
+ticks**, peaking at **12.34 m/s²**, in short excursions (median 0.05 s, max
+0.85 s). Refitting the gain to the measured *peak* rather than the settled
+value (700) reproduces that behaviour and completes the lap.
 
-**Not yet acted on** — the speed-profile discrepancy needs its own
-investigation (is the recorded profile wrong, or does the live planner
-override it?).
+##### Effect of the ceiling, and what remains
+
+Same map, same tuned gains:
+
+| | before (no ceiling) | after (ceiling) | live |
+|---|---|---|---|
+| steering saturation | 4.4% | **6.3%** | **21.1%** |
+| reversals/s | 0.84 | 0.82 | 1.62 |
+| \|e_psi\| mean / p90 | 6.3 / 14.2 | **7.3 / 19.2** | **15.9 / 42.0** |
+| a_lat max | 14.06 | **10.53** | 12.34 |
+| a_lat > 7.5 | 14.2% | 14.2% | 9.8% |
+
+Every metric moves toward the car, and peak lateral acceleration is now
+realistic. **But the gap is only partly closed** — live still saturates 3×
+more often and carries 2× the heading error. The yaw cap was a real and
+necessary fix; it is not the whole story.
+
+> **Do not treat the sim as validated yet.** Re-tuning against it now would be
+> better than before but still optimistic. The remaining saturation gap needs
+> its own investigation.
 
 > **The decay time constant is NOT yet reliably measured.** Fitting
 > peak→settled across the 8 capped trials gives a median of 0.08 s but a range

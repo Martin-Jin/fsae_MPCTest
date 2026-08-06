@@ -193,10 +193,19 @@ class VehicleParams:
         # plant (e.g. when modelling the real vehicle).
         self.alat_ceiling_enabled = True
         self.alat_ceiling = 7.5    # Sustained lateral-accel ceiling (m/s²)
-        # Restoring yaw moment per m/s² of excess (N·m per m/s²). Sized so the
-        # cap actually binds without making the car snap back unphysically;
-        # fitted against the measured settled a_lat (7.80 at 8 m/s, 7.29 at 12).
-        self.alat_ceiling_gain = 3000.0
+        # Restoring yaw moment per m/s² of excess (N·m per m/s²).
+        #
+        # Fitted to the measured PEAK a_lat (9.56 / 10.86 at 8 / 12 m/s here,
+        # against 9.72 mean / 10.89 max measured), NOT to the settled value.
+        # That is deliberate: 7.5 m/s² is a SUSTAINED ceiling, not a wall the
+        # car never crosses. The live car exceeds it on 9.8% of ticks, peaking
+        # at 12.34, in short excursions (median 0.05 s, max 0.85 s).
+        #
+        # A stiffer gain (3000) matched the settled value more exactly and then
+        # enforced 7.5 as a near-absolute limit — stricter than the real car —
+        # which DNF'd the lap. At 700 the sim exceeds 7.5 on 14.2% of ticks and
+        # peaks at 10.53, close to live's 9.8% / 12.34, and completes the lap.
+        self.alat_ceiling_gain = 700.0
         # Time constant (s) over which the restoring moment builds. This is
         # what creates the overshoot: the term lags the excess, so yaw exceeds
         # the ceiling before being pulled back. A memoryless version engages
