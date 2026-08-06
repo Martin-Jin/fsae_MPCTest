@@ -700,6 +700,13 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=None, R_
     else:
         dynamic_max_steps, _ = compute_step_budget(path_X, path_Y, path_v_profile)
 
+    # Physical minimum traversal time, anchoring the score's time objective.
+    # offline_tuner caches this per synthetic path (PATH_OPTIMAL_TIMES); the GUI
+    # runs on arbitrary user-drawn paths, so it computes the bound here. Without
+    # it the rollout silently falls back to the old arc_length/2.5 m/s heuristic
+    # and the GUI's score would not match a tuner score for the same drive.
+    optimal_time = speed_profile.optimal_lap_time(path_X, path_Y)
+
     rollout = run_core_rollout(
         path_X, path_Y, path_Psi, path_v_profile,
         _blue_cones_all, _yellow_cones_all,
@@ -709,6 +716,7 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=None, R_
         use_planner=use_planner, model_lookup=get_cached_model,
         n_horizon=N_horizon, eps=ROLLOUT_EPS, max_iter=ROLLOUT_MAX_ITER,
         want_history=True, want_horizon_pred=True,
+        optimal_time=optimal_time,
     )
 
     return rollout["history"]

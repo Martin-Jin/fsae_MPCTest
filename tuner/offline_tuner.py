@@ -710,10 +710,16 @@ def run_headless_rollout(
     Returns
     -------
     score : float
-        Composite performance score (lower is better). Typical range:
-          Good finish:  Around -0.5
-          Poor finish:   -0.1 to 1
-          DNF:           >= 1 (depending on how early the DNF)
+        Composite performance score (lower is better). Typical range under the
+        constrained 3-tier scoring (see sim/scoring.py):
+          Good finish:   ~0.4 - 1.0
+          Poor finish:   ~1.0 - 2.0
+          Infeasible:    >= CONSTRAINT_FLOOR (10.0) — crashed, left the track,
+                         or didn't finish. Deliberately separated from the
+                         feasible band so no quality score can promote a
+                         failed run above a completed one.
+        These figures are NOT comparable to scores logged before 2026-08-06;
+        see the closed-book header in tuning history.txt.
 
     Called by: _score_task() (from pool.map in parallel_evaluate_candidate),
                evaluate_candidate() (serial fallback)

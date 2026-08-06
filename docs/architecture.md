@@ -226,8 +226,15 @@ default to keep each tuning run faster.
 
 ### Bonus weights
 
-`COMPLETION_BONUS_WEIGHT` / `TIME_BONUS_WEIGHT` — score reductions
-(rewards) for finishing the track at all, and for finishing it quickly.
+`TIME_BONUS_WEIGHT` — legacy weight, no longer used by the score itself.
+Time is now the *primary objective* (tier 2), scaled by
+`TIME_OBJECTIVE_WEIGHT`, not a bonus subtracted from a metric sum.
+
+`COMPLETION_BONUS_WEIGHT` — **no longer used by the score.** Completion is a
+hard constraint (tier 1), not something rewarded: a run that doesn't finish
+is scored above `CONSTRAINT_FLOOR` regardless of how well it drove. Both
+constants are retained only so the live copy's CSV header and
+`tuning history.txt` logging keep their existing fields.
 
 ---
 

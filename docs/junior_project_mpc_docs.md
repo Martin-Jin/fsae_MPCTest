@@ -435,14 +435,21 @@ successful run a failure.
 
 **Lower is always better.** A good finishing run typically scores around **0.4 to 1.0**; anything **above 10.0** means the run crashed, left the track, or didn't finish.
 
-> **Note on scale (changed 2026-08-06).** Before `METRIC_SCALES` existed, the raw
-> weighted sum was much smaller than the bonuses, so essentially every finishing
-> run scored negative (roughly -0.5 to -0.3). With normalisation the metric term
-> is on a comparable footing to the bonuses, so **post-fix scores are numerically
-> larger (less negative) than pre-fix ones for the same quality of driving.**
-> That is a change of units, not a regression — do not compare a score from
-> before this date against one from after it. See the closed-book header in
-> `tuning history.txt`.
+> **Note on scale — it changed TWICE on 2026-08-06.** Originally the raw weighted
+> sum was much smaller than the bonuses, so essentially every finishing run
+> scored negative (roughly -0.5 to -0.3). Then `METRIC_SCALES` put the metric
+> term on a comparable footing to the bonuses, and then the constrained 3-tier
+> restructure replaced the bonus/penalty arithmetic entirely.
+>
+> | era | good completed run | failed run |
+> |---|---|---|
+> | original | ~-0.5 to -0.3 | +3.0 added, could be out-earned |
+> | + `METRIC_SCALES` | ~-0.3 to +0.3 | same |
+> | + 3-tier (current) | **~0.4 to 1.0** | **>= 10.0, unreachable from below** |
+>
+> All three are different functions. **Do not compare a score across any of
+> these boundaries in either direction** — a bigger number is not a worse car.
+> See the closed-book header in `tuning history.txt`.
 
 **Where to find results — `tuning history.txt`.** Every tuning run automatically appends:
 
@@ -543,8 +550,10 @@ All of these live in `settings.py`, with a full plain-English explanation as a c
 | `PATH_N_POINTS` | How finely each synthetic test track is resampled | 200-500 at a time |
 | `SCORE_WEIGHTS` | The 12-entry "what does good driving mean" array (see [2.4](#24-how-a-run-gets-scored)). Kept summing to roughly 1.0 by convention | Move 0.01-0.03 from one weight to another |
 | `VALIDATION_SUITE` | Which synthetic corner shapes the tuner actually scores against | Add/remove one at a time, watch tuning time change |
-| `COMPLETION_BONUS_WEIGHT` / `TIME_BONUS_WEIGHT` | Reward for finishing / finishing quickly | 0.1-0.2 / 0.05-0.1 at a time |
-| `DNF_PENALTY` / `DNF_OFFTRACK_PENALTY` | Flat penalty for not finishing / for leaving the track specifically | 0.5-1.0 at a time |
+| `COMPLETION_BONUS_WEIGHT` / `TIME_BONUS_WEIGHT` | **No longer used by the score** (kept for logging fields only). Finishing is now a hard requirement, and speed is the main objective rather than a bonus | Don't — change `TIME_OBJECTIVE_WEIGHT` / `QUALITY_WEIGHT` instead |
+| `TIME_OBJECTIVE_WEIGHT` / `QUALITY_WEIGHT` | How much the score cares about lap time vs. smooth driving | 0.05 at a time on `QUALITY_WEIGHT` |
+| `CONSTRAINT_FLOOR` / `COMPLETION_THRESHOLD` | The line between "this run counts" and "this run failed" | Rarely; raise the floor only if good scores ever approach 10.0 |
+| `DNF_PENALTY` / `DNF_OFFTRACK_PENALTY` | How much worse a crash is than simply not finishing. Now scales position *within* the failed band, rather than being added to a normal score | 0.5-1.0 at a time |
 | `FAST_TEST_MODE` | Shrinks everything for a ~1 minute smoke-test after a code change. **Never** paste weights tuned with this on into `Q_diag` etc, it's a correctness check, not a real tuning result | `True` only for quick dev iteration |
 
 ### 2.8 Adding a New Test Track

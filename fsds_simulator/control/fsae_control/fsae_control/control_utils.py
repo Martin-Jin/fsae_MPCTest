@@ -5,6 +5,16 @@ import numpy as np
 # FSDS: max steering angle 25 degrees per ros-bridge.md
 MAX_STEER_RAD = math.radians(25.0)
 
+# Planning-level braking capability (m/s^2, positive magnitude) used by
+# curvature_speed()'s braking-distance propagation.  Deliberately well below
+# the vehicle's true limit (~9 m/s^2): the target must be achievable with the
+# tyres ALSO generating the lateral force for the corner being braked into
+# (friction circle), and with margin for model error and the ~0.05 s actuation
+# lag.  Planning at the true limit would make the propagation non-binding
+# exactly when it matters most.  Mirrors the a_brake_max used by
+# fsae_MPCTest/sim/speed_profile.py's compute_speed_profile().
+A_BRAKE_PLAN = 5.0
+
 
 def _heading_error(car_pos, car_yaw, target_global) -> float:
     """Return heading error in radians: positive when target is left of car."""
@@ -197,6 +207,14 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
     corner too late for the car to shed enough speed, saturating steering and
     spinning out at corner entry (observed on the live fsae_planning stack;
     kept in sync with the planner's own lookahead there).
+
+    The returned target also accounts for BRAKING DISTANCE (see the propagation
+    block below): each corner in the scan window is converted to the fastest
+    speed from which that corner is still reachable at A_BRAKE_PLAN, and the
+    most restrictive wins. Without that, a corner 24 m ahead and the same corner
+    2 m ahead give the same answer, so the profile can request a deceleration
+    the car cannot produce. scan_end makes a corner VISIBLE in time; this makes
+    the resulting target ACHIEVABLE.
     """
     n = len(waypoints)
     if n < 3:
@@ -266,20 +284,51 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
 
     k = np.asarray(kappas, dtype=float)
     # A genuine corner spans several consecutive triples, so it survives a
-    # short running mean; an isolated fit artifact is averaged down.  Take the
-    # max of the smoothed series rather than a percentile of the raw one:
-    # the scan window only yields ~7 triples, so a p75/p90 is both noisy AND
-    # biased upward (measured: p75 pushed v_target to 20 m/s on paths where
+    # short running mean; an isolated fit artifact is averaged down.  Reduce
+    # with a max over the SMOOTHED series rather than a percentile of the raw
+    # one: the scan window only yields ~7 triples, so a p75/p90 is both noisy
+    # AND biased upward (measured: p75 pushed v_target to 20 m/s on paths where
     # the raw max said 5 — dangerously fast, the wrong direction to err).
     # This keeps a sustained bend fully authoritative while refusing to let one
-    # point dominate.  Still a MAX over the smoothed series, so it stays
-    # conservative.
+    # point dominate.
     if len(k) >= 3:
         k = np.convolve(k, np.ones(3) / 3.0, mode='valid')
-    max_kappa = float(k.max())
 
-    if max_kappa < 1e-4:
-        return float(v_max_eff)
+    # ── Braking-distance propagation ──────────────────────────────────────
+    # Taking a single max over the window and returning sqrt(a_lat/kappa)
+    # ignores WHERE the corner is: a hairpin 24 m ahead and the same hairpin
+    # 2 m ahead produce an identical target, so the profile can demand a
+    # deceleration the car cannot physically produce.  Measured offline on a
+    # 60 m straight into a 5 m hairpin, the equivalent single-max profile
+    # implied ~273 m/s^2 (~28 g) of braking at corner entry.  The car can't do
+    # that, so the speed error is charged to the controller for failing at
+    # something impossible, and it arrives at the corner too fast regardless.
+    # scan_end=24 m was sized so a hairpin is *seen* in time; this makes the
+    # target actually *achievable* from here.
+    #
+    # For each sampled corner at distance d ahead with its own corner-speed
+    # limit v_corner, the fastest we may travel NOW and still brake to it is
+    #     v_allowed = sqrt(v_corner^2 + 2 * a_brake * d)
+    # (from v_f^2 = v_i^2 - 2*a*d).  Take the most restrictive over the window.
+    # A corner far enough away imposes no limit, which falls out naturally
+    # because v_allowed then exceeds v_max_eff.
+    #
+    # Distances: k[i] is the curvature of the triple centred on pts[i+1] after
+    # the 'valid' convolution shifted the series by one more, so the smoothed
+    # entry i corresponds to pts[i + 2].  scan_start is added because pts began
+    # that far ahead of the car.
+    k_safe = np.maximum(k, 1e-9)
+    v_corner = safety * np.sqrt(a_lat_max / k_safe)
+    idx = np.arange(len(k)) + 2
+    if len(pts) > 1:
+        pts_arc = np.concatenate(
+            [[0.0], np.cumsum(np.linalg.norm(np.diff(pts, axis=0), axis=1))]
+        )
+        d_ahead = scan_start + pts_arc[np.minimum(idx, len(pts_arc) - 1)]
+    else:
+        d_ahead = np.full(len(k), scan_start)
 
-    v_target = safety * math.sqrt(a_lat_max / max_kappa)
+    v_allowed = np.sqrt(v_corner ** 2 + 2.0 * A_BRAKE_PLAN * d_ahead)
+    v_target = float(np.min(v_allowed))
+
     return float(max(v_min, min(v_max_eff, v_target)))

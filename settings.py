@@ -601,6 +601,16 @@ VALIDATION_SUITE = [
 # PERFORMANCE BONUS WEIGHTS
 # ------------------------------------------------------------------------------
 
+# COMPLETION_BONUS_WEIGHT / TIME_BONUS_WEIGHT — NO LONGER USED BY THE SCORE.
+# As of the 2026-08-06 constrained restructure (see CONSTRAINT_FLOOR below),
+# completion is a hard requirement rather than a reward, and time is the
+# primary objective rather than a bonus. Both constants are retained only so
+# the live scoring copy's CSV header and tuning-history logging keep their
+# existing fields. Changing them has no effect on the score — use
+# TIME_OBJECTIVE_WEIGHT / QUALITY_WEIGHT instead.
+#
+# Historical description follows.
+#
 # COMPLETION_BONUS_WEIGHT — "How much of a reward (score reduction) does the
 # car get simply for finishing the track?"
 # This is subtracted from the score in proportion to how much of the track
