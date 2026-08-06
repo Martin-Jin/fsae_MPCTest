@@ -505,7 +505,12 @@ mistake a partial live score for a full offline one. The weighted-metric
 component (the 12 metrics × `SCORE_WEIGHTS`) is directly comparable either
 way; only the bonus/penalty terms differ.
 
-## OPEN: the sim-to-real gap is not yet explained
+## The sim-to-real gap: CAUSE FOUND, fix not yet applied
+
+> **Full investigation history** — every hypothesis tried, why each looked
+> right, and how it was eliminated — is in
+> [`sim_to_real_investigation.md`](sim_to_real_investigation.md). Read that
+> before re-testing any candidate that looks unexplored; most already were.
 
 Measured 2026-08-06 on the recorded `comp test map 3`, same tuned gains both
 sides:
