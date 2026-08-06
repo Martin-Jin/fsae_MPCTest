@@ -59,6 +59,12 @@ STALL_MIN_DISTANCE = 3.0    # Minimum distance (m) expected per interval
 PLANNER_V_MAX = 20.0
 PLANNER_V_MIN = 1.5
 
+# Max rate (m/s^2) at which the speed TARGET may rise. Mirrors
+# mpc_controller_standalone.SPEED_TARGET_RISE_RATE — keep the two in sync.
+# Decreases are never rate-limited; only the rise is damped, to suppress the
+# planner's frame-to-frame curvature jitter without capping real acceleration.
+SPEED_TARGET_RISE_RATE = 2.0
+
 
 def _normalize_angle(angle):
     """Wrap an angle to (−π, π] using atan2."""
@@ -303,6 +309,9 @@ def run_core_rollout(
     # score per candidate (see settings.DELAY_JITTER_SEED).
     delay_rng = np.random.default_rng(DELAY_JITTER_SEED)
 
+    # Previous step's speed target, for the rise-rate limiter above.
+    v_des_prev = None
+
     # ── SLAM / localisation noise ─────────────────────────────────────────
     # Corrupts only the pose fed to perception/planner/tracking-error; the
     # plant and the score always see the true state. See SlamNoise.
@@ -433,6 +442,21 @@ def run_core_rollout(
                 state_est, path_x=path_X, path_y=path_Y, path_psi=path_Psi
             )
             v_target = float(path_v_profile[idx])
+
+        # ── Tracking-error speed gate + rise-rate limit ────────────────────
+        # Mirrors mpc_controller_standalone.py's Phase 3 exactly (see
+        # control_utils.tracking_error_speed_gate for the rationale and the
+        # live measurements behind the thresholds). curvature_speed() reads
+        # only path SHAPE, so without this the target stays high — and can even
+        # command acceleration — while the car is badly off-line with steering
+        # already saturated, which is unrecoverable.
+        #
+        # Applied to every branch above (planner, planner-fallback, oracle) so
+        # the offline speed target is produced the same way in all of them.
+        v_target = max(PLANNER_V_MIN, v_target * sp.tracking_error_speed_gate(e_y, e_psi))
+        if v_des_prev is not None:
+            v_target = min(v_target, v_des_prev + SPEED_TARGET_RISE_RATE * DT)
+        v_des_prev = v_target
 
         # ── TRUE tracking error, for scoring only ──────────────────────────
         # e_y/e_psi above are what the CONTROLLER perceives, and they are not

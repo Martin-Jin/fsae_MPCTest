@@ -17,24 +17,54 @@ The result is a smooth speed profile that:
 
 HOW THE PROFILING WORKS
 -----------------------
-The algorithm iterates over every point in the path and applies a look-ahead
-heuristic to find the maximum upcoming curvature. 
+compute_speed_profile() runs three passes over the path:
 
-  1. Look-ahead Window:
-     At each path point, it samples upcoming points between a `scan_start` 
-     and `scan_end` distance.
-  2. 3-Point Curvature Estimation:
-     It uses a 3-point cross-product method across the sampled window to 
-     find the maximum geometric curvature (κ_max) ahead of the vehicle.
-  3. Speed Target Generation:
-     Using the friction circle approximation (a_c = v² * κ), it sets the 
-     target speed to v_target = sqrt(a_lat_max / κ_max), keeping it bounded 
-     between the global v_min and an effective v_max (which scales down near 
-     the end of the path).
+  Pass 0 — Look-ahead curvature limit:
+     1. Look-ahead Window: at each path point, sample upcoming points between
+        a `scan_start` and `scan_end` distance.
+     2. 3-Point Curvature Estimation: use a 3-point cross-product method
+        across the sampled window to find the maximum geometric curvature
+        (κ_max) ahead of the vehicle.
+     3. Speed Target Generation: using the friction circle approximation
+        (a_c = v² * κ), set the target to v = sqrt(a_lat_max / κ_max),
+        bounded between v_min and an effective v_max (which scales down near
+        the end of the path).
+  Pass 1 — Forward propagation: cap how fast the target may RISE between
+     points, per a_accel_max.
+  Pass 2 — Backward propagation: cap how fast it may FALL, i.e. require each
+     point be slow enough to brake to the next point's limit, per
+     a_brake_max.
 
-This method directly mirrors the ROS2 planner's speed profiling behavior, 
-prioritizing upcoming severe corners over strict point-to-point kinematic 
-acceleration limits.
+Pass 0 alone mirrors the ROS2 planner's heuristic, but it only bounds speed
+point-wise — it never checks consecutive targets are joined by an achievable
+longitudinal acceleration, so it can demand a deceleration the car physically
+cannot produce (measured at ~273 m/s² on a 60 m straight into a 5 m hairpin).
+`speed_rmse` then penalises the controller for failing to do the impossible,
+and the tuner contorts the gains chasing it. Passes 1-2 exist to make the
+profile a trajectory the vehicle can actually follow.
+
+PARITY
+------
+curvature_speed() in this module is a numeric-parity port of the live
+control_utils.curvature_speed() (ros2/src/fsae_planning/control/fsae_control/).
+It is the ONLY curvature heuristic here: compute_speed_profile()'s pass 0
+calls it per path point rather than re-implementing it, so the oracle
+reference profile and the live per-tick target cannot drift apart. Shared
+defaults live in the CURVATURE_SPEED_* constants below and must be kept
+equal to the live function's defaults.
+
+This delegation fixed a real gap. The oracle profile previously used its own
+copy of the heuristic with scan_end=14 m, a_lat_max=mu*g=5.886 and v_max=20,
+against the car's scan_end=24 m, a_lat_max=4.0 and v_max=15, and skipped the
+live function's dense-resample denoising. On a 60 m straight into a 5 m
+hairpin it commanded 2.45 m/s faster on average and 5 m/s faster on
+straights — so weights tuned offline were tuned for a car faster than the
+one that exists.
+
+Passes 1-2 (forward/backward propagation) have no live counterpart; the car
+relies on the 24 m look-ahead to see corners early enough. They only ever
+LOWER a target below what pass 0 returned, so the profile stays bounded by
+what the live heuristic would command.
 
 USED BY
 -------
@@ -54,6 +84,25 @@ DOES NOT USE
 
 import numpy as np
 import math
+
+# ── Live-node parity constants ────────────────────────────────────────────
+# These MUST match the defaults of curvature_speed() in
+# ros2/src/fsae_planning/control/fsae_control/fsae_control/control_utils.py
+# (mirrored in fsds_simulator/.../control_utils.py). They are named here so
+# both curvature_speed() below and compute_speed_profile() draw from one
+# place instead of repeating literals — the drift that let the oracle profile
+# run 2.45 m/s faster than the car.
+#
+# scan_end=24.0 in particular is load-bearing: a tight hairpin (~2 m radius,
+# v_target ~2.7 m/s) approached at v_max needs ~24 m to brake for at a
+# realistic achieved deceleration. A shorter scan sees the corner too late,
+# saturating steering and spinning out at corner entry (observed live).
+CURVATURE_SPEED_V_MAX = 15.0
+CURVATURE_SPEED_V_MIN = 1.5
+CURVATURE_SPEED_A_LAT_MAX = 4.0
+CURVATURE_SPEED_SCAN_START = 1.5
+CURVATURE_SPEED_SCAN_END = 24.0
+CURVATURE_SPEED_STEP = 2.0
 
 # Note: not called by the active compute_speed_profile; retained for previous speed profile function
 def compute_path_curvature(path_X, path_Y):
@@ -234,28 +283,76 @@ def compute_path_curvature(path_X, path_Y):
 
 #     return np.clip(v_profile, v_min, v_max_eff)
 
-# Speed profiler that matches the fsae planning node speed profiler
+# Speed profiler for the ORACLE reference path. Look-ahead curvature limit
+# (matching the live planning node's curvature_speed heuristic) followed by
+# forward/backward longitudinal propagation.
+#
+# WHY THE PROPAGATION PASSES ARE BACK
+# -----------------------------------
+# The look-ahead heuristic alone sets each point's speed from the maximum
+# curvature in the window ahead, but never checks that consecutive targets are
+# connected by an achievable longitudinal acceleration. It can therefore demand
+# a speed drop the car physically cannot brake for, and `speed_rmse` then
+# penalises the controller for failing to do something impossible — which the
+# tuner responds to by contorting the gains. The forward/backward passes make
+# the profile a trajectory the vehicle can actually follow.
+#
+# PARITY: pass 0 below DELEGATES to curvature_speed() — the numeric-parity
+# port of the live control_utils.curvature_speed() — evaluated at every path
+# point, rather than re-implementing the same heuristic with different
+# defaults. Before this, the oracle profile used scan_end=14 m,
+# a_lat_max=mu*g=5.886 and v_max=20, while the car runs scan_end=24 m,
+# a_lat_max=4.0 and v_max=15, and skipped the live function's dense-resample
+# denoising entirely. Measured on a 60 m straight into a 5 m hairpin, the
+# oracle profile commanded 2.45 m/s faster on average and 5 m/s faster on
+# straights than the car will ever drive — so weights tuned against it were
+# tuned for a faster car than exists. Delegating makes that class of drift
+# structurally impossible: there is now exactly one curvature heuristic.
 def compute_speed_profile(
     path_X, path_Y,
-    v_max=20.0,
+    v_max=CURVATURE_SPEED_V_MAX,
     mu=0.6,
     g=9.81,
-    a_accel_max=4.0,  # Maintained for signature compatibility, unused by path_utils logic
-    a_brake_max=-5.0, # Maintained for signature compatibility, unused by path_utils logic
-    v_min=1.5,
+    a_accel_max=4.0,
+    a_brake_max=-5.0,
+    v_min=CURVATURE_SPEED_V_MIN,
     safety=1.0,
-    scan_end=14.0,
+    scan_end=CURVATURE_SPEED_SCAN_END,
+    a_lat_max=CURVATURE_SPEED_A_LAT_MAX,
 ):
     """
-    Compute a per-point target speed profile using a forward look-ahead heuristic.
+    Compute a physically achievable per-point target speed profile.
 
-    At each path point, samples upcoming points in the window [scan_start, scan_end]
-    metres ahead and finds the maximum curvature using the 3-point cross-product
-    method. Target speed is derived from the friction circle limit:
-        v_target = safety * sqrt(a_lat_max / kappa_max)
+    Pass 0 — look-ahead curvature limit, delegated to curvature_speed() at
+    every path point so the oracle profile and the live per-tick target come
+    from the same code with the same defaults (see PARITY note above).
 
-    The a_accel_max and a_brake_max parameters are kept for signature compatibility
-    with the old three-pass implementation but are not used.
+    Pass 1 — forward propagation. Caps how fast speed may RISE between points:
+    v[i] <= sqrt(v[i-1]^2 + 2*a_accel_max*ds).
+
+    Pass 2 — backward propagation. Caps how fast speed may FALL, i.e. requires
+    each point be slow enough to brake to the next point's limit:
+    v[i] <= sqrt(v[i+1]^2 + 2*|a_brake_max|*ds).
+
+    a_accel_max / a_brake_max are deliberately conservative relative to the
+    plant's true bounds (VehicleParams.max_accel=12.0,
+    max_accel_brake=-9.0). Planning at the true limits would leave the
+    controller no margin for combined slip or model-plant mismatch, and would
+    make the passes nearly non-binding — the same rationale as planning at
+    a_lat_max=4.0 against a plant whose peak mu is 1.76.
+
+    `mu` and `g` are retained for signature compatibility with older callers
+    but no longer set the lateral limit — a_lat_max does, matching the live
+    node. Passing mu/g has no effect.
+
+    NOTE: passes 1-2 have no live counterpart; the car relies on
+    curvature_speed()'s 24 m look-ahead to see corners early enough to brake.
+    They exist here because a per-point profile is otherwise not guaranteed to
+    be connected by achievable longitudinal acceleration (measured at ~273
+    m/s^2 of demanded braking before they were restored), which made
+    speed_rmse penalise the controller for the impossible. They only ever
+    LOWER a target, so the profile stays bounded by what the live heuristic
+    would command.
     """
     path_X = np.asarray(path_X)
     path_Y = np.asarray(path_Y)
@@ -265,64 +362,97 @@ def compute_speed_profile(
     if n < 3:
         return v_profile
 
-    a_lat_max = mu * g  # Map speed_profile params to path_utils a_lat_max
-    scan_start = 1.5
-    step = 2.0
-
-    # Pre-compute cumulative arc length for the entire path
+    # Pre-compute segment lengths for the propagation passes below.
     pts = np.column_stack([path_X, path_Y])
     segs = np.linalg.norm(np.diff(pts, axis=0), axis=1)
-    arc = np.concatenate([[0.0], np.cumsum(segs)])
-    total_length = arc[-1]
 
+    # ── Pass 0: look-ahead curvature limit (delegated) ─────────────────────
+    # Evaluate the LIVE heuristic at every path point, scanning forward from
+    # that point exactly as the car does from its current position each tick.
+    # pts[i:] is "the path ahead of point i", which is the same argument shape
+    # rollout_core passes when it calls curvature_speed() on the planner's
+    # centreline — so oracle and planner branches now agree by construction.
     for i in range(n):
-        remaining_arc = total_length - arc[i]
-        
-        # Scale down v_max if we are near the end of the known path
-        v_max_eff = max(v_min, v_max * min(1.0, remaining_arc / scan_end))
+        v_profile[i] = curvature_speed(
+            pts[i:],
+            v_max=v_max, v_min=v_min, a_lat_max=a_lat_max,
+            scan_start=CURVATURE_SPEED_SCAN_START,
+            scan_end=scan_end, step=CURVATURE_SPEED_STEP,
+            safety=safety,
+        )
 
-        if remaining_arc < scan_start + step:
-            v_profile[i] = float(v_max_eff)
-            continue
+    # ── Pass 1: forward propagation (acceleration limit) ──────────────────
+    # v_next^2 = v_prev^2 + 2*a*ds  ->  cap how fast the target may rise.
+    # `segs[i-1]` is the arc length from point i-1 to point i.
+    for i in range(1, n):
+        v_allowed = math.sqrt(v_profile[i - 1] ** 2 + 2.0 * a_accel_max * segs[i - 1])
+        if v_allowed < v_profile[i]:
+            v_profile[i] = v_allowed
 
-        # Sample points ahead of the current position [i]
-        sample_arcs = np.arange(arc[i] + scan_start, min(arc[i] + scan_end, total_length), step)
-        if len(sample_arcs) < 3:
-            v_profile[i] = float(v_max_eff)
-            continue
+    # ── Pass 2: backward propagation (braking limit) ──────────────────────
+    # Each point must already be slow enough to brake down to the next point's
+    # limit. a_brake_max is negative, so the radicand can go below zero when
+    # the demanded drop exceeds what ds allows — clamp at 0 and let v_min
+    # restore the floor afterwards.
+    a_brake_mag = abs(a_brake_max)
+    for i in range(n - 2, -1, -1):
+        radicand = v_profile[i + 1] ** 2 + 2.0 * a_brake_mag * segs[i]
+        v_allowed = math.sqrt(max(radicand, 0.0))
+        if v_allowed < v_profile[i]:
+            v_profile[i] = v_allowed
 
-        sx = np.interp(sample_arcs, arc, path_X)
-        sy = np.interp(sample_arcs, arc, path_Y)
-        sampled_pts = np.column_stack([sx, sy])
-
-        # Find maximum curvature in the look-ahead window (3-point method)
-        max_kappa = 0.0
-        for j in range(1, len(sampled_pts) - 1):
-            p1, p2, p3 = sampled_pts[j - 1], sampled_pts[j], sampled_pts[j + 1]
-            d12 = float(np.linalg.norm(p2 - p1))
-            d23 = float(np.linalg.norm(p3 - p2))
-            d31 = float(np.linalg.norm(p1 - p3))
-            
-            denom = d12 * d23 * d31
-            if denom < 1e-9:
-                continue
-                
-            v1 = p2 - p1
-            v2 = p3 - p1
-            cross = abs(float(v1[0] * v2[1] - v1[1] * v2[0]))
-            kappa = 2.0 * cross / denom
-            
-            if kappa > max_kappa:
-                max_kappa = kappa
-
-        # Calculate target speed for this specific point
-        if max_kappa < 1e-4:
-            v_profile[i] = float(v_max_eff)
-        else:
-            v_target = safety * math.sqrt(a_lat_max / max_kappa)
-            v_profile[i] = float(max(v_min, min(v_max_eff, v_target)))
+    # The propagation passes can push points below v_min (e.g. approaching a
+    # hairpin whose corner speed is already at the floor); restore the floor
+    # so the profile never demands a stop the curvature limit didn't ask for.
+    np.clip(v_profile, v_min, None, out=v_profile)
 
     return v_profile
+
+
+def tracking_error_speed_gate(e_y, e_psi,
+                              ey_lo=0.5, ey_hi=2.0,
+                              epsi_lo=math.radians(20.0), epsi_hi=math.radians(60.0),
+                              floor=0.3):
+    """
+    Multiplier in [floor, 1] that scales the speed target down when the car is
+    failing to track the path.
+
+    OFFLINE MIRROR of fsae_control.control_utils.tracking_error_speed_gate —
+    keep the two numerically identical (same defaults, same shape), or the
+    tuner optimises against a different longitudinal policy than the car runs.
+
+    WHY THIS EXISTS
+    ---------------
+    curvature_speed() looks only at the SHAPE of the path ahead.  It has no
+    idea where the car actually is relative to it, so it will happily command
+    full speed down a straight while the car is 3 m off-line and pointing 60
+    deg the wrong way.  That is exactly how the lap-2 failure in
+    mpc_standalone_control_1785980686.csv became unrecoverable: with |e_y| >
+    1.5 m the mean commanded speed was still 7.3 m/s (peaking at 15.0), and at
+    t=85.5-86.6 s the car held full 25 deg lock while being told to ACCELERATE
+    from 4.8 to 9.3 m/s.  Steering was saturated 49.9% of that lap — no
+    steering command can recover a corner the car is being driven faster into.
+
+    Slowing down is the only remaining control authority once steering
+    saturates, so the speed target must respond to tracking error, not just to
+    path geometry.
+
+    SHAPE
+    -----
+    Linear ramp on each of |e_y| and |e_psi|, taking the WORST (minimum) of the
+    two — being badly misaligned is dangerous even when laterally close, and
+    vice versa.  Below *_lo the gate is exactly 1.0, so normal driving is
+    completely unaffected (measured on the clean middle of that same log: gate
+    < 0.99 on only 1.6% of ticks, mean 0.998).  Above *_hi it saturates at
+    `floor` rather than 0 — the car still needs enough speed to steer and to
+    make progress back to the path; cutting to a standstill mid-track is its
+    own failure mode.
+    """
+    if ey_hi <= ey_lo or epsi_hi <= epsi_lo:
+        return 1.0
+    gy = 1.0 - (abs(float(e_y)) - ey_lo) / (ey_hi - ey_lo)
+    gp = 1.0 - (abs(float(e_psi)) - epsi_lo) / (epsi_hi - epsi_lo)
+    return float(np.clip(min(gy, gp), floor, 1.0))
 
 
 def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
@@ -336,12 +466,17 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
     centreline is currently available). This is a numeric-parity port of
     fsds_simulator/control/fsae_control/fsae_control/control_utils.py's
     curvature_speed() (the live ROS node's own re-implementation, used so
-    that node has no cross-package import) —
-    a_lat_max=4.0 matches that live default, NOT compute_speed_profile()'s
-    mu*g=5.886 convention: the two functions serve different paths (oracle
-    per-point profile vs. on-demand live/offline-planner scalar) and only the
-    latter has a live counterpart that must match bit-for-bit for tuned
-    weights to transfer.
+    that node has no cross-package import) — so these defaults must match
+    that function's bit-for-bit for tuned weights to transfer.
+
+    This is now the single curvature heuristic in this module:
+    compute_speed_profile() calls it per path point for its pass 0 rather
+    than keeping a second copy. Previously the two diverged (this one at
+    a_lat_max=4.0 / scan_end=24, the profile at mu*g=5.886 / scan_end=14),
+    which made the oracle reference systematically faster than anything the
+    car would drive. Defaults here are mirrored in the module-level
+    CURVATURE_SPEED_* constants, which compute_speed_profile() uses; change
+    both together, and only alongside the matching live-node change.
 
     scan_end=24 m (was 14 m) matches the live boundary._WALL_PLAN_HORIZON: a
     tight hairpin (~2 m radius, v_target ~2.7 m/s) approached at v_max needs
@@ -387,7 +522,15 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
         sy  = np.interp(sample_arcs, arc, waypoints[:, 1])
         pts = np.column_stack([sx, sy])
 
-    max_kappa = 0.0
+    # Collect every triple's Menger curvature, then reduce.  Taking the raw MAX
+    # (the original behaviour) lets a SINGLE bad triple set the speed for the
+    # whole scan window, and the planner does emit those: measured on
+    # mpc_standalone_path_1785980686.csv, peak kappa across consecutive
+    # ~1 s snapshots of the same physical corner swung R=5.3 m -> 32.3 m ->
+    # 4.2 m -> 1.0 m, with a lap-2 worst case of R=0.14 m — not a real corner,
+    # a centreline-fit artifact.  Since v = sqrt(a_lat/kappa), that made
+    # v_target swing 4.7 -> 16.7 -> 6.0 m/s frame to frame.
+    kappas = []
     for i in range(1, len(pts) - 1):
         p1, p2, p3 = pts[i - 1], pts[i], pts[i + 1]
         d12 = float(np.linalg.norm(p2 - p1))
@@ -399,9 +542,24 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
         v1    = p2 - p1
         v2    = p3 - p1
         cross = abs(float(v1[0] * v2[1] - v1[1] * v2[0]))
-        kappa = 2.0 * cross / denom
-        if kappa > max_kappa:
-            max_kappa = kappa
+        kappas.append(2.0 * cross / denom)
+
+    if not kappas:
+        return float(v_max_eff)
+
+    k = np.asarray(kappas, dtype=float)
+    # A genuine corner spans several consecutive triples, so it survives a
+    # short running mean; an isolated fit artifact is averaged down.  Take the
+    # max of the smoothed series rather than a percentile of the raw one:
+    # the scan window only yields ~7 triples, so a p75/p90 is both noisy AND
+    # biased upward (measured: p75 pushed v_target to 20 m/s on paths where
+    # the raw max said 5 — dangerously fast, the wrong direction to err).
+    # This keeps a sustained bend fully authoritative while refusing to let one
+    # point dominate.  Still a MAX over the smoothed series, so it stays
+    # conservative.
+    if len(k) >= 3:
+        k = np.convolve(k, np.ones(3) / 3.0, mode='valid')
+    max_kappa = float(k.max())
 
     if max_kappa < 1e-4:
         return float(v_max_eff)

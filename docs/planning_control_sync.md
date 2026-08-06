@@ -187,6 +187,9 @@ writing — re-confirm before relying on them, since a resync can move them.
 | Planner top/bottom speed clamp | `sim/rollout_core.py:55-56` (`PLANNER_V_MAX`, `PLANNER_V_MIN`) | `fsds_simulator/control/fsae_control/fsae_control/mpc_controller_standalone.py` (declared as the `v_max`/`v_min` ROS parameters, default `20.0`/`1.5`) | `20.0` / `1.5` |
 | Steering slew-rate limit (`du_max[0]`) | `model/vehicle_physics.py` (`VehicleParams.max_steer_rate`), applied as `max_steer_rate * DT` in `sim/rollout_core.py` and passed to `controller/optimiser.py`'s `du_max` | `fsds_simulator/control/fsae_control/fsae_control/mpc_core.py` (`MAX_STEER_RATE_RAD_S`, applied as `* self.dt`) | `radians(180.0)` rad/s |
 | Accel slew-rate limit (`du_max[1]`) | `sim/rollout_core.py` (`du_max` second element) | `fsds_simulator/control/fsae_control/fsae_control/mpc_core.py` (`self.du_max` second element) | `0.6` per step |
+| `tracking_error_speed_gate()` thresholds | `sim/speed_profile.py` | `fsds_simulator/.../control_utils.py` | `ey_lo/hi` 0.5/2.0 m, `epsi_lo/hi` 20/60 deg, `floor` 0.3 |
+| Speed-target rise limit | `sim/rollout_core.py` (`SPEED_TARGET_RISE_RATE`) | `fsds_simulator/.../mpc_controller.py` and `mpc_controller_standalone.py` (same name) | `2.0` m/s² |
+| `curvature_speed()` κ reduction | `sim/speed_profile.py` | `fsds_simulator/.../control_utils.py` | max of 3-point running mean |
 | Score weights / bonuses / penalties | `settings.py` (`SCORE_WEIGHTS`, `COMPLETION_BONUS_WEIGHT`, `TIME_BONUS_WEIGHT`, `DNF_PENALTY`, `DNF_OFFTRACK_PENALTY`) | `fsds_simulator/control/fsae_control/fsae_control/scoring.py` (inlined as module constants) | weights sum to `1.0`; `0.5` / `0.25` / `3.0` / `3.0` |
 
 Notes on how these are actually used:
@@ -262,6 +265,88 @@ The true FSDS steering rate is **not recoverable from this repo** (the PhysX
 vehicle setup lives in git-LFS `.uasset` binaries), so 180 deg/s is a measured
 lower-bound estimate, not a datasheet figure. Refine it via system-ID on the
 running sim and update both sides together.
+
+## Known planner defect: centreline curvature spikes (OPEN — not fixed)
+
+**Status: open.** The controller currently carries workarounds; the root cause
+is in the planner and has not been addressed. Read this before changing
+`centerline_planner.py`, `boundary.py`, `cone_sorting.py`, `path_utils.py`, or
+the planner's smoothing parameters.
+
+### What it is
+
+The published centreline contains curvature spikes that do not correspond to
+any real feature of the track. Measured on
+`mpc_standalone_path_1785980686.csv`, peak curvature over consecutive ~1 s
+snapshots **of the same physical corner**:
+
+| t (s) | R_min | implied v (√(a_lat/κ)) |
+|---|---|---|
+| 86.5 | 5.3 m | 4.6 m/s |
+| 88.5 | 32.3 m | 11.4 m/s |
+| 89.5 | 4.2 m | 4.1 m/s |
+| 90.6 | **1.0 m** | 2.0 m/s |
+
+Same track, same 21–24 m path length, one second apart. Worst case on lap 2 was
+**R = 0.14 m** — physically impossible for this car (min turn radius at 25° lock
+and a 1.55 m wheelbase is ≈ 3.7 m).
+
+It **degrades with laps**. Peak-κ statistics across snapshots:
+
+| Phase | median κ | max κ |
+|---|---|---|
+| Lap 1 early | 0.189 | 0.793 |
+| Lap 1 mid | 0.120 | 0.444 |
+| **Lap 2** | **0.271** | **7.242** |
+
+Consistent with cone-map clutter accumulating over a lap and corrupting the
+centreline fit. The path is otherwise in the *right place* — lap-2 geometry
+matched lap-1 geometry at the same physical locations to within 0.12–0.23 m
+median separation. The problem is local kinks, not global drift.
+
+### Why it matters to control
+
+`v_target = √(a_lat_max / κ)`, so a spurious κ spike collapses the speed
+target, and its absence next frame lets it jump back. Measured `v_desired`
+volatility reached **250 m/s²** on lap 2. That alone destabilises the
+longitudinal loop.
+
+### Workarounds currently in the controller (defence in depth)
+
+These treat the symptom. They are **not** a fix, and none of them should be
+removed without re-measuring against a repaired planner:
+
+1. **Curvature smoothing** — `curvature_speed()` (both
+   `control_utils.py` and `sim/speed_profile.py`) takes the max of a 3-point
+   running mean of the Menger-curvature series instead of the raw max, so one
+   bad triple cannot set the speed for the whole scan window. Modest on its own
+   (frame-to-frame volatility 2.75 → 2.61 m/s) because the whole path moves
+   between frames, not just one point.
+   *Note:* a raw percentile (p75/p90) was tried and rejected — the scan window
+   only yields ~7 triples, so a percentile is both noisy and biased upward,
+   pushing `v_target` to 20 m/s where the raw max said 5. Wrong direction to err.
+2. **Tracking-error speed gate** — `tracking_error_speed_gate()`. Scales the
+   target down on `|e_y|`/`|e_psi|`. Inert in normal driving (gate < 0.99 on
+   1.6% of clean-section ticks) but cuts the commanded speed from a mean 7.4 m/s
+   (max 15.0) to 2.8 m/s (max 4.65) when `|e_y| > 1.5 m`.
+3. **Speed-target rise limiter** — `SPEED_TARGET_RISE_RATE = 2.0` m/s², applied
+   in both controller nodes and `sim/rollout_core.py`. Increases only;
+   decreases pass through instantly so a genuine brake request is never
+   delayed.
+
+Combined effect replayed over the failing log: tick-to-tick `|Δv_desired|`
+mean 0.234 → 0.123, p99 2.33 → 0.91; and in the unrecoverable `|e_y| > 1.5 m`
+regime, commanded speed mean 7.44 → 2.80. Offline, worst-case peak lateral
+error across the 10 synthetic paths fell 1.76 m → 0.79 m (`PATH_SPIRAL`), for a
+net composite improvement of −0.267 with small regressions on already-clean
+paths — the expected cost of a safety gate.
+
+### Suggested fix (not attempted)
+
+Root-cause work belongs in the planner: curvature-aware smoothing or a
+spline-fit residual check in `centerline_planner.py`, and/or rejecting cone
+pairings that imply a sub-3.7 m radius. Investigate why lap 2 is worse than lap
+1 first — that points at cone-map accumulation rather than the fitter itself.
 
 ## Simulator fidelity limits (what FSDS does NOT model)
 

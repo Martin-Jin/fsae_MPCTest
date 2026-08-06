@@ -127,6 +127,60 @@ class StanleyController:
         return float(np.clip(delta, -MAX_STEER_RAD, MAX_STEER_RAD))
 
 
+def tracking_error_speed_gate(e_y, e_psi,
+                              ey_lo=0.5, ey_hi=2.0,
+                              epsi_lo=math.radians(20.0), epsi_hi=math.radians(60.0),
+                              floor=0.3):
+    """
+    Multiplier in [floor, 1] that scales the speed target down when the car is
+    failing to track the path.
+
+    WHY THIS EXISTS
+    ---------------
+    curvature_speed() looks only at the SHAPE of the path ahead.  It has no
+    idea where the car actually is relative to it, so it will happily command
+    full speed down a straight while the car is 3 m off-line and pointing 60
+    deg the wrong way.  That is exactly how the lap-2 failure in
+    mpc_standalone_control_1785980686.csv became unrecoverable: with |e_y| >
+    1.5 m the mean commanded speed was still 7.3 m/s (peaking at 15.0), and at
+    t=85.5-86.6 s the car held full 25 deg lock while being told to ACCELERATE
+    from 4.8 to 9.3 m/s.  Steering was saturated 49.9% of that lap — no
+    steering command can recover a corner the car is being driven faster into.
+
+    Slowing down is the only remaining control authority once steering
+    saturates, so the speed target must respond to tracking error, not just to
+    path geometry.
+
+    SHAPE
+    -----
+    Linear ramp on each of |e_y| and |e_psi|, taking the WORST (minimum) of the
+    two — being badly misaligned is dangerous even when laterally close, and
+    vice versa.  Below *_lo the gate is exactly 1.0, so normal driving is
+    completely unaffected (measured on the clean middle of that same log: gate
+    < 0.99 on only 1.6% of ticks, mean 0.998).  Above *_hi it saturates at
+    `floor` rather than 0 — the car still needs enough speed to steer and to
+    make progress back to the path; cutting to a standstill mid-track is its
+    own failure mode.
+
+    Parameters
+    ----------
+    e_y : float     Lateral tracking error (m).   Sign ignored.
+    e_psi : float   Heading tracking error (rad). Sign ignored.
+    ey_lo/ey_hi, epsi_lo/epsi_hi : float
+        Ramp start/end. At/below _lo -> 1.0; at/above _hi -> floor.
+    floor : float   Minimum multiplier.
+
+    Returns
+    -------
+    float in [floor, 1.0]
+    """
+    if ey_hi <= ey_lo or epsi_hi <= epsi_lo:
+        return 1.0
+    gy = 1.0 - (abs(float(e_y)) - ey_lo) / (ey_hi - ey_lo)
+    gp = 1.0 - (abs(float(e_psi)) - epsi_lo) / (epsi_hi - epsi_lo)
+    return float(np.clip(min(gy, gp), floor, 1.0))
+
+
 def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
                     scan_start=1.5, scan_end=24.0, step=2.0, safety=1.0):
     """
@@ -185,7 +239,15 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
         sy  = np.interp(sample_arcs, arc, waypoints[:, 1])
         pts = np.column_stack([sx, sy])
 
-    max_kappa = 0.0
+    # Collect every triple's Menger curvature, then reduce.  Taking the raw MAX
+    # (the original behaviour) lets a SINGLE bad triple set the speed for the
+    # whole scan window, and the planner does emit those: measured on
+    # mpc_standalone_path_1785980686.csv, peak kappa across consecutive
+    # ~1 s snapshots of the same physical corner swung R=5.3 m -> 32.3 m ->
+    # 4.2 m -> 1.0 m, with a lap-2 worst case of R=0.14 m — not a real corner,
+    # a centreline-fit artifact.  Since v = sqrt(a_lat/kappa), that made
+    # v_target swing 4.7 -> 16.7 -> 6.0 m/s frame to frame.
+    kappas = []
     for i in range(1, len(pts) - 1):
         p1, p2, p3 = pts[i - 1], pts[i], pts[i + 1]
         d12 = float(np.linalg.norm(p2 - p1))
@@ -197,9 +259,24 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
         v1    = p2 - p1
         v2    = p3 - p1
         cross = abs(float(v1[0] * v2[1] - v1[1] * v2[0]))
-        kappa = 2.0 * cross / denom
-        if kappa > max_kappa:
-            max_kappa = kappa
+        kappas.append(2.0 * cross / denom)
+
+    if not kappas:
+        return float(v_max_eff)
+
+    k = np.asarray(kappas, dtype=float)
+    # A genuine corner spans several consecutive triples, so it survives a
+    # short running mean; an isolated fit artifact is averaged down.  Take the
+    # max of the smoothed series rather than a percentile of the raw one:
+    # the scan window only yields ~7 triples, so a p75/p90 is both noisy AND
+    # biased upward (measured: p75 pushed v_target to 20 m/s on paths where
+    # the raw max said 5 — dangerously fast, the wrong direction to err).
+    # This keeps a sustained bend fully authoritative while refusing to let one
+    # point dominate.  Still a MAX over the smoothed series, so it stays
+    # conservative.
+    if len(k) >= 3:
+        k = np.convolve(k, np.ones(3) / 3.0, mode='valid')
+    max_kappa = float(k.max())
 
     if max_kappa < 1e-4:
         return float(v_max_eff)

@@ -63,7 +63,7 @@ from geometry_msgs.msg import PoseArray, PoseStamped
 from nav_msgs.msg import Odometry
 from rclpy.time import Time
 
-from fsae_control.control_utils import curvature_speed
+from fsae_control.control_utils import curvature_speed, tracking_error_speed_gate
 from fsae_control.mpc_core import MAX_STEER_RAD, MPCController
 from fsae_control.telemetry_logger import ControlLogger
 
@@ -75,6 +75,13 @@ CONE_BRAKE_DIST      = 2.0    # m — forward corridor depth for cone proximity 
 CONE_BRAKE_WIDTH     = 0.18   # m — lateral half-width of braking corridor (36 cm total)
 CONE_RESET_THRESHOLD = 0.3    # s — continuous cone-brake duration before one MPC reset
 PATH_TIMEOUT         = 0.5    # s — reset the MPC if no fresh trajectory within this window
+
+# Max rate (m/s^2) at which the SPEED TARGET may rise. Decreases are never
+# rate-limited — slowing down is always safe, and delaying a genuine brake
+# request is exactly the failure this is meant to prevent. Sized just under the
+# car's real acceleration capability so it never becomes the binding limit on a
+# true straight; it only suppresses planner-induced target jitter.
+SPEED_TARGET_RISE_RATE = 2.0
 
 
 class MPCControllerStandaloneNode(Node):
@@ -128,6 +135,10 @@ class MPCControllerStandaloneNode(Node):
         self._car_yaw_rate = 0.0
         self._pose_stamp = None
         self._desired_speed = 0.0
+        # Previous tick's speed target, for the rise-rate limiter. None = no
+        # history yet (first tick after start or after a reset), so the first
+        # target passes through unlimited rather than ramping up from zero.
+        self._v_des_prev: float | None = None
 
         # Cones arrive already in the car-LOCAL frame (see ConeDetection.msg /
         # fsae_sim_perception's sim_perception.py), so no car_pos/car_yaw
@@ -217,13 +228,46 @@ class MPCControllerStandaloneNode(Node):
         if not self._have_pose or path_stale or len(self._path_pts) < 2:
             cmd.throttle, cmd.steering, cmd.brake = 0.0, 0.0, 1.0
             self._mpc.reset()
+            self._v_des_prev = None   # don't ramp from a pre-fail-safe target
             self._publish(cmd)
             self.get_logger().warn(
                 'Trajectory path lost or stale — emergency braking.', throttle_duration_sec=1.0)
             return
 
         # ── Phase 3: MPC solve ───────────────────────────────────────────
-        self._desired_speed = curvature_speed(self._path_pts, v_max=self._v_max, v_min=self._v_min)
+        # Slice the path from the car's nearest point before measuring
+        # curvature. curvature_speed() documents "waypoints[0] is assumed to be
+        # the car's current position", and its short-path cap
+        # (v_max * total/scan_end) is measured from waypoints[0] too — so
+        # passing the whole path silently mis-measures both whenever the car is
+        # past the path's first point. sim/rollout_core.py already sliced
+        # (cl[cl_idx:]); this brings the live node into parity with it.
+        path_ahead = self._path_pts
+        if len(path_ahead) > 2:
+            i_near = int(np.argmin(np.linalg.norm(path_ahead - self._car_pos, axis=1)))
+            if i_near < len(path_ahead) - 2:
+                path_ahead = path_ahead[i_near:]
+
+        v_curv = curvature_speed(path_ahead, v_max=self._v_max, v_min=self._v_min)
+
+        # Scale the target down when we're failing to track. Uses the PREVIOUS
+        # tick's errors (this tick's aren't known until the MPC solves), which
+        # is one 50 ms step of lag — negligible next to the error timescales
+        # this responds to. See control_utils.tracking_error_speed_gate.
+        tel = self._mpc.last_telemetry
+        gate = tracking_error_speed_gate(tel.get('e_y', 0.0), tel.get('e_psi', 0.0))
+        # Never gate below v_min: the car still needs authority to steer back.
+        self._desired_speed = max(self._v_min, v_curv * gate)
+
+        # Rate-limit INCREASES only. Decreases pass through instantly because
+        # slowing down is always the safe direction. The planner's frame-to-
+        # frame curvature jitter otherwise swings the target by a measured mean
+        # 2.75 m/s (p95 10.7) between snapshots; limiting the rise cuts that to
+        # 1.72 (p95 5.4) without capping achievable speed on a real straight.
+        if self._v_des_prev is not None:
+            max_rise = SPEED_TARGET_RISE_RATE / CONTROL_HZ
+            self._desired_speed = min(self._desired_speed, self._v_des_prev + max_rise)
+        self._v_des_prev = self._desired_speed
 
         pose_age_s = (self.get_clock().now() - Time.from_msg(self._pose_stamp)).nanoseconds * 1e-9
 
@@ -245,6 +289,7 @@ class MPCControllerStandaloneNode(Node):
             self._cone_brake_duration += 1.0 / CONTROL_HZ
             if self._cone_brake_duration >= CONE_RESET_THRESHOLD and not self._cone_reset_done:
                 self._mpc.reset()
+                self._v_des_prev = None   # see the stale-path reset above
                 self._cone_reset_done = True
             self.get_logger().warn(
                 f'Cone proximity brake active ({self._cone_brake_duration:.2f} s).',

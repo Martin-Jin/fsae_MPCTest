@@ -33,11 +33,18 @@ from geometry_msgs.msg import PoseArray, PoseStamped
 from nav_msgs.msg import Odometry
 from rclpy.time import Time
 
-from fsae_control.control_utils import curvature_speed
+from fsae_control.control_utils import curvature_speed, tracking_error_speed_gate
 from fsae_control.mpc_core import MPCController
 from fsae_control.telemetry_logger import ControlLogger
 
 CONTROL_HZ    = 20.0   # must match MPCController(dt=0.05); dt = 1 / CONTROL_HZ
+
+# Max rate (m/s^2) at which the speed TARGET may rise. Mirrors
+# mpc_controller_standalone.SPEED_TARGET_RISE_RATE and
+# sim/rollout_core.SPEED_TARGET_RISE_RATE — keep all three in sync. Decreases
+# are never rate-limited; delaying a genuine brake request is the failure this
+# is meant to prevent.
+SPEED_TARGET_RISE_RATE = 2.0
 PATH_TIMEOUT  = 0.5    # s — reset the MPC if no fresh trajectory within this window
 
 
@@ -81,6 +88,10 @@ class MPCControllerNode(Node):
         self._path: np.ndarray = np.empty((0, 2))
         self._path_stamp = None
         self._car_pos = np.zeros(2)
+        # Previous tick's speed target, for the rise-rate limiter. None = no
+        # history (start, or after a fail-safe reset) -> first target passes
+        # through unlimited instead of ramping up from zero.
+        self._v_des_prev: float | None = None
         self._car_yaw = 0.0
         self._car_speed = 0.0
         self._car_yaw_rate = 0.0
@@ -131,9 +142,32 @@ class MPCControllerNode(Node):
         if not self._have_pose or len(self._path) < 2 or path_stale:
             self._mpc.reset()
             self._delta_filt = None   # drop filter state with the MPC warm-start
+            self._v_des_prev = None   # don't ramp from a pre-fail-safe target
             return
 
-        desired_speed = curvature_speed(self._path, v_max=self._v_max, v_min=self._v_min)
+        # Slice from the car's nearest point, gate on tracking error, and
+        # rate-limit rises — identical to mpc_controller_standalone.py's
+        # Phase 3; see that file and control_utils.tracking_error_speed_gate
+        # for the measurements behind each. This node forwards the result
+        # through cmd_vel to fsds_bridge's speed loop rather than using the
+        # MPC's own accel, but the speed TARGET must be derived the same way
+        # in both nodes or they diverge in exactly the regime that matters.
+        path_ahead = self._path
+        if len(path_ahead) > 2:
+            i_near = int(np.argmin(np.linalg.norm(path_ahead - self._car_pos, axis=1)))
+            if i_near < len(path_ahead) - 2:
+                path_ahead = path_ahead[i_near:]
+
+        v_curv = curvature_speed(path_ahead, v_max=self._v_max, v_min=self._v_min)
+
+        tel = self._mpc.last_telemetry
+        gate = tracking_error_speed_gate(tel.get('e_y', 0.0), tel.get('e_psi', 0.0))
+        desired_speed = max(self._v_min, v_curv * gate)
+
+        if self._v_des_prev is not None:
+            desired_speed = min(desired_speed,
+                                self._v_des_prev + SPEED_TARGET_RISE_RATE / CONTROL_HZ)
+        self._v_des_prev = desired_speed
 
         # Age of the pose the MPC is about to solve against — how long ago it
         # was actually measured, not how long ago the callback fired. Lets
