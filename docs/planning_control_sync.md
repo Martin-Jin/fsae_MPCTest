@@ -88,7 +88,16 @@ offline tuner cares about:
 | `control/fsae_control/fsae_control/fsds_bridge.py` | `control/fsae_control/fsae_control/fsds_bridge.py` | Direct mirror. Needed by both `stanley_controller.py` and `mpc_controller.py` (not `mpc_controller_standalone.py`, which bypasses it). |
 | `control/fsae_control/fsae_control/telemetry_logger.py` | `control/fsae_control/fsae_control/telemetry_logger.py` | Direct mirror. CSV telemetry shared by all three controller nodes. Also computes the run's composite score (via `scoring.py`) and prepends it to the control CSV as a `#`-commented header on `close()`. |
 | `control/fsae_control/fsae_control/scoring.py` | `control/fsae_control/fsae_control/scoring.py` | Direct mirror **and** a verbatim copy of this repo's own `sim/scoring.py` — see "Live/offline score parity" below. Changes must be made in `sim/scoring.py` first, then re-copied. |
-| `control/fsae_control/setup.py` | `control/fsae_control/setup.py` | Direct mirror. Registers all four console-script entry points (`controller`, `mpc_controller`, `mpc_controller_standalone`, `fsds_bridge`). |
+| `control/fsae_control/setup.py` | `control/fsae_control/setup.py` | Direct mirror **except** the `steering_sysid` entry point — see the note below. Registers the four console-script entry points (`controller`, `mpc_controller`, `mpc_controller_standalone`, `fsds_bridge`). |
+
+> **Intentional one-line divergence in `setup.py` (2026-08-06).** Upstream
+> registers a fifth entry point, `steering_sysid`, for the open-loop
+> steering system-ID node. That node is a **diagnostic**, added upstream only,
+> and this folder's rule is "do not add files that were never there". Copying
+> the entry point without the module would give the mirror a `setup.py`
+> pointing at a non-existent target, so the line is deliberately omitted here.
+> If `steering_sysid.py` is ever genuinely mirrored, add the line at the same
+> time.
 
 `planning/` (root) and the `MPCController` half of `mpc_core.py` are shared
 algorithm code and should track upstream closely. `mpc_controller_standalone.py`
@@ -676,10 +685,77 @@ experiment**: command fixed steering angles at fixed speeds on an empty map
 and record the achieved yaw rate. That isolates the plant from the controller,
 which no lap log can do.
 
+#### The open-loop experiment (built, not yet run)
+
+- **Node:** `fsae_control/steering_sysid.py` (`ros2 run fsae_control
+  steering_sysid`). Bypasses the MPC and publishes straight to
+  `/fsds/control_command`: settle to speed straight-line, apply a fixed
+  steering command, let yaw settle, then record. 25 points
+  (5 speeds × 5 angles), ~5–6 min. Logs to
+  `~/fsae_logs/steering_sysid_<ts>.csv`.
+- **Analysis:** `tuner/steering_sysid_analysis.py`.
+
+**Run it on an empty map.** It drives in circles at up to 14 m/s and does not
+brake for cones. Do not run it alongside `fsds_bridge` or any controller —
+both publish to `/fsds/control_command` and the commands would interleave.
+
+The log records the **raw normalised `cmd.steering`** alongside the roadwheel
+angle we assume it maps to. That assumption is the thing under test, so
+recording only the assumed angle would beg the question.
+
+A falling `s = δ_ach/δ_cmd` is **not** by itself diagnostic — a speed-scaled
+rack, genuine understeer and tyre saturation all produce one. The analyser
+therefore fits all five candidates to achieved yaw rate (common target ⇒
+comparable R²) and reports the margin to the runner-up:
+
+| winning model | meaning |
+|---|---|
+| neutral (s≈1) | steering path is fine; look at the controller/reference |
+| constant scale | `MAX_STEER_RAD` wrong — fix in all three copies |
+| speed-scaled rack | FSDS reduces lock with speed; model it in the plant |
+| understeer (v²) | real vehicle dynamics — but see the C_f note above |
+| grip saturation | yaw capped by lateral grip |
+
+Validated against synthetic logs with each mechanism injected: all five are
+identified correctly and their parameters recovered exactly (scale 0.500,
+c 0.0600, K_us 0.0400, a_lat_max 12.0). The default speed set is **3–14 m/s**
+because speed-scaled rack and understeer are near-degenerate over a narrow
+band — they sat within 0.004 R² over 4–10 m/s, versus a separable 0.018–0.054
+over 3–14 m/s. **If the analyser prints a margin warning, widen the speed
+range and re-run rather than trusting the verdict.**
+
 > **Not yet acted on.** No plant change is recommended from this measurement
 > alone. Reproducing `K_us ≈ 0.04` by bending tyre parameters would match the
 > symptom while keeping the physics wrong, and would corrupt every downstream
 > grip-dependent result. Identify the mechanism first.
+
+### Checked while investigating: the LONGITUDINAL path is not mis-scaled
+
+Prompted by the question "could max throttle / max acceleration / max braking
+differ between the offline model and FSDS?", measured on the same two logs:
+
+| | value |
+|---|---|
+| `a_actual / a_cmd` slope | **1.14–1.18** (car slightly *over*-delivers) |
+| peak achieved accel | 11.2–12.4 m/s² (model: 12.0) |
+| peak achieved braking | −12.2 to −13.0 m/s² (model: −9.0) |
+| throttle saturation | **0.00%** of the run |
+
+So throttle authority, acceleration and braking limits are **not** the problem;
+if anything the car brakes harder than the plant model allows.
+
+**But there is a structural mismatch worth knowing about** (found in
+`fsds_bridge.py`, not yet acted on): the MPC solves for an acceleration
+`a_cmd`, and the bridge **discards it**. It consumes only the target speed and
+re-derives throttle with its own P-controller (`KP_THROTTLE = 0.06`,
+`KP_BRAKE = 0.40`). Offline, `a_cmd` drives the plant directly.
+
+The live longitudinal loop therefore has an extra proportional lag stage the
+offline sim does not model at all. Mean speed error is 0.59 m/s (p90 2.3–2.4),
+consistent with a P-controller that never fully catches up. This cannot cause
+the yaw deficit — a longitudinal path cannot stop the car rotating — but it is
+a genuine sim/live divergence and a candidate explanation for speed-tracking
+differences. Modelling it offline (or feeding `a_cmd` through) is untested.
 
 **Consequence:** offline scores are not yet predictive of live behaviour. A
 tuning run that scores well offline can still produce a car that saturates
