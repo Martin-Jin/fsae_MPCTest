@@ -524,9 +524,84 @@ arrives in sustained episodes (median 0.47 s, up to 2.44 s, 96% of energy below
 | extra actuation delay | No — 2 steps moved saturation 3.4% → 2.3% |
 | planner update rate (1 Hz vs 20 Hz) | No — throttling *improved* the sim |
 | **pose-feed hold** | **No** — model added and verified firing; 3.4% → 4.4% only |
+| **tyre grip / understeer** | **No** — fitted and validated, see below |
 
 The pose-feed hold is real (see `PoseFeedHold`) and is now modelled, but it
 accounts for almost none of the gap.
+
+### The understeer measurement, and why grip is NOT the answer
+
+The most promising lead was that the offline plant simply corners better than
+the car. It does — but fixing that does not close the gap, and the way it fails
+is informative.
+
+**Full-lock steady-state turn** (speed held by throttle, 300 steps to settle).
+Kinematic limit at 25° lock with L=1.55 m is R=3.32 m:
+
+| speed | offline R | understeer | live |
+|---|---|---|---|
+| 4 m/s | 3.76 m | ×1.13 | |
+| 6 m/s | 3.81 m | ×1.15 | **R=6.9 m, ×2.03** |
+| 8 m/s | 4.43 m | ×1.33 | |
+| 10 m/s | 7.09 m | ×2.13 | |
+
+At 6.2 m/s (the live mean *during saturation*) the sim turns essentially at the
+kinematic limit while the car needs nearly double the radius.
+
+**Understeer gradient** `K` from `delta = L/R + K·a_lat`, fitted over
+quasi-steady points (|yaw accel| < 0.5, v > 3, |yaw rate| > 0.05 — 261 points,
+16.5% of the live run):
+
+| | K (rad per m/s²) | deg/g |
+|---|---|---|
+| live | 0.00869 | 4.89 |
+| offline, μ=1.76 (current) | 0.00595 | 3.34 |
+| offline, μ=1.455 (**fitted by bisection**) | 0.00869 | 4.89 |
+
+**The fit succeeds on K and then fails validation.** μ=1.455 reproduces the
+gradient exactly, but still gives ×1.16 understeer at 6 m/s against the live
+×2.03, and in closed loop moves saturation only 4.4% → 4.9% (live: 21.1%).
+
+Two independent measurements of "how much does this car understeer" give
+incompatible answers. That is the signature of a model **structure** problem,
+not a parameter needing a scale factor.
+
+Pushing grip lower does not help either — it produces a *different* failure:
+
+| μ | saturation | \|e_psi\| mean | outcome |
+|---|---|---|---|
+| 1.76 (current) | 4.4% | 6.3° | ok |
+| 1.455 (fitted) | 4.9% | 6.7° | ok |
+| 1.06 | 8.4% | 5.8° | **DNF** |
+| 0.79 | 7.0% | 4.7° | **DNF** |
+| **live** | **21.1%** | **15.9°** | ok |
+
+Lower grip makes the sim car *slide* — heading error goes DOWN and it crashes.
+The car does something else: it holds full lock for sustained periods (21
+episodes, median 0.75 s, up to 2.5 s) at only 4.14 m/s² lateral, which is well
+inside any plausible grip limit.
+
+### Next hypothesis: a speed-INDEPENDENT steering deficit
+
+The two understeer numbers reconcile if the car's steering deficit is roughly
+constant with speed rather than load-dependent. That points at the command
+path, not the tyres:
+
+1. **Steering command scaling.** `MAX_STEER_RAD = 25°` normalises the FSDS
+   command (`cmd.steering = -delta / MAX_STEER_RAD`). If the FSDS vehicle's
+   actual rack limit is not 25°, every commanded angle is scaled wrong by a
+   constant factor and the car under-turns at all speeds. This is the leading
+   candidate: it explains both the ×2.03 full-lock deficit and the modest
+   gradient in one mechanism. It is also precisely the class of bug that the
+   telemetry units error (logged steering inflated ~2.3×) previously hid.
+2. **Steering offset / deadband** in FSDS not modelled offline.
+3. **Wheelbase or geometry mismatch** — `VehicleParams` uses L=1.55 m; the FSDS
+   vehicle's true wheelbase has not been verified against it.
+
+FSDS's steering configuration is not in this repo (it lives in git-LFS
+`.uasset` binaries), so (1) must be measured from telemetry: command a known
+steering angle at a known speed and compare the achieved yaw rate against
+`delta = atan(L·r/v)`.
 
 **Consequence:** offline scores are not yet predictive of live behaviour. A
 tuning run that scores well offline can still produce a car that saturates
