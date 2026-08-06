@@ -904,9 +904,48 @@ removes the turn-in transient the MPC reacts to):
 | parameter | value | basis |
 |---|---|---|
 | `alat_ceiling` | 7.5 m/s² | measured settled a_lat (7.80 @ 8 m/s, 7.29 @ 12) |
-| `alat_ceiling_gain` | 3000 N·m per m/s² | fitted to reproduce those settled values |
-| `alat_ceiling_tau` | 0.25 s | matches measured PEAK a_lat (8.4/9.7 model vs 9.7 mean / 10.9 max measured) |
+| `alat_ceiling_mode` | `'pi'` | **corrected 2026-08-07** — see below |
+| `alat_ceiling_gain` | 450 N·m | fitted to measured PEAK only; settled falls out by structure |
+| `alat_ceiling_tau` | 0.25 s | **behavioural, still not measured** — top-priority re-measurement |
 | `alat_ceiling_enabled` | `True` | models **FSDS**, not the physical car — disable for real-vehicle work |
+
+> **CORRECTED 2026-08-07: the law was proportional, and a proportional law
+> cannot hold a setpoint.** With `alat_lim` lagging toward the excess, steady
+> state gives `alat_lim = excess`, so the restoring moment is `excess × gain` —
+> a P controller, whose equilibrium must sit *above* its setpoint. Sweeping the
+> gain shows the trade-off is monotone and unavoidable: at 700 the settled value
+> was **+0.97 high**; reaching the settled value (6000) collapsed the peak
+> **−2.55 low**. The two "false starts" recorded above were the two ends of one
+> structural flaw, not two bad guesses.
+>
+> The law is now a **leaky integral of the signed excess**, clamped at zero:
+>
+>     err      = |a_lat| - ceiling
+>     alat_lim = max(0, alat_lim + err * h / tau)
+>     M_z     -= sign(r) * alat_lim * gain
+>
+> An integral can only stop growing when the error is zero, so the settled value
+> is pinned AT the ceiling **by structure for any gain**, leaving one free
+> parameter for the transient. Both measured targets are now hit at once
+> (settled 7.50 vs 7.68 measured; peak 10.37 vs 10.42), and on the **held-out
+> sweep** the capped-point error improves 5× (mean +1.41 → +0.29, MAE
+> 1.60 → 0.87). Before the fix the sim sustained 8.3–8.9 m/s² where FSDS
+> sustains 6.1–8.1 — a 20–35% surplus centred on the live car's mean speed.
+>
+> Reproduce: `python3 -m tuner.plant_openloop_validation --ab`
+>
+> **What this did NOT fix:** steering saturation moved only 6.32 → 6.74% against
+> live's 21.1%. It corrects the plant's *lateral-acceleration distribution*
+> (time-above-ceiling ×1.45 → ×0.91 of live), not its steering behaviour. See
+> `sim_to_real_investigation.md` §12 for what was then eliminated and what the
+> residual gap has been narrowed to.
+
+> **Newly identified, not yet modelled: the ceiling is speed-dependent.**
+> Measured sustained a_lat *rises* with speed — 6.45 @ 8 m/s, 7.54 @ 11,
+> 9.26 @ 14 — while the model pins it flat at 7.5 (residuals +1.0 / ~0 / −1.76).
+> Deliberately not fitted: 16 points from one run. Note also that the step test's
+> 3 s settle (7.5 @ 8 m/s) and the sweep's long orbit (6.45) **disagree**, which
+> a longer `step_s` would resolve at the same time as `tau`.
 
 Verified: below ~6 m/s the plant is untouched (1.84 / 3.46 m/s² at 3 / 4 m/s,
 identical with the ceiling on or off), matching the measurement that the cap
@@ -962,18 +1001,46 @@ value (700) reproduces that behaviour and completes the lap.
 
 Same map, same tuned gains:
 
-| | before (no ceiling) | after (ceiling) | live |
-|---|---|---|---|
-| steering saturation | 4.4% | **6.3%** | **21.1%** |
-| reversals/s | 0.84 | 0.82 | 1.62 |
-| \|e_psi\| mean / p90 | 6.3 / 14.2 | **7.3 / 19.2** | **15.9 / 42.0** |
-| a_lat max | 14.06 | **10.53** | 12.34 |
-| a_lat > 7.5 | 14.2% | 14.2% | 9.8% |
+| | before (no ceiling) | P law (700) | **PI law (450)** | live |
+|---|---|---|---|---|
+| steering saturation | 4.4% | 6.3% | **6.7%** | **21.1%** |
+| reversals/s | 0.84 | 0.82 | 0.93 | 1.62 |
+| \|e_psi\| mean / p90 | 6.3 / 14.2 | 7.3 / 19.2 | 7.5 / 20.0 | **15.9 / 42.0** |
+| a_lat max | 14.06 | 10.53 | 10.80 | 12.34 |
+| a_lat > 7.5 | 14.2% | 14.2% | **8.9%** | 9.8% |
+| composite score | — | 0.675 | 0.700 | — |
+
+Reproduce any column with
+`python3 -m tuner.recorded_map_rollout [--mode p --gain 700 | --no-ceiling]`.
 
 Every metric moves toward the car, and peak lateral acceleration is now
 realistic. **But the gap is only partly closed** — live still saturates 3×
 more often and carries 2× the heading error. The yaw cap was a real and
 necessary fix; it is not the whole story.
+
+The PI column reproduces the car's **lateral-acceleration distribution** well
+(time-above-ceiling within 9%, previously 45% too high) while barely moving
+**steering saturation**. Those are now known to be separate problems:
+`sim_to_real_investigation.md` §12 eliminates cornering capability (§12.6) and
+the `a_cmd` divergence (§12.7) as causes of the saturation gap, and narrows it to
+the *rate of entry* into the high-heading-error state (2.6×, with matching
+in-state behaviour) — a turn-in transient, which makes the unmeasured
+`alat_ceiling_tau` the top priority.
+
+**Validation tooling** (added 2026-08-07 — this loop was previously missing, and
+its absence is how a 13% sustained-cornering surplus survived a refit):
+
+| tool | answers |
+|---|---|
+| `tuner/steering_sysid_analysis.py`, `steering_step_analysis.py` | what does FSDS do? |
+| **`tuner/plant_openloop_validation.py`** | **does our plant reproduce it?** (`--ab`, `--robustness`) |
+| **`tuner/recorded_map_rollout.py`** | the closed-loop table above, headless and reproducible |
+| **`tuner/live_vs_sim_diagnostics.py`** | conditional + reference-heading decomposition of live vs sim |
+
+Caveat carried by `plant_openloop_validation.py`: its **low-speed** comparison is
+a confound, not a finding. At 4 m/s full lock the plant cannot hold speed, so
+a_lat swings 2.50→4.03 across the speed-hold gains; the capped regime (≥7 m/s) is
+robust to ±3.5% over the same range and is exactly timestep-independent.
 
 > **Do not treat the sim as validated yet.** Re-tuning against it now would be
 > better than before but still optimistic. The remaining saturation gap needs
@@ -984,6 +1051,25 @@ necessary fix; it is not the whole story.
 > of 0.04–1.06 s — too scattered to use. The rise is a cleaner 0.40 s. Before
 > committing a time constant, either fit the full transient shape rather than a
 > 63% crossing, or re-run with a longer `step_s` and more repeats.
+>
+> **This is now the top-priority measurement (2026-08-07).** Two things changed
+> its status. First, under the integral law `tau` no longer affects the settled
+> value at all — it controls *only* the transient, so it is both more
+> identifiable and no longer entangled with the ceiling level. Second, the
+> residual saturation gap has been localised to a *transient* property: the car
+> enters the high-heading-error state 2.6× more often per second than the sim
+> while behaving near-identically once in it (§12.9).
+>
+> Run it as:
+>
+>     # with FSDS already running (avoids the WSL->Windows launch entirely)
+>     bash ros2/run_steering_step.sh --no-sim \
+>          -p 'speeds:=[5.0,8.0,12.0]' -p 'steer_cmds:=[0.6,1.0]' \
+>          -p 'step_s:=8.0' -p 'repeats:=2' -p 'require_go:=false'
+>
+> Note there must be no spaces inside the array literals and `require_go:=false`
+> removes the need for anyone to press GO. An 8 s hold also resolves the
+> step-vs-sweep level disagreement (7.5 vs 6.45 @ 8 m/s) in the same run.
 
 ##### The test that produced this (reusable)
 

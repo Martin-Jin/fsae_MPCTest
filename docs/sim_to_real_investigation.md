@@ -37,6 +37,18 @@ every one measured and eliminated (§1–§7).
 toward the car, yet live still saturates 3× more often (21.1% vs 6.3%) and
 carries 2× the heading error. Something else remains — see "Open / deferred".
 
+> **Update 2026-08-07 (§12).** The cap's *law* was structurally wrong — a
+> proportional term, whose equilibrium must sit above its setpoint — and is now
+> an integral term that matches settled, peak and sustained cornering at once.
+> That fixed a real 13–35% surplus in sustained cornering and brought
+> time-above-ceiling from ×1.45 to ×0.91 of live. It moved saturation by
+> **0.4 points** (6.3 → 6.7% against live's 21.1%).
+>
+> §12 then eliminated, by measurement, both cornering capability and the
+> `fsds_bridge` `a_cmd` divergence as causes of the residual gap, and narrowed
+> it to a single statistic: the car enters the high-heading-error state
+> **2.6× more often per second**, while behaving near-identically once in it.
+
 ---
 
 ## 0. The starting symptom
@@ -421,6 +433,209 @@ comparison. Track width is **exactly 3.50 m** with zero variance, matching
 
 ---
 
+## 12. The ceiling's LAW was wrong, and what that did (and did not) fix
+
+*(2026-08-07 — chasing the residual saturation gap left by §10.)*
+
+### 12.1 The tell was already in the published table
+
+| | before ceiling | after ceiling | live |
+|---|---|---|---|
+| a_lat max | 14.06 | 10.53 | 12.34 |
+| **a_lat > 7.5** | **14.2%** | **14.2%** | **9.8%** |
+
+Adding a "sustained 7.5 m/s² ceiling" left the fraction of time spent above
+7.5 m/s² **completely unchanged**, and higher than the live car's. Live also has
+a *higher* peak (12.34 vs 10.53) but spends *less* time above the ceiling. That
+pairing — lower peak, more time above — is the signature of a model that
+**settles above** the ceiling while the car only **visits** above it.
+
+### 12.2 Why no gain could work: a proportional law has a steady-state offset
+
+The term was `M_z -= sign(r) · alat_lim · gain` where `alat_lim` lags toward
+`excess = |a_lat| − ceiling`. At steady state `alat_lim = excess`, so it is a
+pure **proportional** controller on the excess — and a P controller needs a
+finite error to produce any output. Its equilibrium therefore *must* sit above
+the setpoint. Measuring the trade-off makes it explicit (capped step trials,
+measured settled 7.68, peak 10.42):
+
+| gain | settled | err | peak | err |
+|---|---|---|---|---|
+| 300 | 9.51 | +1.83 | 10.84 | +0.42 |
+| **700** (shipped) | **8.65** | **+0.97** | **10.11** | −0.31 |
+| 3000 | 7.83 | +0.15 | 8.74 | −1.68 |
+| 6000 | 7.67 | −0.01 | 7.87 | −2.55 |
+
+**No gain fits both.** The two documented "false starts" in §10 were not two bad
+guesses — they were the two ends of one structural flaw. Fitting the peak left
+sustained cornering 13% high; fitting the settled value flattened the excursions
+and DNF'd the lap.
+
+### 12.3 The fix: integrate the excess
+
+    err      = |a_lat| - ceiling            # SIGNED
+    alat_lim = max(0, alat_lim + err·h/tau) # leaky integral, clamped >= 0
+    M_z     -= sign(r) · alat_lim · gain
+
+An integral can only stop growing when the error is **zero**, so the settled
+value is pinned AT the ceiling *by structure, for any gain* — leaving exactly
+one free parameter for the transient. Clamping at zero makes it unwind when the
+car drops back under, so it never adds yaw.
+
+| law | settled (meas 7.68) | peak (meas 10.42) |
+|---|---|---|
+| proportional | can fit one | or the other |
+| **integral, gain 450** | **7.50** (not fitted) | **10.37** (fitted) |
+
+Reproduce with `python3 -m tuner.plant_openloop_validation --ab`.
+
+### 12.4 Validated on data no fit had seen
+
+`gain` was fitted to the step test's **peak** only. The **sweep** — sustained
+cornering over a long orbit, the regime that builds heading error on a lap —
+was never used to fit anything:
+
+| | proportional (700) | integral (450) |
+|---|---|---|
+| capped-point mean err | +1.41 m/s² | **+0.29** |
+| capped-point MAE | 1.60 | **0.87** |
+| all-point MAE | 1.15 | **0.79** |
+
+The sim had been sustaining **8.3–8.9 m/s² where FSDS sustains 6.1–8.1** — a
+20–35% surplus centred on 8 m/s, which is the live car's mean speed (8.03).
+
+### 12.5 What it fixed, and what it didn't
+
+| | P (700) | **PI (450)** | live |
+|---|---|---|---|
+| a_lat > 7.5 % | 14.25 (×1.45) | **8.89 (×0.91)** | 9.80 |
+| a_lat max | 10.53 | 10.80 | 12.34 |
+| reversals/s | 0.82 | 0.93 | 1.62 |
+| score | 0.675 | 0.700 | — |
+| **steering sat %** | **6.32** | **6.74** | **21.10** |
+
+A genuine fidelity fix — and **worth 0.4 points of saturation**. Report it as
+such: the plant now reproduces the car's *lateral-acceleration distribution*,
+not its steering behaviour.
+
+### 12.6 Eliminated: cornering capability is not the residual gap
+
+Lowering the ceiling to 6.5 or 5.5 m/s² does **not** raise saturation toward
+21% — it **DNFs offtrack at ~10% progress**. Same discriminator that killed
+μ=1.455 in §5: a *different failure mode* from the car's. The live car completes
+laps while saturating 21% of the time; the sim either completes with ~6–7% or
+crashes. No capability level reproduces live behaviour.
+
+### 12.7 Eliminated: `fsds_bridge` discarding `a_cmd` is not the differentiator
+
+§7 flagged this as a real unmodelled divergence, and it is: measured live,
+`a_cmd → a_achieved` has **corr 0.56–0.58** (the sim's is ~1 by construction),
+and live over-speeds its target by **+2.49 m/s at p90 against the sim's +1.05**,
+peaking at 13.9 vs 11.1 m/s. Note the earlier speed-profile check compared
+*mean* speed (2% apart) and MAE is also nearly identical (1.92 vs 1.98) — the
+divergence lives entirely in the over-speed tail, which a mean cannot see.
+
+**But it is not the cause.** Conditioning on saturation:
+
+| signal | live inside sat | sim inside sat |
+|---|---|---|
+| \|e_psi\| | 41.4° | **40.4°** |
+| v_target | 4.72 | 4.95 |
+| **speed err** | **+1.13** | **+2.05** |
+| \|e_y\| | 0.66 m | 0.27 m |
+
+The sim already arrives **hotter** than live inside saturation. Modelling the
+bridge's P-loop would have moved the sim the wrong way. Both stacks saturate
+under near-identical conditions.
+
+> This is why the conditional table matters: an aggregate divergence can be
+> real, large, and still not causal. Condition on the symptom before modelling.
+
+### 12.8 The car is on the line, pointing the wrong way
+
+Inside saturation the live car is at full lock while pulling only **4.22 m/s²**
+and sitting just **0.66 m** off the centreline. A car genuinely unable to turn
+through a corner runs wide — `e_y` grows. It does not. This generalises §0's
+"key early observation" from an anecdote to the *typical* saturation condition.
+
+Decomposing heading-error growth via
+`e_psi = wrap(car_yaw − ref_psi) ⇒ d(e_psi)/dt = yaw_rate − d(ref_psi)/dt`:
+
+| | live | sim |
+|---|---|---|
+| \|d(ref_psi)/dt\| mean / p99 / max | 28.8 / 163 / 350 °/s | 25.9 / 142 / 261 °/s |
+| \|yaw_rate\| mean / p99 / max | 28.2 / 73 / 88 °/s | 22.3 / 77 / 85 °/s |
+| growth reference-driven | **77.6%** | **100%** |
+
+**In both stacks the reference heading swings far faster than the car can ever
+yaw** (p99 142–163 °/s against a physical maximum near 85–112 °/s), and
+reference motion — not the car failing to yaw — dominates heading-error growth.
+This is the known planner centreline defect, quantified in *heading* terms for
+the first time; §3 eliminated only the *curvature* comparison, which is a
+different statistic.
+
+Live's reference is worse, but by 15% (p99) to 34% (max) — **not 3×**. So this
+is a strong lead, not yet the answer.
+
+### 12.9 Where the gap actually lives
+
+| | live | sim | ratio |
+|---|---|---|---|
+| saturation episode **rate** | 0.32/s | 0.12/s | **2.6×** |
+| mean episode **duration** | 0.71 s | 0.55 s | 1.3× |
+| \|e_psi\| inside saturation | 41.4° | 40.4° | 1.0× |
+
+Both saturate at the same heading error, for comparable durations. The gap is
+almost entirely **how often the car enters that state** — a *turn-in transient*
+property, not a steady-state capability one. That points squarely at
+`alat_ceiling_tau`, the one ceiling parameter still never measured (§10 chose it
+behaviourally; the measured decay ranged 0.04–1.06 s). Under the integral law
+`tau` no longer affects the settled value at all, so it now controls *only* the
+transient — which makes it both more identifiable and more clearly the next
+thing to measure, with a longer `step_s`.
+
+### 12.10 Tooling added (the loop that was missing)
+
+`steering_sysid_analysis.py` and `steering_step_analysis.py` answer "what does
+FSDS do?". Nothing answered **"does our plant reproduce it?"** — which is how a
+13% sustained-cornering surplus survived a refit. Now:
+
+- **`tuner/plant_openloop_validation.py`** — replays both measured open-loop
+  experiments through the offline plant at matched (speed, steering).
+  `--ab` reproduces the law comparison; `--robustness` runs the confound checks.
+- **`tuner/recorded_map_rollout.py`** — headless closed-loop run on the recorded
+  map. The `comp test map 3` baselines were previously unreproducible from the
+  repo (the track loaded only via a GUI button), so the single most important
+  number in the investigation could not be re-checked after a plant change. It
+  reproduces the published table exactly (6.32%, 10.53, 14.25%, 0.82, 7.26/19.16).
+- **`tuner/live_vs_sim_diagnostics.py`** — the conditional and
+  reference-heading decompositions above.
+
+**Rig validated before use, per lesson 6.** The capped-regime result is robust
+to a 6× range of speed-hold gains (8.24–8.53, ±3.5%) and exactly
+timestep-independent; the ceiling is provably inactive at 3/4/5 m/s. **The
+low-speed comparison is NOT trustworthy** — at 4 m/s full lock the plant cannot
+hold speed and a_lat swings 2.50→4.03 with the same gains, so the apparent
+low-speed under-cornering is a rig confound and is *not* reported as a finding.
+
+### 12.11 Also fixed: two harness bugs that blocked the measurement
+
+- `${EXTRA_ARGS[*]}` **unquoted** in both `run_steering_step.sh` and
+  `run_steering_sysid.sh` — joins then word-splits, so any parameter containing
+  a space breaks argument parsing. This also silently broke the harnesses' own
+  `--quick` flag (`-p 'speeds:=[4.0, 10.0]'`).
+- The **shebang sat on line 3**, below two header comments, so the kernel never
+  saw it and the script inherited the caller's shell — dying immediately under
+  dash on `set -o pipefail`. Fixed in both; `ros2/launch_all.sh` and its
+  `fsds_simulator/` mirror have the same defect, left alone as out of scope.
+
+### 12.12 Not measured this session
+
+The longer step test (`step_s = 8.0`) could not be run: launching FSDS requires
+WSL→Windows process spawning (`cmd.exe`, `taskkill.exe`), which this
+environment terminates. `--no-sim` against an already-running FSDS avoids that
+entirely and is the way to run it.
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
@@ -442,6 +657,32 @@ comparison. Track width is **exactly 3.50 m** with zero variance, matching
 7. **Statistics the controller can influence are not plant measurements.**
    Mean a_lat measures the controller; steady-state full lock measures the
    plant.
+8. **When no parameter value fits, suspect the functional form.** Two failed
+   fits at opposite ends of a range are one structural error, not two mistakes.
+   A proportional law cannot hold a setpoint; an integral one cannot miss it.
+   Sweep the parameter and *look at the trade-off curve* — that a monotone
+   trade-off exists at all is the proof.
+9. **Prefer structure over fitting.** Under the integral law the settled value
+   is pinned by the form of the equation, not by a fitted number, so it cannot
+   drift when something else is refitted. One free parameter, one target.
+10. **Close the loop on your own model, not just on the system.** Analysers that
+    only answer "what does the real thing do?" let a model error survive
+    indefinitely. Every measurement of FSDS should have a matching replay of the
+    plant at the same operating point.
+11. **An aggregate divergence can be real, large, and not causal.** The
+    discarded `a_cmd` is all three. **Condition on the symptom** — inside
+    saturation the sim was already *hotter* than live, so modelling it would
+    have moved the sim the wrong way.
+12. **Aggregates hide tails, and means hide both.** The speed divergence is
+    invisible in the mean (2%) and in the MAE (1.92 vs 1.98), and obvious in the
+    p90 (+2.49 vs +1.05). Pick the statistic that matches the mechanism.
+13. **Decompose the error before attributing it.** `e_psi` growth splits exactly
+    into car-lag and reference-motion. Measuring the split (78–100%
+    reference-driven) beat years of arguing about whether the planner was
+    "good enough".
+14. **Separate rate from duration.** "21% of ticks" hid the actual finding: the
+    durations match (1.3×) and only the *entry rate* differs (2.6×). That
+    reframes the search from steady-state capability to turn-in transients.
 
 ---
 
@@ -450,20 +691,30 @@ comparison. Track width is **exactly 3.50 m** with zero variance, matching
 | item | status |
 |---|---|
 | **Model the yaw cap offline** | **Done** — `alat_ceiling*` in `model/vehicle_physics.py`. Moves every metric toward the car (saturation 4.4→6.3%, a_lat max 14.06→10.53) but closes only part of the gap; live is still 21.1% saturation |
-| Remaining saturation gap | **Open** — the cap was necessary but not sufficient. Needs its own investigation |
+| Remaining saturation gap | **Open, but narrowed (§12).** Not capability (§12.6) and not `a_cmd` (§12.7). Localised to the *entry rate* into the high-heading-error state (2.6×) with matching in-state behaviour — i.e. a turn-in transient property |
+| **`alat_ceiling_tau`** | **Top priority (§12.9).** Never measured; the only ceiling parameter still behavioural. Now controls *only* the transient under the integral law, and the residual gap is *specifically* a transient. Re-measure with `step_s = 8.0` |
+| Ceiling is speed-dependent | **New, unmodelled (§12.4).** Measured sustained a_lat rises with speed — 6.45 @ 8 m/s, 7.54 @ 11, 9.26 @ 14 — while the model pins it flat at 7.5. Residuals +1.0 / ~0 / −1.76. Deliberately not fitted: 16 points, one run |
+| Step vs sweep disagree on level | **Open.** Step's 3 s settle says 7.5 @ 8 m/s; the sweep's long orbit says 6.45. A longer `step_s` resolves whether sustained a_lat keeps decaying past 3 s — same experiment as the `tau` re-measurement |
+| Planner reference heading | **New lead (§12.8).** In *both* stacks the reference heading swings faster than the car can yaw, and drives 78–100% of heading-error growth. Live's is 15–34% worse in the tail. Distinct from the *curvature* comparison §3 eliminated |
 | Identify the exact FSDS mechanism | **Done** — step test run (§9–10): a *dynamically enforced lateral-acceleration* ceiling. Both signatures present: different steering angles settle to the same response (a cap), yet yaw overshoots ~30% first (not a static clip) |
 | Ceiling decay time constant | **Not reliably measured.** Fitting peak→settled gave median 0.08 s over a 0.04–1.06 s range (rise a cleaner 0.40 s). `alat_ceiling_tau = 0.25` was chosen to match peak a_lat and act in time, not from this fit. Needs a longer `step_s` and more repeats |
 | Speed profile | **Closed, not a discrepancy** — see the correction below. Achieved speeds differ by 2% |
 | Objective rebalancing | Deferred (§1) — `QUALITY_WEIGHT` 0.35 → ~0.8, saturation as near-constraint |
 | Step 4: held-out tracks | 5 of 10 tracks unused |
 | Live scorer reports `13.0` | Every live run scores `CONSTRAINT_FLOOR + DNF_PENALTY` — the car has no known path end |
-| `fsds_bridge` discards `a_cmd` | §7 — real divergence, unmodelled |
+| `fsds_bridge` discards `a_cmd` | §7 — real divergence, quantified in §12.7 (corr 0.56, over-speed p90 +2.49 vs +1.05). **Not the cause of the gap.** Still worth fixing on the car: the MPC plans a braking profile the bridge throws away, so live decelerates reactively and arrives hot |
 | Planner centreline defect | Pre-existing, documented; controller carries workarounds |
 
-**Do not retune yet.** The cap is now modelled, which makes the sim materially
-better, but it closes only part of the gap: live still saturates 3x more often
-(21.1% vs 6.3%) and carries 2x the heading error. A good offline score has
-already produced a car saturating steering 21% of the time.
+**Do not retune yet.** The cap is now modelled *and its law corrected*, which
+makes the sim materially better — it reproduces the car's lateral-acceleration
+distribution to within 9% (§12.5). But it does not reproduce the car's steering
+behaviour: live still saturates 3x more often (21.1% vs 6.7%) and carries 2x the
+heading error. A good offline score has already produced a car saturating
+steering 21% of the time.
+
+The §12 work makes the *plant* trustworthy in the lateral-acceleration sense and
+rules out the two candidates that looked most promising. The residual is a
+turn-in/reference problem, and `alat_ceiling_tau` is the cheapest untested lever.
 
 ### A correction worth keeping (2026-08-06)
 

@@ -193,39 +193,65 @@ class VehicleParams:
         # plant (e.g. when modelling the real vehicle).
         self.alat_ceiling_enabled = True
         self.alat_ceiling = 7.5    # Sustained lateral-accel ceiling (m/s²)
-        # Restoring yaw moment per m/s² of excess (N·m per m/s²).
+        # How the restoring moment responds to exceeding the ceiling.
         #
-        # Fitted to the measured PEAK a_lat (9.56 / 10.86 at 8 / 12 m/s here,
-        # against 9.72 mean / 10.89 max measured), NOT to the settled value.
-        # That is deliberate: 7.5 m/s² is a SUSTAINED ceiling, not a wall the
-        # car never crosses. The live car exceeds it on 9.8% of ticks, peaking
-        # at 12.34, in short excursions (median 0.05 s, max 0.85 s).
+        #   'pi' — leaky INTEGRAL of the signed excess (current, validated).
+        #   'p'  — legacy PROPORTIONAL-on-excess. Kept only so
+        #          tuner/plant_openloop_validation.py --ab can reproduce the
+        #          measurement that rejected it. Do not use it for tuning.
         #
-        # A stiffer gain (3000) matched the settled value more exactly and then
-        # enforced 7.5 as a near-absolute limit — stricter than the real car —
-        # which DNF'd the lap. At 700 the sim exceeds 7.5 on 14.2% of ticks and
-        # peaks at 10.53, close to live's 9.8% / 12.34, and completes the lap.
-        self.alat_ceiling_gain = 700.0
-        # Time constant (s) over which the restoring moment builds. This is
-        # what creates the overshoot: the term lags the excess, so yaw exceeds
-        # the ceiling before being pulled back. A memoryless version engages
-        # instantly and cannot overshoot at all.
+        # Why the law changed (2026-08-07). A proportional term needs a finite
+        # error to generate any output, so its equilibrium MUST sit above the
+        # setpoint. That made the two published "false starts" two horns of one
+        # structural flaw rather than a bad gain, and measuring the trade-off
+        # curve makes it explicit — no proportional gain fits both targets:
         #
-        # Chosen to match the measured PEAK lateral acceleration (8.44 at
-        # 8 m/s, 9.73 at 12 m/s here, against 9.72 mean / 10.89 max measured)
-        # while still acting fast enough to cap a real corner entry.
+        #    gain    settled (meas 7.68)    peak (meas 10.42)
+        #     300         9.51  (+1.83)        10.84  (+0.42)
+        #     700         8.65  (+0.97)        10.11  (-0.31)   <- shipped
+        #    3000         7.83  (+0.15)         8.74  (-1.68)
+        #    6000         7.67  (-0.01)         7.87  (-2.55)
         #
-        # That second constraint is the binding one and was learned the hard
-        # way: tau=1.0 reproduced the measured ~30% overshoot beautifully in a
-        # step test, but on a lap the term took ~1 s to build while corners
-        # arrive in ~0.4 s. The cap therefore did nothing during turn-in, let
-        # the car overshoot into the corner, then engaged once it was already
-        # off line -- DNF at 6.3 s with e_y = -1.97 m. A ceiling that acts too
-        # late is worse than no ceiling.
+        # Fitting the peak left SUSTAINED cornering 13% high; fitting the
+        # settled value flattened the excursions and DNF'd the lap. The
+        # integral law removes the trade-off: it can only stop growing when the
+        # excess is zero, so the settled value is pinned AT the ceiling by
+        # STRUCTURE for any gain, leaving one free parameter for the transient.
         #
-        # The measured decay was too scattered to fit directly (median 0.08 s
-        # over a 0.04-1.06 s range). The settled ceiling is insensitive to tau
-        # across 0.05-1.0, so only transients depend on this value.
+        # Verify with:  python3 -m tuner.plant_openloop_validation --ab
+        self.alat_ceiling_mode = 'pi'
+        # Restoring yaw moment per unit of accumulated excess (N·m per m/s²).
+        #
+        # Fitted to the measured PEAK a_lat ONLY (10.37 here against 10.42
+        # measured). The settled value is NOT fitted — it falls out of the
+        # integral structure at 7.50 against 7.68 measured, inside the
+        # 7.29-7.80 spread across the measured speeds.
+        #
+        # Validated against the SWEEP, which no fit has seen (sustained
+        # cornering over a long orbit, the regime that builds heading error on
+        # a lap). Capped-point error improves 5x over the proportional law:
+        #   mean err +1.41 -> +0.29 m/s², MAE 1.60 -> 0.87.
+        self.alat_ceiling_gain = 450.0
+        # Time constant (s) over which the restoring moment builds. The term
+        # lags the excess, so yaw exceeds the ceiling before being pulled back
+        # — that lag is what produces the measured overshoot. A memoryless
+        # version engages instantly and cannot overshoot at all.
+        #
+        # STILL A BEHAVIOURAL FIT, NOT A MEASURED CONSTANT. The measured decay
+        # was too scattered to use (median 0.08 s over a 0.04-1.06 s range; the
+        # rise is a cleaner 0.40 s). This value is chosen to act fast enough to
+        # catch a real corner entry, which is the binding constraint and was
+        # learned the hard way: tau=1.0 reproduced the measured ~30% overshoot
+        # beautifully in a step test, then DNF'd the car at 6.3 s on a lap.
+        # Corners arrive in ~0.4 s, so a term taking ~1 s to build does nothing
+        # during turn-in, lets the car run wide, and engages only once it is
+        # already off line. A ceiling that acts too late is worse than none.
+        #
+        # Under the integral law the settled value no longer depends on tau at
+        # all (structure pins it), so tau now controls ONLY the transient.
+        # That makes it the first parameter to re-measure if the sim's turn-in
+        # looks wrong — with a longer step_s, per the note in
+        # docs/planning_control_sync.md.
         self.alat_ceiling_tau = 0.25
 
         # ── Unsprung Mass ────────────────────────────────────────────────────
@@ -989,18 +1015,36 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
         # a_lat is 7.80 m/s² at 8 m/s and 7.29 at 12 m/s (1.07x spread) while
         # yaw rate varies 1.56x. Below the ceiling the car is unconstrained,
         # which is why the sweep measured s ~ 1.0 under ~6 m/s.
-        # The restoring term is a STATE with a first-order lag, not a function
-        # of the instantaneous excess. That is what produces the measured
-        # overshoot: a memoryless term engages the moment the ceiling is
-        # crossed and can never overshoot it (verified — every (gain, soft)
-        # pairing tried gave 0.0% overshoot, against ~30% measured).
+        # The restoring term is a STATE that builds over time, not a function of
+        # the instantaneous excess. That is what produces the measured overshoot:
+        # a memoryless term engages the moment the ceiling is crossed and can
+        # never overshoot it (verified — every (gain, soft) pairing tried gave
+        # 0.0% overshoot, against ~30% measured).
+        #
+        # It ACCUMULATES the excess (mode 'pi') rather than tracking it
+        # (mode 'p'). Corrected 2026-08-07: tracking the excess makes this a
+        # proportional controller, which needs a standing error to produce any
+        # output and therefore settles ABOVE the ceiling — it left sustained
+        # cornering 13% high, and no gain could fix both that and the peak.
+        # See VehicleParams.alat_ceiling_mode for the measured trade-off curve.
         if p.alat_ceiling_enabled:
-            excess = max(0.0, abs(vx_safe * r) - p.alat_ceiling)
-            # Build toward the current excess with time constant
-            # alat_ceiling_tau; decay back with the same constant once the
-            # car is under the ceiling again.
-            alat_lim = alat_lim + (excess - alat_lim) * (
-                h / max(p.alat_ceiling_tau, 1e-3))
+            if p.alat_ceiling_mode == 'pi':
+                # Leaky INTEGRAL of the SIGNED excess. Winds up while the car is
+                # over the ceiling and unwinds once it is back under; clamped at
+                # zero so it can never add yaw. It can only stop growing when
+                # the excess is zero, so a_lat settles AT the ceiling for any
+                # gain — the settled value is pinned by structure, leaving one
+                # free parameter (gain) for the transient.
+                err = abs(vx_safe * r) - p.alat_ceiling
+                alat_lim = max(0.0, alat_lim + err * (
+                    h / max(p.alat_ceiling_tau, 1e-3)))
+            else:
+                # REJECTED proportional law, kept only so
+                # tuner/plant_openloop_validation.py --ab can reproduce the
+                # measurement that rejected it. Do not tune against this.
+                excess = max(0.0, abs(vx_safe * r) - p.alat_ceiling)
+                alat_lim = alat_lim + (excess - alat_lim) * (
+                    h / max(p.alat_ceiling_tau, 1e-3))
             M_z = M_z - np.sign(r) * alat_lim * p.alat_ceiling_gain
         # ── 19. Rigid-body equations of motion ────────────────────────────────
         # Newton in body frame; Coriolis terms appear because the frame rotates:
