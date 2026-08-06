@@ -1,0 +1,201 @@
+"""
+MPC path-tracking controller.
+
+A drop-in alternative to the Stanley controller: it follows the planned
+centreline and emits the same drive command on the car stack's control
+interface (target speed + steering angle), so the downstream FSDS conversion in
+fsds_bridge (speed->throttle/brake, GO gating, cone e-brake) is unchanged.
+
+    in   /fsae/planning/selected_trajectory  geometry_msgs/PoseArray   path to follow
+    in   /fsae/slam/car_position             geometry_msgs/PoseStamped x,y in position; yaw in orientation.w
+    in   /fsds/testing_only/odom             nav_msgs/Odometry         speed + yaw-rate feedback
+    out  /fsae/control/cmd_vel               ackermann_msgs/AckermannDriveStamped  speed + steering_angle
+
+The optimiser (mpc_core.MPCController) is a linear time-varying MPC ported from
+the fsae_MPCTest repo.  Unlike Stanley (which reacts to the instantaneous
+cross-track/heading error), the MPC plans a 1.25 s horizon, which is what damps
+the high-speed left-right sway.  It natively outputs throttle/brake too, but to
+preserve the cmd_vel -> fsds_bridge abstraction (and keep fsds_bridge the single
+owner of GO-gating and cone-braking) we forward only its steering angle (rad)
+and let the curvature-limited target speed drive the bridge's speed controller.
+
+The control step runs on a FIXED 20 Hz timer (not the pose callback like
+Stanley), because the MPC's discretisation assumes a constant dt = 0.05 s
+between solves.
+"""
+import numpy as np
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+
+from ackermann_msgs.msg import AckermannDriveStamped
+from geometry_msgs.msg import PoseArray, PoseStamped
+from nav_msgs.msg import Odometry
+from rclpy.time import Time
+
+from fsae_control.control_utils import curvature_speed
+from fsae_control.mpc_core import MPCController
+from fsae_control.telemetry_logger import ControlLogger
+
+CONTROL_HZ    = 20.0   # must match MPCController(dt=0.05); dt = 1 / CONTROL_HZ
+PATH_TIMEOUT  = 0.5    # s — reset the MPC if no fresh trajectory within this window
+
+
+class MPCControllerNode(Node):
+    def __init__(self):
+        super().__init__('controller')
+
+        self.declare_parameters(
+            namespace='',
+            parameters=[
+                ('v_max', 15.0),      # m/s — top speed on straights
+                ('v_min', 1.5),       # m/s — minimum speed through tight corners
+                ('steer_lp', 0.3),    # output steering low-pass (EMA); 1.0 disables
+                ('log_csv', False),   # write CSV telemetry to log_dir
+                ('log_dir', ''),      # '' -> ~/fsae_logs
+            ],
+        )
+        self._v_max = self.get_parameter('v_max').get_parameter_value().double_value
+        self._v_min = self.get_parameter('v_min').get_parameter_value().double_value
+        self._steer_lp = self.get_parameter('steer_lp').get_parameter_value().double_value
+        self._delta_filt: float | None = None   # filtered steering state
+
+        self._telemetry = None
+        if self.get_parameter('log_csv').get_parameter_value().bool_value:
+            log_dir = self.get_parameter('log_dir').get_parameter_value().string_value
+            self._telemetry = ControlLogger('mpc', log_dir=log_dir)
+            self.get_logger().info(f'CSV telemetry -> {self._telemetry.paths[0]}')
+
+        sensor_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10,
+        )
+
+        self.create_subscription(PoseArray, '/fsae/planning/selected_trajectory', self._traj_cb, 10)
+        self.create_subscription(PoseStamped, '/fsae/slam/car_position', self._pose_cb, 10)
+        self.create_subscription(Odometry, '/fsds/testing_only/odom', self._odom_cb, sensor_qos)
+
+        self.pub_cmd = self.create_publisher(AckermannDriveStamped, '/fsae/control/cmd_vel', 10)
+
+        self._path: np.ndarray = np.empty((0, 2))
+        self._path_stamp = None
+        self._car_pos = np.zeros(2)
+        self._car_yaw = 0.0
+        self._car_speed = 0.0
+        self._car_yaw_rate = 0.0
+        self._pose_stamp = None
+        self._have_pose = False
+
+        dt = 1.0 / CONTROL_HZ
+        self._mpc = MPCController(dt=dt, N=25)
+
+        self.create_timer(dt, self._control_step)
+
+        self.get_logger().info('MPC controller ready — waiting for a trajectory + car_position.')
+
+    # ------------------------------------------------------------------
+    # Subscribers (cache latest state; the timer does the work)
+    # ------------------------------------------------------------------
+
+    def _traj_cb(self, msg: PoseArray) -> None:
+        self._path = np.array(
+            [[p.position.x, p.position.y] for p in msg.poses], dtype=np.float64
+        ) if msg.poses else np.empty((0, 2))
+        self._path_stamp = self.get_clock().now()
+
+    def _odom_cb(self, msg: Odometry) -> None:
+        v = msg.twist.twist.linear
+        self._car_speed = float(np.hypot(v.x, v.y))
+        self._car_yaw_rate = float(msg.twist.twist.angular.z)
+
+    def _pose_cb(self, msg: PoseStamped) -> None:
+        # x,y in position; yaw (rad) is stuffed into orientation.w (upstream convention).
+        self._car_pos = np.array([msg.pose.position.x, msg.pose.position.y])
+        self._car_yaw = float(msg.pose.orientation.w)
+        self._pose_stamp = msg.header.stamp
+        self._have_pose = True
+
+    # ------------------------------------------------------------------
+    # Control step (fixed 20 Hz)
+    # ------------------------------------------------------------------
+
+    def _control_step(self) -> None:
+        # No pose or no path yet, or the path has gone stale: publish nothing and
+        # reset the MPC so it doesn't warm-start from a stale trajectory.  The
+        # downstream fsds_bridge brakes on its own cmd_vel timeout.
+        path_stale = (
+            self._path_stamp is None
+            or (self.get_clock().now() - self._path_stamp).nanoseconds * 1e-9 > PATH_TIMEOUT
+        )
+        if not self._have_pose or len(self._path) < 2 or path_stale:
+            self._mpc.reset()
+            self._delta_filt = None   # drop filter state with the MPC warm-start
+            return
+
+        desired_speed = curvature_speed(self._path, v_max=self._v_max, v_min=self._v_min)
+
+        # Age of the pose the MPC is about to solve against — how long ago it
+        # was actually measured, not how long ago the callback fired. Lets
+        # MPCController compensate for the real, unknown/time-varying delay
+        # instead of assuming the state is fresh (see mpc_core.py compute()).
+        pose_age_s = (self.get_clock().now() - Time.from_msg(self._pose_stamp)).nanoseconds * 1e-9
+
+        # The MPC returns FSDS-normalised (steering, throttle, brake); we take its
+        # pre-normalisation steering angle in radians (last_telemetry['delta_cmd'],
+        # +ve = left, already clamped to the 25deg limit) and forward the
+        # curvature-limited speed, keeping the cmd_vel abstraction intact.
+        self._mpc.compute(
+            self._path, self._car_pos, self._car_yaw,
+            self._car_speed, desired_speed, self._car_yaw_rate,
+            pose_age_s=pose_age_s,
+        )
+        steering = float(self._mpc.last_telemetry.get('delta_cmd', 0.0))
+
+        # Low-pass the steering command across ticks (matches the Stanley node) so
+        # rapid left-right jitter never reaches the servo.  1.0 disables.
+        if self._delta_filt is None or self._steer_lp >= 1.0:
+            self._delta_filt = steering
+        else:
+            self._delta_filt += self._steer_lp * (steering - self._delta_filt)
+        steering = self._delta_filt
+
+        msg = AckermannDriveStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.drive.speed = float(desired_speed)
+        msg.drive.steering_angle = steering
+        self.pub_cmd.publish(msg)
+
+        if self._telemetry is not None:
+            tel = self._mpc.last_telemetry
+            t = self.get_clock().now().nanoseconds * 1e-9
+            self._telemetry.log_control(
+                t, self._car_pos[0], self._car_pos[1], self._car_yaw,
+                self._car_speed, desired_speed, steering,
+                tel.get('e_y', 0.0), tel.get('e_psi', 0.0), self._car_yaw_rate)
+            self._telemetry.log_path(t, self._path)
+
+        self.get_logger().info(
+            f'cmd_vel: speed={desired_speed:.2f} m/s  steer={steering:.3f} rad  '
+            f'v_actual={self._car_speed:.2f} m/s  '
+            f'e_y={self._mpc.last_telemetry.get("e_y", 0.0):.2f}',
+            throttle_duration_sec=1.0,
+        )
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = MPCControllerNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if node._telemetry is not None:
+            node._telemetry.close()
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()

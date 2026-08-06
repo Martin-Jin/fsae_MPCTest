@@ -326,7 +326,7 @@ def compute_speed_profile(
 
 
 def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
-                    scan_start=1.5, scan_end=14.0, step=2.0, safety=1.0):
+                    scan_start=1.5, scan_end=24.0, step=2.0, safety=1.0):
     """
     Curvature-limited target speed over the next scan_end metres of the path.
 
@@ -342,6 +342,12 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
     per-point profile vs. on-demand live/offline-planner scalar) and only the
     latter has a live counterpart that must match bit-for-bit for tuned
     weights to transfer.
+
+    scan_end=24 m (was 14 m) matches the live boundary._WALL_PLAN_HORIZON: a
+    tight hairpin (~2 m radius, v_target ~2.7 m/s) approached at v_max needs
+    ~24 m to brake for at a realistic achieved deceleration, not the raw
+    a_max_brake limit — a shorter scan sees the corner too late, saturating
+    steering and spinning out at corner entry (observed on the live stack).
 
     v_target = safety*sqrt(a_lat_max / kappa_peak), with a short-path cap that
     scales v_max down when the visible path is shorter than scan_end.

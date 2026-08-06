@@ -38,8 +38,15 @@ _WALL_MAX_TURN_COS  = -0.5
 # Default arc-length horizon (m) the published centreline is clamped to before
 # smoothing.  Far midpoints beyond this are dropped so the near path in front of
 # the car does not change as the lookahead grows, and the global spline is not
-# dragged by distant apex points.  Kept ≥ the controller's ~14 m speed scan.
-_WALL_PLAN_HORIZON  = 15.0
+# dragged by distant apex points.  Kept >= the controller's ~24 m speed scan
+# (control_utils.curvature_speed's scan_end) — a tight hairpin (~2 m radius,
+# v_target ~2.7 m/s) approached at v_max=15 m/s needs ~24 m to brake for at a
+# realistic achieved deceleration (~4.5 m/s2, well under the 9 m/s2 hard limit
+# once the MPC's own speed-request low-pass and rate limits are accounted for);
+# the previous 15 m horizon only revealed such a corner a couple of car-lengths
+# before the car needed to already be nearly stopped, causing steering
+# saturation and a spin-out (see fsae_planning_changes.md).
+_WALL_PLAN_HORIZON  = 25.0
 
 
 def build_wall_segments(
@@ -291,7 +298,7 @@ def build_path_walls(
     max_ahead: float = 25.0,
     max_lateral: float = 10.0,
     smooth_per_pt: float = DEFAULT_SMOOTH_PER_PT,
-    look_radius: float = 18.0,
+    look_radius: float = 25.0,   # kept >= _WALL_PLAN_HORIZON — see that constant's comment
     plan_horizon: float = _WALL_PLAN_HORIZON,
 ) -> tuple[np.ndarray | None,
            list[tuple[np.ndarray, np.ndarray]],

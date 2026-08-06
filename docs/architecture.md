@@ -141,12 +141,14 @@ mpc_controller_standalone.py    │  gui/simulation.py's rollout loop           
 cone_recorder.py                │  sim/track_io.py + gui/simulation.py's Load Recorded Track  (recorder writes what the loader reads)
 ```
 
-The `stanley_control.py` / `stanely_control_utils.py` files under
-`fsds_simulator/stanley_controller/` are the **previous** controller
-implementation (a Stanley path-tracking controller), kept only as a reference
-for how a ROS 2 control node in this project is structured. The active
-controller is the MPC in `mpc_controller_standalone.py` / `mpc_core.py`
-(staged under `fsds_simulator/control/fsae_control/fsae_control/`).
+`fsds_simulator/control/fsae_control/fsae_control/stanley_controller.py` is
+the actual current Stanley controller (mirrored from upstream, kept in sync
+like everything else under `fsds_simulator/` — see
+[docs/planning_control_sync.md](planning_control_sync.md)), not just a
+structural reference. This project's tuner and offline simulator only ever
+drive against the MPC (`mpc_controller_standalone.py` / `mpc_core.py`,
+same directory) — Stanley is mirrored purely so `fsds_simulator/` can stand
+up the full live stack, not because this repo's own simulator exercises it.
 
 ---
 ## Configuring the Project (`settings.py`)
@@ -1228,3 +1230,4 @@ not here.
 | `gui/manual_drive.py` | Standalone WASD/mouse drive mode against the 24-state nonlinear plant — no MPC, no scoring, purely open-loop human control for building intuition or sanity-checking a track. See [Manual Drive Mode](developer_guide.md#manual-drive-mode). |
 | `settings.py` | All project-level tuning/scoring/DNF configuration. See [Configuring the Project](#configuring-the-project-settingspy). |
 | `mpc_controller_standalone.py` / `mpc_core.py` / `control_utils.py` (staged under `fsds_simulator/control/fsae_control/fsae_control/`) | The live ROS 2 MPC controller for FSDS. See [Simulator Integration](developer_guide.md#simulator-integration). |
+| `fsds_simulator/` (whole tree) | Full staging mirror of upstream's ROS 2 workspace — every package, not just control — so a clone of this repo plus FSDS can build and run the complete stack (`stanley`, `mpc`, or `mpc_standalone`) with no separate `fsae_planning` checkout. See [docs/planning_control_sync.md](planning_control_sync.md) and [fsds_simulator/README.md](../fsds_simulator/README.md). |

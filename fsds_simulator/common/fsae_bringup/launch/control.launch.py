@@ -29,6 +29,8 @@ def generate_launch_description():
     )
     planner = LaunchConfiguration('planner')
     controller = LaunchConfiguration('controller')
+    log_csv = LaunchConfiguration('log_csv')
+    log_dir = LaunchConfiguration('log_dir')
     run_controller = IfCondition(
         PythonExpression(["'", planner, "' != 'skidpad_planner'"])
     )
@@ -50,12 +52,18 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'controller', default_value='stanley',
             description='stanley | mpc | mpc_standalone — path-tracking controller to run'),
+        DeclareLaunchArgument(
+            'log_csv', default_value='false',
+            description='Write controller CSV telemetry (e_y/e_psi/steer/...) to log_dir'),
+        DeclareLaunchArgument(
+            'log_dir', default_value='',
+            description="Controller CSV telemetry output dir ('' -> ~/fsae_logs)"),
         Node(
             package='fsae_control',
             executable=controller_exec,
             name='controller',
             output='screen',
-            parameters=[config],
+            parameters=[config, {'log_csv': log_csv, 'log_dir': log_dir}],
             condition=run_controller,
         ),
         Node(

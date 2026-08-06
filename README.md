@@ -19,10 +19,14 @@ project transfer directly to that live controller, because both preserve the
 MPC's own throttle/brake output rather than routing speed through
 `fsds_bridge.py`'s separate P-loop.
 
-`fsds_simulator/` is a staging area, not a live module of this repo: its
-subfolders mirror `fsae_planning`'s own ROS 2 package hierarchy exactly (e.g.
-`fsds_simulator/control/fsae_control/fsae_control/mpc_core.py`), so a file
-can be copied straight across to the matching path with no manual re-pathing.
+`fsds_simulator/` is a staging area, not a live module of this repo: it
+mirrors `fsae_planning`'s entire ROS 2 workspace — every package
+(`fsae_interfaces`, `fsae_bringup`, `fsae_sim_perception`, `fsae_planning`,
+`fsae_control`), including build scaffolding, not just the MPC-relevant
+files — at the exact same relative paths, so someone with only this repo and
+FSDS can build and run the full stack (Stanley, `mpc`, or `mpc_standalone`)
+with no separate `fsae_planning` checkout. See
+[fsds_simulator/README.md](fsds_simulator/README.md) for build/run steps.
 Nothing under `fsds_simulator/` is imported by the simulator or tuner —
 those live under `planning/`, `sim/`, `model/`, `controller/` instead.
 
@@ -77,6 +81,7 @@ for how to run the CMA-ES weight tuner instead.
 | [docs/developer_guide.md](docs/developer_guide.md) | How to use and extend the project: running the simulator and offline tuner, FSDS/ROS 2 integration (including Windows/WSL/Docker setup from scratch), manual drive mode, dependencies, adding a new synthetic path, and debugging solver failures. |
 | [docs/vehicle_physics_guide.md](docs/vehicle_physics_guide.md) | Plain-English walkthrough of the 24-state nonlinear plant in `model/vehicle_physics.py` (tyres, suspension, weight transfer, aero) for readers who don't already know vehicle dynamics. |
 | [docs/planning_control_sync.md](docs/planning_control_sync.md) | Reference for re-syncing `planning/` and `fsds_simulator/` against a newer `fsae_planning` upstream clone: file mapping, deliberate non-mirrors, numeric-parity constants, and the resync procedure. |
+| [fsds_simulator/README.md](fsds_simulator/README.md) | How to build and run the full ROS 2 stack (Stanley / MPC / MPC-standalone) from `fsds_simulator/` alone, plus FSDS — no separate `fsae_planning` checkout needed. |
 
 ---
 
@@ -93,6 +98,7 @@ for how to run the CMA-ES weight tuner instead.
 | `settings.py` | All project-level tuning/scoring/DNF configuration. |
 | `gui/manual_drive.py` | Standalone keyboard-driven test mode against the nonlinear plant. |
 | `mpc_controller_standalone.py` / `mpc_core.py` / `control_utils.py` (staged under `fsds_simulator/control/fsae_control/fsae_control/`) | The live ROS 2 MPC controller for FSDS. |
+| `fsds_simulator/` | Full staging mirror of the live ROS 2 workspace (all packages, not just control) — see [fsds_simulator/README.md](fsds_simulator/README.md). |
 
 See [docs/architecture.md#module-reference](docs/architecture.md#module-reference)
 for the complete per-file index.

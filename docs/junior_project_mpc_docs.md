@@ -675,7 +675,7 @@ The live ROS 2 side of this project lives as a proper ROS 2 package, `fsae_contr
 
 | Executable | Backing file | What it does |
 |---|---|---|
-| `controller` (`controller:=stanley`, the default) | `stanley_controller.py` | The original reactive Stanley controller, kept as a structural reference |
+| `controller` (`controller:=stanley`, the default) | `stanley_controller.py` | The active reactive Stanley controller — publishes `cmd_vel`, routes through `fsds_bridge` like `mpc_controller` does |
 | `mpc_controller` (`controller:=mpc`) | `mpc_controller.py` (uses `mpc_core.MPCController`) | Publishes only steering through the shared `cmd_vel` interface; `fsds_bridge` computes throttle/brake itself from a simple speed-error loop, the same way it does for Stanley |
 | `mpc_controller_standalone` (`controller:=mpc_standalone`) | `mpc_controller_standalone.py` (also uses `mpc_core.MPCController`) | Publishes `fs_msgs/ControlCommand` directly using the MPC's own throttle/brake output unchanged — the one that preserves the offline-tuned longitudinal behaviour from `tuner/offline_tuner.py`/`gui/simulation.py`, since both of those also drive the plant with the MPC's own commanded acceleration (see `sim/rollout_core.py`) |
 
@@ -725,5 +725,5 @@ For the full from-scratch Windows/WSL/Docker setup (cloning FSDS, building the R
 | `tuner/performance_stats.py` | Powers Show Metrics / Benchmark All Paths |
 | `settings.py` | All project-level tuning/scoring/DNF configuration |
 | `planning/*` | Shared cone-sorting/boundary/path-building code (from the `fsae_planning` repo) |
-| `fsds_simulator/control/fsae_control/fsae_control/mpc_core.py`, `control_utils.py`, `mpc_controller.py`, `mpc_controller_standalone.py` | The live ROS 2 controller package for FSDS (Section [8](#8-running-against-the-real-fsds-simulator)) |
-| `fsds_simulator/stanley_controller/*` | The old Stanley controller, kept only as a structural reference, not active |
+| `fsds_simulator/control/fsae_control/fsae_control/mpc_core.py`, `control_utils.py`, `mpc_controller.py`, `mpc_controller_standalone.py`, `stanley_controller.py`, `fsds_bridge.py`, `telemetry_logger.py` | The live ROS 2 controller package for FSDS (Section [8](#8-running-against-the-real-fsds-simulator)) |
+| `fsds_simulator/` (`common/`, `perception/`, `planning/`) | Full staging mirror of the rest of the live ROS 2 workspace (messages, bringup/launch, perception, planning) — see [docs/planning_control_sync.md](planning_control_sync.md) |

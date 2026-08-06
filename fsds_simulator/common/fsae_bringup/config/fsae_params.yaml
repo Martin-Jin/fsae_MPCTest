@@ -1,0 +1,61 @@
+# Central parameter config for the FSDS-simulator planning stack.
+#
+# Single source of truth for tunables (mirrors fsae_autonomous/common/fsae_bringup).
+# Launch files load this file and pass it to each node; ROS matches params by node
+# name, so each top-level key MUST equal the node name (== executable name).
+
+# --- perception (simulator stand-in) ---
+sim_perception:
+  ros__parameters:
+    look_ahead: 25.0    # m ahead included in the forward preview box
+    look_wide: 10.0     # m lateral half-width of the forward box
+    min_ahead: 0.5      # m; forward box ignores cones behind / at the car
+    # 25.0 (was 18.0) — kept >= centerline_planner's look_radius/plan_horizon,
+    # otherwise cones for a tight corner never reach the planner far enough
+    # out for it to detect and brake for the corner in time (see that block's
+    # own comment for the full derivation).
+    look_radius: 25.0   # m; omni-directional visibility radius (corner-robust)
+    full_track: false   # publish the whole map (set true for skidpad by sim.launch.py)
+
+# --- planning (one planner runs at a time; node name == executable) ---
+# `smooth` is the per-point spline smoothing budget (splprep s = smooth * n_pts,
+# capped internally so a longer lookahead can't reshape the near path). 0.0 →
+# interpolating spline that reproduces every cone-pairing kink; a small positive
+# value approximates the midpoints, removing left-right bumps on straights. Kept
+# low so the corner line stays on the true centreline (first-lap safety);
+# residual straight-line jitter is absorbed downstream by the controller's
+# steering low-pass and the planner's path_blend. Raise for smoother/lazier
+# lines, lower if corners get cut.
+# `look_radius` (m): the planner crops the accumulated cone map to this radius
+# (omni) OR the forward box, so the path spans corners instead of truncating when
+# the track curves out of a heading-aligned box.
+# `plan_horizon` (m): arc-length the published centreline is clamped to. Makes
+# the near path invariant to how far look_radius reaches. Keep >= the ~24 m
+# controller speed-scan window (control_utils.curvature_speed's scan_end) — a
+# tight hairpin (~2 m radius, v_target ~2.7 m/s) approached at v_max needs
+# ~24 m to brake for at a realistic achieved deceleration; a shorter horizon
+# reveals such a corner too late, saturating steering and spinning out at
+# corner entry (observed on the live stack, see fsae_planning_changes.md).
+# `path_blend` (0<a<=1): temporal EMA weight toward each freshly-planned path, so
+# successive paths ease between frames instead of jumping (which the controller
+# tracks as a jerk). 1.0 disables blending; smaller = smoother/laggier.
+centerline_planner:
+  ros__parameters:
+    smooth: 0.015
+    look_radius: 25.0
+    plan_horizon: 25.0
+    path_blend: 0.4
+skidpad_planner:
+  ros__parameters:
+    v_start: 3.0        # m/s — speed at the start of the ramp
+    ramp_accel: 0.25    # m/s per second — how fast the target speed rises
+    v_cap: 25.0         # m/s — hard ceiling on the ramp
+
+# --- control ---
+controller:
+  ros__parameters:
+    v_max: 15.0         # m/s — top speed on straights
+    v_min: 1.5          # m/s — minimum speed through tight corners
+    stanley_gain: 1.0   # cross-track gain (k_cte)
+fsds_bridge:
+  ros__parameters: {}   # no tunables yet

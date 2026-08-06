@@ -225,18 +225,24 @@ for what they control.
 
 ## Simulator integration
 
-`fsds_simulator/` in this repo is a staging area that mirrors `fsae_planning`'s
-own ROS 2 package hierarchy — e.g. `fsds_simulator/control/fsae_control/
+`fsds_simulator/` in this repo is a full staging mirror of `fsae_planning`'s
+own ROS 2 workspace — every package (`fsae_interfaces`, `fsae_bringup`,
+`fsae_sim_perception`, `fsae_planning`, `fsae_control`), not just the
+control-layer files, e.g. `fsds_simulator/control/fsae_control/
 fsae_control/mpc_core.py` sits at the exact relative path it needs to land at
-inside a `fsae_planning` checkout. To run the controller against the FSDS
-simulator in ros2, obtain the `fsae_planning` repo, then copy everything
-under `fsds_simulator/control/`, `fsds_simulator/perception/`, and
-`fsds_simulator/common/` in this repo over the matching paths inside
-`fsae_planning` (same relative structure, so it's a straight directory copy,
-not a manual file-by-file paste). See
-[docs/planning_control_sync.md](planning_control_sync.md) for the full file
-mapping and what's a direct mirror vs. deliberately not ported (e.g. this
-repo's frozen Stanley reference implementation).
+inside a `fsae_planning` checkout. There are two ways to use it:
+
+- **If you already have a `fsae_planning` checkout**, copy everything under
+  `fsds_simulator/control/`, `fsds_simulator/perception/`,
+  `fsds_simulator/common/`, and `fsds_simulator/planning/` in this repo over
+  the matching paths inside `fsae_planning` (same relative structure, so
+  it's a straight directory copy, not a manual file-by-file paste).
+- **If you don't**, `fsds_simulator/` alone (plus FSDS and the two message
+  repos it depends on) is enough to build a working workspace from scratch —
+  see [fsds_simulator/README.md](../fsds_simulator/README.md).
+
+See [docs/planning_control_sync.md](planning_control_sync.md) for the full
+file mapping and what's a deliberate non-mirror.
 (If you already have the simulator set up with the `fsae_planning` repo. Scroll down for installing from scratch on windows.)
 
 **Choosing the controller and planner:**
@@ -468,9 +474,9 @@ git clone https://github.com/UOA-FSAE/fsae_planning.git
 ```
 
 Copy everything under `fsds_simulator/control/`, `fsds_simulator/perception/`,
-and `fsds_simulator/common/` (in this repo) over the matching paths inside
-the freshly-cloned `fsae_planning` checkout — the hierarchy already matches,
-so this is a straight directory copy (see
+`fsds_simulator/common/`, and `fsds_simulator/planning/` (in this repo) over
+the matching paths inside the freshly-cloned `fsae_planning` checkout — the
+hierarchy already matches, so this is a straight directory copy (see
 [docs/planning_control_sync.md](planning_control_sync.md) for the exact file
 mapping if you want to copy file-by-file instead), then resolve dependencies
 and build:
