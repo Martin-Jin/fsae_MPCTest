@@ -1118,13 +1118,25 @@ task's rollout runs in parallel across `cpu_count - 1` worker processes.
 The per-candidate objective combines all task scores as:
 
 ```
-objective = 0.7 · weighted_mean(scores) + 0.3 · max(scores)
+objective = 0.7 · weighted_mean(scores) + 0.3 · quantile(scores, TAIL_QUANTILE)
 ```
 
-The 30% worst-case term exists specifically so CMA-ES can't find a weight
-set that scores well *on average* by driving one corner shape perfectly and
-another one badly — every task in the suite has to be reasonably good, not
-just the average.
+The 30% tail term exists specifically so CMA-ES can't find a weight set that
+scores well *on average* by driving one corner shape perfectly and another
+one badly — every task in the suite has to be reasonably good, not just the
+average.
+
+`TAIL_QUANTILE` (in `settings.py`, default `0.8`) replaced a hard `max()` on
+2026-08-06. With the flat `DNF_PENALTY` of +3.0 (+6.0 off-track), `max()` let
+**one** unlucky task out of ten shift the objective by ~0.9 and swamp all
+twelve continuous quality metrics — measured, a plausible hand-picked gain set
+ranked 3rd-worst of six (below two deliberately pathological sets) purely
+because a single one of its ten tasks DNF'd. That is a discontinuous,
+high-variance signal for CMA-ES and a likely contributor to the ~10× spread in
+tuned gains across historical runs. A high quantile keeps the intent — punish
+weights that fail badly *somewhere* — while requiring more than one bad task
+before it dominates. Set `TAIL_QUANTILE = 1.0` to recover the old behaviour
+exactly.
 
 ### DNF conditions (offline tuner — tighter than the live simulator)
 
@@ -1190,7 +1202,7 @@ normalised (mostly to RMS values) at the end via `.finalize()`:
 ### Combining into one score
 
 ```python
-score = SCORE_WEIGHTS @ metrics                                # weighted sum of the 12 metrics
+score = SCORE_WEIGHTS @ (metrics / METRIC_SCALES)               # NORMALISED weighted sum
 score -= COMPLETION_BONUS_WEIGHT * progress + TIME_BONUS_WEIGHT * time_bonus
 if dnf:       score += DNF_PENALTY
 if offtrack:  score += DNF_OFFTRACK_PENALTY
@@ -1198,6 +1210,20 @@ if inaccurate_count > 0:
     factor = min(5, inaccurate_count) * 0.1                     # capped at 50%
     score += abs(score) * factor
 ```
+
+`METRIC_SCALES` (added 2026-08-06) divides each metric by a reference magnitude
+*before* weighting, so `SCORE_WEIGHTS` expresses priority rather than silently
+doing unit conversion as well. Without it a metric's influence is
+`weight × typical magnitude`: measured, that left all ten non-tracking metrics
+contributing a combined +0.0064 against a −0.2649 tracking term, i.e. the score
+was effectively single-objective and the smoothness/oscillation terms could not
+bite no matter how their weights were set. `tuner/performance_stats.py` now
+prints each metric's **effective contribution** (`weight × metric / scale`) and
+percentage share, so this is visible directly in a benchmark report.
+
+Consequence: post-2026-08-06 scores are on a different scale (a run with every
+metric at its reference scores exactly 1.0 before bonuses) and are **not**
+comparable to earlier logged scores.
 
 **Lower is always better.** A good finishing run typically scores in
 `[-0.5, -0.3]` — negative because the completion/time bonuses usually

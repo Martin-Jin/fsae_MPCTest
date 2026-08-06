@@ -43,7 +43,7 @@ DOES NOT USE
 
 from model.vehicle_physics import VehicleParams
 import numpy as np
-from sim.scoring import SCORE_WEIGHTS, COMPLETION_BONUS_WEIGHT, TIME_BONUS_WEIGHT, RolloutMetrics
+from sim.scoring import SCORE_WEIGHTS, METRIC_SCALES, COMPLETION_BONUS_WEIGHT, TIME_BONUS_WEIGHT, RolloutMetrics
 from tuner.offline_tuner import (
     PATH_NAMES,
     INITIAL_CONDITIONS,
@@ -259,6 +259,36 @@ def report_performance_metrics(history, log_fn=print):
     log_fn("-" * 60)
     log_fn(f"  Path completion    : {completion_frac*100:8.1f} %      (-{COMPLETION_BONUS_WEIGHT:.2f} bonus)")
     log_fn(f"  Time bonus         : {time_bonus:8.4f}        (-{TIME_BONUS_WEIGHT:.2f} bonus)")
+    log_fn("-" * 60)
+    # Effective contribution = weight * (metric / reference scale). This is
+    # what each metric actually adds to the composite, and it is the number
+    # to look at when deciding whether a metric is pulling its weight — the
+    # "(x0.05)" annotations above are the raw weights, which say nothing on
+    # their own about influence. Before METRIC_SCALES existed, several terms
+    # here were 2-3 orders of magnitude below the tracking terms despite
+    # respectable-looking weights (see settings.METRIC_SCALES).
+    _contrib = [
+        ("rmse",                  rmse,                  _IDX_RMSE),
+        ("yaw_rms",               yaw_rms,               _IDX_YAW_RMS),
+        ("smooth_rms",            smooth_rms,            _IDX_SMOOTH_RMS),
+        ("steer_rms",             steer_rms,             _IDX_STEER_RMS),
+        ("accel_rms",             accel_rms,             _IDX_ACCEL_RMS),
+        ("max_steering",          max_steering,          _IDX_MAX_STEERING),
+        ("steering_sat_ratio",    steering_sat_ratio,    _IDX_STEER_SAT_RATIO),
+        ("jerk_rms",              jerk_rms,              _IDX_JERK_RMS),
+        ("max_yaw_rate",          max_yaw_rate,          _IDX_MAX_YAW_RATE),
+        ("steering_reversal_rms", steering_reversal_rms, _IDX_STEER_REVERSAL_RMS),
+        ("peak_lateral_error",    peak_lateral_error,    _IDX_PEAK_LATERAL_ERROR),
+        ("speed_rmse",            speed_rmse,            _IDX_SPEED_RMSE),
+    ]
+    _rows = []
+    for _name, _val, _i in _contrib:
+        _v = 0.0 if (_val is None or np.isnan(_val)) else float(_val)
+        _rows.append((_name, W[_i] * (_v / METRIC_SCALES[_i])))
+    _total = sum(c for _, c in _rows) or 1.0
+    log_fn("  Effective contribution to score (weight x metric/scale):")
+    for _name, _c in sorted(_rows, key=lambda r: -abs(r[1])):
+        log_fn(f"    {_name:<22s} {_c:8.4f}  ({100.0 * _c / _total:5.1f}%)")
     log_fn("=" * 60)
 
     return {

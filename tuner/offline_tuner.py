@@ -115,6 +115,8 @@ from sim.rollout_core import run_core_rollout, compute_step_budget
 import subprocess
 from settings import (
     SCORE_WEIGHTS,
+    METRIC_SCALES,
+    TAIL_QUANTILE,
     PATH_N_POINTS,
     USE_PLANNER,
     ROLLOUT_EPS,
@@ -815,12 +817,39 @@ def _aggregate_task_scores(task_scores):
     """
     Combine per-task scores into a single objective value.
 
-    Uses a 70/30 blend of weighted mean and worst-case score:
-        objective = 0.7 * weighted_mean + 0.3 * max(scores)
+    Uses a 70/30 blend of weighted mean and a high-quantile tail score:
+        objective = 0.7 * weighted_mean + 0.3 * quantile(scores, TAIL_QUANTILE)
 
-    The worst-case term (30%) prevents CMA-ES from finding weights that perform
-    well on average but catastrophically fail on one path type — a real risk
-    when the validation suite has diverse track geometries.
+    The tail term (30%) prevents CMA-ES from finding weights that perform well
+    on average but catastrophically fail on one path type — a real risk when
+    the validation suite has diverse track geometries.
+
+    WHY A QUANTILE RATHER THAN max() (changed 2026-08-06)
+    ------------------------------------------------------
+    This used to be a hard `max(scores)`. Combined with the flat DNF_PENALTY
+    (+3.0, +6.0 if off-track), that let ONE unlucky task out of ten dominate
+    the objective. Measured in the step-2 probe batch: a plausible,
+    hand-reasonable gain set ("F_mid_balanced") went from roughly -0.2 to
+    +2.15 — ranking 3rd-WORST of six, below two deliberately pathological
+    sets — because a single one of its ten tasks DNF'd. With `max`, the
+    0.3 coefficient applied to a +3.0 penalty moves the objective by ~0.9
+    regardless of how good the other nine tasks were.
+
+    That is a discontinuous, high-variance signal for CMA-ES: a gain set
+    sitting near the boundary of finishing one hard task gets scored almost
+    entirely by which side of that boundary it landed on, which is a large
+    part of why historical tuning runs produced ~10x spreads in gains.
+
+    A high quantile keeps the actual intent — punish weights that fail badly
+    somewhere, not just on average — while requiring that the failure be more
+    than a single task before it dominates. With 10 tasks, TAIL_QUANTILE=0.8
+    interpolates around the 2nd-worst score, so one bad task still hurts
+    substantially but two bad tasks hurt much more. Set it to 1.0 to recover
+    the old hard-max behaviour exactly.
+
+    NOTE: this deliberately keeps DNFs expensive. The aim is to stop a single
+    borderline task from swamping the twelve continuous quality metrics, not
+    to make crashing cheap.
 
     Parameters
     ----------
@@ -834,8 +863,10 @@ def _aggregate_task_scores(task_scores):
     """
     s = np.asarray(task_scores, dtype=float)
     weighted_mean = float(np.sum(EVAL_WEIGHTS * s) / np.sum(EVAL_WEIGHTS))
-    worst = float(np.max(s))
-    return 0.7 * weighted_mean + 0.3 * worst
+    # Linear-interpolated quantile; with TAIL_QUANTILE=1.0 this is exactly
+    # max(s), so the old behaviour remains reachable from settings.py.
+    tail = float(np.quantile(s, TAIL_QUANTILE))
+    return 0.7 * weighted_mean + 0.3 * tail
 
 
 def _score_task(args):

@@ -191,6 +191,7 @@ writing — re-confirm before relying on them, since a resync can move them.
 | Speed-target rise limit | `sim/rollout_core.py` (`SPEED_TARGET_RISE_RATE`) | `fsds_simulator/.../mpc_controller.py` and `mpc_controller_standalone.py` (same name) | `2.0` m/s² |
 | `curvature_speed()` κ reduction | `sim/speed_profile.py` | `fsds_simulator/.../control_utils.py` | max of 3-point running mean |
 | Score weights / bonuses / penalties | `settings.py` (`SCORE_WEIGHTS`, `COMPLETION_BONUS_WEIGHT`, `TIME_BONUS_WEIGHT`, `DNF_PENALTY`, `DNF_OFFTRACK_PENALTY`) | `fsds_simulator/control/fsae_control/fsae_control/scoring.py` (inlined as module constants) | weights sum to `1.0`; `0.5` / `0.25` / `3.0` / `3.0` |
+| Metric normalisation scales | `settings.py` (`METRIC_SCALES`) | `fsds_simulator/control/fsae_control/fsae_control/scoring.py` (inlined as module constant) | 12 entries, `[0.40, 0.45, 0.30, 0.18, 1.50, 0.40, 0.02, 0.30, 1.00, 0.015, 0.70, 2.30]` |
 
 Notes on how these are actually used:
 
@@ -466,10 +467,20 @@ over 500 identical synthetic steps: all 18 returned fields matched to within
 1e-12 (bit-identical composite score).
 
 The one intentional difference is the settings import. `sim/scoring.py` pulls
-`SCORE_WEIGHTS` and the bonus/penalty constants from `settings.py`, which is
-not on the live car's `PYTHONPATH`; the live copy inlines them as module
-constants. **These must be kept numerically identical** — they're listed in
-the numeric-parity table above.
+`SCORE_WEIGHTS`, `METRIC_SCALES` and the bonus/penalty constants from
+`settings.py`, which is not on the live car's `PYTHONPATH`; the live copy
+inlines them as module constants. **These must be kept numerically identical**
+— they're listed in the numeric-parity table above.
+
+`METRIC_SCALES` (added 2026-08-06) divides each metric by a reference magnitude
+before weighting: `score = SCORE_WEIGHTS @ (metrics / METRIC_SCALES)`. It exists
+because without it a metric's real influence is `weight × typical magnitude`,
+which had made the composite effectively single-objective — all ten non-tracking
+metrics combined moved the score by +0.0064 against a −0.2649 tracking term, so
+the smoothness and oscillation terms could not bite regardless of their weights.
+Because it is inlined in **three** places (`settings.py`, the live
+`fsae_control/scoring.py`, and the `fsds_simulator/` mirror), a change to it is
+a three-file edit — the same rule as `SCORE_WEIGHTS`.
 
 Two inputs have no faithful live equivalent and default to `0.0`/`False`:
 

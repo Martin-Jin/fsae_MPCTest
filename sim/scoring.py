@@ -25,6 +25,7 @@ USED BY
 import numpy as np
 from settings import (
     SCORE_WEIGHTS,
+    METRIC_SCALES,
     COMPLETION_BONUS_WEIGHT,
     TIME_BONUS_WEIGHT,
     DNF_PENALTY,
@@ -106,7 +107,14 @@ def compute_composite_score(
             speed_rmse,
         ]
     )
-    score = float(SCORE_WEIGHTS @ metrics)
+    # Normalise each metric by its reference scale BEFORE weighting, so a
+    # weight expresses priority rather than silently doing unit conversion
+    # too. Without this the effective influence of a metric is
+    # weight x typical magnitude, which made the smoothness/oscillation terms
+    # 2-3 orders of magnitude too small to affect the outcome — see
+    # settings.METRIC_SCALES for the measurement. A metric sitting exactly at
+    # its reference scale now contributes exactly its weight.
+    score = float(SCORE_WEIGHTS @ (metrics / METRIC_SCALES))
 
     # Bonuses reward progress/time; clip progress defensively in case a
     # caller passes a slightly out-of-range value (e.g. 1.0000001 from

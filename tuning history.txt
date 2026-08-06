@@ -1,4 +1,71 @@
 
+# =============================================================================
+# CLOSED BOOK — entries below 2026-08-06 are NOT comparable to each other or
+# to future runs.
+# =============================================================================
+# Every entry above the "RESUMES HERE" marker at the end of this file was
+# produced under a DIFFERENT combination of planner, scoring function and/or
+# tuner configuration. Specifically, across the recorded history:
+#   - SCORE_WEIGHTS changed (visibly, between the 05/08 and 06/08 entries:
+#     yaw_rms 0.06->0.09, smooth_rms 0.085->0.065, sat_ratio 0.075->0.045,
+#     and steering_reversal_rate was REPLACED by the magnitude-weighted
+#     steering_reversal_rms metric)
+#   - the tuner gained an Optuna TPE pre-pass partway through
+#   - the scoring/simulation stack was unified partway through (see the
+#     08/07/26 entry's own description)
+#
+# CONSEQUENCES — please read before using any number in this file:
+#   1. "Tuner score" values are NOT comparable across entries. They are
+#      measurements of different functions. The apparent improving trend
+#      (-0.36 -> -0.25) is partly an artifact of the ruler changing, not
+#      evidence of better driving.
+#   2. The Q/R gain sets are NOT usable as validation data. A gain set tuned
+#      against a different planner and objective is a sample from a different
+#      problem, so it cannot be used to check whether the current objective
+#      ranks good driving correctly.
+#   3. Note that EVERY entry records "Overall score = Haven't been tested."
+#      No entry in this file has been validated against real-car or
+#      full-benchmark performance.
+#
+# Additionally, as of 2026-08-06 several defects were fixed that change scores
+# for all future runs:
+#   - sim/rollout_core.py: scored e_y/e_psi and the off-track check aliased
+#     the PLANNER-relative error whenever SLAM noise was off (the default),
+#     so ~60% of the score measured controller-vs-planner agreement with no
+#     ground-truth anchor
+#   - sim/speed_profile.py: compute_speed_profile() had no longitudinal
+#     propagation, so it could demand ~273 m/s^2 of braking that speed_rmse
+#     then punished the controller for not achieving; it also used its own
+#     copy of the curvature heuristic with different defaults from the live
+#     node (scan_end 14 vs 24 m, a_lat_max 5.886 vs 4.0, v_max 20 vs 15),
+#     commanding 2.45 m/s faster on average than the car will ever drive.
+#     Pass 0 now delegates to curvature_speed() so the two cannot diverge.
+#   - settings.py + sim/scoring.py: METRIC_SCALES added. Metrics are now
+#     normalised by a reference magnitude BEFORE weighting. Previously a
+#     metric's influence was weight x typical magnitude, which made the score
+#     effectively single-objective: comparing a deliberately-hunting gain set
+#     against a neutral baseline, rmse + peak_lateral_error accounted for the
+#     entire -0.2605 difference while all ten other metrics combined
+#     contributed +0.0064. steering_reversal_rms had an effective
+#     contribution of 0.0003 despite a nominal weight of 0.05.
+#   - tuner/offline_tuner.py: task aggregation changed from
+#     0.7*mean + 0.3*max to 0.7*mean + 0.3*quantile(TAIL_QUANTILE=0.8).
+#     With a flat +3.0 DNF penalty, the hard max let ONE unlucky task in ten
+#     shift the objective by ~0.9 — a plausible gain set scored 3rd-worst of
+#     six purely because one of its ten tasks DNF'd.
+#
+# BECAUSE OF THE ABOVE, scores are not comparable across the 2026-08-06
+# boundary either. The scale changed: normalisation means a run with every
+# metric at its reference magnitude scores 1.0 before bonuses, where
+# previously the raw weighted sum was much smaller. Expect post-fix scores to
+# be numerically LARGER (less negative) than pre-fix ones for the same
+# driving quality. That is a change of units, not a regression.
+#
+# For future entries: record planner mode (USE_PLANNER), the scoring-function
+# version/hash, and the tuner configuration alongside the gains. The commit
+# hash alone does not make it visible at a glance what changed underneath.
+# =============================================================================
+
 # Initial tuning results
 # 3/07/26 12:00 - Tracks path in simulator accurately, slightly wobbly at lower speeds. Main issue is low speed, had too high weight on acceleration
 that it had to be reduced for the car to even move. Need to implement higher friction in vehicle model.
@@ -248,3 +315,25 @@ Overall score (avged from all testing scenarios)  = Haven't been tested.
 Tuner score (tuning scenarios / validation suite) = -0.2497
 Optuna TPE pre-pass = Yes (250 trials, best -0.2419) — CMA-ES x0 seeded from best trial
 Commit hash = 1d9036ca799883b45c1e0dd8857ecb8280f362c7
+
+# =============================================================================
+# COMPARABLE HISTORY RESUMES HERE (2026-08-06)
+# =============================================================================
+# Everything ABOVE this line is closed-book — see the header at the top of
+# this file for why. Entries BELOW this line are made under the post-fix
+# configuration (ground-truth-anchored e_y/e_psi scoring + longitudinally
+# feasible oracle speed profile) and are comparable to each other, provided
+# the per-entry configuration fields below match.
+#
+# Baseline for reference — untuned unit gains (all nine = 1.0) scored under
+# the post-fix configuration, USE_PLANNER=True, 350 steps, ey0/epsi0 = 0:
+#   PATH_HAIRPIN       -0.3110
+#   PATH_SUDDEN_TURN   -0.3187
+#   PATH_SPIRAL        -0.0967
+#   PATH_FS_CORNER     -0.2499
+#   PATH_MICRO_SLALOM  -0.2794
+# These are single-rollout scores, not the tuner's aggregated objective
+# (which is 0.7*weighted_mean + 0.3*max over 5 paths x 2 ICs). They exist so
+# a future tuned run can be sanity-checked against "did tuning beat doing
+# nothing", which no entry above this line can answer.
+# =============================================================================

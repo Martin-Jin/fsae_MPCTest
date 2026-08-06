@@ -324,10 +324,12 @@ This project specifically uses `cma.fmin_lq_surr2`, layering two extra technique
 Every candidate is tested across a library of synthetic corner shapes (hairpins, chicanes, slaloms, etc — see `VALIDATION_SUITE` in `settings.py`), from both a perfect starting position and a slightly-off starting position (to also test recovery, not just perfect tracking). The final objective for one candidate combines all of these tests as:
 
 $$
-\text{objective} = 0.7 \times \text{weighted\_mean(scores)} + 0.3 \times \max(\text{scores})
+\text{objective} = 0.7 \times \text{weighted\_mean(scores)} + 0.3 \times \text{quantile(scores, TAIL\_QUANTILE)}
 $$
 
-The 30% worst-case term exists so the tuner can't find a setting that looks great *on average* by driving one corner shape perfectly and another badly — every shape in the suite has to be reasonably good, not just the average.
+The 30% tail term exists so the tuner can't find a setting that looks great *on average* by driving one corner shape perfectly and another badly — every shape in the suite has to be reasonably good, not just the average.
+
+`TAIL_QUANTILE` (default `0.8`) replaced a plain "worst score" on 2026-08-06. A DNF adds a flat +3.0, so taking the single worst task let **one** unlucky run out of ten shift the objective by ~0.9 and drown out all twelve driving-quality metrics — a sensible hand-picked setting was measured ranking 3rd-worst of six, below two deliberately-bad settings, purely because one of its ten tests DNF'd. Using the ~2nd-worst instead means one bad test still hurts a lot, but two bad tests hurt much more. Set it to `1.0` to get the old behaviour back.
 
 ### 2.3 The Optuna Pre-Search Warm Start
 
@@ -378,7 +380,7 @@ This now extends to the **real car** too. The ROS 2 control package carries a ve
 **Combining into one score:**
 
 ```python
-score = SCORE_WEIGHTS @ metrics                                   # weighted sum of the 12 metrics
+score = SCORE_WEIGHTS @ (metrics / METRIC_SCALES)                 # NORMALISED weighted sum
 score -= COMPLETION_BONUS_WEIGHT * progress + TIME_BONUS_WEIGHT * time_bonus
 if dnf:       score += DNF_PENALTY
 if offtrack:  score += DNF_OFFTRACK_PENALTY
@@ -387,12 +389,27 @@ if inaccurate_count > 0:
     score += abs(score) * factor
 ```
 
-- **`SCORE_WEIGHTS`** (in `settings.py`) is the 12-entry array of how much each metric above matters. By convention it's kept summing to roughly `1.0`, so the composite score's overall scale stays stable and comparable across tuning runs — this is enforced by the code's comments, not a hard runtime check; the only runtime assertion is that the array has exactly 12 entries.
+- **`METRIC_SCALES`** (in `settings.py`) is a 12-entry array of "what counts as a normal amount of this". Each metric is divided by its entry **before** being weighted. This is what makes a weight mean what it says.
+
+  Why it exists: the 12 metrics have wildly different natural sizes (`steering_reversal_rms` ~0.007, `speed_rmse` ~2.5). Without normalising, a metric's real influence is *weight × typical magnitude*, not weight. Measured on 2026-08-06, that had made the score effectively **single-objective**: comparing a deliberately-hunting gain set against a neutral baseline, the entire −0.2605 score difference came from `rmse` (−0.2031) and `peak_lateral_error` (−0.0618), while **all ten other metrics combined contributed +0.0064**. `steering_reversal_rms`, nominally the 4th-largest weight, had an effective contribution of 0.0003 — it could not affect the outcome at all.
+
+  So: to change **priority**, change `SCORE_WEIGHTS`. To correct for a metric's typical size having genuinely shifted, change `METRIC_SCALES`. Two separate jobs.
+
+- **`SCORE_WEIGHTS`** (in `settings.py`) is the 12-entry array of how much each metric above matters, applied *after* normalisation. It's kept summing to `1.0`, which now carries real meaning: a run with every metric sitting exactly at its reference scale scores exactly `1.0` before bonuses and penalties.
 - **Completion/time bonuses** are subtracted (i.e. improve the score) for finishing the track at all, and for finishing it quickly.
 - **DNF penalties** are added if the car didn't finish, with an extra penalty if it left the track — so the tuner can't "cheat" by driving slowly and carefully forever without ever finishing.
 - **The inaccurate-solver penalty** inflates an already-computed score proportionally (up to +50% at 5+ occurrences) if the solver returned a not-fully-converged answer too often — still usable, but penalised, rather than thrown out outright.
 
-**Lower is always better.** A good finishing run typically scores around **-0.5 to -0.3** — negative because the bonuses usually outweigh the (small, well-tuned) metric costs.
+**Lower is always better.** A good finishing run typically scores around **-0.3 to +0.3**.
+
+> **Note on scale (changed 2026-08-06).** Before `METRIC_SCALES` existed, the raw
+> weighted sum was much smaller than the bonuses, so essentially every finishing
+> run scored negative (roughly -0.5 to -0.3). With normalisation the metric term
+> is on a comparable footing to the bonuses, so **post-fix scores are numerically
+> larger (less negative) than pre-fix ones for the same quality of driving.**
+> That is a change of units, not a regression — do not compare a score from
+> before this date against one from after it. See the closed-book header in
+> `tuning history.txt`.
 
 **Where to find results — `tuning history.txt`.** Every tuning run automatically appends:
 

@@ -384,6 +384,79 @@ OPTUNA_PRE_PASS_EVALS = max(10, int(0.1 * MAX_EVALS))
 # COST FUNCTION SCORING WEIGHTS
 # ------------------------------------------------------------------------------
 
+# METRIC_SCALES — "What counts as a NORMAL amount of each thing being
+# measured?"
+# Each of the 12 metrics below is divided by its entry here before being
+# multiplied by its SCORE_WEIGHTS entry. That turns every metric into a
+# roughly unitless "multiples of a typical value" number, so a weight of
+# 0.05 next to a weight of 0.015 really does mean "this matters ~3x more".
+#
+# WHY THIS EXISTS (measured, 2026-08-06)
+# --------------------------------------
+# Without it, a metric's real influence is weight x typical magnitude, not
+# weight — and the 12 metrics have wildly different natural magnitudes
+# (steering_reversal_rms ~0.007, accel_rms ~1.3, speed_rmse ~2.5). A probe
+# batch of 6 hand-constructed gain sets spanning known failure modes found
+# that this made the score effectively SINGLE-objective:
+#
+#   Comparing a deliberately-hunting gain set against a neutral baseline,
+#   the total score difference of -0.2605 decomposed as
+#       rmse                            -0.2031
+#       peak_lateral_error              -0.0618
+#       ALL TEN other metrics combined  +0.0064   <-- 3% of the tracking term
+#
+#   Every anti-hunting metric DID register the misbehaviour (steering_sat_
+#   ratio was 7x higher, yaw_rms higher), but their combined contribution
+#   was noise. steering_reversal_rms, nominally the 4th-largest weight at
+#   0.05, had an effective contribution of 0.0003 — it could not influence
+#   the outcome at all. The hunting set therefore SCORED BETTER than the
+#   baseline purely by tracking the line more tightly.
+#
+# That is also why hand-raising yaw_rms 0.06 -> 0.09 (see the SCORE_WEIGHTS
+# comments below) failed to suppress the oscillation seen in live logs: it
+# moved that metric's effective contribution by about 0.001. And it explains
+# the ~10x spread in tuned gains across historical runs — with ~97% of the
+# discrimination coming from two correlated tracking metrics, CMA-ES roamed
+# freely in every other dimension because they cost nothing.
+#
+# HOW THESE NUMBERS WERE CHOSEN
+# -----------------------------
+# Median-ish observed magnitude across CLEAN (no-DNF, non-pathological)
+# rollouts in both planner and oracle modes, rounded to 1-2 significant
+# figures so they read as deliberate reference points rather than
+# false-precision measurements. They are REFERENCE SCALES, not targets or
+# limits — a metric equal to its scale contributes exactly its weight.
+#
+#   - Set one too LARGE: that metric is suppressed, contributes less than
+#     its weight implies.
+#   - Set one too SMALL: that metric is amplified and can dominate.
+#   - Typical adjustment: only change these if a metric's typical magnitude
+#     genuinely shifts (e.g. after a plant/planner change). To change
+#     PRIORITY, change SCORE_WEIGHTS instead — that is now what it means.
+#
+# Order MUST match SCORE_WEIGHTS / the IDX_* constants in sim/scoring.py.
+METRIC_SCALES = np.array(
+    [
+        0.40,    # 0  rmse                   (clean runs 0.26-0.52)
+        0.45,    # 1  yaw_rms                (0.39-0.56 rad/s)
+        0.30,    # 2  smooth_rms             (0.21-0.30 in clean, higher when jerky)
+        0.18,    # 3  steer_rms              (0.168-0.188 rad — very stable)
+        1.50,    # 4  accel_rms              (1.3-1.8 m/s^2)
+        0.40,    # 5  max_steering           (0.34-0.43 rad)
+        0.02,    # 6  steering_sat_ratio     (0.001-0.06; small but real range)
+        0.30,    # 7  jerk_rms               (0.24-0.31 in clean runs)
+        1.00,    # 8  max_yaw_rate           (0.84-1.44 rad/s)
+        0.015,   # 9  steering_reversal_rms  (0.0002-0.027; the worst-scaled
+                 #    metric of the 12 — previously ~0.0003 effective)
+        0.70,    # 10 peak_lateral_error     (0.57-0.82 m)
+        2.30,    # 11 speed_rmse             (1.86-2.83 m/s)
+    ],
+    dtype=float,
+)
+assert len(METRIC_SCALES) == 12
+assert np.all(METRIC_SCALES > 0.0), "METRIC_SCALES must be strictly positive (used as a divisor)"
+
+
 # SCORE_WEIGHTS — "How much does each aspect of driving quality matter when
 # grading a test run?"
 # Every test run is graded on 12 different things (see the list below), and
@@ -392,21 +465,26 @@ OPTUNA_PRE_PASS_EVALS = max(10, int(0.1 * MAX_EVALS))
 # automated tuner is actually trying to minimise — it is the definition of
 # "good driving" for this whole project.
 #
-# These weights are applied directly to each metric's *raw* value, and the
-# 12 metrics have very different natural units/magnitudes (mixed m²/rad² RMS
-# terms, radians, m/s², unitless ratios, a per-step rate). What actually
-# determines a metric's influence on the score is weight x typical magnitude
-# ("effective contribution"), not the weight in isolation — so a small weight
-# next to a large-magnitude metric can still dominate, and vice versa.
-# offline_tuner.py still asserts these 12 numbers sum to ~1.0, kept mainly so
-# the composite score's overall scale stays stable/comparable across tuning
-# runs — but summing to 1.0 does NOT by itself make relative priority
-# "correct"; that comes from weight x typical magnitude as above. If you
-# adjust one weight, prefer taking the offsetting change from a metric with
-# a similar effective-contribution size (not just any metric) so the
-# relative priority ordering below is preserved (rmse and peak_lateral_error
-# should stay the two largest effective contributions; steer_rms/jerk_rms/
-# reversal rate are meant to stay minor/secondary terms).
+# As of 2026-08-06 these weights are applied to each metric AFTER it has been
+# divided by its METRIC_SCALES entry above. That normalisation is what makes
+# a weight mean what it says: previously the weights hit each metric's *raw*
+# value, and since the 12 metrics have wildly different natural magnitudes
+# (mixed m²/rad² RMS terms, radians, m/s², unitless ratios), a metric's real
+# influence was weight x typical magnitude rather than weight. See the
+# METRIC_SCALES block above for the measurement that showed this had made the
+# score effectively single-objective (~97% of discrimination from rmse +
+# peak_lateral_error alone).
+#
+# So: to change PRIORITY, change the weight here. To correct for a metric's
+# typical magnitude having genuinely shifted, change METRIC_SCALES instead.
+# Those are now two separate jobs, which is the point of the split.
+#
+# offline_tuner.py still asserts these 12 numbers sum to ~1.0, which keeps the
+# composite score's overall scale stable/comparable across tuning runs. With
+# normalisation in place, summing to 1.0 now DOES carry real meaning: a run
+# where every metric sits exactly at its reference scale scores 1.0 before
+# bonuses/penalties. If you adjust one weight, take the offsetting change
+# from another so the sum is preserved.
 #
 # What each of the 12 numbers grades, in order:
 #   0: rmse               — how far off the racing line the car drives on
@@ -536,6 +614,30 @@ VALIDATION_SUITE = [
 #     than simply finishing.
 #   - Typical adjustment: change by 0.1-0.2 at a time.
 COMPLETION_BONUS_WEIGHT = 0.5
+
+# TAIL_QUANTILE — "When grading a candidate across all the practice tracks,
+# how much should its WORST track count?"
+# The tuner scores each candidate on every track x starting-condition
+# combination (10 tasks by default), then combines them as
+#     0.7 * weighted_average + 0.3 * quantile(scores, TAIL_QUANTILE)
+# The second term is there so the tuner can't pick weights that drive well on
+# average but crash on one particular track.
+#
+# This used to be a hard worst-case (equivalent to TAIL_QUANTILE = 1.0). The
+# problem, measured 2026-08-06: a DNF adds a flat +3.0 (+6.0 off-track), so
+# ONE unlucky task out of ten shifted the objective by ~0.9 and swamped all
+# twelve continuous quality metrics. A plausible hand-picked gain set scored
+# 3rd-WORST of six — below two deliberately pathological sets — purely
+# because one of its ten tasks DNF'd.
+#   - 1.0  = old behaviour, the single worst task decides the tail term.
+#   - 0.8  = around the 2nd-worst of 10 tasks. One bad task still hurts a
+#            lot; two bad tasks hurt much more.
+#   - 0.5  = the median; effectively stops punishing rare failures at all
+#            (not recommended — that's what DNF_PENALTY is for).
+#   - Typical adjustment: 0.05-0.1 at a time. Lower it if tuning results
+#     swing wildly between runs; raise it if the tuner starts accepting
+#     weights that reliably fail one track.
+TAIL_QUANTILE = 0.8
 
 # TIME_BONUS_WEIGHT — "How much of a reward (score reduction) does the car
 # get for finishing quickly?"

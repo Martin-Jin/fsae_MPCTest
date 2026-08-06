@@ -60,6 +60,31 @@ SCORE_WEIGHTS = np.array([
     0.10,   # 10 peak_lateral_error
     0.015,  # 11 speed_rmse
 ])
+
+# METRIC_SCALES — each metric is divided by its entry here BEFORE being
+# multiplied by its SCORE_WEIGHTS entry, so a weight expresses priority
+# rather than silently doing unit conversion as well. Without this, a
+# metric's real influence is weight x typical magnitude, which made the
+# smoothness/oscillation terms 2-3 orders of magnitude too small to affect
+# the outcome (steering_reversal_rms had an effective contribution of
+# ~0.0003 despite a nominal weight of 0.05). See fsae_MPCTest/settings.py's
+# METRIC_SCALES block for the measurement this came from.
+# Order MUST match SCORE_WEIGHTS / the IDX_* constants below.
+METRIC_SCALES = np.array([
+    0.40,    # 0  rmse
+    0.45,    # 1  yaw_rms
+    0.30,    # 2  smooth_rms
+    0.18,    # 3  steer_rms
+    1.50,    # 4  accel_rms
+    0.40,    # 5  max_steering
+    0.02,    # 6  steering_sat_ratio
+    0.30,    # 7  jerk_rms
+    1.00,    # 8  max_yaw_rate
+    0.015,   # 9  steering_reversal_rms
+    0.70,    # 10 peak_lateral_error
+    2.30,    # 11 speed_rmse
+])
+
 COMPLETION_BONUS_WEIGHT = 0.5
 TIME_BONUS_WEIGHT = 0.25
 DNF_PENALTY = 3.0
@@ -125,7 +150,8 @@ def compute_composite_score(
             speed_rmse,
         ]
     )
-    score = float(SCORE_WEIGHTS @ metrics)
+    # Normalise by reference scale before weighting — see METRIC_SCALES above.
+    score = float(SCORE_WEIGHTS @ (metrics / METRIC_SCALES))
 
     progress = float(np.clip(progress, 0.0, 1.0))
     score -= COMPLETION_BONUS_WEIGHT * progress + TIME_BONUS_WEIGHT * time_bonus
