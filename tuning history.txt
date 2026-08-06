@@ -236,3 +236,15 @@ Overall score (avged from all testing scenarios)  = Haven't been tested.
 Tuner score (tuning scenarios / validation suite) = -0.2820
 Optuna TPE pre-pass = Yes (375 trials, best -0.2664) — CMA-ES x0 seeded from best trial
 Commit hash = 86e59ea85c74ab33f7e328abd4e130ff58f08d44
+
+# 06/08/26 11:05 - [Pending Description: yet to be tested]
+Q_diag      = [5.732257553913991, 1.185291265595073, 5.336061825548227, 8.551974642936917, 2.347470167485916, 0.0, 0.0, 0.0]
+R_diag      = [1.3813886877086599, 2.058720365852702]
+R_rate_diag = [3.5730821419788663, 4.207449882607239]
+Score weights = rmse=0.505, yaw_rms=0.09, smooth_rms=0.065, steer_rms=0.02, accel_rms=0.015, max_steering=0.03, steering_sat_ratio=0.045, jerk_rms=0.045, max_yaw_rate=0.02, steering_reversal_rms=0.05, peak_lateral_error=0.1, speed_rmse=0.015
+Bonus/penalty weights = completion_bonus=0.5, time_bonus=0.25, dnf_penalty=3
+Duration    = 162.71 minutes
+Overall score (avged from all testing scenarios)  = Haven't been tested.
+Tuner score (tuning scenarios / validation suite) = -0.2497
+Optuna TPE pre-pass = Yes (250 trials, best -0.2419) — CMA-ES x0 seeded from best trial
+Commit hash = 1d9036ca799883b45c1e0dd8857ecb8280f362c7

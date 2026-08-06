@@ -251,9 +251,9 @@ class MPCController:
         # to 2.5 (just above Q_diag[1]=2.4068) so it's no longer the smallest of
         # the five active Q entries. See settings.py's Q_diag comment for the
         # full rationale — keep these two values in sync manually.
-        Q_diag      = [3.453726085690303, 2.4068449985797766, 4.2737838673329325, 2.5, 6.647778080173016, 0.0, 0.0, 0.0]
-        R_diag      = [9.627551492038648, 6.800106107654756]
-        R_rate_diag = [6.463838428622283, 7.80854969942995]
+        Q_diag      = [5.732257553913991, 1.185291265595073, 5.336061825548227, 8.551974642936917, 2.347470167485916, 0.0, 0.0, 0.0]
+        R_diag      = [1.3813886877086599, 2.058720365852702]
+        R_rate_diag = [3.5730821419788663, 4.207449882607239]
 
         self.Q      = np.diag(Q_diag)
         self.R      = np.diag(R_diag)
