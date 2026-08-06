@@ -154,8 +154,16 @@ def report_performance_metrics(history, log_fn=print):
 
     Called by: gui/simulation.py (btn_optimize "Show Metrics" callback)
     """
-    e_y     = np.asarray(history.get("e_y",     []), dtype=float)
-    e_psi   = np.asarray(history.get("e_psi",   []), dtype=float)
+    # Prefer the GROUND-TRUTH tracking error when it's present. Under SLAM
+    # noise, history["e_y"]/["e_psi"] are what the controller PERCEIVED, which
+    # is not where the car actually was — scoring on those would credit a
+    # mislocalised car for tracking its own wrong belief. run_core_rollout()
+    # scores on the *_true series for exactly this reason, so replaying the
+    # perceived ones here would silently disagree with it. Falls back to the
+    # perceived series for histories recorded before *_true existed (and they
+    # are identical anyway when SLAM noise is off).
+    e_y     = np.asarray(history.get("e_y_true",   history.get("e_y",   [])), dtype=float)
+    e_psi   = np.asarray(history.get("e_psi_true", history.get("e_psi", [])), dtype=float)
     v       = np.asarray(history.get("v",        []), dtype=float)
     v_target_arr = np.asarray(history.get("v_target", []), dtype=float)
     u_steer = np.asarray(history.get("u_steer", []), dtype=float)

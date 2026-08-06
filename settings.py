@@ -87,6 +87,82 @@ DELAY_JITTER_STEPS = 0.2
 # attributable to the weights and not to luck. Change it only to check that a
 # tuned result isn't overfitted to one particular jitter sequence.
 DELAY_JITTER_SEED = 12345
+
+# ------------------------------------------------------------------------------
+# SLAM / localisation noise
+# ------------------------------------------------------------------------------
+# "Does the car know exactly where it is?"
+#
+# In FSDS it currently does, perfectly. The simulator has no real SLAM: the
+# `sim_perception` node republishes FSDS's ground-truth `/fsds/testing_only/odom`
+# straight onto `/fsae/slam/car_position`, and the cone map is a latched oracle
+# map cropped to a forward window. The only realism is limited sensor RANGE.
+# This offline rollout mirrors that — it feeds the exact plant state back into
+# the planner and the tracking-error maths.
+#
+# The REAL car's pose comes from actual SLAM (ZED visual odometry +
+# cone_mapper), which jitters frame to frame and drifts slowly. That error
+# lands directly in e_y/e_psi, which is what the MPC steers on, so a
+# noise-free pose makes the tuner blind to weights that are fragile under
+# localisation error.
+#
+# IMPORTANT — what this is NOT for. It does not explain the steering chatter
+# seen in mpc_standalone_control_1785976976.csv. That log came from FSDS,
+# where localisation is already perfect (ground-truth odom, see above), so
+# pose noise cannot have caused it. The measured cause of that chatter was the
+# steering slew limit (the command sat pinned on du_max for 41% of steps); the
+# secondary contributor was delay-estimation jitter, which comes from control
+# loop timing rather than localisation and so exists in FSDS too. Don't reach
+# for this knob to reproduce that behaviour — it won't.
+#
+# The noise below is applied ONLY to the pose the controller/planner SEE. The
+# true plant state still drives the physics and the score, exactly like real
+# SLAM error: the car is punished for where it actually ends up, not for where
+# it thought it was.
+#
+# DEFAULT IS OFF, deliberately. The platform currently being validated against
+# is FSDS, which has no localisation error, so enabling this by default would
+# make offline scores pessimistic relative to the very runs they're compared
+# to. Turn it ON when tuning for the real car, or to check that a candidate
+# weight set doesn't fall apart once the pose stops being perfect.
+SLAM_NOISE_ENABLED = False
+
+# Two components, because they behave differently and the controller reacts to
+# them differently:
+#
+#  1. JITTER — zero-mean, independent every step ("white"). This is the one
+#     that provokes chattering: it moves e_y/e_psi randomly each tick, and a
+#     controller with too little damping chases it. Sub-centimetre per-frame
+#     jitter is typical of a well-behaved visual-odometry front-end.
+#  2. DRIFT/BIAS — slowly-varying, correlated over seconds. This is what real
+#     SLAM does between loop closures: the estimate wanders off and comes
+#     back. It produces a slow steady-state offset from the true centreline
+#     rather than chatter.
+#
+# Units are metres for position, radians for yaw.
+#   - Increase jitter: more chatter pressure; the tuner will favour smoother,
+#     better-damped weights.
+#   - Increase drift: tests robustness to a mis-localised car.
+#   - Typical adjustment: change by ~2x at a time and re-check that rollouts
+#     still complete without DNF.
+SLAM_POS_JITTER_STD = 0.02          # m,   per-step white noise on x/y (2 cm)
+SLAM_YAW_JITTER_STD = np.radians(0.3)   # rad, per-step white noise on yaw (0.3 deg)
+
+SLAM_POS_DRIFT_STD = 0.05           # m,   std of the slow position drift (5 cm)
+SLAM_YAW_DRIFT_STD = np.radians(0.5)    # rad, std of the slow yaw drift (0.5 deg)
+
+# SLAM_DRIFT_TAU — how many SECONDS the drift takes to wander appreciably.
+# Implemented as a first-order (Ornstein-Uhlenbeck) random walk that is pulled
+# back toward zero, so the estimate wanders and self-corrects instead of
+# running away over a long rollout. 5 s is a reasonable stand-in for the
+# timescale between loop closures / re-observations.
+SLAM_DRIFT_TAU = 5.0
+
+# SLAM_NOISE_SEED — fixed so rollouts stay reproducible and CMA-ES compares
+# candidate weight sets against the identical noise sequence (same rationale
+# as DELAY_JITTER_SEED). Change it only to check a tuned result isn't
+# overfitted to one particular noise realisation.
+SLAM_NOISE_SEED = 24680
 # Note: rollout_core.py now predicts the state forward through the commands
 # already queued (predict_ahead()) before solving, so the MPC no longer
 # reacts to a stale x0 at DELAY_STEPS > 0 — the large-oscillation/DNF

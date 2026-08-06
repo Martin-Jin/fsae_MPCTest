@@ -44,6 +44,8 @@ from settings import (
     USE_PLANNER, DELAY_STEPS, OFFTRACK_LIMIT, MAX_FAILS, DT,
     ROLLOUT_EPS, ROLLOUT_MAX_ITER, N_HORIZON,
     DELAY_JITTER_STEPS, DELAY_JITTER_SEED,
+    SLAM_NOISE_ENABLED, SLAM_POS_JITTER_STD, SLAM_YAW_JITTER_STD,
+    SLAM_POS_DRIFT_STD, SLAM_YAW_DRIFT_STD, SLAM_DRIFT_TAU, SLAM_NOISE_SEED,
 )
 
 STALL_CHECK_INTERVAL = 60   # Steps between rolling stall checks (3 s at 20 Hz)
@@ -61,6 +63,76 @@ PLANNER_V_MIN = 1.5
 def _normalize_angle(angle):
     """Wrap an angle to (−π, π] using atan2."""
     return np.arctan2(np.sin(angle), np.cos(angle))
+
+
+class SlamNoise:
+    """
+    Corrupts the pose the controller/planner SEE, leaving the true plant
+    state untouched.
+
+    Why this exists
+    ---------------
+    FSDS has no real SLAM. Its `sim_perception` node republishes ground-truth
+    `/fsds/testing_only/odom` straight onto `/fsae/slam/car_position`, and the
+    cone map is a latched oracle map cropped to a forward window — the only
+    modelled limitation is sensor RANGE, not accuracy. This rollout mirrored
+    that by feeding exact plant state back into the planner and the
+    tracking-error maths, which makes the simulator systematically easier than
+    the real car, whose pose comes from ZED visual odometry + cone_mapper.
+
+    Localisation error matters here specifically because it lands directly in
+    e_y/e_psi — the signals the MPC steers on. A pose that jitters makes the
+    measured error jitter, and an under-damped controller chases it. That is
+    the suspected remaining cause of the live/offline chatter gap (~1441
+    reversals live vs ~6-12 offline).
+
+    Model
+    -----
+    Two additive components, matching how real SLAM misbehaves:
+
+      jitter — zero-mean white noise, redrawn every step. Causes chatter.
+      drift  — a first-order (Ornstein-Uhlenbeck) process pulled back toward
+               zero with time constant SLAM_DRIFT_TAU. Wanders over seconds
+               and self-corrects, like a SLAM estimate between loop closures,
+               instead of random-walking away over a long rollout.
+
+    The OU update uses the exact discrete-time form
+    ``d <- a*d + sqrt(1-a^2)*sigma*w`` with ``a = exp(-dt/tau)``, whose
+    stationary standard deviation is exactly ``sigma`` regardless of dt — so
+    SLAM_POS_DRIFT_STD means what it says and does not change meaning if DT
+    changes.
+
+    IMPORTANT: this is deliberately NOT applied to the state handed to the
+    plant or to scoring. The car is judged on where it actually ended up, not
+    where it believed it was — the same asymmetry real localisation error has.
+    """
+
+    def __init__(self, dt, seed, pos_jitter_std, yaw_jitter_std,
+                 pos_drift_std, yaw_drift_std, drift_tau):
+        self._rng = np.random.default_rng(seed)
+        self._pos_jitter_std = float(pos_jitter_std)
+        self._yaw_jitter_std = float(yaw_jitter_std)
+        self._pos_drift_std = float(pos_drift_std)
+        self._yaw_drift_std = float(yaw_drift_std)
+
+        tau = max(float(drift_tau), 1e-6)
+        self._a = float(np.exp(-float(dt) / tau))
+        # Scale that makes the OU process's stationary std equal *_drift_std.
+        self._q = float(np.sqrt(max(0.0, 1.0 - self._a * self._a)))
+
+        # Start the drift at a stationary sample rather than 0, so step 0 isn't
+        # artificially better-localised than the rest of the run.
+        self._drift = self._rng.normal(0.0, 1.0, size=3)
+
+    def corrupt(self, x, y, yaw):
+        """Return (x_est, y_est, yaw_est) as the controller would measure them."""
+        self._drift = self._a * self._drift + self._q * self._rng.normal(0.0, 1.0, size=3)
+        jitter = self._rng.normal(0.0, 1.0, size=3)
+
+        x_est = x + self._drift[0] * self._pos_drift_std + jitter[0] * self._pos_jitter_std
+        y_est = y + self._drift[1] * self._pos_drift_std + jitter[1] * self._pos_jitter_std
+        yaw_est = yaw + self._drift[2] * self._yaw_drift_std + jitter[2] * self._yaw_jitter_std
+        return float(x_est), float(y_est), float(_normalize_angle(yaw_est))
 
 
 _PREDICT_EPSI_CLIP = 0.5   # rad (~28.6°) — small-angle bound, see predict_ahead below
@@ -225,6 +297,20 @@ def run_core_rollout(
     # score per candidate (see settings.DELAY_JITTER_SEED).
     delay_rng = np.random.default_rng(DELAY_JITTER_SEED)
 
+    # ── SLAM / localisation noise ─────────────────────────────────────────
+    # Corrupts only the pose fed to perception/planner/tracking-error; the
+    # plant and the score always see the true state. See SlamNoise.
+    slam_noise = None
+    if SLAM_NOISE_ENABLED:
+        slam_noise = SlamNoise(
+            dt=DT, seed=SLAM_NOISE_SEED,
+            pos_jitter_std=SLAM_POS_JITTER_STD,
+            yaw_jitter_std=SLAM_YAW_JITTER_STD,
+            pos_drift_std=SLAM_POS_DRIFT_STD,
+            yaw_drift_std=SLAM_YAW_DRIFT_STD,
+            drift_tau=SLAM_DRIFT_TAU,
+        )
+
     metrics = RolloutMetrics()
     idx = 0
     last_idx = 0
@@ -244,6 +330,9 @@ def run_core_rollout(
         history = {
             "X": [], "Y": [], "psi": [], "v": [], "r": [], "v_target": [],
             "u_steer": [], "u_accel": [], "e_y": [], "e_psi": [],
+            # Ground-truth tracking error (what the score uses). Identical to
+            # e_y/e_psi unless SLAM noise is enabled — see SlamNoise.
+            "e_y_true": [], "e_psi_true": [],
             "pred_X": [], "pred_Y": [], "solver_failed": [],
             "failed": False, "offtrack": False, "fail_reason": None,
         }
@@ -257,10 +346,29 @@ def run_core_rollout(
     n_ran = max_steps
 
     for step in range(max_steps):
-        car_pos_np = np.array([state[0], state[1]])
         X_g, Y_g, psi_g = state[0], state[1], state[2]
 
+        # ── Estimated (SLAM) pose vs true pose ────────────────────────────
+        # Everything the controller and planner consume below uses the
+        # ESTIMATED pose; the plant integration and the score keep using the
+        # true `state`. With SLAM noise disabled the two are identical, so
+        # this is a no-op relative to the previous behaviour.
+        if slam_noise is not None:
+            X_est, Y_est, psi_est = slam_noise.corrupt(X_g, Y_g, psi_g)
+        else:
+            X_est, Y_est, psi_est = X_g, Y_g, psi_g
+
+        # `state_est` is `state` with only the pose entries replaced, so the
+        # existing tracking-error helpers keep working unchanged (they read
+        # velocity/yaw-rate entries from the same vector).
+        state_est = state.copy()
+        state_est[0], state_est[1], state_est[2] = X_est, Y_est, psi_est
+
+        car_pos_np = np.array([X_est, Y_est])
+
         if want_history:
+            # History records the TRUE trajectory — that's what "where the car
+            # actually went" means for plotting and for the score.
             history["X"].append(X_g)
             history["Y"].append(Y_g)
             history["psi"].append(psi_g)
@@ -270,8 +378,8 @@ def run_core_rollout(
         # ── Tracking error + speed target (planner or oracle) ─────────────────
         rpsi = None
         if use_planner:
-            b_vis, y_vis = perception.visible_cones(state[0], state[1], state[2])
-            planner.update(b_vis, y_vis, car_pos_np, state[2])
+            b_vis, y_vis = perception.visible_cones(X_est, Y_est, psi_est)
+            planner.update(b_vis, y_vis, car_pos_np, psi_est)
 
             cl = planner.centreline
             if cl is not None and len(cl) >= 2:
@@ -281,9 +389,9 @@ def run_core_rollout(
                 cl_psi[-1] = cl_psi[-2] if len(cl_psi) > 1 else state[2]
 
                 e_y, _, e_psi, _, _, _, _ = plant_to_tracking_error(
-                    state, path_x=cl_x, path_y=cl_y, path_psi=cl_psi
+                    state_est, path_x=cl_x, path_y=cl_y, path_psi=cl_psi
                 )
-                rpsi = psi_g - e_psi
+                rpsi = psi_est - e_psi
 
                 # No pre-computed profile exists for a live-built centreline (see
                 # SimPlanner) — derive the target speed on-demand each step from
@@ -304,7 +412,7 @@ def run_core_rollout(
                 # meant e_y/e_psi/v_target silently reused stale values from
                 # the previous step whenever the planner wasn't ready.)
                 e_y, _, e_psi, _, _, _, _ = plant_to_tracking_error(
-                    state, path_x=path_X, path_y=path_Y, path_psi=path_Psi
+                    state_est, path_x=path_X, path_y=path_Y, path_psi=path_Psi
                 )
                 v_target = float(path_v_profile[idx])
 
@@ -316,9 +424,23 @@ def run_core_rollout(
                     history["planner_Y"].append(np.empty(0))
         else:
             e_y, _, e_psi, _, _, _, _ = plant_to_tracking_error(
-                state, path_x=path_X, path_y=path_Y, path_psi=path_Psi
+                state_est, path_x=path_X, path_y=path_Y, path_psi=path_Psi
             )
             v_target = float(path_v_profile[idx])
+
+        # ── TRUE tracking error, for scoring only ──────────────────────────
+        # e_y/e_psi above are what the CONTROLLER perceives, and under SLAM
+        # noise they are not where the car actually is. Scoring and the
+        # off-track check must use ground truth, otherwise a badly-localised
+        # car could score well by tracking its own wrong belief — the exact
+        # asymmetry real localisation error has. Always measured against the
+        # true reference path, never the planner's estimated centreline.
+        if slam_noise is not None:
+            e_y_true, _, e_psi_true, _, _, _, _ = plant_to_tracking_error(
+                state, path_x=path_X, path_y=path_Y, path_psi=path_Psi
+            )
+        else:
+            e_y_true, e_psi_true = e_y, e_psi
 
         # ── Progress tracking (unconditional, every step) ──────────────────────
         idx, _, _, idx_rpsi = find_closest_reference_bounded(
@@ -332,8 +454,13 @@ def run_core_rollout(
 
         if want_history:
             history["v_target"].append(v_target)
+            # "e_y"/"e_psi" stay the CONTROLLER's view so existing plots keep
+            # showing what it was reacting to; the *_true series is what the
+            # score uses. With SLAM noise off the two are identical.
             history["e_y"].append(e_y)
             history["e_psi"].append(e_psi)
+            history["e_y_true"].append(e_y_true)
+            history["e_psi_true"].append(e_psi_true)
 
         # ── MPC state vector ────────────────────────────────────────────────
         vx_true = state[3]
@@ -467,20 +594,22 @@ def run_core_rollout(
             dist_at_last_stall_check = cumulative_distance
 
         # ── Metric accumulation (single source of truth: scoring.RolloutMetrics) ──
+        # Scored on the TRUE error (see "TRUE tracking error" above), not the
+        # controller's possibly-mislocalised belief.
         metrics.add_step(
-            e_y=e_y, e_psi=e_psi, r=state[5], u_opt=u_opt,
+            e_y=e_y_true, e_psi=e_psi_true, r=state[5], u_opt=u_opt,
             v_target=v_target, v_actual=state[3], u_max_steer=u_max[0],
             solver_failed=solver_failed, inaccurate=inaccurate,
         )
 
-        if abs(e_y) > OFFTRACK_LIMIT:
+        if abs(e_y_true) > OFFTRACK_LIMIT:
             offtrack = True
             dnf = True
             n_ran = step + 1
             if want_history:
                 history["failed"] = True
                 history["offtrack"] = True
-                history["fail_reason"] = f"off-track (|e_y|={abs(e_y):.2f} m) at step {step}"
+                history["fail_reason"] = f"off-track (|e_y|={abs(e_y_true):.2f} m) at step {step}"
             break
 
         u_prev = u_opt.copy()
