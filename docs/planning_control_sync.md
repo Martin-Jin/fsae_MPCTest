@@ -539,12 +539,15 @@ arrives in sustained episodes (median 0.47 s, up to 2.44 s, 96% of energy below
 | **yaw_rate / speed telemetry error** | **No** — channels validated against pose derivatives |
 | **tyre front/rear balance** | **No** — needs C_f at 10% of physical to reach live K_us |
 
-**Root cause is now localised** (2026-08-06): the car's yaw response to a
-steering command is ~3× weaker than commanded, in a *speed-dependent* way the
-offline plant does not reproduce at all (characteristic speed 6 m/s live vs
-52 m/s offline). Grip is roughly right; the rotation is not. The mechanism
-inside FSDS is still unidentified — see "MEASURED: the car's yaw response is
-~3× weaker than commanded" below.
+**ROOT CAUSE FOUND** (2026-08-06, open-loop system-ID):
+**FSDS caps the car's yaw rate at ~0.7 rad/s once speed exceeds ~6 m/s.**
+Below that the commanded steering angle is delivered exactly (`s` = 1.00–1.01
+at 3 and 5 m/s); above it the response collapses (`s` = 0.34 at 8 m/s, 0.17 at
+14 m/s). The implied lateral-acceleration ceiling is **7.0 m/s²**, far below
+the 12.3 m/s² the same car reaches on a lap, so it is **not** tyre saturation —
+a grip limit does not depend on speed. The offline plant models no such cap,
+which is the entire sim-to-real gap. See "RESULT: FSDS caps yaw rate above
+~6 m/s" below.
 
 The pose-feed hold is real (see `PoseFeedHold`) and is now modelled, but it
 accounts for almost none of the gap.
@@ -795,7 +798,65 @@ model, and the ranking then reports a confident, meaningless answer. (Observed:
 the first crashed run produced "FSDS delivers the commanded angle" from pure
 zeros.)
 
-##### First partial data — not yet conclusive
+##### RESULT (2026-08-06): FSDS caps yaw rate above ~6 m/s
+
+Full clean sweep, 16/16 points, no geofence triggers —
+`fsae_logs/steering_sysid_1786014330.csv`.
+
+**Below ~5 m/s the car delivers the commanded angle exactly. Above it, the
+response collapses.**
+
+| speed | commanded | achieved | `s` |
+|---|---|---|---|
+| 3 m/s | 25° | 25.3° | **1.01** |
+| 5 m/s | 25° | 24.9° | **1.00** |
+| 8 m/s | 25° | **8.5°** | **0.34** |
+| 11 m/s | 25° | 5.8° | 0.23 |
+| 14 m/s | 25° | 4.1° | 0.17 |
+
+Not a gradual understeer curve — a cliff between 5 and 8 m/s. Model fit:
+
+| model | R² |
+|---|---|
+| **grip saturation** (`a_lat` ceiling) | **0.987** |
+| understeer (v²) | 0.898 |
+| speed-scaled rack | 0.893 |
+| constant scale | 0.617 |
+| neutral | −1.226 |
+
+First time the models have separated by a decisive margin (0.089).
+
+**The cap is not tyres.** Fitted ceiling **7.0 m/s²**, against 12.3 m/s²
+measured on the same car during a lap and 14.5 m/s² in the offline plant. A
+tyre limit is speed-independent; this one engages above a threshold speed.
+Lateral acceleration vs steering makes it plain — it rises normally at low
+speed and goes flat once the cap engages:
+
+| v | 0.50 | 0.65 | 0.80 | 1.00 |
+|---|---|---|---|---|
+| 3 m/s | 1.61 | 1.93 | 2.38 | 2.75 |
+| 5 m/s | 4.37 | 5.28 | 6.30 | 7.48 |
+| **8 m/s** | **6.27** | **5.95** | **5.72** | **6.09** |
+| 11 m/s | — | 6.84 | 7.55 | 8.05 |
+
+At 8 m/s more steering produces *less* cornering. The signature — a yaw-rate
+ceiling (~0.7 rad/s) that engages above a threshold speed while commanded
+angles are honoured exactly below it — points at a **stability-control or
+yaw-damping term inside FSDS**, which the offline plant does not model at all.
+
+This closes the loop on the closed-loop symptom: the MPC plans a corner, FSDS
+clamps the yaw, heading error builds, the controller demands more steer and
+hits the 25° stop → the 21% saturation seen on every lap.
+
+> **Not yet acted on.** The fix is to model the cap in the offline plant, not
+> to bend tyre parameters to imitate it (which would also wreck the plant's
+> genuine 14.5 m/s² grip). The exact FSDS mechanism — a hard yaw-rate limit, a
+> speed-dependent steering-authority curve, or a damping torque — is still
+> unidentified; the three produce similar steady-state data but differ in
+> transients, so distinguishing them needs a step-input test rather than the
+> settled-circle protocol used here.
+
+##### Earlier partial data (superseded by the result above)
 
 The wall-crash run still yielded **11 valid points at 3–5 m/s** before impact,
 and they point somewhere unexpected:

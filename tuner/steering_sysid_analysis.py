@@ -277,10 +277,32 @@ def main(argv):
         print("  parameters (needs C_f ~10% of physical) -- so if this wins,")
         print("  the mismatch is in mass/geometry/load transfer, not grip.")
     else:
-        near = [p for p in pts if p['a_lat'] > 0.8 * GRIP_CEILING]
-        print(f"  TYRE SATURATION: yaw is capped by lateral grip "
-              f"({len(near)}/{len(pts)} points near the ceiling).")
-        print("  Check the fitted a_lat_max against the plant's peak.")
+        # A lateral-acceleration ceiling has two very different causes, and
+        # they are told apart by WHERE the ceiling sits -- not by counting
+        # points against a hardcoded grip figure (an earlier version did that
+        # and printed "TYRE SATURATION ... 0/16 points near the ceiling",
+        # which is self-contradictory whenever the fitted ceiling is well
+        # below GRIP_CEILING).
+        fitted = None
+        try:
+            fitted = float(str(wparams).split('=')[1])
+        except Exception:
+            pass
+        print("  YAW IS CAPPED: more steering stops producing more cornering.")
+        if fitted is not None:
+            print(f"  fitted ceiling {fitted:.1f} m/s2 vs known peak "
+                  f"{GRIP_CEILING:.1f} m/s2 on this car")
+            if fitted < 0.8 * GRIP_CEILING:
+                print("  -> the cap is FAR BELOW the car's demonstrated grip, so")
+                print("     this is NOT tyre saturation. Something is limiting")
+                print("     yaw directly -- e.g. a stability-control or yaw-")
+                print("     damping term inside FSDS that the offline plant")
+                print("     does not model. Check whether the cap engages above")
+                print("     a threshold speed (the s-vs-speed table above): a")
+                print("     tyre limit would not depend on speed.")
+            else:
+                print("  -> consistent with real tyre saturation; compare the")
+                print("     fitted ceiling against the plant's peak a_lat.")
     return 0
 
 
