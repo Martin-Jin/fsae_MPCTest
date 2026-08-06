@@ -251,24 +251,10 @@ class MPCController:
         self.nx = 8
         self.nu = 2
 
-        # Tuned parameters — offline-tuner run of 08/07/26 11:16 (see
-        # fsae_MPCTest/"tuning history.txt"): "Retuned with unified scoring and
-        # simulation. Decent tracking performance and speed, just not the best at
-        # sudden corners."  Chosen over the later 10/07/26 set, whose own note
-        # flagged braking triggering much later in FSDS than in the MPC sim.
-        # Q_diag[3] (yaw-rate/e_psi_dot damping) manually corrected 2026-08-05,
-        # mirroring the same fix in fsae_MPCTest/settings.py: live standalone-ROS
-        # test data (mpc_standalone_control_*.csv, this file's own output) showed
-        # steering sign-reversal chatter almost every ~0.05s tick, worst in
-        # corners. The old value (0.1009...) was ~42:1 smaller than Q_diag[2]
-        # (heading error), giving the controller almost no cost on the yaw rate
-        # it uses to correct heading — a classic recipe for oscillation. Raised
-        # to 2.5 (just above Q_diag[1]=2.4068) so it's no longer the smallest of
-        # the five active Q entries. See settings.py's Q_diag comment for the
-        # full rationale — keep these two values in sync manually.
-        Q_diag      = [5.732257553913991, 1.185291265595073, 5.336061825548227, 8.551974642936917, 2.347470167485916, 0.0, 0.0, 0.0]
-        R_diag      = [1.3813886877086599, 2.058720365852702]
-        R_rate_diag = [3.5730821419788663, 4.207449882607239]
+        # Tuned parameters
+        Q_diag      = [5.652309254831446, 0.3161236925233666, 2.798244246741331, 0.2546694567259241, 0.683532104837636, 0.0, 0.0, 0.0]
+        R_diag      = [9.217407925832218, 0.3382032665811773]
+        R_rate_diag = [2.9495178296071587, 9.460759229883873]
 
         self.Q      = np.diag(Q_diag)
         self.R      = np.diag(R_diag)
