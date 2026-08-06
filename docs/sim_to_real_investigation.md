@@ -695,6 +695,105 @@ answer.** The residual saturation gap is still open. The reference-heading lead
 pursue, and it is testable **offline**: planner republish rate, centreline
 smoothing parameters, no FSDS session required.
 
+## 13. How much does each tested factor actually explain? A quantified ledger
+
+*(2026-08-07.)* Every factor above was reported as a single before/after number
+on the one recorded map — a point estimate with no error bar. "6.3% → 6.7%"
+could be signal or map-specific noise, and nothing so far could tell the
+difference. This section fixes that with `tuner/gap_attribution_ledger.py`.
+
+**Why the recorded map alone cannot supply variance.** Every rollout on it is
+fully deterministic by construction: SLAM noise, delay jitter and pose-hold all
+use FIXED seeds (`settings.SLAM_NOISE_SEED`, `DELAY_JITTER_SEED`,
+`POSE_HOLD_SEED`) so CMA-ES sees a repeatable score per tuning candidate.
+Re-running the same map twice reports exactly zero variance — a false
+confidence signal, not a real one. The ledger instead runs every factor across
+`settings.VALIDATION_SUITE` (5 synthetic paths: spiral, sudden turn, hairpin,
+FS corner, micro-slalom) as the repeat axis. This measures whether an effect is
+consistent across track geometry or an artefact of one map's specific corners.
+These paths have no live-log counterpart, so the recorded map stays the only
+**live-comparable** number; the suite is purely for attributing how much each
+factor moves the *sim*, with a real spread attached.
+
+**A baseline mismatch, caught before it corrupted the ledger.** The obvious
+first step — "gap = live 21.1% − historical no-ceiling baseline 4.4%" — is
+wrong. Measuring "no ceiling" with today's code (`python3 -m
+tuner.recorded_map_rollout --no-ceiling`) gives **3.67%**, not 4.4%. The 4.4%
+figure predates `recorded_map_rollout.py` and several since-fixed bugs
+(including this session's `curvature_speed` parity fix, itself a real change
+to planner/controller interaction) — it is not the same quantity and mixing it
+with today's numbers would repeat the exact mistake this document exists to
+catalogue (§8, lesson 2 in "What generalises"). The gap used below is
+**live 21.1% − today's no-ceiling baseline 3.67% = 17.43 pp**, measured with
+one consistent code state.
+
+**Recorded map (live-comparable) vs `VALIDATION_SUITE` (variance-comparable):**
+
+| factor | rec. map sat % | suite mean | suite std |
+|---|---|---|---|
+| A. no ceiling (today's baseline) | 3.67 | 7.71 | 4.10 |
+| B. ceiling, proportional law (700, 0.25) | 5.51 | 9.85 | 6.06 |
+| C. ceiling, integral law, old tau=0.25 (450) | 5.84 | 10.45 | 5.94 |
+| D. ceiling, integral law, **shipped** tau=0.40 (450) | 4.80 | 9.42 | 5.11 |
+| E. ceiling lowered to 6.5 (capability probe) | 6.90 | 10.86 | 6.23 |
+
+**The step-by-step "closes X% of the gap" table, and why it should not be
+trusted at face value:**
+
+| step | closes (pp) | closes (%) | suite std (pp) |
+|---|---|---|---|
+| B. proportional law | 1.84 | 10.5 | 6.06 |
+| C. integral law, old tau | 0.33 | 1.9 | 5.94 |
+| D. integral law, shipped tau | −1.04 | −6.0 | 5.11 |
+| E. lower ceiling to 6.5 | 2.10 | 12.0 | 6.23 |
+| **REMAINING UNEXPLAINED** | **14.20** | **81.5** | — |
+
+Every one of those per-step deltas (0.33 to 2.10 pp) is smaller than the
+suite's own standard deviation (5.1–6.2 pp) at that step. **None of them is
+distinguishable from noise on this evidence.** Do not read "closes 12.0%" as a
+real, confident effect size — it is a point estimate with an error bar several
+times larger than itself. This is true even of D showing *negative* attribution
+(the measured, validated `tau` fix moved the recorded-map number slightly
+*away* from live) — that looked like a real regression in §12.12, and this
+ledger shows it is not distinguishable from a null result either.
+
+**What the ledger changes about the conclusion: nothing about which candidates
+are viable, but it upgrades the confidence in ruling them out.** Even reading
+every point estimate at face value and summing the largest ones (B + E, the two
+biggest, non-overlapping single-parameter changes tried): 1.84 + 2.10 = 3.94 pp,
+23% of the 17.43 pp gap — and E is already known from §12.6 to DNF the recorded
+map before reaching a level that would close more. So even the most generous
+possible reading of noisy, unvalidated point estimates cannot get the tested
+plant/ceiling parameters past roughly a quarter of the gap. **At least three
+quarters of the saturation gap is not explained by anything about the ceiling's
+law, level, or time constant.**
+
+**A genuinely new finding, from the paired (per-path) breakdown the raw
+suite mean/std hides:**
+
+| step | SPIRAL | SUDDEN_TURN | HAIRPIN | FS_CORNER | MICRO_SLALOM | mean | std |
+|---|---|---|---|---|---|---|---|
+| B | −1.0 | +3.1 | +0.0 | −0.0 | +8.7 | +2.15 | 3.55 |
+| C | −0.4 | +5.4 | +0.0 | −0.0 | +8.7 | +2.75 | 3.68 |
+| D (shipped) | −1.5 | +3.8 | +0.0 | +0.0 | +6.2 | +1.72 | 2.85 |
+| E | −1.7 | +7.8 | +0.0 | −0.1 | +9.7 | +3.15 | 4.66 |
+
+**The ceiling has ZERO measurable effect on HAIRPIN and FS_CORNER in every
+configuration tried**, and its entire effect is concentrated on SUDDEN_TURN and
+MICRO_SLALOM — paths with sustained moderate-radius bends at speed, not tight
+low-speed corners. That is consistent with the ceiling's own mechanism (it only
+engages above ~6 m/s, §9) and is a genuinely new, structural finding: the
+ceiling's contribution — whatever it is — is not a general saturation
+mechanism, it is specific to a particular corner *type*. Any future attempt to
+explain saturation via plant/ceiling parameters should be checked against this
+same per-path breakdown before trusting an aggregate number.
+
+**Reproduce with:** `python3 -m tuner.gap_attribution_ledger` (needs
+`MPLBACKEND=Agg` set — see the note at the top of that file; `cma`'s optional
+matplotlib import was observed to crash the whole process, not just skip
+`cma.plot()`, depending on backend state, and cost two failed runs before being
+tracked down).
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
@@ -761,7 +860,8 @@ smoothing parameters, no FSDS session required.
 | item | status |
 |---|---|
 | **Model the yaw cap offline** | **Done** — `alat_ceiling*` in `model/vehicle_physics.py`. Moves every metric toward the car (saturation 4.4→6.3%, a_lat max 14.06→10.53) but closes only part of the gap; live is still 21.1% saturation |
-| Remaining saturation gap | **Open, but narrowed (§12).** Not capability (§12.6) and not `a_cmd` (§12.7). Localised to the *entry rate* into the high-heading-error state (2.6×) with matching in-state behaviour — i.e. a turn-in transient property |
+| Remaining saturation gap | **Open, quantified (§13).** ≥75% of the 17.43 pp gap (live 21.1% vs today's 3.67% no-ceiling baseline) is not explained by the ceiling's law, level, or tau — every tested plant/ceiling factor's effect is within noise (suite std 5–6 pp vs effect sizes 0.3–2.1 pp). Localised to the *entry rate* into the high-heading-error state (2.6×) with matching in-state behaviour — a turn-in transient property |
+| Ceiling's effect is corner-type-specific | **New (§13).** Zero measurable effect on HAIRPIN/FS_CORNER in every configuration tried; entire effect concentrated on SUDDEN_TURN/MICRO_SLALOM (sustained moderate-radius bends at speed). Check any future plant explanation against this per-path breakdown before trusting an aggregate |
 | **`alat_ceiling_tau`** | **Done (§12.12).** Measured 0.35 s median (0.28–0.46, 11/12 trials) with `step_s=8.0`; model set to 0.40. Fixing it did **not** close the saturation gap — the residual is elsewhere |
 | Ceiling is speed-dependent | **New, unmodelled (§12.4).** Measured sustained a_lat rises with speed — 6.45 @ 8 m/s, 7.54 @ 11, 9.26 @ 14 — while the model pins it flat at 7.5. Residuals +1.0 / ~0 / −1.76. Deliberately not fitted: 16 points, one run |
 | Step vs sweep disagree on level | **Open.** Step's 3 s settle says 7.5 @ 8 m/s; the sweep's long orbit says 6.45. A longer `step_s` resolves whether sustained a_lat keeps decaying past 3 s — same experiment as the `tau` re-measurement |
