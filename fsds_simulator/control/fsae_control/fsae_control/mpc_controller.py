@@ -23,6 +23,8 @@ The control step runs on a FIXED 20 Hz timer (not the pose callback like
 Stanley), because the MPC's discretisation assumes a constant dt = 0.05 s
 between solves.
 """
+import time
+
 import numpy as np
 import rclpy
 from rclpy.node import Node
@@ -132,6 +134,9 @@ class MPCControllerNode(Node):
     # ------------------------------------------------------------------
 
     def _control_step(self) -> None:
+        # Loop-entry timestamp for the cmd_latency_ms telemetry column — see
+        # telemetry_logger's latency-diagnostics note.
+        _t_loop0 = time.perf_counter()
         # No pose or no path yet, or the path has gone stale: publish nothing and
         # reset the MPC so it doesn't warm-start from a stale trajectory.  The
         # downstream fsds_bridge brakes on its own cmd_vel timeout.
@@ -206,11 +211,19 @@ class MPCControllerNode(Node):
             # steering is already the roadwheel angle in radians here (this
             # node publishes an Ackermann steering_angle, not a normalised
             # FSDS command), so it is both the logged steer and delta_cmd.
+            path_age_s = None
+            if self._path_stamp is not None:
+                path_age_s = (self.get_clock().now() - self._path_stamp).nanoseconds * 1e-9
             self._telemetry.log_control(
                 t, self._car_pos[0], self._car_pos[1], self._car_yaw,
                 self._car_speed, desired_speed, steering,
                 tel.get('e_y', 0.0), tel.get('e_psi', 0.0), self._car_yaw_rate,
-                delta_cmd=steering, a_cmd=tel.get('a_cmd', 0.0))
+                delta_cmd=steering, a_cmd=tel.get('a_cmd', 0.0),
+                pose_age_s=tel.get('pose_age_s'),
+                path_age_s=path_age_s,
+                n_delay=tel.get('n_delay'),
+                solve_ms=tel.get('solve_ms'),
+                cmd_latency_ms=(time.perf_counter() - _t_loop0) * 1e3)
             self._telemetry.log_path(t, self._path)
 
         self.get_logger().info(

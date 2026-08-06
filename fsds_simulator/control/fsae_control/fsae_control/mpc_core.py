@@ -77,6 +77,7 @@ USED BY
 """
 
 import math
+import time
 from collections import deque
 
 import cvxpy as cp
@@ -251,7 +252,21 @@ class MPCController:
         self.nx = 8
         self.nu = 2
 
-        # Tuned parameters
+        # Tuned parameters — offline-tuner run of 08/07/26 11:16 (see
+        # fsae_MPCTest/"tuning history.txt"): "Retuned with unified scoring and
+        # simulation. Decent tracking performance and speed, just not the best at
+        # sudden corners."  Chosen over the later 10/07/26 set, whose own note
+        # flagged braking triggering much later in FSDS than in the MPC sim.
+        # Q_diag[3] (yaw-rate/e_psi_dot damping) manually corrected 2026-08-05,
+        # mirroring the same fix in fsae_MPCTest/settings.py: live standalone-ROS
+        # test data (mpc_standalone_control_*.csv, this file's own output) showed
+        # steering sign-reversal chatter almost every ~0.05s tick, worst in
+        # corners. The old value (0.1009...) was ~42:1 smaller than Q_diag[2]
+        # (heading error), giving the controller almost no cost on the yaw rate
+        # it uses to correct heading — a classic recipe for oscillation. Raised
+        # to 2.5 (just above Q_diag[1]=2.4068) so it's no longer the smallest of
+        # the five active Q entries. See settings.py's Q_diag comment for the
+        # full rationale — keep these two values in sync manually.
         Q_diag      = [5.652309254831446, 0.3161236925233666, 2.798244246741331, 0.2546694567259241, 0.683532104837636, 0.0, 0.0, 0.0]
         R_diag      = [9.217407925832218, 0.3382032665811773]
         R_rate_diag = [2.9495178296071587, 9.460759229883873]
@@ -685,7 +700,12 @@ class MPCController:
         R_scaled      = _adaptive_R_scaling(car_speed, self.R)
         R_rate_scaled = _adaptive_R_rate(kappa, self.R_rate)
 
+        # Wall-clock the QP so the log can distinguish "the solver is slow"
+        # from "the pipeline upstream of us is slow" — see solve_ms in
+        # telemetry_logger's column reference.
+        _t_solve0 = time.perf_counter()
         u_opt = self._solve_qp(x0, Ad, Bd, R_scaled, R_rate_scaled)
+        solve_ms = (time.perf_counter() - _t_solve0) * 1e3
         self._u_history.append(u_opt.copy())
 
         # ── EXACT ZOH ACTUATOR INTEGRATION ────────────────────────────
@@ -712,6 +732,13 @@ class MPCController:
 
         self.last_telemetry = {
             **dbg,
+            # Delay diagnostics — the controller's own view of how stale its
+            # inputs were and how far it rolled the state forward to compensate.
+            # Logged so a live run can be checked against the offline sim's
+            # DELAY_STEPS assumption instead of it being taken on trust.
+            "pose_age_s":    float(pose_age_s),
+            "n_delay":       int(n_delay),
+            "solve_ms":      float(solve_ms),
             "car_speed":     car_speed,
             "desired_speed": desired_speed,
             "steering":      steering,

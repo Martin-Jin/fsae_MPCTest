@@ -224,6 +224,52 @@ and how they combine.
 candidates against. Commented-out paths are available but excluded by
 default to keep each tuning run faster.
 
+### Pose-feed hold (sim-to-real)
+
+`PoseFeedHold` in `sim/rollout_core.py` models the live pose feed **repeating**
+its last measurement instead of delivering a fresh one. Measured on live
+telemetry 2026-08-06 (two runs, same track, same tuned weights, differing only
+in how badly the feed stalled):
+
+| | normal run | failed run |
+|---|---|---|
+| fresh-pose rate | 18.9 Hz | 6.4 Hz |
+| repeated ticks | 5.3% | 60.7% |
+| longest hold | 5 ticks (0.25 s) | 20 ticks (0.99 s) |
+| peak `pose_age_s` | 347 ms | 1242 ms |
+
+In the failed run the pose froze for ~1 s at 14 m/s — ~17 m travelled blind —
+and the car spun on resume with 105° of heading error.
+
+This is distinct from the two existing delay knobs, and none of them substitute
+for it:
+
+- `DELAY_STEPS` delays a pose that is still **fresh** every tick.
+- `DELAY_JITTER_STEPS` perturbs only the controller's **belief** about the lag.
+- `PoseFeedHold` repeats the **data**, so `pose_age` genuinely ramps and the
+  controller is briefly blind.
+
+While a hold is active the rollout also **skips perception and planning**, since
+on the car the planner is triggered by `car_position` — a stalled pose stalls
+the whole chain. Without that, re-planning from a frozen pose still yields a
+slightly different centreline each tick and the controller is never actually
+blind (measured: `e_y` repeated on 0.0% of ticks instead of the intended ~5%).
+
+Tuned to the normal run: `POSE_HOLD_PROB = 0.05`, `MEAN_TICKS = 2.1`,
+`MAX_TICKS = 5` reproduces 5.8% repeated ticks / mean hold 2.10 against the
+measured 5.3% / 2.08.
+
+> **This does NOT close the sim-to-real gap.** With the model on and firing
+> correctly, steering saturation moves only 3.4% → 4.4% against a live 21.1%,
+> and heading error 6.0° → 6.3° against a live 15.9°. The pose hold is real and
+> now faithfully reproduced, but it is **not** the cause of the gap. Plant grip,
+> corner entry speed, planner centreline quality, SLAM pose noise, extra
+> actuation delay and planner update rate have each also been tested and
+> eliminated. The cause remains open — do not treat offline scores as
+> predictive of live behaviour until it is found.
+
+---
+
 ### Bonus weights
 
 `TIME_BONUS_WEIGHT` — legacy weight, no longer used by the score itself.

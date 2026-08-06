@@ -52,6 +52,8 @@ CONTROL LOOP PHASES (see _control_loop)
   Phase 4a — Telemetry logging of the *final* (post-override) command.
   Phase 5 — Publish.
 """
+import time
+
 import numpy as np
 import rclpy
 from rclpy.node import Node
@@ -211,6 +213,11 @@ class MPCControllerStandaloneNode(Node):
     # ------------------------------------------------------------------
 
     def _control_loop(self) -> None:
+        # Loop-entry timestamp for the cmd_latency_ms telemetry column: how
+        # long this tick took from entering the callback to publishing a
+        # command. Distinguishes "our compute is slow" from "our inputs were
+        # already stale when we got them" (pose_age_s / path_age_s).
+        _t_loop0 = time.perf_counter()
         cmd = ControlCommand()
 
         # ── Phase 1: hold until GO ──────────────────────────────────────
@@ -318,11 +325,22 @@ class MPCControllerStandaloneNode(Node):
             a_cmd = tel.get('a_cmd', 0.0)
             if cmd.brake > 0.0 and cmd.throttle == 0.0:
                 a_cmd = min(a_cmd, -float(cmd.brake) * self._mpc.a_max_brake)
+            # Age of the planner path this solve consumed. The path arrives at
+            # ~1 Hz while this loop runs at 20 Hz, so it is routinely ~20 ticks
+            # old; logging it makes that concrete instead of inferred.
+            path_age_s = None
+            if self._path_stamp is not None:
+                path_age_s = (self.get_clock().now() - self._path_stamp).nanoseconds * 1e-9
             self._telemetry.log_control(
                 t, self._car_pos[0], self._car_pos[1], self._car_yaw,
                 self._car_speed, self._desired_speed, steer_rad,
                 tel.get('e_y', 0.0), tel.get('e_psi', 0.0), self._car_yaw_rate,
-                delta_cmd=steer_rad, a_cmd=a_cmd)
+                delta_cmd=steer_rad, a_cmd=a_cmd,
+                pose_age_s=tel.get('pose_age_s'),
+                path_age_s=path_age_s,
+                n_delay=tel.get('n_delay'),
+                solve_ms=tel.get('solve_ms'),
+                cmd_latency_ms=(time.perf_counter() - _t_loop0) * 1e3)
             self._telemetry.log_path(t, self._path_pts)
 
         # ── Phase 5: publish ─────────────────────────────────────────────

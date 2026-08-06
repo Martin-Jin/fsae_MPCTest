@@ -194,6 +194,8 @@ writing — re-confirm before relying on them, since a resync can move them.
 | Metric normalisation scales | `settings.py` (`METRIC_SCALES`) | `fsds_simulator/control/fsae_control/fsae_control/scoring.py` (inlined as module constant) | 12 entries, `[0.40, 0.45, 0.30, 0.18, 1.50, 0.40, 0.02, 0.30, 1.00, 0.015, 0.70, 2.30]` |
 | Constrained-scoring constants | `settings.py` (`CONSTRAINT_FLOOR`, `COMPLETION_THRESHOLD`, `TIME_OBJECTIVE_WEIGHT`, `QUALITY_WEIGHT`) | `fsds_simulator/.../scoring.py` (inlined as module constants) | `10.0` / `0.98` / `1.0` / `0.35` |
 | `A_BRAKE_PLAN` (braking-distance propagation in `curvature_speed`) | `sim/speed_profile.py` | `fsds_simulator/.../control_utils.py` | `5.0` m/s², positive magnitude |
+| Latency telemetry columns | — (offline has no equivalent) | `fsds_simulator/.../telemetry_logger.py` | `pose_age_s`, `path_age_s`, `n_delay`, `solve_ms`, `cmd_latency_ms` |
+| Pose-feed hold model | `settings.py` (`POSE_HOLD_*`) + `sim/rollout_core.PoseFeedHold` | — (offline-only; models a live fault) | `PROB 0.05`, `MEAN_TICKS 2.1`, `MAX_TICKS 5` |
 
 Notes on how these are actually used:
 
@@ -493,6 +495,43 @@ The emitted CSV header records this as `score_is_partial=1` so a reader can't
 mistake a partial live score for a full offline one. The weighted-metric
 component (the 12 metrics × `SCORE_WEIGHTS`) is directly comparable either
 way; only the bonus/penalty terms differ.
+
+## OPEN: the sim-to-real gap is not yet explained
+
+Measured 2026-08-06 on the recorded `comp test map 3`, same tuned gains both
+sides:
+
+| | offline sim | live car |
+|---|---|---|
+| steering saturation | 3.4% | **21.1%** |
+| \|e_psi\| mean / p90 | 6.0° / 13.8° | **15.9° / 42.0°** |
+| max \|e_y\| | 1.82 m | 1.20 m |
+
+The car sits at full steering lock six times more often than the simulator, and
+when it does it is pulling only 4.14 m/s² lateral at 5.74 m/s — it is not
+cornering hard, it is rotating back from a large heading error. Heading error
+arrives in sustained episodes (median 0.47 s, up to 2.44 s, 96% of energy below
+1 Hz), i.e. a stale/wrong reference rather than high-frequency chatter.
+
+**Candidates tested and eliminated:**
+
+| candidate | verdict |
+|---|---|
+| plant grip too generous | No — a_lat mean 3.57 sim vs 3.76 live |
+| entering corners too fast | No — car is *slower* when saturated (5.74 vs 8.03 m/s) |
+| planner centreline quality | No — offline is *worse* in the tail (R=0.16 m vs 1.26 m) |
+| SLAM pose noise | No — overshoots reversals (3.76/s vs 1.62) barely moves saturation |
+| extra actuation delay | No — 2 steps moved saturation 3.4% → 2.3% |
+| planner update rate (1 Hz vs 20 Hz) | No — throttling *improved* the sim |
+| **pose-feed hold** | **No** — model added and verified firing; 3.4% → 4.4% only |
+
+The pose-feed hold is real (see `PoseFeedHold`) and is now modelled, but it
+accounts for almost none of the gap.
+
+**Consequence:** offline scores are not yet predictive of live behaviour. A
+tuning run that scores well offline can still produce a car that saturates
+steering a fifth of the time — this has already happened once. Validate on the
+car before trusting any tuned weight set.
 
 ## MPC prediction horizon: frozen target speed
 

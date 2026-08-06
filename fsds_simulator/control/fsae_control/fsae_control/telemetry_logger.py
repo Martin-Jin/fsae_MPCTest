@@ -129,7 +129,21 @@ class ControlLogger:
         self._ctrl_w.writerow(
             ['t', 'car_x', 'car_y', 'car_yaw', 'v_actual', 'v_desired',
              'steer_deg', 'e_y', 'e_psi_deg', 'yaw_rate',
-             'delta_cmd', 'a_cmd', 'solver_failed', 'inaccurate'])
+             'delta_cmd', 'a_cmd', 'solver_failed', 'inaccurate',
+             # ── Latency diagnostics ──────────────────────────────────────
+             # Added to answer a specific question: the offline simulator
+             # assumes DELAY_STEPS=1 (50 ms) of actuation lag and a perfectly
+             # uniform 20 Hz loop, and does NOT reproduce the sustained
+             # heading error seen on the car (live |e_psi| mean 15.9 deg /
+             # p90 42.0 vs sim 6.0 / 13.8 on the same map with the same
+             # gains). These five columns measure the real latency chain so
+             # that assumption can be checked rather than trusted.
+             'pose_age_s',      # age of the pose the solve used, seconds
+             'path_age_s',      # age of the planner path the solve used
+             'n_delay',         # rollforward depth the controller chose
+             'solve_ms',        # QP solve wall time
+             'cmd_latency_ms',  # loop start -> command published
+             ])
         self._path_w.writerow(['t', 'idx', 'x', 'y'])
 
         self._path_period = path_period
@@ -161,7 +175,9 @@ class ControlLogger:
     def log_control(self, t, car_x, car_y, car_yaw, v_actual, v_desired,
                     steer_rad, e_y, e_psi_rad, yaw_rate,
                     delta_cmd=None, a_cmd=None,
-                    solver_failed=False, inaccurate=False) -> None:
+                    solver_failed=False, inaccurate=False,
+                    pose_age_s=None, path_age_s=None, n_delay=None,
+                    solve_ms=None, cmd_latency_ms=None) -> None:
         """
         Record one control step.  See the module docstring for the units and
         frame of every argument.
@@ -170,7 +186,17 @@ class ControlLogger:
         omitted, delta_cmd falls back to steer_rad and a_cmd to 0.0 so the
         Stanley controller (which has no longitudinal command) still logs and
         scores its lateral behaviour.
+
+        The five latency arguments are optional and written as empty cells when
+        not supplied, so callers that don't have them (Stanley) still log.
+          pose_age_s      age of the pose fed to this solve (s)
+          path_age_s      age of the planner path fed to this solve (s)
+          n_delay         integer rollforward depth the controller chose
+          solve_ms        QP solve wall time (ms)
+          cmd_latency_ms  loop entry -> command publish (ms)
         """
+        def _f(x, fmt='.4f'):
+            return '' if x is None else format(float(x), fmt)
         if delta_cmd is None:
             delta_cmd = steer_rad
         if a_cmd is None:
@@ -183,6 +209,9 @@ class ControlLogger:
             f'{e_y:.4f}', f'{math.degrees(e_psi_rad):.3f}', f'{yaw_rate:.4f}',
             f'{delta_cmd:.6f}', f'{a_cmd:.4f}',
             int(bool(solver_failed)), int(bool(inaccurate)),
+            _f(pose_age_s), _f(path_age_s),
+            '' if n_delay is None else int(n_delay),
+            _f(solve_ms, '.3f'), _f(cmd_latency_ms, '.3f'),
         ])
 
         # Same accumulation the offline tuner runs, step for step.

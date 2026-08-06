@@ -651,6 +651,66 @@ TAIL_QUANTILE = 0.8
 
 
 # ==============================================================================
+# POSE FEED HOLD (sim-to-real: the pose sometimes stops updating)
+# ==============================================================================
+# POSE_HOLD_ENABLED — "Does the simulated controller sometimes get handed the
+# SAME pose it got last tick, instead of a fresh one?"
+# On the real car, /fsae/slam/car_position intermittently stops publishing and
+# the controller re-uses its last known pose while the car keeps moving. The
+# offline rollout used to hand it a brand-new exact pose every single tick, so
+# heading error could never accumulate — which is exactly why the simulator
+# showed smooth driving while the car wobbled on the same track with the same
+# weights.
+#
+# Measured on live telemetry (2026-08-06, two runs, same track, same tuned
+# weights, differing only in how badly the feed stalled):
+#
+#                          normal run       failed run
+#     fresh-pose rate      18.9 Hz          6.4 Hz
+#     repeated ticks       5.3%             60.7%
+#     longest hold         5 ticks (0.25s)  20 ticks (0.99s)
+#     peak pose_age        347 ms           1242 ms
+#
+# In the failed run the pose froze for ~1 s at 14 m/s — the car covered ~17 m
+# blind, and when the feed resumed the heading error was unrecoverable
+# (105 deg) and it spun. This is NOT DELAY_STEPS (which delays a pose that is
+# still fresh each tick) nor DELAY_JITTER_STEPS (which perturbs only the
+# controller's belief about the lag). It repeats the DATA.
+#   - True : the tuner sees a controller that must survive going briefly blind.
+#            Recommended, and the whole point of the model.
+#   - False: previous behaviour, optimistic; the sim will keep flattering
+#            weights that cannot cope on the car.
+POSE_HOLD_ENABLED = True
+
+# POSE_HOLD_PROB — chance, on a tick that delivered a FRESH pose, that a hold
+# begins. Verified against the logs: 0.05 with the mean/max below reproduces
+# 5.1% repeated ticks / mean hold 2.10 against the normal run's measured
+# 5.3% / 2.08.
+# To reproduce the FAILED run instead (60.7% repeated, mean hold 5.05, max 20)
+# set POSE_HOLD_PROB=0.40, POSE_HOLD_MEAN_TICKS=5.05, POSE_HOLD_MAX_TICKS=20 —
+# that config measures 61.2% / 4.99 / 20. Useful as a recovery stress test,
+# but do NOT tune against it as the normal case; it is a fault condition, not
+# the expected operating point.
+#   - Typical adjustment: 0.01 at a time.
+POSE_HOLD_PROB = 0.05
+
+# POSE_HOLD_MEAN_TICKS — average length of a hold, in control ticks (0.05 s
+# each). Measured 2.08 ticks on the normal run. Hold length is drawn
+# geometrically, which reproduces the observed shape: mostly 2-tick holds with
+# a thin tail of longer ones.
+POSE_HOLD_MEAN_TICKS = 2.1
+
+# POSE_HOLD_MAX_TICKS — hard cap on a single hold, counted as total ticks
+# including the fresh one. 5 (0.25 s) matches the worst hold in the normal run.
+POSE_HOLD_MAX_TICKS = 5
+
+# POSE_HOLD_SEED — fixed so each rollout is reproducible and CMA-ES still gets
+# a stable score per candidate. Change it only to check that a tuned result
+# isn't overfitted to one particular hold sequence.
+POSE_HOLD_SEED = 24680
+
+
+# ==============================================================================
 # CONSTRAINED SCORING STRUCTURE (added 2026-08-06)
 # ==============================================================================
 # The score used to be one weighted sum of 12 metrics plus additive bonuses and

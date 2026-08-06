@@ -46,6 +46,8 @@ from settings import (
     DELAY_JITTER_STEPS, DELAY_JITTER_SEED,
     SLAM_NOISE_ENABLED, SLAM_POS_JITTER_STD, SLAM_YAW_JITTER_STD,
     SLAM_POS_DRIFT_STD, SLAM_YAW_DRIFT_STD, SLAM_DRIFT_TAU, SLAM_NOISE_SEED,
+    POSE_HOLD_ENABLED, POSE_HOLD_PROB, POSE_HOLD_MEAN_TICKS,
+    POSE_HOLD_MAX_TICKS, POSE_HOLD_SEED,
 )
 
 STALL_CHECK_INTERVAL = 60   # Steps between rolling stall checks (3 s at 20 Hz)
@@ -145,6 +147,105 @@ class SlamNoise:
         y_est = y + self._drift[1] * self._pos_drift_std + jitter[1] * self._pos_jitter_std
         yaw_est = yaw + self._drift[2] * self._yaw_drift_std + jitter[2] * self._yaw_jitter_std
         return float(x_est), float(y_est), float(_normalize_angle(yaw_est))
+
+
+class PoseFeedHold:
+    """
+    Models the live pose feed REPEATING the previous measurement instead of
+    delivering a fresh one — the dominant sim-to-real gap, measured 2026-08-06.
+
+    WHY THIS EXISTS
+    ---------------
+    The offline rollout gave the controller a brand-new, exact pose every
+    single tick. DELAY_STEPS models a fixed 50 ms lag, but the controller
+    still learns something new every step, so its heading error can never
+    accumulate. The real car does not work that way: `/fsae/slam/car_position`
+    intermittently stops publishing, and the controller re-uses the last pose
+    it received while the car keeps moving.
+
+    Measured from live telemetry (mpc_standalone_control_1786007642 and
+    ...614, same track, same tuned gains, differing only in how badly the feed
+    stalled):
+
+                              normal run      failed run
+        fresh-pose rate       18.9 Hz         6.4 Hz
+        repeated ticks        5.3%            60.7%
+        longest hold          5 ticks (0.25s) 20 ticks (0.99s)
+        peak pose_age         347 ms          1242 ms
+
+    In the failed run the pose froze for ~1 s at 14 m/s — the car travelled
+    ~17 m with no positional update, and when the feed resumed the heading
+    error was unrecoverable (105 deg) and it spun. Both runs used identical
+    weights on identical track; the only difference was the feed.
+
+    This is NOT the same thing as DELAY_STEPS or DELAY_JITTER_STEPS:
+      - DELAY_STEPS delays a pose that is still FRESH each tick.
+      - DELAY_JITTER_STEPS perturbs only the controller's BELIEF about the lag.
+      - This repeats the DATA, so pose_age genuinely ramps and the controller
+        is flying blind. Nothing in the previous model produced that.
+
+    MODEL
+    -----
+    Two-state Markov chain over "fresh" and "held":
+      - each tick, with probability `p_hold`, a hold begins
+      - hold length is drawn geometrically, mean `mean_hold_ticks`, capped at
+        `max_hold_ticks`
+    A geometric hold length reproduces the measured histogram shape well: many
+    short 2-tick holds, a thin tail of long ones. Fitting anything more
+    elaborate to two runs would be overfitting.
+
+    The whole ESTIMATED state is frozen, not just x/y — the live log shows
+    v_actual and yaw repeating alongside position, because they come from the
+    same odometry message. Freezing position while letting speed update would
+    model a failure mode that does not exist.
+
+    Seeded, so rollouts stay reproducible and CMA-ES still gets a stable score
+    per candidate (see settings.POSE_HOLD_SEED).
+    """
+
+    def __init__(self, p_hold, mean_hold_ticks, max_hold_ticks, seed):
+        self._rng = np.random.default_rng(seed)
+        self._p_hold = float(np.clip(p_hold, 0.0, 1.0))
+        # Geometric success prob giving the requested mean hold length.
+        # Repeats per hold average mean_hold - 1 (see apply()); guard the
+        # degenerate mean_hold <= 1 case, which means "never actually hold".
+        self._mean_hold = max(float(mean_hold_ticks), 1.0)
+        self._q_repeat = 1.0 / max(self._mean_hold - 1.0, 1e-6)
+        self._q_repeat = float(np.clip(self._q_repeat, 1e-6, 1.0))
+        self._max_hold = int(max(1, max_hold_ticks))
+        self._remaining = 0          # ticks still to hold
+        self._held = None            # the frozen (state, X, Y, psi) tuple
+
+    def apply(self, state_est, X_est, Y_est, psi_est):
+        """
+        Return the pose the controller actually sees this tick, plus how many
+        ticks old it is.
+
+        Returns (state_est, X, Y, psi, age_ticks). age_ticks is 0 on a fresh
+        sample and increments through a hold, mirroring the live pose_age_s.
+        """
+        if self._remaining > 0:
+            self._remaining -= 1
+            s, x, y, psi, age = self._held
+            self._held = (s, x, y, psi, age + 1)
+            return s, x, y, psi, age + 1
+
+        # Fresh sample this tick; decide whether the NEXT ticks are held.
+        # A "hold of length L" spans L ticks TOTAL (this fresh one plus L-1
+        # repeats), matching how the live histogram was counted, so the number
+        # of repeat ticks to schedule is L-1. np.random.geometric returns >= 1,
+        # hence the -1: without it every hold ran one tick long and the mean
+        # came out at 2.94 against a measured 2.08.
+        if self._rng.random() < self._p_hold:
+            # A hold spans `mean_hold_ticks` ticks TOTAL (this fresh one plus
+            # the repeats), matching how the live histogram was counted, so the
+            # number of REPEATS to schedule averages mean_hold - 1. A geometric
+            # draw has mean 1/q, hence q = 1/(mean_hold - 1).
+            self._remaining = int(np.clip(
+                self._rng.geometric(self._q_repeat), 1, self._max_hold - 1))
+
+        self._held = (state_est.copy(), float(X_est), float(Y_est), float(psi_est), 0)
+        return state_est, X_est, Y_est, psi_est, 0
 
 
 _PREDICT_EPSI_CLIP = 0.5   # rad (~28.6°) — small-angle bound, see predict_ahead below
@@ -333,6 +434,22 @@ def run_core_rollout(
             drift_tau=SLAM_DRIFT_TAU,
         )
 
+    # ── Pose-feed hold ────────────────────────────────────────────────────
+    # Models the live pose feed repeating its last measurement instead of
+    # delivering a fresh one. See PoseFeedHold — this is the measured dominant
+    # sim-to-real gap, and it is deliberately applied AFTER SLAM noise so a
+    # held tick repeats the corrupted pose the controller actually saw, not a
+    # freshly-corrupted one (re-drawing noise during a freeze would leak new
+    # information into a period when the controller should be blind).
+    pose_hold = None
+    if POSE_HOLD_ENABLED:
+        pose_hold = PoseFeedHold(
+            p_hold=POSE_HOLD_PROB,
+            mean_hold_ticks=POSE_HOLD_MEAN_TICKS,
+            max_hold_ticks=POSE_HOLD_MAX_TICKS,
+            seed=POSE_HOLD_SEED,
+        )
+
     metrics = RolloutMetrics()
     idx = 0
     last_idx = 0
@@ -386,6 +503,14 @@ def run_core_rollout(
         state_est = state.copy()
         state_est[0], state_est[1], state_est[2] = X_est, Y_est, psi_est
 
+        # Freeze the estimated pose for the duration of a hold. pose_age_ticks
+        # mirrors the live pose_age_s telemetry column.
+        pose_age_ticks = 0
+        if pose_hold is not None:
+            state_est, X_est, Y_est, psi_est, pose_age_ticks = pose_hold.apply(
+                state_est, X_est, Y_est, psi_est
+            )
+
         car_pos_np = np.array([X_est, Y_est])
 
         if want_history:
@@ -400,8 +525,19 @@ def run_core_rollout(
         # ── Tracking error + speed target (planner or oracle) ─────────────────
         rpsi = None
         if use_planner:
-            b_vis, y_vis = perception.visible_cones(X_est, Y_est, psi_est)
-            planner.update(b_vis, y_vis, car_pos_np, psi_est)
+            # Skip perception/planning entirely while the pose is held. On the
+            # car, a stalled pose feed stalls everything downstream of it: the
+            # planner is triggered by car_position, so no new pose means no new
+            # centreline AND no new tracking error. Re-planning here from a
+            # frozen pose would still hand the controller a subtly different
+            # centreline each tick (the fit is not a pure function of pose), so
+            # e_y would keep changing and the controller would never actually
+            # be blind — which is exactly what the first version of this model
+            # got wrong (measured: e_y repeated on 0.0% of ticks instead of the
+            # intended ~5%).
+            if pose_age_ticks == 0:
+                b_vis, y_vis = perception.visible_cones(X_est, Y_est, psi_est)
+                planner.update(b_vis, y_vis, car_pos_np, psi_est)
 
             cl = planner.centreline
             if cl is not None and len(cl) >= 2:
