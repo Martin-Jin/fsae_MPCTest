@@ -362,6 +362,21 @@ spline-fit residual check in `centerline_planner.py`, and/or rejecting cone
 pairings that imply a sub-3.7 m radius. Investigate why lap 2 is worse than lap
 1 first — that points at cone-map accumulation rather than the fitter itself.
 
+### Related but eliminated: `blend_paths`' reset-bypass discontinuity
+
+`path_utils.py::blend_paths()` (used by both `centerline_planner.py` and
+`sim/sim_track.py`, `alpha=0.4`) exists to stop the from-scratch rebuild every
+pose tick from producing a heading jump. It has a `reset_dist=2.0` m bypass
+that skips the blend entirely when the rebuild has moved too far from the
+previous publish — plausibly correlated with this section's curvature-spike
+defect, since a spike event is exactly when the rebuild changes most.
+Measured on the offline sim (`tuner/blend_reset_diagnostics.py`,
+`sim_to_real_investigation.md` §14): real, can jump the reference up to 166°
+on other geometries, but **fires 0/1038 times on the recorded map** (max
+trigger-distance 1.98 m, just under the threshold) — so it cannot explain
+that map's saturation gap. Re-check if a planner fix here changes rebuild
+volatility enough to push the recorded map over 2.0 m.
+
 ## Simulator fidelity limits (what FSDS does NOT model)
 
 Read this before trusting any offline or FSDS result as a prediction of

@@ -794,6 +794,84 @@ matplotlib import was observed to crash the whole process, not just skip
 `cma.plot()`, depending on backend state, and cost two failed runs before being
 tracked down).
 
+## 14. Testing the reference-heading lead: does `blend_paths`' reset bypass fire?
+
+*(2026-08-07.)* §12.8/12.9 found the residual gap is a *turn-in transient*
+property (2.6× more saturation-episode entries, same duration/severity once
+entered) and that both stacks chase a reference heading swinging faster than
+either car can yaw. §13's ledger then ruled out every *plant/ceiling*
+parameter as the explanation. This section tests the next candidate — the
+*planner* — without touching any planner file, per the standing caution in
+`planning_control_sync.md` ("Known planner defect: centreline curvature
+spikes").
+
+**The mechanism.** `planning/path_utils.py`'s `blend_paths()` exists
+specifically because the planner rebuilds the centreline from scratch every
+pose tick (`centerline_planner.py::_planning_loop`, confirmed by reading the
+code — `build_path_walls()` is called fresh each cycle from the accumulated
+`ConeMap`, with no previous-path seed into the geometry fit itself). Without
+blending, successive rebuilds would jump and the controller would track that
+jump as a heading swing — exactly the symptom in §12.8. `blend_paths` eases
+between rebuilds via an EMA (`alpha=0.4`, both `centerline_planner.py` on the
+live side and `sim/sim_track.py::SimPlanner.update()` on the sim side — same
+function, same default, genuine parity, confirmed by reading both). But it
+has an escape hatch: if the mean resampled distance between the fresh rebuild
+and the previous *published* path exceeds `reset_dist=2.0` m, the blend is
+skipped and the raw new path is published unblended — "the paths have
+genuinely diverged... snap to the new path instead of lagging toward the old
+one." That bypass fires exactly when the rebuild has moved the most, which is
+plausibly correlated with the documented curvature-spike defect (cone-map
+clutter worsening lap-over-lap). If it fires often and produces large
+near-field heading jumps, it is a second, independent mechanism for exactly
+the symptom in §12.8 — distinct from curvature magnitude, because even a
+smooth centreline could still jump if consecutive publishes are not
+temporally consistent with each other.
+
+**Measured with `tuner/blend_reset_diagnostics.py`** (new, this session) — a
+non-invasive wrapper around `blend_paths` that counts reset events and the
+resulting near-field heading jump, without changing the function's behaviour
+(the rollout is byte-for-byte identical to an uninstrumented run):
+
+| track | calls | resets | reset dist (mean/max) | heading jump at reset (mean/p90/max) |
+|---|---|---|---|---|
+| **recorded map** (live-comparable) | 1038 | **0 (0.0%)** | — | — |
+| PATH_SPIRAL | 220 | 6 (2.7%) | 7.35 / 13.08 m | 88.9° / 166.2° / 166.4° |
+| PATH_SUDDEN_TURN | 225 | 0 (0.0%) | — | — |
+| PATH_HAIRPIN | 125 | 1 (0.8%) | 2.63 / 2.63 m | 8.4° / 8.4° / 8.4° |
+| PATH_FS_CORNER | 75 | 0 (0.0%) | — | — |
+| PATH_MICRO_SLALOM | 155 | 0 (0.0%) | — | — |
+
+Confirmed not an artifact of the 2.0 m threshold being unreachable: the
+recorded map's own reset-trigger distance distribution (measured directly,
+not just pass/fail) is mean 0.14 m, p99 1.00 m, **max 1.98 m** — a real
+distribution that sits just under the threshold, not a mechanism that never
+engages.
+
+**Result: the mechanism is real, parity-correct across both stacks, and can
+produce large discontinuities (up to 166° on a spiral) — but on the one
+live-comparable track it is measured against, it never fires.** This does not
+support "reset-bypass discontinuity" as the explanation for the recorded
+map's saturation gap: 0 events cannot produce 21.1% saturation. It does mean
+the mechanism is a live hazard on other geometries (tightening-radius spirals
+being the worst case measured) and should be re-checked if a future planner
+fix changes rebuild volatility enough to bring the recorded map's max (1.98
+m) over the 2.0 m line — it is close enough that a small increase in
+cone-map clutter would cross it.
+
+**What this does and does not rule out.** It rules out this *specific*
+mechanism (blend-defeat-by-divergence) as the explanation for the
+recorded-map gap. It does not rule out the planner more broadly — the
+reference-heading lead itself (§12.8) is still open and unexplained; this
+only closes off one candidate mechanism within it. The still-untested part of
+§12.8 is whether the *blended* path itself (the 97.3%+ of cycles that do
+*not* hit the reset) nonetheless carries a heading rate exceeding what the
+car can yaw, i.e. whether `alpha=0.4` blending is insufficient rather than
+bypassed. That is directly measurable offline from the same instrumentation
+and is the natural next step.
+
+**Reproduce with:** `python3 -m tuner.blend_reset_diagnostics` (needs
+`MPLBACKEND=Agg`, same `cma`/matplotlib import issue as §13's ledger).
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
@@ -865,7 +943,8 @@ tracked down).
 | **`alat_ceiling_tau`** | **Done (§12.12).** Measured 0.35 s median (0.28–0.46, 11/12 trials) with `step_s=8.0`; model set to 0.40. Fixing it did **not** close the saturation gap — the residual is elsewhere |
 | Ceiling is speed-dependent | **New, unmodelled (§12.4).** Measured sustained a_lat rises with speed — 6.45 @ 8 m/s, 7.54 @ 11, 9.26 @ 14 — while the model pins it flat at 7.5. Residuals +1.0 / ~0 / −1.76. Deliberately not fitted: 16 points, one run |
 | Step vs sweep disagree on level | **Open.** Step's 3 s settle says 7.5 @ 8 m/s; the sweep's long orbit says 6.45. A longer `step_s` resolves whether sustained a_lat keeps decaying past 3 s — same experiment as the `tau` re-measurement |
-| Planner reference heading | **New lead (§12.8).** In *both* stacks the reference heading swings faster than the car can yaw, and drives 78–100% of heading-error growth. Live's is 15–34% worse in the tail. Distinct from the *curvature* comparison §3 eliminated |
+| Planner reference heading | **Open, narrowed (§12.8, §14).** In *both* stacks the reference heading swings faster than the car can yaw, and drives 78–100% of heading-error growth. Live's is 15–34% worse in the tail. Distinct from the *curvature* comparison §3 eliminated |
+| `blend_paths` reset-bypass discontinuity | **Eliminated for the recorded map (§14).** Real, parity-correct mechanism, can jump the reference up to 166° on other geometries (PATH_SPIRAL) — but fires 0/1038 times on the recorded map (max trigger-distance 1.98 m, just under the 2.0 m threshold). Cannot explain 21.1% saturation with 0 events. Still open: whether the *blended* (non-bypassed) path itself swings faster than the car can yaw |
 | Identify the exact FSDS mechanism | **Done** — step test run (§9–10): a *dynamically enforced lateral-acceleration* ceiling. Both signatures present: different steering angles settle to the same response (a cap), yet yaw overshoots ~30% first (not a static clip) |
 | Ceiling decay time constant | **Done — see `alat_ceiling_tau` above (§12.12).** Superseded the original 0.04–1.06 s scattered fit from the 3 s hold |
 | Speed profile | **Closed, not a discrepancy** — see the correction below. Achieved speeds differ by 2% |
