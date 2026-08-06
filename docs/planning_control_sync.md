@@ -544,15 +544,22 @@ arrives in sustained episodes (median 0.47 s, up to 2.44 s, 96% of energy below
 | **yaw_rate / speed telemetry error** | **No** — channels validated against pose derivatives |
 | **tyre front/rear balance** | **No** — needs C_f at 10% of physical to reach live K_us |
 
-**ROOT CAUSE FOUND** (2026-08-06, open-loop system-ID):
-**FSDS caps the car's yaw rate at ~0.7 rad/s once speed exceeds ~6 m/s.**
-Below that the commanded steering angle is delivered exactly (`s` = 1.00–1.01
-at 3 and 5 m/s); above it the response collapses (`s` = 0.34 at 8 m/s, 0.17 at
-14 m/s). The implied lateral-acceleration ceiling is **7.0 m/s²**, far below
-the 12.3 m/s² the same car reaches on a lap, so it is **not** tyre saturation —
-a grip limit does not depend on speed. The offline plant models no such cap,
-which is the entire sim-to-real gap. See "RESULT: FSDS caps yaw rate above
-~6 m/s" below.
+**ROOT CAUSE FOUND** (2026-08-06, open-loop system-ID + step test):
+**FSDS enforces a sustained LATERAL-ACCELERATION ceiling of ~7.5 m/s².**
+Below ~6 m/s the car never reaches it and the commanded steering angle is
+delivered exactly (`s` = 1.00–1.01 at 3 and 5 m/s); above it the yaw response
+collapses (`s` = 0.34 at 8 m/s, 0.17 at 14 m/s). It is far below the 12.3 m/s²
+the same car reaches on a lap, so it is **not** tyre saturation — a grip limit
+does not depend on speed.
+
+The sweep alone read this as a *yaw-rate* cap (~0.7 rad/s); the step test
+showed **lateral acceleration** is what is held constant (1.07× spread across
+speeds vs 1.56× for yaw rate). The two are indistinguishable at a single speed.
+
+**Now modelled** in `model/vehicle_physics.py` (`alat_ceiling*`). It moves every
+metric toward the car but closes only part of the gap — live still saturates 3×
+more often. See "MECHANISM: a dynamically-enforced lateral-acceleration
+ceiling" below, and `sim_to_real_investigation.md` for the full history.
 
 The pose-feed hold is real (see `PoseFeedHold`) and is now modelled, but it
 accounts for almost none of the gap.

@@ -11,20 +11,31 @@ numerical match and was still wrong). Anyone revisiting this — or tempted to
 re-try a candidate that looks unexplored — needs the reasoning, not the diffs.
 
 For the current state and what to do about it, read
-[`planning_control_sync.md`](planning_control_sync.md) →
-"RESULT: FSDS caps yaw rate above ~6 m/s". This file is the *history*.
+[`planning_control_sync.md`](planning_control_sync.md) → "MECHANISM: a
+dynamically-enforced lateral-acceleration ceiling". This file is the *history*.
 
 ---
 
 ## The bottom line, first
 
-**FSDS caps the car's yaw rate at ~0.7 rad/s once speed exceeds ~6 m/s.**
-Below that it delivers the commanded steering angle exactly; above it the
-response collapses. The offline plant models no such cap — that is the entire
-gap.
+**FSDS enforces a sustained LATERAL-ACCELERATION ceiling of ~7.5 m/s².**
+Below ~6 m/s the car never reaches it and delivers the commanded steering
+angle exactly; above that the yaw response collapses. It is a *sustained*
+ceiling, not a wall — the live car exceeds it on 9.8% of ticks (peak 12.34) in
+short excursions. The offline plant modelled no such cap.
 
-It is **not** tyre grip, not the plant model, not the planner, not latency, and
-not the tuner. Every one of those was measured and eliminated.
+> Earlier revisions of this file described it as a **yaw-rate** cap at
+> ~0.7 rad/s. That was the sweep's reading from a single capped speed; the
+> step test showed lateral acceleration is what is held constant (spread 1.07×
+> across speeds, vs 1.56× for yaw rate). Yaw rate and lateral acceleration are
+> indistinguishable at one speed and diverge across a sweep.
+
+It is **not** tyre grip, not the planner, not latency, and not the tuner —
+every one measured and eliminated (§1–§7).
+
+**The cap is necessary but NOT sufficient.** Modelling it moves every metric
+toward the car, yet live still saturates 3× more often (21.1% vs 6.3%) and
+carries 2× the heading error. Something else remains — see "Open / deferred".
 
 ---
 
@@ -343,6 +354,73 @@ explanation was checking the wrong number. Fixed.)*
 
 ---
 
+## 10. Modelling the cap (and two false starts)
+
+Implemented in `model/vehicle_physics.py` as a restoring yaw moment with a
+first-order lag — new state `IDX_ALAT_LIM`, `N_STATES` 24 → 25. A clip was
+rejected: it reproduces steady state but removes the turn-in transient, which
+is exactly what the MPC reacts to.
+
+    alat_ceiling         7.5 m/s2    measured settled a_lat
+    alat_ceiling_gain    700         fitted to measured PEAK a_lat
+    alat_ceiling_tau     0.25 s      fast enough to cap a real corner entry
+    alat_ceiling_enabled True        models FSDS, NOT the physical car
+
+**False start 1 — fitting `tau` to the overshoot.** The step test measured ~30%
+overshoot, so `tau = 1.0 s` was chosen to reproduce it. It did, beautifully —
+and then **DNF'd the car at 6.3 s** on a real lap. Corners arrive in ~0.4 s, so
+a term taking ~1 s to build does nothing during turn-in, lets the car run wide,
+and engages only once it is already off line. *A ceiling that acts too late is
+worse than no ceiling.* `tau = 0.25` matches peak a_lat instead and acts in
+time.
+
+**False start 2 — fitting `gain` to the settled value.** `gain = 3000` matched
+the settled 7.80/7.29 almost exactly, and thereby enforced 7.5 as a
+near-absolute limit. But 7.5 is a *sustained* ceiling: the live car exceeds it
+on 9.8% of ticks, peaking at 12.34, in bursts of median 0.05 s. The stiff gain
+was **stricter than the real car** and pushed `e_y` off track. Refitting to the
+measured *peak* (700) reproduces the excursions and completes the lap.
+
+**And a wrong diagnosis in between.** When the stiff-gain version DNF'd, I
+blamed the recorded track's speed profile — claiming it was ~50% faster than
+the car. It is not. That compared the stored oracle profile `V` (mean 12.08,
+used only to size the step budget, never the runtime target) against the live
+car's *achieved* speed (8.03). Like for like, achieved speeds differ by 2%
+(8.20 vs 8.03), and over the first 6 s the live car is *faster*. Code parity
+was verified too: both stacks run `curvature_speed` with the same constants and
+both apply `tracking_error_speed_gate` and the rise-rate limit at runtime.
+
+Same failure mode as the μ=1.455 fit: **check that the two numbers being
+compared are the same quantity** before drawing a conclusion from their ratio.
+
+**Result** — same map, same tuned gains:
+
+| | before | after | live |
+|---|---|---|---|
+| steering saturation | 4.4% | **6.3%** | **21.1%** |
+| reversals/s | 0.84 | 0.82 | 1.62 |
+| \|e_psi\| mean / p90 | 6.3 / 14.2 | **7.3 / 19.2** | **15.9 / 42.0** |
+| a_lat max | 14.06 | **10.53** | 12.34 |
+| a_lat > 7.5 | 14.2% | 14.2% | 9.8% |
+
+Every metric moves the right way and peak lateral is now realistic — but the
+gap is only partly closed.
+
+---
+
+## 11. Also verified: cone geometry is accurate
+
+Checked because a track-geometry mismatch would corrupt every planner
+comparison. Track width is **exactly 3.50 m** with zero variance, matching
+`TRACK_HALF_WIDTH = 1.75`; cone spacing is median ~4.0 m with 98–99% inside the
+5 m FS limit. Not a source of the gap.
+
+> Measure spacing **along the path**, not down the array. Cones are stored in
+> recording order, so differencing consecutive entries reports phantom gaps up
+> to 43.7 m. Project onto the nearest centreline index and sort first.
+
+---
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
@@ -373,7 +451,9 @@ explanation was checking the wrong number. Fixed.)*
 |---|---|
 | **Model the yaw cap offline** | **Done** — `alat_ceiling*` in `model/vehicle_physics.py`. Moves every metric toward the car (saturation 4.4→6.3%, a_lat max 14.06→10.53) but closes only part of the gap; live is still 21.1% saturation |
 | Remaining saturation gap | **Open** — the cap was necessary but not sufficient. Needs its own investigation |
-| Identify the exact FSDS mechanism | **Test built, awaiting a run.** `run_steering_step.sh` + `tuner/steering_step_analysis.py`, validated against all three injected mechanisms. Preliminary evidence (25–75% overshoot in the sweep's HOLD_STEER windows) points at **active damping**, which would rule out a hard clip |
+| Identify the exact FSDS mechanism | **Done** — step test run (§9–10): a *dynamically enforced lateral-acceleration* ceiling. Both signatures present: different steering angles settle to the same response (a cap), yet yaw overshoots ~30% first (not a static clip) |
+| Ceiling decay time constant | **Not reliably measured.** Fitting peak→settled gave median 0.08 s over a 0.04–1.06 s range (rise a cleaner 0.40 s). `alat_ceiling_tau = 0.25` was chosen to match peak a_lat and act in time, not from this fit. Needs a longer `step_s` and more repeats |
+| Speed profile | **Closed, not a discrepancy** — see the correction below. Achieved speeds differ by 2% |
 | Objective rebalancing | Deferred (§1) — `QUALITY_WEIGHT` 0.35 → ~0.8, saturation as near-constraint |
 | Step 4: held-out tracks | 5 of 10 tracks unused |
 | Live scorer reports `13.0` | Every live run scores `CONSTRAINT_FLOOR + DNF_PENALTY` — the car has no known path end |
