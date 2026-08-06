@@ -687,17 +687,81 @@ which no lap log can do.
 
 #### The open-loop experiment (built, not yet run)
 
-- **Node:** `fsae_control/steering_sysid.py` (`ros2 run fsae_control
-  steering_sysid`). Bypasses the MPC and publishes straight to
-  `/fsds/control_command`: settle to speed straight-line, apply a fixed
-  steering command, let yaw settle, then record. 25 points
-  (5 speeds × 5 angles), ~5–6 min. Logs to
-  `~/fsae_logs/steering_sysid_<ts>.csv`.
-- **Analysis:** `tuner/steering_sysid_analysis.py`.
+**Where the three pieces live** — none of this is mirrored; see
+"Why none of it is mirrored" below.
 
-**Run it on an empty map.** It drives in circles at up to 14 m/s and does not
-brake for cones. Do not run it alongside `fsds_bridge` or any controller —
-both publish to `/fsds/control_command` and the commands would interleave.
+| file | repo | role |
+|---|---|---|
+| `control/fsae_control/fsae_control/steering_sysid.py` | `fsae_planning` (live ROS 2 ws) | the node — drives FSDS directly |
+| `ros2/run_steering_sysid.sh` | **FSDS repo root**, next to `launch_all.sh` | one-command harness |
+| `tuner/steering_sysid_analysis.py` | `fsae_MPCTest` | reads the log, names the mechanism |
+
+**Run it with one command** (starts FSDS, waits for RPC, starts the bridge,
+waits for odom, runs the sweep, analyses the log, tears everything down —
+including on Ctrl+C):
+
+    cd <FSDS repo>/ros2 && ./run_steering_sysid.sh
+
+Flags: `--no-sim` (FSDS already running), `--quick` (fewer points), and any
+`-p name:=value` passes through to the node.
+
+The harness **refuses to start** if `mpc_controller`, `fsds_bridge` or
+`stanley` is already running: two publishers on `/fsds/control_command`
+interleave commands and silently corrupt the log.
+
+**Run it on an empty map.** It circles at up to 14 m/s and does not brake for
+cones.
+
+##### Geometry constraints learned the hard way
+
+The first real run drove into a map wall. Three separate design faults, all
+now fixed — worth recording because each is easy to reintroduce:
+
+1. **Straight-line settling does not fit in any bounded area.** The original
+   sequence was settle-straight → turn → recover-straight, which carries the
+   car ~120 m downrange per point at 14 m/s (measured: 103 m of drift before
+   impact). The node now reaches target speed *while already turning*, so it
+   orbits instead of travelling.
+2. **A geofence is necessary but not sufficient.** `home_radius` (40 m,
+   return) and `max_radius` (70 m, hard abort) are checked from every phase.
+   On their own they fired ~126 times per sweep and starved it of time —
+   16/20 points in 40 min.
+3. **Some (speed, steering) pairs cannot be driven in a bounded area at all.**
+   Radius grows as `(L + K_us·v²)/δ`, so high speed with small steering traces
+   an enormous arc — at 14 m/s and 0.5 normalised steering the real orbit is
+   **~86 m across**. Those points are also the least informative (small angle
+   ⇒ small yaw signal). The node now predicts each orbit and skips the ones
+   that will not fit, logging what it dropped.
+
+   The prediction uses a **deliberately pessimistic** `K_US_ESTIMATE = 0.05`,
+   above the ~0.038–0.045 measured on the car. Over-estimating costs one
+   skipped point; under-estimating costs a geofence abort mid-measurement.
+   An earlier near-neutral estimate (0.005) predicted 23 m for that same
+   point and let it through — that is what caused fault 2's symptom.
+
+   With all three fixed: **16/16 points, 2.6 min, zero geofence triggers,**
+   max distance 63 m against the 70 m limit, full 3–14 m/s coverage retained.
+
+Default steering commands are `[0.5, 0.65, 0.8, 1.0]` — biased high for the
+same reason.
+
+##### Why none of it is mirrored
+
+`fsds_simulator/` is a PR-staging snapshot, and its rule is "do not add files
+that were never there". All three files are new, so none are mirrored:
+
+- `steering_sysid.py` — a diagnostic, not part of the car's runtime stack.
+- `run_steering_sysid.sh` — the mirror *does* carry `launch_all.sh`, but that
+  copy is **intentionally adapted** (different Windows username, its own
+  `cone_maps` path, different resolution), not a sync target. Copying the
+  sysid harness would create a second file needing the same manual
+  divergence, for no benefit.
+- `steering_sysid_analysis.py` — lives in `fsae_MPCTest` only; nothing to
+  mirror.
+
+The one knock-on: `setup.py`'s `steering_sysid` entry point is deliberately
+**omitted** from the mirror's copy, since the module is not there. See the
+`setup.py` row in the file-mapping table.
 
 The log records the **raw normalised `cmd.steering`** alongside the roadwheel
 angle we assume it maps to. That assumption is the thing under test, so
@@ -723,6 +787,36 @@ because speed-scaled rack and understeer are near-degenerate over a narrow
 band — they sat within 0.004 R² over 4–10 m/s, versus a separable 0.018–0.054
 over 3–14 m/s. **If the analyser prints a margin warning, widen the speed
 range and re-run rather than trusting the verdict.**
+
+The analyser also refuses to return a verdict when fewer than 3 RECORD windows
+contain real motion. A car wedged against a wall still emits RECORD rows, but
+they are all zero speed / zero yaw; fitting those gives `R² = nan` for every
+model, and the ranking then reports a confident, meaningless answer. (Observed:
+the first crashed run produced "FSDS delivers the commanded angle" from pure
+zeros.)
+
+##### First partial data — not yet conclusive
+
+The wall-crash run still yielded **11 valid points at 3–5 m/s** before impact,
+and they point somewhere unexpected:
+
+| | measured open-loop | same speeds, from lap logs |
+|---|---|---|
+| `s = δ_ach/δ_cmd` at 3 m/s | **1.09–1.26** | — |
+| `s` at 5 m/s | **1.04–1.21** | ~0.85 at 4 m/s |
+| `s` at 8 m/s (1 point) | 1.05 | ~0.42 at 6 m/s |
+| fitted `K_us` | **0.0000** | 0.038–0.045 |
+
+Open-loop, the car delivers the commanded angle — slightly *more* than
+commanded — with no measurable understeer over the range reached. That is the
+opposite of the lap-log finding.
+
+**Do not conclude from this yet.** The run reached 8 m/s exactly once, and the
+entire gap lives above that speed; the analyser correctly flagged the
+top-two margin as too small to separate. But if the full sweep holds `s ≈ 1`
+out to 14 m/s, the plant is exonerated and the investigation moves to the
+**controller and its reference**, not the vehicle model — a materially
+different search from the one this section has pursued so far.
 
 > **Not yet acted on.** No plant change is recommended from this measurement
 > alone. Reproducing `K_us ≈ 0.04` by bending tyre parameters would match the

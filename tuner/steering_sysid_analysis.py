@@ -134,6 +134,21 @@ def main(argv):
 
     print(f"=== {path.split('/')[-1]} ===")
     print(f"{len(pts)} steady test points  (assumed L = {WHEELBASE} m)\n")
+
+    # A car wedged against a wall still emits RECORD rows, but they are all
+    # zero speed / zero yaw.  Fitting those yields R2 = nan for every model,
+    # and the ranking would then hand back a confident, meaningless verdict.
+    moving = [p for p in pts if abs(p['v']) > 1.0 and abs(p['yaw_rate']) > 1e-3]
+    if len(moving) < 3:
+        print("!! The car was not moving during the RECORD windows "
+              f"({len(moving)} of {len(pts)} points have real motion).")
+        print("   This usually means it stalled against a wall or never "
+              "reached the target speed.")
+        print("   No verdict: the log contains no usable measurement.")
+        return 1
+    if len(moving) < len(pts):
+        print(f"   (ignoring {len(pts) - len(moving)} stationary point(s))\n")
+        pts = moving
     print(f"  {'v':>6} {'steer_n':>8} {'d_cmd':>7} {'d_ach':>7} {'s':>6} "
           f"{'a_lat':>6} {'drift':>7}")
     for p in sorted(pts, key=lambda q: (q['v'], abs(q['steer_norm']))):
