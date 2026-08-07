@@ -244,6 +244,41 @@ OFFTRACK_LIMIT = TRACK_HALF_WIDTH * 1.3  # Lateral error threshold for DNF (m)
 # calculation in the project.
 DT = 0.05
 
+# REF_HEADING_RISE_RATE — "How fast is the planner's steering target allowed
+# to swing before we start holding it back?"
+# sim_to_real_investigation.md S26/S27 found the planner's published centreline
+# sometimes points much further into an upcoming corner than the car has
+# actually turned yet ("anticipating" a corner early) — a real but sustained
+# effect (not a single bad frame), concentrated at sharp braking corners, and
+# strongly linked to steering saturation (up to 18x more likely on the ticks
+# where this happens). This limiter caps how fast the reference heading the
+# controller tracks (ref_psi) is allowed to change per second, exactly like
+# SPEED_TARGET_RISE_RATE already does for the speed target — the raw
+# direction is still used once the car catches up, this only slows how fast
+# the TARGET moves, so the controller isn't asked to snap onto a heading the
+# car has no chance of reaching yet.
+#   - Increase it (or disable): the controller reacts to the planner's full
+#     corner-anticipation immediately — can drive the reported saturation gap
+#     in S26/S27 but may also mean earlier, more confident turn-in.
+#   - Decrease it: smoother, later turn-in, but risks entering a tight corner
+#     with too little heading correction already applied ("understeering in").
+#   - Units: deg/s. Only the MAGNITUDE of change is capped; sign (turning
+#     left vs. right) is never touched, so this cannot reverse a correction.
+#
+# MEASURED (sim_to_real_investigation.md S28): 90 is the tightest value with
+# NO DNF anywhere in settings.VALIDATION_SUITE. It cuts recorded-map
+# saturation 4.62%->3.07% and suite-mean saturation 8.99%->6.02% with no
+# per-path regression. Values below ~85 look even better on the recorded map
+# (65 reaches 0.00% saturation there) but DNF PATH_MICRO_SLALOM off-track —
+# the reference is held back so hard the car cannot keep up on a fast, tight
+# slalom. Do not lower this without re-running
+# tuner/ref_heading_limiter_suite_check.py; the recorded map alone hid this
+# failure mode completely.
+# Default OFF until validated live — see S28 for the full sweep before
+# enabling on the car.
+REF_HEADING_RATE_LIMIT_ENABLED = False
+REF_HEADING_RISE_RATE = 90.0   # deg/s — only used when the flag above is True
+
 # ------------------------------------------------------------------------------
 # Cost function weights (for simulator only)
 # ------------------------------------------------------------------------------

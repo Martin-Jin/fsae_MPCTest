@@ -49,6 +49,7 @@ from settings import (
     POSE_HOLD_ENABLED, POSE_HOLD_PROB, POSE_HOLD_MEAN_TICKS,
     POSE_HOLD_MAX_TICKS, POSE_HOLD_SEED,
     CONE_NOISE_ENABLED, CONE_POS_JITTER_STD, CONE_NOISE_SEED,
+    REF_HEADING_RATE_LIMIT_ENABLED, REF_HEADING_RISE_RATE,
 )
 
 STALL_CHECK_INTERVAL = 60   # Steps between rolling stall checks (3 s at 20 Hz)
@@ -72,6 +73,54 @@ SPEED_TARGET_RISE_RATE = 2.0
 def _normalize_angle(angle):
     """Wrap an angle to (−π, π] using atan2."""
     return np.arctan2(np.sin(angle), np.cos(angle))
+
+
+def _rate_limit_ref_psi(ref_psi_raw, ref_psi_prev, max_rate_rad_per_s, dt):
+    """
+    Cap how fast the reference heading (ref_psi) is allowed to change per
+    tick, same shape as SPEED_TARGET_RISE_RATE's cap on v_target.
+
+    Why this exists: sim_to_real_investigation.md S26/S27. Most of the
+    planner's reference-heading swing is real track geometry, but a
+    tail-concentrated excess — the reference correctly anticipating a sharp
+    corner earlier than the car has actually yawed — is strongly linked to
+    steering saturation (measured there, not assumed here). Limiting only the
+    RATE (never the final direction — once the car catches up, the raw
+    reference is reached again) trades slightly later turn-in commitment for
+    not asking the controller to snap onto a heading the car has no chance of
+    reaching yet.
+
+    Symmetric (limits swings in either direction) — unlike
+    SPEED_TARGET_RISE_RATE, which only limits increases because slowing down
+    is always safe. There is no equivalent "always safe" direction for a
+    heading reference: swinging the target toward straight ahead just as
+    hard as toward the apex can be equally premature relative to where the
+    car has actually turned.
+
+    Parameters
+    ----------
+    ref_psi_raw : float
+        This tick's actual reference heading (rad), unwrapped-compatible with
+        ref_psi_prev (i.e. already continuous, not wrapped to [-pi, pi]).
+    ref_psi_prev : float or None
+        Previous tick's LIMITED reference heading. None on the first tick
+        after start/reset, in which case the raw value passes through
+        unlimited (mirrors v_des_prev's None handling).
+    max_rate_rad_per_s : float
+        Maximum |d(ref_psi)/dt|, rad/s.
+    dt : float
+        Tick period, s.
+
+    Returns
+    -------
+    float — the limited reference heading (rad, unwrapped-compatible).
+    """
+    if ref_psi_prev is None:
+        return ref_psi_raw
+    max_step = max_rate_rad_per_s * dt
+    delta = _normalize_angle(ref_psi_raw - ref_psi_prev)
+    delta = np.clip(delta, -max_step, max_step)
+    return ref_psi_prev + delta
 
 
 class SlamNoise:
@@ -473,6 +522,11 @@ def run_core_rollout(
     # Previous step's speed target, for the rise-rate limiter above.
     v_des_prev = None
 
+    # Previous step's LIMITED reference heading, for REF_HEADING_RATE_LIMIT.
+    # Unwrapped/continuous (not [-pi, pi]) so consecutive limiting steps
+    # compose correctly across the wrap boundary.
+    ref_psi_prev = None
+
     # ── SLAM / localisation noise ─────────────────────────────────────────
     # Corrupts only the pose fed to perception/planner/tracking-error; the
     # plant and the score always see the true state. See SlamNoise.
@@ -605,6 +659,22 @@ def run_core_rollout(
                     state_est, path_x=cl_x, path_y=cl_y, path_psi=cl_psi
                 )
                 rpsi = psi_est - e_psi
+
+                # ── Reference-heading rate limit (settings.REF_HEADING_RATE_LIMIT_ENABLED) ──
+                # See sim_to_real_investigation.md S26/S27 and _rate_limit_ref_psi's
+                # own docstring for the mechanism. Only applied here (the live
+                # planner branch) — the fallback/oracle branches below reference
+                # path_X/path_Y/path_Psi, the fixed geometric path S26 showed does
+                # NOT carry this excess, so there is nothing to limit there.
+                if REF_HEADING_RATE_LIMIT_ENABLED:
+                    rpsi_limited = _rate_limit_ref_psi(
+                        rpsi, ref_psi_prev, np.radians(REF_HEADING_RISE_RATE), DT
+                    )
+                    ref_psi_prev = rpsi_limited
+                    e_psi = _normalize_angle(psi_est - rpsi_limited)
+                    rpsi = rpsi_limited
+                else:
+                    ref_psi_prev = rpsi
 
                 # No pre-computed profile exists for a live-built centreline (see
                 # SimPlanner) — derive the target speed on-demand each step from

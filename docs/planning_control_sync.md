@@ -417,6 +417,19 @@ pairings that imply a sub-3.7 m radius. Investigate why lap 2 is worse than lap
 > is a distinct, previously undocumented mechanism, not a resizing of this
 > section's `min_ahead` finding — treat them as two separate open items, not
 > one.
+>
+> **Update (2026-08-07, later still) — a candidate fix exists, off by
+> default, and it has its own suite-safety caveat.** `sim_to_real_investigation.md`
+> §28 adds a symmetric reference-heading rate limiter
+> (`settings.REF_HEADING_RATE_LIMIT_ENABLED`/`REF_HEADING_RISE_RATE`, in
+> `sim/rollout_core.py::_rate_limit_ref_psi`) that caps how fast the tracked
+> reference heading may change per tick — same shape as the existing
+> `SPEED_TARGET_RISE_RATE`. At 90°/s it improves saturation on both the
+> recorded map and every path in `VALIDATION_SUITE` with no DNF anywhere.
+> **Do not tighten this toward the recorded map's more dramatic numbers**
+> (65–70°/s reach 0% saturation there) — both DNF `PATH_MICRO_SLALOM`
+> off-track in the suite, a failure the recorded map cannot show because it
+> has no fast-reversal slalom geometry. Default OFF pending a live test.
 
 ### Fixed: a real cone-map duplication bug in `_absorb()`
 

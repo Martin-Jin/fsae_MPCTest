@@ -90,6 +90,23 @@ MAX_STEER_RAD: float = math.radians(25.0)
 MAX_ACCEL: float = 12.0
 MAX_BRAKE: float = 9.0
 
+# ── Reference-heading rate limit ─────────────────────────────────────────────
+# Mirrors fsae_MPCTest/sim/rollout_core.py's REF_HEADING_RATE_LIMIT_ENABLED /
+# REF_HEADING_RISE_RATE / _rate_limit_ref_psi — keep all three in sync.
+# See sim_to_real_investigation.md S26-S28: the planner's published centreline
+# sometimes anticipates a sharp corner earlier than the car has actually
+# yawed yet, a sustained (not single-frame) effect strongly linked to
+# steering saturation. This caps how fast the tracked reference heading
+# (path_yaw in _error_state) may change per tick, symmetric in both
+# directions — unlike the speed-target rise limiter, there is no "always
+# safe" direction for a heading reference. MEASURED value: 90 deg/s is the
+# tightest rate with no DNF across settings.VALIDATION_SUITE offline; do not
+# tighten this without re-running tuner/ref_heading_limiter_suite_check.py —
+# tighter values look better on the recorded map alone but DNF a fast slalom.
+# Default OFF pending a live test, matching the offline default.
+REF_HEADING_RATE_LIMIT_ENABLED: bool = False
+REF_HEADING_RISE_RATE_DEG_S: float = 90.0
+
 # ── Delay compensation ──────────────────────────────────────────────────────
 # Real delay (perception + planning + control + actuation latency) is
 # unknown and time-varying, unlike fsae_MPCTest's simulator-only fixed
@@ -308,6 +325,12 @@ class MPCController:
         self._u_prev:         np.ndarray = np.zeros(self.nu)
         self._v_des_filtered: float | None = None
 
+        # Previous tick's LIMITED reference heading (rad, unwrapped-compatible
+        # — see _rate_limit_ref_psi), for REF_HEADING_RATE_LIMIT_ENABLED. None
+        # on the first tick after start/reset: the raw value passes through
+        # unlimited, mirroring _v_des_filtered's None handling above.
+        self._ref_psi_prev: float | None = None
+
         # Rolling history of recently issued u_opt, oldest-first, used by
         # predict_ahead() to roll x0 forward through however many steps the
         # measured pose_age_s indicates (see compute()). Sized to the delay
@@ -476,6 +499,26 @@ class MPCController:
         e_y_proj = dy * math.cos(path_yaw) - dx * math.sin(path_yaw)
         true_dist = math.hypot(dx, dy)
         e_y = true_dist * (1.0 if e_y_proj >= 0 else -1.0)
+
+        # ── Reference-heading rate limit (REF_HEADING_RATE_LIMIT_ENABLED) ──
+        # Mirrors fsae_MPCTest/sim/rollout_core.py's planner branch exactly:
+        # only e_psi is recomputed from the limited reference; e_y above is
+        # left untouched (matches the offline choice not to also limit
+        # lateral tracking). See the module-level comment above
+        # REF_HEADING_RATE_LIMIT_ENABLED for the mechanism and measurements.
+        if REF_HEADING_RATE_LIMIT_ENABLED:
+            if self._ref_psi_prev is None:
+                path_yaw_limited = path_yaw
+            else:
+                max_step = math.radians(REF_HEADING_RISE_RATE_DEG_S) * self.dt
+                delta = math.atan2(
+                    math.sin(path_yaw - self._ref_psi_prev),
+                    math.cos(path_yaw - self._ref_psi_prev),
+                )
+                delta = max(-max_step, min(max_step, delta))
+                path_yaw_limited = self._ref_psi_prev + delta
+            self._ref_psi_prev = path_yaw_limited
+            path_yaw = path_yaw_limited
 
         # Heading error wrapped to [-pi, pi]
         e_psi = math.atan2(math.sin(car_yaw - path_yaw), math.cos(car_yaw - path_yaw))
@@ -761,6 +804,7 @@ class MPCController:
         self._a_act           = 0.0
         self._u_prev          = np.zeros(self.nu)
         self._v_des_filtered  = None
+        self._ref_psi_prev    = None
         self._u_history.clear()
         self._pose_age_filtered = None
         self._n_delay           = 0

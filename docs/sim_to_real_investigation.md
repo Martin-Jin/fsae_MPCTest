@@ -1991,6 +1991,94 @@ whether some corner entries produce no such gap.
 **Reproduce with:** `python3 -m tuner.reference_excess_mechanism_check`
 (same `MPLBACKEND=Agg` requirement).
 
+## 28. A reference-heading rate limiter: real improvement on the recorded map, a real DNF hazard on the suite
+
+*(2026-08-07, continued.)* §27 identified the mechanism (sustained turn-in
+lag) but did not test a fix. This section implements and measures one,
+following the same shape as the existing `SPEED_TARGET_RISE_RATE` limiter
+(§ references throughout this doc) — cap how fast the reference *rate* is
+allowed to change, never the final direction, so the controller is never
+asked to snap onto a heading the car has had no time to physically reach.
+
+**Implementation** (`sim/rollout_core.py::_rate_limit_ref_psi`, gated by new
+`settings.REF_HEADING_RATE_LIMIT_ENABLED`/`REF_HEADING_RISE_RATE`, default
+OFF): applied only in the planner-in-the-loop branch — the fallback/oracle
+branches reference the fixed geometric path, which §26 showed does not
+carry this excess, so there is nothing to limit there. Unlike
+`SPEED_TARGET_RISE_RATE`, this limiter is symmetric (limits swings in either
+direction) — there is no "always safe" direction for a heading reference the
+way slowing down always is for speed.
+
+**Recorded-map sweep** (`tuner/ref_heading_limiter_ab.py`), saturation vs.
+rate limit:
+
+| rate (°/s) | sat % | \|e_psi\| mean | \|e_psi\| p90 | steps | DNF |
+|---|---|---|---|---|---|
+| OFF (baseline) | 4.62 | 6.92° | 18.46° | 1104 | No |
+| 120 | 4.66 | 6.72° | 18.21° | 1117 | No |
+| 100 | 4.12 | 6.55° | 18.70° | 1093 | No |
+| **90** | **3.07** | **6.43°** | **18.38°** | 1075 | **No** |
+| 80 | 2.27 | 6.42° | 18.25° | 1058 | No |
+| 70 | 0.10 | 6.16° | 16.48° | 1047 | No |
+| 65 | **0.00** | 6.02° | 15.24° | 1046 | No |
+| 60 | 0.00 | 2.35° | 11.58° | 125 | **Yes** — off-track (`\|e_y\|`=2.28 m) at step 124 |
+
+On the recorded map alone this looks like an unambiguous win — saturation
+falls monotonically to zero at 65°/s with lower heading error too (not just
+less saturation, genuinely better tracking), a clean DNF cliff only at
+60°/s, and progress ≈0.994 (a complete lap) at every surviving rate.
+
+**Checked against `VALIDATION_SUITE` before trusting it, per the standing
+rig-validation lesson (§12.10/§13 — "the absence of this check is exactly
+how the 13% sustained-cornering surplus survived a refit").** This is where
+the recorded-map picture breaks down:
+
+| | OFF | 90°/s | 70°/s | 65°/s |
+|---|---|---|---|---|
+| SPIRAL | 11.26% | 0.52% | 0.00% | 0.00% |
+| SUDDEN_TURN | 7.59% | 7.51% | 0.00% | 0.00% |
+| HAIRPIN | 6.15% | 6.20% | 4.69% | 2.34% |
+| FS_CORNER | 2.56% | 0.00% | 0.00% | 0.00% |
+| MICRO_SLALOM | 17.39% | 15.89% | **DNF** (`\|e_y\|`=2.41m, 56% progress) | **DNF** (`\|e_y\|`=2.45m, 56% progress) |
+| suite mean | 8.99% | 6.02% | — | — |
+
+**Both 65°/s and 70°/s — the rates that looked best on the recorded map —
+DNF `PATH_MICRO_SLALOM` off-track, at only ~56% progress.** The recorded map
+never surfaces this because it does not contain a slalom-like sequence of
+fast direction reversals; the suite does. Narrowing the sweep (75/80/85°/s)
+found the DNF persists through 80°/s and only clears at 85°/s — but 85°/s
+also *regresses* MICRO_SLALOM sharply (17.39%→27.27% saturation, worse than
+doing nothing) while still surviving. **90°/s is the recommended value**: no
+DNF anywhere in the suite, a real improvement on the recorded map (4.62%→
+3.07%) and the suite mean (8.99%→6.02%), and no per-path regression (every
+path is flat-to-better, including MICRO_SLALOM 17.39%→15.89%).
+
+**Why the failure happens.** The limiter holds the reference back during
+exactly the sustained turn-in transient §27 identified — correct on a single
+corner, where the car eventually catches up. A slalom asks for the opposite
+of that: fast, sequential direction reversals with little time between them.
+Holding the reference back on entry to reversal N means the controller is
+still lagging when reversal N+1 arrives, compounding rather than resolving —
+the exact mechanism the "modest, occasional... but disproportionate at the
+tail" framing in `planning_control_sync.md` warned would need this kind of
+check before trusting a fix.
+
+**What this does and does not establish.** A validated, real, suite-safe
+improvement exists at 90°/s: lower saturation and no per-path regression,
+confirmed on both the live-comparable recorded map and all 5 synthetic
+paths. It does **not** establish this closes any part of the ≥75%-unexplained
+gap from §13 at scale — 90°/s's effect (recorded map −1.55 pp, suite mean
+−2.97 pp) is real but modest next to live's 21.1% vs. sim's ~5% gap, and
+per the standing caution throughout this document, **no live run has been
+attempted**. Left `REF_HEADING_RATE_LIMIT_ENABLED = False` by default in
+`settings.py` pending that. If enabling for a live test, use 90°/s, not a
+tighter value chasing the recorded map's more dramatic (but suite-unsafe)
+numbers.
+
+**Reproduce with:** `python3 -m tuner.ref_heading_limiter_ab` (recorded-map
+sweep) and `python3 -m tuner.ref_heading_limiter_suite_check`
+(`VALIDATION_SUITE` cross-check) — both `MPLBACKEND=Agg`.
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
@@ -2163,6 +2251,20 @@ whether some corner entries produce no such gap.
     suspected failure *shape*, not just re-running an existing instrument
     on new data, is what found this.
 
+28. **The one live-comparable track is not a substitute for the synthetic
+    suite, even when it is the only ground truth you have.** §28's rate
+    limiter looked like a clean win on the recorded map — saturation to
+    zero, heading error also improved, no DNF until a sharp cliff at 60°/s.
+    `VALIDATION_SUITE` told a different story: the two best-looking rates
+    (65, 70°/s) both DNF `PATH_MICRO_SLALOM` off-track, because the recorded
+    map contains no fast sequential-reversal geometry to expose it. This is
+    the same lesson §12.10/§13 already learned about the plant/ceiling
+    parameters ("the absence of this check is exactly how the 13%
+    sustained-cornering surplus survived a refit"), now confirmed to apply
+    just as much to a planner/controller-side fix — a good idea with a
+    correct mechanism behind it still needs the full suite before being
+    trusted, not just the one map with live data to compare against.
+
 ---
 
 ## Open / deferred
@@ -2175,7 +2277,7 @@ whether some corner entries produce no such gap.
 | **`alat_ceiling_tau`** | **Done (§12.12).** Measured 0.35 s median (0.28–0.46, 11/12 trials) with `step_s=8.0`; model set to 0.40. Fixing it did **not** close the saturation gap — the residual is elsewhere |
 | Ceiling is speed-dependent | **New, unmodelled (§12.4).** Measured sustained a_lat rises with speed — 6.45 @ 8 m/s, 7.54 @ 11, 9.26 @ 14 — while the model pins it flat at 7.5. Residuals +1.0 / ~0 / −1.76. Deliberately not fitted: 16 points, one run |
 | Step vs sweep disagree on level | **Open.** Step's 3 s settle says 7.5 @ 8 m/s; the sweep's long orbit says 6.45. A longer `step_s` resolves whether sustained a_lat keeps decaying past 3 s — same experiment as the `tau` re-measurement |
-| Planner reference heading | **Open, mechanism identified (§12.8, §14, §26, §27).** In *both* stacks the reference heading swings faster than the car can yaw, driving 78–100% of heading-error growth. §26: most of that swing is geometry (ratio ≈1.2 mean/p90 vs. a fixed geometric reference, r=0.80) — but a tail excess (ratio 1.87 p99, 3.51 max, 5.8% of ticks) is planner-added and predicts saturation directly (42.2% vs 2.3% immediate rate). §27: NOT §19's seed-jump (only 9%/64 of high-excess ticks coincide with one) — instead a sustained turn-in lag at braking corner entries, where the online planner's reference anticipates the corner earlier/more aggressively than the car has yawed yet (confirmed on 3/3 checked episodes). Not yet fixed; open question is whether the controller should track that early reference as tightly as it does |
+| Planner reference heading | **Open, mechanism identified and a candidate fix measured, not yet fixed (§12.8, §14, §26, §27, §28).** In *both* stacks the reference heading swings faster than the car can yaw, driving 78–100% of heading-error growth. §26: most of that swing is geometry (ratio ≈1.2 mean/p90 vs. a fixed geometric reference, r=0.80) — but a tail excess (ratio 1.87 p99, 3.51 max, 5.8% of ticks) is planner-added and predicts saturation directly (42.2% vs 2.3% immediate rate). §27: NOT §19's seed-jump (only 9%/64 of high-excess ticks coincide with one) — instead a sustained turn-in lag at braking corner entries. §28: a symmetric reference-rate limiter (`settings.REF_HEADING_RATE_LIMIT_ENABLED`, default OFF) at 90°/s cuts recorded-map saturation 4.62%→3.07% and suite-mean 8.99%→6.02% with no DNF anywhere in `VALIDATION_SUITE` — but tighter rates that look better on the recorded map alone (65–70°/s) DNF `PATH_MICRO_SLALOM` off-track. Not yet tried live |
 | `blend_paths` reset-bypass discontinuity | **Eliminated for the recorded map (§14).** Real, parity-correct mechanism, can jump the reference up to 166° on other geometries (PATH_SPIRAL) — but fires 0/1038 times on the recorded map (max trigger-distance 1.98 m, just under the 2.0 m threshold). Cannot explain 21.1% saturation with 0 events |
 | `blend_paths` blended-magnitude vs heading rate | **Mostly eliminated (§14.1).** Rebuild distance vs. blended path's own reference-heading rate: r=0.15 raw, r=0.10 controlling for corner severity — explains ~1-2% of variance, not the 78–100% reference-driven growth in §12.8. Points back at the planner's spatial fit itself (curvature-spike defect), not `blend_paths`, as the likely source of the heading-rate symptom |
 | `ConeMap._absorb()` same-frame duplicate bug | **Fixed (§15), unmeasured effect.** Real, deterministic bug (two same-frame detections of a newly-sighted cone both became permanent, unmerged entries — confirmed at 1 cm apart, independent of `MERGE_DIST`). Fixed in all 3 copies. Does not move the recorded map's saturation at default noise (4.80%→4.86%, matches pre-fix), because FSDS's noise-free oracle perception never triggers it and the added `CONE_NOISE_ENABLED` jitter is too small to separately trigger it either. Whether this matters on the real car is still open — needs measured detector noise or a live log |
