@@ -1655,6 +1655,130 @@ quoted as *the* saturation figure for its condition without more repeats.
 sufficient evidence for or against any fix, this session's own result
 included.
 
+## 24. Getting to a point where `SteeringCurve` can actually be read: installing UE 4.27 and building AirLib on Windows
+
+*(2026-08-07, continued.)* §18/§20 identified `SteeringCurve` — a UE4/PhysX
+speed-dependent steering-scaling field — as the most concrete remaining
+candidate for the measured ceiling, confirmed compiled into the shipped
+`Blocks.exe`, but unreadable without the Unreal Editor open on the vehicle
+Blueprint. This section is the process of getting there: installing UE 4.27
+and building the project from source on the user's Windows machine, so its
+own gotchas are documented rather than re-discovered next time. **As of this
+section, the build is in progress and not yet confirmed successful** — this
+is a process log, not a completed result.
+
+**Which engine version, and why it matters.** `UE4Project/FSOnline.uproject`
+pins `"EngineAssociation": "4.27"` explicitly — not a guess. UE5 was
+considered and rejected: opening a UE4 project in UE5 forces an asset
+upgrade/conversion step that can silently rewrite `.uasset` binary data,
+which is exactly the data this whole exercise exists to read unmodified.
+Installed via the Epic Games Launcher, matching `docs/software-install-
+instructions.md` (root repo) exactly.
+
+**Bug 1 — the initial project folder was never a real git clone.**
+The user's first attempt used a folder obtained via GitHub's "Download ZIP"
+(named `Formula-Student-Driverless-Simulator-master`, the exact naming
+pattern GitHub's zip download produces). `git submodule update --init
+--recursive` appeared to succeed (no errors) but changed nothing, because
+`git rev-parse --show-toplevel` from inside that folder resolved to
+`C:/Users/marti` — an unrelated, pre-existing git repo somewhere up the
+directory tree — not the FSDS folder itself. A submodule command run
+against the wrong repo silently no-ops rather than erroring, which is what
+made this look like a submodule problem at first. **Diagnosed by checking
+`git rev-parse --show-toplevel` and `.gitmodules` directly** rather than
+trusting the submodule command's silence. **Fixed** by cloning fresh with
+`git clone --recurse-submodules
+https://github.com/FS-Driverless/Formula-Student-Driverless-Simulator.git`
+into a new folder — confirmed correct afterward via the same two checks
+(`rev-parse` now resolves to the new folder; `.gitmodules` is present and
+lists three submodules: `AirSim/external/rpclib`, `ros/src/fs_msgs`,
+`ros2/src/fs_msgs` — note `AirLib` itself is **not** one of these three; it
+is tracked as regular files under `AirSim/AirLib/`, which is a distinct fact
+from the next bug).
+
+**Bug 2 — the actual missing step was `AirSim/build.cmd`, not a submodule.**
+Even with a correct clone, `UE4Project/Plugins/AirSim/Source/AirLib` did not
+exist, and the plugin build failed on a missing header
+(`common/AirSimSettings.hpp`) after getting partway through compilation —
+`UnrealBuildTool` only warns (does not fail immediately) when a referenced
+source directory is absent, so the build proceeds until it actually needs a
+file from that directory. `docs/getting-started.md` (root repo) documents
+this exactly: `AirLib` (the code) and the UE4 plugin (`Source/AirLib`, the
+*destination*) are separate, and `build.cmd` is what compiles the former and
+`robocopy /MIR`s it into the latter (see `AirSim/build.cmd` lines 113–114).
+This step is easy to miss because nothing in the plain `git clone` /
+`.uproject`-open flow prompts for it — it is a manual, documented
+prerequisite, not something git or UnrealBuildTool does automatically.
+
+**Bug 3 — `build.cmd` hardcodes a CMake generator for the wrong Visual
+Studio version.** `build.cmd` line 53: `cmake -G"Visual Studio 16 2019" ..`
+(building `rpclib`, `AirLib`'s one true external dependency built via
+CMake rather than MSBuild directly). The user has VS2022 installed, not
+VS2019 — CMake correctly reported *"could not find any instance of Visual
+Studio"* for the 2019 generator name specifically, which does not mean no
+Visual Studio is installed, only that the exact generator string doesn't
+match anything present. **Fixed** by editing the one live occurrence (line
+52's identical string is inside a `REM` comment and doesn't need changing)
+from `"Visual Studio 16 2019"` to `"Visual Studio 17 2022"`, after deleting
+the stale `external\rpclib\build` directory left behind by the failed
+configure attempt (a CMake cache pointing at a generator that was never
+found does not self-heal on retry — it must be cleared). rpclib then built
+successfully.
+
+**Bug 4 — `AirLib.vcxproj` itself pins the VS2019 (`v142`) platform toolset.**
+A distinct issue from Bug 3 (a different project file, a different build
+system — MSBuild via `AirSim.sln`, not CMake): `AirLib\AirLib.vcxproj`
+hardcodes `<PlatformToolset>v142</PlatformToolset>` (4 occurrences, one per
+build configuration). MSBuild's own error names the fix directly
+("Retarget solution" / install v142 build tools). Confirmed via `grep -rl
+"v142"` that only this one `.vcxproj` in the whole `AirSim/` tree references
+it (`AirLib.vcxproj` at the top level and `UnrealPluginFiles.vcxproj` do
+not) — so a single find/replace was sufficient, not a per-project retarget.
+**Fixed** via a one-line PowerShell replace (`(Get-Content ...) -replace
+'v142','v143' | Set-Content ...`) rather than the GUI "Retarget solution"
+flow, since only one file needed it. Note this had to be run from a
+*separate* plain PowerShell window — the Developer Command Prompt for VS
+2022 (needed for `build.cmd` itself, to get `%VisualStudioVersion%` and the
+MSBuild environment set up) is `cmd.exe`, not PowerShell, and does not
+understand `-replace`/pipeline syntax.
+
+**Status: `build.cmd` completed successfully after Bug 4's fix** — reached
+its final `REM //---------- done building ----------` marker, after the
+`robocopy /MIR` of `AirLib` into `UE4Project/Plugins/AirSim/Source/AirLib`
+and the `copy /y AirSim.props ...` step both completed with no `:buildfailed`
+jump. `AirLib` should now exist inside the UE4 plugin folder, which was the
+condition the original plugin build (top of this section) was missing.
+**Not yet verified:** that the UE4 Editor itself opens and compiles the
+`BlocksEditor`/`AirSim` plugin modules clean against this newly-populated
+`AirLib` — `build.cmd` only builds the standalone `AirSim.sln` (`AirLib`
+plus its CMake dependency, rpclib), not the UE4 plugin/game modules
+themselves; those compile separately, inside/via the Editor, the first time
+`FSOnline.uproject` is opened (per `docs/getting-started.md`'s step 3,
+"When asked to rebuild the 'Blocks' and 'AirSim' modules, choose 'Yes'").
+**Next actions:** open `FSOnline.uproject`, allow the prompted module
+rebuild, then locate the vehicle Blueprint (likely under
+`Content/VehicleAdv/Cars/`, per the folder names already seen in the
+LFS-pointer listing in §20), open its `WheeledVehicleMovementComponent4W`,
+and read the `SteeringCurve` field directly — the entire point of this
+section's work. **A known, separate, not-yet-encountered blocker remains
+queued behind this one:** the Git LFS problem from §20 (`.uasset` files as
+unpulled pointer stubs) was diagnosed on the WSL/Linux checkout
+specifically; whether the user's Windows git client has working LFS support
+is untested as of this section — if the vehicle Blueprint or its mesh/curve
+assets come up broken/missing in the Editor once it opens, that is the next
+thing to diagnose, not a regression in anything fixed here.
+
+**What generalises, provisionally:** every one of the four bugs above
+produced an error message that either directly named its own fix (Bug 4) or
+was one diagnostic command away from being unambiguous (Bugs 1–3) — none
+required guessing. The recurring trap was trusting a command's *silence* as
+success (Bug 1's submodule update) or a partial build's *progress* as
+evidence a directory really existed (Bug 2, where compilation got 6/11
+actions deep before the missing-directory warning became a fatal error) —
+consistent with lesson 18 earlier in this document (a timing/progress signal
+can mask an address/existence problem) recurring in a completely different
+domain (a Windows C++ build, not a WSL network path).
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
@@ -1788,6 +1912,17 @@ included.
     to be one noisy sample, not a stable baseline. Attribute causes to
     mechanisms visible in the data, not to whichever single aggregate
     number happened to be measured first.
+25. **An error message that names its own fix should be trusted over a
+    plausible-sounding guess.** Every bug in §24 (a wrong git-repo root, a
+    missing manual build step, a wrong CMake generator name, a wrong
+    MSBuild platform toolset) either stated the fix directly in its own
+    output (`"could not find any instance of Visual Studio"`, `"Retarget
+    solution"`) or was resolved by one targeted diagnostic command
+    (`git rev-parse --show-toplevel`, `findstr /n`, `grep -rl`) rather than
+    by trying candidate fixes and seeing what stuck. Read the exact error
+    text and act on it before reaching for a broader, slower remedy (e.g.
+    installing a second Visual Studio version, which was available as an
+    option but not needed here).
 
 ---
 
@@ -1808,7 +1943,7 @@ included.
 | Cone-detection noise model | **New capability (§15), not yet a finding.** `CONE_NOISE_ENABLED`/`CONE_POS_JITTER_STD`/`CONE_NOISE_SEED` added to `settings.py` + `sim/rollout_core.py::ConeNoise` — closes part of the "cone map... not modelled anywhere" fidelity gap (position jitter only; false positives/negatives/range-dependence remain unmodelled). Default off. `fsae_MPCTest`-only, no live-side counterpart needed (same as `SLAM_NOISE_*`) |
 | `launch_all.sh` couldn't get FSDS running at all | **Fixed (§16).** Two stacked bugs: shebang on line 3 (script never ran as bash), then WSL2 unable to reach the Windows host via `127.0.0.1` (needs the WSL default-gateway IP, or `FSDS_HOST_IP` — `fsds_ros2_bridge.launch.py` already supported this, just was never set). Fixed in both `ros2/launch_all.sh` and the `fsds_simulator` mirror, preserving the mirror's intentional config differences |
 | First live-vs-sim comparison since §0 | **Superseded (§23) — the "improvement" does not replicate.** §17's single-run 15.2% figure does not hold: a 5-lap run at the identical 20 Hz config landed at 26.4%, worse than the number it was meant to have improved on. §21 still correctly ruled out the MPC reweight as an explanation (offline A/B, old weights score *better* on saturation — that finding does not depend on which live run is "the" baseline). Correct current statement: live saturation varies roughly 15–32% run-to-run at the fixed config, well above the sim's 4.8%, no single run yet establishes a stable number. Needs several repeats to get a real mean/spread, the same way §13's `VALIDATION_SUITE` does offline |
-| `SteeringCurve` (UE4/PhysX speed-dependent steering scaling) | **Narrowed (§18, §20), still not read.** The property is confirmed compiled into this exact FSDS build (found as a string in the shipped `Blocks.exe`), alongside `SteeringInputRate` and the PhysX anti-roll-bar system — the integration is real and non-trivial, not a stub. But the *value* baked into FSDS's vehicle instance is binary data inside `FSOnline-WindowsNoEditor.pak` (452 MB, unencrypted enough for plugin-name strings to leak but not asset-instance data) or the source `.uasset`s (unpulled Git LFS pointers here) — neither readable by any tool available in this environment. Still needs the UE4 Editor, opened on the vehicle Blueprint's movement component, to read the curve directly |
+| `SteeringCurve` (UE4/PhysX speed-dependent steering scaling) | **Narrowed (§18, §20), build environment now ready (§24), still not read.** The property is confirmed compiled into this exact FSDS build (found as a string in the shipped `Blocks.exe`), alongside `SteeringInputRate` and the PhysX anti-roll-bar system. UE 4.27 installed and `AirSim/build.cmd` now completes successfully on the user's Windows machine after fixing four stacked build issues (wrong git repo root, missing manual build step, wrong CMake generator, wrong MSBuild toolset — §24). Remaining steps: open `FSOnline.uproject` in the Editor (module rebuild prompt expected), locate the vehicle Blueprint, read `SteeringCurve` off its `WheeledVehicleMovementComponent4W`. The Git LFS `.uasset`-pointer problem (§20) was only diagnosed on the WSL checkout — untested on the user's Windows git client, and is the next thing to check if Blueprint/mesh assets appear broken once the Editor opens |
 | Curvature-spike defect | **Mechanism confirmed real (§19), but confirmed MODEST, not pervasive — corrected same day.** Root cause: the car-anchored spline's nearest midpoint drops out discontinuously as the car's pose crosses it, confirmed via byte-identical midpoint sets across a reproduced jump (rules out cone-map duplication/`_absorb()`/NN-reassignment). The initial "22.4% of ticks" estimate was an artifact of the measurement (ordinary arc-length resampling, not the defect) — two fix attempts against it correctly showed no effect, which is what exposed the flawed metric. A corrected metric (near-field tangent direction, cross-checked against `e_psi`/`steer_deg`) found only 3 large single-tick jumps in the whole run (0.07% of ticks), all genuine corner transitions, and re-measured the original instance at a real but modest −17.3° tangent reversal. Still supersedes "cone-map clutter" as the cause of *this* mechanism. No fix shipped — not judged worthwhile at this measured size; needs revisiting if the pose-rate test (§22) or another lead reopens the question |
 | Pose-rate mechanism | **Confirmed as a real, independently-visible mechanism (§22) — still true after §23.** Reintroducing the 10 Hz pose bug reproduced the user's directly-observed symptom (car runs wide off-track, slowly corrects back — confirmed in the log as a sustained ~1s excursion, `|e_y|` to 2.18 m, steering pinned at the 25° stop throughout). This holds regardless of §23's correction, since it's visible mechanistically in the raw log, not just via the aggregate percentage it was originally compared against. What does NOT hold: quoting "31.9% vs 15.2%" as the effect size — 15.2% was one noisy sample (§23). `pose_rate` reverted to 20.0 after the test. Needs repeat runs at both 10 Hz and 20 Hz to size the real effect |
 | Run-to-run variance at the live 20 Hz config | **New, open (§23).** Saturation measured at 15.2% (n=1 lap), 26.4% (n=5 laps, same config, same day), with the 5-lap run's own three real laps ranging 19.1–30.0%. No repeat-count yet establishes a trustworthy mean; treat any single live saturation number quoted elsewhere in this document as one sample from this spread, not a fixed value |
