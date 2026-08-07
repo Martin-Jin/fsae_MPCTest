@@ -379,11 +379,24 @@ pairings that imply a sub-3.7 m radius. Investigate why lap 2 is worse than lap
 > reassignment as the cause of *this* mechanism (all three were reasonable
 > suspects going in). "Why lap 2 is worse than lap 1" narrows to *how often a
 > lap's specific pose trace happens to straddle a midpoint boundary*, not the
-> map getting dirtier. `blend_paths` damps this (measured recovery ~0.3–0.4 s)
-> but does not eliminate it — 22.4% of ticks in the checked log still show a
-> >0.5 m near-field jump in one 50 ms step even after blending. Does not yet
-> establish how much of the residual saturation gap this explains; no planner
-> file has been edited to test a fix, per the standing caution above.
+> map getting dirtier.
+>
+> **Correction, same day.** The original "22.4% of ticks show a near-field
+> jump" figure was itself a measurement artifact (dominated by ordinary
+> arc-length resampling on a curving path, not the defect) and has been
+> retracted — two targeted fix attempts against it moved nothing, which is
+> what exposed the flawed metric. A corrected metric (near-field path
+> *tangent direction*, cross-checked against `e_psi`/`steer_deg` to rule out
+> genuine corners) found the real effect is real but modest: **3 large
+> single-tick tangent jumps out of 4160 ticks (0.07%)** in the checked log,
+> and the original t=74.83/74.98 instance re-measured at a ~17° tangent
+> reversal, not the "5×+ radius jump" framing implied on its own. The
+> mechanism itself (byte-identical midpoints, a genuine chain-anchor
+> discontinuity) is still confirmed real — only its measured *frequency* was
+> wrong. No fix has been shipped at this size; see
+> `sim_to_real_investigation.md` §19's correction note and §23 for the full
+> detail, including two new lessons on trusting a metric only after checking
+> it against ground truth.
 
 ### Fixed: a real cone-map duplication bug in `_absorb()`
 
@@ -601,6 +614,7 @@ arrives in sustained episodes (median 0.47 s, up to 2.44 s, 96% of energy below
 | **actuator lag** | **No** — `s` does not degrade with command rate |
 | **yaw_rate / speed telemetry error** | **No** — channels validated against pose derivatives |
 | **tyre front/rear balance** | **No** — needs C_f at 10% of physical to reach live K_us |
+| **`SteeringCurve` (UE4/PhysX speed-dependent steering scaling)** | **No** — read directly from `TechnionCarPawn`'s `WheeledVehicleMovementComponent4W` in the UE4 Editor (2026-08-07): flat at 1.0 across all 3 keyframes, no speed-dependent scaling at all. See `sim_to_real_investigation.md` §18/§20/§24/§25 for the full mechanism search, the UE 4.27 build process needed to check it, and the read-out |
 
 **ROOT CAUSE FOUND** (2026-08-06, open-loop system-ID + step test):
 **FSDS enforces a sustained LATERAL-ACCELERATION ceiling of ~7.5 m/s².**
