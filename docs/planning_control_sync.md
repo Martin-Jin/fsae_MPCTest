@@ -490,8 +490,8 @@ reality.
 
 | Aspect | FSDS / this rollout | Real car | Modelled? |
 |---|---|---|---|
-| **Localisation accuracy** | Perfect. `sim_perception` copies ground-truth `/fsds/testing_only/odom` verbatim onto `/fsae/slam/car_position`. No noise, no drift, no estimation lag. | ZED visual odometry + `cone_mapper` SLAM: jitters, drifts, lags. | Offline only, via `SLAM_NOISE_ENABLED` (**default off** — FSDS has no such error, so defaulting it on would make offline scores pessimistic against the very runs they're compared to). |
-| **Cone map** | Latched *oracle* map of exact cone positions, cropped to a forward window + radius. Only **range** is limited. | Real detections: false positives/negatives, position error, colour confusion, range-dependent noise. | **No.** Not modelled anywhere. |
+| **Localisation accuracy** | Perfect. `sim_perception` copies ground-truth `/fsds/testing_only/odom` verbatim onto `/fsae/slam/car_position`. No noise, no drift, no estimation lag. | ZED visual odometry + `cone_mapper` SLAM: jitters, drifts, lags. | Offline, via `SLAM_NOISE_ENABLED` (**default ON as of 2026-08-08** — see `sim_to_real_investigation.md` S43: at default magnitude this measurably closed most of the steer-sat/e_psi/reversal-rate gap against a fresh live log, overturning the original "would make offline scores pessimistic" reasoning). |
+| **Cone map** | Latched *oracle* map of exact cone positions, cropped to a forward window + radius. Only **range** is limited. | Real detections: false positives/negatives, position error, colour confusion, range-dependent noise. | Partly, via `CONE_NOISE_ENABLED` (**default ON as of 2026-08-08**, position jitter only — false positives/negatives/range-dependence remain unmodelled). |
 | **Pose rate** | 20 Hz (`pose_rate`), matching the controller. Was 10 Hz — see the section below. | Bounded by the perception pipeline's real throughput. | Live-only concern; the offline rollout always uses a fresh pose per step. |
 | **Actuation delay** | Fixed `DELAY_STEPS`, compensated exactly by `predict_ahead()`. | Variable, estimated from a timestamp, never exactly known. | Partly — `DELAY_JITTER_STEPS` perturbs the controller's *belief* about the lag. |
 | **Steering slew** | Hard `du_max`, now on both sides. | Real rack limit, measured ≥ ~200 deg/s. | Yes, at 180 deg/s (a measured lower bound, not a datasheet figure). |
@@ -582,8 +582,10 @@ now fixed in `sim_perception` rather than modelled here.
 An earlier revision of this section guessed SLAM pose noise was the likely
 remaining cause. **That was wrong** and is corrected here: the log came from
 FSDS, where `sim_perception` republishes ground-truth odom, so the pose was
-exact — just stale. Staleness is not noise. `SLAM_NOISE_ENABLED` exists for the
-real car's localisation error and defaults to off for exactly this reason.
+exact — just stale. Staleness is not noise. `SLAM_NOISE_ENABLED` exists to
+model the real car's localisation error specifically — this conclusion about
+that specific FSDS log is unaffected by the flag's current default (which
+changed to on 2026-08-08, see the "Simulator fidelity limits" table above).
 
 **Treat a clean offline score as necessary but not sufficient** — re-measure
 the live reversal count after the pose-rate fix before assuming the remaining

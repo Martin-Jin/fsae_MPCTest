@@ -968,6 +968,9 @@ CONE_POS_JITTER_STD = 0.05        # m, per-cone-per-frame white noise on x/y
 CONE_NOISE_SEED = 97531
 ```
 
+(Historical snapshot at time of writing. Default flipped to `True` 2026-08-08
+— see §43.)
+
 Unlike `SlamNoise`, there is deliberately no drift/bias term: a vision cone
 detector re-estimates each cone's position from scratch every frame rather
 than tracking a belief over time, so nothing should carry over between
@@ -2995,6 +2998,118 @@ and test live at any time; defaults default (0.05/0.3/0.5 thresholds) are
 a starting point bracketing the live log's reversal-rate regime, not fitted
 to anything.
 
+## 43. SLAM/cone noise defaulted OFF this whole session — turning it on closes most of the reversal-rate gap, none of the mean|e_y| gap
+
+Every offline comparison in §36-§42 ran with `SLAM_NOISE_ENABLED=False` and
+`CONE_NOISE_ENABLED=False` — perfect localisation and perfect cone
+detection, the whole time. Never tested with noise on this session until
+directly asked whether slip/noise had been accounted for.
+
+**Slip: already modelled, not a gap.** The plant's full Pacejka MF94 tyre
+model (lateral slip angle + longitudinal slip ratio) is always active in
+`model/vehicle_physics.py` — not a flag, structurally part of the dynamics.
+Not a candidate for anything found this session.
+
+**Noise: tested directly against a fresh live log
+(`mpc_standalone_control_1786140619.csv`, sat=20.77%, e_psi_mean=16.91°,
+reversals/s=3.48, mean\|e_y\|=0.346).** Swept `SLAM_NOISE_*`/`CONE_*`
+magnitude multipliers 1x (documented defaults) through 10x, 2 seeds per
+level (single-seed runs at the same level disagreed enough — e.g. sat
+7.6% vs 19.2% at 3x — to require this):
+
+| mult | sat% | e_psi_mean | reversals/s | mean\|e_y\| | progress |
+|---|---|---|---|---|---|
+| 0 (prior baseline) | 7.83 | 12.40 | 0.99 | 0.044 | 0.994 |
+| 1x (documented default) | 13.4 | 16.2 | **3.06** | 0.061 | 0.966 |
+| 2x | 16.2 | 20.1 | 3.37 | 0.076 | 0.963 |
+| 3x | 9.2 | 11.6 | 4.31 | 0.080 | 0.966 |
+| 6x | — | 36.6 (stall artifact, §36-style) | 2.69 | 0.061 | 0.963 |
+| 10x | rollout hangs, does not complete in 90s | | | | |
+
+**1x (the existing documented magnitudes, just never enabled) already
+closes most of the reversal-rate/sat/e_psi gap**: reversals/s 0.99→3.06,
+landing right in live's 3.48; sat and e_psi_mean also move substantially
+closer. The reversal-rate-by-`|e_y|`-bucket pattern (§42's finding — live
+shows WORST chatter at smallest error) only starts to qualitatively match
+at 3x, not 1x, and even then only in shape, not magnitude.
+
+**Noise does NOT close the mean|e_y| gap at any tested level.** Stuck at
+0.06-0.08 across every multiplier 1x-6x — roughly 4-6x below live's 0.346,
+and not trending toward it as noise increases. 6x+ starts producing
+stall-type artifacts (inflated e_psi from localized near-stops, the same
+mechanism as §36) rather than genuine convergence toward live, and 10x
+breaks the rollout outright (needs separate investigation before drawing
+any conclusion from it — not simply "worse").
+
+**Conclusion: sensor noise was a real, previously-untested contributor to
+the reversal-rate/chatter gap, but not to the actual distance-off-line
+gap.** The car in live logs isn't just noisier around a well-tracked
+line — it runs further from the line on average, by an amount pure
+position-sensor noise at any tested level can't explain. The leading
+hypothesis, given §braking-authority (documented in this same session,
+not yet its own numbered section): a car braking late into a corner runs
+wider through it, which shows up as larger `e_y` directly, independent of
+sensor noise.
+
+**Shipped: `SLAM_NOISE_ENABLED` and `CONE_NOISE_ENABLED` flipped to `True`
+by default** in `settings.py`, at their existing (1x, never-changed)
+magnitudes — not scaled up, since 1x is what was actually measured to
+help without the seed-instability/stall-artifact problems seen at higher
+multipliers. This changes what `tuner/offline_tuner.py` optimises against
+going forward. `fsae_MPCTest`-only (no live-side equivalent — noise models
+imperfect real-car SLAM/perception, which live obviously already has
+without a flag).
+
+## 44. Braking authority barely used approaching corners, in both stacks
+
+User's report: "car performs so much better except when approaching a
+relatively sharp corner at speed, where it seems to brake too late."
+Measured, not assumed.
+
+**The planner is not the problem.** In every one of 17 distinct
+large-tracking-error events found in `mpc_standalone_control_1786140619.csv`
+(the fresh log after the S42/x0[0]-bugfix + adaptive_Q_scaling-enabled
+run), `v_desired` was already dropping well before the error spiked — one
+example: `v_desired` fell 17→3.5 m/s over the 3 seconds leading into the
+corner, while `v_actual` only came down from 15→8. The car sees the
+slowdown coming; it just doesn't execute it.
+
+**Braking authority is available and barely used.** At the worst
+over-speed moments in that log (`v_actual` more than 5 m/s above
+`v_desired`, n=87 ticks), mean commanded `a_cmd` is **-0.76 m/s²** and the
+minimum across all 87 ticks is **-1.39 m/s²** — against **-9.0 m/s²**
+available (`max_accel_brake`, `model/vehicle_physics.py`). Under 9% of
+available braking gets used exactly when it's needed most. At the same
+moments, steering is saturated 49% of the time and mean `|e_psi|` is
+already 33° — the car is fighting the corner with steering while barely
+touching the brake.
+
+**Same shape offline, smaller magnitude.** Recorded-map rollout, same
+over-speed definition: mean `a_cmd` at `e_v>5` is -2.58 (stronger than
+live's -0.76), but the MAXIMUM braking ever commanded anywhere in that
+whole rollout is only -3.39 — well short of -9.0 too. Both stacks
+under-use available braking authority in this regime; live under-uses it
+more than offline does.
+
+**Leading hypothesis, not yet tested: `Q_diag[4]` (the `e_v`/speed-error
+state weight, currently 0.68) is small relative to `Q_diag[0]`/`Q_diag[2]`
+(lateral/heading error, 5.65/2.80).** `R_diag[1]` (acceleration input cost,
+0.34) is already cheap relative to steering's `R_diag[0]`=9.22 — braking
+itself isn't expensive in the cost function, so the likely explanation is
+that closing the speed gap doesn't reduce total cost enough to be worth
+prioritising over lateral/heading tracking, not that braking is penalised
+directly.
+
+**User is retuning `Q_diag[4]` directly** (their own call, this is inside
+the weight-tuning they're doing by hand) — not implemented or shipped
+here. This section documents the measurement, not a fix.
+
+**Also plausibly connected to §43's unclosed mean|e_y| gap**: a car that
+brakes late into a corner runs wider through it, which inflates `e_y`
+directly — independent of, and possibly larger than, any sensor-noise
+contribution. Untested; noted as the leading hypothesis for why noise
+(§43) closed the reversal-rate gap but not the distance-off-line gap.
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
@@ -3272,7 +3387,9 @@ to anything.
 | Solver tolerance mismatch (1e-4 offline / 1e-5 live) | **Ruled out (§38), 2026-08-08.** Measured directly on the recorded map full-lap: byte-identical sat/e_psi/progress/score at both tolerances. OSQP already converges well inside 1e-4 on this QP; not a source of sim/live divergence |
 | Missing step-0 slew constraint offline | **Fixed (§39), 2026-08-08.** Added `u_prev_param` + hard `u[:,0]-u_prev` constraint to `controller/optimiser.py`, mirroring `mpc_core.py`'s existing `uprev_p` constraint. `fsae_MPCTest`-only (live already had it). 0 new DNFs; ratios mostly moved toward live (sat 0.40→0.47, e_psi mean 0.60→0.70, e_psi p90 0.52→0.67) |
 | No terminal cost/constraint | **Added as an inactive toggle (§40), 2026-08-08.** `TERMINAL_Q_SCALE=1.0` (no-op, verified bit-identical), mirrored to both `mpc_core.py` copies + offline `optimiser.py`. A gap in BOTH stacks identically, not a parity issue. Picking/validating a non-default value deliberately left to the user, same tuning loop as `Q_diag`/`R_diag` |
-| Small-error steering hunting | **Real on one live log, NOT reproduced offline (§42), 2026-08-08.** Reversal rate rises to 35.6% as \|e_y\|→0 live (opposite trend offline). `adaptive_Q_scaling()` added, disabled by default (`ADAPTIVE_Q_SCALING_ENABLED=False`). Tested enabled: 0 new DNFs, sat improves on 4/5 `VALIDATION_SUITE` paths and on the recorded map, but recorded-map e_psi gets worse — needs a live A/B before enabling, same lesson as §29 |
+| Small-error steering hunting | **Real on one live log, NOT reproduced offline (§42), 2026-08-08.** Reversal rate rises to 35.6% as \|e_y\|→0 live (opposite trend offline at the time). `adaptive_Q_scaling()` added. Enabled live 2026-08-08 for an A/B test (user's own call) — fresh log shows broad improvement (sat 27.0%→20.8%, e_psi mean 23.6°→16.9°) but reversals/s got WORSE (1.99→3.48) and the small-error reversal-rate pattern got worse too (35.6%→46.9% at \|e_y\|<0.05m) even though the car now spends more time there (1.9%→5.4%) — a mixed result, not a clean win on the specific symptom it targeted |
+| Sensor noise disabled in every offline comparison | **Found and fixed (§43), 2026-08-08.** `SLAM_NOISE_ENABLED`/`CONE_NOISE_ENABLED` were `False` for every offline run this whole session. At documented (1x) magnitude, enabling closes most of the reversal-rate gap (0.99→3.06/s, live is 3.48) but none of the mean\|e_y\| gap (stuck at 0.06-0.08 vs live's 0.346 across 1x-6x). Flipped to `True` by default — changes what `offline_tuner.py` optimises against |
+| Braking authority under-used approaching corners | **Measured (§44), 2026-08-08 — user's reported symptom, confirmed real.** At worst over-speed moments live: mean `a_cmd`=-0.76 m/s² vs -9.0 available (<9% used); offline: -2.58 vs -3.39 max ever reached. Planner already requests the slowdown in time in every case checked — the gap is in the controller, not the planner/lookahead. Leading hypothesis: `Q_diag[4]` (e_v weight, 0.68) too small relative to `Q_diag[0]`/`Q_diag[2]` (5.65/2.80). User retuning `Q_diag[4]` directly; not fixed here. Plausibly the actual driver of §43's unclosed mean\|e_y\| gap (late braking → wider corner → larger e_y, not just noise) |
 | **Model the yaw cap offline** | **Done** — `alat_ceiling*` in `model/vehicle_physics.py`. Moves every metric toward the car (saturation 4.4→6.3%, a_lat max 14.06→10.53) but closes only part of the gap; live is still 21.1% saturation |
 | **Planner parity bug (`SimPlanner` call sites)** | **Fixed (§31), 2026-08-08.** Offline never passed `smooth_per_pt`/`look_radius`/`plan_horizon`/blend `alpha`/`horizon` to `build_path_walls()`/`blend_paths()`, silently using hardcoded defaults instead of `fsae_params.yaml`'s tuned values (2 of 5 coincidentally matched). Fix narrows the "unexplained gap" 17.43→10.68 pp in one step — bigger than every previously-tested plant/ceiling factor combined — and introduces a new recorded-map DNF at step 95. Weights may need re-tuning against the corrected planner |
 | **Recorded-map DNF (post-§31/braking-fix)** | **Root-caused and fixed (§33/§34), 2026-08-08.** Cause: `_build_wall_path`'s seed filter (`planning/boundary.py`, `fwd > 0.3`) discontinuously drops the nearest midpoint as the car's heading rotates through a corner. This is §19's `min_ahead`/chain-anchor discontinuity, pinned to the exact line. **Fix 1** (`curvature_speed`'s `v_max_eff` no longer reapplied after real curvature is measured) and **Fix 2** (seed filter loosened to `fwd > -0.5`) both shipped, mirrored to all 3 repos (AST-identical, confirmed). Initially reverted for raising `VALIDATION_SUITE`'s DNF count (0/5→1-2/5); re-shipped after recognising that check was the wrong direction here — the live car already DNFs/saturates far more than the offline sim, so the sim failing more after removing artificial forgiveness is closing the gap, not regressing (lesson 32). Produced the closest full-lap sim/live match in this document (§34: ratios 0.68-0.73 across every metric) |

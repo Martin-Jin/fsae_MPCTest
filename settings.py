@@ -140,12 +140,23 @@ DELAY_JITTER_SEED = 12345
 # SLAM error: the car is punished for where it actually ends up, not for where
 # it thought it was.
 #
-# DEFAULT IS OFF, deliberately. The platform currently being validated against
-# is FSDS, which has no localisation error, so enabling this by default would
-# make offline scores pessimistic relative to the very runs they're compared
-# to. Turn it ON when tuning for the real car, or to check that a candidate
-# weight set doesn't fall apart once the pose stops being perfect.
-SLAM_NOISE_ENABLED = False
+# DEFAULT CHANGED TO ON 2026-08-08 (sim_to_real_investigation.md S43). The
+# reasoning above ("FSDS has no localisation error, so this would make
+# offline scores pessimistic") turned out to be incomplete: measured
+# directly against a fresh live log at these same default magnitudes,
+# turning this on moved steer_sat/e_psi_mean/reversals-per-s substantially
+# closer to live (reversals/s 0.99->3.06, right in live's 3.48; sat/e_psi
+# landed close too) without the seed instability or stall artifacts seen at
+# higher multipliers (tested 1x-10x; 6x+ started producing e_psi-inflating
+# stall events, 10x hung the rollout outright). This says pose noise at
+# THIS magnitude is a real, previously-untested contributor to the
+# reversal-rate/chatter gap this session chased through several other
+# routes first (adaptive_Q_scaling, braking authority). It did NOT close
+# the mean|e_y| gap (stayed ~0.06-0.08 across every multiplier tried vs
+# live's 0.346) -- that's a separate, still-open gap, not fixed by this.
+# Turn OFF only to reproduce a pre-S43 baseline number, or to isolate a
+# result from noise-driven variance while diagnosing something else.
+SLAM_NOISE_ENABLED = True
 
 # Two components, because they behave differently and the controller reacts to
 # them differently:
@@ -211,10 +222,11 @@ SLAM_NOISE_SEED = 24680
 # because there is no detection noise. This flag exists to make that (and any
 # other perception-noise-dependent behaviour) testable offline at all.
 #
-# DEFAULT IS OFF, deliberately, same rationale as SLAM_NOISE_ENABLED: FSDS
-# itself has no such error, so this models a hypothesised REAL-car effect that
-# would make offline scores pessimistic relative to FSDS-vs-FSDS comparisons.
-CONE_NOISE_ENABLED = False
+# DEFAULT CHANGED TO ON 2026-08-08, same measurement and same reasoning as
+# SLAM_NOISE_ENABLED above (sim_to_real_investigation.md S43) -- tested
+# together with SLAM noise, not isolated from it, so this flag's own
+# individual contribution vs SLAM noise's isn't separately measured.
+CONE_NOISE_ENABLED = True
 
 # Per-cone, per-frame position jitter (independent white noise, redrawn every
 # time a cone is returned as visible — NOT correlated frame-to-frame, unlike

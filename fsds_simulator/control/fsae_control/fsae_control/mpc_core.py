@@ -372,9 +372,13 @@ class MPCController:
 
         # ADAPTIVE_Q_SCALING_ENABLED (settings.py, fsae_MPCTest) — see
         # _adaptive_Q_scaling above and sim_to_real_investigation.md S42.
-        # False = no-op, matching every weight set tuned so far. Not yet
-        # validated live; keep in sync with fsae_MPCTest's copy.
-        self.adaptive_q_scaling_enabled = False
+        # ENABLED 2026-08-08 for a live A/B test: the small-error hunting
+        # this targets (35.6% reversal rate at |e_y|<0.05m) was measured
+        # live and NOT reproduced offline, so a live test is the only way to
+        # tell if this helps. Revert to False if it doesn't, or if it DNFs
+        # or otherwise misbehaves -- untested at this point, same caution as
+        # any first live try of a new weight-shaping change (c.f. S29).
+        self.adaptive_q_scaling_enabled = True
 
         # ── Continuity memory ─────────────────────────────────────────
         self._delta_act:      float      = 0.0
@@ -807,7 +811,9 @@ class MPCController:
 
         R_scaled      = _adaptive_R_scaling(car_speed, self.R)
         R_rate_scaled = _adaptive_R_rate(kappa, self.R_rate)
-        Q_scaled      = _adaptive_Q_scaling(e_y, self.Q, self.adaptive_q_scaling_enabled)
+        # x0[0] is e_y (delay-compensated, if n_delay>0 above rolled it
+        # forward) -- compute() has no bare e_y in scope, only x0.
+        Q_scaled      = _adaptive_Q_scaling(x0[0], self.Q, self.adaptive_q_scaling_enabled)
 
         # Wall-clock the QP so the log can distinguish "the solver is slow"
         # from "the pipeline upstream of us is slow" — see solve_ms in
