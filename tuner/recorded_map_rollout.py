@@ -100,7 +100,10 @@ def summarise(rollout, params, dt=0.05):
         "e_psi_true_mean": float(e_psi_true.mean()),
         "e_psi_true_p90": float(np.percentile(e_psi_true, 90)),
         "alat_max": float(alat.max()),
-        "alat_over_pct": float(np.mean(alat > params.alat_ceiling)) * 100.0,
+        # Per-tick effective ceiling, not the flat floor -- alat_ceiling is
+        # now speed-dependent above ~10.7 m/s (see VehicleParams.alat_ceiling_at).
+        "alat_over_pct": float(np.mean(
+            alat > np.array([params.alat_ceiling_at(vi) for vi in v]))) * 100.0,
         "reversals_per_s": reversals,
         "score": float(rollout["composite_score"]),
         "progress": float(rollout["progress"]),

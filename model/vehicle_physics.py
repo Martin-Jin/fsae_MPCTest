@@ -207,7 +207,39 @@ class VehicleParams:
         # it. Set alat_ceiling_enabled=False to recover the unconstrained
         # plant (e.g. when modelling the real vehicle).
         self.alat_ceiling_enabled = True
-        self.alat_ceiling = 7.5    # Sustained lateral-accel ceiling (m/s²)
+        self.alat_ceiling = 7.5    # Legacy flat value; kept as the low-speed floor, see below
+        # Speed-dependence of the ceiling (m/s² per m/s), added 2026-08-08.
+        #
+        # The flat 7.5 was deliberately not fitted to speed (§12.4 in
+        # sim_to_real_investigation.md: only 16 points, one run). Confirmed
+        # real and refit (§35) with two independent measurements that agree
+        # on SHAPE (rises with speed) but disagree on LEVEL:
+        #   step test (15s hold, straight-line):  ceiling(v) = 6.00 + 0.25*v
+        #   sweep (sustained circular orbit):      ceiling(v) = 2.46 + 0.47*v
+        # Naive pooling fits worse (R²=0.67) than either alone (0.86 / 0.89)
+        # because the offset between them is not constant -- do not average.
+        #
+        # Using the SWEEP's fit directly (sustained circular orbit is the
+        # closer match to a lap than a single straight-line hold; §35, a
+        # judgement call -- re-open if live validation disagrees). The line
+        # matches the sweep's 3 measured points closely across 8-14 m/s
+        # (6.22/7.63/9.04 predicted vs 6.45/7.54/9.26 measured).
+        #
+        # Below ~6 m/s the sysid table shows the cap does NOT engage at all
+        # (s~1.0, car unconstrained -- docs/planning_control_sync.md), but the
+        # raw line drops to 2.46-5.28 m/s² there, which is not "unconstrained,"
+        # it is "constrained to an unphysically low value." The fit only
+        # covers the engaged regime (8-14 m/s) and must not be extrapolated
+        # below it. Applying alat_lim as max(alat_ceiling, line(v)) -- see
+        # ceiling_value() below -- makes the effective ceiling the ORIGINAL
+        # flat 7.5 everywhere the line would sit below it (v <~ 10.7 m/s) and
+        # only lets the line take over where it actually rises above 7.5
+        # (v >~ 10.7 m/s, matching the measured 9.26 @ 14). This changes
+        # nothing below ~11 m/s versus the old flat model and only raises the
+        # ceiling at higher speed, which is the direction both the step and
+        # sweep data agree on.
+        self.alat_ceiling_slope = 0.47   # m/s² per m/s (sweep fit slope)
+        self.alat_ceiling_intercept = 2.46  # m/s² (sweep fit intercept)
         # How the restoring moment responds to exceeding the ceiling.
         #
         #   'pi' — leaky INTEGRAL of the signed excess (current, validated).
@@ -421,6 +453,19 @@ class VehicleParams:
     def L(self):
         """Total wheelbase: lf + lr (m). Used frequently in weight distribution formulae."""
         return self.lf + self.lr
+
+    def alat_ceiling_at(self, vx):
+        """
+        Speed-dependent sustained lateral-accel ceiling (m/s²). See the
+        alat_ceiling*/alat_ceiling_slope/alat_ceiling_intercept comments
+        above for the derivation (§35, sim_to_real_investigation.md).
+
+        max(flat, line) so this never lowers the ceiling below the
+        already-validated flat value -- it only raises it at higher speed,
+        where the sweep fit rises above 7.5 (v >~ 10.7 m/s).
+        """
+        return max(self.alat_ceiling,
+                    self.alat_ceiling_intercept + self.alat_ceiling_slope * vx)
 
     def static_fz_per_corner(self):
         """
@@ -1058,6 +1103,7 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
         # cornering 13% high, and no gain could fix both that and the peak.
         # See VehicleParams.alat_ceiling_mode for the measured trade-off curve.
         if p.alat_ceiling_enabled:
+            ceiling_now = p.alat_ceiling_at(vx_safe)
             if p.alat_ceiling_mode == 'pi':
                 # Leaky INTEGRAL of the SIGNED excess. Winds up while the car is
                 # over the ceiling and unwinds once it is back under; clamped at
@@ -1065,14 +1111,14 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
                 # the excess is zero, so a_lat settles AT the ceiling for any
                 # gain — the settled value is pinned by structure, leaving one
                 # free parameter (gain) for the transient.
-                err = abs(vx_safe * r) - p.alat_ceiling
+                err = abs(vx_safe * r) - ceiling_now
                 alat_lim = max(0.0, alat_lim + err * (
                     h / max(p.alat_ceiling_tau, 1e-3)))
             else:
                 # REJECTED proportional law, kept only so
                 # tuner/plant_openloop_validation.py --ab can reproduce the
                 # measurement that rejected it. Do not tune against this.
-                excess = max(0.0, abs(vx_safe * r) - p.alat_ceiling)
+                excess = max(0.0, abs(vx_safe * r) - ceiling_now)
                 alat_lim = alat_lim + (excess - alat_lim) * (
                     h / max(p.alat_ceiling_tau, 1e-3))
             M_z = M_z - np.sign(r) * alat_lim * p.alat_ceiling_gain

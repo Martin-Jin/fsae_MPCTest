@@ -2727,6 +2727,63 @@ boundary.py seed-filter loosening producing a bad path point under some
 condition this recorded-map testing doesn't exercise) — worth checking if
 another live run reproduces stalls at the same track locations.
 
+## 37. Ceiling made speed-dependent, using the sweep's fit, validated against both checks
+
+§35 confirmed the ceiling rises with speed but left it unfitted, flagging
+two open questions: which fit to use (step vs sweep disagree on level) and
+whether shipping either regresses `VALIDATION_SUITE`/the recorded map.
+
+**Fit chosen: the sweep's `2.46 + 0.47*v`.** Reasoning (a judgement call,
+not a proof): a lap is sustained circular cornering, which is what the
+sweep measures; the step test is a single straight-line hold, a different
+loading condition. Implemented as `VehicleParams.alat_ceiling_at(vx) =
+max(self.alat_ceiling, intercept + slope*vx)` — i.e. take the larger of the
+old flat 7.5 and the sweep line. This is deliberately asymmetric: it never
+LOWERS the ceiling below the already-validated flat value, it only lets the
+line take over where it rises above 7.5, which per the fit is v ≳ 10.7 m/s.
+Below that the model is byte-identical in behaviour to the flat one.
+
+**Validated two ways before shipping:**
+1. `tuner/plant_openloop_validation` (both open-loop replays, the same
+   check CLAUDE.md requires before trusting a refit): CAPPED sweep MAE
+   improves 0.87→0.72 m/s² vs the flat model, driven almost entirely by the
+   v=14 m/s point (err −1.75 flat → −0.49 speed-dependent). STEP replay
+   settled values also move correctly (e.g. 11 m/s: 7.50→7.62, matching the
+   fit at that actual settled speed — note nominal "11.0" and the PI-held
+   settled speed differ slightly, e.g. 10.48-10.98 m/s depending on
+   `hold_s`, which is why some individual sweep rows near the v0 threshold
+   still print exactly 7.50: their true settled speed is just under
+   threshold, not a bug).
+2. `VALIDATION_SUITE` (one-off script, not checked in — same pattern as
+   `ref_heading_limiter_suite_check.py`): **0 new DNFs.** Same 2/5 DNF as
+   the flat baseline (PATH_SPIRAL, PATH_SUDDEN_TURN — both pre-existing,
+   same failure step within 1 step of the flat baseline). Per-path
+   saturation moves by at most +0.7pp (PATH_SUDDEN_TURN); everything else
+   is unchanged to the tenth of a percent, consistent with most synthetic
+   paths not sustaining speeds above the ~10.7 m/s threshold.
+3. Recorded map, `--continue-after-dnf`: full-lap sim/live ratios
+   0.40/0.60/0.52/0.99/0.62/0.62 (sat/e_psi-mean/e_psi-p90/a_lat-max/
+   a_lat-over-ceiling/reversals) — the a_lat>ceiling ratio moves 0.64→0.62,
+   marginally closer to live's 9.8%, consistent with the model now allowing
+   more of the same real high-speed excess live shows. Still DNFs at the
+   same point as §33/§34 (unrelated — a planner/path issue, not this).
+
+Also fixed `recorded_map_rollout.py`'s `alat_over_pct` metric, which
+compared against the flat `params.alat_ceiling` directly — now compares
+against the per-tick effective ceiling via `alat_ceiling_at(v)`, since it
+would otherwise silently over-count "over ceiling" ticks above ~10.7 m/s
+now that the ceiling legitimately rises there.
+
+`vehicle_physics.py` has no live/mirror counterpart (it is the offline
+plant's "truth" model; the live car's real plant is FSDS/PhysX itself), so
+this is `fsae_MPCTest`-only by nature — same as `SLAM_NOISE_*`/cone-noise,
+no cross-repo mirroring needed or applicable.
+
+**Not yet done:** a live validation run at the changed ceiling. The
+recorded-map ratios above are still offline-only. Per this document's
+standing rule, do not trust this fit closes any additional gap until
+measured live.
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
@@ -3000,7 +3057,7 @@ another live run reproduces stalls at the same track locations.
 | item | status |
 |---|---|
 | **Fresh post-fix live log looked worse than pre-fix baselines** | **Explained, not a regression (§36).** Traced to two localized stall/tangle events (t=40s, t=150s) that drag the mean e_psi up while bulk-of-lap saturation/tracking is statistically unchanged from pre-fix logs. `steer_lp` and pose-age/delay hypotheses both checked and ruled out directly from log columns. Cause of the two stalls themselves not yet identified |
-| Speed-dependent `alat_ceiling(v)` | **Not yet done (§35).** Two independent fits agree on rising-with-speed shape but disagree on level (step: `6.00+0.25v`; sweep: `2.46+0.47v`); sweep's fit is the likely candidate for sustained cornering but this is a judgement call. Needs fitting, then `VALIDATION_SUITE`/recorded-map re-validation before shipping |
+| Speed-dependent `alat_ceiling(v)` | **Shipped (§37), 2026-08-08.** `max(7.5, 2.46+0.47*v)` — sweep's fit, only raises the ceiling above ~10.7 m/s, never lowers it. Validated: sweep MAE 0.87→0.72, 0 new `VALIDATION_SUITE` DNFs, recorded-map ratios unchanged-to-improved. `fsae_MPCTest`-only (no live plant model to mirror to). Not yet validated live |
 | **Model the yaw cap offline** | **Done** — `alat_ceiling*` in `model/vehicle_physics.py`. Moves every metric toward the car (saturation 4.4→6.3%, a_lat max 14.06→10.53) but closes only part of the gap; live is still 21.1% saturation |
 | **Planner parity bug (`SimPlanner` call sites)** | **Fixed (§31), 2026-08-08.** Offline never passed `smooth_per_pt`/`look_radius`/`plan_horizon`/blend `alpha`/`horizon` to `build_path_walls()`/`blend_paths()`, silently using hardcoded defaults instead of `fsae_params.yaml`'s tuned values (2 of 5 coincidentally matched). Fix narrows the "unexplained gap" 17.43→10.68 pp in one step — bigger than every previously-tested plant/ceiling factor combined — and introduces a new recorded-map DNF at step 95. Weights may need re-tuning against the corrected planner |
 | **Recorded-map DNF (post-§31/braking-fix)** | **Root-caused and fixed (§33/§34), 2026-08-08.** Cause: `_build_wall_path`'s seed filter (`planning/boundary.py`, `fwd > 0.3`) discontinuously drops the nearest midpoint as the car's heading rotates through a corner. This is §19's `min_ahead`/chain-anchor discontinuity, pinned to the exact line. **Fix 1** (`curvature_speed`'s `v_max_eff` no longer reapplied after real curvature is measured) and **Fix 2** (seed filter loosened to `fwd > -0.5`) both shipped, mirrored to all 3 repos (AST-identical, confirmed). Initially reverted for raising `VALIDATION_SUITE`'s DNF count (0/5→1-2/5); re-shipped after recognising that check was the wrong direction here — the live car already DNFs/saturates far more than the offline sim, so the sim failing more after removing artificial forgiveness is closing the gap, not regressing (lesson 32). Produced the closest full-lap sim/live match in this document (§34: ratios 0.68-0.73 across every metric) |
