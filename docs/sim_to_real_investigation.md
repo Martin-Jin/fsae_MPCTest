@@ -1144,6 +1144,159 @@ sim only, with the recorded map as the sole live-comparable reference. The
 next step is comparing this fresh log against the sim baseline via
 `tuner/live_vs_sim_diagnostics.py` — not yet done as of this section.
 
+## 17. First live-vs-sim comparison since §0 — improved, but confounded, and one metric got worse
+
+*(2026-08-07, continued.)* A second, longer live run completed
+(`mpc_standalone_control_1786066237.csv`, 207.9 s, 4160 ticks, no solver
+failures) on the same map as §0's original baseline — confirmed by comparing
+recorded (x, y) extent against `comp test map 3` (x: −35.3..52.7,
+y: −0.8..90.0, matching to within the path-recorder's own resolution).
+`tuner/live_vs_sim_diagnostics.py` runs it against the current sim baseline
+directly:
+
+| | §0 baseline (live) | **this run (live)** | current sim |
+|---|---|---|---|
+| steering saturation | 21.1% | **15.2%** | 4.80% |
+| saturation episode rate | 0.32/s | **0.20/s** | 0.12/s |
+| mean episode duration | 0.71 s | **0.77 s** | 0.55 s |
+| \|e_psi\| inside saturation | 41.4° | **43.3°** | 40.4° |
+| \|e_psi\| mean / p90 | 15.9° / 42.0° | **12.1° / 33.6°** | 6.9° / 18.5° |
+| steering reversals/s | 1.62 | **3.15** | — |
+
+**Read this as a mixed result, not a fix.** Saturation and mean heading error
+both improved materially, and the entry-rate gap against sim narrowed from
+2.6× to about 1.7× — consistent with §12.9's framing that the gap is about
+*how often* the car enters the high-error state, not its severity once
+there (duration and in-state \|e_psi\| are essentially unchanged, as before).
+But reversals/s very nearly doubled — a real signal, not zero-crossing
+noise (`delta_cmd` sits within ±1° of centre on only 9.0% of ticks). A
+controller that saturates less but reverses direction more is not an
+unambiguous improvement; it may be trading one wobble symptom for another.
+
+**This cannot be attributed to any single fix from §12–§16.** The live
+`fsae_planning` repo's working tree currently carries a full uncommitted
+rewrite on top of the commit that produced the 21.1% baseline (`dfd1a08`,
+2026-08-04) — retuned `Q_diag`/`R_diag`/`R_rate_diag` (including a deliberate
+manual correction to `Q_diag[3]`, the yaw-rate/e_psi_dot damping term, per its
+own inline comment), a rewritten `mpc_core.py`/`control_utils.py`, the
+`ConeMap._absorb()` fix (§15), and changes to `sim_perception.py`,
+`boundary.py`, and `centerline_planner.py` — fifteen files, ~1060 insertions,
+none of it committed, all of it present in this one run. There is no way to
+isolate which change moved which number from a single before/after pair.
+Getting attribution would need re-running with only one change at a time
+(starting with reverting the MPC weights back to `dfd1a08`'s values, since
+that is the largest and most likely candidate for both the saturation
+improvement and the reversal regression — a stiffer yaw-rate penalty
+plausibly cuts saturation by damping the turn-in transient while also
+inducing more correction oscillation).
+
+**Reproduce with:** `MPLBACKEND=Agg python3 -m tuner.live_vs_sim_diagnostics`
+(picks up every `*.csv` in `fsae_logs/` automatically; the `cma`/matplotlib
+import warning printed first is the same benign non-fatal issue noted in
+§13/§14, not a real error).
+
+## 18. Researched whether FSDS's physics engine itself is publicly documented to explain the ceiling
+
+*(2026-08-07, continued.)* Everything in §8–§13 characterised the ceiling by
+measurement, from outside FSDS as a black box, without ever checking what is
+publicly known about the engine producing it. FSDS is a fork of Microsoft
+AirSim, whose vehicle physics run inside Unreal Engine's PhysX-based wheeled-
+vehicle system — not something either project re-implements. This section
+checked whether that upstream engine is documented to do anything that would
+produce our exact measured signature (full steering response below ~6 m/s,
+collapsing to a 0.17 ratio by 14 m/s, ~0.35–0.40 s first-order lag, ~30% yaw
+overshoot before settling).
+
+**No smoking gun, but one concrete, previously-untested, and directly
+checkable candidate: `SteeringCurve`.**
+
+- **AirSim's own C++ layer does nothing relevant.** `CarPawnApi.cpp` passes
+  steering straight through to UE4's `WheeledVehicleMovementComponent4W`
+  (`SetSteeringInput(controls.steering)`) with no scaling, clamping, or
+  traction/stability-control logic anywhere in AirSim's source, and AirSim's
+  public docs (`settings.md`, `using_car.md`) expose no traction-control or
+  steering-curve fields. This rules out AirSim's own wrapper code as the
+  mechanism — whatever is happening is either inside UE4's vehicle component
+  itself or inside FSDS's specific vehicle asset configuration.
+- **NVIDIA's PhysX Vehicle SDK documentation describes exactly this shape of
+  behaviour — as an optional, developer-wired pattern, not a built-in
+  default.** The SDK's own tutorial (nvidia-omniverse.github.io/PhysX)
+  recommends *"filter[ing] the steer angles passed to the car at run-time to
+  generate smaller steer angles at larger speeds,"* with a sample table (0–5
+  m/s → full steer, 30 m/s → 0.125× steer). That is qualitatively our
+  signature. Critically, PhysX's docs are explicit this only exists if a
+  vehicle's setup wires a **`SteeringCurve`** — a speed-keyed
+  `FRuntimeFloatCurve` that is a first-class field on every
+  `WheeledVehicleMovementComponent4W` in UE4's stock wheeled-vehicle
+  template. If FSDS's car Blueprint carries a nonzero curve here (inherited
+  from Epic's template content, not something FSDS would have had to add
+  deliberately), it would produce a genuine, designed-in speed-dependent
+  steering reduction — a fundamentally different mechanism from tyre grip,
+  and one that would explain why scaling tyre friction/cornering-stiffness
+  parameters could never reproduce it (already established as failing,
+  §"Consequences" in the top-level summary).
+- **FSDS explicitly never built a custom dynamics model.** Issue #2 and PR
+  #63 in FS-Driverless/Formula-Student-Driverless-Simulator confirm the
+  maintainers only retuned engine inertia, 0-throttle damping, gear-switch
+  time, and differential type on top of the stock UE4 PhysX vehicle
+  template, quoting: *"most of the math is inside the UnrealEngine repo and
+  I did not want to mess with that."* `docs/vehicle_model.md` states the
+  physics engine was deliberately chosen for fidelity high enough that
+  *"even the developers of the simulation... would [not] have an edge"* —
+  i.e. FSDS was intentionally built to resist exactly the kind of system-ID
+  reverse-engineering this investigation has been doing. This is consistent
+  with (not proof of) an unexamined, inherited nonlinearity like
+  `SteeringCurve` surviving untouched from Epic's template.
+- **Precedent for exactly this failure mode already exists in FSDS's own
+  issue tracker**, just on the longitudinal axis: issue #342 documents a
+  hidden throttle deadzone (torque curve inactive below throttle ≈0.278)
+  baked into the UE4 vehicle template that surprised users. No issue,
+  discussion, or doc anywhere in the repo names a lateral/steering
+  equivalent — this is a structurally similar but *not directly confirming*
+  precedent, not independent evidence the same thing happens for steering.
+- **Issue #270 independently confirms max steering is hardcoded to exactly
+  25°** in `FormulaFrontWheel.uasset` — validates the reference point our
+  system-ID ratios are measured against, though it says nothing about
+  speed-dependent scaling.
+
+**Attempted to check directly against this repo's own asset — blocked, not
+inconclusive.** `FormulaFrontWheel.uasset` and the car Blueprint assets exist
+locally, but this repo's Git LFS is not functional here (`git lfs` is not a
+runnable subcommand) and every `.uasset` under
+`UE4Project/Plugins/AirSim/Content/` is a 129-byte LFS pointer stub, not the
+real binary. Even with LFS fixed, a `SteeringCurve`'s keyframes are stored in
+serialized binary form inside the asset, not as greppable text — confirming
+or ruling this out requires opening the vehicle Blueprint's movement
+component in the Unreal Editor and reading the curve directly. This has
+**not been done**; report this as untested, not as negative evidence.
+
+**What this changes:** raises `SteeringCurve` (or an equivalent inherited
+UE4 template nonlinearity) alongside the already-open reference-heading lead
+(§12.8, §14) as a candidate for the residual gap — specifically because it
+is a mechanism-level explanation for a *speed-dependent* ceiling that no
+plant/tyre parameter tried in §4–§7 could imitate (already measured to fail
+cross-validation), whereas a `SteeringCurve` would be speed-dependent by
+construction and could, in principle, be measured directly rather than
+inferred from closed-loop symptoms. **It does not replace or supersede
+anything already found** — the ceiling itself, however it arises internally,
+is unchanged by knowing (or not knowing) its implementation, and §13's
+ledger result (≥75% of the gap unexplained by any *ceiling parameter*) holds
+regardless, since a `SteeringCurve` would be a different, additional/
+alternative mechanism to model, not a re-parameterisation of the one already
+built. Opening the project in the UE4 Editor to read the curve directly is
+the next concrete, low-cost action this section identifies — cheaper than
+another sim experiment, and something no amount of further offline
+measurement can substitute for.
+
+**Sources:**
+[FS-Driverless#270](https://github.com/FS-Driverless/Formula-Student-Driverless-Simulator/issues/270) (25° max steer confirmed) ·
+[FS-Driverless#2](https://github.com/FS-Driverless/Formula-Student-Driverless-Simulator/issues/2) and
+[PR #63](https://github.com/FS-Driverless/Formula-Student-Driverless-Simulator/pull/63) (no custom dynamic model) ·
+[`docs/vehicle_model.md`](https://github.com/FS-Driverless/Formula-Student-Driverless-Simulator/blob/master/docs/vehicle_model.md) (design philosophy) ·
+[NVIDIA PhysX Vehicles guide](https://nvidia-omniverse.github.io/PhysX/physx/5.3.0/docs/Vehicles.html) (steer-vs-speed curve pattern) ·
+[AirSim `CarPawnApi.cpp`](https://github.com/microsoft/AirSim/blob/main/Unreal/Plugins/AirSim/Source/Vehicles/Car/CarPawnApi.cpp) (no scaling at the AirSim layer) ·
+[FS-Driverless#342](https://github.com/FS-Driverless/Formula-Student-Driverless-Simulator/issues/342) (analogous hidden template nonlinearity, longitudinal axis).
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
@@ -1218,6 +1371,22 @@ next step is comparing this fresh log against the sim baseline via
     independent bugs stacked behind one symptom; fixing the outer one was
     necessary to see the inner one at all, and every fix short of the last
     one produced a plausible-looking but still-broken result.
+19. **An improved live number is not evidence for whichever fix you were
+    thinking about.** §17's saturation improvement (21.1% → 15.2%) landed
+    on top of fifteen uncommitted, simultaneous changes — a full MPC
+    reweight, a real cone-map bug fix, and edits to three other files.
+    Without isolating variables, a better number cannot be attributed to a
+    specific cause, no matter how mechanistically plausible that cause
+    sounds — and the same run's reversals/s got worse, which a
+    single-metric read would have missed entirely.
+20. **A mechanism can be plausible, documented, and still unverified —
+    say so.** §18 found a specific, named UE4/PhysX feature
+    (`SteeringCurve`) that would produce the measured signature by
+    construction, with supporting circumstantial evidence (FSDS never
+    built a custom dynamics model; a structurally similar hidden
+    nonlinearity is already confirmed on the throttle axis). None of that
+    is a substitute for opening the asset and reading the curve. A strong
+    circumstantial case is still zero measurements.
 
 ---
 
@@ -1237,7 +1406,8 @@ next step is comparing this fresh log against the sim baseline via
 | `ConeMap._absorb()` same-frame duplicate bug | **Fixed (§15), unmeasured effect.** Real, deterministic bug (two same-frame detections of a newly-sighted cone both became permanent, unmerged entries — confirmed at 1 cm apart, independent of `MERGE_DIST`). Fixed in all 3 copies. Does not move the recorded map's saturation at default noise (4.80%→4.86%, matches pre-fix), because FSDS's noise-free oracle perception never triggers it and the added `CONE_NOISE_ENABLED` jitter is too small to separately trigger it either. Whether this matters on the real car is still open — needs measured detector noise or a live log |
 | Cone-detection noise model | **New capability (§15), not yet a finding.** `CONE_NOISE_ENABLED`/`CONE_POS_JITTER_STD`/`CONE_NOISE_SEED` added to `settings.py` + `sim/rollout_core.py::ConeNoise` — closes part of the "cone map... not modelled anywhere" fidelity gap (position jitter only; false positives/negatives/range-dependence remain unmodelled). Default off. `fsae_MPCTest`-only, no live-side counterpart needed (same as `SLAM_NOISE_*`) |
 | `launch_all.sh` couldn't get FSDS running at all | **Fixed (§16).** Two stacked bugs: shebang on line 3 (script never ran as bash), then WSL2 unable to reach the Windows host via `127.0.0.1` (needs the WSL default-gateway IP, or `FSDS_HOST_IP` — `fsds_ros2_bridge.launch.py` already supported this, just was never set). Fixed in both `ros2/launch_all.sh` and the `fsds_simulator` mirror, preserving the mirror's intentional config differences |
-| First live control log of this investigation | **New, not yet analysed.** `mpc_standalone_control_1786065783.csv` exists as of §16 — every finding in §12–§15 was offline-only until now. Compare against the sim baseline via `tuner/live_vs_sim_diagnostics.py` next |
+| First live-vs-sim comparison since §0 | **Done (§17), confounded.** Saturation improved 21.1%→15.2% and entry-rate gap narrowed 2.6×→1.7×, but reversals/s worsened 1.62→3.15 and fifteen uncommitted live-side files changed at once (MPC reweight, `_absorb()` fix, others). Cannot attribute the improvement to any one change. Next: re-run with only the MPC weights reverted to `dfd1a08` to isolate that variable |
+| `SteeringCurve` (UE4/PhysX speed-dependent steering scaling) | **New lead (§18), untested.** PhysX's own vehicle docs describe exactly this pattern (full steer below a speed threshold, scaled down above it) as an optional, developer-wired curve on `WheeledVehicleMovementComponent4W` — present by default in Epic's template content FSDS forked from and never replaced (confirmed FSDS built no custom dynamics model). Could not be checked from this environment: this repo's Git LFS is non-functional, so the relevant `.uasset` files are unpulled pointer stubs; even pulled, the curve's keyframes aren't text-searchable. Needs the UE4 Editor, opened on the vehicle Blueprint's movement component, to confirm or eliminate directly |
 | Identify the exact FSDS mechanism | **Done** — step test run (§9–10): a *dynamically enforced lateral-acceleration* ceiling. Both signatures present: different steering angles settle to the same response (a cap), yet yaw overshoots ~30% first (not a static clip) |
 | Ceiling decay time constant | **Done — see `alat_ceiling_tau` above (§12.12).** Superseded the original 0.04–1.06 s scattered fit from the 3 s hold |
 | Speed profile | **Closed, not a discrepancy** — see the correction below. Achieved speeds differ by 2% |
