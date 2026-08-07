@@ -35,6 +35,26 @@ from sim.sim_track import TRACK_HALF_WIDTH
 #     weights tuned here won't behave the same on the real car.
 N_HORIZON = 25
 
+# TERMINAL_Q_SCALE — "How much extra does the controller care about where it
+# ends up at the very end of its plan, compared to every other step?"
+# Added 2026-08-08 (sim_to_real_investigation.md S40): with no
+# terminal cost or constraint, the MPC has exactly the same incentive to
+# track well at the last predicted step as at every other step, and no
+# incentive at all to leave itself in a good position for what happens just
+# past the horizon. This affects BOTH stacks identically (mpc_core.py has
+# the same gap) since it's a genuine structural omission, not a sim/live
+# mismatch.
+# 1.0 = no-op (the only value ever validated against the current Q_diag/
+#       R_diag/R_rate_diag tuning -- this is what every existing tuned
+#       weight set assumes).
+#   - Increase it: the last predicted step is penalised more heavily than
+#     the others, which should reduce end-of-horizon myopic behaviour, at
+#     the cost of some responsiveness earlier in the plan.
+#   - Typical adjustment: try 2-5x as a starting point if tuning this;
+#     re-validate against VALIDATION_SUITE and the recorded map for new
+#     DNFs before trusting it, the same as any other weight change.
+TERMINAL_Q_SCALE = 1.0
+
 # USE_PLANNER — "Does the tuner pretend to have real cone-vision, or cheat
 # and use the perfect track outline?"
 # True  = the tuner simulates a car that can only see nearby cones and has

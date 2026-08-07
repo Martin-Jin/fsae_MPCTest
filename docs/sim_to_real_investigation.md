@@ -2846,6 +2846,47 @@ slightly away from 1.0 but remain in a reasonable range.
 (that's the parity gap this closes: only the offline copy was missing it).
 `fsae_MPCTest`-only diff, in `controller/optimiser.py`.
 
+## 40. Terminal cost added as an inactive (1.0 = no-op) toggle, mirrored to both stacks
+
+Unlike §38/§39, this is a gap present in BOTH stacks identically, not a
+sim/live mismatch: `mpc_core.py` (live) and `controller/optimiser.py`
+(offline) both weight every predicted state x[:,0..N] uniformly via
+`sqrtQ_param`, with no extra cost or constraint on the terminal state
+x[:,N]. This means the MPC has no structural incentive to prefer ending
+its plan in a good position, which can show up as myopic behaviour right
+at the horizon boundary — flagged as unexamined in the user's action list.
+
+**Implementation, chosen deliberately conservative (asked the user first —
+this touches the shared cost function both stacks use, and is a new
+tunable weight, not a fix to something already tuned):** added
+`terminal_scale`, defaulting to `1.0` (a provable, verified no-op — see
+below), rather than picking a value myself. `cost += (terminal_scale - 1.0)
+* sum_squares(sqrtQ * x[:,N])` — additive on top of the existing uniform
+term, so at 1.0 the extra term's coefficient is exactly zero. New setting
+`settings.TERMINAL_Q_SCALE = 1.0` in `settings.py`, threaded through
+`solve_mpc()` -> `init_parameterized_mpc()` (offline) and inlined as
+`self.terminal_scale = 1.0` in `mpc_core.py` (both the live copy and the
+`fsds_simulator` mirror — no `settings.py` on the car's PYTHONPATH, same
+pattern as every other inlined constant there). `terminal_scale` is baked
+into the compiled QP like `du_max`/`u_min`/`u_max`, so `solve_mpc()` got the
+same staleness-triggered-rebuild check those already have.
+
+**Verified the default is a true no-op, not just "should be":**
+`solve_mpc(..., terminal_scale=1.0)` and the same call omitting the
+argument produce bit-identical `u_sol` at tight tolerance (1e-7), and a
+full `VALIDATION_SUITE` run with it wired through end-to-end (rather than
+tested in isolation) reproduced the exact same per-path saturation numbers
+and DNF steps as immediately before this change.
+
+**Not yet done, deliberately left to the user:** picking and validating a
+value other than 1.0. This is the kind of judgement call the user is
+already making by hand for `Q_diag`/`R_diag`/`R_rate_diag` — a wrong
+terminal weight could bias behaviour in a way that looks like a `Q_diag`
+problem, so it should be tuned in that same loop, not guessed here.
+Starting-point guidance is in `settings.py`'s comment (try 2-5x, re-validate
+against `VALIDATION_SUITE`/recorded map for new DNFs the same as any other
+weight change).
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
@@ -3122,6 +3163,7 @@ slightly away from 1.0 but remain in a reasonable range.
 | Speed-dependent `alat_ceiling(v)` | **Shipped (§37), 2026-08-08.** `max(7.5, 2.46+0.47*v)` — sweep's fit, only raises the ceiling above ~10.7 m/s, never lowers it. Validated: sweep MAE 0.87→0.72, 0 new `VALIDATION_SUITE` DNFs, recorded-map ratios unchanged-to-improved. `fsae_MPCTest`-only (no live plant model to mirror to). Not yet validated live |
 | Solver tolerance mismatch (1e-4 offline / 1e-5 live) | **Ruled out (§38), 2026-08-08.** Measured directly on the recorded map full-lap: byte-identical sat/e_psi/progress/score at both tolerances. OSQP already converges well inside 1e-4 on this QP; not a source of sim/live divergence |
 | Missing step-0 slew constraint offline | **Fixed (§39), 2026-08-08.** Added `u_prev_param` + hard `u[:,0]-u_prev` constraint to `controller/optimiser.py`, mirroring `mpc_core.py`'s existing `uprev_p` constraint. `fsae_MPCTest`-only (live already had it). 0 new DNFs; ratios mostly moved toward live (sat 0.40→0.47, e_psi mean 0.60→0.70, e_psi p90 0.52→0.67) |
+| No terminal cost/constraint | **Added as an inactive toggle (§40), 2026-08-08.** `TERMINAL_Q_SCALE=1.0` (no-op, verified bit-identical), mirrored to both `mpc_core.py` copies + offline `optimiser.py`. A gap in BOTH stacks identically, not a parity issue. Picking/validating a non-default value deliberately left to the user, same tuning loop as `Q_diag`/`R_diag` |
 | **Model the yaw cap offline** | **Done** — `alat_ceiling*` in `model/vehicle_physics.py`. Moves every metric toward the car (saturation 4.4→6.3%, a_lat max 14.06→10.53) but closes only part of the gap; live is still 21.1% saturation |
 | **Planner parity bug (`SimPlanner` call sites)** | **Fixed (§31), 2026-08-08.** Offline never passed `smooth_per_pt`/`look_radius`/`plan_horizon`/blend `alpha`/`horizon` to `build_path_walls()`/`blend_paths()`, silently using hardcoded defaults instead of `fsae_params.yaml`'s tuned values (2 of 5 coincidentally matched). Fix narrows the "unexplained gap" 17.43→10.68 pp in one step — bigger than every previously-tested plant/ceiling factor combined — and introduces a new recorded-map DNF at step 95. Weights may need re-tuning against the corrected planner |
 | **Recorded-map DNF (post-§31/braking-fix)** | **Root-caused and fixed (§33/§34), 2026-08-08.** Cause: `_build_wall_path`'s seed filter (`planning/boundary.py`, `fwd > 0.3`) discontinuously drops the nearest midpoint as the car's heading rotates through a corner. This is §19's `min_ahead`/chain-anchor discontinuity, pinned to the exact line. **Fix 1** (`curvature_speed`'s `v_max_eff` no longer reapplied after real curvature is measured) and **Fix 2** (seed filter loosened to `fwd > -0.5`) both shipped, mirrored to all 3 repos (AST-identical, confirmed). Initially reverted for raising `VALIDATION_SUITE`'s DNF count (0/5→1-2/5); re-shipped after recognising that check was the wrong direction here — the live car already DNFs/saturates far more than the offline sim, so the sim failing more after removing artificial forgiveness is closing the gap, not regressing (lesson 32). Produced the closest full-lap sim/live match in this document (§34: ratios 0.68-0.73 across every metric) |

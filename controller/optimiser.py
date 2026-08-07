@@ -64,7 +64,7 @@ import numpy as np
 _mpc_cache = None
 
 
-def init_parameterized_mpc(nx, nu, N, u_min, u_max, du_max=None):
+def init_parameterized_mpc(nx, nu, N, u_min, u_max, du_max=None, terminal_scale=1.0):
     """
     Build and compile a parameterized CVXPY MPC problem.
 
@@ -107,6 +107,17 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max, du_max=None):
         Hard per-step slew-rate limit on u, including step 0 against u_prev.
         None disables the constraint (legacy behaviour). Must match the live
         mpc_core.py du_max for offline-tuned weights to transfer.
+    terminal_scale : float, optional
+        Extra multiplier on the state cost applied ONLY to the terminal state
+        x[:,N], on top of the existing (unscaled) per-step cost it already
+        gets from the uniform sum over all N+1 columns. 1.0 (default) is a
+        no-op -- exactly the pre-2026-08-08 behaviour, no terminal weighting
+        at all. Added to close a structural gap: with no terminal cost or
+        constraint, the MPC has no reason to prefer trajectories that leave
+        it in a good position at the end of the horizon, which can show up
+        as myopic behaviour right at the horizon boundary. >1.0 adds weight;
+        NOT the same knob as settings.Q_diag, which scales every step
+        equally including this one.
 
     Returns
     -------
@@ -145,6 +156,16 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max, du_max=None):
     # cp.multiply(sqrtQ_param, x) broadcasts (nx,1) across (nx,N+1) columns.
     # cp.sum_squares computes Σ_ij (sqrtQ_i * x_ij)² = Σ_i Q_ii * Σ_j x_ij²
     cost  = cp.sum(cp.sum_squares(cp.multiply(sqrtQ_param, x)))
+
+    # Terminal cost: EXTRA weight on the final predicted state x[:,N], on top
+    # of the per-step weight it already receives above. terminal_scale=1.0
+    # (default) makes this term's coefficient zero -- a pure no-op, matching
+    # the pre-2026-08-08 behaviour where every column including the terminal
+    # one was weighted identically. See init_parameterized_mpc's docstring.
+    if terminal_scale != 1.0:
+        cost += (terminal_scale - 1.0) * cp.sum_squares(
+            cp.multiply(sqrtQ_param[:, 0], x[:, N])
+        )
 
     # Input magnitude cost: penalises large control commands.
     cost += cp.sum(cp.sum_squares(cp.multiply(sqrtR_param, u)))
@@ -233,13 +254,16 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max, du_max=None):
         'u_min': np.array(u_min, dtype=float),
         'u_max': np.array(u_max, dtype=float),
         'du_max': None if du_max is None else np.array(du_max, dtype=float),
+        # terminal_scale is baked into the cost as a plain constant (like
+        # u_min/u_max/du_max above), so it needs the same staleness check.
+        'terminal_scale': float(terminal_scale),
     }
 
 
 def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max, R_rate=None, u_prev=None,
               silent=False, return_status=False,
               eps_abs=1e-5, eps_rel=1e-5, max_iter=8000, warm_start=True,
-              du_max=None):
+              du_max=None, terminal_scale=1.0):
     """
     Execute the parameterized MPC solve for the current timestep.
 
@@ -324,6 +348,8 @@ def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max, R_rate=None, u_prev=None,
         OSQP maximum iteration count.
     warm_start : bool, optional
         Whether to warm-start OSQP from the previous solution.
+    terminal_scale : float, optional
+        See init_parameterized_mpc's docstring. 1.0 (default) is a no-op.
 
     Returns
     -------
@@ -362,15 +388,22 @@ def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max, R_rate=None, u_prev=None,
         (cached_du is None) != (du_max_arr is None)
         or (du_max_arr is not None and not np.array_equal(cached_du, du_max_arr))
     )
+    # terminal_scale is baked in like du_max/u_min/u_max -- needs the same check.
+    terminal_changed = (
+        _mpc_cache is not None
+        and _mpc_cache.get('terminal_scale', 1.0) != float(terminal_scale)
+    )
     needs_rebuild = (
         _mpc_cache is None
         or _mpc_cache['u'].shape[1] != N
         or not np.array_equal(_mpc_cache['u_min'], u_min_arr)
         or not np.array_equal(_mpc_cache['u_max'], u_max_arr)
         or du_changed
+        or terminal_changed
     )
     if needs_rebuild:
-        _mpc_cache = init_parameterized_mpc(nx, nu, N, u_min, u_max, du_max)
+        _mpc_cache = init_parameterized_mpc(nx, nu, N, u_min, u_max, du_max,
+                                             terminal_scale=terminal_scale)
 
     # ── Inject dynamics matrices (change every timestep as vx changes) ────────
     _mpc_cache['A'].value  = Ad

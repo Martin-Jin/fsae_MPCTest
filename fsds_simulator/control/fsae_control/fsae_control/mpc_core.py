@@ -335,6 +335,17 @@ class MPCController:
         MAX_STEER_RATE_RAD_S: float = math.radians(180.0)
         self.du_max = np.array([MAX_STEER_RATE_RAD_S * self.dt, 0.6])
 
+        # TERMINAL_Q_SCALE (settings.py, fsae_MPCTest) — extra weight on the
+        # final predicted state x[:,N], on top of the uniform per-step weight
+        # it already gets. 1.0 = no-op, matching every weight set tuned
+        # against this controller so far. See settings.py's comment and
+        # sim_to_real_investigation.md S40 for the structural gap this closes
+        # (both stacks lacked a terminal cost/constraint identically -- this
+        # is not a sim/live parity fix, it's a shared, previously-unaddressed
+        # gap in both). Inlined here per the standing no-settings.py-on-the-
+        # car rule; must be kept numerically identical to fsae_MPCTest's copy.
+        self.terminal_scale = 1.0
+
         # ── Continuity memory ─────────────────────────────────────────
         self._delta_act:      float      = 0.0
         self._a_act:          float      = 0.0
@@ -405,6 +416,12 @@ class MPCController:
 
         # Cost Formulation (Exact match to optimiser.py)
         cost  = cp.sum(cp.sum_squares(cp.multiply(sqrtQ_param, x)))
+        # Terminal cost: extra weight on x[:,N] only. self.terminal_scale=1.0
+        # makes this a no-op (see __init__ for the full explanation).
+        if self.terminal_scale != 1.0:
+            cost += (self.terminal_scale - 1.0) * cp.sum_squares(
+                cp.multiply(sqrtQ_param[:, 0], x[:, N])
+            )
         cost += cp.sum(cp.sum_squares(cp.multiply(sqrtR_param, u)))
         cost += W_slack * cp.sum_squares(slack)
         

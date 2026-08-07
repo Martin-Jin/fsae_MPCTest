@@ -50,6 +50,7 @@ from settings import (
     POSE_HOLD_MAX_TICKS, POSE_HOLD_SEED,
     CONE_NOISE_ENABLED, CONE_POS_JITTER_STD, CONE_NOISE_SEED,
     REF_HEADING_RATE_LIMIT_ENABLED, REF_HEADING_RISE_RATE,
+    TERMINAL_Q_SCALE,
 )
 
 STALL_CHECK_INTERVAL = 60   # Steps between rolling stall checks (3 s at 20 Hz)
@@ -837,7 +838,7 @@ def run_core_rollout(
             R_rate=R_rate_scaled, u_prev=u_prev, silent=True,
             return_status=True, eps_abs=eps, eps_rel=eps,
             max_iter=max_iter, warm_start=(step != 0),
-            du_max=du_max,
+            du_max=du_max, terminal_scale=TERMINAL_Q_SCALE,
         )
 
         solver_failed = mpc_result is None
