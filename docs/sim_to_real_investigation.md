@@ -2304,6 +2304,60 @@ sufficient for parity; the call sites also have to agree.
 `python3 -m tuner.gap_attribution_ledger` (`MPLBACKEND=Agg`) — both now
 reflect the fix.
 
+## 32. A parallel live-side investigation reached the same conclusion independently — and is mid-edit on the exact next lead
+
+A separate, concurrent investigation was running on the live (`fsae_planning`)
+side while §1–§31 above happened on the offline side, using real recorded car
+logs rather than the offline plant. It independently found and fixed several
+of the same mechanisms this document did — steering-rate limit missing
+offline, position-update-rate split (10 Hz shared timer → 20 Hz pose / 10 Hz
+cones), a units bug inflating logged steering by 2.3×, the scoring-scale bug
+where 10 of 12 quality terms were numerically inert, the tiered
+safety/laptime/quality scoring rebuild, the `ConeMap` same-frame duplicate-cone
+bug, and — independently, via the FSDS `SteeringCurve` engine-level check —
+converged on the same "≥75% of the gap is unexplained by the ceiling" number
+this document reached in §16 (their numbering)/§13 (this doc's ledger). Their
+write-ups are `fsae_planning_changes.md` (repo root) and, mirrored into this
+repo, `docs/change_story.md` / `docs/changelog_2026-08-04_to_2026-08-07.md`.
+
+Two things worth recording before they're lost across the two documents:
+
+- **Their investigation ends exactly where this one's §31 begins.** Both
+  independently landed on "the leading remaining suspect is a defect in
+  exactly how the path-planning software shapes the car's intended route" as
+  the open lead, without either side having found the specific `SimPlanner`
+  call-site parity bug §31 describes. That bug is new information neither
+  write-up has yet — worth surfacing to that investigation rather than only
+  recording it here.
+- **`curvature_speed`'s braking-distance propagation is being corrected on
+  the live side right now, concurrently with this note being written.** As of
+  2026-08-08, `fsds_simulator/control/fsae_control/fsae_control/control_utils.py`
+  and this repo's own `sim/speed_profile.py` have matching, uncommitted,
+  in-progress edits fixing an index-offset bug in how a curvature sample's
+  distance-ahead is computed for the braking-distance propagation added in
+  their Part 7 / this doc's braking-distance fix (the old code assumed a fixed
+  `+2` sample-index offset that was wrong by a few metres in both directions
+  depending on which sampling branch ran; the fix tracks the true arc-length
+  offset via a new `pts_s0`/`kappa_at` bookkeeping pair, and makes a
+  corner-entry braking margin explicit instead of accidental). **This means
+  every rollout in this document that calls `sim.rollout_core.run_core_rollout`
+  with `use_planner=True` — i.e. essentially every recorded-map and
+  `VALIDATION_SUITE` measurement in §12–§31 — runs through a `curvature_speed`
+  that is mid-edit as of this writing.** Do not run a re-measurement pass
+  until that edit lands and is confirmed syntactically and behaviourally
+  complete; a measurement taken mid-edit would be stale before it's even
+  written down. `fsae_MPCTest/sim/speed_profile.py` and its `fsds_simulator`
+  mirror were the only two files with uncommitted changes at the time this
+  note was written — no other file in this repo was touched by that
+  concurrent session.
+
+**What this means for the "re-measure §13/§26-30 against the §31 fix" plan**
+that was the standing next step: hold it until the concurrent
+`curvature_speed` edit is committed (check `git status` /
+`git diff --stat` in `fsae_MPCTest` for a clean tree on those two files), to
+avoid measuring — and writing into this document as if settled — numbers from
+a half-landed function.
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
