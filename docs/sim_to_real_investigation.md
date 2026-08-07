@@ -2784,6 +2784,28 @@ recorded-map ratios above are still offline-only. Per this document's
 standing rule, do not trust this fit closes any additional gap until
 measured live.
 
+## 38. Solver tolerance mismatch (1e-4 offline vs 1e-5 live): measured, zero effect
+
+One of the geometry-fix follow-up items was the offline tuner's relaxed
+`ROLLOUT_EPS=1e-4` (settings.py, deliberately loosened for CMA-ES speed)
+against `mpc_core.py`'s hardcoded `eps_abs=eps_rel=1e-5` live. Measured
+directly rather than assumed: re-ran the recorded map full-lap
+(`--continue-after-dnf`) at both tolerances, everything else identical.
+
+**Result: byte-identical outputs.** `sat`, `e_psi_mean`, `e_psi_p90`,
+`progress`, `dnf`, and `score` all matched to the printed precision at both
+1e-4 and 1e-5 (wall-clock also came out statistically the same, 15.1s vs
+13.9s on a single run — not a real speed difference at this map size).
+OSQP's warm-started solves on this QP already converge well past 1e-4
+before hitting the iteration cap, so tightening the tolerance changes
+nothing about the solution actually returned.
+
+**Conclusion: not a real source of sim/live divergence, no fix needed.**
+This was one of five items flagged for investigation after the geometry
+fix; it is the one that turned out to be a non-issue once measured, which
+is itself the useful finding — it rules this out as a place to keep
+spending effort chasing the residual gap.
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
@@ -3058,6 +3080,7 @@ measured live.
 |---|---|
 | **Fresh post-fix live log looked worse than pre-fix baselines** | **Explained, not a regression (§36).** Traced to two localized stall/tangle events (t=40s, t=150s) that drag the mean e_psi up while bulk-of-lap saturation/tracking is statistically unchanged from pre-fix logs. `steer_lp` and pose-age/delay hypotheses both checked and ruled out directly from log columns. Cause of the two stalls themselves not yet identified |
 | Speed-dependent `alat_ceiling(v)` | **Shipped (§37), 2026-08-08.** `max(7.5, 2.46+0.47*v)` — sweep's fit, only raises the ceiling above ~10.7 m/s, never lowers it. Validated: sweep MAE 0.87→0.72, 0 new `VALIDATION_SUITE` DNFs, recorded-map ratios unchanged-to-improved. `fsae_MPCTest`-only (no live plant model to mirror to). Not yet validated live |
+| Solver tolerance mismatch (1e-4 offline / 1e-5 live) | **Ruled out (§38), 2026-08-08.** Measured directly on the recorded map full-lap: byte-identical sat/e_psi/progress/score at both tolerances. OSQP already converges well inside 1e-4 on this QP; not a source of sim/live divergence |
 | **Model the yaw cap offline** | **Done** — `alat_ceiling*` in `model/vehicle_physics.py`. Moves every metric toward the car (saturation 4.4→6.3%, a_lat max 14.06→10.53) but closes only part of the gap; live is still 21.1% saturation |
 | **Planner parity bug (`SimPlanner` call sites)** | **Fixed (§31), 2026-08-08.** Offline never passed `smooth_per_pt`/`look_radius`/`plan_horizon`/blend `alpha`/`horizon` to `build_path_walls()`/`blend_paths()`, silently using hardcoded defaults instead of `fsae_params.yaml`'s tuned values (2 of 5 coincidentally matched). Fix narrows the "unexplained gap" 17.43→10.68 pp in one step — bigger than every previously-tested plant/ceiling factor combined — and introduces a new recorded-map DNF at step 95. Weights may need re-tuning against the corrected planner |
 | **Recorded-map DNF (post-§31/braking-fix)** | **Root-caused and fixed (§33/§34), 2026-08-08.** Cause: `_build_wall_path`'s seed filter (`planning/boundary.py`, `fwd > 0.3`) discontinuously drops the nearest midpoint as the car's heading rotates through a corner. This is §19's `min_ahead`/chain-anchor discontinuity, pinned to the exact line. **Fix 1** (`curvature_speed`'s `v_max_eff` no longer reapplied after real curvature is measured) and **Fix 2** (seed filter loosened to `fwd > -0.5`) both shipped, mirrored to all 3 repos (AST-identical, confirmed). Initially reverted for raising `VALIDATION_SUITE`'s DNF count (0/5→1-2/5); re-shipped after recognising that check was the wrong direction here — the live car already DNFs/saturates far more than the offline sim, so the sim failing more after removing artificial forgiveness is closing the gap, not regressing (lesson 32). Produced the closest full-lap sim/live match in this document (§34: ratios 0.68-0.73 across every metric) |
