@@ -630,7 +630,9 @@ low-speed under-cornering is a rig confound and is *not* reported as a finding.
 - The **shebang sat on line 3**, below two header comments, so the kernel never
   saw it and the script inherited the caller's shell — dying immediately under
   dash on `set -o pipefail`. Fixed in both; `ros2/launch_all.sh` and its
-  `fsds_simulator/` mirror have the same defect, left alone as out of scope.
+  `fsds_simulator/` mirror had the same defect — see §16, where both were
+  fixed too (not left out of scope after all — it caused a real launch
+  failure, not just a latent risk).
 
 ### 12.12 `alat_ceiling_tau` measured — tight, but does not close the gap
 
@@ -1071,6 +1073,77 @@ edited before import — like `SLAM_NOISE_ENABLED`, the rollout reads it via
 after import has no effect) and re-run `python3 -m tuner.recorded_map_rollout`
 for the closed-loop check.
 
+## 16. Getting a live run at all: two real bugs in `launch_all.sh`
+
+*(2026-08-07, continued.)* Every section above measured the offline sim only —
+no live control log existed anywhere in this environment for the whole
+investigation. Getting one required `ros2/launch_all.sh` (the host-side
+orchestrator that starts FSDS, the ROS 2 bridge, and the autonomous stack) to
+actually work, and it didn't. Two distinct bugs, found in sequence because
+fixing the first one exposed the second:
+
+**Bug 1 — the shebang sat on line 3, so the script never ran as bash.**
+Same defect already documented in §12.11 for `run_steering_step.sh`/
+`run_steering_sysid.sh`, and *this* file was noted there as "left alone as
+out of scope" — it wasn't, it wired straight into the failure being debugged
+here. `/bin/sh` on this machine is `dash`, and a script invoked without its
+shebang recognised falls back to the caller's shell. The pre-existing
+`sleep 2` after launching FSDS had no shell-specific requirements, so this
+was invisible for as long as the script only ever slept. The first fix
+attempted here — replacing that blind sleep with a poll loop — was the first
+thing in the file to need a real bash feature (`/dev/tcp`), and it exposed
+the shebang bug immediately: under dash, `/dev/tcp/...` isn't a special path
+at all, so the connection attempt fails unconditionally regardless of
+whether the target port is open, producing an infinite poll with no way to
+tell "genuinely down" from "wrong shell" apart from reading the shell itself.
+Fixed by moving `#!/bin/bash` to line 1.
+
+**Bug 2 — the real cause: WSL2 cannot reach the Windows host via
+`127.0.0.1`.** With bash actually running, the poll loop correctly reported
+the AirSim RPC port as unreachable — because it is, from WSL's network
+namespace, via loopback. WSL2's NAT networking gives WSL and Windows separate
+loopback interfaces; the Windows host is reachable via WSL's default gateway
+instead (`ip route show default`, third field). Confirmed directly: FSDS's
+RPC port was observed open via `netstat.exe` from the Windows side while the
+WSL-side poll loop still reported it closed, and connecting via the gateway
+IP succeeded immediately where `127.0.0.1` failed with `Connection refused`.
+
+This also explains why the ORIGINAL bug report (`fsds_ros2_bridge` crashing
+with `Failed connecting to RPC server (airsim)`) was never really about
+timing at all: `fsds_ros2_bridge.launch.py` already anticipated this exact
+problem — it accepts an `FSDS_HOST_IP` environment variable specifically for
+WSL, documented in its own `DeclareLaunchArgument` comment, defaulting to
+`localhost` otherwise. `launch_all.sh` never set it, so the bridge was always
+going to fail to connect the same way regardless of how long the wait before
+launching it — the 2-second sleep and the later 120-second poll were both
+solving a timing problem that didn't exist; the actual problem was
+address-only, on a machine where `localhost` had apparently worked before
+(user-confirmed), meaning this may be newly broken by a Windows/WSL
+networking change rather than always-broken. Not investigated further; the
+fix does not depend on knowing why it changed.
+
+**Fixed** in `ros2/launch_all.sh` by computing
+`FSDS_HOST_IP="$(ip route show default | awk '{print $3; exit}')"` once (only
+for the native, non-Docker path — the Docker container has its own
+networking) and exporting it before both the readiness poll and the bridge
+launch, so both consumers agree on the same address without a manual
+`export` step. **Applied to both copies** — `ros2/launch_all.sh` and
+`fsds_simulator/launch_all.sh` — despite the standing rule that the mirror
+copy is "intentionally adapted, not a sync target" (different Windows
+username, resolution, and cone-map output path): that rule is about
+*configuration* divergence, not about carrying a bug fix. The
+username/resolution/cone-path differences were preserved exactly; only the
+shebang position and the RPC-wait/networking logic were ported, matching how
+§12.11's quoting fixes were applied to both `run_steering_*.sh` copies
+without collapsing their other differences.
+
+**Consequence for this investigation:** a live control log now exists
+(`mpc_standalone_control_1786065783.csv`) for the first time since this
+document began. Every finding in §12–§15 was measured against the offline
+sim only, with the recorded map as the sole live-comparable reference. The
+next step is comparing this fresh log against the sim baseline via
+`tuner/live_vs_sim_diagnostics.py` — not yet done as of this section.
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
@@ -1129,6 +1202,22 @@ for the closed-loop check.
     contained the command — a different bug with the same symptom (broken
     arguments), only caught by an actual failed run, not by reasoning about the
     fix in isolation.
+17. **"Out of scope" is a claim about priority, not about risk.** §12.11 noted
+    `launch_all.sh` had the same shebang defect as the harnesses being fixed
+    and left it alone. It went on to cause a real launch failure (§16), not a
+    hypothetical one — the defect doesn't care which script it's in. A noted-
+    but-deferred bug is still a live bug; it surfaces on its own schedule, not
+    the investigation's.
+18. **A timing fix can mask an address fix, and look like it worked.** The
+    original symptom (`fsds_ros2_bridge` crashing with "Failed connecting to
+    RPC server") was diagnosed as a race and fixed with a longer wait — a
+    reasonable read of the evidence at the time, and it never got the chance
+    to be tested cleanly, because the *shebang* bug (§16) made the wait loop
+    fail unconditionally before the real, unrelated address bug (WSL cannot
+    reach the Windows host via `127.0.0.1`) could even be observed. Two
+    independent bugs stacked behind one symptom; fixing the outer one was
+    necessary to see the inner one at all, and every fix short of the last
+    one produced a plausible-looking but still-broken result.
 
 ---
 
@@ -1147,6 +1236,8 @@ for the closed-loop check.
 | `blend_paths` blended-magnitude vs heading rate | **Mostly eliminated (§14.1).** Rebuild distance vs. blended path's own reference-heading rate: r=0.15 raw, r=0.10 controlling for corner severity — explains ~1-2% of variance, not the 78–100% reference-driven growth in §12.8. Points back at the planner's spatial fit itself (curvature-spike defect), not `blend_paths`, as the likely source of the heading-rate symptom |
 | `ConeMap._absorb()` same-frame duplicate bug | **Fixed (§15), unmeasured effect.** Real, deterministic bug (two same-frame detections of a newly-sighted cone both became permanent, unmerged entries — confirmed at 1 cm apart, independent of `MERGE_DIST`). Fixed in all 3 copies. Does not move the recorded map's saturation at default noise (4.80%→4.86%, matches pre-fix), because FSDS's noise-free oracle perception never triggers it and the added `CONE_NOISE_ENABLED` jitter is too small to separately trigger it either. Whether this matters on the real car is still open — needs measured detector noise or a live log |
 | Cone-detection noise model | **New capability (§15), not yet a finding.** `CONE_NOISE_ENABLED`/`CONE_POS_JITTER_STD`/`CONE_NOISE_SEED` added to `settings.py` + `sim/rollout_core.py::ConeNoise` — closes part of the "cone map... not modelled anywhere" fidelity gap (position jitter only; false positives/negatives/range-dependence remain unmodelled). Default off. `fsae_MPCTest`-only, no live-side counterpart needed (same as `SLAM_NOISE_*`) |
+| `launch_all.sh` couldn't get FSDS running at all | **Fixed (§16).** Two stacked bugs: shebang on line 3 (script never ran as bash), then WSL2 unable to reach the Windows host via `127.0.0.1` (needs the WSL default-gateway IP, or `FSDS_HOST_IP` — `fsds_ros2_bridge.launch.py` already supported this, just was never set). Fixed in both `ros2/launch_all.sh` and the `fsds_simulator` mirror, preserving the mirror's intentional config differences |
+| First live control log of this investigation | **New, not yet analysed.** `mpc_standalone_control_1786065783.csv` exists as of §16 — every finding in §12–§15 was offline-only until now. Compare against the sim baseline via `tuner/live_vs_sim_diagnostics.py` next |
 | Identify the exact FSDS mechanism | **Done** — step test run (§9–10): a *dynamically enforced lateral-acceleration* ceiling. Both signatures present: different steering angles settle to the same response (a cap), yet yaw overshoots ~30% first (not a static clip) |
 | Ceiling decay time constant | **Done — see `alat_ceiling_tau` above (§12.12).** Superseded the original 0.04–1.06 s scattered fit from the 3 s hold |
 | Speed profile | **Closed, not a discrepancy** — see the correction below. Achieved speeds differ by 2% |

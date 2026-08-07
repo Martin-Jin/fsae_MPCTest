@@ -1,6 +1,6 @@
+#!/bin/bash
 # Language: bash
 # Title: Rock-Solid Auto-Launch and Cleanup Orchestrator for launch_all.sh
-#!/bin/bash
 
 # --- CONFIGURATION ---
 CONTAINER_NAME="fsds_ros2_bridge"
@@ -18,6 +18,19 @@ if command -v ros2 >/dev/null 2>&1 && [ -f "$HOST_ROS2_DIR/install/local_setup.b
     USE_DOCKER=false
 else
     USE_DOCKER=true
+fi
+
+# Under WSL2 (NAT networking), 127.0.0.1/localhost inside WSL does NOT reach
+# the Windows host running FSDS — WSL has its own network namespace. The
+# Windows host is reachable via WSL's default gateway instead. This affects
+# both this script's own RPC-readiness check below AND fsds_ros2_bridge's
+# connection to AirSim (fsds_ros2_bridge.launch.py already supports this via
+# the FSDS_HOST_IP env var, but expects it to be set externally — it defaults
+# to 'localhost' otherwise, which fails the same way). Computed once here and
+# exported so both consumers agree, without requiring a manual `export` step.
+# Skipped for the Docker path, where the container's own networking applies.
+if [ "$USE_DOCKER" != true ] && [ -z "$FSDS_HOST_IP" ]; then
+    export FSDS_HOST_IP="$(ip route show default 2>/dev/null | awk '{print $3; exit}')"
 fi
 
 cleanup() {
@@ -79,10 +92,39 @@ else
 fi
 
 # 1. Launch Simulator in background
+AIRSIM_RPC_PORT=41451
+# FSDS_HOST_IP is 'localhost' when running natively on the same machine as
+# ROS 2, or the WSL default-gateway IP under WSL2 (see above) — either way
+# it's the address FSDS's RPC server is actually reachable at, so the
+# readiness check below must probe the same address the bridge will use.
+AIRSIM_RPC_HOST="${FSDS_HOST_IP:-localhost}"
+AIRSIM_READY_TIMEOUT=120   # seconds — a full competition map's Vulkan/shader/
+                           # level-streaming boot can take well over a short
+                           # fixed sleep, which would race the bridge against
+                           # a simulator that hadn't opened its RPC port yet
+                           # ("Failed connecting to RPC server (airsim)").
+
+wait_for_airsim_rpc() {
+    echo "⏳ Waiting for FSDS AirSim RPC server on $AIRSIM_RPC_HOST:$AIRSIM_RPC_PORT..."
+    local waited=0
+    while ! (exec 3<>"/dev/tcp/$AIRSIM_RPC_HOST/$AIRSIM_RPC_PORT") 2>/dev/null; do
+        exec 3>&- 2>/dev/null
+        sleep 1
+        waited=$((waited + 1))
+        if [ "$waited" -ge "$AIRSIM_READY_TIMEOUT" ]; then
+            echo "⚠️ Timed out after ${AIRSIM_READY_TIMEOUT}s waiting for AirSim RPC — proceeding anyway."
+            return 1
+        fi
+    done
+    exec 3>&- 2>/dev/null
+    echo "✅ AirSim RPC is up after ${waited}s."
+    return 0
+}
+
 if [ -d "/mnt/c/Users/Martin/Downloads/fsds-v2.2.0-windows" ]; then
     echo "[1/3] Spinning up Windows Simulator within its home directory..."
     cmd.exe /c "cd /d C:\Users\Martin\Downloads\fsds-v2.2.0-windows && FSDS.exe -windowed -ResX=1280 -ResY=720" &
-    sleep 2
+    wait_for_airsim_rpc
 else
     echo "⚠️ Warning: Windows Simulator folder path not found!"
 fi
