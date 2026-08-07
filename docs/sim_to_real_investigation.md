@@ -1928,6 +1928,69 @@ its concentration at exactly the moments that matter).
 (same `MPLBACKEND=Agg` requirement as the other diagnostic scripts in this
 document).
 
+## 27. The tail excess is NOT §19's seed-jump — it's a sustained hairpin turn-in lag
+
+*(2026-08-07, continued.)* §26 left the cross-check against §19's
+`min_ahead` mechanism as the explicit next step. This section does it,
+using `tuner/reference_excess_mechanism_check.py` (new) — a wrapper around
+`build_path_walls()` (same non-invasive pattern as §14/§19) that logs, per
+tick, the seed midpoint `_build_wall_path` chains from (the exact quantity
+§19's mechanism perturbs) alongside the raw centreline's near-field
+tangent.
+
+**Result: only 6/64 (9%) of §26's high-excess ticks coincide with a
+`>1m` seed-midpoint jump — the great majority show `seed_jump = 0.00`, no
+discontinuity in the seed at all.** §19's mechanism is a real but separate,
+minor contributor; it is not what produces most of the tail. This also
+matches §19's own corrected frequency (0.07% of all ticks, vs. §26's 5.8%
+high-excess ticks) — the two were never the same size of effect to begin
+with, this section just confirms they are not even the same *ticks*.
+
+**What is actually happening, traced directly on the largest episode
+(t=5.40–6.65 s, a hairpin — car decelerates 10.0→3.2 m/s over 1.4 s):**
+`e_psi_true` (against the fixed geometric reference) stays smooth and
+modest throughout (−6.3° → −20.1°, a real but unremarkable corner-entry
+error). `e_psi` (against the planner's online reference) blows out from
+−2.5° to −63.4° over the same interval, then snaps back sharply
+(−63.4°→−44.5°→−31.4° across the next two ticks). Tracing the planner's
+own published near-field tangent directly shows why: it swings from 21.3°
+at t=5.25 to 139.9° at t=6.45 — a full 119° rotation — while the car's own
+heading only rotates from 17.4° to 80.8° (63°) over the same ticks. **The
+online planner's reference is not glitching — it is correctly anticipating
+a sharp hairpin earlier and more aggressively than the car has physically
+had time to yaw into**, so the reference-minus-car gap grows continuously
+for over a second before the car catches up and the gap closes. This is a
+sustained lead/lag dynamic, not a discrete artifact — it would not show up
+as a "jump" in any single-tick diff, which is exactly why §19's
+discontinuity-based instrumentation (built to catch a different failure
+mode) missed it.
+
+**What this does and does not establish.** This identifies, for the first
+time, the actual shape of the mechanism behind §26's saturation-predictive
+tail excess: sustained over-anticipation at sharp corner entries, not a
+discrete windowing bug. It does **not** yet show this is wrong or fixable
+without cost — a planner that anticipates a hairpin early is not
+obviously a defect (arguably desirable preview behaviour), and the
+question of whether the *controller* should track that early reference as
+tightly as it does (versus some form of curvature-aware reference-rate
+limiting, conceptually similar to the existing `SPEED_TARGET_RISE_RATE`
+limiter but for heading rather than speed) has not been investigated. No
+change has been made to any planner or controller file.
+
+**Confirmed on the other two flagged episodes, same shape.** Checked
+t≈17.25–18.55 s (v: 8.05→5.11 m/s) and t≈33.20–34.35 s (v: 9.27→5.41 m/s) —
+both braking corner entries. In both, `e_psi_true` stays modest and
+bounded (±12–14°) while `e_psi` swings roughly 2–3× wider (−37.1° to
+−4.5°, and −33.9° to −1.9° respectively). Same pattern as the hairpin: the
+online planner's reference outpaces the car's actual yaw during braking
+corner entry, not a one-off. Not yet checked: whether this is universal to
+every braking corner entry on the map (these three were selected because
+§26 already flagged them as high-excess, not sampled independently), or
+whether some corner entries produce no such gap.
+
+**Reproduce with:** `python3 -m tuner.reference_excess_mechanism_check`
+(same `MPLBACKEND=Agg` requirement).
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
@@ -2086,6 +2149,20 @@ document).
     despite a real, saturation-predictive effect being present in 5.8% of
     ticks.
 
+27. **A discontinuity-detector cannot find a mechanism that has no
+    discontinuity.** §19's instrumentation was built to catch tick-to-tick
+    jumps, and correctly found few (0.07%). §26 found a different, larger
+    effect (5.8% of ticks) using a completely different measurement (excess
+    over a fixed geometric reference) — and §27 confirmed by direct
+    cross-check that the two are mostly disjoint sets of ticks (9% overlap),
+    not the same mechanism measured two ways. A sustained lead/lag (the
+    reference smoothly outpacing the car for over a second, then
+    correcting) produces no large single-tick delta anywhere in the middle
+    of the episode; only an integral-style measurement (excess accumulated
+    against a stable reference) surfaces it. Matching the instrument to the
+    suspected failure *shape*, not just re-running an existing instrument
+    on new data, is what found this.
+
 ---
 
 ## Open / deferred
@@ -2098,7 +2175,7 @@ document).
 | **`alat_ceiling_tau`** | **Done (§12.12).** Measured 0.35 s median (0.28–0.46, 11/12 trials) with `step_s=8.0`; model set to 0.40. Fixing it did **not** close the saturation gap — the residual is elsewhere |
 | Ceiling is speed-dependent | **New, unmodelled (§12.4).** Measured sustained a_lat rises with speed — 6.45 @ 8 m/s, 7.54 @ 11, 9.26 @ 14 — while the model pins it flat at 7.5. Residuals +1.0 / ~0 / −1.76. Deliberately not fitted: 16 points, one run |
 | Step vs sweep disagree on level | **Open.** Step's 3 s settle says 7.5 @ 8 m/s; the sweep's long orbit says 6.45. A longer `step_s` resolves whether sustained a_lat keeps decaying past 3 s — same experiment as the `tau` re-measurement |
-| Planner reference heading | **Open, narrowed further (§12.8, §14, §26).** In *both* stacks the reference heading swings faster than the car can yaw, driving 78–100% of heading-error growth. §26: most of that swing is geometry (planner-vs-fixed-geometric-reference ratio ≈1.2 mean/p90, r=0.80) — but a tail excess (ratio 1.87 p99, 3.51 max, 5.8% of ticks) is planner-added on top of geometry and predicts saturation directly (42.2% vs 2.3% immediate rate). Not yet fixed or attributed to a specific planner mechanism; candidate is §19's `min_ahead` window artifact, not yet cross-checked against these specific ticks |
+| Planner reference heading | **Open, mechanism identified (§12.8, §14, §26, §27).** In *both* stacks the reference heading swings faster than the car can yaw, driving 78–100% of heading-error growth. §26: most of that swing is geometry (ratio ≈1.2 mean/p90 vs. a fixed geometric reference, r=0.80) — but a tail excess (ratio 1.87 p99, 3.51 max, 5.8% of ticks) is planner-added and predicts saturation directly (42.2% vs 2.3% immediate rate). §27: NOT §19's seed-jump (only 9%/64 of high-excess ticks coincide with one) — instead a sustained turn-in lag at braking corner entries, where the online planner's reference anticipates the corner earlier/more aggressively than the car has yawed yet (confirmed on 3/3 checked episodes). Not yet fixed; open question is whether the controller should track that early reference as tightly as it does |
 | `blend_paths` reset-bypass discontinuity | **Eliminated for the recorded map (§14).** Real, parity-correct mechanism, can jump the reference up to 166° on other geometries (PATH_SPIRAL) — but fires 0/1038 times on the recorded map (max trigger-distance 1.98 m, just under the 2.0 m threshold). Cannot explain 21.1% saturation with 0 events |
 | `blend_paths` blended-magnitude vs heading rate | **Mostly eliminated (§14.1).** Rebuild distance vs. blended path's own reference-heading rate: r=0.15 raw, r=0.10 controlling for corner severity — explains ~1-2% of variance, not the 78–100% reference-driven growth in §12.8. Points back at the planner's spatial fit itself (curvature-spike defect), not `blend_paths`, as the likely source of the heading-rate symptom |
 | `ConeMap._absorb()` same-frame duplicate bug | **Fixed (§15), unmeasured effect.** Real, deterministic bug (two same-frame detections of a newly-sighted cone both became permanent, unmerged entries — confirmed at 1 cm apart, independent of `MERGE_DIST`). Fixed in all 3 copies. Does not move the recorded map's saturation at default noise (4.80%→4.86%, matches pre-fix), because FSDS's noise-free oracle perception never triggers it and the added `CONE_NOISE_ENABLED` jitter is too small to separately trigger it either. Whether this matters on the real car is still open — needs measured detector noise or a live log |
