@@ -2358,6 +2358,107 @@ that was the standing next step: hold it until the concurrent
 avoid measuring — and writing into this document as if settled — numbers from
 a half-landed function.
 
+**Update, same day: the concurrent edit landed** (committed `51deba0`,
+verified AST-identical between `sim/speed_profile.py` and the
+`fsds_simulator` mirror, ignoring docstrings). Re-measurement resumed — see
+§33.
+
+## 33. Re-measurement against §31 + the braking-distance fix: the recorded map still DNFs, and a new, distinct short-path-cap mechanism is why
+
+With both fixes landed, `recorded_map_rollout` and `gap_attribution_ledger`
+were re-run.
+
+**Headline numbers (recorded map, shipped ceiling law):** steering
+saturation 10.42% (was 4.80% pre-§31), `|e_psi|` mean/p90 6.09/20.05° (was
+6.9/18.5), `a_lat` max 10.42, reversals/s 1.25 — all essentially unchanged
+from the immediate post-§31 numbers in the table at the top of this
+document. **The recorded map still DNFs at step 96 (10.5% progress)**, one
+step later than pre-braking-fix (was 95) — the braking-distance index-offset
+fix did not move this failure at all.
+
+**Ledger re-run, factors B/C/D (the three ceiling laws) are now
+statistically indistinguishable from each other on the recorded map** — all
+three read 10.42%, where they previously showed measurable spread. Against
+the freshly-measured no-ceiling baseline (9.38%, itself different from any
+historical "4.4%"/"9.38%" figure quoted before this fix — see the ledger's
+own printed warning not to mix them), the ceiling now explains at most
+1.04pp (factor B only; C and D explain 0.00pp) of an 11.73pp live gap —
+**10.68pp (91.1%) remains unexplained**, essentially unchanged from the
+pre-braking-fix state. The braking-distance fix is a genuine correctness fix
+(confirmed AST-identical to the live copy) but does not move this
+particular metric.
+
+### Root cause of the new DNF: a short-path speed cap masking a real corner until it's too late
+
+Traced directly (car state history, not aggregate stats): the rollout drives
+cleanly to 14.8 m/s by t=3.0s, then between t=3.25–4.75s `e_psi` explodes
+from -3.9° to -65.6°, steering pins at the 25° stop, and the car goes
+off-track shortly after — the same "heading runaway while `e_y` stays
+modest" shape as every earlier saturation episode in this document.
+
+The mechanism is **not** a repeat of the braking-distance index-offset bug
+just fixed, and **not** exactly the same as the `min_ahead` seed-jump
+(§19) or the turn-in-lag tail (§27) already documented. It's a third,
+previously-undocumented sub-mechanism in the same family:
+
+- The published centreline (`planner_X`/`planner_Y` per step) shrinks
+  steadily as the car approaches the corner — 18.9 m at t=3.5s down to
+  8.9 m by t=4.4s — well short of `PLANNER_PLAN_HORIZON=25.0`. This is
+  `build_path_walls()` genuinely running out of walkable boundary that far
+  ahead through a tight bend, not a bug in the §31 kwarg-passing fix (the
+  four `PLANNER_*` params are confirmed correctly threaded through both
+  call sites).
+- `curvature_speed()`'s short-path cap, `v_max_eff = max(v_min, v_max *
+  min(1.0, total_len/scan_end))`, then dominates `v_target` while the path
+  is short: at `v_max=20.0` (the offline planner branch's `PLANNER_V_MAX`,
+  confirmed at `sim/rollout_core.py:63` — not the module's own
+  `v_max=15.0` default, which a naive direct repro of this call gets
+  wrong) and `scan_end=24.0`, a ~10 m path caps `v_target` at only
+  ~8.3 m/s. Verified directly: calling `curvature_speed()` on the exact
+  per-step sliced waypoints (`cl[cl_idx:]`, not the full published
+  centreline stored in history) reproduces `v_target` within rounding at
+  every checked step.
+- The near-field curvature at these same steps is genuinely tight (R≈4.5m,
+  triples 1-3 of the published path, consistent step to step — not a
+  spurious spike) and implies `v_corner=√(4×4.5)≈4.2 m/s`, but the
+  braking-distance propagation never gets to bind on it, because the
+  short-path cap is already the more restrictive term while the path is
+  short. Only once the path shortens further (step 88, 8.88 m) does the
+  genuine curvature-aware term finally take over — and by then the car is
+  still at 10.0 m/s with only ~9 m of remaining path to shed 6+ m/s in,
+  which `A_BRAKE_PLAN=5.0` cannot do in time.
+
+In short: **the short-path cap is a coarse, distance-blind stand-in for "I
+can't see far enough to trust a speed target," and it silently masks a
+genuine, correctly-detected tight corner for exactly as long as the path
+stays short — which is precisely the regime where the corner is closest and
+the masking is most dangerous.** This is a distinct failure mode from a
+curvature *value* artifact (§19) or a reference-heading *lag* (§27): here
+the curvature measurement is correct and stable, but a different, unrelated
+term (the length-based cap) overrides it until too late.
+
+**Not attempted:** a fix. Per CLAUDE.md's standing instruction on this
+family of defects, this is exactly the kind of planner-adjacent change that
+needs to be applied to both `fsae_MPCTest` and the live
+`fsae_planning`/`fsds_simulator` copies together, and the existing
+workarounds (curvature smoothing, tracking-error gate, speed-rise limiter)
+are defence in depth that would need re-checking against any change here,
+not assumed to still be correctly tuned. Candidate directions, not
+evaluated: (a) blend the short-path cap with the curvature-based term
+(e.g. take the min only when the path's near-field curvature is itself
+unremarkable, rather than always deferring to path length first), (b)
+investigate why `build_path_walls()` can't find a walkable boundary out to
+`plan_horizon` through this specific corner — a cone-density or
+`_WALL_MID_DIST` issue would be a different, and more fixable, root cause
+than "tight corners inherently truncate the boundary walk."
+
+**Reproduce with:** `python3 -m tuner.recorded_map_rollout` and
+`python3 -m tuner.gap_attribution_ledger` (`MPLBACKEND=Agg`) for the
+headline numbers; the per-step trace above was produced with a one-off
+script (not committed) that calls `run_core_rollout(..., want_history=True)`
+and inspects `history["v"]`, `history["v_target"]`, `history["e_psi"]`, and
+`history["planner_X"/"planner_Y"]` around the DNF step.
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
@@ -2593,20 +2694,25 @@ a half-landed function.
 
 ## Open / deferred
 
-> **Read §31 before trusting any specific number below.** A real parity bug
-> in `sim/sim_track.py::SimPlanner` (offline never passed the live-tuned
-> planner smoothing/blend parameters — silently used different hardcoded
-> defaults instead) was fixed 2026-08-08. It moved the recorded-map baseline
-> saturation from 4.80%→10.42% and introduced a DNF that wasn't there before.
-> Every precise percentage/ratio measured in §12–§30 predates this fix and
-> should be treated as directionally informative, not numerically current,
-> until re-measured.
+> **§12–§30 predate §31; §33 is the current re-measurement.** A real parity
+> bug in `sim/sim_track.py::SimPlanner` (offline never passed the live-tuned
+> planner smoothing/blend parameters) was fixed 2026-08-08 (§31), and a
+> concurrent live-side fix to `curvature_speed`'s braking-distance index
+> offset landed the same day. §33 re-measured against both: recorded-map
+> saturation is 10.42% (steady, not further moved by the braking fix), the
+> DNF at ~step 95-96/10.5% progress persists, and the unexplained-gap
+> fraction is still ~91% (10.68 of 11.73 pp). §33 also identifies the DNF's
+> specific new mechanism (a short-path speed cap masking a correctly-detected
+> tight corner). Treat every precise percentage/ratio in §12–§30 as
+> directionally informative, not numerically current.
 
 | item | status |
 |---|---|
 | **Model the yaw cap offline** | **Done** — `alat_ceiling*` in `model/vehicle_physics.py`. Moves every metric toward the car (saturation 4.4→6.3%, a_lat max 14.06→10.53) but closes only part of the gap; live is still 21.1% saturation |
 | **Planner parity bug (`SimPlanner` call sites)** | **Fixed (§31), 2026-08-08.** Offline never passed `smooth_per_pt`/`look_radius`/`plan_horizon`/blend `alpha`/`horizon` to `build_path_walls()`/`blend_paths()`, silently using hardcoded defaults instead of `fsae_params.yaml`'s tuned values (2 of 5 coincidentally matched). Fix narrows the "unexplained gap" 17.43→10.68 pp in one step — bigger than every previously-tested plant/ceiling factor combined — and introduces a new recorded-map DNF at step 95. Weights may need re-tuning against the corrected planner |
-| Remaining saturation gap | **Open, now measured against the corrected planner (§13, §30, §31).** Pre-fix: ≥75% of a 17.43 pp gap was not explained by the ceiling's law, level, or tau. Post-fix (§31): gap is 10.68 pp against a run that now DNFs at 10.5% progress — the recorded-map comparison itself needs redoing before re-quoting a percentage. §30's combined-factor sweep predates the fix and needs re-running |
+| **Recorded-map DNF (post-§31/braking-fix)** | **Root-caused, not fixed (§33), 2026-08-08.** A short-path `v_max_eff` cap in `curvature_speed()` masks a correctly-detected, stable-radius tight corner (R≈4.5m) for as long as the published centreline stays short (`build_path_walls()` returns ~9-19m, well under `plan_horizon=25`), then the genuine curvature term takes over too late to brake in time. Distinct from §19's `min_ahead` seed-jump and §27's turn-in lag — the curvature measurement itself is correct and stable here; an unrelated length-based term overrides it. No fix attempted; two untried candidate directions noted in §33 |
+| **Braking-distance index-offset fix (`curvature_speed`)** | **Landed (concurrent live-side session), 2026-08-08.** Fixed a `+2`-sample-index assumption that mis-attributed each curvature sample's distance-ahead by a few metres either direction. Verified AST-identical to the `fsds_simulator` mirror. Confirmed via §33 re-measurement: does not move recorded-map saturation (10.42% before and after) or the DNF step (95→96, unchanged in substance) |
+| Remaining saturation gap | **Open, re-measured against both the planner fix and the braking-distance fix (§13, §31, §33).** Pre-§31: ≥75% of a 17.43 pp gap unexplained. Post-§31+braking-fix (§33): 91.1% (10.68 of 11.73 pp) unexplained, against a run that still DNFs at ~10.5% progress — neither fix moved this fraction. §30's combined-factor sweep still predates both fixes and needs re-running if pursued further |
 | Ceiling's effect is corner-type-specific | **New (§13).** Zero measurable effect on HAIRPIN/FS_CORNER in every configuration tried; entire effect concentrated on SUDDEN_TURN/MICRO_SLALOM (sustained moderate-radius bends at speed). Check any future plant explanation against this per-path breakdown before trusting an aggregate |
 | **`alat_ceiling_tau`** | **Done (§12.12).** Measured 0.35 s median (0.28–0.46, 11/12 trials) with `step_s=8.0`; model set to 0.40. Fixing it did **not** close the saturation gap — the residual is elsewhere |
 | Ceiling is speed-dependent | **New, unmodelled (§12.4).** Measured sustained a_lat rises with speed — 6.45 @ 8 m/s, 7.54 @ 11, 9.26 @ 14 — while the model pins it flat at 7.5. Residuals +1.0 / ~0 / −1.76. Deliberately not fitted: 16 points, one run |
