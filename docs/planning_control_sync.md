@@ -362,6 +362,29 @@ spline-fit residual check in `centerline_planner.py`, and/or rejecting cone
 pairings that imply a sub-3.7 m radius. Investigate why lap 2 is worse than lap
 1 first — that points at cone-map accumulation rather than the fitter itself.
 
+> **Update — root cause found for one mechanism, and it is NOT cone-map
+> accumulation (`sim_to_real_investigation.md` §19).** Replaying
+> `build_path_walls()` directly against today's real cone map and live log
+> found the same physical corner producing a smooth, tightening radius on two
+> laps and a discontinuous 5×+ radius jump on the other two — reproduced from
+> a single static, already-fully-built cone map, with no lap-to-lap
+> accumulation involved. The actual mechanism: `filter_cones_window`'s
+> `min_ahead=0.5` cutoff drops the nearest surviving midpoint as soon as the
+> car's own pose crosses it, forcing the car-anchored spline (`pin_start` in
+> `smooth_centreline`) to reach for the next midpoint instead — sometimes
+> several metres further away — producing a sharp, transient near-field
+> curvature spike. Confirmed by comparing the two builds directly:
+> `_gen_midpoints()` returns byte-identical midpoints across the jump, which
+> rules out cone-map duplication, `_absorb()`, and exclusive-nearest-neighbour
+> reassignment as the cause of *this* mechanism (all three were reasonable
+> suspects going in). "Why lap 2 is worse than lap 1" narrows to *how often a
+> lap's specific pose trace happens to straddle a midpoint boundary*, not the
+> map getting dirtier. `blend_paths` damps this (measured recovery ~0.3–0.4 s)
+> but does not eliminate it — 22.4% of ticks in the checked log still show a
+> >0.5 m near-field jump in one 50 ms step even after blending. Does not yet
+> establish how much of the residual saturation gap this explains; no planner
+> file has been edited to test a fix, per the standing caution above.
+
 ### Fixed: a real cone-map duplication bug in `_absorb()`
 
 Investigating "why lap 2 is worse" (`sim_to_real_investigation.md` §15) found

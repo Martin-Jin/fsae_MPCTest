@@ -1297,6 +1297,188 @@ measurement can substitute for.
 [AirSim `CarPawnApi.cpp`](https://github.com/microsoft/AirSim/blob/main/Unreal/Plugins/AirSim/Source/Vehicles/Car/CarPawnApi.cpp) (no scaling at the AirSim layer) ·
 [FS-Driverless#342](https://github.com/FS-Driverless/Formula-Student-Driverless-Simulator/issues/342) (analogous hidden template nonlinearity, longitudinal axis).
 
+## 19. Root cause of the curvature-spike defect: a hard `min_ahead` cutoff, not cone-map clutter
+
+*(2026-08-07, continued.)* `planning_control_sync.md`'s "Known planner defect"
+section named cone-map clutter accumulating over a lap as the likely cause,
+and suggested investigating "why lap 2 is worse than lap 1" first. This
+section does that, directly on today's actual recorded cone map
+(`cone_map.json`, 118 blue + 118 yellow cones) and the new live log
+(`mpc_standalone_control_1786066237.csv`), by replaying `build_path_walls()`
+at every real car pose from the log — a non-invasive read, no planner file
+changed.
+
+**Reproduced immediately.** A tick-by-tick scan (every 0.05 s) around the
+tightest corner on the map found the same physical location visited on all
+four laps (car returns to within 1.5 m of a fixed point four times, each
+time hitting full steering lock). Two of those four visits (laps 2 and 4)
+show the fitted centreline's radius jump discontinuously from R≈2.2–2.8 m to
+R≈13–14.7 m in a single 0.15–0.2 s step — a >5× radius change while the car
+moved <0.15 m — while the other two visits (laps 1 and 3) show radius
+tightening smoothly through the same region (R: 10.5 → 0.45 m over 2.6 s, no
+jump). Same physical corner, same cone map, two visibly different planner
+behaviours depending on exactly where the car's pose lands relative to the
+window.
+
+**Root cause, confirmed by comparing the two builds directly.** At the two
+consecutive ticks straddling a jump (t=74.83 and t=74.98 in the new log),
+`_gen_midpoints()` returns the **exact same 13 midpoints, byte-identical**,
+at both ticks — ruling out cone-map duplication, `_absorb()`, or exclusive
+nearest-neighbour reassignment as the cause (all three were already
+suspected candidates from §15 and §"Known planner defect", and are now
+eliminated for this specific mechanism). What changes is which midpoint
+survives `filter_cones_window`'s `min_ahead=0.5` forward cutoff as the car's
+own position crosses it: at t=74.83 the nearest surviving midpoint sits 0.71
+m ahead of the car and anchors a short, gently-curving first segment; 0.15 s
+later the car has passed that same point, it drops out of the window
+entirely (now behind the 0.5 m line), and the spline's car-pinned first
+segment (`pin_start`/`_ANCHOR_WEIGHT=100.0` in `smooth_centreline`) must now
+reach the *next* midpoint instead — 4.0 m away, at a different bearing, while
+the car itself moved only 0.87 m. The spline bends hard to make that
+connection, producing exactly the transient tight-radius artifact measured
+here and in the original `planning_control_sync.md` table (R down to 0.45–1.0
+m). This is a **near-field discretisation/windowing artifact of the
+anchor-to-nearest-midpoint distance**, not degrading cone-map quality — it
+is reproducible from a single, static, already-fully-built cone map with no
+lap-to-lap accumulation involved at all, which narrows "why lap 2 is worse
+than lap 1" to *how often the car's pose happens to straddle a midpoint's
+window edge on that lap*, not the map getting dirtier.
+
+**`blend_paths` only partially absorbs it, and never trips its own reset
+bypass.** Replaying `blend_paths` sequentially across the same window shows
+the blended radius reaches only R=3.19 m at the worst tick (vs. the raw
+build's instantaneous 14.66 m) and takes ~0.3–0.4 s to recover — real
+damping, not nothing, and it explains why §14 measured 0 reset-bypass events
+on this map (the mean resample shift here, 1.3 m, stays under the 2.0 m
+`reset_dist` threshold). But it is not sufficient to erase the effect: a
+full-run replay of every tick found the blended path's near-field point
+(second waypoint) shifts >0.5 m in a single 50 ms step on **22.4% of all
+4160 ticks** — well above what car motion alone explains (mean per-tick
+displacement 0.43 m, max 0.70 m at the run's top speed, and that upper bound
+is for the *anchor point itself*, not the next point down the path). Both
+§14's finding (reset bypass never fires) and §14.1's finding (blended-path
+heading rate only weakly correlates with rebuild distance, r≈0.10–0.15) are
+consistent with this: this is a distinct, narrower, higher-frequency effect
+that a coarse per-tick rebuild-distance correlation would not isolate,
+because the artifact is highly local (one path point, one brief window) and
+largely damped by the time it reaches the heading-rate statistic §14.1
+measured a few points further down the path.
+
+**What this does and does not establish.** This identifies a concrete,
+reproducible mechanism for a portion of the documented curvature-spike
+defect, on real recorded data, without touching any planner file. It does
+**not** establish how much of the ≥75%-unexplained saturation gap (§13) this
+accounts for — that needs a rollout comparison with the windowing fixed
+(e.g. hysteresis on the `min_ahead` cutoff, or excluding the single nearest
+midpoint from the anchor-distance jump) against one without, which has not
+been done. Per the standing caution in `planning_control_sync.md`, no
+planner file has been edited to test this — this section is read-only
+instrumentation (see reproduction script below) against the existing
+committed/uncommitted code exactly as it stands.
+
+**Reproduce with** (ad hoc script, not yet checked in — the analysis is
+straightforward to redo against any `(cone_map.json, control_log.csv)` pair):
+call `planning.boundary.build_path_walls()` directly at each logged
+`(car_x, car_y, car_yaw)`, track the arg-min forward-distance midpoint's
+identity frame-to-frame, and flag ticks where it changes while the car moved
+less than the previous midpoint's forward margin.
+
+## 20. `SteeringCurve` is a real, compiled-in field — but its value is still unread
+
+*(2026-08-07, continued.)* §18 identified `SteeringCurve` (a speed-keyed
+steering-scaling curve, first-class on UE4's `WheeledVehicleMovementComponent4W`)
+as a documented PhysX/UE4 pattern matching our measured ceiling signature,
+but could not confirm FSDS's vehicle actually carries a non-trivial one — the
+source `.uasset` files in this checkout are unpulled Git LFS pointer stubs.
+
+**Checked the shipped Windows binary instead of the source tree.** The
+downloaded release (`/mnt/c/Users/marti/Downloads/fsds-v2.2.0-windows`) is
+the actual cooked build FSDS runs — a stronger source than source assets,
+since it's what executes. Its packed content (`FSOnline-WindowsNoEditor.pak`,
+452 MB) is a compressed/serialized archive that generic tools (`strings`,
+`file`) cannot parse into asset data — no `UnrealPak`/extraction tool is
+available in this environment and installing one is out of scope here. But
+the **compiled game binary itself** (`Blocks.exe`) still carries its
+reflection metadata as plain strings, and a direct search confirms:
+
+- `SteeringCurve` **is present** as a string in `Blocks.exe` — the property
+  name is real and compiled into this exact build, not a hypothetical UE4
+  feature that might not be linked in.
+- `SteeringInputRate`, `PxVehicleAntiRollBarData`/`mAntiRollBars` (the PhysX
+  anti-roll-bar system — a different vehicle-dynamics feature, weight-transfer
+  related, not investigated further here) are also present, confirming the
+  PhysX Vehicles plugin (already known enabled, §18) is a non-trivial,
+  multi-feature integration, not a minimal stub.
+
+**This is not confirmation.** A property name being compiled into the
+executable's reflection metadata says the *field exists on the class* — it
+says nothing about the *value* baked into FSDS's specific vehicle instance
+(a curve can exist and still be flat/disabled, which is the default when a
+Blueprint never touches it). That value lives in per-instance binary data
+inside the `.pak`, not in the executable's string table, and no tool
+available here can read it. **The check §18 called for — opening the
+vehicle Blueprint's movement component in the UE4 Editor and reading the
+curve directly — is still the only way to resolve this, and remains
+undone.**
+
+## 21. The §17 live improvement is NOT the MPC reweight — isolated by reverting weights offline
+
+*(2026-08-07, continued.)* §17 found live steering saturation improved
+(21.1% → 15.2%) between the `dfd1a08` baseline and the newest live run, but
+could not attribute it: fifteen files of uncommitted changes sit on top of
+`dfd1a08`, including a full `Q_diag`/`R_diag`/`R_rate_diag` reweight — the
+most likely single suspect by inspection, since a stiffer yaw-rate penalty
+plausibly reduces saturation while inducing more correction oscillation
+(matching the reversals/s increase, 1.62 → 3.15).
+
+**Directly tested offline — the opposite of the hypothesis.** The offline
+sim's weights are already in parity with the *new* live weights (confirmed
+identical in `settings.py`). Swapping `settings.py`'s `Q_diag`/`R_diag`/
+`R_rate_diag` to `dfd1a08`'s original values and re-running
+`tuner.recorded_map_rollout` on today's map, with nothing else changed:
+
+| | new weights (current) | old weights (`dfd1a08`) |
+|---|---|---|
+| steering sat % | 4.80 | **2.53** |
+| reversals/s | 0.80 | 0.79 |
+
+The *old* weights score **better** on saturation offline and are
+statistically indistinguishable on reversals. If the reweight explained
+live's saturation improvement, the new weights should look at least as good
+offline too — they do not, on this map. **The MPC reweight is not the
+explanation for either live change.** (Settings reverted to the working
+values immediately after this test; no working-tree changes left behind.)
+
+**A better-timed candidate, found while ruling this out: the pose-rate
+fix.** `sim_perception.py`'s diff (still uncommitted) documents, with its
+own measured evidence, that `sim_perception` used to publish pose and cones
+on one shared 10 Hz timer while the MPC ran at 20 Hz — a real 2:1 mismatch
+that left the controller re-solving against a stale pose on 50.5% of control
+steps, causing measured steering oscillation (catch-up jumps exceeding
+`v*dt` on 24 logged steps). That measurement's own source log
+(`mpc_standalone_control_1785976976.csv`, epoch 1785976976 = **2026-08-06**)
+dates the discovery to *after* `dfd1a08` (2026-08-04, the run that produced
+the 21.1% baseline) and *before* today's runs (2026-08-07) — meaning the bug
+was almost certainly still active when 21.1% was measured, and fixed by the
+time the new 15.2% run happened. This has no offline counterpart to
+isolate it against: the offline rollout has no concept of a separate pose
+timer at all (it always gives the controller a fresh pose every step, per
+the fidelity table in `planning_control_sync.md`), so unlike the MPC
+weights this cannot be tested by a settings toggle.
+
+**Status: plausible and well-timed, not proven.** This is inference from
+commit/log timestamps and the fix's own documented mechanism, not a
+controlled A/B — there is no live rollout with the pose-rate bug
+deliberately re-introduced on top of everything else to test in isolation.
+The `plan_horizon`/`look_radius` 15→25 m change (also in this file pile, but
+already in parity with the offline sim's `_WALL_PLAN_HORIZON=25.0`, so it is
+not new relative to what has already been validated) is not a live-only
+suspect and is set aside here. **Next step, if this needs a real answer**: a
+controlled live run with `pose_rate` deliberately dropped back to 10 Hz
+(one-line parameter change, no code revert needed) against the current
+code otherwise unchanged, replicating this section's offline A/B but for
+the one variable that cannot be isolated offline.
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
@@ -1387,6 +1569,23 @@ measurement can substitute for.
     nonlinearity is already confirmed on the throttle axis). None of that
     is a substitute for opening the asset and reading the curve. A strong
     circumstantial case is still zero measurements.
+21. **A documented "likely cause" is a hypothesis, not a finding — re-derive
+    it from data before propagating it further.** `planning_control_sync.md`
+    named cone-map clutter as the probable driver of the curvature-spike
+    defect, reasonably, from a lap-1-vs-lap-2 correlation. §19 found the
+    actual mechanism (a `min_ahead` window-edge cutoff) reproduces on a
+    single static cone map with no accumulation at all — a different cause
+    that happened to correlate with the same lap-number variable, because
+    laps differ in exactly where the car's pose lands relative to a
+    midpoint's boundary, not in map quality.
+22. **The most likely-looking suspect in a pile of simultaneous changes can
+    be wrong — test it, don't just name it.** §17 flagged the MPC reweight
+    as the probable cause of a live improvement because the story fit
+    (stiffer yaw-rate penalty → less saturation, more oscillation). §21's
+    offline isolation showed the *old* weights score better on the exact
+    metric the new ones were credited for. The correct suspect (pose-rate
+    mismatch) surfaced only from checking commit/log timestamps against every
+    candidate, not from picking the most mechanistically plausible one.
 
 ---
 
@@ -1406,8 +1605,9 @@ measurement can substitute for.
 | `ConeMap._absorb()` same-frame duplicate bug | **Fixed (§15), unmeasured effect.** Real, deterministic bug (two same-frame detections of a newly-sighted cone both became permanent, unmerged entries — confirmed at 1 cm apart, independent of `MERGE_DIST`). Fixed in all 3 copies. Does not move the recorded map's saturation at default noise (4.80%→4.86%, matches pre-fix), because FSDS's noise-free oracle perception never triggers it and the added `CONE_NOISE_ENABLED` jitter is too small to separately trigger it either. Whether this matters on the real car is still open — needs measured detector noise or a live log |
 | Cone-detection noise model | **New capability (§15), not yet a finding.** `CONE_NOISE_ENABLED`/`CONE_POS_JITTER_STD`/`CONE_NOISE_SEED` added to `settings.py` + `sim/rollout_core.py::ConeNoise` — closes part of the "cone map... not modelled anywhere" fidelity gap (position jitter only; false positives/negatives/range-dependence remain unmodelled). Default off. `fsae_MPCTest`-only, no live-side counterpart needed (same as `SLAM_NOISE_*`) |
 | `launch_all.sh` couldn't get FSDS running at all | **Fixed (§16).** Two stacked bugs: shebang on line 3 (script never ran as bash), then WSL2 unable to reach the Windows host via `127.0.0.1` (needs the WSL default-gateway IP, or `FSDS_HOST_IP` — `fsds_ros2_bridge.launch.py` already supported this, just was never set). Fixed in both `ros2/launch_all.sh` and the `fsds_simulator` mirror, preserving the mirror's intentional config differences |
-| First live-vs-sim comparison since §0 | **Done (§17), confounded.** Saturation improved 21.1%→15.2% and entry-rate gap narrowed 2.6×→1.7×, but reversals/s worsened 1.62→3.15 and fifteen uncommitted live-side files changed at once (MPC reweight, `_absorb()` fix, others). Cannot attribute the improvement to any one change. Next: re-run with only the MPC weights reverted to `dfd1a08` to isolate that variable |
-| `SteeringCurve` (UE4/PhysX speed-dependent steering scaling) | **New lead (§18), untested.** PhysX's own vehicle docs describe exactly this pattern (full steer below a speed threshold, scaled down above it) as an optional, developer-wired curve on `WheeledVehicleMovementComponent4W` — present by default in Epic's template content FSDS forked from and never replaced (confirmed FSDS built no custom dynamics model). Could not be checked from this environment: this repo's Git LFS is non-functional, so the relevant `.uasset` files are unpulled pointer stubs; even pulled, the curve's keyframes aren't text-searchable. Needs the UE4 Editor, opened on the vehicle Blueprint's movement component, to confirm or eliminate directly |
+| First live-vs-sim comparison since §0 | **Done (§17), confound resolved (§21) — but not who did it.** Saturation improved 21.1%→15.2%, reversals/s worsened 1.62→3.15. §21 ruled out the MPC reweight by direct offline A/B (old weights score *better* on saturation, 2.53% vs 4.80% — opposite of the hypothesis). Best-timed remaining candidate: a pose-rate bug fix (10 Hz shared timer → 20 Hz, dated 2026-08-06, between the 21.1% baseline and the new run) — plausible and correctly timed, but has no offline counterpart to isolate and is therefore inference, not proof. Needs a controlled live run with `pose_rate` reverted to 10 Hz to confirm |
+| `SteeringCurve` (UE4/PhysX speed-dependent steering scaling) | **Narrowed (§18, §20), still not read.** The property is confirmed compiled into this exact FSDS build (found as a string in the shipped `Blocks.exe`), alongside `SteeringInputRate` and the PhysX anti-roll-bar system — the integration is real and non-trivial, not a stub. But the *value* baked into FSDS's vehicle instance is binary data inside `FSOnline-WindowsNoEditor.pak` (452 MB, unencrypted enough for plugin-name strings to leak but not asset-instance data) or the source `.uasset`s (unpulled Git LFS pointers here) — neither readable by any tool available in this environment. Still needs the UE4 Editor, opened on the vehicle Blueprint's movement component, to read the curve directly |
+| Curvature-spike defect | **Root cause found for one mechanism (§19), effect size on the saturation gap not yet measured.** Reproduced directly on today's real cone map + live log: a hard `min_ahead=0.5` forward-window cutoff drops the nearest surviving midpoint discontinuously as the car's pose crosses it, forcing the car-anchored spline to jump to a midpoint up to 4 m further away — confirmed via byte-identical midpoint sets across the jump (rules out cone-map duplication/`_absorb()`/NN-reassignment for this specific mechanism). `blend_paths` damps but does not eliminate it: near-field path point still shifts >0.5 m in one 50 ms tick on 22.4% of all ticks in the new log. Supersedes `planning_control_sync.md`'s "cone-map clutter accumulating over a lap" as the primary explanation — the effect reproduces on a single static map with no lap-to-lap accumulation at all. Not yet measured: how much of the ≥75% unexplained saturation gap (§13) this accounts for; needs a rollout comparison with the windowing fixed vs. not, which has not been done, per the standing caution against editing planner files speculatively |
 | Identify the exact FSDS mechanism | **Done** — step test run (§9–10): a *dynamically enforced lateral-acceleration* ceiling. Both signatures present: different steering angles settle to the same response (a cap), yet yaw overshoots ~30% first (not a static clip) |
 | Ceiling decay time constant | **Done — see `alat_ceiling_tau` above (§12.12).** Superseded the original 0.04–1.06 s scattered fit from the 3 s hold |
 | Speed profile | **Closed, not a discrepancy** — see the correction below. Achieved speeds differ by 2% |
