@@ -238,7 +238,15 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
     # window and moving-average denoise it before measuring curvature.  A real
     # corner is a sustained bend that survives the ~5 m smoothing; only the
     # cm-scale wiggle is removed (this also stops noise from over-slowing corners).
+    #
+    # pts_s0 is the arc distance AHEAD OF THE CAR of pts[0].  It is not simply
+    # scan_start in the dense branch: a width-w 'valid' moving average places its
+    # first output at the CENTRE of the first window, i.e. (w-1)/2 further along.
+    # Carrying it explicitly is what keeps the braking propagation below honest —
+    # deriving distances from pts alone silently loses this offset (it used to,
+    # by -2 m in the common w=5 case).
     pts = None
+    pts_s0 = scan_start
     dense = np.arange(scan_start, hi, 1.0)
     if len(dense) >= 7:                       # room to smooth and still leave >=3 triples
         dx = np.interp(dense, arc, waypoints[:, 0])
@@ -248,6 +256,7 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
         sx = np.convolve(dx, ker, mode='valid')
         sy = np.convolve(dy, ker, mode='valid')
         pts = np.column_stack([sx, sy])[::2]  # back to ~2 m spacing for the triples
+        pts_s0 = scan_start + (w - 1) / 2.0
     if pts is None or len(pts) < 3:
         # Short scan window: no headroom to denoise — fall back to coarse sampling.
         sample_arcs = np.arange(scan_start, hi, step)
@@ -256,6 +265,7 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
         sx  = np.interp(sample_arcs, arc, waypoints[:, 0])
         sy  = np.interp(sample_arcs, arc, waypoints[:, 1])
         pts = np.column_stack([sx, sy])
+        pts_s0 = scan_start
 
     # Collect every triple's Menger curvature, then reduce.  Taking the raw MAX
     # (the original behaviour) lets a SINGLE bad triple set the speed for the
@@ -265,7 +275,11 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
     # 4.2 m -> 1.0 m, with a lap-2 worst case of R=0.14 m — not a real corner,
     # a centreline-fit artifact.  Since v = sqrt(a_lat/kappa), that made
     # v_target swing 4.7 -> 16.7 -> 6.0 m/s frame to frame.
+    # kappa_at[j] records which pts index kappas[j] is centred on.  A degenerate
+    # triple is skipped, so the two lists would otherwise drift out of step and
+    # every later curvature would be attributed to the wrong distance.
     kappas = []
+    kappa_at = []
     for i in range(1, len(pts) - 1):
         p1, p2, p3 = pts[i - 1], pts[i], pts[i + 1]
         d12 = float(np.linalg.norm(p2 - p1))
@@ -278,11 +292,13 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
         v2    = p3 - p1
         cross = abs(float(v1[0] * v2[1] - v1[1] * v2[0]))
         kappas.append(2.0 * cross / denom)
+        kappa_at.append(i)
 
     if not kappas:
         return float(v_max_eff)
 
     k = np.asarray(kappas, dtype=float)
+    k_at = np.asarray(kappa_at, dtype=int)
     # A genuine corner spans several consecutive triples, so it survives a
     # short running mean; an isolated fit artifact is averaged down.  Reduce
     # with a max over the SMOOTHED series rather than a percentile of the raw
@@ -291,8 +307,12 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
     # the raw max said 5 — dangerously fast, the wrong direction to err).
     # This keeps a sustained bend fully authoritative while refusing to let one
     # point dominate.
+    # The 'valid' 3-point mean drops one entry at each end, so the surviving
+    # centres are k_at[1:-1] — track them alongside k rather than assuming a
+    # fixed offset, which breaks whenever this branch does not run.
     if len(k) >= 3:
         k = np.convolve(k, np.ones(3) / 3.0, mode='valid')
+        k_at = k_at[1:len(k) + 1]
 
     # ── Braking-distance propagation ──────────────────────────────────────
     # Taking a single max over the window and returning sqrt(a_lat/kappa)
@@ -313,20 +333,33 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
     # A corner far enough away imposes no limit, which falls out naturally
     # because v_allowed then exceeds v_max_eff.
     #
-    # Distances: k[i] is the curvature of the triple centred on pts[i+1] after
-    # the 'valid' convolution shifted the series by one more, so the smoothed
-    # entry i corresponds to pts[i + 2].  scan_start is added because pts began
-    # that far ahead of the car.
+    # Distances: each surviving entry k[j] is centred on pts[k_at[j]], whose
+    # distance ahead of the car is pts_s0 (where pts[0] actually sits, INCLUDING
+    # the moving-average centre shift) plus the arc length along pts to there.
+    # A previous version assumed a fixed "+2" index offset instead, which was
+    # wrong in both directions depending on which sampling branch ran: -2 m in
+    # the common smoothed case and +2 m in the coarse short-path case.
+    #
+    # CORNER_ENTRY_MARGIN: a curvature sample describes the middle of a bend, but
+    # the car must already be AT corner speed by the bend's ENTRY, which is
+    # earlier.  Braking to the sample's own distance is therefore too late.  The
+    # old "-2 m" index error happened to supply this margin by accident; making
+    # it explicit keeps the distance honest and the conservatism deliberate.
+    # Sized at one triple half-width (the arc a single curvature sample spans),
+    # so it scales with the sampling density instead of being a magic number.
     k_safe = np.maximum(k, 1e-9)
     v_corner = safety * np.sqrt(a_lat_max / k_safe)
-    idx = np.arange(len(k)) + 2
     if len(pts) > 1:
         pts_arc = np.concatenate(
             [[0.0], np.cumsum(np.linalg.norm(np.diff(pts, axis=0), axis=1))]
         )
-        d_ahead = scan_start + pts_arc[np.minimum(idx, len(pts_arc) - 1)]
+        entry_margin = float(np.median(np.diff(pts_arc))) if len(pts_arc) > 1 else 0.0
+        d_ahead = (pts_s0
+                   + pts_arc[np.clip(k_at, 0, len(pts_arc) - 1)]
+                   - entry_margin)
+        d_ahead = np.maximum(d_ahead, 0.0)
     else:
-        d_ahead = np.full(len(k), scan_start)
+        d_ahead = np.full(len(k), pts_s0)
 
     v_allowed = np.sqrt(v_corner ** 2 + 2.0 * A_BRAKE_PLAN * d_ahead)
     v_target = float(np.min(v_allowed))
