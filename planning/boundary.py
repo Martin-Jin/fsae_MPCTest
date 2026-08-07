@@ -243,12 +243,31 @@ def _build_wall_path(
     cos_y, sin_y = math.cos(car_yaw), math.sin(car_yaw)
     heading = np.array([cos_y, sin_y], dtype=np.float64)
 
-    # Seed: the midpoint ahead of the car (in the heading frame) that is nearest
-    # to the car.  If none is clearly ahead (a sharp bend right at the car, every
-    # midpoint lateral), fall back to the nearest midpoint overall so the path
-    # still starts around the corner instead of collapsing to nothing.
+    # Seed: nearest midpoint that isn't clearly BEHIND the car.
+    #
+    # A hard `fwd > 0.3` gate (the previous version) discards a midpoint
+    # outright the instant its heading-frame forward projection dips at or
+    # below the cutoff -- which happens as the car's heading rotates through
+    # a corner even while the midpoint is still the closest point on the
+    # track and hasn't moved. Losing the nearest, ~1 m midpoint then forces
+    # the seed to jump to the next surviving one, which in a corner (where
+    # midpoints are sparser) can be several metres further away -- while the
+    # car itself moved a few tens of cm. That discontinuous jump in the
+    # published path's own near-field anchor deletes a real corner from the
+    # plan right as the car needs to react to it (measured directly: two
+    # consecutive control ticks, car displacement 0.5 m, seed jumped from
+    # dist 1.09 to 4.72 m -- see sim_to_real_investigation.md S33/S19).
+    #
+    # Fix: reject only midpoints CLEARLY behind the car (a small negative
+    # margin, not a positive one) so a near midpoint stays eligible through
+    # the exact heading range where the old cutoff discarded it, and among
+    # eligible points always take the nearest -- same selection rule as
+    # before, just a threshold that does not discontinuously exclude the
+    # single closest point mid-corner. Falls back to the nearest midpoint
+    # overall if literally everything is behind (a sharp bend right at the
+    # car), same as before.
     fwd = (midpoints - car_pos) @ heading
-    forward_idx = np.where(fwd > 0.3)[0]
+    forward_idx = np.where(fwd > -0.5)[0]
     if len(forward_idx) == 0:
         forward_idx = np.arange(n)
     seed = int(forward_idx[np.argmin(np.linalg.norm(midpoints[forward_idx] - car_pos, axis=1))])

@@ -404,7 +404,7 @@ def run_core_rollout(
     use_planner=USE_PLANNER, model_lookup=None,
     n_horizon=N_HORIZON, eps=ROLLOUT_EPS, max_iter=ROLLOUT_MAX_ITER,
     want_history=False, want_horizon_pred=False,
-    optimal_time=None,
+    optimal_time=None, continue_after_dnf=False,
 ):
     """
     Run one closed-loop MPC rollout: nonlinear plant + MPC controller.
@@ -453,6 +453,17 @@ def run_core_rollout(
     want_horizon_pred : bool
         If True (and want_history=True), also compute the cosmetic N-step
         horizon prediction used by the GUI's cyan prediction line.
+    continue_after_dnf : bool
+        If True, a DNF trigger (solver-fail streak, stall, or off-track) sets
+        the dnf/offtrack flags and history["fail_reason"] as usual but does
+        NOT stop the loop -- the plant keeps stepping to max_steps. For
+        inspecting what the car does AFTER the moment that would normally end
+        the rollout (e.g. does it recover, does it stay off-track, how does
+        the rest of a recorded map compare to a live log that also doesn't
+        stop at first excursion). Only the FIRST trigger's reason is recorded
+        in fail_reason; dnf/offtrack stay True from that point on even if the
+        car re-enters OFFTRACK_LIMIT afterward. Default False preserves the
+        existing stop-on-DNF behaviour used by scoring and tuning.
 
     Returns
     -------
@@ -896,14 +907,16 @@ def run_core_rollout(
         if step > 0 and step % STALL_CHECK_INTERVAL == 0 and step > STALL_CHECK_INTERVAL:
             dist_since = cumulative_distance - dist_at_last_stall_check
             if dist_since < STALL_MIN_DISTANCE:
+                first_trigger = not dnf
                 dnf = True
                 n_ran = step + 1
-                if want_history:
+                if want_history and first_trigger:
                     history["failed"] = True
                     history["fail_reason"] = (
                         f"stalled (< {STALL_MIN_DISTANCE} m in {STALL_CHECK_INTERVAL} steps) at step {step}"
                     )
-                break
+                if not continue_after_dnf:
+                    break
             dist_at_last_stall_check = cumulative_distance
 
         # ── Metric accumulation (single source of truth: scoring.RolloutMetrics) ──
@@ -916,14 +929,16 @@ def run_core_rollout(
         )
 
         if abs(e_y_true) > OFFTRACK_LIMIT:
+            first_trigger = not dnf
             offtrack = True
             dnf = True
             n_ran = step + 1
-            if want_history:
+            if want_history and first_trigger:
                 history["failed"] = True
                 history["offtrack"] = True
                 history["fail_reason"] = f"off-track (|e_y|={abs(e_y_true):.2f} m) at step {step}"
-            break
+            if not continue_after_dnf:
+                break
 
         u_prev = u_opt.copy()
         state = step_nonlinear_plant(state, delayed_u_cmd, DT, vehicle_params)

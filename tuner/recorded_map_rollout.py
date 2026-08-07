@@ -51,7 +51,7 @@ LIVE = {
 }
 
 
-def run(map_path, params, use_planner=True):
+def run(map_path, params, use_planner=True, continue_after_dnf=False):
     path_X, path_Y, path_Psi, path_v, blue, yellow = load_recorded_track(map_path)
     dyn_max, num_steps = compute_step_budget(path_X, path_Y, path_v)
 
@@ -67,7 +67,7 @@ def run(map_path, params, use_planner=True):
         max_steps=num_steps, dynamic_max_steps=dyn_max,
         use_planner=use_planner, model_lookup=get_cached_model,
         n_horizon=N_HORIZON, eps=ROLLOUT_EPS, max_iter=ROLLOUT_MAX_ITER,
-        want_history=True,
+        want_history=True, continue_after_dnf=continue_after_dnf,
     )
 
 
@@ -120,6 +120,10 @@ def main():
     ap.add_argument("--no-ceiling", action="store_true")
     ap.add_argument("--oracle", action="store_true",
                     help="track the global path instead of the planner")
+    ap.add_argument("--continue-after-dnf", action="store_true",
+                    help="keep stepping past a DNF trigger (off-track/stall) "
+                         "instead of stopping, to see whether/how the car "
+                         "recovers over the rest of the map")
     args = ap.parse_args()
 
     p = VehicleParams()
@@ -138,7 +142,8 @@ def main():
           f"gain={p.alat_ceiling_gain} tau={p.alat_ceiling_tau}")
     print(f"planner  : {'oracle path' if args.oracle else 'planner-in-loop'}\n")
 
-    s = summarise(run(args.map, p, use_planner=not args.oracle), p)
+    s = summarise(run(args.map, p, use_planner=not args.oracle,
+                      continue_after_dnf=args.continue_after_dnf), p)
 
     print(f"{'metric':<22}{'sim':>10}{'live':>10}{'sim/live':>10}")
     print("-" * 52)

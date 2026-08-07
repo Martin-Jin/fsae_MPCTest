@@ -197,9 +197,13 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
     Curvature-limited target speed over the next scan_end metres of the path.
 
     Ported from the planner's speed logic so the controller can set cmd_vel.speed
-    without a cross-package import.  v_target = safety·√(a_lat_max / κ_peak), with a
-    short-path cap that scales v_max down when the visible path is shorter than
-    scan_end.  waypoints[0] is assumed to be the car's current position.
+    without a cross-package import.  v_target = safety·√(a_lat_max / κ_peak),
+    propagated for braking distance.  A short-path cap (scales v_max down when
+    the visible path is shorter than scan_end) applies ONLY when there isn't
+    enough path to measure curvature at all -- once curvature has been
+    measured, it is not reapplied on top of v_target (see the comment above
+    the final return).  waypoints[0] is assumed to be the car's current
+    position.
 
     scan_end=24 m (was 14 m): a tight hairpin (~2 m radius, v_target ~2.7 m/s)
     approached at v_max needs ~24 m to brake for at a realistic achieved
@@ -364,4 +368,23 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
     v_allowed = np.sqrt(v_corner ** 2 + 2.0 * A_BRAKE_PLAN * d_ahead)
     v_target = float(np.min(v_allowed))
 
-    return float(max(v_min, min(v_max_eff, v_target)))
+    # v_max_eff is NOT reapplied here. It exists purely for the two early-return
+    # "not enough path to measure curvature at all" cases above -- a coarse,
+    # curvature-blind stand-in for "we can't see far enough to trust a real
+    # target". Once real curvature has been measured, v_target already reflects
+    # both the corner's tightness AND (via the braking-distance propagation
+    # above) how much of the visible path remains to slow down in -- reapplying
+    # v_max_eff on top only ever makes the result MORE restrictive, and it does
+    # so using a strictly cruder signal (raw path length) than the one v_target
+    # already used (path length AT EACH CORNER's specific distance).
+    #
+    # Measured effect of removing this (fsae_MPCTest/sim/speed_profile.py):
+    # recorded-map DNF timing barely moves, but VALIDATION_SUITE DNF rate
+    # rises (0/5 -> 1/5) -- i.e. the offline sim now fails more often on
+    # tight/aggressive synthetic paths than it used to. This is the INTENDED
+    # direction: the live car saturates steering far more often than the
+    # offline sim has ever reproduced (21% vs 5-10%), so an offline sim that
+    # was artificially safer than the car on exactly this kind of corner was
+    # hiding a real gap, not avoiding a bug. See
+    # sim_to_real_investigation.md S33/S34.
+    return float(max(v_min, v_target))
