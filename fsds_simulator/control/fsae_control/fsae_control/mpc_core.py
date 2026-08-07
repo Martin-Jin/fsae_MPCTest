@@ -257,6 +257,14 @@ class MPCController:
         # Wheelbase L = lf + lr = 1.55 m is an estimate for a FS car (the FSDS
         # collision box is 1.80 m long — an upper bound on car length, not the
         # wheelbase).  Refine all of these via system-ID on the running sim.
+        #
+        # 2026-08-08: vehicle_physics.py's own lf/lr/Iz were still the OLD,
+        # oversteer-prone values (0.85/0.70/110) when this swap was made here
+        # 2026-08-07 -- a one-sided fix that violated this project's plant/
+        # model parity rule (see CLAUDE.md) and left THIS file's own Cf/Cr
+        # below stale (computed against the pre-swap geometry). Both are now
+        # fixed together: vehicle_physics.py's lf/lr/Iz match this file, and
+        # Cf/Cr below are recomputed from the corrected geometry.
         self.lf = 0.70
         self.lr = 0.85
         self.m  = 255.0
@@ -266,8 +274,11 @@ class MPCController:
         # (C_eff = mu_eff * Fz_nominal * B * C * D). If the tyre model in
         # vehicle_physics.py changes, recompute these from VehicleParams()
         # and paste the new values here; don't hand-edit them independently.
-        self.Cf = 24390.42770690137
-        self.Cr = 23324.382135371874
+        # Recomputed 2026-08-08 after fixing vehicle_physics.py's lf/lr (see
+        # above) -- the previous values here were stale, computed against
+        # vehicle_physics.py's pre-fix geometry (lf=0.85, lr=0.70).
+        self.Cf = 29155.47766921484
+        self.Cr = 19512.3421655211
         self.tau_delta = 0.08
         self.tau_a     = 0.02
 

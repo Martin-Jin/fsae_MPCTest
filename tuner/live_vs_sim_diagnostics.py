@@ -207,7 +207,7 @@ def live_report():
     return picked
 
 
-def sim_report(mode=None, gain=None):
+def sim_report(mode=None, gain=None, continue_after_dnf=False):
     from model.vehicle_physics import VehicleParams
     from tuner.recorded_map_rollout import DEFAULT_MAP, run
 
@@ -218,8 +218,9 @@ def sim_report(mode=None, gain=None):
         p.alat_ceiling_gain = gain
 
     print(f"=== SIM (recorded map, mode={p.alat_ceiling_mode} "
-          f"gain={p.alat_ceiling_gain}) ===\n")
-    h = run(DEFAULT_MAP, p)["history"]
+          f"gain={p.alat_ceiling_gain}"
+          f"{', continue-after-dnf' if continue_after_dnf else ''}) ===\n")
+    h = run(DEFAULT_MAP, p, continue_after_dnf=continue_after_dnf)["history"]
     dt = 0.05
     v = np.asarray(h["v"], float)
     vt = np.asarray(h["v_target"], float)
@@ -252,11 +253,15 @@ def main():
     ap.add_argument("--no-sim", action="store_true")
     ap.add_argument("--mode", choices=("p", "pi"))
     ap.add_argument("--gain", type=float)
+    ap.add_argument("--continue-after-dnf", action="store_true",
+                    help="keep stepping the sim past a DNF trigger instead "
+                         "of stopping, for a duration comparable to a full "
+                         "live log rather than a stub ending at first DNF")
     args = ap.parse_args()
 
     live_report()
     if not args.no_sim:
-        sim_report(args.mode, args.gain)
+        sim_report(args.mode, args.gain, continue_after_dnf=args.continue_after_dnf)
 
 
 if __name__ == "__main__":

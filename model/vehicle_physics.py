@@ -137,10 +137,25 @@ class VehicleParams:
         COASTING_SCALE = 3.0 # < 1.0 = Rolls further, > 1.0 = Stops faster
 
         # ── Geometry ────────────────────────────────────────────────────────
-        self.lf    = 0.85     # Distance from CoM to front axle (m)
-        self.lr    = 0.70     # Distance from CoM to rear  axle (m)
+        # lf/lr/Iz corrected 2026-08-08 to match the live mpc_core.py, which
+        # had already made this exact correction (2026-08-07) but only on the
+        # live side -- a one-sided fix that silently violated this repo's own
+        # plant/model parity rule. Neither set of values is measured (the true
+        # lf/lr/Iz aren't in the FSDS repo -- they live in git-LFS .uasset
+        # binaries) so this is not "picking the more correct guess", it's
+        # applying the live author's own already-documented reasoning here
+        # too: lf=0.85 > lr=0.70 (the old value here) makes the bicycle model
+        # OVERSTEER (understeer gradient K_us < 0, v_crit ~35 m/s) -- a
+        # needless stability risk on a car whose real balance can't be
+        # measured. lf < lr instead makes it UNDERSTEER (stable at every
+        # speed). Iz ~= m*lf*lr (~151.7) is the standard yaw-inertia estimate;
+        # the old value of 110 under-estimated it, making the model expect a
+        # twitchier car than reality. See mpc_core.py's identical comment for
+        # the full rationale -- keep these two files in sync manually.
+        self.lf    = 0.70     # Distance from CoM to front axle (m)
+        self.lr    = 0.85     # Distance from CoM to rear  axle (m)
         self.m     = 255.0    # Total vehicle mass including driver (kg)
-        self.Iz    = 110.0    # Yaw moment of inertia about CoM (kg·m²)
+        self.Iz    = 150.0    # Yaw moment of inertia about CoM (kg·m²)
         self.tf    = 1.25     # Front track width between tyre contact patches (m)
         self.tr    = 1.20     # Rear  track width between tyre contact patches (m)
         # FSDS's own docs state 25 cm CoG height (stationary) for its vehicle
