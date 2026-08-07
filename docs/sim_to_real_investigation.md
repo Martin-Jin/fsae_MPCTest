@@ -1779,6 +1779,62 @@ consistent with lesson 18 earlier in this document (a timing/progress signal
 can mask an address/existence problem) recurring in a completely different
 domain (a Windows C++ build, not a WSL network path).
 
+## 25. `SteeringCurve` read directly — the hypothesis is RULED OUT
+
+*(2026-08-07, continued.)* With the build from §24 complete, the user opened
+`FSOnline.uproject`, located the default vehicle (`TechnionCarPawn`, under
+`AirSim Content/VehicleAdv/Cars/TechnionCar` — not the main project's
+`Content/`, since it lives in the AirSim plugin's own content root, which
+the Content Browser does not show by default; "Show Plugin Content" has to
+be enabled explicitly and the tree/search is scoped per-folder, which cost
+some back-and-forth before landing on it), opened its `VehicleMovement`
+component (a `WheeledVehicleMovementComponent4W`, confirmed via the
+component's own "Vehicle Setup"/"Mechanical Setup"/"Steering Setup"
+categories — `Mass 255.0`, `Chassis Width 144.0`, `Chassis Height 112.0`,
+4 wheel setups), and read the `Steering Curve` field directly in the
+expanded Curve Editor view.
+
+**The curve is FLAT at 1.0 across its entire defined domain.** Three
+keyframes, all at Y=1.00: X=0, X=64, X=144 (X-axis units not separately
+confirmed, but irrelevant to the shape — a flat line is a flat line
+regardless of what the X-axis is measured in). UE4 curves hold their last
+keyframe's value for any input beyond the final defined point, so this
+curve returns 1.0 for every speed, not just the 0–144 range shown.
+
+**This rules out `SteeringCurve` as the mechanism behind the measured
+ceiling.** §18/§20's hypothesis required a curve that tapers *down* with
+speed to reproduce the measured signature (ratio 1.00 below 6 m/s, 0.34 at
+8 m/s, 0.17 at 14 m/s) — a flat curve at 1.0 applies no speed-dependent
+scaling at all, so whatever raw steering value AirSim's `SetSteeringInput`
+passes in reaches the wheels unscaled by this particular mechanism,
+regardless of speed. The `PxVehicleAntiRollBarData`/anti-roll-bar system
+noted in §20 as a lower-priority, not-investigated lead remains exactly
+that — untouched by this finding, since it's a physically distinct
+mechanism (weight transfer, not steering input scaling).
+
+**What this changes.** The measured lateral-acceleration ceiling (§8–§10)
+is real and still unexplained at the engine level — this was always true,
+since §18/§20 treated `SteeringCurve` as a *candidate*, never a confirmed
+cause, precisely so a negative result here wouldn't need walking back
+anything already stated as fact. The remaining candidates from §18 (PhysX
+Vehicle SDK sticky-tire-friction thresholds at low speed — already
+deprioritised there as implausible at 6–14 m/s; the anti-roll-bar system;
+or some other UE4/PhysX internal not yet identified) are now the only
+engine-level leads left, and none of them has the same direct, checkable
+path this one did — reading a Blueprint curve was uniquely easy compared to,
+say, tracing PhysX's own tyre-friction code, which is compiled into the
+engine binary, not exposed as an editable Blueprint asset.
+
+**What generalises:** this is the cleanest example in the whole
+investigation of a well-specified, falsifiable hypothesis (§18: "if
+`SteeringCurve` tapers with speed, that's the mechanism") checked directly
+against the one piece of ground truth that could settle it, rather than
+inferred from closed-loop symptoms. It took real effort to get to that one
+check (§24's four build bugs), and the result was a clean elimination, not
+a confirmation — exactly the outcome the effort was worth taking regardless
+of which way it went, per lesson 20 earlier in this document ("a strong
+circumstantial case is still zero measurements").
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
@@ -1943,7 +1999,7 @@ domain (a Windows C++ build, not a WSL network path).
 | Cone-detection noise model | **New capability (§15), not yet a finding.** `CONE_NOISE_ENABLED`/`CONE_POS_JITTER_STD`/`CONE_NOISE_SEED` added to `settings.py` + `sim/rollout_core.py::ConeNoise` — closes part of the "cone map... not modelled anywhere" fidelity gap (position jitter only; false positives/negatives/range-dependence remain unmodelled). Default off. `fsae_MPCTest`-only, no live-side counterpart needed (same as `SLAM_NOISE_*`) |
 | `launch_all.sh` couldn't get FSDS running at all | **Fixed (§16).** Two stacked bugs: shebang on line 3 (script never ran as bash), then WSL2 unable to reach the Windows host via `127.0.0.1` (needs the WSL default-gateway IP, or `FSDS_HOST_IP` — `fsds_ros2_bridge.launch.py` already supported this, just was never set). Fixed in both `ros2/launch_all.sh` and the `fsds_simulator` mirror, preserving the mirror's intentional config differences |
 | First live-vs-sim comparison since §0 | **Superseded (§23) — the "improvement" does not replicate.** §17's single-run 15.2% figure does not hold: a 5-lap run at the identical 20 Hz config landed at 26.4%, worse than the number it was meant to have improved on. §21 still correctly ruled out the MPC reweight as an explanation (offline A/B, old weights score *better* on saturation — that finding does not depend on which live run is "the" baseline). Correct current statement: live saturation varies roughly 15–32% run-to-run at the fixed config, well above the sim's 4.8%, no single run yet establishes a stable number. Needs several repeats to get a real mean/spread, the same way §13's `VALIDATION_SUITE` does offline |
-| `SteeringCurve` (UE4/PhysX speed-dependent steering scaling) | **Narrowed (§18, §20), build environment now ready (§24), still not read.** The property is confirmed compiled into this exact FSDS build (found as a string in the shipped `Blocks.exe`), alongside `SteeringInputRate` and the PhysX anti-roll-bar system. UE 4.27 installed and `AirSim/build.cmd` now completes successfully on the user's Windows machine after fixing four stacked build issues (wrong git repo root, missing manual build step, wrong CMake generator, wrong MSBuild toolset — §24). Remaining steps: open `FSOnline.uproject` in the Editor (module rebuild prompt expected), locate the vehicle Blueprint, read `SteeringCurve` off its `WheeledVehicleMovementComponent4W`. The Git LFS `.uasset`-pointer problem (§20) was only diagnosed on the WSL checkout — untested on the user's Windows git client, and is the next thing to check if Blueprint/mesh assets appear broken once the Editor opens |
+| `SteeringCurve` (UE4/PhysX speed-dependent steering scaling) | **RULED OUT (§25).** Read directly in the Editor on `TechnionCarPawn`'s `WheeledVehicleMovementComponent4W`: the curve is flat at Y=1.00 across all 3 defined keyframes (X=0, 64, 144) and holds 1.0 beyond that by UE4's default curve extrapolation. No speed-dependent steering scaling from this mechanism. The ceiling's engine-level cause is still unidentified; remaining untested candidates (PhysX anti-roll-bar system, sticky-tire-friction thresholds) are lower-priority and less directly checkable than this one was |
 | Curvature-spike defect | **Mechanism confirmed real (§19), but confirmed MODEST, not pervasive — corrected same day.** Root cause: the car-anchored spline's nearest midpoint drops out discontinuously as the car's pose crosses it, confirmed via byte-identical midpoint sets across a reproduced jump (rules out cone-map duplication/`_absorb()`/NN-reassignment). The initial "22.4% of ticks" estimate was an artifact of the measurement (ordinary arc-length resampling, not the defect) — two fix attempts against it correctly showed no effect, which is what exposed the flawed metric. A corrected metric (near-field tangent direction, cross-checked against `e_psi`/`steer_deg`) found only 3 large single-tick jumps in the whole run (0.07% of ticks), all genuine corner transitions, and re-measured the original instance at a real but modest −17.3° tangent reversal. Still supersedes "cone-map clutter" as the cause of *this* mechanism. No fix shipped — not judged worthwhile at this measured size; needs revisiting if the pose-rate test (§22) or another lead reopens the question |
 | Pose-rate mechanism | **Confirmed as a real, independently-visible mechanism (§22) — still true after §23.** Reintroducing the 10 Hz pose bug reproduced the user's directly-observed symptom (car runs wide off-track, slowly corrects back — confirmed in the log as a sustained ~1s excursion, `|e_y|` to 2.18 m, steering pinned at the 25° stop throughout). This holds regardless of §23's correction, since it's visible mechanistically in the raw log, not just via the aggregate percentage it was originally compared against. What does NOT hold: quoting "31.9% vs 15.2%" as the effect size — 15.2% was one noisy sample (§23). `pose_rate` reverted to 20.0 after the test. Needs repeat runs at both 10 Hz and 20 Hz to size the real effect |
 | Run-to-run variance at the live 20 Hz config | **New, open (§23).** Saturation measured at 15.2% (n=1 lap), 26.4% (n=5 laps, same config, same day), with the 5-lap run's own three real laps ranging 19.1–30.0%. No repeat-count yet establishes a trustworthy mean; treat any single live saturation number quoted elsewhere in this document as one sample from this spread, not a fixed value |
