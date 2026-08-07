@@ -1383,6 +1383,43 @@ call `planning.boundary.build_path_walls()` directly at each logged
 identity frame-to-frame, and flag ticks where it changes while the car moved
 less than the previous midpoint's forward margin.
 
+> **Correction (2026-08-07, same day) — the mechanism is real; the 22.4%
+> figure above is not, and the effect is smaller than this section implied.**
+> Attempting a fix exposed that the "near-field point shifts >0.5 m per 50 ms
+> tick" metric above is dominated by ordinary path resampling, not the
+> artifact: `blend_paths`'s `_resample_forward()` re-anchors to the car's
+> *current* position and resamples at fixed 0.5 m spacing on every call, so
+> "the point 0.5 m ahead along the path" is a different physical point almost
+> every tick on any curving section — large apparent jumps in that specific
+> metric on both a genuine hairpin (t≈147.5, traced directly, path continuous
+> and correct) and nowhere near either flagged anchor-jump instant. Two
+> targeted fix attempts against this metric (relaxing `filter_cones_window`'s
+> `min_ahead` from 0.5 to −1.0/−2.0 m; relaxing `_build_wall_path`'s seed
+> threshold `fwd > 0.3` to −1.0/−2.0/−3.0) both left the metric **unchanged or
+> slightly worse**, which is the tell that it was never measuring this
+> mechanism. A second, cleaner metric — tracking the blended path's own
+> near-field tangent direction (`blended[2]-blended[0]`) tick-to-tick, which
+> is what §12.8's reference-heading-lead framework already uses — found only
+> **3 single-tick jumps >20° across all 4160 ticks (0.07%)**, and tracing all
+> three directly showed they were genuine corner-to-corner transitions (`e_psi`
+> and `steer_deg` both reverse sign in step with the tangent, exactly as a real
+> S-turn/chicane should look), not artifacts. Re-tracing the *original*
+> t=74.83→74.98 jump with this correct metric found a real single-tick tangent
+> reversal of **−17.3°** — smaller than the 20° threshold, and an order of
+> magnitude smaller than what the flawed 22.4%/"up to 5×radius" framing
+> suggested was pervasive. **Net finding: the anchor-to-nearest-midpoint
+> mechanism is confirmed real (the t=74.83/74.98 pair is not in dispute — the
+> raw builds are byte-identical-midpoints with a genuinely different chain
+> output), but on this run it is a modest, occasional effect, not the dominant
+> driver of any global path-quality statistic tried so far.** No fix was
+> shipped — two parameter-based attempts were tested and rejected because
+> they didn't move a metric that, on reflection, wasn't the right one, and
+> chasing a third attempt for an effect this size was not judged worthwhile
+> before checking with the effect's actual measured scope in hand (see lesson
+> 23 below). This does not reopen "cone-map clutter" as the explanation —
+> that is still ruled out by the byte-identical-midpoints evidence — it only
+> revises how much this specific mechanism matters.
+
 ## 20. `SteeringCurve` is a real, compiled-in field — but its value is still unread
 
 *(2026-08-07, continued.)* §18 identified `SteeringCurve` (a speed-keyed
@@ -1478,6 +1515,47 @@ controlled live run with `pose_rate` deliberately dropped back to 10 Hz
 (one-line parameter change, no code revert needed) against the current
 code otherwise unchanged, replicating this section's offline A/B but for
 the one variable that cannot be isolated offline.
+
+## 22. Pose-rate A/B test staged, awaiting a live run
+
+*(2026-08-07, continued.)* §21 identified the pose-rate fix as the
+best-timed candidate for the §17 confound but could not isolate it offline —
+the offline rollout has no separate pose timer to disable. Staged the test
+it called for.
+
+**What was checked before touching anything.** `sim_perception`'s
+`pose_rate`/`cone_rate` are ROS 2 node parameters with no dynamic-reconfigure
+callback (`add_on_set_parameters_callback` is not registered) — the timer
+period is fixed once at `__init__` via `self.create_timer(1.0 /
+self._pose_rate, ...)`. A live `ros2 param set` after the node is already
+running would not change it; the only way to test 10 Hz is to change the
+value the node reads at startup. Confirmed the install is
+`--symlink-install`ed all the way through
+(`ros2/install/fsae_bringup/.../fsae_params.yaml` →
+`ros2/build/fsae_bringup/.../fsae_params.yaml` → the source file itself, both
+real symlinks), so editing the source YAML takes effect immediately with no
+`colcon build` needed.
+
+**Change staged (uncommitted, live repo, file-only — no git command run
+here per the standing rule):**
+`ros2/src/fsae_planning/common/fsae_bringup/config/fsae_params.yaml`,
+`sim_perception.pose_rate` 20.0 → **10.0**, with an inline comment marking it
+temporary and pointing back to this section. **This must be reverted to
+20.0 immediately after the test run** — it deliberately reintroduces a bug
+this investigation already fixed and documented as fixed (§21, and the
+parameter's own surrounding comment explains why 20.0 is correct).
+
+**Protocol for the run, once it happens:** one live run with this file as
+staged (10 Hz pose / 20 Hz control, everything else exactly as it stood for
+the 15.2%-saturation run in §17), same map (`comp test map 3`), compared via
+`tuner.live_vs_sim_diagnostics` against both the 21.1% (`dfd1a08`-era, 10 Hz
+pose was already broken by construction back then) and 15.2% (today, 20 Hz
+pose) reference points. If saturation/reversals on the 10 Hz run land closer
+to the 21.1%/1.62 figures than the 15.2%/3.15 ones, that is real evidence
+for the pose-rate hypothesis; if it looks like the 15.2% run instead, the
+hypothesis is wrong and the true explanation is still open. **Not yet run as
+of this section** — needs FSDS launched via `launch_all.sh` (or the
+`fsds_simulator` equivalent), which only the user can do from here.
 
 ## What generalises
 
@@ -1586,6 +1664,20 @@ the one variable that cannot be isolated offline.
     metric the new ones were credited for. The correct suspect (pose-rate
     mismatch) surfaced only from checking commit/log timestamps against every
     candidate, not from picking the most mechanistically plausible one.
+23. **A metric that doesn't move when you fix the thing it's supposed to
+    measure is not confirming the fix failed — check whether it was ever
+    measuring that thing.** §19's "22.4% of ticks show a >0.5 m near-field
+    jump" survived two independent, targeted fix attempts completely
+    unchanged, which should have been the first clue rather than a reason to
+    try a third fix. The metric was dominated by ordinary arc-length
+    resampling on a curving path, not the artifact it was built to catch. A
+    second, better-chosen metric (near-field tangent direction, checked
+    against `e_psi`/`steer_deg` to confirm each flagged event was real and
+    not a legitimate corner) found the true effect was real but roughly two
+    orders of magnitude smaller in incidence than the first metric implied
+    (3 events / 4160 ticks, not ~933). Build the measurement, then sanity
+    check it against ground truth *before* trusting its silence or its
+    alarm — in either direction.
 
 ---
 
@@ -1607,7 +1699,8 @@ the one variable that cannot be isolated offline.
 | `launch_all.sh` couldn't get FSDS running at all | **Fixed (§16).** Two stacked bugs: shebang on line 3 (script never ran as bash), then WSL2 unable to reach the Windows host via `127.0.0.1` (needs the WSL default-gateway IP, or `FSDS_HOST_IP` — `fsds_ros2_bridge.launch.py` already supported this, just was never set). Fixed in both `ros2/launch_all.sh` and the `fsds_simulator` mirror, preserving the mirror's intentional config differences |
 | First live-vs-sim comparison since §0 | **Done (§17), confound resolved (§21) — but not who did it.** Saturation improved 21.1%→15.2%, reversals/s worsened 1.62→3.15. §21 ruled out the MPC reweight by direct offline A/B (old weights score *better* on saturation, 2.53% vs 4.80% — opposite of the hypothesis). Best-timed remaining candidate: a pose-rate bug fix (10 Hz shared timer → 20 Hz, dated 2026-08-06, between the 21.1% baseline and the new run) — plausible and correctly timed, but has no offline counterpart to isolate and is therefore inference, not proof. Needs a controlled live run with `pose_rate` reverted to 10 Hz to confirm |
 | `SteeringCurve` (UE4/PhysX speed-dependent steering scaling) | **Narrowed (§18, §20), still not read.** The property is confirmed compiled into this exact FSDS build (found as a string in the shipped `Blocks.exe`), alongside `SteeringInputRate` and the PhysX anti-roll-bar system — the integration is real and non-trivial, not a stub. But the *value* baked into FSDS's vehicle instance is binary data inside `FSOnline-WindowsNoEditor.pak` (452 MB, unencrypted enough for plugin-name strings to leak but not asset-instance data) or the source `.uasset`s (unpulled Git LFS pointers here) — neither readable by any tool available in this environment. Still needs the UE4 Editor, opened on the vehicle Blueprint's movement component, to read the curve directly |
-| Curvature-spike defect | **Root cause found for one mechanism (§19), effect size on the saturation gap not yet measured.** Reproduced directly on today's real cone map + live log: a hard `min_ahead=0.5` forward-window cutoff drops the nearest surviving midpoint discontinuously as the car's pose crosses it, forcing the car-anchored spline to jump to a midpoint up to 4 m further away — confirmed via byte-identical midpoint sets across the jump (rules out cone-map duplication/`_absorb()`/NN-reassignment for this specific mechanism). `blend_paths` damps but does not eliminate it: near-field path point still shifts >0.5 m in one 50 ms tick on 22.4% of all ticks in the new log. Supersedes `planning_control_sync.md`'s "cone-map clutter accumulating over a lap" as the primary explanation — the effect reproduces on a single static map with no lap-to-lap accumulation at all. Not yet measured: how much of the ≥75% unexplained saturation gap (§13) this accounts for; needs a rollout comparison with the windowing fixed vs. not, which has not been done, per the standing caution against editing planner files speculatively |
+| Curvature-spike defect | **Mechanism confirmed real (§19), but confirmed MODEST, not pervasive — corrected same day.** Root cause: the car-anchored spline's nearest midpoint drops out discontinuously as the car's pose crosses it, confirmed via byte-identical midpoint sets across a reproduced jump (rules out cone-map duplication/`_absorb()`/NN-reassignment). The initial "22.4% of ticks" estimate was an artifact of the measurement (ordinary arc-length resampling, not the defect) — two fix attempts against it correctly showed no effect, which is what exposed the flawed metric. A corrected metric (near-field tangent direction, cross-checked against `e_psi`/`steer_deg`) found only 3 large single-tick jumps in the whole run (0.07% of ticks), all genuine corner transitions, and re-measured the original instance at a real but modest −17.3° tangent reversal. Still supersedes "cone-map clutter" as the cause of *this* mechanism. No fix shipped — not judged worthwhile at this measured size; needs revisiting if the pose-rate test (§22) or another lead reopens the question |
+| Pose-rate 10 Hz A/B test | **Staged (§22), not yet run.** `sim_perception.pose_rate` temporarily set to 10.0 in the live repo's `fsae_params.yaml` (file-only edit, uncommitted, uses the existing `--symlink-install` — no rebuild needed) to reproduce the pre-fix bug and test it against the §17 confound. Needs one live run via `launch_all.sh`; **must be reverted to 20.0 immediately after** |
 | Identify the exact FSDS mechanism | **Done** — step test run (§9–10): a *dynamically enforced lateral-acceleration* ceiling. Both signatures present: different steering angles settle to the same response (a cap), yet yaw overshoots ~30% first (not a static clip) |
 | Ceiling decay time constant | **Done — see `alat_ceiling_tau` above (§12.12).** Superseded the original 0.04–1.06 s scattered fit from the 3 s hold |
 | Speed profile | **Closed, not a discrepancy** — see the correction below. Achieved speeds differ by 2% |
