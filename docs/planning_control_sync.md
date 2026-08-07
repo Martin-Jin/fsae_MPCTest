@@ -362,6 +362,26 @@ spline-fit residual check in `centerline_planner.py`, and/or rejecting cone
 pairings that imply a sub-3.7 m radius. Investigate why lap 2 is worse than lap
 1 first — that points at cone-map accumulation rather than the fitter itself.
 
+### Fixed: a real cone-map duplication bug in `_absorb()`
+
+Investigating "why lap 2 is worse" (`sim_to_real_investigation.md` §15) found
+and fixed a genuine bug in `planning/cone_map.py::ConeMap._absorb()`: two
+detections of one physical cone in the same frame, both farther than
+`MERGE_DIST` (0.8 m) from anything already in the map — i.e. that cone's
+first sighting — were both appended as separate, permanent entries. This is
+deterministic (confirmed for detections 1 cm apart) and independent of
+`MERGE_DIST` tuning, since it only compared each candidate against the
+existing map, never against other candidates in the same batch. Fixed in all
+three copies (live, offline, `fsds_simulator` mirror) by also checking
+candidates against each other before appending. Verified byte-identical
+sim output when the bug cannot fire (FSDS's cone perception is a noise-free
+oracle by default, so it never produces the same-frame duplicate detections
+needed to trigger this). Does **not** yet establish this explains any part of
+the curvature-spike defect or the saturation gap — that needs either a
+measured real-detector noise figure or a live log showing actual duplicate
+clustering, neither available yet. See §15 for full detail, including the new
+`CONE_NOISE_ENABLED` offline testing capability this fix was verified against.
+
 ### Related but eliminated: `blend_paths`' reset-bypass discontinuity
 
 `path_utils.py::blend_paths()` (used by both `centerline_planner.py` and

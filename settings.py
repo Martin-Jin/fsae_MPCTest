@@ -172,6 +172,46 @@ SLAM_NOISE_SEED = 24680
 # by default since it's a deliberate "how much lag do I want to simulate"
 # knob, not because delay is unsafe to enable.
 
+# ── Cone-detection noise ────────────────────────────────────────────────
+# FSDS's cone map is a latched ORACLE: sim_track.SimPerception returns exact
+# ground-truth cone positions, cropped only by range/FOV (see
+# docs/planning_control_sync.md, "Simulator fidelity limits" — "Cone map...
+# Not modelled anywhere" until this was added). Real cone detection has
+# per-detection position error from the vision pipeline, which this models as
+# jitter applied at the SimPerception boundary, independently per cone per
+# frame (not per-frame-global, since real detection noise is dominated by
+# each cone's own range/angle to the sensor, not a single shared offset).
+#
+# Why this exists: planning/cone_map.py's ConeMap._absorb() merges each new
+# detection into whichever existing map entry is nearest, if within
+# MERGE_DIST — otherwise it is appended as a brand-new permanent cone. Two
+# jittered detections of the SAME physical cone, on the far side of MERGE_DIST
+# from each other before either has been merged into the map, would be added
+# as two separate permanent entries; nothing currently exercises that path
+# because there is no detection noise. This flag exists to make that (and any
+# other perception-noise-dependent behaviour) testable offline at all.
+#
+# DEFAULT IS OFF, deliberately, same rationale as SLAM_NOISE_ENABLED: FSDS
+# itself has no such error, so this models a hypothesised REAL-car effect that
+# would make offline scores pessimistic relative to FSDS-vs-FSDS comparisons.
+CONE_NOISE_ENABLED = False
+
+# Per-cone, per-frame position jitter (independent white noise, redrawn every
+# time a cone is returned as visible — NOT correlated frame-to-frame, unlike
+# SLAM_POS_DRIFT_STD, because a vision cone detector re-estimates each cone's
+# position from scratch every frame rather than tracking/filtering it).
+# 0.05 m is a placeholder magnitude (typical stereo-vision cone-detection
+# error at short range), not a measured FSDS or real-car constant — there is
+# no measurement to fit this to yet. Treat it as tunable, same as
+# SLAM_POS_JITTER_STD, and prefer measuring the real detector's noise before
+# trusting any conclusion drawn from a specific value.
+CONE_POS_JITTER_STD = 0.05   # m, per-cone-per-frame white noise on x/y
+
+# CONE_NOISE_SEED — fixed so rollouts stay reproducible and CMA-ES compares
+# candidate weight sets against the identical noise sequence (same rationale
+# as SLAM_NOISE_SEED/DELAY_JITTER_SEED).
+CONE_NOISE_SEED = 97531
+
 # MAX_FAILS — "How many times in a row can the maths solver fail before we
 # give up on this test run?"
 # Occasionally the underlying optimisation (the maths that decides steering/

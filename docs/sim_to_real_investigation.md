@@ -909,6 +909,168 @@ blended-magnitude correlation here) and cleared each time.
 **Reproduce with:** `python3 -m tuner.reference_heading_vs_rebuild` (same
 `MPLBACKEND=Agg` requirement).
 
+## 15. Cone-detection noise: closing a real blind spot, testing a real gap in `_absorb()`
+
+*(2026-08-07, continued.)* §14.1 pointed the reference-heading lead back at
+the planner's spatial fit, specifically at *why* the documented
+curvature-spike defect gets worse lap-over-lap ("consistent with cone-map
+clutter accumulating," `planning_control_sync.md`'s "Known planner defect"
+section). Reading `planning/cone_map.py::ConeMap._absorb()` (identical in
+both `ros2/src/fsae_planning` and `fsae_MPCTest`) found a candidate mechanism:
+
+```python
+for pt in obs:
+    dists = np.linalg.norm(store - pt, axis=1)
+    best  = int(np.argmin(dists))
+    if dists[best] < MERGE_DIST:          # MERGE_DIST = 0.8 m
+        store[best] = (store[best] + pt) * 0.5
+    else:
+        new_pts.append(pt)
+```
+
+Each detection in an incoming batch is only ever compared against `store`
+(the existing map) — never against the other detections already queued into
+`new_pts` from the *same* call. Two noisy detections of one physical cone,
+both more than `MERGE_DIST` from anything already in the map (e.g. a cone
+newly entering the FOV) but within `MERGE_DIST` of *each other*, would both
+be appended as separate, permanent map entries — a phantom duplicate that
+never merges later, since every future detection still only checks against
+`store`. Combined with `cone_sorting.py`'s greedy nearest-neighbour walk and
+greedy nearest-unpaired-cone pairing, a single such duplicate is exactly the
+kind of thing that could pull a boundary wall into a spurious sub-3.7 m-radius
+kink.
+
+**This could not be tested as-is.** `sim/sim_track.py::SimPerception` (and
+the identical ROS2-side oracle) returns *exact* ground-truth cone positions,
+only cropped by range/FOV — confirmed by reading `visible_cones()`: the
+returned array is `cones[mask]`, a slice of the stored ground truth, never
+perturbed. `SlamNoise` corrupts the *pose* used to compute the FOV mask, not
+cone coordinates, so even with `SLAM_NOISE_ENABLED=True` a visible cone always
+reports at its exact true position. Per `planning_control_sync.md`'s own
+"Simulator fidelity limits" table: **"Cone map... Not modelled anywhere."**
+With zero detection noise, two detections of one cone can never land on
+opposite sides of `MERGE_DIST` from each other — the `_absorb()` gap cannot
+fire, regardless of whether `MERGE_DIST=0.8` is itself well- or
+mis-calibrated. Neither question was answerable before this.
+
+**Added `ConeNoise`** (`sim/rollout_core.py`, alongside the existing
+`SlamNoise`/`PoseFeedHold`) — independent per-cone, per-frame position
+jitter, applied at the `SimPerception.visible_cones()` boundary, both at
+rollout initialisation and in the main step loop. New settings, following the
+exact `SLAM_NOISE_*` convention (default off, seeded, magnitude documented as
+a placeholder pending a real measurement):
+
+```python
+CONE_NOISE_ENABLED = False        # default off — FSDS itself has no such error
+CONE_POS_JITTER_STD = 0.05        # m, per-cone-per-frame white noise on x/y
+CONE_NOISE_SEED = 97531
+```
+
+Unlike `SlamNoise`, there is deliberately no drift/bias term: a vision cone
+detector re-estimates each cone's position from scratch every frame rather
+than tracking a belief over time, so nothing should carry over between
+frames the way SLAM's OU drift does — if a future measurement shows real
+detections DO carry correlated frame-to-frame error, add a drift term the
+same way `SlamNoise` does rather than repurposing jitter. Also deliberately
+per-cone rather than a single shared frame offset (`SlamNoise`'s model):
+detection error is per-object (each cone has its own range/angle/occlusion
+to the sensor), not a single pose error shared by the whole visible set.
+
+**Scope, deliberately narrow.** This models position jitter only. False
+positives, false negatives, and range-dependent noise growth are all real
+and still unmodelled — the fidelity-limits table's "Cone map... Not modelled
+anywhere" row is only partly closed, not fully. This was scoped to the
+minimum needed to test the `_absorb()` hypothesis, not to build a complete
+perception noise model.
+
+**Full-rollout duplicate-cluster counting was the wrong tool: a stress test at
+0.5 m jitter never finished in 400 s** (the growing, unmerged cone map makes
+every subsequent `_absorb()` call's linear scan more expensive, compounding
+badly — a real, if secondary, finding about the cost of unbounded jitter, not
+about correctness). **A direct unit test of `_absorb()` in isolation was
+decisive instead** — no rollout needed at all:
+
+```python
+>>> _absorb(np.empty((0, 2)), np.array([[10.0, 2.0], [10.01, 2.0]]))
+array([[10.  ,  2.  ],
+       [10.01,  2.  ]])   # two PERMANENT entries, 1 cm apart, never merged
+```
+
+**This is a real, deterministic correctness bug, not a noise-magnitude
+question.** Two detections of one physical cone **1 cm apart** — far below
+any plausible detection noise — both get appended as separate, permanent map
+entries whenever the map has nothing within `MERGE_DIST` yet (a cone's first
+sighting, or `store` starting empty). It fires independent of jitter
+magnitude, so tuning `MERGE_DIST` cannot fix it: the loop only ever compares
+each candidate against `store`, never against the other candidates already
+accepted into `new_pts` from the same call. Confirmed the scope precisely:
+once a cone has ONE entry in the map, later multi-detection frames merge
+correctly (`_absorb()` on an existing store, two nearby new detections,
+correctly averages to one point) — the gap is specific to a cone's entry
+into the map, not persistent per-cone jitter.
+
+**Fixed** in `planning/cone_map.py::_absorb()` (both `fsae_MPCTest` and the
+identical `ros2/src/fsae_planning` copy — see parity note below): new-point
+candidates are now also checked against each other (and against
+new-points already accepted earlier in the same call) before being appended,
+with the same running-mean merge used against `store`. Also fixed the
+`len(store) == 0` early-return, which bypassed all merge logic (including the
+new same-batch check) whenever the map started empty.
+
+**Verified:**
+- Unit tests: the 1 cm-apart case now merges to one entry; two genuinely
+  distinct new cones (>`MERGE_DIST` apart) still both get added; an
+  already-known cone plus a same-frame duplicate-of-it plus a same-frame
+  genuinely-new cone all resolve correctly (2 entries, not 3); a 3-way
+  same-frame duplicate merges to 1; result is order-independent.
+- No regression at the default (noise disabled): recorded map still 4.80%
+  saturation exactly, and the validation-suite mean/std/per-path breakdown
+  for the shipped params is **byte-identical to §13's original table**
+  (9.42% mean, 5.11% std, SPIRAL 11.3/SUDDEN_TURN 7.6/HAIRPIN 7.7/FS_CORNER
+  2.6/MICRO_SLALOM 18.0) — expected, since `_absorb()`'s new-vs-new check is
+  a no-op when there's at most one genuinely new cone per frame, which is
+  what a noise-free oracle always produces.
+- With noise on (default 0.05 m jitter): runs cleanly, no crash, no DNF;
+  236 permanent cone entries accumulated over the recorded-map rollout, a
+  sane count for the track length (no explosion). Saturation unchanged from
+  the pre-fix noise-on measurement (4.86%) — expected, since 0.05 m jitter
+  was already too small to make two same-cone detections land on opposite
+  sides of `MERGE_DIST=0.8` m from EACH OTHER either; the fix closes the
+  logic gap regardless, since it doesn't depend on that being the case.
+
+**What this does and does not establish.** The bug is real and fixed, and
+the fix is verified safe (byte-identical outputs when it cannot fire, correct
+merges in every case tested when it can). It does **not** establish that this
+bug explains any part of the live saturation gap: at the realistic default
+noise level, the aggregate saturation number does not move, because 0.05 m
+jitter is far too small for the specific first-sighting scenario to
+meaningfully compound over a lap on this map. Confirming or ruling out a
+real-world effect needs either a measured real-detector noise figure (not
+guessed) or a live log showing actual duplicate-cone clustering in the
+accumulated map — neither exists in this environment. This section fixes a
+genuine bug and makes the hypothesis testable; it does not close the
+investigation.
+
+**Parity applied to all three copies:** identical fix in
+`ros2/src/fsae_planning/planning/fsae_planning/fsae_planning/cone_map.py`
+(the live copy), `fsae_MPCTest/planning/cone_map.py` (offline), and
+`fsae_MPCTest/fsds_simulator/planning/fsae_planning/fsae_planning/cone_map.py`
+(the PR-staging mirror, which already had this file — per CLAUDE.md, an
+existing shared file gets the same change, not just the two "parity" copies).
+The `ConeNoise` half of this change (`settings.py`, `sim/rollout_core.py`) is
+`fsae_MPCTest`-only by design — it is an offline testing-harness fidelity
+feature with no live-node counterpart to keep in sync (the real car already
+has real sensor noise for free; FSDS does not), the same reasoning that
+already applies to `SLAM_NOISE_*`/`POSE_HOLD_*`, neither of which appears
+anywhere in the live ROS2 code either.
+
+**Reproduce with:** unit-test `_absorb()` directly (see above) for the
+correctness check; set `CONE_NOISE_ENABLED = True` in `settings.py` (must be
+edited before import — like `SLAM_NOISE_ENABLED`, the rollout reads it via
+`from settings import CONE_NOISE_ENABLED`, so patching the module attribute
+after import has no effect) and re-run `python3 -m tuner.recorded_map_rollout`
+for the closed-loop check.
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
@@ -983,6 +1145,8 @@ blended-magnitude correlation here) and cleared each time.
 | Planner reference heading | **Open, narrowed (§12.8, §14).** In *both* stacks the reference heading swings faster than the car can yaw, and drives 78–100% of heading-error growth. Live's is 15–34% worse in the tail. Distinct from the *curvature* comparison §3 eliminated |
 | `blend_paths` reset-bypass discontinuity | **Eliminated for the recorded map (§14).** Real, parity-correct mechanism, can jump the reference up to 166° on other geometries (PATH_SPIRAL) — but fires 0/1038 times on the recorded map (max trigger-distance 1.98 m, just under the 2.0 m threshold). Cannot explain 21.1% saturation with 0 events |
 | `blend_paths` blended-magnitude vs heading rate | **Mostly eliminated (§14.1).** Rebuild distance vs. blended path's own reference-heading rate: r=0.15 raw, r=0.10 controlling for corner severity — explains ~1-2% of variance, not the 78–100% reference-driven growth in §12.8. Points back at the planner's spatial fit itself (curvature-spike defect), not `blend_paths`, as the likely source of the heading-rate symptom |
+| `ConeMap._absorb()` same-frame duplicate bug | **Fixed (§15), unmeasured effect.** Real, deterministic bug (two same-frame detections of a newly-sighted cone both became permanent, unmerged entries — confirmed at 1 cm apart, independent of `MERGE_DIST`). Fixed in all 3 copies. Does not move the recorded map's saturation at default noise (4.80%→4.86%, matches pre-fix), because FSDS's noise-free oracle perception never triggers it and the added `CONE_NOISE_ENABLED` jitter is too small to separately trigger it either. Whether this matters on the real car is still open — needs measured detector noise or a live log |
+| Cone-detection noise model | **New capability (§15), not yet a finding.** `CONE_NOISE_ENABLED`/`CONE_POS_JITTER_STD`/`CONE_NOISE_SEED` added to `settings.py` + `sim/rollout_core.py::ConeNoise` — closes part of the "cone map... not modelled anywhere" fidelity gap (position jitter only; false positives/negatives/range-dependence remain unmodelled). Default off. `fsae_MPCTest`-only, no live-side counterpart needed (same as `SLAM_NOISE_*`) |
 | Identify the exact FSDS mechanism | **Done** — step test run (§9–10): a *dynamically enforced lateral-acceleration* ceiling. Both signatures present: different steering angles settle to the same response (a cap), yet yaw overshoots ~30% first (not a static clip) |
 | Ceiling decay time constant | **Done — see `alat_ceiling_tau` above (§12.12).** Superseded the original 0.04–1.06 s scattered fit from the 3 s hold |
 | Speed profile | **Closed, not a discrepancy** — see the correction below. Achieved speeds differ by 2% |

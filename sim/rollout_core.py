@@ -48,6 +48,7 @@ from settings import (
     SLAM_POS_DRIFT_STD, SLAM_YAW_DRIFT_STD, SLAM_DRIFT_TAU, SLAM_NOISE_SEED,
     POSE_HOLD_ENABLED, POSE_HOLD_PROB, POSE_HOLD_MEAN_TICKS,
     POSE_HOLD_MAX_TICKS, POSE_HOLD_SEED,
+    CONE_NOISE_ENABLED, CONE_POS_JITTER_STD, CONE_NOISE_SEED,
 )
 
 STALL_CHECK_INTERVAL = 60   # Steps between rolling stall checks (3 s at 20 Hz)
@@ -147,6 +148,48 @@ class SlamNoise:
         y_est = y + self._drift[1] * self._pos_drift_std + jitter[1] * self._pos_jitter_std
         yaw_est = yaw + self._drift[2] * self._yaw_drift_std + jitter[2] * self._yaw_jitter_std
         return float(x_est), float(y_est), float(_normalize_angle(yaw_est))
+
+
+class ConeNoise:
+    """
+    Corrupts cone positions AFTER SimPerception's FOV filter, modelling real
+    per-detection vision noise on top of FSDS's noise-free oracle cone map.
+
+    Why this exists
+    ---------------
+    sim_track.SimPerception.visible_cones() returns exact ground-truth cone
+    coordinates, only cropped by range/FOV — see docs/planning_control_sync.md,
+    "Simulator fidelity limits": the cone map was, until this class existed,
+    the one aspect of the sim/real gap with literally no model at all. This
+    adds the minimum needed to make perception-side hypotheses testable
+    offline: independent per-cone, per-frame position jitter. It does NOT
+    model false positives/negatives or range-dependent noise growth — both
+    are real, both are still unmodelled, this only closes the position-jitter
+    gap. See settings.CONE_NOISE_ENABLED for the full rationale.
+
+    Unlike SlamNoise, there is no drift/bias component: a vision cone detector
+    re-estimates each cone's position independently every frame rather than
+    tracking one belief over time, so there is nothing that should carry over
+    between frames the way SLAM's OU drift does. If a future measurement shows
+    real cone detections DO carry frame-to-frame correlated error (e.g. from a
+    slowly-drifting camera calibration), add a drift term the same way
+    SlamNoise does rather than repurposing jitter for it.
+
+    Deliberately applied to EACH CONE INDEPENDENTLY, not once per frame as a
+    shared offset — SlamNoise corrupts a single pose shared by the whole cone
+    set, which is correct for localisation error, but detection error is
+    per-object (each cone has its own range/angle/occlusion to the sensor).
+    """
+
+    def __init__(self, seed, pos_jitter_std):
+        self._rng = np.random.default_rng(seed)
+        self._pos_jitter_std = float(pos_jitter_std)
+
+    def corrupt(self, cones):
+        """Return a copy of `cones` (n, 2) with independent per-point jitter."""
+        if len(cones) == 0 or self._pos_jitter_std <= 0.0:
+            return cones
+        return cones + self._rng.normal(0.0, self._pos_jitter_std, size=cones.shape)
 
 
 class PoseFeedHold:
@@ -387,10 +430,20 @@ def run_core_rollout(
 
     state = init_plant_state(X0, Y0, psi0, vx0=0.0)
 
+    # ── Cone-detection noise ───────────────────────────────────────────────
+    # Corrupts only what SimPerception reports as visible; the plant, the
+    # oracle centreline (use_planner=False) and the score are unaffected. See
+    # ConeNoise / settings.CONE_NOISE_ENABLED.
+    cone_noise = None
+    if CONE_NOISE_ENABLED:
+        cone_noise = ConeNoise(seed=CONE_NOISE_SEED, pos_jitter_std=CONE_POS_JITTER_STD)
+
     if use_planner:
         perception = SimPerception(blue_cones, yellow_cones)
         planner = SimPlanner()
         _b0, _y0 = perception.visible_cones(float(X0), float(Y0), float(psi0))
+        if cone_noise is not None:
+            _b0, _y0 = cone_noise.corrupt(_b0), cone_noise.corrupt(_y0)
         planner.update(_b0, _y0, np.array([X0, Y0]), float(psi0))
 
     command_queue = deque([np.zeros(2) for _ in range(DELAY_STEPS + 1)], maxlen=DELAY_STEPS + 1)
@@ -537,6 +590,8 @@ def run_core_rollout(
             # intended ~5%).
             if pose_age_ticks == 0:
                 b_vis, y_vis = perception.visible_cones(X_est, Y_est, psi_est)
+                if cone_noise is not None:
+                    b_vis, y_vis = cone_noise.corrupt(b_vis), cone_noise.corrupt(y_vis)
                 planner.update(b_vis, y_vis, car_pos_np, psi_est)
 
             cl = planner.centreline
