@@ -2887,6 +2887,49 @@ Starting-point guidance is in `settings.py`'s comment (try 2-5x, re-validate
 against `VALIDATION_SUITE`/recorded map for new DNFs the same as any other
 weight change).
 
+## 41. PhysX anti-roll-bar and sticky-tire-friction: both RULED OUT as the ceiling's mechanism
+
+The last two untested candidates from §25's list for the ceiling's
+engine-level cause (PhysX ARB, sticky-tire friction). Documentation-only
+research (no local PhysX source/UE4 install), same style as §25's
+`SteeringCurve` check but via public docs instead of reading the Editor.
+
+**Anti-roll-bar: RULED OUT.** `PxVehicleAntiRollBarData`'s torque is
+strictly proportional to the *difference* in suspension jounce between a
+wheel pair — a symmetric roll-stiffness spring, nothing more. No term
+involves yaw rate, lateral acceleration, or speed, and it has no
+saturation of its own. Two measured signatures it structurally cannot
+produce: (a) different steering angles settling to the SAME sustained
+value (ARB torque scales with the actual roll/cornering demand, not a cap
+independent of it), (b) a ceiling that rises with speed independent of
+slip. Also requires explicit per-axle `AntiRollBarSetup` configuration in
+UE4.27's `WheeledVehicleMovementComponent4W` — not silently always-on.
+
+**Sticky-tire friction: RULED OUT.** Real and documented
+(`PxVehicleTireStickyStateUpdate`): when a tire's speed drops below a
+threshold for longer than a threshold time, PhysX swaps to a direct
+velocity constraint specifically to stop a resting/near-resting car from
+creeping or jittering. Explicitly a near-zero-speed feature — nothing ties
+its trigger to 8-14 m/s driving speeds, and it's a binary state switch on
+absolute wheel speed, not a slip-dependent force cap that could rise with
+speed. Above the (near-zero) trigger, the ordinary slip/friction curve
+applies with no forward-speed term at all.
+
+**Conclusion: the ceiling's engine-level mechanism remains unidentified**,
+same status as §25 left it — but this closes out the two candidates the
+user's action list specifically named as lowest-priority-but-worth-ruling-
+out. Consistent with the standing framing: the ceiling's existence and
+approximate shape are already confirmed and modelled by measurement
+regardless of *why* FSDS produces it, so this was a "nice to know," not a
+blocker for anything currently in progress.
+
+**New leads surfaced by this research, not yet pursued:** PhysX's
+suspension travel/jounce limit clamp (`PxVehicleSuspensionData` max
+compression) and the tire load-sensitivity term in the friction model —
+both remain unresolved rather than ruled out, and were not part of the
+user's original two-item list, so left for a future session if the engine
+mechanism is worth chasing further.
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
@@ -3180,7 +3223,8 @@ weight change).
 | Cone-detection noise model | **New capability (§15), not yet a finding.** `CONE_NOISE_ENABLED`/`CONE_POS_JITTER_STD`/`CONE_NOISE_SEED` added to `settings.py` + `sim/rollout_core.py::ConeNoise` — closes part of the "cone map... not modelled anywhere" fidelity gap (position jitter only; false positives/negatives/range-dependence remain unmodelled). Default off. `fsae_MPCTest`-only, no live-side counterpart needed (same as `SLAM_NOISE_*`) |
 | `launch_all.sh` couldn't get FSDS running at all | **Fixed (§16).** Two stacked bugs: shebang on line 3 (script never ran as bash), then WSL2 unable to reach the Windows host via `127.0.0.1` (needs the WSL default-gateway IP, or `FSDS_HOST_IP` — `fsds_ros2_bridge.launch.py` already supported this, just was never set). Fixed in both `ros2/launch_all.sh` and the `fsds_simulator` mirror, preserving the mirror's intentional config differences |
 | First live-vs-sim comparison since §0 | **Superseded (§23) — the "improvement" does not replicate.** §17's single-run 15.2% figure does not hold: a 5-lap run at the identical 20 Hz config landed at 26.4%, worse than the number it was meant to have improved on. §21 still correctly ruled out the MPC reweight as an explanation (offline A/B, old weights score *better* on saturation — that finding does not depend on which live run is "the" baseline). Correct current statement: live saturation varies roughly 15–32% run-to-run at the fixed config, well above the sim's 4.8%, no single run yet establishes a stable number. Needs several repeats to get a real mean/spread, the same way §13's `VALIDATION_SUITE` does offline |
-| `SteeringCurve` (UE4/PhysX speed-dependent steering scaling) | **RULED OUT (§25).** Read directly in the Editor on `TechnionCarPawn`'s `WheeledVehicleMovementComponent4W`: the curve is flat at Y=1.00 across all 3 defined keyframes (X=0, 64, 144) and holds 1.0 beyond that by UE4's default curve extrapolation. No speed-dependent steering scaling from this mechanism. The ceiling's engine-level cause is still unidentified; remaining untested candidates (PhysX anti-roll-bar system, sticky-tire-friction thresholds) are lower-priority and less directly checkable than this one was |
+| `SteeringCurve` (UE4/PhysX speed-dependent steering scaling) | **RULED OUT (§25).** Read directly in the Editor on `TechnionCarPawn`'s `WheeledVehicleMovementComponent4W`: the curve is flat at Y=1.00 across all 3 defined keyframes (X=0, 64, 144) and holds 1.0 beyond that by UE4's default curve extrapolation. No speed-dependent steering scaling from this mechanism |
+| PhysX anti-roll-bar / sticky-tire-friction | **Both RULED OUT (§41), 2026-08-08.** ARB torque is a symmetric roll-stiffness spring with no yaw/speed term and no cap of its own; sticky-tire is a near-zero-speed-only creep-prevention switch, irrelevant at 8-14 m/s. Neither can produce a same-value-regardless-of-steering cap or a speed-rising ceiling. **The ceiling's engine-level cause remains unidentified** — new unpursued leads: PhysX suspension jounce-limit clamp, tire load-sensitivity term |
 | Curvature-spike defect | **Mechanism confirmed real (§19), but confirmed MODEST, not pervasive — corrected same day.** Root cause: the car-anchored spline's nearest midpoint drops out discontinuously as the car's pose crosses it, confirmed via byte-identical midpoint sets across a reproduced jump (rules out cone-map duplication/`_absorb()`/NN-reassignment). The initial "22.4% of ticks" estimate was an artifact of the measurement (ordinary arc-length resampling, not the defect) — two fix attempts against it correctly showed no effect, which is what exposed the flawed metric. A corrected metric (near-field tangent direction, cross-checked against `e_psi`/`steer_deg`) found only 3 large single-tick jumps in the whole run (0.07% of ticks), all genuine corner transitions, and re-measured the original instance at a real but modest −17.3° tangent reversal. Still supersedes "cone-map clutter" as the cause of *this* mechanism. No fix shipped — not judged worthwhile at this measured size; needs revisiting if the pose-rate test (§22) or another lead reopens the question |
 | Pose-rate mechanism | **Confirmed as a real, independently-visible mechanism (§22) — still true after §23.** Reintroducing the 10 Hz pose bug reproduced the user's directly-observed symptom (car runs wide off-track, slowly corrects back — confirmed in the log as a sustained ~1s excursion, `|e_y|` to 2.18 m, steering pinned at the 25° stop throughout). This holds regardless of §23's correction, since it's visible mechanistically in the raw log, not just via the aggregate percentage it was originally compared against. What does NOT hold: quoting "31.9% vs 15.2%" as the effect size — 15.2% was one noisy sample (§23). `pose_rate` reverted to 20.0 after the test. Needs repeat runs at both 10 Hz and 20 Hz to size the real effect |
 | Run-to-run variance at the live 20 Hz config | **New, open (§23).** Saturation measured at 15.2% (n=1 lap), 26.4% (n=5 laps, same config, same day), with the 5-lap run's own three real laps ranging 19.1–30.0%. No repeat-count yet establishes a trustworthy mean; treat any single live saturation number quoted elsewhere in this document as one sample from this spread, not a fixed value |
