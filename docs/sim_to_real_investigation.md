@@ -2460,6 +2460,56 @@ script (not committed) that calls `run_core_rollout(..., want_history=True)`
 and inspects `history["v"]`, `history["v_target"]`, `history["e_psi"]`, and
 `history["planner_X"/"planner_Y"]` around the DNF step.
 
+### A fix was attempted at the exact mechanism, confirmed, and still reverted
+
+With the mechanism pinned down to `_build_wall_path`'s seed selection
+(`planning/boundary.py`), the specific discontinuity was reproduced directly
+by monkeypatching `_gen_midpoints`/`_build_wall_path` to log their real
+inputs/outputs mid-rollout (not a reconstruction — the actual planner call).
+Confirmed exactly: at steps 83→84 the car moves ~0.5 m
+((47.77,7.40)→(48.22,7.61)), the nearest midpoint (47.91,8.48) stays present
+in `_gen_midpoints`'s output at every step (dist_to_car 1.09→0.93, shrinking
+smoothly — never dropped by `min_ahead`), but the seed used by
+`_build_wall_path` jumps from that point to (48.90,12.27), 3.6 m further
+away, because the seed filter `fwd = (midpoints - car_pos) @ heading;
+forward_idx = where(fwd > 0.3)` drops the near midpoint the instant its
+heading-frame forward projection crosses the fixed 0.3 threshold (measured:
+fwd=0.467 at step 83, fwd=0.006 at step 84) — a hard binary cutoff, same
+class of bug as the per-step turn gate this file's own comments say was
+already softened once for exactly this reason (`_WALL_MAX_TURN_COS`).
+
+**Fix tried:** loosen the seed filter from `fwd > 0.3` to `fwd > -0.5` (reject
+only midpoints clearly behind the car, rather than midpoints not
+sufficiently ahead), keeping "take the nearest eligible midpoint" unchanged.
+Verified this removes the specific discontinuity (seed stayed on the near
+midpoint through step 85 instead of jumping at step 84) and the recorded-map
+DNF moved from step 96 to 97 — negligible.
+
+**This was reverted.** `gap_attribution_ledger` on `VALIDATION_SUITE` after
+the change: DNF count rose from 0/5 to 1-2/5 across every ceiling-law
+factor, and suite std roughly tripled (4-9pp → 15-17pp) — a real, serious
+regression on other geometries, the same category of failure as the
+`curvature_speed` short-path-cap deletion earlier in this section. The
+`-0.5` threshold is evidently too permissive somewhere else in the suite
+(not yet isolated which path or why); a narrower fix that only relaxes the
+gate in the specific circumstance measured here (a near midpoint that was
+eligible on the immediately preceding tick) rather than uniformly loosening
+the constant would need to be tried and re-checked against the full suite
+before being trusted. Not attempted in this session, to avoid a third
+speculative planner edit without the budget to fully characterise it.
+
+**Where this leaves the DNF:** root-caused to a specific, reproducible
+mechanism and line of code, with one candidate fix tried, measured, and
+shown to trade a rare corner-truncation failure for a broader
+suite-wide regression. Two verified-safe options remain: (a) leave
+`_build_wall_path` as-is and accept this DNF as a known, rare, corner-anchor
+edge case (consistent with §19's own "0.07% of ticks" rarity finding), or
+(b) design a narrower fix (e.g. hysteresis on the seed choice — only switch
+away from the current seed once its replacement is closer, not merely once
+the old one crosses a threshold — rather than moving the threshold) and
+re-validate against `VALIDATION_SUITE` before trusting it. Neither was
+completed this session.
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
@@ -2690,6 +2740,22 @@ and inspects `history["v"]`, `history["v_target"]`, `history["e_psi"]`, and
     — a fair question to ask about any shared-logic-but-separate-harness
     boundary, not just this one, and worth asking explicitly rather than
     trusting that byte-identical dependencies imply identical behaviour.
+32. **A fixed threshold on a continuously-varying quantity is a discontinuity
+    waiting to happen — and loosening it is not automatically safe either.**
+    Two separate fixed cutoffs in this planner (`curvature_speed`'s
+    `v_max_eff` short-path cap, `_build_wall_path`'s `fwd > 0.3` seed filter)
+    were each identified as the apparent cause of the same recorded-map DNF,
+    and removing/loosening each one in turn was tried directly rather than
+    assumed correct. Both individually fixed the traced mechanism (confirmed
+    by direct instrumentation) and both individually regressed
+    `VALIDATION_SUITE` (0/5 DNF → 1-2/5 DNF) — the fixed threshold was
+    load-bearing somewhere else in the suite that the recorded map alone
+    never exercises. Two fixes, two regressions, is enough of a pattern to
+    stop and report rather than try a third: this planner's thresholds are
+    each protecting against a *different* failure mode than the one visible
+    on any single test case, and a fix validated against only the case that
+    motivated it should be assumed unsafe until `VALIDATION_SUITE` says
+    otherwise — the same lesson as #29, now confirmed twice more.
 
 ---
 
@@ -2712,7 +2778,7 @@ and inspects `history["v"]`, `history["v_target"]`, `history["e_psi"]`, and
 |---|---|
 | **Model the yaw cap offline** | **Done** — `alat_ceiling*` in `model/vehicle_physics.py`. Moves every metric toward the car (saturation 4.4→6.3%, a_lat max 14.06→10.53) but closes only part of the gap; live is still 21.1% saturation |
 | **Planner parity bug (`SimPlanner` call sites)** | **Fixed (§31), 2026-08-08.** Offline never passed `smooth_per_pt`/`look_radius`/`plan_horizon`/blend `alpha`/`horizon` to `build_path_walls()`/`blend_paths()`, silently using hardcoded defaults instead of `fsae_params.yaml`'s tuned values (2 of 5 coincidentally matched). Fix narrows the "unexplained gap" 17.43→10.68 pp in one step — bigger than every previously-tested plant/ceiling factor combined — and introduces a new recorded-map DNF at step 95. Weights may need re-tuning against the corrected planner |
-| **Recorded-map DNF (post-§31/braking-fix)** | **Root-caused, not fixed (§33), 2026-08-08.** First hypothesis (a `curvature_speed` short-path cap masking the corner) tested directly and disproven — deleting the cap made the DNF earlier and regressed `VALIDATION_SUITE` (0/5→1/5 DNF), so it was reverted. Actual cause: §19's already-documented `min_ahead`/chain-anchor discontinuity — the published path's near-field anchor jumped ~0.9m in one tick (car moved only 0.6m), discontinuously erasing the only representation of a real, correctly-measured R≈4.5m corner (R jumped to 11-38m two steps later). Same defect §19 measured at 0.07% of ticks, now caught landing on a corner's sole near-field point — rare but disproportionately costly there. No planner fix attempted (needs full §19/`planning_control_sync.md` context per CLAUDE.md) |
+| **Recorded-map DNF (post-§31/braking-fix)** | **Root-caused to a specific line; two fixes tried and reverted (§33), 2026-08-08.** Cause: `_build_wall_path`'s seed filter (`planning/boundary.py`, `fwd > 0.3`) discontinuously drops the nearest midpoint as the car's heading rotates through a corner, even though the point hasn't moved and is still the closest on-track anchor (measured directly: 0.5m of car motion, seed jumped from 1.09m to 4.72m away). This is §19's `min_ahead`/chain-anchor discontinuity, now pinned to the exact line. **Fix 1** (delete `curvature_speed`'s `v_max_eff` re-application) and **Fix 2** (loosen the seed filter to `fwd > -0.5`) each independently fixed the traced mechanism but each independently regressed `VALIDATION_SUITE` (0/5→1-2/5 DNF) — both reverted. Two safe next steps identified, neither attempted: accept as a known rare edge case, or design a hysteresis-based seed-switch fix and validate against the full suite before trusting it |
 | **Braking-distance index-offset fix (`curvature_speed`)** | **Landed (concurrent live-side session), 2026-08-08.** Fixed a `+2`-sample-index assumption that mis-attributed each curvature sample's distance-ahead by a few metres either direction. Verified AST-identical to the `fsds_simulator` mirror. Confirmed via §33 re-measurement: does not move recorded-map saturation (10.42% before and after) or the DNF step (95→96, unchanged in substance) |
 | Remaining saturation gap | **Open, re-measured against both the planner fix and the braking-distance fix (§13, §31, §33).** Pre-§31: ≥75% of a 17.43 pp gap unexplained. Post-§31+braking-fix (§33): 91.1% (10.68 of 11.73 pp) unexplained, against a run that still DNFs at ~10.5% progress — neither fix moved this fraction. §30's combined-factor sweep still predates both fixes and needs re-running if pursued further |
 | Ceiling's effect is corner-type-specific | **New (§13).** Zero measurable effect on HAIRPIN/FS_CORNER in every configuration tried; entire effect concentrated on SUDDEN_TURN/MICRO_SLALOM (sustained moderate-radius bends at speed). Check any future plant explanation against this per-path breakdown before trusting an aggregate |
