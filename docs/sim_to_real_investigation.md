@@ -2363,7 +2363,7 @@ verified AST-identical between `sim/speed_profile.py` and the
 `fsds_simulator` mirror, ignoring docstrings). Re-measurement resumed — see
 §33.
 
-## 33. Re-measurement against §31 + the braking-distance fix: the recorded map still DNFs, and a new, distinct short-path-cap mechanism is why
+## 33. Re-measurement against §31 + the braking-distance fix: the recorded map still DNFs, and it's §19's chain-anchor discontinuity landing on a corner's only near-field point
 
 With both fixes landed, `recorded_map_rollout` and `gap_attribution_ledger`
 were re-run.
@@ -2388,7 +2388,7 @@ pre-braking-fix state. The braking-distance fix is a genuine correctness fix
 (confirmed AST-identical to the live copy) but does not move this
 particular metric.
 
-### Root cause of the new DNF: a short-path speed cap masking a real corner until it's too late
+### Root cause of the new DNF, corrected: a discontinuous centreline jump, not the short-path speed cap
 
 Traced directly (car state history, not aggregate stats): the rollout drives
 cleanly to 14.8 m/s by t=3.0s, then between t=3.25–4.75s `e_psi` explodes
@@ -2396,61 +2396,62 @@ from -3.9° to -65.6°, steering pins at the 25° stop, and the car goes
 off-track shortly after — the same "heading runaway while `e_y` stays
 modest" shape as every earlier saturation episode in this document.
 
-The mechanism is **not** a repeat of the braking-distance index-offset bug
-just fixed, and **not** exactly the same as the `min_ahead` seed-jump
-(§19) or the turn-in-lag tail (§27) already documented. It's a third,
-previously-undocumented sub-mechanism in the same family:
+**First hypothesis, tried and disproven by direct experiment:** the
+published centreline shrinks steadily as the car approaches the corner
+(18.9 m at t=3.5s down to 8.9 m by t=4.4s, well short of
+`PLANNER_PLAN_HORIZON=25.0`), and `curvature_speed()`'s short-path cap
+(`v_max_eff = max(v_min, v_max * min(1.0, total_len/scan_end))`, with
+`v_max=20.0` from `PLANNER_V_MAX` — not the module's own `v_max=15.0`
+default) computes to ~8.3 m/s on a ~10 m path, which looked like it was
+overriding a lower, correctly-computed braking-aware `v_target`. **This was
+wrong.** Instrumenting both terms separately at the crash steps shows
+`v_max_eff` (8.1, 7.4, 7.0 at steps 86/88/90) is actually the *more
+conservative* of the two — the raw curvature-and-braking-distance term
+(`v_target` before the `min` with `v_max_eff`) is *rising* over the same
+steps (10.7 → 11.8 → 19.9), i.e. the braking-aware math thinks the corner is
+getting **less** urgent as the car approaches, which is backwards. Deleting
+the short-path cap entirely (tested directly, reverted) made the DNF happen
+one step *earlier* and introduced a new DNF on `VALIDATION_SUITE` (0/5 →
+1/5) that wasn't there before — `v_max_eff` is genuine, load-bearing safety
+margin on other geometries, not redundant dead weight. That change was not
+kept.
 
-- The published centreline (`planner_X`/`planner_Y` per step) shrinks
-  steadily as the car approaches the corner — 18.9 m at t=3.5s down to
-  8.9 m by t=4.4s — well short of `PLANNER_PLAN_HORIZON=25.0`. This is
-  `build_path_walls()` genuinely running out of walkable boundary that far
-  ahead through a tight bend, not a bug in the §31 kwarg-passing fix (the
-  four `PLANNER_*` params are confirmed correctly threaded through both
-  call sites).
-- `curvature_speed()`'s short-path cap, `v_max_eff = max(v_min, v_max *
-  min(1.0, total_len/scan_end))`, then dominates `v_target` while the path
-  is short: at `v_max=20.0` (the offline planner branch's `PLANNER_V_MAX`,
-  confirmed at `sim/rollout_core.py:63` — not the module's own
-  `v_max=15.0` default, which a naive direct repro of this call gets
-  wrong) and `scan_end=24.0`, a ~10 m path caps `v_target` at only
-  ~8.3 m/s. Verified directly: calling `curvature_speed()` on the exact
-  per-step sliced waypoints (`cl[cl_idx:]`, not the full published
-  centreline stored in history) reproduces `v_target` within rounding at
-  every checked step.
-- The near-field curvature at these same steps is genuinely tight (R≈4.5m,
-  triples 1-3 of the published path, consistent step to step — not a
-  spurious spike) and implies `v_corner=√(4×4.5)≈4.2 m/s`, but the
-  braking-distance propagation never gets to bind on it, because the
-  short-path cap is already the more restrictive term while the path is
-  short. Only once the path shortens further (step 88, 8.88 m) does the
-  genuine curvature-aware term finally take over — and by then the car is
-  still at 10.0 m/s with only ~9 m of remaining path to shed 6+ m/s in,
-  which `A_BRAKE_PLAN=5.0` cannot do in time.
+**Actual root cause, confirmed by inspecting the published waypoints
+directly in the global frame:** the centreline's own near-field curvature
+is genuinely tight and correct at one step (R≈4.5-4.9 m over the first ~1 m
+of path, step 86) and then **discontinuously vanishes two steps later**
+(R≈11-38 m at step 88, R≈34-300 m at step 90) — not because the corner
+straightened out (the car's heading was still swinging hard through this
+exact window) but because the published path's first point jumped forward
+~0.9 m along the track while the car itself moved only ~0.6 m in that same
+tick (step 87: car at (47.30, 7.22), path starts at (46.72, 7.16); step 88:
+car at (47.77, 7.40), path starts at (47.53, 7.63) — the anchor moved
+*further* than the car did). This is the `min_ahead`/chain-anchor
+discontinuity mechanism §19 already documented and measured at "0.07% of
+ticks, 3 large jumps" on a different log — here it recurs at exactly the
+moment it's most costly: a tight corner's only representation in the
+published path is the near-field point that gets dropped. `curvature_speed`
+is measuring the discontinuously-updated path correctly; the path itself is
+the defect.
 
-In short: **the short-path cap is a coarse, distance-blind stand-in for "I
-can't see far enough to trust a speed target," and it silently masks a
-genuine, correctly-detected tight corner for exactly as long as the path
-stays short — which is precisely the regime where the corner is closest and
-the masking is most dangerous.** This is a distinct failure mode from a
-curvature *value* artifact (§19) or a reference-heading *lag* (§27): here
-the curvature measurement is correct and stable, but a different, unrelated
-term (the length-based cap) overrides it until too late.
+This is not a new, fourth mechanism — it is §19's already-documented and
+already-measured defect, just caught in the act on a different corner/log
+than the one §19's own measurement was taken from, which is worth recording
+because §19 characterized the defect as rare (0.07% of ticks) and *this*
+occurrence directly caused a DNF. Rarity and severity are different axes;
+a rare event landing exactly on a corner's only near-field anchor point is
+disproportionately costly compared to the same discontinuity on a straight.
 
-**Not attempted:** a fix. Per CLAUDE.md's standing instruction on this
-family of defects, this is exactly the kind of planner-adjacent change that
-needs to be applied to both `fsae_MPCTest` and the live
-`fsae_planning`/`fsds_simulator` copies together, and the existing
-workarounds (curvature smoothing, tracking-error gate, speed-rise limiter)
-are defence in depth that would need re-checking against any change here,
-not assumed to still be correctly tuned. Candidate directions, not
-evaluated: (a) blend the short-path cap with the curvature-based term
-(e.g. take the min only when the path's near-field curvature is itself
-unremarkable, rather than always deferring to path length first), (b)
-investigate why `build_path_walls()` can't find a walkable boundary out to
-`plan_horizon` through this specific corner — a cone-density or
-`_WALL_MID_DIST` issue would be a different, and more fixable, root cause
-than "tight corners inherently truncate the boundary walk."
+**Not attempted:** a fix to the planner itself (the `min_ahead` cutoff /
+pin-start chain-anchor behaviour in `boundary.py`/`path_utils.py`). Per
+CLAUDE.md's standing instruction on this family of defects, root-causing it
+further and fixing it needs the full context in this document's §19 and the
+"Known planner defect" section of `planning_control_sync.md`, applied to
+`fsae_MPCTest` and the live `fsae_planning`/`fsds_simulator` copies
+together, with the existing workarounds re-checked afterward rather than
+assumed still correctly tuned. A `curvature_speed`-level fix (the direction
+this session tried first) cannot address it — the input path itself is
+discontinuous, not the function reading it.
 
 **Reproduce with:** `python3 -m tuner.recorded_map_rollout` and
 `python3 -m tuner.gap_attribution_ledger` (`MPLBACKEND=Agg`) for the
@@ -2701,16 +2702,17 @@ and inspects `history["v"]`, `history["v_target"]`, `history["e_psi"]`, and
 > offset landed the same day. §33 re-measured against both: recorded-map
 > saturation is 10.42% (steady, not further moved by the braking fix), the
 > DNF at ~step 95-96/10.5% progress persists, and the unexplained-gap
-> fraction is still ~91% (10.68 of 11.73 pp). §33 also identifies the DNF's
-> specific new mechanism (a short-path speed cap masking a correctly-detected
-> tight corner). Treat every precise percentage/ratio in §12–§30 as
+> fraction is still ~91% (10.68 of 11.73 pp). §33 traces the DNF to §19's
+> already-documented chain-anchor discontinuity landing on a corner's only
+> near-field point (a `curvature_speed`-level fix was tried first, disproven,
+> and reverted). Treat every precise percentage/ratio in §12–§30 as
 > directionally informative, not numerically current.
 
 | item | status |
 |---|---|
 | **Model the yaw cap offline** | **Done** — `alat_ceiling*` in `model/vehicle_physics.py`. Moves every metric toward the car (saturation 4.4→6.3%, a_lat max 14.06→10.53) but closes only part of the gap; live is still 21.1% saturation |
 | **Planner parity bug (`SimPlanner` call sites)** | **Fixed (§31), 2026-08-08.** Offline never passed `smooth_per_pt`/`look_radius`/`plan_horizon`/blend `alpha`/`horizon` to `build_path_walls()`/`blend_paths()`, silently using hardcoded defaults instead of `fsae_params.yaml`'s tuned values (2 of 5 coincidentally matched). Fix narrows the "unexplained gap" 17.43→10.68 pp in one step — bigger than every previously-tested plant/ceiling factor combined — and introduces a new recorded-map DNF at step 95. Weights may need re-tuning against the corrected planner |
-| **Recorded-map DNF (post-§31/braking-fix)** | **Root-caused, not fixed (§33), 2026-08-08.** A short-path `v_max_eff` cap in `curvature_speed()` masks a correctly-detected, stable-radius tight corner (R≈4.5m) for as long as the published centreline stays short (`build_path_walls()` returns ~9-19m, well under `plan_horizon=25`), then the genuine curvature term takes over too late to brake in time. Distinct from §19's `min_ahead` seed-jump and §27's turn-in lag — the curvature measurement itself is correct and stable here; an unrelated length-based term overrides it. No fix attempted; two untried candidate directions noted in §33 |
+| **Recorded-map DNF (post-§31/braking-fix)** | **Root-caused, not fixed (§33), 2026-08-08.** First hypothesis (a `curvature_speed` short-path cap masking the corner) tested directly and disproven — deleting the cap made the DNF earlier and regressed `VALIDATION_SUITE` (0/5→1/5 DNF), so it was reverted. Actual cause: §19's already-documented `min_ahead`/chain-anchor discontinuity — the published path's near-field anchor jumped ~0.9m in one tick (car moved only 0.6m), discontinuously erasing the only representation of a real, correctly-measured R≈4.5m corner (R jumped to 11-38m two steps later). Same defect §19 measured at 0.07% of ticks, now caught landing on a corner's sole near-field point — rare but disproportionately costly there. No planner fix attempted (needs full §19/`planning_control_sync.md` context per CLAUDE.md) |
 | **Braking-distance index-offset fix (`curvature_speed`)** | **Landed (concurrent live-side session), 2026-08-08.** Fixed a `+2`-sample-index assumption that mis-attributed each curvature sample's distance-ahead by a few metres either direction. Verified AST-identical to the `fsds_simulator` mirror. Confirmed via §33 re-measurement: does not move recorded-map saturation (10.42% before and after) or the DNF step (95→96, unchanged in substance) |
 | Remaining saturation gap | **Open, re-measured against both the planner fix and the braking-distance fix (§13, §31, §33).** Pre-§31: ≥75% of a 17.43 pp gap unexplained. Post-§31+braking-fix (§33): 91.1% (10.68 of 11.73 pp) unexplained, against a run that still DNFs at ~10.5% progress — neither fix moved this fraction. §30's combined-factor sweep still predates both fixes and needs re-running if pursued further |
 | Ceiling's effect is corner-type-specific | **New (§13).** Zero measurable effect on HAIRPIN/FS_CORNER in every configuration tried; entire effect concentrated on SUDDEN_TURN/MICRO_SLALOM (sustained moderate-radius bends at speed). Check any future plant explanation against this per-path breakdown before trusting an aggregate |
