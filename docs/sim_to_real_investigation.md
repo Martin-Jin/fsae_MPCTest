@@ -2141,6 +2141,67 @@ section.
 **Reproduce with:** `MPLBACKEND=Agg python3 -m tuner.live_vs_sim_diagnostics`
 against `mpc_standalone_control_1786095789.csv`.
 
+## 30. Combining several small-effect factors at once: still doesn't close the gap
+
+*(2026-08-07, continued.)* §13's ledger tested every plant/ceiling factor
+ONE AT A TIME and found each individual effect (0.3–2.1 pp) indistinguishable
+from the suite's own 5–6 pp std. That says nothing about whether several
+small, independent effects compound when stacked — untested until now.
+
+**Three factors, chosen to target different subsystems (not redundant with
+each other, and not re-deriving the ceiling via tyre grip — the mechanism
+CLAUDE.md's standing warning is specifically about):**
+1. Ceiling level lowered to 6.5 (§13's factor E; already individually
+   measured at 4.80%→6.90% recorded-map, no DNF there).
+2. `SLAM_NOISE_ENABLED=True` at documented defaults — models real
+   localisation error (off by default specifically because FSDS's own pose
+   is exact; the real car's is not, which is exactly the asymmetry this
+   whole investigation is trying to explain).
+3. `CONE_NOISE_ENABLED=True` at documented defaults — models real
+   cone-detector position jitter (same off-by-default rationale).
+
+**All 8 combinations, on both the recorded map and `VALIDATION_SUITE`**
+(`tuner/combined_factors_sweep.py`, new):
+
+| ceiling=6.5 | SLAM noise | cone noise | rec. map sat % | suite mean | suite std | suite DNF |
+|---|---|---|---|---|---|---|
+| — | — | — | 4.62 | 8.99 | 5.04 | 0/5 |
+| — | — | ✓ | 4.89 | 8.95 | 4.84 | 0/5 |
+| — | ✓ | — | 5.41 | 8.60 | 4.62 | 0/5 |
+| — | ✓ | ✓ | 5.04 | 9.56 | 4.41 | 0/5 |
+| ✓ | — | — | 6.47 | 10.35 | 6.20 | 0/5 |
+| ✓ | — | ✓ | 6.03 | 10.08 | 5.63 | 0/5 |
+| ✓ | ✓ | — | 6.07 | 10.56 | 5.56 | 0/5 |
+| ✓ | ✓ | ✓ | 5.82 | 11.54 | 5.95 | 0/5 |
+
+**No DNF anywhere, and no combination gets close.** The full range across
+all 8 cells is 4.62–6.47% on the recorded map — a 1.85 pp spread, smaller
+than the suite's own std at every single cell (4.41–6.20 pp). Stacking all
+three does not even reliably beat the best single factor alone (ceiling=6.5
+alone: 6.47%; all three together: 5.82%, *lower* — the factors are not
+additive, and in this combination partially cancel). SLAM noise and cone
+noise individually move the number by ±0.5 pp in either direction depending
+on what else is enabled — consistent with noise around a symmetric
+baseline, not a real directional effect from either.
+
+**What this does and does not establish.** This rules out the specific
+combination tested — plant-level ceiling + the two currently-modelled
+perception/localisation noise sources — as jointly sufficient to explain any
+meaningful fraction of the ~17 pp gap, at each factor's currently-measured
+or documented-default magnitude. It does not rule out combining factors at
+*more aggressive* magnitudes (e.g. a ceiling lower than 6.5, or noise
+levels beyond the documented defaults) — but §12.6 already showed lowering
+the ceiling much further trades saturation for a DNF-prone failure mode the
+live car doesn't exhibit, so that direction is not free to push. It also
+does not test combining a plant factor with a controller/planner-side
+factor (e.g. ceiling=6.5 + the §28 rate limiter) — not attempted here since
+§29 already showed the rate limiter fails on its own; stacking it with
+something else would need to first establish it doesn't independently make
+things worse in combination, which was not checked.
+
+**Reproduce with:** `python3 -m tuner.combined_factors_sweep`
+(`MPLBACKEND=Agg`).
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
@@ -2343,6 +2404,20 @@ against `mpc_standalone_control_1786095789.csv`.
     validation tooling was built for, and a reason to trust suite warnings
     even when the recorded map itself looks fine.
 
+30. **Small non-redundant effects do not automatically compound — check
+    before assuming they do.** It is intuitive that several individually-
+    marginal factors might add up to something real when combined, but
+    §30 measured this directly rather than assuming it: three factors
+    targeting different subsystems (plant ceiling level, localisation
+    noise, cone-detection noise) summed to a smaller combined range
+    (1.85 pp) than any one factor's own uncertainty band (4.4–6.2 pp
+    suite std), and the largest combination (all three) scored *below*
+    the single strongest factor alone — evidence of partial cancellation,
+    not reinforcement. Whether small effects compound, cancel, or do
+    neither is an empirical question specific to the mechanisms involved,
+    not something to assume in either direction without measuring the
+    actual combination.
+
 ---
 
 ## Open / deferred
@@ -2350,7 +2425,7 @@ against `mpc_standalone_control_1786095789.csv`.
 | item | status |
 |---|---|
 | **Model the yaw cap offline** | **Done** — `alat_ceiling*` in `model/vehicle_physics.py`. Moves every metric toward the car (saturation 4.4→6.3%, a_lat max 14.06→10.53) but closes only part of the gap; live is still 21.1% saturation |
-| Remaining saturation gap | **Open, quantified (§13).** ≥75% of the 17.43 pp gap (live 21.1% vs today's 3.67% no-ceiling baseline) is not explained by the ceiling's law, level, or tau — every tested plant/ceiling factor's effect is within noise (suite std 5–6 pp vs effect sizes 0.3–2.1 pp). Localised to the *entry rate* into the high-heading-error state (2.6×) with matching in-state behaviour — a turn-in transient property |
+| Remaining saturation gap | **Open, quantified (§13, §30).** ≥75% of the 17.43 pp gap (live 21.1% vs today's 3.67% no-ceiling baseline) is not explained by the ceiling's law, level, or tau — every tested plant/ceiling factor's effect is within noise (suite std 5–6 pp vs effect sizes 0.3–2.1 pp). §30: combining ceiling=6.5 + SLAM noise + cone noise (3 factors, no DNF anywhere) still only reaches 4.62–6.47% recorded-map saturation — the factors do not compound additively and the combined range is smaller than the suite's own std. Localised to the *entry rate* into the high-heading-error state (2.6×) with matching in-state behaviour — a turn-in transient property |
 | Ceiling's effect is corner-type-specific | **New (§13).** Zero measurable effect on HAIRPIN/FS_CORNER in every configuration tried; entire effect concentrated on SUDDEN_TURN/MICRO_SLALOM (sustained moderate-radius bends at speed). Check any future plant explanation against this per-path breakdown before trusting an aggregate |
 | **`alat_ceiling_tau`** | **Done (§12.12).** Measured 0.35 s median (0.28–0.46, 11/12 trials) with `step_s=8.0`; model set to 0.40. Fixing it did **not** close the saturation gap — the residual is elsewhere |
 | Ceiling is speed-dependent | **New, unmodelled (§12.4).** Measured sustained a_lat rises with speed — 6.45 @ 8 m/s, 7.54 @ 11, 9.26 @ 14 — while the model pins it flat at 7.5. Residuals +1.0 / ~0 / −1.76. Deliberately not fitted: 16 points, one run |
