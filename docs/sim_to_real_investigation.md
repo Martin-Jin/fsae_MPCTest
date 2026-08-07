@@ -1516,46 +1516,69 @@ controlled live run with `pose_rate` deliberately dropped back to 10 Hz
 code otherwise unchanged, replicating this section's offline A/B but for
 the one variable that cannot be isolated offline.
 
-## 22. Pose-rate A/B test staged, awaiting a live run
+## 22. Pose-rate A/B test: run, and the result confirms the hypothesis — with a wrinkle
 
 *(2026-08-07, continued.)* §21 identified the pose-rate fix as the
 best-timed candidate for the §17 confound but could not isolate it offline —
 the offline rollout has no separate pose timer to disable. Staged the test
-it called for.
+it called for, the user ran it, and the result is in
+(`mpc_standalone_control_1786070296.csv`).
 
-**What was checked before touching anything.** `sim_perception`'s
-`pose_rate`/`cone_rate` are ROS 2 node parameters with no dynamic-reconfigure
-callback (`add_on_set_parameters_callback` is not registered) — the timer
-period is fixed once at `__init__` via `self.create_timer(1.0 /
-self._pose_rate, ...)`. A live `ros2 param set` after the node is already
-running would not change it; the only way to test 10 Hz is to change the
-value the node reads at startup. Confirmed the install is
-`--symlink-install`ed all the way through
-(`ros2/install/fsae_bringup/.../fsae_params.yaml` →
-`ros2/build/fsae_bringup/.../fsae_params.yaml` → the source file itself, both
-real symlinks), so editing the source YAML takes effect immediately with no
-`colcon build` needed.
+**Setup.** `sim_perception`'s `pose_rate`/`cone_rate` are ROS 2 node
+parameters with no dynamic-reconfigure callback — the timer period is fixed
+once at `__init__`, so a live `ros2 param set` would not have worked; the
+value had to be changed at startup. Confirmed the install is
+`--symlink-install`ed all the way through, so editing the source YAML
+(`fsae_params.yaml`, `sim_perception.pose_rate` 20.0 → 10.0) took effect
+immediately with no `colcon build`. File-only edit, uncommitted, no git
+command run against the live repo, reverted back to 20.0 immediately after
+the run below (confirmed via `git diff` — no leftover trace beyond the
+pre-existing session change).
 
-**Change staged (uncommitted, live repo, file-only — no git command run
-here per the standing rule):**
-`ros2/src/fsae_planning/common/fsae_bringup/config/fsae_params.yaml`,
-`sim_perception.pose_rate` 20.0 → **10.0**, with an inline comment marking it
-temporary and pointing back to this section. **This must be reverted to
-20.0 immediately after the test run** — it deliberately reintroduces a bug
-this investigation already fixed and documented as fixed (§21, and the
-parameter's own surrounding comment explains why 20.0 is correct).
+**Result — confirmed real, but the 10 Hz run is not a return to the 21.1%
+baseline, it's worse than both:**
 
-**Protocol for the run, once it happens:** one live run with this file as
-staged (10 Hz pose / 20 Hz control, everything else exactly as it stood for
-the 15.2%-saturation run in §17), same map (`comp test map 3`), compared via
-`tuner.live_vs_sim_diagnostics` against both the 21.1% (`dfd1a08`-era, 10 Hz
-pose was already broken by construction back then) and 15.2% (today, 20 Hz
-pose) reference points. If saturation/reversals on the 10 Hz run land closer
-to the 21.1%/1.62 figures than the 15.2%/3.15 ones, that is real evidence
-for the pose-rate hypothesis; if it looks like the 15.2% run instead, the
-hypothesis is wrong and the true explanation is still open. **Not yet run as
-of this section** — needs FSDS launched via `launch_all.sh` (or the
-`fsds_simulator` equivalent), which only the user can do from here.
+| | 21.1% (`dfd1a08`, 10 Hz bug) | 15.2% (today, 20 Hz fixed) | **10 Hz reintroduced (this test)** |
+|---|---|---|---|
+| steering sat % | 21.1 | 15.2 | **31.9** |
+| episode rate | 0.32/s | 0.20/s | **0.67/s** |
+| reversals/s | 1.62 | 3.15 | **2.03** |
+| \|e_psi\| mean/p90 | 15.9°/42.0° | 12.1°/33.6° | **19.4°/47.4°** |
+| a_lat > 7.5 | 9.8% | — | **13.0%** |
+
+Saturation and heading error both move strongly in the predicted direction
+(worse at 10 Hz) and by more than the 21.1%→15.2% gap alone — reintroducing
+just this one bug overshoots the original baseline rather than merely
+recovering it, which is itself informative: whatever else changed between
+`dfd1a08` and today (the MPC reweight, ruled out in §21; the `_absorb()` fix;
+`plan_horizon`/`look_radius`) was net-positive enough to more than offset a
+fully-reintroduced pose-rate bug on top of it. Reversals/s, by contrast, is
+*not* monotonic — 10 Hz (2.03) sits between the 20 Hz run (3.15) and the old
+baseline (1.62), rather than tracking either cleanly. Saturation and
+reversals are not simply two faces of the same mechanism; the pose-rate bug
+maps more cleanly onto the saturation/heading-error axis than the
+reversal-rate one.
+
+**Directly confirms the user's live observation of the car going off-track
+and slowly recovering.** `|e_y|` exceeds a 1.5 m half-track-width threshold
+on 1.2% of ticks (max 2.18 m), in episodes rather than isolated spikes — the
+worst, t=7.0–8.0 s, is a sustained ~1s excursion with `steer_deg` pinned at
+the 25° stop the entire time, `e_y` growing from −1.3 m to −2.17 m while
+`e_psi` swings out to −91.7° before slowly recovering back under 1.5 m by
+t≈8.1 s. This is the catch-up-jump mechanism from
+`planning_control_sync.md`'s "Measurement rate" section operating exactly as
+documented: the car saturates steering trying to correct against a partly
+stale reference, cannot turn any harder once at the 25° stop, and drifts
+wide until the controller's belief catches up.
+
+**Status: the pose-rate mechanism is now measured, not just timed —
+promoted from §21's "plausible, not proven."** It is a real, reproducible
+contributor to steering saturation and heading error. It is very unlikely to
+be the *only* remaining factor, though: even the 15.2% (fixed) run is still
+well above the sim's 4.8% baseline, and this single-run A/B (90 s, ~1.3
+laps, no repeat) has no error bar — treat the exact magnitudes as directional,
+not final, the same caution §13's ledger raised about single-map point
+estimates generally.
 
 ## What generalises
 
@@ -1700,7 +1723,7 @@ of this section** — needs FSDS launched via `launch_all.sh` (or the
 | First live-vs-sim comparison since §0 | **Done (§17), confound resolved (§21) — but not who did it.** Saturation improved 21.1%→15.2%, reversals/s worsened 1.62→3.15. §21 ruled out the MPC reweight by direct offline A/B (old weights score *better* on saturation, 2.53% vs 4.80% — opposite of the hypothesis). Best-timed remaining candidate: a pose-rate bug fix (10 Hz shared timer → 20 Hz, dated 2026-08-06, between the 21.1% baseline and the new run) — plausible and correctly timed, but has no offline counterpart to isolate and is therefore inference, not proof. Needs a controlled live run with `pose_rate` reverted to 10 Hz to confirm |
 | `SteeringCurve` (UE4/PhysX speed-dependent steering scaling) | **Narrowed (§18, §20), still not read.** The property is confirmed compiled into this exact FSDS build (found as a string in the shipped `Blocks.exe`), alongside `SteeringInputRate` and the PhysX anti-roll-bar system — the integration is real and non-trivial, not a stub. But the *value* baked into FSDS's vehicle instance is binary data inside `FSOnline-WindowsNoEditor.pak` (452 MB, unencrypted enough for plugin-name strings to leak but not asset-instance data) or the source `.uasset`s (unpulled Git LFS pointers here) — neither readable by any tool available in this environment. Still needs the UE4 Editor, opened on the vehicle Blueprint's movement component, to read the curve directly |
 | Curvature-spike defect | **Mechanism confirmed real (§19), but confirmed MODEST, not pervasive — corrected same day.** Root cause: the car-anchored spline's nearest midpoint drops out discontinuously as the car's pose crosses it, confirmed via byte-identical midpoint sets across a reproduced jump (rules out cone-map duplication/`_absorb()`/NN-reassignment). The initial "22.4% of ticks" estimate was an artifact of the measurement (ordinary arc-length resampling, not the defect) — two fix attempts against it correctly showed no effect, which is what exposed the flawed metric. A corrected metric (near-field tangent direction, cross-checked against `e_psi`/`steer_deg`) found only 3 large single-tick jumps in the whole run (0.07% of ticks), all genuine corner transitions, and re-measured the original instance at a real but modest −17.3° tangent reversal. Still supersedes "cone-map clutter" as the cause of *this* mechanism. No fix shipped — not judged worthwhile at this measured size; needs revisiting if the pose-rate test (§22) or another lead reopens the question |
-| Pose-rate 10 Hz A/B test | **Staged (§22), not yet run.** `sim_perception.pose_rate` temporarily set to 10.0 in the live repo's `fsae_params.yaml` (file-only edit, uncommitted, uses the existing `--symlink-install` — no rebuild needed) to reproduce the pre-fix bug and test it against the §17 confound. Needs one live run via `launch_all.sh`; **must be reverted to 20.0 immediately after** |
+| Pose-rate mechanism | **Confirmed by live A/B test (§22), promoted from "plausible" to "measured."** Reintroducing the 10 Hz pose bug pushed saturation to 31.9% (worse than BOTH the 20 Hz/15.2% run and the original 21.1% baseline) and reproduced the user's directly-observed symptom (car runs wide off-track, slowly corrects back — confirmed in the log as a sustained ~1s excursion, `|e_y|` to 2.18 m, steering pinned at the 25° stop throughout). Reversals/s was not monotonic (10 Hz: 2.03, between the 20 Hz run's 3.15 and the baseline's 1.62) — this mechanism maps more cleanly onto saturation/heading-error than onto reversal rate. Single 90 s run, no repeat — magnitudes are directional. `pose_rate` reverted to 20.0 immediately after |
 | Identify the exact FSDS mechanism | **Done** — step test run (§9–10): a *dynamically enforced lateral-acceleration* ceiling. Both signatures present: different steering angles settle to the same response (a cap), yet yaw overshoots ~30% first (not a static clip) |
 | Ceiling decay time constant | **Done — see `alat_ceiling_tau` above (§12.12).** Superseded the original 0.04–1.06 s scattered fit from the 3 s hold |
 | Speed profile | **Closed, not a discrepancy** — see the correction below. Achieved speeds differ by 2% |
