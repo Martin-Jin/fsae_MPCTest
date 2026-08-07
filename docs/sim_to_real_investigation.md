@@ -3110,6 +3110,81 @@ directly — independent of, and possibly larger than, any sensor-noise
 contribution. Untested; noted as the leading hypothesis for why noise
 (§43) closed the reversal-rate gap but not the distance-off-line gap.
 
+## 45. `curvature_speed()` could exceed `v_max` on a straight approach — found while investigating §44's late braking, fixed in both stacks
+
+Investigating why braking authority is under-used approaching corners
+(§44), traced the user's exact reported symptom one level further back:
+not just "braking starts too late," but the TARGET SPEED itself is wrong
+before the corner is detected.
+
+**Root cause.** §33/§34's fix removed `v_max_eff` (the short-path-scaled
+ceiling) from `curvature_speed()`'s final return, reasoning that once
+curvature is genuinely measured, `v_target` already reflects both the
+corner's tightness and remaining braking distance, so reapplying any cap
+"only ever makes the result MORE restrictive." That reasoning has a gap: on
+a straight approach, before a corner enters the ~24m scan window, measured
+curvature is near zero, so `v_corner = safety*sqrt(a_lat_max/kappa)` is
+enormous, and nothing else in the function bounds the upper end. The final
+return was `float(max(v_min, v_target))` — a floor only, no ceiling at all.
+
+**Confirmed live, not just in theory.** `mpc_standalone_control_1786140619.csv`:
+the FILTERED `v_desired` (what the MPC's `e_v` state actually sees) reaches
+**24.7 m/s against a configured `v_max=15.0`**, in **8 distinct episodes**
+across the lap, up to 3.4s long — including exactly the t=36-37s window of
+the braking event examined in §44 (target peaked at 17.27 m/s right before
+crashing down to 3.5 as the corner arrived). A target above the car's own
+top speed eats directly into the braking-distance margin the whole
+`A_BRAKE_PLAN`/24m-scan design assumes is available: the car is still
+being told to accelerate (or not decelerate) in the seconds before the
+corner is detected, not just reacting slightly late once it is.
+
+**Fixed**: re-clamp to `v_max` (not `v_max_eff` — that part of S33/S34's
+reasoning is unaffected and correct) on the final return:
+`float(np.clip(v_target, v_min, v_max))`. Mirrored to
+`sim/speed_profile.py`, live `control_utils.py`, and the `fsds_simulator`
+mirror (all three AST/diff-verified identical after the edit).
+
+**Validated:**
+- Unit check: a pure straight-line path (zero curvature) now correctly
+  returns exactly `v_max` instead of an unbounded value.
+- `VALIDATION_SUITE`: `PATH_SUDDEN_TURN`, which DNF'd at ~step 111-112 in
+  EVERY prior run this session (with or without noise/Q-scaling), **no
+  longer DNFs** — sat rose to 33.9% but the path now completes. This
+  strongly suggests that synthetic path had the exact same
+  over-speed-before-corner failure mode this fix targets.
+  `PATH_SPIRAL` still DNFs at the same point, unaffected.
+- Recorded map (matched to live's config: noise + Q-scaling on),
+  vs the fresh live log directly (not the stale hardcoded baseline):
+  sat 17.18% (ratio 0.83, was 0.38 before this fix — real, large movement
+  toward matching live), reversals/s 3.17 (ratio 0.91, was 0.28) — but
+  `e_psi_mean` overshot PAST live (20.75 vs live's 16.91, ratio 1.23) and
+  `mean|e_y|` is still far off (0.071 vs 0.346, ratio 0.21, though better
+  than the 0.13 before this fix). A real, mixed result — not a clean win —
+  and the DNF point on the recorded map moved slightly (step 97 vs the
+  long-documented 95-96), attributable to this fix changing exactly when
+  the known S19/S33 boundary.py seed-filter discontinuity gets triggered,
+  not a new failure mode.
+- **Measurement-tool artifact found while validating, not a driving
+  bug**: with `continue_after_dnf=True`, the recorded-map rollout after
+  this fix terminates at step 227 (11.35s, ~80m) reporting 96.8%
+  "progress" — clearly wrong for a full lap. Traced to
+  `run_core_rollout()`'s reached-the-end check (`idx >= len(path_X)-2`,
+  unconditional, no `continue_after_dnf` guard) firing on a spurious
+  nearest-point match after the step-97 off-track event throws the car's
+  position far enough off the reference path. Pre-existing weakness in the
+  nearest-point/lap-end detection, only exposed because this fix changes
+  exactly when/where the off-track event happens — not evidence the
+  driving behaviour itself is broken. Not fixed here; noted for whoever
+  next needs a trustworthy `continue_after_dnf` progress number after an
+  early off-track event.
+
+**Not yet done**: a live re-test with this fix specifically (all live
+testing so far predates it). Given the magnitude of the measured live
+`v_desired`-exceeds-`v_max` episodes, this is a strong candidate for
+directly improving the "brakes too late" symptom, but per this document's
+standing rule, do not trust the offline ratios above as a live prediction
+until measured.
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
@@ -3389,7 +3464,8 @@ contribution. Untested; noted as the leading hypothesis for why noise
 | No terminal cost/constraint | **Added as an inactive toggle (§40), 2026-08-08.** `TERMINAL_Q_SCALE=1.0` (no-op, verified bit-identical), mirrored to both `mpc_core.py` copies + offline `optimiser.py`. A gap in BOTH stacks identically, not a parity issue. Picking/validating a non-default value deliberately left to the user, same tuning loop as `Q_diag`/`R_diag` |
 | Small-error steering hunting | **Real on one live log, NOT reproduced offline (§42), 2026-08-08.** Reversal rate rises to 35.6% as \|e_y\|→0 live (opposite trend offline at the time). `adaptive_Q_scaling()` added. Enabled live 2026-08-08 for an A/B test (user's own call) — fresh log shows broad improvement (sat 27.0%→20.8%, e_psi mean 23.6°→16.9°) but reversals/s got WORSE (1.99→3.48) and the small-error reversal-rate pattern got worse too (35.6%→46.9% at \|e_y\|<0.05m) even though the car now spends more time there (1.9%→5.4%) — a mixed result, not a clean win on the specific symptom it targeted |
 | Sensor noise disabled in every offline comparison | **Found and fixed (§43), 2026-08-08.** `SLAM_NOISE_ENABLED`/`CONE_NOISE_ENABLED` were `False` for every offline run this whole session. At documented (1x) magnitude, enabling closes most of the reversal-rate gap (0.99→3.06/s, live is 3.48) but none of the mean\|e_y\| gap (stuck at 0.06-0.08 vs live's 0.346 across 1x-6x). Flipped to `True` by default — changes what `offline_tuner.py` optimises against |
-| Braking authority under-used approaching corners | **Measured (§44), 2026-08-08 — user's reported symptom, confirmed real.** At worst over-speed moments live: mean `a_cmd`=-0.76 m/s² vs -9.0 available (<9% used); offline: -2.58 vs -3.39 max ever reached. Planner already requests the slowdown in time in every case checked — the gap is in the controller, not the planner/lookahead. Leading hypothesis: `Q_diag[4]` (e_v weight, 0.68) too small relative to `Q_diag[0]`/`Q_diag[2]` (5.65/2.80). User retuning `Q_diag[4]` directly; not fixed here. Plausibly the actual driver of §43's unclosed mean\|e_y\| gap (late braking → wider corner → larger e_y, not just noise) |
+| Braking authority under-used approaching corners | **Measured (§44), 2026-08-08 — user's reported symptom, confirmed real.** At worst over-speed moments live: mean `a_cmd`=-0.76 m/s² vs -9.0 available (<9% used); offline: -2.58 vs -3.39 max ever reached. Planner already requests the slowdown in time in every case checked. Leading hypothesis for the remaining tuning-side contribution: `Q_diag[4]` too small relative to `Q_diag[0]`/`Q_diag[2]`; user retuning directly |
+| `curvature_speed()` could exceed `v_max` before a corner enters the scan window | **Root-caused and fixed (§45), 2026-08-08.** S33/S34's fix removed the upper clamp entirely on the curvature-measured path, not just the short-path `v_max_eff` ceiling it targeted. Confirmed live: `v_desired` reached 24.7 m/s vs `v_max`=15.0 in 8 episodes up to 3.4s, including the exact braking event examined in §44. Re-clamped to `v_max` (not `v_max_eff`) in all 3 copies. `PATH_SUDDEN_TURN` (DNF'd every prior run this session) now completes. Recorded-map ratios move substantially toward live on sat (0.38→0.83) and reversals (0.28→0.91) but overshoot past live on e_psi_mean (1.23) and remain far off on mean\|e_y\| (0.21). Not yet tested live |
 | **Model the yaw cap offline** | **Done** — `alat_ceiling*` in `model/vehicle_physics.py`. Moves every metric toward the car (saturation 4.4→6.3%, a_lat max 14.06→10.53) but closes only part of the gap; live is still 21.1% saturation |
 | **Planner parity bug (`SimPlanner` call sites)** | **Fixed (§31), 2026-08-08.** Offline never passed `smooth_per_pt`/`look_radius`/`plan_horizon`/blend `alpha`/`horizon` to `build_path_walls()`/`blend_paths()`, silently using hardcoded defaults instead of `fsae_params.yaml`'s tuned values (2 of 5 coincidentally matched). Fix narrows the "unexplained gap" 17.43→10.68 pp in one step — bigger than every previously-tested plant/ceiling factor combined — and introduces a new recorded-map DNF at step 95. Weights may need re-tuning against the corrected planner |
 | **Recorded-map DNF (post-§31/braking-fix)** | **Root-caused and fixed (§33/§34), 2026-08-08.** Cause: `_build_wall_path`'s seed filter (`planning/boundary.py`, `fwd > 0.3`) discontinuously drops the nearest midpoint as the car's heading rotates through a corner. This is §19's `min_ahead`/chain-anchor discontinuity, pinned to the exact line. **Fix 1** (`curvature_speed`'s `v_max_eff` no longer reapplied after real curvature is measured) and **Fix 2** (seed filter loosened to `fwd > -0.5`) both shipped, mirrored to all 3 repos (AST-identical, confirmed). Initially reverted for raising `VALIDATION_SUITE`'s DNF count (0/5→1-2/5); re-shipped after recognising that check was the wrong direction here — the live car already DNFs/saturates far more than the offline sim, so the sim failing more after removing artificial forgiveness is closing the gap, not regressing (lesson 32). Produced the closest full-lap sim/live match in this document (§34: ratios 0.68-0.73 across every metric) |

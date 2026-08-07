@@ -662,25 +662,29 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
     v_allowed = np.sqrt(v_corner ** 2 + 2.0 * A_BRAKE_PLAN * d_ahead)
     v_target = float(np.min(v_allowed))
 
-    # v_max_eff is NOT reapplied here. It exists purely for the two early-return
-    # "not enough path to measure curvature at all" cases above -- a coarse,
-    # curvature-blind stand-in for "we can't see far enough to trust a real
-    # target". Once real curvature has been measured, v_target already reflects
-    # both the corner's tightness AND (via the braking-distance propagation
-    # above) how much of the visible path remains to slow down in -- reapplying
-    # v_max_eff on top only ever makes the result MORE restrictive, and it does
-    # so using a strictly cruder signal (raw path length) than the one v_target
-    # already used (path length AT EACH CORNER's specific distance).
+    # v_max_eff (the SHORT-PATH-scaled ceiling) is NOT reapplied here -- that
+    # part of the S33/S34 reasoning still holds: it exists purely for the two
+    # early-return "not enough path to measure curvature at all" cases above,
+    # and reapplying it here would only ever make a validly-measured tight
+    # corner's target MORE restrictive using a cruder signal than v_target
+    # already used.
     #
-    # Measured effect of removing this: recorded-map DNF timing barely moves,
-    # but VALIDATION_SUITE DNF rate rises (0/5 -> 1/5) -- i.e. the offline sim
-    # now fails more often on tight/aggressive synthetic paths than it used
-    # to. This is the INTENDED direction: the live car saturates steering far
-    # more often than the offline sim has ever reproduced (21% vs 5-10%), so
-    # an offline sim that was artificially safer than the car on exactly this
-    # kind of corner was hiding a real gap, not avoiding a bug. See
-    # sim_to_real_investigation.md S33/S34.
-    return float(max(v_min, v_target))
+    # v_max ITSELF is re-clamped here (added 2026-08-08, S45) -- this was
+    # missed by the S33/S34 fix and is a distinct question from v_max_eff.
+    # On a straight approach, before a corner enters the scan window, kappa
+    # is measured near zero, so v_corner = safety*sqrt(a_lat_max/kappa) and
+    # therefore v_target can be arbitrarily large -- there is nothing else in
+    # this function that bounds the upper end once curvature has been
+    # measured at all. Confirmed live: mpc_standalone_control_1786140619.csv
+    # shows v_desired (the FILTERED target the MPC actually reacts to) reach
+    # 24.7 m/s against v_max=15.0, in 8 distinct episodes up to 3.4s long,
+    # including exactly the corner-entry window of a "brakes too late" event
+    # the user reported. A target above the car's own configured top speed
+    # eats into the braking-distance margin curvature_speed()'s whole design
+    # (A_BRAKE_PLAN, scan_end=24m) assumes is available -- the car arrives at
+    # the point curvature is finally measured already faster than intended,
+    # not just later than intended.
+    return float(np.clip(v_target, v_min, v_max))
 
 
 def optimal_lap_time(path_X, path_Y, v_max=None, a_lat_max=None,
