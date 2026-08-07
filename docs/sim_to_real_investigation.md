@@ -1835,6 +1835,99 @@ a confirmation — exactly the outcome the effort was worth taking regardless
 of which way it went, per lesson 20 earlier in this document ("a strong
 circumstantial case is still zero measurements").
 
+## 26. The reference-heading lead, resumed: most of the swing is geometry, but the planner adds a tail excess that predicts saturation directly
+
+*(2026-08-07, continued.)* §14/§14.1/§19 each tested one specific mechanism
+that could make the planner's online reference swing faster than pure track
+geometry demands (blend-reset bypass, blended-magnitude correlation,
+anchor-window jump) and found each too small individually. None of them
+asked the more basic question directly: **is the swing measured in §12.8
+geometry at all, or is the online planner adding heading-rate on top of
+it?** This section answers that directly rather than by elimination, using
+a comparison the rollout already computes for an unrelated reason.
+
+**The mechanism.** `sim/rollout_core.py` tracks error against two
+independent references on every tick: `e_psi` (the controller's view — the
+planner's cone-derived, FOV-limited, EMA-blended centreline) and
+`e_psi_true` (the score's view — the fixed, offline-optimal global spline
+`path_X/path_Y/path_Psi` that `sim/track_io.py::load_recorded_track` fits
+once from the full recorded cone map, never touched by the online planner's
+per-tick rebuild). `ref_psi = car_yaw − e_psi` reconstructs what the
+planner's online reference was doing; `ref_psi_true = car_yaw − e_psi_true`
+reconstructs what a fixed, geometrically-ideal centreline would have
+required at the exact same car positions. Comparing `d(ref_psi)/dt` against
+`d(ref_psi_true)/dt`, tick for tick, directly separates "the track demands
+this heading rate" from "the planner's rebuild adds this heading rate."
+
+**Measured with `tuner/reference_heading_geometry_check.py`** (new, this
+session) on the recorded map, same rollout config as §12.8/§14.1:
+
+| \|d(ref_psi)/dt\|, °/s | mean | p90 | p99 | max |
+|---|---|---|---|---|
+| planner's online reference | 26.1 | 62.5 | 130.6 | 265.0 |
+| fixed geometric reference | 21.4 | 49.3 | 69.8 | 75.4 |
+| ratio (planner / geometric) | 1.22 | 1.27 | **1.87** | **3.51** |
+
+Correlation across ticks: **0.797**.
+
+**Reading this precisely: the bulk is geometry, the tail is not.** Mean and
+p90 sit close to 1.2×, with strong (0.80) correlation — most of the
+reference-heading swing §12.8 measured is simply what this track's real
+curvature requires, exactly as §14.1's own stated (but previously untested)
+interpretation predicted ("more likely intrinsic to the geometry the
+centreline is fitting"). But the ratio grows sharply in the tail: 1.87× at
+p99, 3.51× at the max. The planner's online reference is not just
+inheriting geometry in the tail — it is adding a real, growing excess on
+top of it, concentrated in a small number of ticks.
+
+**That tail excess predicts steering saturation directly.** Defining
+`excess = |d(ref_psi)/dt| − |d(ref_psi_true)/dt|` per tick: ticks with
+`excess > 30°/s` are only **5.8%** of the run (64/1104), but:
+
+| | saturation rate now | P(saturation within next 1 s) |
+|---|---|---|
+| high-excess ticks (excess > 30°/s) | **42.2%** | **68.8%** |
+| all other ticks | 2.3% | 8.0% |
+
+An 18× jump in immediate saturation rate and an 8.6× jump in near-term
+saturation risk, from a signal that is directly computable and has nothing
+to do with the plant, the ceiling, or `alat_ceiling*` — it is purely a
+property of the planner's online reference relative to true geometry.
+Tracing the individual high-excess ticks shows them clustered into a
+handful of distinct corner-entry/exit events (e.g. t≈5.5–6.55 s, 17.6–18.5
+s, 33.45–34.2 s on this map), not a pervasive tick-by-tick artifact — one of
+them (t≈6.45–6.55 s) is a sign reversal of the planner's reference rate
+(−106°/s → +244°/s across 2 ticks) while the geometric reference itself
+stays small and single-signed, i.e. the planner's path briefly reverses
+direction relative to itself where the true centreline does not.
+
+**What this does and does not establish.** This directly confirms, for the
+first time with a clean measurement rather than by elimination, that (a)
+§12.8's "reference swings faster than the car can yaw" is mostly a
+geometry fact and NOT primarily a planner defect, but (b) a real,
+tail-concentrated planner-added excess exists on top of that geometry, and
+(c) that excess is strongly associated with saturation. It does **not**
+establish that fixing this excess would close the ≥75%-unexplained gap
+from §13 — 5.8% of ticks is a small fraction of the run, and correlation
+(even this strong) is not yet a demonstrated closed-loop fix: no planner
+change has been attempted, per the standing caution in
+`planning_control_sync.md`. It also does not yet identify *which* part of
+`centerline_planner.py`/`boundary.py` produces these specific
+sign-reversal/excess events — §19's `min_ahead` mechanism is a candidate
+(it produces exactly this kind of discontinuous tangent change) but has not
+been directly checked against these specific tick ranges.
+
+**Next step, not yet done:** cross-reference the high-excess tick ranges
+found here against §19's anchor-jump instrumentation to check whether they
+are the same mechanism recurring, or a distinct one — if the same, §19's
+"modest, occasional" framing needs revisiting specifically for its
+saturation-relevance (not its raw frequency, which is genuinely low, but
+its concentration at exactly the moments that matter).
+
+**Reproduce with:** `python3 -m tuner.reference_heading_geometry_check`
+(same `MPLBACKEND=Agg` requirement as the other diagnostic scripts in this
+document).
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
@@ -1980,6 +2073,19 @@ circumstantial case is still zero measurements").
     installing a second Visual Studio version, which was available as an
     option but not needed here).
 
+26. **Test the question directly before hunting for it by elimination.**
+    §14/§14.1/§19 each ruled out one specific mechanism that could make the
+    planner's reference swing faster than geometry, without ever computing
+    "how fast does geometry alone actually demand" as its own number — the
+    rollout had carried that exact fixed reference (`e_psi_true`) the whole
+    time, for a different purpose (scoring). §26 answered in one script what
+    three sections of elimination could not: most of the swing is geometry
+    (ratio ≈1.2, r=0.80), and the real planner-added defect is a
+    tail-concentrated excess, not a broad property — which also explains why
+    every prior *aggregate* correlation (§14.1's r≈0.10–0.15) looked weak
+    despite a real, saturation-predictive effect being present in 5.8% of
+    ticks.
+
 ---
 
 ## Open / deferred
@@ -1992,7 +2098,7 @@ circumstantial case is still zero measurements").
 | **`alat_ceiling_tau`** | **Done (§12.12).** Measured 0.35 s median (0.28–0.46, 11/12 trials) with `step_s=8.0`; model set to 0.40. Fixing it did **not** close the saturation gap — the residual is elsewhere |
 | Ceiling is speed-dependent | **New, unmodelled (§12.4).** Measured sustained a_lat rises with speed — 6.45 @ 8 m/s, 7.54 @ 11, 9.26 @ 14 — while the model pins it flat at 7.5. Residuals +1.0 / ~0 / −1.76. Deliberately not fitted: 16 points, one run |
 | Step vs sweep disagree on level | **Open.** Step's 3 s settle says 7.5 @ 8 m/s; the sweep's long orbit says 6.45. A longer `step_s` resolves whether sustained a_lat keeps decaying past 3 s — same experiment as the `tau` re-measurement |
-| Planner reference heading | **Open, narrowed (§12.8, §14).** In *both* stacks the reference heading swings faster than the car can yaw, and drives 78–100% of heading-error growth. Live's is 15–34% worse in the tail. Distinct from the *curvature* comparison §3 eliminated |
+| Planner reference heading | **Open, narrowed further (§12.8, §14, §26).** In *both* stacks the reference heading swings faster than the car can yaw, driving 78–100% of heading-error growth. §26: most of that swing is geometry (planner-vs-fixed-geometric-reference ratio ≈1.2 mean/p90, r=0.80) — but a tail excess (ratio 1.87 p99, 3.51 max, 5.8% of ticks) is planner-added on top of geometry and predicts saturation directly (42.2% vs 2.3% immediate rate). Not yet fixed or attributed to a specific planner mechanism; candidate is §19's `min_ahead` window artifact, not yet cross-checked against these specific ticks |
 | `blend_paths` reset-bypass discontinuity | **Eliminated for the recorded map (§14).** Real, parity-correct mechanism, can jump the reference up to 166° on other geometries (PATH_SPIRAL) — but fires 0/1038 times on the recorded map (max trigger-distance 1.98 m, just under the 2.0 m threshold). Cannot explain 21.1% saturation with 0 events |
 | `blend_paths` blended-magnitude vs heading rate | **Mostly eliminated (§14.1).** Rebuild distance vs. blended path's own reference-heading rate: r=0.15 raw, r=0.10 controlling for corner severity — explains ~1-2% of variance, not the 78–100% reference-driven growth in §12.8. Points back at the planner's spatial fit itself (curvature-spike defect), not `blend_paths`, as the likely source of the heading-rate symptom |
 | `ConeMap._absorb()` same-frame duplicate bug | **Fixed (§15), unmeasured effect.** Real, deterministic bug (two same-frame detections of a newly-sighted cone both became permanent, unmerged entries — confirmed at 1 cm apart, independent of `MERGE_DIST`). Fixed in all 3 copies. Does not move the recorded map's saturation at default noise (4.80%→4.86%, matches pre-fix), because FSDS's noise-free oracle perception never triggers it and the added `CONE_NOISE_ENABLED` jitter is too small to separately trigger it either. Whether this matters on the real car is still open — needs measured detector noise or a live log |

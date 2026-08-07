@@ -397,6 +397,21 @@ pairings that imply a sub-3.7 m radius. Investigate why lap 2 is worse than lap
 > `sim_to_real_investigation.md` §19's correction note and §23 for the full
 > detail, including two new lessons on trusting a metric only after checking
 > it against ground truth.
+>
+> **Update (2026-08-07, later the same day) — "modest" needs a caveat: the
+> tail matters more than the frequency.** `sim_to_real_investigation.md` §26
+> compared the planner's online reference heading against a fixed,
+> geometry-only reference computed from the same rollout and found the bulk
+> of reference-heading swing is genuine geometry (ratio ≈1.2 mean/p90 vs.
+> geometric, r=0.80) — but a small tail (5.8% of ticks, planner rate 1.87–
+> 3.51× the geometric rate) carries an 18× higher immediate steering-
+> saturation rate (42.2% vs 2.3%). This tail has **not yet** been confirmed
+> as the same `min_ahead` mechanism above — that cross-check is the next
+> step, not done. Read as: even though this mechanism's raw frequency (0.07%
+> of ticks) looks negligible, a mechanism this shaped (a sudden anchor/tangent
+> discontinuity) is exactly the kind of event §26 shows matters
+> disproportionately at the tail. Do not treat "modest, occasional" as "safe
+> to ignore" when deciding whether to fix this.
 
 ### Fixed: a real cone-map duplication bug in `_absorb()`
 
