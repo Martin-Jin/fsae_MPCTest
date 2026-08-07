@@ -1580,6 +1580,81 @@ laps, no repeat) has no error bar — treat the exact magnitudes as directional,
 not final, the same caution §13's ledger raised about single-map point
 estimates generally.
 
+## 23. A longer 20 Hz run (~5 laps) shows the "improvement" does not hold up — this needs to be said plainly
+
+*(2026-08-07, continued.)* §22's 20 Hz reference point (15.2% saturation)
+was a single ~208 s run. The user then ran a longer session
+(`mpc_standalone_control_1786076797.csv`, 297 s, same map, `pose_rate`
+confirmed at 20.0, no solver failures) — five real laps, not one. The
+result revises the picture downward, and should not be smoothed over
+because it contradicts the more optimistic framing in §17/§22.
+
+**Headline numbers, same map, same 20 Hz config as the "improved" run:**
+
+| | 21.1% baseline (`dfd1a08`, 10 Hz bug) | 15.2% run (single lap, §17) | **this run (5 laps, 20 Hz)** | sim |
+|---|---|---|---|---|
+| steering sat % | 21.1 | 15.2 | **26.4** | 4.8 |
+| reversals/s | 1.62 | 3.15 | **1.43** | 0.80 |
+| \|e_psi\| mean/p90 | 15.9°/42.0° | 12.1°/33.6° | **18.6°/51.8°** | 6.9°/18.5° |
+
+**Saturation on this longer run (26.4%) is worse than both the single 20 Hz
+run it's supposed to corroborate AND the original 21.1% baseline it was
+meant to have improved on** — despite the same config that produced 15.2%
+minutes earlier. Reversals/s, by contrast, is the best of any run measured
+so far (1.43, below even the baseline's 1.62).
+
+**A lap-boundary artifact was caught and corrected before trusting the
+per-lap breakdown.** An automatic "car returns within 3 m of start" lap
+splitter initially reported a 25.2 s "lap 2" at 48.1% saturation sandwiched
+between two much longer laps — this is not a real short lap: arc length
+travelled in that window is 124 m against ~490 m for an adjacent full lap,
+so the car re-entered the 3 m capture radius without completing a loop (the
+track likely passes close to its own start twice per lap, e.g. at a
+figure-eight-like crossing or a start/finish chute near another straight).
+Discarding that split and measuring the three genuine laps directly:
+saturation trends downward across the session (30.0% → 19.1% → 24.0%
+across three merged segments) but never drops near either the single-run
+15.2% figure or the sim's 4.8% — and the last segment ticks back up rather
+than continuing to improve. **The lesson generalises beyond this one
+metric: any per-lap or per-segment breakdown needs its segment boundaries
+sanity-checked against arc length or duration before being trusted, the
+same way §13 required checking that two saturation percentages were the
+same underlying quantity before subtracting them.**
+
+**What this means for the pose-rate finding (§22) and for §17's "improved"
+framing.** §22's A/B result — reintroducing the 10 Hz bug made things worse
+than 20 Hz, live, with a directly-observed matching symptom — still stands;
+that comparison was against this same run's config, not against a cherry-
+picked good run, and the mechanism (stale pose → catch-up jump → saturate →
+drift wide) is independently visible in the raw log regardless of what the
+aggregate percentage does elsewhere. What does **not** stand is treating
+15.2% as "the new normal" for the fixed config: it was one lap out of what
+is evidently a noisy, run-to-run-variable process, and a 5-lap sample at the
+identical config landed at 26.4% — closer to the original problem than to
+an improvement. **Read §17's framing ("saturation improved 21.1%→15.2%") as
+superseded by this section**: the correct statement is that saturation
+*varies* across roughly 15–32% run-to-run at the current (fixed) live
+config, still well above the sim's 4.8%, and no single run so far
+establishes a stable new number.
+
+**What generalises from getting this wrong the first time.** §17 drew a
+conclusion from n=1. That was flagged as confounded at the time (too many
+simultaneous code changes to attribute it to one cause), but the confound
+analysis in §21/§22 implicitly treated the 15.2% *value itself* as solid
+ground to explain, rather than treating single-run noise as a live
+possibility to rule out first. With n=3 real laps in one run plus one
+comparison run, the honest range is wide enough that further single-run
+A/B tests (like §22's) risk the same trap: a single 10 Hz run reading worse
+than a single 20 Hz run is suggestive, matches a real, independently-visible
+mechanism, and should not be discarded — but neither number should be
+quoted as *the* saturation figure for its condition without more repeats.
+
+**Next, if this needs a firmer answer:** several repeat runs at the current
+(20 Hz) config, on the same map, to establish a real mean/spread the way
+`VALIDATION_SUITE` does for the offline sim (§13) — a single live run is not
+sufficient evidence for or against any fix, this session's own result
+included.
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
@@ -1701,6 +1776,18 @@ estimates generally.
     (3 events / 4160 ticks, not ~933). Build the measurement, then sanity
     check it against ground truth *before* trusting its silence or its
     alarm — in either direction.
+24. **n=1 is not a finding, even when the story fits.** §17 reported
+    saturation "improved" 21.1%→15.2% from a single run and flagged the
+    confound; §21/§22 then spent real effort explaining that one number
+    (correctly ruling out the MPC reweight, correctly confirming the
+    pose-rate mechanism) without first asking whether 15.2% itself would
+    replicate. A 5-lap run at the identical config landed at 26.4% — worse
+    than the number being explained. The pose-rate mechanism is still real
+    (independently visible in the raw log, not just in an aggregate
+    percentage), but the specific value it was measured against turned out
+    to be one noisy sample, not a stable baseline. Attribute causes to
+    mechanisms visible in the data, not to whichever single aggregate
+    number happened to be measured first.
 
 ---
 
@@ -1720,10 +1807,11 @@ estimates generally.
 | `ConeMap._absorb()` same-frame duplicate bug | **Fixed (§15), unmeasured effect.** Real, deterministic bug (two same-frame detections of a newly-sighted cone both became permanent, unmerged entries — confirmed at 1 cm apart, independent of `MERGE_DIST`). Fixed in all 3 copies. Does not move the recorded map's saturation at default noise (4.80%→4.86%, matches pre-fix), because FSDS's noise-free oracle perception never triggers it and the added `CONE_NOISE_ENABLED` jitter is too small to separately trigger it either. Whether this matters on the real car is still open — needs measured detector noise or a live log |
 | Cone-detection noise model | **New capability (§15), not yet a finding.** `CONE_NOISE_ENABLED`/`CONE_POS_JITTER_STD`/`CONE_NOISE_SEED` added to `settings.py` + `sim/rollout_core.py::ConeNoise` — closes part of the "cone map... not modelled anywhere" fidelity gap (position jitter only; false positives/negatives/range-dependence remain unmodelled). Default off. `fsae_MPCTest`-only, no live-side counterpart needed (same as `SLAM_NOISE_*`) |
 | `launch_all.sh` couldn't get FSDS running at all | **Fixed (§16).** Two stacked bugs: shebang on line 3 (script never ran as bash), then WSL2 unable to reach the Windows host via `127.0.0.1` (needs the WSL default-gateway IP, or `FSDS_HOST_IP` — `fsds_ros2_bridge.launch.py` already supported this, just was never set). Fixed in both `ros2/launch_all.sh` and the `fsds_simulator` mirror, preserving the mirror's intentional config differences |
-| First live-vs-sim comparison since §0 | **Done (§17), confound resolved (§21) — but not who did it.** Saturation improved 21.1%→15.2%, reversals/s worsened 1.62→3.15. §21 ruled out the MPC reweight by direct offline A/B (old weights score *better* on saturation, 2.53% vs 4.80% — opposite of the hypothesis). Best-timed remaining candidate: a pose-rate bug fix (10 Hz shared timer → 20 Hz, dated 2026-08-06, between the 21.1% baseline and the new run) — plausible and correctly timed, but has no offline counterpart to isolate and is therefore inference, not proof. Needs a controlled live run with `pose_rate` reverted to 10 Hz to confirm |
+| First live-vs-sim comparison since §0 | **Superseded (§23) — the "improvement" does not replicate.** §17's single-run 15.2% figure does not hold: a 5-lap run at the identical 20 Hz config landed at 26.4%, worse than the number it was meant to have improved on. §21 still correctly ruled out the MPC reweight as an explanation (offline A/B, old weights score *better* on saturation — that finding does not depend on which live run is "the" baseline). Correct current statement: live saturation varies roughly 15–32% run-to-run at the fixed config, well above the sim's 4.8%, no single run yet establishes a stable number. Needs several repeats to get a real mean/spread, the same way §13's `VALIDATION_SUITE` does offline |
 | `SteeringCurve` (UE4/PhysX speed-dependent steering scaling) | **Narrowed (§18, §20), still not read.** The property is confirmed compiled into this exact FSDS build (found as a string in the shipped `Blocks.exe`), alongside `SteeringInputRate` and the PhysX anti-roll-bar system — the integration is real and non-trivial, not a stub. But the *value* baked into FSDS's vehicle instance is binary data inside `FSOnline-WindowsNoEditor.pak` (452 MB, unencrypted enough for plugin-name strings to leak but not asset-instance data) or the source `.uasset`s (unpulled Git LFS pointers here) — neither readable by any tool available in this environment. Still needs the UE4 Editor, opened on the vehicle Blueprint's movement component, to read the curve directly |
 | Curvature-spike defect | **Mechanism confirmed real (§19), but confirmed MODEST, not pervasive — corrected same day.** Root cause: the car-anchored spline's nearest midpoint drops out discontinuously as the car's pose crosses it, confirmed via byte-identical midpoint sets across a reproduced jump (rules out cone-map duplication/`_absorb()`/NN-reassignment). The initial "22.4% of ticks" estimate was an artifact of the measurement (ordinary arc-length resampling, not the defect) — two fix attempts against it correctly showed no effect, which is what exposed the flawed metric. A corrected metric (near-field tangent direction, cross-checked against `e_psi`/`steer_deg`) found only 3 large single-tick jumps in the whole run (0.07% of ticks), all genuine corner transitions, and re-measured the original instance at a real but modest −17.3° tangent reversal. Still supersedes "cone-map clutter" as the cause of *this* mechanism. No fix shipped — not judged worthwhile at this measured size; needs revisiting if the pose-rate test (§22) or another lead reopens the question |
-| Pose-rate mechanism | **Confirmed by live A/B test (§22), promoted from "plausible" to "measured."** Reintroducing the 10 Hz pose bug pushed saturation to 31.9% (worse than BOTH the 20 Hz/15.2% run and the original 21.1% baseline) and reproduced the user's directly-observed symptom (car runs wide off-track, slowly corrects back — confirmed in the log as a sustained ~1s excursion, `|e_y|` to 2.18 m, steering pinned at the 25° stop throughout). Reversals/s was not monotonic (10 Hz: 2.03, between the 20 Hz run's 3.15 and the baseline's 1.62) — this mechanism maps more cleanly onto saturation/heading-error than onto reversal rate. Single 90 s run, no repeat — magnitudes are directional. `pose_rate` reverted to 20.0 immediately after |
+| Pose-rate mechanism | **Confirmed as a real, independently-visible mechanism (§22) — still true after §23.** Reintroducing the 10 Hz pose bug reproduced the user's directly-observed symptom (car runs wide off-track, slowly corrects back — confirmed in the log as a sustained ~1s excursion, `|e_y|` to 2.18 m, steering pinned at the 25° stop throughout). This holds regardless of §23's correction, since it's visible mechanistically in the raw log, not just via the aggregate percentage it was originally compared against. What does NOT hold: quoting "31.9% vs 15.2%" as the effect size — 15.2% was one noisy sample (§23). `pose_rate` reverted to 20.0 after the test. Needs repeat runs at both 10 Hz and 20 Hz to size the real effect |
+| Run-to-run variance at the live 20 Hz config | **New, open (§23).** Saturation measured at 15.2% (n=1 lap), 26.4% (n=5 laps, same config, same day), with the 5-lap run's own three real laps ranging 19.1–30.0%. No repeat-count yet establishes a trustworthy mean; treat any single live saturation number quoted elsewhere in this document as one sample from this spread, not a fixed value |
 | Identify the exact FSDS mechanism | **Done** — step test run (§9–10): a *dynamically enforced lateral-acceleration* ceiling. Both signatures present: different steering angles settle to the same response (a cap), yet yaw overshoots ~30% first (not a static clip) |
 | Ceiling decay time constant | **Done — see `alat_ceiling_tau` above (§12.12).** Superseded the original 0.04–1.06 s scattered fit from the 3 s hold |
 | Speed profile | **Closed, not a discrepancy** — see the correction below. Achieved speeds differ by 2% |
