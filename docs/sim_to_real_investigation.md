@@ -2079,6 +2079,68 @@ numbers.
 sweep) and `python3 -m tuner.ref_heading_limiter_suite_check`
 (`VALIDATION_SUITE` cross-check) — both `MPLBACKEND=Agg`.
 
+## 29. First live test of the rate limiter: it did NOT help — saturation went up
+
+*(2026-08-07, continued.)* `REF_HEADING_RATE_LIMIT_ENABLED` was flipped
+`True` at 90°/s in the live `mpc_core.py` (both `ros2/src/fsae_planning` and
+the `fsds_simulator` mirror) and the user drove one lap
+(`mpc_standalone_control_1786095789.csv`, 84.5 s, 1686 ticks).
+
+**The limiter is confirmed active and doing exactly what it was designed to
+do.** `|d(ref_psi)/dt|` max fell from 1508.0°/s (this same day's no-limiter
+5-lap run, `...1786076797.csv`) to 220.1°/s — the cap is genuinely
+constraining the reference on the real car, not a no-op.
+
+**Saturation went up, not down: 28.0%, vs. 21.1% (§0 original baseline) and
+26.4% (this same day's no-limiter 5-lap run).** This is the opposite of the
+offline prediction (recorded map: 4.62%→3.07% at the same 90°/s). Per lesson
+24 (n=1 is not a finding), this single lap does not on its own prove the
+limiter makes things *worse* — but it clearly did not deliver the predicted
+improvement, and the failure mode is specific enough to be informative
+regardless of sample size.
+
+**Tracing the worst episode (t=6.45–10.23 s, 3.77 s continuously
+saturated) shows the exact offline MICRO_SLALOM failure mode, live, just
+short of a full DNF.** `e_psi` grows smoothly from near zero to −85.0° while
+the car decelerates hard (10.7→2.4 m/s) and steering sits pinned at the 25°
+stop the entire time; `e_y` stays modest throughout (≤1.3 m — the car
+never leaves the track). This is precisely §12.8's original signature ("the
+car is on the line, pointing the wrong way") and precisely the mechanism
+§28 measured causing `PATH_MICRO_SLALOM` to run off-track offline: the
+limiter holds the reference back during turn-in, so less heading correction
+gets applied while there was time for it, and the car arrives at the
+corner with a much larger heading deficit to claw back at full lock —
+longer, not shorter, saturation episodes (this run's episodes ran up to
+3.77 s; the un-limited 5-lap run same day topped out lower per the §23
+table). The suite already warned this trade existed; this is the first
+evidence it also applies on the recorded map's own track/car, not just
+`PATH_MICRO_SLALOM`'s synthetic geometry.
+
+**What this does and does not establish.** It does not disprove the §26/§27
+mechanism — the reference genuinely does swing faster than the car can yaw,
+that finding stands on its own measurement. It does show that *this
+specific fix* (holding the reference back uniformly) trades one failure
+mode for a worse one on the live car, consistent with — not contradicting —
+the suite-level warning already on record in §28. It also does not yet
+distinguish "90°/s is the wrong rate for the live car" from "this class of
+fix is wrong regardless of rate" — both remain open. Given the offline
+suite already flagged this exact risk before the live test confirmed it,
+the appropriate response is not to search for a better rate by further live
+trial and error (expensive, and each attempt burns a lap); if this is
+revisited, it should be offline first, on a synthetic path that reproduces
+this specific "long, smooth heading deficit building through a decelerating
+corner" shape, rather than tuning the rate further against the recorded map
+alone — the same mistake §28 already corrected once.
+
+**Reverted.** `REF_HEADING_RATE_LIMIT_ENABLED` set back to `False` in
+`ros2/src/fsae_planning/control/fsae_control/fsae_control/mpc_core.py`
+(the live file; the temporary-flip comment is removed). `settings.py` and
+`sim/rollout_core.py` were already `False` by default and untouched by this
+section.
+
+**Reproduce with:** `MPLBACKEND=Agg python3 -m tuner.live_vs_sim_diagnostics`
+against `mpc_standalone_control_1786095789.csv`.
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
@@ -2265,6 +2327,22 @@ sweep) and `python3 -m tuner.ref_heading_limiter_suite_check`
     correct mechanism behind it still needs the full suite before being
     trusted, not just the one map with live data to compare against.
 
+29. **A correct mechanism does not guarantee a correct fix, and the suite
+    already told us so before the live test confirmed it.** §26/§27's
+    measurement (the reference genuinely outpaces the car's yaw) was never
+    in question — §29's live test doesn't touch it. What failed was the
+    specific intervention (§28's uniform rate limiter), and its failure mode
+    on the real car (a 3.77 s saturation episode from a growing heading
+    deficit) is the *same* mechanism §28 already caught offline on
+    `PATH_MICRO_SLALOM`, just short of a full DNF. The suite-level warning
+    ("do not tighten this further") was correct, and the live result adds
+    "this rate, on this track, already crosses the line the suite warned
+    about" rather than being a surprise. Cheap offline signal (a DNF on a
+    synthetic path) generalised correctly to an expensive live signal
+    (worse saturation on the real car) — exactly the payoff §12.10's
+    validation tooling was built for, and a reason to trust suite warnings
+    even when the recorded map itself looks fine.
+
 ---
 
 ## Open / deferred
@@ -2277,7 +2355,7 @@ sweep) and `python3 -m tuner.ref_heading_limiter_suite_check`
 | **`alat_ceiling_tau`** | **Done (§12.12).** Measured 0.35 s median (0.28–0.46, 11/12 trials) with `step_s=8.0`; model set to 0.40. Fixing it did **not** close the saturation gap — the residual is elsewhere |
 | Ceiling is speed-dependent | **New, unmodelled (§12.4).** Measured sustained a_lat rises with speed — 6.45 @ 8 m/s, 7.54 @ 11, 9.26 @ 14 — while the model pins it flat at 7.5. Residuals +1.0 / ~0 / −1.76. Deliberately not fitted: 16 points, one run |
 | Step vs sweep disagree on level | **Open.** Step's 3 s settle says 7.5 @ 8 m/s; the sweep's long orbit says 6.45. A longer `step_s` resolves whether sustained a_lat keeps decaying past 3 s — same experiment as the `tau` re-measurement |
-| Planner reference heading | **Open, mechanism identified and a candidate fix measured, not yet fixed (§12.8, §14, §26, §27, §28).** In *both* stacks the reference heading swings faster than the car can yaw, driving 78–100% of heading-error growth. §26: most of that swing is geometry (ratio ≈1.2 mean/p90 vs. a fixed geometric reference, r=0.80) — but a tail excess (ratio 1.87 p99, 3.51 max, 5.8% of ticks) is planner-added and predicts saturation directly (42.2% vs 2.3% immediate rate). §27: NOT §19's seed-jump (only 9%/64 of high-excess ticks coincide with one) — instead a sustained turn-in lag at braking corner entries. §28: a symmetric reference-rate limiter (`settings.REF_HEADING_RATE_LIMIT_ENABLED`, default OFF) at 90°/s cuts recorded-map saturation 4.62%→3.07% and suite-mean 8.99%→6.02% with no DNF anywhere in `VALIDATION_SUITE` — but tighter rates that look better on the recorded map alone (65–70°/s) DNF `PATH_MICRO_SLALOM` off-track. Not yet tried live |
+| Planner reference heading | **Open — mechanism confirmed real, first candidate fix tried live and FAILED (§12.8, §14, §26, §27, §28, §29).** In *both* stacks the reference heading swings faster than the car can yaw, driving 78–100% of heading-error growth. §26: most of that swing is geometry (ratio ≈1.2 mean/p90 vs. a fixed geometric reference, r=0.80) — but a tail excess (ratio 1.87 p99, 3.51 max, 5.8% of ticks) is planner-added and predicts saturation directly (42.2% vs 2.3% immediate rate). §27: NOT §19's seed-jump — instead a sustained turn-in lag at braking corner entries. §28: a symmetric reference-rate limiter at 90°/s cut recorded-map saturation 4.62%→3.07% and suite-mean 8.99%→6.02% with no DNF in `VALIDATION_SUITE`, but tighter rates (65–70°/s) DNF `PATH_MICRO_SLALOM`. **§29: tried live (one lap, 90°/s) — saturation ROSE to 28.0% (vs. 21.1%/26.4% no-limiter baselines).** Confirmed active (max ref-heading rate capped 1508→220°/s) but traced to the same failure mode §28 found on `PATH_MICRO_SLALOM`: holding the reference back during turn-in produces a larger heading deficit to claw back later (one 3.77s saturation episode observed). Reverted live. The §26/§27 measurement itself is not in question — only this specific fix — so the mechanism remains open and unfixed |
 | `blend_paths` reset-bypass discontinuity | **Eliminated for the recorded map (§14).** Real, parity-correct mechanism, can jump the reference up to 166° on other geometries (PATH_SPIRAL) — but fires 0/1038 times on the recorded map (max trigger-distance 1.98 m, just under the 2.0 m threshold). Cannot explain 21.1% saturation with 0 events |
 | `blend_paths` blended-magnitude vs heading rate | **Mostly eliminated (§14.1).** Rebuild distance vs. blended path's own reference-heading rate: r=0.15 raw, r=0.10 controlling for corner severity — explains ~1-2% of variance, not the 78–100% reference-driven growth in §12.8. Points back at the planner's spatial fit itself (curvature-spike defect), not `blend_paths`, as the likely source of the heading-rate symptom |
 | `ConeMap._absorb()` same-frame duplicate bug | **Fixed (§15), unmeasured effect.** Real, deterministic bug (two same-frame detections of a newly-sighted cone both became permanent, unmerged entries — confirmed at 1 cm apart, independent of `MERGE_DIST`). Fixed in all 3 copies. Does not move the recorded map's saturation at default noise (4.80%→4.86%, matches pre-fix), because FSDS's noise-free oracle perception never triggers it and the added `CONE_NOISE_ENABLED` jitter is too small to separately trigger it either. Whether this matters on the real car is still open — needs measured detector noise or a live log |

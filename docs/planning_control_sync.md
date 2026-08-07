@@ -430,6 +430,22 @@ pairings that imply a sub-3.7 m radius. Investigate why lap 2 is worse than lap
 > (65–70°/s reach 0% saturation there) — both DNF `PATH_MICRO_SLALOM`
 > off-track in the suite, a failure the recorded map cannot show because it
 > has no fast-reversal slalom geometry. Default OFF pending a live test.
+>
+> **Update (2026-08-07, live test run) — tried at 90°/s, made saturation
+> WORSE (21.1%/26.4% baselines → 28.0%).** `sim_to_real_investigation.md`
+> §29: confirmed active on the car (max reference-heading rate capped
+> 1508°/s → 220°/s) but produced a 3.77 s continuous saturation episode —
+> the same failure mode §28 found offline on `PATH_MICRO_SLALOM`, just short
+> of a full DNF. Holding the reference back during turn-in left a larger
+> heading deficit to claw back later, worse than not limiting at all.
+> Reverted to `False` in the live `mpc_core.py`. The underlying §26/§27
+> measurement (reference genuinely outpaces the car's yaw) is unaffected by
+> this — only this specific fix is now known not to work. Do not re-enable
+> this limiter without a new offline test against a synthetic path shaped
+> like this failure (a long, smoothly-growing heading deficit through a
+> decelerating corner) — the recorded map and `VALIDATION_SUITE` as they
+> stand did not fully predict this outcome, only partially warn about its
+> existence.
 
 ### Fixed: a real cone-map duplication bug in `_absorb()`
 

@@ -103,7 +103,12 @@ MAX_BRAKE: float = 9.0
 # tightest rate with no DNF across settings.VALIDATION_SUITE offline; do not
 # tighten this without re-running tuner/ref_heading_limiter_suite_check.py —
 # tighter values look better on the recorded map alone but DNF a fast slalom.
-# Default OFF pending a live test, matching the offline default.
+# TRIED LIVE 2026-08-07 at 90 deg/s (see sim_to_real_investigation.md S29):
+# made saturation WORSE (21.1%/26.4% baselines -> 28.0%), via the same
+# failure mode S28 found offline on PATH_MICRO_SLALOM (holding the reference
+# back during turn-in leaves a larger heading deficit to claw back later).
+# Do not re-enable without a new offline test against a synthetic path
+# shaped like that failure first — see S29 for what to check.
 REF_HEADING_RATE_LIMIT_ENABLED: bool = False
 REF_HEADING_RISE_RATE_DEG_S: float = 90.0
 
