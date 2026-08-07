@@ -244,6 +244,25 @@ OFFTRACK_LIMIT = TRACK_HALF_WIDTH * 1.3  # Lateral error threshold for DNF (m)
 # calculation in the project.
 DT = 0.05
 
+# ------------------------------------------------------------------------------
+# Planner tunables — MUST mirror fsae_bringup/config/fsae_params.yaml's
+# centerline_planner block (live ROS params: smooth, look_radius, plan_horizon,
+# path_blend). Found 2026-08-08: sim/sim_track.py::SimPlanner called
+# build_path_walls()/blend_paths() with NO keyword args at all, silently
+# falling back to those functions' own hardcoded defaults instead of the
+# live-tuned values below — a real, previously undetected parity break, live
+# the whole time this investigation's offline rollouts have been run. Two of
+# four values (look_radius, path_blend's alpha) happened to already match by
+# coincidence; PLANNER_SMOOTH_PER_PT (0.015 live vs 0.05 hardcoded default)
+# and blend_paths' internal horizon (25.0 live vs 15.0 hardcoded default) did
+# not. See sim_to_real_investigation.md S31 for the fix and its measured
+# effect on every prior finding in this document.
+# ------------------------------------------------------------------------------
+PLANNER_SMOOTH_PER_PT = 0.015   # m^2 smoothing budget per input point (splprep s = this * n_pts)
+PLANNER_LOOK_RADIUS = 25.0      # m; omni-directional cone-map crop radius
+PLANNER_PLAN_HORIZON = 25.0     # m; arc-length the published centreline is clamped to
+PLANNER_PATH_BLEND = 0.4        # 0<a<=1; temporal EMA weight toward each freshly-planned path
+
 # REF_HEADING_RISE_RATE — "How fast is the planner's steering target allowed
 # to swing before we start holding it back?"
 # sim_to_real_investigation.md S26/S27 found the planner's published centreline

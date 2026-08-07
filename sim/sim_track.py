@@ -44,6 +44,12 @@ from planning.cone_map import ConeMap
 from planning.boundary import build_path_walls
 from planning.path_utils import blend_paths, build_local_path
 
+# NOTE: settings.py imports TRACK_HALF_WIDTH from this module at module
+# scope, so `from settings import PLANNER_*` cannot be a top-level import
+# here without a circular import — deferred into SimPlanner.update() instead,
+# which only needs the values at call time (see settings.py's PLANNER_*
+# comment for why these must mirror fsae_params.yaml).
+
 # ── Track geometry constants (FSG / FSUK specification) ─────────────────────
 CONE_SPACING      = 3.0    # Distance between cones along each boundary (m)
 TRACK_HALF_WIDTH  = 1.75   # Distance from centreline to boundary cones (m) → 3.5 m total width
@@ -244,12 +250,25 @@ class SimPlanner:
         Called by: gui/simulation.py (simulate_closed_loop),
                    tuner/offline_tuner.py (run_headless_rollout)
         """
+        from settings import (
+            PLANNER_SMOOTH_PER_PT, PLANNER_LOOK_RADIUS, PLANNER_PLAN_HORIZON,
+            PLANNER_PATH_BLEND,
+        )
+
         self._cone_map.update(blue_obs, yellow_obs)
 
-        # Attempt primary path builder (cone-boundary matching + centreline extraction)
+        # Attempt primary path builder (cone-boundary matching + centreline extraction).
+        # Keyword args mirror centerline_planner.py's _compute_path() exactly, sourced
+        # from the same settings.PLANNER_* constants that mirror fsae_params.yaml's
+        # live-tuned ROS params — see settings.py's comment for why this matters
+        # (previously these were omitted here, silently using build_path_walls'/
+        # blend_paths' own hardcoded defaults instead of the live-tuned values).
         try:
             cl, _, _, _ = build_path_walls(
-                self._cone_map.blue, self._cone_map.yellow, car_pos, car_yaw
+                self._cone_map.blue, self._cone_map.yellow, car_pos, car_yaw,
+                smooth_per_pt=PLANNER_SMOOTH_PER_PT,
+                look_radius=PLANNER_LOOK_RADIUS,
+                plan_horizon=PLANNER_PLAN_HORIZON,
             )
         except Exception:
             # Fallback: simple local path from cone midpoints
@@ -260,7 +279,10 @@ class SimPlanner:
         self.centreline = cl
 
         if self.centreline is not None and len(self.centreline) >= 2:
-            self.centreline = blend_paths(self._prev_centreline, self.centreline, car_pos)
+            self.centreline = blend_paths(
+                self._prev_centreline, self.centreline, car_pos,
+                alpha=PLANNER_PATH_BLEND, horizon=PLANNER_PLAN_HORIZON,
+            )
             self._prev_centreline = self.centreline
         else:
             self._prev_centreline = None

@@ -2202,6 +2202,108 @@ things worse in combination, which was not checked.
 **Reproduce with:** `python3 -m tuner.combined_factors_sweep`
 (`MPLBACKEND=Agg`).
 
+## 31. A real parity bug in the offline planner harness — the sim has been running an over-smoothed, under-blended centreline this whole time
+
+*(2026-08-08.)* Prompted by a direct question — "did you ever check the
+planner itself matches between the live node and the offline sim harness?"
+— rather than another closed-loop symptom. Every planner LOGIC file
+(`boundary.py`, `cone_sorting.py`, `path_utils.py`, `cone_map.py`) was
+confirmed byte-identical (module-path differences aside) across all three
+copies, which is not where the bug was. The bug was in **how the offline
+harness calls that logic**.
+
+**The bug.** `centerline_planner.py`'s `_compute_path()` calls
+`build_path_walls(..., smooth_per_pt=self._smooth_per_pt,
+look_radius=self._look_radius, plan_horizon=self._plan_horizon)` and
+`blend_paths(..., alpha=self._path_blend, horizon=self._plan_horizon)`,
+with all four values sourced from `fsae_params.yaml`'s tuned
+`centerline_planner` block (`smooth=0.015`, `look_radius=25.0`,
+`plan_horizon=25.0`, `path_blend=0.4`). `sim/sim_track.py::SimPlanner.update()`
+called both functions with **no keyword arguments at all**, silently
+falling back to each function's own hardcoded defaults:
+
+| parameter | live (tuned) | offline (silent default) | matched? |
+|---|---|---|---|
+| `smooth_per_pt` | 0.015 | 0.05 (`DEFAULT_SMOOTH_PER_PT`) | **no — 3.3× smoother offline** |
+| `look_radius` | 25.0 | 25.0 (hardcoded) | yes, by coincidence |
+| `plan_horizon` | 25.0 | 25.0 (hardcoded) | yes, by coincidence |
+| `blend_paths` `alpha` | 0.4 | 0.4 (hardcoded) | yes, by coincidence |
+| `blend_paths` `horizon` | 25.0 (`plan_horizon`) | 15.0 (hardcoded) | **no** |
+
+Two of five happened to match only because a function's hardcoded default
+equalled the live-tuned value — fragile agreement, not real parity. `git
+log` shows no sign this was ever intentional; `SimPlanner` was simply never
+updated to pass through the same tunables the ROS node exposes as
+parameters. **This bug was live for the entire investigation** — every
+rollout behind §12–§30, including the reference-heading lead (§26/§27) and
+the rate limiter (§28), was measured against an over-smoothed, differently-
+blended centreline than what `fsae_params.yaml` actually configures.
+
+**Fixed** in `sim/sim_track.py::SimPlanner.update()`: both calls now pass
+the same four values explicitly, sourced from four new constants in
+`settings.py` (`PLANNER_SMOOTH_PER_PT`, `PLANNER_LOOK_RADIUS`,
+`PLANNER_PLAN_HORIZON`, `PLANNER_PATH_BLEND`) set to match
+`fsae_params.yaml` exactly, per the standing rule that copied FSDS/live
+settings must be adjustable and documented in one place. (The `settings`
+import is deferred inside `update()`, not module-level, because
+`settings.py` itself imports `TRACK_HALF_WIDTH` from `sim_track.py` at
+module scope — a top-level `from settings import ...` here would be
+circular.)
+
+**Effect: large, and not in the reassuring direction.** Recorded-map
+baseline (shipped ceiling, factor D): saturation **4.80%→10.42%**, and the
+run now **DNFs off-track at step 95 (`|e_y|`=2.37 m, ~4.75 s into the
+lap, 10.5% progress)** — a run that previously completed the full lap
+cleanly now fails early. The "remaining unexplained gap" from §13
+(live 21.1% vs. no-ceiling baseline) narrows from **17.43 pp → 10.68 pp**
+— a bigger single-step reduction than every previously-tested plant/ceiling
+factor achieved, combined (§13's best-case reading topped out around 3.94
+pp). Re-running §13's ledger with the fix: **B/C/D (the three ceiling laws)
+are now within 0–1.04 pp of each other** on the recorded map — indistinguishable,
+where the ceiling's law used to visibly matter — and **E (ceiling=6.5) now
+DNFs 1/5 on `VALIDATION_SUITE`**, where it previously ran clean everywhere.
+The harder, correctly-configured planner geometry appears to dominate over
+ceiling-law differences that mattered when the centreline was artificially
+smoother.
+
+**What this does and does not establish.** This is a real, mechanical bug
+fix, not a new hypothesis — the before/after numbers are a direct
+consequence of finally calling the shared planner code with the same
+arguments on both sides, nothing else changed. It does **not** mean
+§13/§26–§30's qualitative conclusions are wrong (the ceiling's law/level/tau
+were still not the dominant explanation; the reference-heading lead's
+mechanism was still real) — but it does mean **every precise number in
+§12–§30 was measured against the wrong planner configuration** and should
+be treated as superseded pending re-measurement, not trusted at face value
+for anything beyond direction-of-effect. In particular: §26/§27's exact
+ratios (1.22/1.87/3.51 etc.), §28's exact sweep values (90°/s, 65-70°/s DNF
+threshold), and §30's exact combined-sweep numbers were all measured
+pre-fix and need re-running before being relied on again. This also
+does **not** establish that 10.68 pp is now "the real gap" — it is the
+gap under one arbitrary (if now correctly-configured) weight/ceiling
+setting, and the DNF at step 95 means the recorded-map score itself is no
+longer a clean completed-lap comparison until either the corner that fails
+is understood or the weights are re-tuned against the corrected planner.
+
+**Immediate consequence: the offline tuner's weights may now be stale.**
+`Q_diag`/`R_diag`/`R_rate_diag` were tuned (via CMA-ES and manual correction)
+against the buggy, over-smoothed planner. Whether they are still a good fit
+for the correctly-configured planner — or need re-tuning — is now an open
+question this bug fix creates, not one it answers.
+
+**What generalises, immediately:** the exact question that found this
+("did you ever check X matches between the two copies?") is precisely
+CLAUDE.md's standing parity rule, applied to a piece of code
+(`SimPlanner`'s call sites) that is not itself one of the two "kept in
+sync" file copies — it's a *third*, independently-written harness that
+*calls* the shared logic, and nothing had ever verified it called that
+logic the same way. Byte-identical shared files are necessary but not
+sufficient for parity; the call sites also have to agree.
+
+**Reproduce with:** `python3 -m tuner.recorded_map_rollout` and
+`python3 -m tuner.gap_attribution_ledger` (`MPLBACKEND=Agg`) — both now
+reflect the fix.
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
@@ -2418,14 +2520,39 @@ things worse in combination, which was not checked.
     not something to assume in either direction without measuring the
     actual combination.
 
+31. **"The shared files are byte-identical" is not the same claim as "the
+    two systems behave the same."** Every parity check in this document
+    before §31 compared FILES (are `boundary.py`/`cone_map.py`/etc.
+    identical across copies?) and every one passed. Nobody had checked
+    whether the two independent CALL SITES — `centerline_planner.py`'s ROS
+    node and `sim_track.py`'s plain-Python harness — invoked that identical
+    shared code with the same arguments, and they didn't (offline silently
+    used two hardcoded defaults instead of the live-tuned values). This
+    survived the entire investigation because the question that surfaces it
+    ("does the offline harness call the planner the same way the live node
+    does?") is different in kind from "is this file the same as that file?"
+    — a fair question to ask about any shared-logic-but-separate-harness
+    boundary, not just this one, and worth asking explicitly rather than
+    trusting that byte-identical dependencies imply identical behaviour.
+
 ---
 
 ## Open / deferred
 
+> **Read §31 before trusting any specific number below.** A real parity bug
+> in `sim/sim_track.py::SimPlanner` (offline never passed the live-tuned
+> planner smoothing/blend parameters — silently used different hardcoded
+> defaults instead) was fixed 2026-08-08. It moved the recorded-map baseline
+> saturation from 4.80%→10.42% and introduced a DNF that wasn't there before.
+> Every precise percentage/ratio measured in §12–§30 predates this fix and
+> should be treated as directionally informative, not numerically current,
+> until re-measured.
+
 | item | status |
 |---|---|
 | **Model the yaw cap offline** | **Done** — `alat_ceiling*` in `model/vehicle_physics.py`. Moves every metric toward the car (saturation 4.4→6.3%, a_lat max 14.06→10.53) but closes only part of the gap; live is still 21.1% saturation |
-| Remaining saturation gap | **Open, quantified (§13, §30).** ≥75% of the 17.43 pp gap (live 21.1% vs today's 3.67% no-ceiling baseline) is not explained by the ceiling's law, level, or tau — every tested plant/ceiling factor's effect is within noise (suite std 5–6 pp vs effect sizes 0.3–2.1 pp). §30: combining ceiling=6.5 + SLAM noise + cone noise (3 factors, no DNF anywhere) still only reaches 4.62–6.47% recorded-map saturation — the factors do not compound additively and the combined range is smaller than the suite's own std. Localised to the *entry rate* into the high-heading-error state (2.6×) with matching in-state behaviour — a turn-in transient property |
+| **Planner parity bug (`SimPlanner` call sites)** | **Fixed (§31), 2026-08-08.** Offline never passed `smooth_per_pt`/`look_radius`/`plan_horizon`/blend `alpha`/`horizon` to `build_path_walls()`/`blend_paths()`, silently using hardcoded defaults instead of `fsae_params.yaml`'s tuned values (2 of 5 coincidentally matched). Fix narrows the "unexplained gap" 17.43→10.68 pp in one step — bigger than every previously-tested plant/ceiling factor combined — and introduces a new recorded-map DNF at step 95. Weights may need re-tuning against the corrected planner |
+| Remaining saturation gap | **Open, now measured against the corrected planner (§13, §30, §31).** Pre-fix: ≥75% of a 17.43 pp gap was not explained by the ceiling's law, level, or tau. Post-fix (§31): gap is 10.68 pp against a run that now DNFs at 10.5% progress — the recorded-map comparison itself needs redoing before re-quoting a percentage. §30's combined-factor sweep predates the fix and needs re-running |
 | Ceiling's effect is corner-type-specific | **New (§13).** Zero measurable effect on HAIRPIN/FS_CORNER in every configuration tried; entire effect concentrated on SUDDEN_TURN/MICRO_SLALOM (sustained moderate-radius bends at speed). Check any future plant explanation against this per-path breakdown before trusting an aggregate |
 | **`alat_ceiling_tau`** | **Done (§12.12).** Measured 0.35 s median (0.28–0.46, 11/12 trials) with `step_s=8.0`; model set to 0.40. Fixing it did **not** close the saturation gap — the residual is elsewhere |
 | Ceiling is speed-dependent | **New, unmodelled (§12.4).** Measured sustained a_lat rises with speed — 6.45 @ 8 m/s, 7.54 @ 11, 9.26 @ 14 — while the model pins it flat at 7.5. Residuals +1.0 / ~0 / −1.76. Deliberately not fitted: 16 points, one run |
