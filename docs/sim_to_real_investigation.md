@@ -2682,6 +2682,51 @@ disagreement between step and sweep is unresolved, the sweep's fit
 (sustained cornering, not a single hold) but this is a judgement call, not
 a settled one.
 
+## 36. Why the fresh post-fix live log looked worse: two localized stalls, not a systemic regression
+
+§34's correction flagged a fresh live log (`mpc_standalone_control_1786101462.csv`,
+2026-08-07 23:20, recorded after §33/§34's planner fixes landed) as scoring
+worse than pre-fix baselines (saturation 27.70%→27.04% recomputed here,
+e_psi mean 23.56° vs ~18.6° pre-fix) and flagged this as urgent/unexplained.
+
+**Checked and ruled out:**
+- **`steer_lp` filter interaction** — the log's header tags it
+  `tag=mpc_standalone`, i.e. produced by `mpc_controller_standalone.py`,
+  which does not have the `steer_lp` EMA filter (that only exists in
+  `mpc_controller.py`). Not applicable to this log.
+- **Pose-age / delay-hysteresis degradation** — compared `pose_age_s` and
+  `n_delay` across the two pre-fix logs and this post-fix one: mean
+  `pose_age_s` 0.069 / 0.076 / **0.053**, mean `n_delay` 1.20 / 1.42 /
+  **1.05**. The post-fix log's delay compensation is *better*, not worse.
+
+**Actual cause, found by bucketing `|e_psi|` into 10s windows:** the mean is
+flat at 11-25° for almost the entire 157.5s log — matching pre-fix logs
+almost exactly — except for two isolated spikes: t=40s (63.8° bucket mean)
+and t=150s (89.5° bucket mean, and the log ends at t=157.5s still at
+e_psi=163° with the car crawling at v=0.19 m/s). Dumping raw rows around
+t=148-156s shows the car's speed collapsing from 16.6 m/s to ~0 while
+steering pins at ±25° repeatedly and e_psi runs out to 90-163° — the
+signature of the car stalling/getting tangled near the end of the lap, not
+of degraded tracking. Aggregate saturation is nearly unchanged by this
+(25.7%→27.0%, within run-to-run noise per §23's 15-32% spread); it's
+specifically the **mean e_psi** that a couple of near-stationary,
+spinning-in-place ticks can drag arbitrarily high, since heading error is
+not a meaningful quantity for a car that has stopped moving forward.
+
+**Conclusion:** this was not a regression introduced by §33/§34's planner
+fixes. The bulk-of-lap behaviour is statistically indistinguishable from
+pre-fix logs; two localized stall events (cause not yet identified — could
+be a hard corner, a cone strike, or something else entirely) inflated the
+mean e_psi metric in a way that doesn't reflect general tracking quality.
+**Lesson: report a trimmed mean or median alongside the mean for e_psi in
+future live-vs-sim comparisons** — a metric that a handful of near-stationary
+ticks can dominate is misleading for judging whether a fix helped or hurt.
+Not yet done: identifying what caused the two stalls specifically, and
+confirming they aren't themselves connected to the planner fixes (e.g. the
+boundary.py seed-filter loosening producing a bad path point under some
+condition this recorded-map testing doesn't exercise) — worth checking if
+another live run reproduces stalls at the same track locations.
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
@@ -2954,6 +2999,8 @@ a settled one.
 
 | item | status |
 |---|---|
+| **Fresh post-fix live log looked worse than pre-fix baselines** | **Explained, not a regression (§36).** Traced to two localized stall/tangle events (t=40s, t=150s) that drag the mean e_psi up while bulk-of-lap saturation/tracking is statistically unchanged from pre-fix logs. `steer_lp` and pose-age/delay hypotheses both checked and ruled out directly from log columns. Cause of the two stalls themselves not yet identified |
+| Speed-dependent `alat_ceiling(v)` | **Not yet done (§35).** Two independent fits agree on rising-with-speed shape but disagree on level (step: `6.00+0.25v`; sweep: `2.46+0.47v`); sweep's fit is the likely candidate for sustained cornering but this is a judgement call. Needs fitting, then `VALIDATION_SUITE`/recorded-map re-validation before shipping |
 | **Model the yaw cap offline** | **Done** — `alat_ceiling*` in `model/vehicle_physics.py`. Moves every metric toward the car (saturation 4.4→6.3%, a_lat max 14.06→10.53) but closes only part of the gap; live is still 21.1% saturation |
 | **Planner parity bug (`SimPlanner` call sites)** | **Fixed (§31), 2026-08-08.** Offline never passed `smooth_per_pt`/`look_radius`/`plan_horizon`/blend `alpha`/`horizon` to `build_path_walls()`/`blend_paths()`, silently using hardcoded defaults instead of `fsae_params.yaml`'s tuned values (2 of 5 coincidentally matched). Fix narrows the "unexplained gap" 17.43→10.68 pp in one step — bigger than every previously-tested plant/ceiling factor combined — and introduces a new recorded-map DNF at step 95. Weights may need re-tuning against the corrected planner |
 | **Recorded-map DNF (post-§31/braking-fix)** | **Root-caused and fixed (§33/§34), 2026-08-08.** Cause: `_build_wall_path`'s seed filter (`planning/boundary.py`, `fwd > 0.3`) discontinuously drops the nearest midpoint as the car's heading rotates through a corner. This is §19's `min_ahead`/chain-anchor discontinuity, pinned to the exact line. **Fix 1** (`curvature_speed`'s `v_max_eff` no longer reapplied after real curvature is measured) and **Fix 2** (seed filter loosened to `fwd > -0.5`) both shipped, mirrored to all 3 repos (AST-identical, confirmed). Initially reverted for raising `VALIDATION_SUITE`'s DNF count (0/5→1-2/5); re-shipped after recognising that check was the wrong direction here — the live car already DNFs/saturates far more than the offline sim, so the sim failing more after removing artificial forgiveness is closing the gap, not regressing (lesson 32). Produced the closest full-lap sim/live match in this document (§34: ratios 0.68-0.73 across every metric) |
