@@ -2609,6 +2609,79 @@ now more clearly motivated by §34's result (the tuned weights currently in
 tight corners). This is the natural next step and was explicitly deferred
 to a retune pass outside this session's scope.
 
+**Correction on §34's sim/live comparison: it was measured against a stale
+live log.** The `LIVE = {...}` constants `recorded_map_rollout.py` compares
+against (21.1% saturation etc.) predate every fix in §31/§33/§34 — they
+were recorded before this session's planner/speed-target code even existed
+on the car. A fresh live run recorded after these fixes landed
+(`mpc_standalone_control_1786101462.csv`, 157.5s) tells a less favourable
+story: steering saturation 27.70% (up from 26.4/28.0% pre-fix), `|e_psi|`
+mean/p90 23.56°/74.88° (worse than 18.6°/50° pre-fix), and the
+reference/car heading-rate ratio rose to 1.54 (from 1.01-1.09 pre-fix) —
+the live car's reference now swings faster relative to what it can yaw
+than it did before these fixes. Re-running the sim comparison against this
+fresh log with `tuner.live_vs_sim_diagnostics --continue-after-dnf` (full
+63.5s run) gives sim/live ratios of 0.41 (steering sat), 0.45/0.34 (`e_psi`
+mean/p90), 0.94/0.86 (a_lat max/over-ceiling) — **not** the 0.68-0.73
+figures reported earlier in this section, which should be treated as
+invalid (measured against the wrong live baseline) rather than superseded
+by an improvement. The planner fixes may have made the offline sim more
+realistic in isolation without helping — or while mildly hurting — the
+actual car. This is not yet understood and is a more urgent open question
+than it was framed as being.
+
+## 35. The step-vs-sweep ceiling disagreement resolves toward "genuinely speed-dependent," not toward the flat model
+
+The Open/deferred table flagged an unresolved conflict: the step test's 3s
+hold said the ceiling was roughly flat with speed (7.80 @ 8 m/s, 7.29 @
+12 m/s), while the sweep's sustained long-orbit said it clearly *rises*
+with speed (6.45 @ 8 m/s → 9.26 @ 14 m/s). The suspected explanation was
+that 3s might be too short to see the settled value fully decay — i.e. the
+step test might just not have run long enough to agree with the sweep's
+lower values.
+
+**Re-measured with a 15s hold** (`ros2/run_steering_step.sh --no-sim -p
+'speeds:=[8.0,11.0,14.0]' -p 'steer_cmds:=[0.6,1.0]' -p 'step_s:=15.0' -p
+'repeats:=2'`, log `steering_step_1786102769.csv`, 12 trials). Result:
+
+| speed | 3s hold (old) | 15s hold (new) | sweep (sustained) |
+|---|---|---|---|
+| 8 m/s | 7.80 | **8.17** | 6.45 |
+| 11 m/s | — (12: 7.29) | **8.40** | 7.54 |
+| 14 m/s | — | **9.67** | 9.26 |
+
+**The settled value does not decay toward the sweep's lower numbers with a
+longer hold — if anything it's slightly higher than the 3s reading at every
+speed.** This rules out "3s was too short" as the explanation for the
+disagreement. What it does confirm: the 15s-hold data now clearly shows the
+**same rising-with-speed shape** as the sweep (linear fit: step data alone
+gives `ceiling(v) = 6.00 + 0.25*v`, R²=0.86; sweep alone gives
+`ceiling(v) = 2.46 + 0.47*v`, R²=0.89) — both datasets agree the ceiling
+rises with speed, roughly doubling in *slope-implied effect* from 8 to
+14 m/s, even though they disagree on the absolute level (step sits ~0.7-2.0
+m/s² above the sweep's fitted line, with the gap shrinking at higher
+speed). A naive pool of both datasets fits worse (R²=0.67) than either
+alone, because the offset between them isn't constant — so they should not
+simply be averaged together.
+
+**Likely explanation for the level offset, not yet verified:** the step
+test holds a straight-line, single steering step; the sweep is a sustained
+circular orbit. These load the tyres/vehicle differently (e.g. combined
+slip, thermal/state build-up over a full circle vs. a single hold) and
+there's no reason to expect the two loading conditions produce identical
+sustained a_lat even if both reflect the same underlying speed-dependent
+ceiling mechanism.
+
+**Not yet done:** fitting a specific `alat_ceiling(v)` replacement for the
+current flat `alat_ceiling=7.5` and re-validating it doesn't DNF the
+recorded map or `VALIDATION_SUITE` (the flat value was itself only settled
+on after two earlier fitting mistakes — §12 — so a speed-dependent
+replacement deserves the same care, not a quick swap). Given the level
+disagreement between step and sweep is unresolved, the sweep's fit
+(`2.46 + 0.47*v`) is probably the more appropriate one to use for a lap
+(sustained cornering, not a single hold) but this is a judgement call, not
+a settled one.
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
