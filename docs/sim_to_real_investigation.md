@@ -2585,12 +2585,29 @@ live log, not a replacement for the existing stop-on-DNF scoring path used
 by tuning (`offline_tuner.py` does not use it and is unaffected by this
 option's existence).
 
-**Not yet done:** re-running §13's gap-attribution ledger and the
-`VALIDATION_SUITE`-based comparisons in §28–§30 against both of these fixes
-together — those numbers (last measured in §33, before either fix) are now
-doubly stale. Retuning `Q_diag`/`R_diag`/`R_rate_diag` against this
-corrected planner+speed-target combination is also still open, flagged
-originally in §31 and not yet started.
+**Gap-attribution ledger re-run (stop-on-DNF, not `--continue-after-dnf`)
+with both fixes shipped:** no-ceiling baseline 22.39% suite mean (std
+16.97, up from single digits — expected, this is the fixes working as
+intended on `SUDDEN_TURN` specifically, per-path diff -41 to -43 vs factor
+A). Ceiling factors B/D still measurably separate on the recorded map
+(10.47 vs 9.41 vs 10.47) but the live gap is effectively unchanged: 10.63pp
+of 10.63pp (100%) unexplained by the ceiling's law/level/tau. **This is
+expected and consistent with §34's finding, not a contradiction of it** —
+the recorded-map/ledger numbers are stop-on-DNF, scored on a ~4.75s stub
+before the corner that used to end the run; §34's 0.68-0.73 sim/live ratios
+come from the *same* fixes evaluated over a (diagnostic-only)
+`--continue-after-dnf` full-lap run. The ceiling was never expected to close
+this particular gap (§16/§30 already established that) — these two fixes
+target the planner/speed-target side, and their effect shows up in the
+full-lap comparison, not in a ledger that still stops at the first
+excursion.
+
+**Not yet done:** retuning `Q_diag`/`R_diag`/`R_rate_diag` against this
+corrected planner+speed-target combination — flagged originally in §31, and
+now more clearly motivated by §34's result (the tuned weights currently in
+`settings.py` were never validated against a planner this responsive to
+tight corners). This is the natural next step and was explicitly deferred
+to a retune pass outside this session's scope.
 
 ## What generalises
 
