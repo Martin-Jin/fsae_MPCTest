@@ -94,6 +94,7 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max, du_max=None):
     sqrtR_param        : (nu, 1)   Element-wise sqrt of diagonal R weights
     sqrtR_rate_param   : (nu, 1)   Element-wise sqrt of diagonal R_rate weights
     weighted_u_prev    : (nu,)     sqrtR_rate * u_prev (for rate cost at first step)
+    u_prev_param       : (nu,)     raw u_prev (for the step-0 hard slew constraint)
 
     Parameters
     ----------
@@ -103,9 +104,9 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max, du_max=None):
     u_min : array-like, shape (nu,)   Lower input bounds
     u_max : array-like, shape (nu,)   Upper input bounds
     du_max : array-like, shape (nu,), optional
-        Hard per-step slew-rate limit on u. None disables the constraint
-        (legacy behaviour). Must match the live mpc_core.py du_max for
-        offline-tuned weights to transfer.
+        Hard per-step slew-rate limit on u, including step 0 against u_prev.
+        None disables the constraint (legacy behaviour). Must match the live
+        mpc_core.py du_max for offline-tuned weights to transfer.
 
     Returns
     -------
@@ -115,6 +116,7 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max, du_max=None):
         'x0'             : cp.Parameter — initial state
         'sqrtQ', 'sqrtR', 'sqrtR_rate' : cp.Parameter — cost weights
         'weighted_u_prev': cp.Parameter — rate cost anchor at step 0
+        'u_prev'         : cp.Parameter — raw u_prev, step-0 slew constraint anchor
         'u'              : cp.Variable  — control variable (for extracting u[0])
 
     Called by: solve_mpc() — on first call or when N changes
@@ -129,6 +131,7 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max, du_max=None):
     sqrtR_param      = cp.Parameter((nu, 1), nonneg=True)   # Input weight sqrt
     sqrtR_rate_param = cp.Parameter((nu, 1), nonneg=True)   # Rate weight sqrt
     weighted_u_prev_param = cp.Parameter(nu)   # sqrtR_rate * u_prev for step-0 rate cost
+    u_prev_param = cp.Parameter(nu)            # raw u_prev, for the step-0 hard slew constraint
 
     # ── CVXPY Variables ────────────────────────────────────────────────────────
     x     = cp.Variable((nx, N + 1))   # Predicted states: x[:,0] = x0, x[:,N] = terminal
@@ -191,9 +194,21 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max, du_max=None):
     # weights tuned here did not transfer faithfully. Mirrors mpc_core.py's
     # du_max (see that file for how the 180 deg/s figure was measured).
     #
-    # Only the step-0 constraint against u_prev is omitted here: solve_mpc()
-    # already anchors step 0 through weighted_u_prev in the cost, and u_prev
-    # is not available as a constraint parameter in this cached formulation.
+    # Step-0 constraint against u_prev, added 2026-08-08 to close a second
+    # parity gap: mpc_core.py hard-constrains `u[:,0] - uprev_p` (its own
+    # separate raw-u_prev Parameter, not the sqrtR_rate-weighted one used in
+    # the cost), so live could never jump more than du_max from the last
+    # applied command on the very first predicted step. Offline previously
+    # only SOFT-penalised that jump via weighted_u_prev in the rate cost —
+    # a large tracking-error gradient could still push u[:,0] arbitrarily far
+    # from u_prev if the cost tradeoff favoured it. u_prev_param carries the
+    # unweighted value for exactly this purpose.
+    if du_max is not None:
+        du0 = u[:, 0] - u_prev_param
+        constraints += [
+            du0 <=  np.array(du_max),
+            du0 >= -np.array(du_max),
+        ]
     if du_max is not None and N > 1:
         du_hard = cp.diff(u, axis=1)
         constraints += [
@@ -208,6 +223,7 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max, du_max=None):
         'sqrtQ': sqrtQ_param, 'sqrtR': sqrtR_param,
         'sqrtR_rate': sqrtR_rate_param,
         'weighted_u_prev': weighted_u_prev_param,
+        'u_prev': u_prev_param,
         'u': u,
         # u_min/u_max are baked into the constraints above as plain numpy
         # constants (not cp.Parameters), so they can't be updated later the
@@ -294,7 +310,8 @@ def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max, R_rate=None, u_prev=None,
         If None, rate cost is zero (no smoothness penalty).
     u_prev : array-like, shape (2,), optional
         Previously applied control input. Used as anchor for the step-0
-        rate cost. If None, zeros are assumed.
+        rate cost, and (if du_max is set) the step-0 hard slew constraint.
+        If None, zeros are assumed.
     silent : bool, optional
         If True, suppress OPTIMAL_INACCURATE warnings. Used by offline tuner
         where warning noise would flood the console during mass rollouts.
@@ -384,6 +401,7 @@ def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max, R_rate=None, u_prev=None,
     # Pre-multiply u_prev by sqrtR_rate so the rate cost at step 0 is:
     # ||sqrtR_rate * u[:,0] - sqrtR_rate * u_prev||² = ||sqrtR_rate ⊙ Δu_0||²
     _mpc_cache['weighted_u_prev'].value = sqrtR_rate * np.asarray(u_prev)
+    _mpc_cache['u_prev'].value           = np.asarray(u_prev, dtype=float)
 
     # ── Solve: OSQP primary, Clarabel fallback ─────────────────────────────────
     try:

@@ -2806,6 +2806,46 @@ fix; it is the one that turned out to be a non-issue once measured, which
 is itself the useful finding — it rules this out as a place to keep
 spending effort chasing the residual gap.
 
+## 39. Missing step-0 slew-rate constraint offline: fixed, not just measured
+
+`mpc_core.py` (live) hard-constrains `u[:,0] - uprev_p` within `du_max` using
+its own raw (unweighted) `u_prev` Parameter, separate from the
+`weighted_u_prev` Parameter used only in the rate cost. `controller/optimiser.py`
+(offline) had the weighted one for the cost but never had the raw one, so it
+could only SOFT-penalise a large jump at step 0 — a strong-enough
+tracking-error gradient could push `u[:,0]` further from `u_prev` than
+`du_max` would ever allow live, something the previous per-step-only
+`du_hard` constraint (steps 1..N-1) could not catch since it only
+constrains consecutive *planned* steps against each other, not the plan's
+first step against the actually-applied previous command.
+
+**Fixed**, not left as a measured-but-unfixed gap like §38: added
+`u_prev_param = cp.Parameter(nu)` alongside the existing
+`weighted_u_prev_param`, set from the same `u_prev` argument in
+`solve_mpc()`, and added `u[:,0] - u_prev_param` as a hard constraint
+(mirroring `mpc_core.py` lines ~395-396) whenever `du_max` is not None —
+previously this constraint only existed for `N > 1` steps, now step 0 is
+included unconditionally when `du_max` is set. This was a genuine
+structural gap in the cached-QP formulation, not something requiring a
+redesign: the cache already threads a fresh Parameter value through every
+solve, so this needed one more Parameter, not new architecture.
+
+**Verified the constraint actually binds**: smoke test with `u_prev` set
+far from the unconstrained optimum solves to exactly `u_prev ± du_max`,
+confirming it's load-bearing, not a no-op.
+
+**Validated no new DNFs**: `VALIDATION_SUITE` still shows the same 2/5
+pre-existing failures (PATH_SPIRAL, PATH_SUDDEN_TURN) at the same
+approximate step. Recorded map (`--continue-after-dnf`) still completes to
+99.4% progress, same DNF point. Ratios shifted mostly favourably: sat
+0.40→0.47, e_psi mean 0.60→0.70, e_psi p90 0.52→0.67 (all closer to
+matching live); a_lat max 0.99→0.93 and a_lat>ceiling 0.62→0.53 moved
+slightly away from 1.0 but remain in a reasonable range.
+
+**No live-side change needed** — `mpc_core.py` already has this constraint
+(that's the parity gap this closes: only the offline copy was missing it).
+`fsae_MPCTest`-only diff, in `controller/optimiser.py`.
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
@@ -3081,6 +3121,7 @@ spending effort chasing the residual gap.
 | **Fresh post-fix live log looked worse than pre-fix baselines** | **Explained, not a regression (§36).** Traced to two localized stall/tangle events (t=40s, t=150s) that drag the mean e_psi up while bulk-of-lap saturation/tracking is statistically unchanged from pre-fix logs. `steer_lp` and pose-age/delay hypotheses both checked and ruled out directly from log columns. Cause of the two stalls themselves not yet identified |
 | Speed-dependent `alat_ceiling(v)` | **Shipped (§37), 2026-08-08.** `max(7.5, 2.46+0.47*v)` — sweep's fit, only raises the ceiling above ~10.7 m/s, never lowers it. Validated: sweep MAE 0.87→0.72, 0 new `VALIDATION_SUITE` DNFs, recorded-map ratios unchanged-to-improved. `fsae_MPCTest`-only (no live plant model to mirror to). Not yet validated live |
 | Solver tolerance mismatch (1e-4 offline / 1e-5 live) | **Ruled out (§38), 2026-08-08.** Measured directly on the recorded map full-lap: byte-identical sat/e_psi/progress/score at both tolerances. OSQP already converges well inside 1e-4 on this QP; not a source of sim/live divergence |
+| Missing step-0 slew constraint offline | **Fixed (§39), 2026-08-08.** Added `u_prev_param` + hard `u[:,0]-u_prev` constraint to `controller/optimiser.py`, mirroring `mpc_core.py`'s existing `uprev_p` constraint. `fsae_MPCTest`-only (live already had it). 0 new DNFs; ratios mostly moved toward live (sat 0.40→0.47, e_psi mean 0.60→0.70, e_psi p90 0.52→0.67) |
 | **Model the yaw cap offline** | **Done** — `alat_ceiling*` in `model/vehicle_physics.py`. Moves every metric toward the car (saturation 4.4→6.3%, a_lat max 14.06→10.53) but closes only part of the gap; live is still 21.1% saturation |
 | **Planner parity bug (`SimPlanner` call sites)** | **Fixed (§31), 2026-08-08.** Offline never passed `smooth_per_pt`/`look_radius`/`plan_horizon`/blend `alpha`/`horizon` to `build_path_walls()`/`blend_paths()`, silently using hardcoded defaults instead of `fsae_params.yaml`'s tuned values (2 of 5 coincidentally matched). Fix narrows the "unexplained gap" 17.43→10.68 pp in one step — bigger than every previously-tested plant/ceiling factor combined — and introduces a new recorded-map DNF at step 95. Weights may need re-tuning against the corrected planner |
 | **Recorded-map DNF (post-§31/braking-fix)** | **Root-caused and fixed (§33/§34), 2026-08-08.** Cause: `_build_wall_path`'s seed filter (`planning/boundary.py`, `fwd > 0.3`) discontinuously drops the nearest midpoint as the car's heading rotates through a corner. This is §19's `min_ahead`/chain-anchor discontinuity, pinned to the exact line. **Fix 1** (`curvature_speed`'s `v_max_eff` no longer reapplied after real curvature is measured) and **Fix 2** (seed filter loosened to `fwd > -0.5`) both shipped, mirrored to all 3 repos (AST-identical, confirmed). Initially reverted for raising `VALIDATION_SUITE`'s DNF count (0/5→1-2/5); re-shipped after recognising that check was the wrong direction here — the live car already DNFs/saturates far more than the offline sim, so the sim failing more after removing artificial forgiveness is closing the gap, not regressing (lesson 32). Produced the closest full-lap sim/live match in this document (§34: ratios 0.68-0.73 across every metric) |
