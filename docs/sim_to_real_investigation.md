@@ -2930,6 +2930,71 @@ both remain unresolved rather than ruled out, and were not part of the
 user's original two-item list, so left for a future session if the engine
 mechanism is worth chasing further.
 
+## 42. Small-error steering hunting: real on a live log, NOT reproduced offline, softening added but left disabled
+
+User's proposal: soften the lateral-error weight `Q[0,0]` when the car is
+already close to the centreline, on the theory that a quadratic cost with
+no dead zone keeps correcting proportionally even when the error is
+already tiny, which can self-reinforce into a correct-overcorrect cycle
+right where the controller should be settling.
+
+**Checked on a live log first, before writing any code.** Bucketed
+steering-reversal rate by `|e_y|` on `mpc_standalone_control_1786101462.csv`:
+
+| \|e_y\| range | % of lap | reversal rate |
+|---|---|---|
+| 0-0.05 m | 1.9% | **35.6%** |
+| 0.05-0.15 m | 9.6% | 24.5% |
+| 0.15-0.3 m | 49.9% | 14.2% |
+| 0.3-0.6 m | 13.7% | 9.1% |
+| 0.6+ m | 25.0% | 2.4% |
+
+Reversal rate rises monotonically as `|e_y|` SHRINKS — the opposite of
+"small error, no correction needed." Only 1.9% of the lap sits at
+`|e_y|<0.05 m`; the car almost never settles onto the centreline, it darts
+across it. A single contiguous stretch showed `e_y` swinging
+-0.033→-0.24→-0.033 m across two 0.05s ticks while steer swung 2-11°: real
+oscillation, not a noisy reading of a static value.
+
+**Checked on the offline recorded-map rollout, in its CURRENT tuned state,
+before assuming this generalises: NOT reproduced.** Same bucketing shows
+the opposite trend — reversal rate RISES with `|e_y|` (7.05% at <0.05m up
+to 10.91% at 0.15-0.3m). This is either a live-only symptom (sensor/state
+noise, delay-compensation dynamics, or plant behaviour near zero slip the
+offline model doesn't reproduce) or specific to this one log/lap.
+
+**Implemented anyway, DISABLED BY DEFAULT** — the same discipline as every
+weight-shaped addition this session: `adaptive_Q_scaling(e_y, Q_base,
+enabled=False)` in `controller/model_utils.py`, gated by new
+`settings.ADAPTIVE_Q_SCALING_ENABLED = False`. Mirrors `adaptive_R_rate`'s
+saturating-floor shape: `Q[0,0]` scaled by `floor` (0.5) at `|e_y|<=0.05`,
+ramping linearly to 1.0 (no change) at `|e_y|>=0.3`. `enabled=False`
+returns `Q_base` completely untouched — verified byte-identical recorded-
+map output with it wired through end-to-end vs before.
+
+**Tested enabled, not shipped enabled:**
+- Recorded map: sat 9.84%→7.83%, reversals/s 1.09→0.99 (both better), but
+  `e_psi` mean 11.16°→12.40° and p90 28.32°→32.05° (both worse) — softening
+  lateral-error correction trades some heading tracking for less
+  aggressive lateral correction, as expected.
+- `VALIDATION_SUITE`: **0 new DNFs** (same 2/5, same paths, same
+  approximate failure step). Saturation improved on 4/5 paths (PATH_HAIRPIN
+  -5.8pp, PATH_SPIRAL -3.0pp, PATH_SUDDEN_TURN -0.9pp, PATH_FS_CORNER
+  -0.1pp), one small regression (PATH_MICRO_SLALOM +0.6pp). Suite mean
+  8.89%→7.07%.
+
+**Why left disabled rather than shipped:** the recorded-map trade-off
+(better sat/reversals, worse e_psi) is a real behavioural change requiring
+the same judgement as any `Q_diag` retune, not a free improvement — and the
+whole premise (small-error hunting) isn't reproduced in the offline plant
+that this test ran against, only on the live log that motivated it. The
+right validation is a live A/B, not another offline number, the same
+lesson as §29's reference-heading limiter (helped every offline metric,
+made saturation worse on the one live test it got). Available to enable
+and test live at any time; defaults default (0.05/0.3/0.5 thresholds) are
+a starting point bracketing the live log's reversal-rate regime, not fitted
+to anything.
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
@@ -3207,6 +3272,7 @@ mechanism is worth chasing further.
 | Solver tolerance mismatch (1e-4 offline / 1e-5 live) | **Ruled out (§38), 2026-08-08.** Measured directly on the recorded map full-lap: byte-identical sat/e_psi/progress/score at both tolerances. OSQP already converges well inside 1e-4 on this QP; not a source of sim/live divergence |
 | Missing step-0 slew constraint offline | **Fixed (§39), 2026-08-08.** Added `u_prev_param` + hard `u[:,0]-u_prev` constraint to `controller/optimiser.py`, mirroring `mpc_core.py`'s existing `uprev_p` constraint. `fsae_MPCTest`-only (live already had it). 0 new DNFs; ratios mostly moved toward live (sat 0.40→0.47, e_psi mean 0.60→0.70, e_psi p90 0.52→0.67) |
 | No terminal cost/constraint | **Added as an inactive toggle (§40), 2026-08-08.** `TERMINAL_Q_SCALE=1.0` (no-op, verified bit-identical), mirrored to both `mpc_core.py` copies + offline `optimiser.py`. A gap in BOTH stacks identically, not a parity issue. Picking/validating a non-default value deliberately left to the user, same tuning loop as `Q_diag`/`R_diag` |
+| Small-error steering hunting | **Real on one live log, NOT reproduced offline (§42), 2026-08-08.** Reversal rate rises to 35.6% as \|e_y\|→0 live (opposite trend offline). `adaptive_Q_scaling()` added, disabled by default (`ADAPTIVE_Q_SCALING_ENABLED=False`). Tested enabled: 0 new DNFs, sat improves on 4/5 `VALIDATION_SUITE` paths and on the recorded map, but recorded-map e_psi gets worse — needs a live A/B before enabling, same lesson as §29 |
 | **Model the yaw cap offline** | **Done** — `alat_ceiling*` in `model/vehicle_physics.py`. Moves every metric toward the car (saturation 4.4→6.3%, a_lat max 14.06→10.53) but closes only part of the gap; live is still 21.1% saturation |
 | **Planner parity bug (`SimPlanner` call sites)** | **Fixed (§31), 2026-08-08.** Offline never passed `smooth_per_pt`/`look_radius`/`plan_horizon`/blend `alpha`/`horizon` to `build_path_walls()`/`blend_paths()`, silently using hardcoded defaults instead of `fsae_params.yaml`'s tuned values (2 of 5 coincidentally matched). Fix narrows the "unexplained gap" 17.43→10.68 pp in one step — bigger than every previously-tested plant/ceiling factor combined — and introduces a new recorded-map DNF at step 95. Weights may need re-tuning against the corrected planner |
 | **Recorded-map DNF (post-§31/braking-fix)** | **Root-caused and fixed (§33/§34), 2026-08-08.** Cause: `_build_wall_path`'s seed filter (`planning/boundary.py`, `fwd > 0.3`) discontinuously drops the nearest midpoint as the car's heading rotates through a corner. This is §19's `min_ahead`/chain-anchor discontinuity, pinned to the exact line. **Fix 1** (`curvature_speed`'s `v_max_eff` no longer reapplied after real curvature is measured) and **Fix 2** (seed filter loosened to `fwd > -0.5`) both shipped, mirrored to all 3 repos (AST-identical, confirmed). Initially reverted for raising `VALIDATION_SUITE`'s DNF count (0/5→1-2/5); re-shipped after recognising that check was the wrong direction here — the live car already DNFs/saturates far more than the offline sim, so the sim failing more after removing artificial forgiveness is closing the gap, not regressing (lesson 32). Produced the closest full-lap sim/live match in this document (§34: ratios 0.68-0.73 across every metric) |

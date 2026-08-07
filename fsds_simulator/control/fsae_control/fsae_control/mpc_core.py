@@ -192,6 +192,30 @@ def _adaptive_R_rate(kappa: float, R_rate_base: np.ndarray) -> np.ndarray:
     return R
 
 
+def _adaptive_Q_scaling(e_y: float, Q_base: np.ndarray, enabled: bool) -> np.ndarray:
+    """
+    Soften the lateral-error cost Q[0,0] when already close to the
+    centreline, to reduce small-error hunting/chatter. Mirrors
+    model_utils.adaptive_Q_scaling in fsae_MPCTest — see that function's
+    docstring for the full mechanism, live-log measurement, and why this is
+    disabled by default (added 2026-08-08, sim_to_real_investigation.md S42).
+    enabled=False returns Q_base untouched.
+    """
+    if not enabled:
+        return Q_base
+    ey_lo, ey_hi, floor = 0.05, 0.3, 0.5
+    ey_abs = abs(e_y)
+    if ey_abs >= ey_hi:
+        scale = 1.0
+    elif ey_abs <= ey_lo:
+        scale = floor
+    else:
+        scale = floor + (1.0 - floor) * (ey_abs - ey_lo) / (ey_hi - ey_lo)
+    Q = Q_base.copy()
+    Q[0, 0] *= scale
+    return Q
+
+
 def _curvature(path: np.ndarray, idx: int) -> float:
     """
     Estimate signed path curvature (1/m) at waypoint idx via finite-difference.
@@ -345,6 +369,12 @@ class MPCController:
         # gap in both). Inlined here per the standing no-settings.py-on-the-
         # car rule; must be kept numerically identical to fsae_MPCTest's copy.
         self.terminal_scale = 1.0
+
+        # ADAPTIVE_Q_SCALING_ENABLED (settings.py, fsae_MPCTest) — see
+        # _adaptive_Q_scaling above and sim_to_real_investigation.md S42.
+        # False = no-op, matching every weight set tuned so far. Not yet
+        # validated live; keep in sync with fsae_MPCTest's copy.
+        self.adaptive_q_scaling_enabled = False
 
         # ── Continuity memory ─────────────────────────────────────────
         self._delta_act:      float      = 0.0
@@ -630,6 +660,7 @@ class MPCController:
         Bd: np.ndarray,
         R_scaled:      np.ndarray,
         R_rate_scaled: np.ndarray,
+        Q_scaled:      np.ndarray | None = None,
     ) -> np.ndarray:
         """
         Solves the MPC optimization problem utilizing warm starts.
@@ -644,7 +675,8 @@ class MPCController:
         qp["u_prev"].value = self._u_prev
 
         # Format arrays for cp.sum_squares element-wise multiplication
-        sqrtQ  = np.sqrt(np.clip(np.diag(self.Q), 1e-6, 1e6))
+        Q_for_solve = self.Q if Q_scaled is None else Q_scaled
+        sqrtQ  = np.sqrt(np.clip(np.diag(Q_for_solve), 1e-6, 1e6))
         sqrtR  = np.sqrt(np.clip(np.diag(R_scaled), 1e-6, 1e6))
         sqrtRr = np.sqrt(np.clip(np.diag(R_rate_scaled), 1e-6, 1e6))
         
@@ -775,12 +807,13 @@ class MPCController:
 
         R_scaled      = _adaptive_R_scaling(car_speed, self.R)
         R_rate_scaled = _adaptive_R_rate(kappa, self.R_rate)
+        Q_scaled      = _adaptive_Q_scaling(e_y, self.Q, self.adaptive_q_scaling_enabled)
 
         # Wall-clock the QP so the log can distinguish "the solver is slow"
         # from "the pipeline upstream of us is slow" — see solve_ms in
         # telemetry_logger's column reference.
         _t_solve0 = time.perf_counter()
-        u_opt = self._solve_qp(x0, Ad, Bd, R_scaled, R_rate_scaled)
+        u_opt = self._solve_qp(x0, Ad, Bd, R_scaled, R_rate_scaled, Q_scaled)
         solve_ms = (time.perf_counter() - _t_solve0) * 1e3
         self._u_history.append(u_opt.copy())
 

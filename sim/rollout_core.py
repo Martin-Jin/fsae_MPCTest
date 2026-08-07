@@ -35,7 +35,9 @@ from model.vehicle_physics import (
 )
 from controller.optimiser import solve_mpc
 from sim.sim_track import SimPerception, SimPlanner, calculate_dynamic_max_steps
-from controller.model_utils import curvature_estimate, adaptive_R_rate, adaptive_R_scaling
+from controller.model_utils import (
+    curvature_estimate, adaptive_R_rate, adaptive_R_scaling, adaptive_Q_scaling,
+)
 from sim.scoring import RolloutMetrics
 import sim.speed_profile as sp
 import cvxpy as cp
@@ -50,7 +52,7 @@ from settings import (
     POSE_HOLD_MAX_TICKS, POSE_HOLD_SEED,
     CONE_NOISE_ENABLED, CONE_POS_JITTER_STD, CONE_NOISE_SEED,
     REF_HEADING_RATE_LIMIT_ENABLED, REF_HEADING_RISE_RATE,
-    TERMINAL_Q_SCALE,
+    TERMINAL_Q_SCALE, ADAPTIVE_Q_SCALING_ENABLED,
 )
 
 STALL_CHECK_INTERVAL = 60   # Steps between rolling stall checks (3 s at 20 Hz)
@@ -799,6 +801,7 @@ def run_core_rollout(
         kappa = curvature_estimate(state)
         R_rate_scaled = adaptive_R_rate(kappa, R_rate)
         R_scaled = adaptive_R_scaling(vx, R)
+        Q_scaled = adaptive_Q_scaling(e_y, Q, enabled=ADAPTIVE_Q_SCALING_ENABLED)
         Ad, Bd = model_lookup(vx, DT)
 
         # ── Delay compensation ───────────────────────────────────────────────
@@ -834,7 +837,7 @@ def run_core_rollout(
 
         # ── MPC solve ─────────────────────────────────────────────────────────
         mpc_result = solve_mpc(
-            x0_mpc, Ad, Bd, n_horizon, Q, R_scaled, u_min, u_max,
+            x0_mpc, Ad, Bd, n_horizon, Q_scaled, R_scaled, u_min, u_max,
             R_rate=R_rate_scaled, u_prev=u_prev, silent=True,
             return_status=True, eps_abs=eps, eps_rel=eps,
             max_iter=max_iter, warm_start=(step != 0),

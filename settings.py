@@ -318,6 +318,22 @@ PLANNER_PATH_BLEND = 0.4        # 0<a<=1; temporal EMA weight toward each freshl
 REF_HEADING_RATE_LIMIT_ENABLED = False
 REF_HEADING_RISE_RATE = 90.0   # deg/s — only used when the flag above is True
 
+# ADAPTIVE_Q_SCALING_ENABLED — "Should the controller relax its lateral-error
+# penalty when it's already close to the centreline, to stop small-error
+# hunting?"
+# Added 2026-08-08 after a live log showed steering-reversal rate
+# INCREASING as |e_y| got smaller (35.6% of ticks at |e_y|<0.05 m, down to
+# 2.4% at |e_y|>0.6 m) — the car darting back and forth across the
+# centreline instead of settling onto it. See
+# controller/model_utils.py::adaptive_Q_scaling for the full mechanism and
+# sim_to_real_investigation.md S42 for the measurement.
+# NOT REPRODUCED on the offline recorded-map rollout as currently tuned
+# (there, reversal rate rises WITH |e_y|, the opposite trend) — this may be
+# a live-only symptom. Default OFF until validated: re-run
+# VALIDATION_SUITE/recorded-map for new DNFs before enabling, then validate
+# on a live log the same way S28's reference-heading limiter was.
+ADAPTIVE_Q_SCALING_ENABLED = False
+
 # ------------------------------------------------------------------------------
 # Cost function weights (for simulator only)
 # ------------------------------------------------------------------------------

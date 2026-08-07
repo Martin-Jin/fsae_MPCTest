@@ -143,6 +143,94 @@ def adaptive_R_rate(kappa, R_rate_base):
     return R
 
 
+def adaptive_Q_scaling(e_y, Q_base, enabled=False):
+    """
+    Soften the lateral-error cost Q[0,0] when the car is already close to the
+    path centreline, to reduce small-error hunting/chatter.
+
+    WHY THIS EXISTS
+    ----------------
+    Added 2026-08-08 after a live log (mpc_standalone_control_1786101462.csv)
+    showed reversal rate INCREASING as |e_y| got smaller: 35.6% of ticks
+    reverse steering sign at |e_y|<0.05 m, dropping monotonically to 2.4% at
+    |e_y|>0.6 m. Only 1.9% of the lap sat at |e_y|<0.05 m -- the car almost
+    never settles onto the centreline, it darts across it (a single
+    contiguous stretch showed e_y swinging -0.033 -> -0.24 -> -0.033 m across
+    two 0.05s ticks while steer swung 2-11 deg). A quadratic cost with no
+    dead zone has the same proportional "pull" toward zero error regardless
+    of how small the error already is, which is a plausible contributor to a
+    self-reinforcing correct-overcorrect cycle right at the point the
+    controller should be settling, not correcting.
+
+    Checked and NOT REPRODUCED on the offline recorded-map rollout in its
+    current tuned state: there, reversal rate INCREASES with |e_y| (7.05% at
+    <0.05m rising to 10.91% at 0.15-0.3m), the opposite trend. This may be a
+    live-only symptom (sensor/state noise, delay-compensation dynamics, or
+    the plant behaving differently from the model near zero slip) rather
+    than something the offline plant reproduces -- see
+    sim_to_real_investigation.md S42 for the full comparison. Implemented
+    here anyway, DISABLED BY DEFAULT, so it exists to test against a live
+    log without risking any offline-tuned behaviour changing silently.
+
+    SHAPE
+    -----
+    Mirrors adaptive_R_rate's saturating-floor style: linear ramp between
+    ey_lo and ey_hi, 1.0 (no change) at and above ey_hi, floor below ey_lo.
+        scale = floor                              |e_y| <= ey_lo
+        scale = floor + (1-floor)*(|e_y|-ey_lo)/(ey_hi-ey_lo)   ey_lo < |e_y| < ey_hi
+        scale = 1.0                                 |e_y| >= ey_hi
+    Defaults (ey_lo=0.05, ey_hi=0.3, floor=0.5) are a starting point chosen
+    to bracket the exact regime the live log's reversal-rate spike sits in
+    (compare tracking_error_speed_gate's ey_lo=0.5/ey_hi=2.0, which gates a
+    completely different, much larger-error regime -- speed reduction during
+    recovery from being badly off-line, not steering softening near-centre).
+    NOT validated against live data yet; must not be enabled without
+    re-running VALIDATION_SUITE/recorded-map for new DNFs first, same as any
+    other weight change.
+
+    Parameters
+    ----------
+    e_y : float
+        Current lateral deviation from the path centreline (m). Sign does
+        not matter; only magnitude is used.
+    Q_base : np.ndarray, shape (8,) or (8,8)
+        Base state cost, typically the tuned Q from tuner/offline_tuner.py
+        or gui/simulation.py. Not modified in-place.
+    enabled : bool, optional
+        Master off-switch. False (default) returns Q_base completely
+        unmodified -- not even copied -- so callers that don't opt in pay
+        zero cost and get byte-identical behaviour to before this function
+        existed.
+
+    Returns
+    -------
+    Q : np.ndarray
+        Q_base unchanged if enabled=False. Otherwise a copy with Q[0,0]
+        (or Q[0] if Q_base is a 1-D diagonal vector) scaled down when
+        |e_y| < ey_hi.
+
+    Called by: sim/rollout_core.py (run_core_rollout), opt-in only
+    """
+    if not enabled:
+        return Q_base
+
+    ey_lo, ey_hi, floor = 0.05, 0.3, 0.5
+    ey_abs = abs(e_y)
+    if ey_abs >= ey_hi:
+        scale = 1.0
+    elif ey_abs <= ey_lo:
+        scale = floor
+    else:
+        scale = floor + (1.0 - floor) * (ey_abs - ey_lo) / (ey_hi - ey_lo)
+
+    Q = np.array(Q_base, copy=True)
+    if Q.ndim == 1:
+        Q[0] *= scale
+    else:
+        Q[0, 0] *= scale
+    return Q
+
+
 def adaptive_R_scaling(vx, R_base):
     """
     Scale the steering and acceleration input costs R[0,0] and R[1,1] based
