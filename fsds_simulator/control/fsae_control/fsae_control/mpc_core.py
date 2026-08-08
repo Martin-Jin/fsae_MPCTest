@@ -314,26 +314,9 @@ class MPCController:
         self.nx = 8
         self.nu = 2
 
-        # Retuned 2026-08-08 — see fsae_MPCTest/"tuning history.txt"'s
-        # 08/08/26 17:36 entry (53.89 min Optuna+CMA-ES run, tuner score
-        # 0.6723) for provenance. This mirror was missing the sync; copied in
-        # to match settings.py's Q_diag/R_diag/R_rate_diag and the live
-        # copy's same three lists (ros2/src/fsae_planning/control/
-        # fsae_control/fsae_control/mpc_core.py) — keep all three identical.
-        # R_diag[1] further lowered 2.11423973420019 -> 0.25x (2026-08-08) --
-        # see settings.py's R_diag comment for the PATH_SUDDEN_TURN sweep
-        # that found this optimum (closes ~half the pre-corner speed-tracking
-        # gap; below 0.25x it plateaus/reverses).
-        # Three further hand edits 2026-08-08 chasing live accel/brake jitter
-        # on straights -- see settings.py's comment for the measured
-        # accel_rms_mps2 progression and caveat that these are live hand-tuning
-        # steps, not offline-validated optima:
-        #   Q_diag[4]: 9.715386646449979 -> 3.715386646449979
-        #   R_diag[0]: 0.44113286130397317 -> 0.84113286130397317
-        #   R_rate_diag[0]: 5.856634028761815 -> 1.856634028761815
-        Q_diag      = [9.642721455680089, 0.6429771471569046, 9.09754222209661, 0.10571694008486163, 3.715386646449979, 0.0, 0.0, 0.0]
-        R_diag      = [0.84113286130397317, 0.5285599335500475]
-        R_rate_diag = [1.856634028761815, 0.6466599689268518]
+        Q_diag      = [8.835061533166446, 0.10074710969078902, 3.121860429243342, 0.10204777472070867, 9.944842732101566, 0.0, 0.0, 0.0]
+        R_diag      = [0.96036050771207, 2.7854960715243156]
+        R_rate_diag = [0.10425012508917786, 2.60031073385853]
 
         self.Q      = np.diag(Q_diag)
         self.R      = np.diag(R_diag)

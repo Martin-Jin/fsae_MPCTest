@@ -441,9 +441,9 @@ ADAPTIVE_Q_SCALING_ENABLED = False
 # heading/speed tracking aren't sacrificed outright. CMA-ES should still
 # re-tune this properly in a full run — this is a manual corrective starting
 # point, not a final value.
-Q_diag      = [9.642721455680089, 0.6429771471569046, 9.09754222209661, 0.10571694008486163, 3.715386646449979, 0.0, 0.0, 0.0]
-R_diag      = [0.84113286130397317, 0.5285599335500475]
-R_rate_diag = [1.856634028761815, 0.6466599689268518]
+Q_diag      = [8.835061533166446, 0.10074710969078902, 3.121860429243342, 0.10204777472070867, 9.944842732101566, 0.0, 0.0, 0.0]
+R_diag      = [0.96036050771207, 2.7854960715243156]
+R_rate_diag = [0.10425012508917786, 2.60031073385853]
 # Three further hand edits 2026-08-08 (live edits, resynced here), all part
 # of chasing live accel/brake jitter on straights (accel_rms_mps2 2.67 after
 # R_diag[1]'s 0.25x cut, 2.06 after Q_diag[4]'s cut below, 1.81 after this
@@ -548,7 +548,7 @@ _stop_requested = False
 #     iteration while testing changes to the tracks or scoring.
 #   - Typical adjustment: double or halve it (e.g. 2500 → 5000 or → 1250)
 #     to meaningfully change tuning time; small changes won't be noticeable.
-MAX_EVALS = 2500
+MAX_EVALS = 1500
 
 # PATH_N_POINTS — "How finely detailed are the practice tracks the tuner
 # drives on?"

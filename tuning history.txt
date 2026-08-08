@@ -407,3 +407,18 @@ Optuna TPE pre-pass = Yes (250 trials, best 0.6962) — CMA-ES x0 seeded from be
   Optuna R_diag      = [0.3650184528877142, 3.0010937609374038]
   Optuna R_rate_diag = [9.16533241119927, 2.8764506689204685]
 Commit hash = f5ec4cc5d10b9df51dec7270a16b1cec184c49b1
+
+# 09/08/26 09:35 - [Pending Description: yet to be tested]
+Q_diag      = [8.835061533166446, 0.10074710969078902, 3.121860429243342, 0.10204777472070867, 9.944842732101566, 0.0, 0.0, 0.0]
+R_diag      = [0.96036050771207, 2.7854960715243156]
+R_rate_diag = [0.10425012508917786, 2.60031073385853]
+Score weights = rmse=0.505, yaw_rms=0.09, smooth_rms=0.04, steer_rms=0.02, accel_rms=0.015, max_steering=0.03, steering_sat_ratio=0.045, jerk_rms=0.02, max_yaw_rate=0.02, steering_reversal_rms=0.05, peak_lateral_error=0.1, speed_rmse=0.015
+Bonus/penalty weights = completion_bonus=0.5, time_bonus=0.25, dnf_penalty=3
+Duration    = 42.27 minutes
+Overall score (avged from all testing scenarios)  = Haven't been tested.
+Tuner score (tuning scenarios / validation suite) = 0.6478
+Optuna TPE pre-pass = Yes (150 trials, best 0.6774) — CMA-ES x0 seeded from best trial
+  Optuna Q_diag      = [7.388417907550287, 0.11031239967821513, 3.916998980037992, 0.16682676184944903, 9.722591406302653, 0.0, 0.0, 0.0]
+  Optuna R_diag      = [0.9935150644658981, 5.216240166292664]
+  Optuna R_rate_diag = [0.5984189093299346, 3.1091981118560135]
+Commit hash = c79f78be0469739e88610f233afdc9b782da6f53
