@@ -4140,6 +4140,31 @@ they are not silently dropped or mistaken for oversights:
 
 ## Open / deferred
 
+> **State as of end of session, 2026-08-08 (post-§54).** The main
+> investigation — why live saturates/tracks worse than `fsae_MPCTest` — is
+> **not closed**. The last full re-measurement of the headline gap is still
+> §33 (91.1% of the saturation gap unexplained); nothing in §50–§54 re-ran
+> that specific measurement, so treat 91.1% as the current number until it
+> is re-measured against §50's fix. What this session added: §50 fixed a
+> real bug (`curvature_speed()`'s apex blind-spot, all 3 copies, validated
+> offline against all 9 recorded-map corners); §51 got a live result with
+> the planner entirely removed from the loop (`path_map_path`) — saturation
+> fell from ~50-55% to 19.5%, a large real improvement, but still ~4× the
+> sim's ~4.8% target, meaning the residual is in controller/plant tracking,
+> not planner path quality; §52 closed a build-hygiene bug that had been
+> corrupting earlier live test results; §53 is an **untested, not
+> tried-and-failed** attempt at increasing the MPC's fixed horizon length
+> (`N_HORIZON`), interrupted before producing a result; §54 is three ideas
+> reviewed and deliberately deferred, not attempted. **Most promising next
+> lever, per §51's own conclusion**: `N_HORIZON` (currently a fixed 25 steps
+> × 0.05s = 1.25s of look-ahead time, ~20-22.5m of look-ahead distance at
+> 16-18 m/s — see §48/§53) is the leading untested suspect, since §51 already
+> isolated out planner-induced path error and the gap remained. §53 records
+> exactly what to re-run to test it properly (a full `N_HORIZON=25/35/45`
+> sweep against `tuner.recorded_map_rollout`, including a solve-time-per-step
+> check against the 0.05s/20Hz real-time budget) before anyone re-attempts it
+> blind.
+
 > **§12–§30 predate §31; §33 is the current re-measurement.** A real parity
 > bug in `sim/sim_track.py::SimPlanner` (offline never passed the live-tuned
 > planner smoothing/blend parameters) was fixed 2026-08-08 (§31), and a
