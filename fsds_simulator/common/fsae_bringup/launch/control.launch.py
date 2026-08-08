@@ -4,7 +4,9 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch.substitutions import (
+    EqualsSubstitution, IfElseSubstitution, LaunchConfiguration, PythonExpression,
+)
 from launch_ros.actions import Node
 
 
@@ -32,6 +34,22 @@ def generate_launch_description():
     log_csv = LaunchConfiguration('log_csv')
     log_dir = LaunchConfiguration('log_dir')
     map_path = LaunchConfiguration('map_path')
+    use_precomputed_speed = LaunchConfiguration('use_precomputed_speed')
+    # Effective map_path handed to the node: '' whenever the feature is
+    # switched off, regardless of what map_path itself is set to -- so
+    # use_precomputed_speed:=false is a reliable one-flag disable without
+    # having to also clear map_path (map_path alone doubles as "where's the
+    # file" and, implicitly, "is this on"; this makes "is this on" explicit).
+    # IfElseSubstitution (not PythonExpression) deliberately: map_path is an
+    # arbitrary filesystem path that could contain backslashes (Windows) or
+    # quotes, which would corrupt/break a PythonExpression string built by
+    # concatenating it into Python source text -- IfElseSubstitution passes
+    # it through as data instead of evaluating it.
+    effective_map_path = IfElseSubstitution(
+        EqualsSubstitution(use_precomputed_speed, 'true'),
+        map_path,
+        '',
+    )
     # Map the friendly name to the package entry point; node name stays
     # 'controller' either way so all three read the `controller:` params block.
     controller_exec = PythonExpression([
@@ -76,19 +94,28 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'map_path', default_value='',
             description=(
-                "Path to a fsae_MPCTest tuner/export_speed_profile.py CSV. "
-                "'' (default) -> live curvature_speed() every tick, as before. "
-                "Set only for a track that's already been fully mapped -- see "
+                "Path to a fsae_MPCTest tuner/export_speed_profile.py CSV, "
+                "exported from a recorded cone map. Has no effect unless "
+                "use_precomputed_speed:=true. Applies to both `mpc` and "
+                "`mpc_standalone`; ignored by `stanley`."
+            )),
+        DeclareLaunchArgument(
+            'use_precomputed_speed', default_value='false',
+            description=(
+                "true  -> look up the target speed from map_path's precomputed "
+                "oracle profile instead of live curvature_speed() every tick. "
+                "Only valid for a track that's already been fully mapped -- see "
                 "mpc_controller_standalone.py's map_path param and S48 in "
-                "fsae_MPCTest/docs/sim_to_real_investigation.md. Applies to "
-                "both `mpc` and `mpc_standalone`; ignored by `stanley`."
+                "fsae_MPCTest/docs/sim_to_real_investigation.md. "
+                "false (default) -> unchanged live curvature_speed() behaviour, "
+                "regardless of what map_path is set to."
             )),
         Node(
             package='fsae_control',
             executable=controller_exec,
             name='controller',
             output='screen',
-            parameters=[config, {'log_csv': log_csv, 'log_dir': log_dir, 'map_path': map_path}],
+            parameters=[config, {'log_csv': log_csv, 'log_dir': log_dir, 'map_path': effective_map_path}],
             condition=run_controller_mpc,
         ),
         Node(
