@@ -4356,7 +4356,7 @@ live).
 | item | status |
 |---|---|
 | Fixed `N_HORIZON` increase (25→35/45), cheap alternative to full speed-dependent horizon scaling | **Root-caused, tested, and shipped (§55), 2026-08-08.** `N_HORIZON=35` is a real, non-trivial optimum on the synthetic sudden-turn corner (peak `\|e_y\|` 0.527→0.450m, score 0.474→0.441; N=50/70 drift slightly worse again), neutral on the full recorded map. Shipped to all copies. Does NOT move the late-turn-in commit timing itself — that's a separate, unfitted geometry-vs-yaw-dynamics limit (the reference has zero curvature signal before the car's own position reaches the corner, so no horizon length gives it anything earlier to react to) |
-| Unsmoothed `tracking_error_speed_gate()` firing even when a precomputed path is active | **Root-caused and fixed (§55), 2026-08-08.** The gate's rationale (a live-planner failure mode) doesn't apply with a static oracle path, and unlike the rise-rate limiter it isn't smoothed — a fast-growing `e_y` sweeping through its active band compounded with an already-falling `v_curv` into a sharp, uncapped `v_desired` step (measured: 8.20→6.53→4.09 m/s in 0.1s), producing erratic `a_cmd` right after. Fixed: no-op whenever a precomputed path is active, live (both node files, both copies) and offline (`sim/rollout_core.py`, gated on `use_planner`). **Verified live**: single-tick `\|dv\|>1.0 m/s` `v_desired` jumps 2→0 in the next full run; `accel_rms_mps2` improved to 1.44, best of the session |
+| Unsmoothed `tracking_error_speed_gate()` firing even when a precomputed path is active | **Root-caused and fixed (§55), 2026-08-08 — superseded (§56), 2026-08-09.** §55's no-op-when-precomputed fix removed the single-tick `v_desired` cliff but also removed the gate's whole safety purpose: a precomputed-path run that drifts off-line kept commanding full track speed regardless (observed driving fast while significantly off-track). §56 replaces "no-op vs. unsmoothed" with `GATE_RATE_LIMIT`, rate-limiting the gate itself (both directions) so it still responds within ~0.35s without the single-tick jump. Applied unconditionally now, no more precomputed/live branch. **Not yet verified live** — re-check §55's own metrics (`accel_rms_mps2`, single-tick `\|dv\|` count) don't regress |
 | `car_pos`/`car_yaw` vs. `car_speed`/`car_yaw_rate` desynchronisation — two independent subscriptions racing the same 250 Hz odom publisher | **Root-caused and fixed (§55), 2026-08-08.** No guarantee the two reflected the same odom instant on any given 20 Hz tick; gap jittered with subscription callback scheduling. Present in every `mpc_standalone` run regardless of path source (purely a localisation-timing bug). Confirmed via an open-loop QP replay (rules out lateral/longitudinal coupling) and a closed-loop offline replay of the identical corner (never oscillates — no equivalent of two racing subscriptions offline). Fixed: `sim_perception.py` now publishes `/fsae/slam/car_odom` from the same atomic snapshot as `/fsae/slam/car_position`; both MPC controllers switched to it. **Not yet verified live as of this entry** |
 | Scoring-side penalty for sustained low steering authority; live validation of `alat_ceiling(v)`; a new planner reference-heading fix attempt | **Reviewed, deliberately left open (§54), 2026-08-08.** Scoring penalty needs the user's tuning-philosophy input before a formula is worth drafting (real risk of a new §47-style objective-gap exploit if designed wrong). `alat_ceiling(v)` needs an actual car session, unchanged from §37. Reference-heading needs a genuinely new idea — the one candidate tried (§29) already failed live for an understood reason; retrying the same fix isn't worth it |
 | Scoring-side penalty for sustained low steering authority; live validation of `alat_ceiling(v)`; a new planner reference-heading fix attempt | **Reviewed, deliberately left open (§54), 2026-08-08.** Scoring penalty needs the user's tuning-philosophy input before a formula is worth drafting (real risk of a new §47-style objective-gap exploit if designed wrong). `alat_ceiling(v)` needs an actual car session, unchanged from §37. Reference-heading needs a genuinely new idea — the one candidate tried (§29) already failed live for an understood reason; retrying the same fix isn't worth it |
@@ -4429,3 +4429,47 @@ The real cause was my own ceiling gain being too stiff — enforcing 7.5 m/s2 as
 an absolute limit when the live car exceeds it on 9.8% of ticks. The lesson is
 the same one as the mu=1.455 fit: **check that the two numbers you are
 comparing are the same quantity** before concluding anything from their ratio.
+
+## 56. §55's gate disable reopened: driving fast off-track on a precomputed path, fixed by smoothing instead of disabling; plus a correction worth keeping about which weights were current
+
+**The symptom that reopened it.** With a precomputed path/speed profile
+active (`use_precomputed_path`/`use_precomputed_speed`), a run that drifted
+significantly off the reference kept commanding near-full track speed
+regardless — exactly the failure mode `tracking_error_speed_gate()` exists to
+prevent, and exactly what disabling it for precomputed runs (§55) traded away.
+§55's own fix was correct for the symptom it targeted (a single-tick
+`v_desired` cliff producing erratic `a_cmd`) but the trade was too blunt: "no
+gate at all" instead of "a smoother gate."
+
+**The fix.** `GATE_RATE_LIMIT` (2.0 gate-units/s, same order of magnitude as
+`SPEED_TARGET_RISE_RATE` by design choice, not measurement) rate-limits
+`tracking_error_speed_gate()`'s own output tick-to-tick, in both directions,
+instead of applying it unsmoothed or not at all. A full `1.0→0.3` gate swing
+now takes ~0.35s instead of one 50ms tick — slow enough that the MPC's
+`e_v` state doesn't jump discontinuously (removing §55's erratic-`a_cmd`
+symptom), fast enough that the car still genuinely slows down within a few
+hundred ms of drifting off-line (recovering the safety property §55's fix
+removed). Applied unconditionally now — the `self._speed_profile is not
+None` / `use_planner` branch that previously chose "gate vs. no gate" is
+gone; every configuration now gets the same rate-limited gate. Shipped to
+both live node copies and `sim/rollout_core.py`.
+
+Not yet validated live — the same discipline as every other unverified entry
+in this document applies: re-measure `accel_rms_mps2` and single-tick
+`|dv_desired|` (§55's own verification metrics) on the next live run to
+confirm the smoothing didn't reopen what §55 fixed.
+
+**A correction worth keeping, in the same spirit as "A correction worth
+keeping (2026-08-06)" under Open/deferred above.** While investigating
+unrelated steering-chatter reports, `mpc_core.py`'s
+`Q_diag`/`R_diag`/`R_rate_diag` were changed to match this repo's
+`settings.py` — reasonable on its face, since `git log` on `settings.py`
+showed no newer commit. But `git log` was only ever run locally; `origin/main`
+had an unpulled commit (`d5d0afd`, a fresh 42-minute CMA-ES+Optuna run,
+tuner score 0.6478 vs the local copy's stale 0.6723) that superseded exactly
+the values being "fixed away." The edit was reverted once the remote was
+actually fetched. **The lesson: "no newer commit" from local `git log` alone
+only means no newer LOCAL commit — check `git fetch` + compare against
+`origin` before concluding a value is stale** — the same underlying mistake
+as that earlier note's "check the two numbers you are comparing are the same
+quantity," applied to git history instead of a physical measurement.

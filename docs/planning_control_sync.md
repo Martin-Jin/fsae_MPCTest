@@ -384,7 +384,13 @@ removed without re-measuring against a repaired planner:
 2. **Tracking-error speed gate** — `tracking_error_speed_gate()`. Scales the
    target down on `|e_y|`/`|e_psi|`. Inert in normal driving (gate < 0.99 on
    1.6% of clean-section ticks) but cuts the commanded speed from a mean 7.4 m/s
-   (max 15.0) to 2.8 m/s (max 4.65) when `|e_y| > 1.5 m`.
+   (max 15.0) to 2.8 m/s (max 4.65) when `|e_y| > 1.5 m`. The gate's own output
+   is additionally rate-limited (`GATE_RATE_LIMIT`, both node files and
+   `sim/rollout_core.py`) so its tick-to-tick change is bounded in either
+   direction — see `sim_to_real_investigation.md` §55/§56 for why: applying
+   it unsmoothed let a fast-changing tracking error compound with an
+   already-falling curvature-based target into a single-tick `v_desired`
+   cliff.
 3. **Speed-target rise limiter** — `SPEED_TARGET_RISE_RATE = 2.0` m/s², applied
    in both controller nodes and `sim/rollout_core.py`. Increases only;
    decreases pass through instantly so a genuine brake request is never
