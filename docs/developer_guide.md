@@ -126,12 +126,12 @@ Before running, confirm:
 - `USE_PLANNER` reflects whether you want the tuner testing the full
   perception/planning pipeline (`True`, default) or driving on the perfect
   reference line (`False`, faster).
-- `USE_OPTUNA_PRESEARCH` (default `False`) — set `True` to run a short
-  Optuna TPE search before CMA-ES starts, which seeds CMA-ES's starting
-  point instead of the fixed geometric midpoint (see
+- `USE_OPTUNA_PRESEARCH` (default `True`) — set `False` to skip the short
+  Optuna TPE search that runs before CMA-ES starts and seeds its starting
+  point, falling back instead to the fixed geometric midpoint (see
   [Optional Optuna TPE pre-search](architecture.md#optional-optuna-tpe-pre-search)).
   Requires `optuna` to be installed (see
-  [Dependencies](#dependencies)). Leave `False` for the exact previous
+  [Dependencies](#dependencies)). Set `False` for the exact pre-2026-08-05
   behaviour.
 
 ### 3. Launch

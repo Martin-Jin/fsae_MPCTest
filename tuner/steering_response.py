@@ -26,6 +26,8 @@ import sys
 
 import numpy as np
 
+from tuner.csv_log import load_columns
+
 # Wheelbase (m): must match model.vehicle_physics lf + lr.
 WHEELBASE = 1.55
 
@@ -41,16 +43,7 @@ MIN_STEER_RAD = np.radians(2.0)
 
 def load_control_log(path):
     """Read a telemetry CSV, skipping the leading '#' metadata block."""
-    with open(path) as fh:
-        lines = [ln for ln in fh if not ln.startswith('#')]
-    header = lines[0].strip().split(',')
-    rows = []
-    for ln in lines[1:]:
-        parts = ln.strip().split(',')
-        if len(parts) == len(header):
-            rows.append([float(p) if p else np.nan for p in parts])
-    return {name: np.array([r[i] for r in rows])
-            for i, name in enumerate(header)}
+    return load_columns(path)
 
 
 def _r2(y, pred):

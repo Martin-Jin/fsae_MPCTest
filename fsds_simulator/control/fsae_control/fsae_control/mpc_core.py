@@ -560,12 +560,19 @@ class MPCController:
         # Orientation of the path segment
         path_yaw = math.atan2(seg[1], seg[0])
 
-        # Robust Euclidean projection for lateral error (matches vehicle_physics.py)
+        # Perpendicular projection for lateral error (matches vehicle_physics.py's
+        # plant_to_tracking_error(): e_y = e_y_proj directly). A prior version of
+        # this line used true_dist * sign(e_y_proj) -- the full Euclidean distance
+        # to the nearest path point, not the perpendicular offset -- which only
+        # equals the correct value when the nearest point happens to be exactly
+        # abeam of the car, and otherwise overstates e_y substantially (e.g. a
+        # 5 m along-track / 0.2 m lateral offset read back as e_y ~= 5.0 instead
+        # of 0.2). Fixed to match both vehicle_physics.py and this file's own
+        # StanleyController.compute(), which never had this bug.
         dx = fa[0] - path[base_idx][0]
         dy = fa[1] - path[base_idx][1]
         e_y_proj = dy * math.cos(path_yaw) - dx * math.sin(path_yaw)
-        true_dist = math.hypot(dx, dy)
-        e_y = true_dist * (1.0 if e_y_proj >= 0 else -1.0)
+        e_y = e_y_proj
 
         # ── Reference-heading rate limit (REF_HEADING_RATE_LIMIT_ENABLED) ──
         # Mirrors fsae_MPCTest/sim/rollout_core.py's planner branch exactly:

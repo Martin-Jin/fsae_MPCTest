@@ -31,6 +31,8 @@ import sys
 
 import numpy as np
 
+from tuner.csv_log import load_columns, medfilt
+
 # Steady-state ceiling fitted by the sweep (m/s2 equivalent lateral).
 SWEEP_CEILING_ALAT = 7.0
 # Single-sample yaw spikes appear in FSDS telemetry (one 4.5 rad/s sample was
@@ -40,27 +42,7 @@ MEDFILT = 5
 
 
 def load(path):
-    with open(path) as fh:
-        lines = [ln for ln in fh if not ln.startswith('#')]
-    header = lines[0].strip().split(',')
-    rows = [ln.strip().split(',') for ln in lines[1:]]
-    rows = [r for r in rows if len(r) == len(header)]
-    out = {}
-    for i, name in enumerate(header):
-        raw = [r[i] for r in rows]
-        if name in ('phase',):
-            out[name] = np.array(raw)
-        else:
-            out[name] = np.array([float(x) if x else np.nan for x in raw])
-    return out
-
-
-def medfilt(x, k=MEDFILT):
-    if k < 3 or len(x) < k:
-        return x
-    pad = k // 2
-    xp = np.pad(x, pad, mode='edge')
-    return np.array([np.median(xp[i:i + k]) for i in range(len(x))])
+    return load_columns(path, string_columns=('phase',))
 
 
 def analyse_trial(t_step, yaw_rate, v, steer):
@@ -68,7 +50,7 @@ def analyse_trial(t_step, yaw_rate, v, steer):
     ok = np.isfinite(t_step) & np.isfinite(yaw_rate)
     if ok.sum() < 20:
         return None
-    ts, r = t_step[ok], np.abs(medfilt(yaw_rate[ok]))
+    ts, r = t_step[ok], np.abs(medfilt(yaw_rate[ok], k=MEDFILT))
     order = np.argsort(ts)
     ts, r = ts[order], r[order]
     if ts[-1] < 1.0:

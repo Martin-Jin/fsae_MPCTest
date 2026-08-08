@@ -874,9 +874,10 @@ subject to:
 
 `Q`, `R`, `R_rate` are diagonal weight matrices — one number per state/input
 dimension, controlling how much the solver cares about minimising that
-particular quantity relative to the others (see
-[Tuning Guide](#tuning-guide) below and the comments in `settings.py` for
-what each entry means practically). They're expressed and injected as
+particular quantity relative to the others (see the
+[Manual Tuning Guide](junior_project_mpc_docs.md#26-manual-tuning-guide) and
+the comments in `settings.py` for what each entry means practically). They're
+expressed and injected as
 square roots (`sqrtQ`, `sqrtR`, `sqrtR_rate`) so the cost can be written with
 `cp.sum_squares`, which CVXPY maps efficiently onto OSQP's internal
 quadratic-cost matrix — this is a numerical-stability/implementation choice,
@@ -1090,7 +1091,7 @@ replaced by the Optuna pre-pass's best result instead.
 
 ### Optional Optuna TPE pre-search
 
-`USE_OPTUNA_PRESEARCH` in `settings.py` (default `False`) runs a short
+`USE_OPTUNA_PRESEARCH` in `settings.py` (default `True` as of 2026-08-05) runs a short
 Optuna TPE (Tree-structured Parzen Estimator) search *before* CMA-ES starts,
 using `OPTUNA_PRE_PASS_EVALS` true rollouts (default 10% of `MAX_EVALS`) out
 of a separate mini-budget — this phase's cost is in addition to, not carved

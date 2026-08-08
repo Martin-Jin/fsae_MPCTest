@@ -615,23 +615,6 @@ PATH_OPTIMAL_TIMES = {
 
 
 # ==========================================
-# TRACKING ERROR HELPERS
-# ==========================================
-def _normalize_angle(angle):
-    """
-    Wrap an angle to the range (−π, π] using atan2.
-
-    Parameters
-    ----------
-    angle : float   Angle in radians (any value).
-    Returns
-    -------
-    float : Equivalent angle in (−π, π].
-    """
-    return np.arctan2(np.sin(angle), np.cos(angle))
-
-
-# ==========================================
 # WORKER INITIALIZER
 # ==========================================
 def init_worker(Q_init, R_init, R_rate_init):

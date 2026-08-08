@@ -275,23 +275,6 @@ def get_car_triangle(x, y, heading, size=2.2):
     return rotated[:, 0] + x, rotated[:, 1] + y
 
 
-def normalize_angle(angle):
-    """
-    Wrap an angle to (−π, π] using atan2.
-
-    Parameters
-    ----------
-    angle : float   Angle in radians (any range).
-
-    Returns
-    -------
-    float : Equivalent angle in (−π, π].
-
-    Called by: simulate_closed_loop(), load_test_path()
-    """
-    return np.arctan2(np.sin(angle), np.cos(angle))
-
-
 # ==========================================
 # INTERACTIVE EVENT HANDLERS
 # ==========================================

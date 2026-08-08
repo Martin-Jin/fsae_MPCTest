@@ -29,6 +29,8 @@ import sys
 
 import numpy as np
 
+from tuner.csv_log import load_columns
+
 # Nominal wheelbase (m): model.vehicle_physics lf + lr.
 WHEELBASE = 1.55
 
@@ -38,22 +40,7 @@ GRIP_CEILING = 12.0
 
 
 def load(path):
-    with open(path) as fh:
-        lines = [ln for ln in fh if not ln.startswith('#')]
-    header = lines[0].strip().split(',')
-    rows = []
-    for ln in lines[1:]:
-        parts = ln.strip().split(',')
-        if len(parts) == len(header):
-            rows.append(parts)
-    cols = {}
-    for i, name in enumerate(header):
-        raw = [r[i] for r in rows]
-        if name == 'phase':
-            cols[name] = np.array(raw)
-        else:
-            cols[name] = np.array([float(x) if x else np.nan for x in raw])
-    return cols
+    return load_columns(path, string_columns=('phase',))
 
 
 def summarise_points(d, L=WHEELBASE):

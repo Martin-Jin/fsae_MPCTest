@@ -48,6 +48,8 @@ sys.path.insert(0, os.path.dirname(_HERE))
 from model.vehicle_physics import (  # noqa: E402
     IDX_R, IDX_VX, VehicleParams, init_plant_state, step_nonlinear_plant,
 )
+from tuner.csv_log import medfilt as _medfilt  # noqa: E402
+from tuner.csv_log import read_data_lines  # noqa: E402
 
 # The harnesses (ros2/run_steering_*.sh) always write to $HOME/fsae_logs, never
 # to a repo-relative path. A one-off manual copy previously left stale
@@ -72,17 +74,7 @@ def _newest(pattern):
 
 
 def _load(path):
-    with open(path) as f:
-        rows = [ln for ln in f if not ln.startswith("#")]
-    return list(csv.DictReader(rows))
-
-
-def _medfilt(x, k=5):
-    x = np.asarray(x, float)
-    if len(x) < k:
-        return x
-    xp = np.pad(x, k // 2, mode="edge")
-    return np.array([np.median(xp[i:i + k]) for i in range(len(x))])
+    return list(csv.DictReader(read_data_lines(path)))
 
 
 def _summarise(t, yaw, v, settle_frac=0.4):
