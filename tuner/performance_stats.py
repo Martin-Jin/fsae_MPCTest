@@ -70,6 +70,7 @@ _IDX_MAX_YAW_RATE       = 8   # Peak yaw rate
 _IDX_STEER_REVERSAL_RMS = 9   # Magnitude-weighted RMS of steering reversal swings
 _IDX_PEAK_LATERAL_ERROR = 10  # Worst single-step lateral error
 _IDX_SPEED_RMSE         = 11
+_IDX_ACCEL_REVERSAL_RMS = 12  # Magnitude-weighted RMS of throttle/brake reversal swings
 
 def report_performance_metrics(history, log_fn=print):
     """
@@ -108,8 +109,12 @@ def report_performance_metrics(history, log_fn=print):
                           unnormalised count mechanically grows with rollout
                           length / shrinks with DT and can't tell swing size apart]
       peak_lateral_error: max(|e_y|)
+      accel_reversal_rms: sqrt( Σ swing² / n ) for each a_cmd sign change > 0.02
+                          m/s² threshold, where swing = |u_accel| + |u_accel_prev|
+                          [identical construction to steering_reversal_rms above,
+                          applied to a_cmd instead of u_steer]
 
-    These 12 metrics are then combined.
+    These 13 metrics are then combined.
 
     Parameters
     ----------
@@ -149,6 +154,12 @@ def report_performance_metrics(history, log_fn=print):
           "steering_reversal_rate": float — Reversals per step, informational
                                     only (not scored)
           "steering_reversals"   : int   — Raw count of steering direction
+                                    changes, informational only (not scored)
+          "accel_reversal_rms"   : float — Magnitude-weighted RMS of throttle/
+                                    brake reversal swings (scored metric)
+          "accel_reversal_rate"  : float — Reversals per step, informational
+                                    only (not scored)
+          "accel_reversals"      : int   — Raw count of accel/brake direction
                                     changes, informational only (not scored)
           "peak_lateral_error_m" : float — Worst lateral error (m)
           "completion_pct"       : float — Path completion percentage
@@ -227,6 +238,9 @@ def report_performance_metrics(history, log_fn=print):
     steering_reversal_rms  = result["steering_reversal_rms"]
     steering_reversal_rate = result["steering_reversal_rate"]  # raw rate, informational only
     steering_reversals  = result["steering_reversals"]  # raw count, informational only
+    accel_reversal_rms  = result["accel_reversal_rms"]
+    accel_reversal_rate = result["accel_reversal_rate"]  # raw rate, informational only
+    accel_reversals     = result["accel_reversals"]  # raw count, informational only
     peak_lateral_error  = result["peak_lateral_error_m"]
     speed_rmse          = result["speed_rmse_mps"]
     n                   = result["n_steps"]
@@ -257,6 +271,7 @@ def report_performance_metrics(history, log_fn=print):
     log_fn(f"  Jerk RMS           : {jerk_rms:8.4f}        (x{W[_IDX_JERK_RMS]:.2f})")
     log_fn(f"  Max yaw rate       : {max_yaw_rate:8.4f} rad/s  (x{W[_IDX_MAX_YAW_RATE]:.2f})")
     log_fn(f"  Steer Reversals    : {steering_reversals:8d} (raw)  {steering_reversal_rate:8.4f} /step  {steering_reversal_rms:8.4f} rms (x{W[_IDX_STEER_REVERSAL_RMS]:.2f})")
+    log_fn(f"  Accel Reversals    : {accel_reversals:8d} (raw)  {accel_reversal_rate:8.4f} /step  {accel_reversal_rms:8.4f} rms (x{W[_IDX_ACCEL_REVERSAL_RMS]:.2f})")
     log_fn(f"  Peak Lateral Error : {peak_lateral_error:8.4f} m        (x{W[_IDX_PEAK_LATERAL_ERROR]:.2f})")
     log_fn(f"  Speed RMS          : {speed_rmse:8.4f} m/s        (x{W[_IDX_SPEED_RMSE]:.2f})")
     log_fn("-" * 60)
@@ -290,6 +305,7 @@ def report_performance_metrics(history, log_fn=print):
         ("steering_reversal_rms", steering_reversal_rms, _IDX_STEER_REVERSAL_RMS),
         ("peak_lateral_error",    peak_lateral_error,    _IDX_PEAK_LATERAL_ERROR),
         ("speed_rmse",            speed_rmse,            _IDX_SPEED_RMSE),
+        ("accel_reversal_rms",    accel_reversal_rms,    _IDX_ACCEL_REVERSAL_RMS),
     ]
     _rows = []
     for _name, _val, _i in _contrib:
@@ -316,6 +332,9 @@ def report_performance_metrics(history, log_fn=print):
         "steering_reversal_rms": steering_reversal_rms,
         "steering_reversal_rate": steering_reversal_rate,  # raw rate, informational only
         "steering_reversals":   steering_reversals,  # raw count, informational only
+        "accel_reversal_rms":   accel_reversal_rms,
+        "accel_reversal_rate":  accel_reversal_rate,  # raw rate, informational only
+        "accel_reversals":      accel_reversals,  # raw count, informational only
         "peak_lateral_error_m": peak_lateral_error,
         "completion_pct":       completion_frac * 100.0,
         "failed":               failed,

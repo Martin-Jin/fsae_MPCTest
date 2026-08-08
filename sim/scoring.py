@@ -4,13 +4,13 @@ sim/scoring.py — Single Source of Truth for MPC Rollout Scoring
 PURPOSE
 -------
 Both offline_tuner.run_headless_rollout() and performance_stats's live-sim
-report used to hand-implement the same 12-metric accumulation independently.
+report used to hand-implement the same 13-metric accumulation independently.
 That duplication is exactly how the two silently drift apart over time.
 
 This module is now the ONLY place that defines:
   1. How raw per-step signals (e_y, e_psi, r, u, v, v_target) get turned
-     into the 12 score metrics (RolloutMetrics)
-  2. How those 12 metrics get combined into the final composite score
+     into the 13 score metrics (RolloutMetrics)
+  2. How those 13 metrics get combined into the final composite score
      (compute_composite_score)
 
 USED BY
@@ -49,6 +49,7 @@ IDX_MAX_YAW_RATE       = 8
 IDX_STEER_REVERSAL_RMS = 9
 IDX_PEAK_LATERAL_ERROR = 10
 IDX_SPEED_RMSE         = 11
+IDX_ACCEL_REVERSAL_RMS = 12
 
 
 def compute_composite_score(
@@ -65,6 +66,7 @@ def compute_composite_score(
     peak_lateral_error,
     speed_rmse,
     progress,
+    accel_reversal_rms=0.0,
     time_bonus=0.0,
     dnf=False,
     offtrack=False,
@@ -73,13 +75,15 @@ def compute_composite_score(
 ):
     """
     Single source of truth for the composite performance score.
-    Combines the 12 metrics with SCORE_WEIGHTS, applies completion/time
+    Combines the 13 metrics with SCORE_WEIGHTS, applies completion/time
     bonuses, DNF penalties, and the inaccurate-solver factor.
     Lower is better.
 
     Parameter order here MUST match the IDX_* constants above / the order
     of SCORE_WEIGHTS in settings.py — the metrics array below is built
-    positionally, not by name.
+    positionally, not by name. accel_reversal_rms is keyword-only with a
+    default so existing positional callers (which predate this metric)
+    don't break; new callers should pass it explicitly.
 
     steering_reversal_rms is an RMS, magnitude-weighted measure of steering
     direction reversals (sqrt(Σ swing² / n steps)) — see
@@ -95,6 +99,14 @@ def compute_composite_score(
     correction. Normalising by n steps keeps it on a comparable per-step
     scale to the other RMS metrics instead of mechanically growing with
     rollout length or shrinking with DT.
+
+    accel_reversal_rms is the identical construction applied to u_opt[1]
+    (a_cmd) instead of u_opt[0] (delta_cmd) — added 2026-08-08 after live
+    logs showed persistent throttle/brake sign-flip chatter with no
+    corresponding cost term: steering_reversal_rms only ever looks at
+    u_opt[0], so nothing in the score discouraged a_cmd from oscillating
+    across zero even though the same magnitude-weighted-swing rationale
+    applies identically to accel/brake effort.
     """
     metrics = np.array(
         [
@@ -110,6 +122,7 @@ def compute_composite_score(
             float(steering_reversal_rms),
             peak_lateral_error,
             speed_rmse,
+            float(accel_reversal_rms),
         ]
     )
     # Normalise each metric by its reference scale BEFORE weighting, so a
@@ -197,7 +210,7 @@ def compute_composite_score(
 
 class RolloutMetrics:
     """
-    Accumulates the 12 raw score-metric sums one simulation step at a time.
+    Accumulates the 13 raw score-metric sums one simulation step at a time.
 
     This is THE canonical per-step accumulation logic. Any rollout loop
     (offline tuner, live simulator, or a metrics-replay over stored history)
@@ -225,7 +238,10 @@ class RolloutMetrics:
         self.steering_saturation = 0.0
         self.steering_reversals = 0
         self.steering_reversal_cost = 0.0
+        self.accel_reversals = 0
+        self.accel_reversal_cost = 0.0
         self._last_sign = 0
+        self._last_accel_sign = 0
         self.max_yaw_rate = 0.0
         self.max_steering = 0.0
         self.max_accel = 0.0
@@ -238,7 +254,7 @@ class RolloutMetrics:
     def add_step(self, e_y, e_psi, r, u_opt, v_target, v_actual, u_max_steer,
                  solver_failed=False, inaccurate=False):
         """
-        Accumulate one timestep's contribution to all 12 metrics.
+        Accumulate one timestep's contribution to all 13 metrics.
 
         Parameters
         ----------
@@ -281,6 +297,21 @@ class RolloutMetrics:
                 delta_swing = abs(u_opt[0]) + abs(self.u_prev[0])
                 self.steering_reversal_cost += delta_swing ** 2
             self._last_sign = current_sign
+
+        # Identical construction to the steering block above, applied to
+        # u_opt[1] (a_cmd) instead of u_opt[0] (delta_cmd) — see
+        # compute_composite_score's accel_reversal_rms docstring for why
+        # this exists. Gate threshold is 0.02 m/s^2 rather than 0.02 rad
+        # since a_cmd's units/typical magnitude differ from steering's, but
+        # serves the same purpose (reject float noise as a sign flip).
+        current_accel_sign = int(np.sign(u_opt[1]))
+        if current_accel_sign != 0:
+            if (self._last_accel_sign != 0 and current_accel_sign != self._last_accel_sign
+                    and abs(u_opt[1]) > 0.02):
+                self.accel_reversals += 1
+                accel_delta_swing = abs(u_opt[1]) + abs(self.u_prev[1])
+                self.accel_reversal_cost += accel_delta_swing ** 2
+            self._last_accel_sign = current_accel_sign
 
         self.max_yaw_rate = max(self.max_yaw_rate, abs(r))
         e_v_now = v_actual - v_target
@@ -332,12 +363,16 @@ class RolloutMetrics:
         # scored) — see the "steering_reversals" raw count below for the
         # unnormalised version.
         steering_reversal_rate = self.steering_reversals / n
+        # Same construction, applied to a_cmd — see add_step's comment.
+        accel_reversal_rms = float(np.sqrt(self.accel_reversal_cost / n))
+        accel_reversal_rate = self.accel_reversals / n
 
         score = compute_composite_score(
             rmse, yaw_rms, smooth_rms, steer_rms, accel_rms,
             self.max_steering, steering_sat_ratio, jerk_rms, self.max_yaw_rate,
             steering_reversal_rms, self.peak_lateral_error, speed_rmse,
-            progress=progress, time_bonus=time_bonus, dnf=dnf, offtrack=offtrack,
+            progress=progress, accel_reversal_rms=accel_reversal_rms,
+            time_bonus=time_bonus, dnf=dnf, offtrack=offtrack,
             inaccurate_count=self.inaccurate_count, reached_end=reached_end,
         )
 
@@ -355,6 +390,9 @@ class RolloutMetrics:
             "steering_reversal_rms": steering_reversal_rms,
             "steering_reversal_rate": steering_reversal_rate,  # informational-only rate
             "steering_reversals": self.steering_reversals,  # informational-only raw count
+            "accel_reversal_rms": accel_reversal_rms,
+            "accel_reversal_rate": accel_reversal_rate,  # informational-only rate
+            "accel_reversals": self.accel_reversals,  # informational-only raw count
             "peak_lateral_error_m": self.peak_lateral_error,
             "speed_rmse_mps": speed_rmse,
             "max_yaw_rate_radps": self.max_yaw_rate,

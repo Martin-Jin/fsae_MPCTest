@@ -676,10 +676,12 @@ METRIC_SCALES = np.array(
                  #    metric of the 12 — previously ~0.0003 effective)
         0.70,    # 10 peak_lateral_error     (0.57-0.82 m)
         2.30,    # 11 speed_rmse             (1.86-2.83 m/s)
+        0.08,    # 12 accel_reversal_rms     (0.037-0.123 measured directly on
+                 #    VALIDATION_SUITE at current tuned weights, use_planner=False)
     ],
     dtype=float,
 )
-assert len(METRIC_SCALES) == 12
+assert len(METRIC_SCALES) == 13
 assert np.all(METRIC_SCALES > 0.0), "METRIC_SCALES must be strictly positive (used as a divisor)"
 
 
@@ -750,6 +752,16 @@ assert np.all(METRIC_SCALES > 0.0), "METRIC_SCALES must be strictly positive (us
 #                            racing line, even briefly
 #  11: speed_rmse           — how far off the intended speed the car drives
 #                            on average
+#  12: accel_reversal_rms   — how large the car's throttle/brake direction
+#                            flips are, magnitude-weighted, same construction
+#                            as steering_reversal_rms above but applied to
+#                            a_cmd instead of delta_cmd. Distinguishes a car
+#                            that's genuinely flip-flopping between throttle
+#                            and brake from one that's simply using a lot of
+#                            accel/brake effort (accel_rms, metric 4) or
+#                            changing it jerkily but monotonically (jerk_rms,
+#                            metric 7) — neither of those isolates a sign
+#                            flip the way this does.
 #
 # Increasing any one weight makes the tuner prioritise fixing that aspect
 # of driving more, even if it makes other aspects slightly worse.
@@ -763,9 +775,11 @@ SCORE_WEIGHTS = np.array(
                 #    hundred ms in corners; CMA-ES had too little pressure to avoid
                 #    this via the composite score, raised so oscillatory yaw actually
                 #    costs the tuner something. Offset below.)
-        0.065,  # 2  smooth_rms               (was 0.085 — trimmed to offset the yaw_rms/
-                #    steering_reversal_rate raise; already has partial overlap with
-                #    those two as a general jerkiness measure)
+        0.040,  # 2  smooth_rms               (was 0.085, then 0.065 — trimmed again,
+                #    0.025 taken to help fund accel_reversal_rms below, on the same
+                #    logic as the original trim: this metric only blunt-instrument
+                #    reacts to accel/brake flip-flopping via (u_opt-u_prev)^2 without
+                #    isolating reversal count/magnitude the way the new metric does)
         0.02,   # 3  steer_rms
         0.015,  # 4  accel_rms               (was 0.005 — too small to give CMA-ES
                 #    any real gradient on throttle/brake effort; nudged up)
@@ -773,7 +787,10 @@ SCORE_WEIGHTS = np.array(
         0.045,  # 6  steering_sat_ratio       (was 0.075 — trimmed to offset the
                 #    yaw_rms/steering_reversal_rate raise; less directly related to
                 #    the oscillation/chatter symptom than the two raised terms)
-        0.045,  # 7  jerk_rms
+        0.020,  # 7  jerk_rms                 (was 0.045 — trimmed 0.025, same
+                #    reasoning as smooth_rms above: jerk_cost reacts to a sign flip's
+                #    large du but conflates it with any other jerky-but-monotonic
+                #    accel change, unlike the new dedicated reversal metric)
         0.02,   # 8  max_yaw_rate
         0.05,   # 9  steering_reversal_rms  (was 0.03 on the old flat-count-based
                 #    "steering_reversal_rate", originally 0.005 on a raw count of
@@ -789,10 +806,24 @@ SCORE_WEIGHTS = np.array(
                 #    normalised) in scale, but re-tuning may want to revisit it.)
         0.10,   # 10 peak_lateral_error
         0.015,  # 11 speed_rmse              (was 0.005 — same issue as accel_rms)
+        0.05,   # 12 accel_reversal_rms      (NEW 2026-08-08 — the identical
+                #    magnitude-weighted-swing construction as steering_reversal_rms
+                #    above, applied to a_cmd instead of delta_cmd. Added after live
+                #    logs showed persistent throttle/brake sign-flip chatter with NO
+                #    corresponding cost term anywhere in the score: smooth_rms/
+                #    jerk_cost react to a_cmd's tick-to-tick delta but can't
+                #    distinguish a reversal from any other jerky-but-same-sign
+                #    change, and nothing else even looks at u_opt[1]'s sign. Given
+                #    the same weight as steering_reversal_rms since the two are the
+                #    same behaviour on the two different actuators; funded by
+                #    trimming smooth_rms/jerk_rms by 0.025 each (see their comments)
+                #    rather than the tracking terms. METRIC_SCALES entry is a
+                #    PLACEHOLDER (1.0) until measured on VALIDATION_SUITE — see that
+                #    entry's comment.)
     ],
     dtype=float,
 )
-assert len(SCORE_WEIGHTS) == 12
+assert len(SCORE_WEIGHTS) == 13
 
 # VALIDATION_SUITE — "Which practice tracks does the tuner actually test the
 # car on?"
