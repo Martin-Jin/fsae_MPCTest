@@ -247,6 +247,19 @@ def _resample_path(waypoints_x, waypoints_y, n_points=PATH_N_POINTS):
     prevents the "not-a-knot" default from creating an upswing at path ends
     that would generate unrealistic curvature and corner speeds.
 
+    Parameterised by cumulative arc-length (not waypoint index). Paths built
+    from long straights + a short dense arc (e.g. PATH_SUDDEN_TURN: two ~20-60m
+    straights at 10 points each, meeting a ~7m/20-point arc) have wildly uneven
+    index-spacing; an index-uniform parameterisation compresses the parameter
+    step right at the straight-to-arc junction, and the clamped spline
+    overshoots there. Measured on PATH_SUDDEN_TURN: index parameterisation
+    produced an effective corner radius of ~0.0007 m (a spline blow-up
+    artefact, not the intended R=4.5 m arc) — tight enough that even full
+    steering lock + full braking cannot stay on the path, which silently
+    capped every offline_tuner.py run at a DNF regardless of MPC weights.
+    Arc-length parameterisation gives uniform physical spacing along the
+    waypoints, closing this overshoot (measured radius recovers to ~3.7 m).
+
     Parameters
     ----------
     waypoints_x : array-like   Sparse X waypoints defining the path shape.
@@ -266,7 +279,9 @@ def _resample_path(waypoints_x, waypoints_y, n_points=PATH_N_POINTS):
     """
     wx = np.asarray(waypoints_x, dtype=float)
     wy = np.asarray(waypoints_y, dtype=float)
-    t = np.linspace(0.0, 1.0, len(wx))
+    chord = np.hypot(np.diff(wx), np.diff(wy))
+    t = np.concatenate([[0.0], np.cumsum(chord)])
+    t /= t[-1]
 
     # Clamped end derivatives: direction of first/last chord
     d0 = np.array([wx[1] - wx[0], wy[1] - wy[0]]) / (t[1] - t[0])

@@ -300,12 +300,20 @@ def _resample_dense(waypoints_x, waypoints_y, n_points=PATH_N_POINTS):
     not require offline_tuner's optional `cma` dependency. Keep this in sync
     with _resample_path() if that function's spline/profile logic changes.
 
+    Parameterised by cumulative arc-length (not waypoint index) — see
+    _resample_path()'s docstring for why (index parameterisation lets the
+    clamped spline overshoot at an uneven-spacing junction, e.g. a straight
+    meeting a short dense arc, producing an effective corner radius far
+    tighter than intended).
+
     Returns (path_X, path_Y, path_Psi, path_v) — see _resample_path()'s own
     docstring for the shape/meaning of each.
     """
     wx = np.asarray(waypoints_x, dtype=float)
     wy = np.asarray(waypoints_y, dtype=float)
-    t = np.linspace(0.0, 1.0, len(wx))
+    chord = np.hypot(np.diff(wx), np.diff(wy))
+    t = np.concatenate([[0.0], np.cumsum(chord)])
+    t /= t[-1]
 
     d0 = np.array([wx[1] - wx[0], wy[1] - wy[0]]) / (t[1] - t[0])
     dN = np.array([wx[-1] - wx[-2], wy[-1] - wy[-2]]) / (t[-1] - t[-2])
