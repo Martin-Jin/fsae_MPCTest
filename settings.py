@@ -443,7 +443,7 @@ ADAPTIVE_Q_SCALING_ENABLED = False
 # point, not a final value.
 Q_diag      = [8.835061533166446, 0.10074710969078902, 3.121860429243342, 0.10204777472070867, 9.944842732101566, 0.0, 0.0, 0.0]
 R_diag      = [0.96036050771207, 2.7854960715243156]
-R_rate_diag = [0.10425012508917786, 2.60031073385853]
+R_rate_diag = [1.10425012508917786, 2.60031073385853]
 # Three further hand edits 2026-08-08 (live edits, resynced here), all part
 # of chasing live accel/brake jitter on straights (accel_rms_mps2 2.67 after
 # R_diag[1]'s 0.25x cut, 2.06 after Q_diag[4]'s cut below, 1.81 after this
