@@ -73,7 +73,8 @@ class MPCControllerNode(Node):
                                        # (default); else the SAME kind of CSV as map_path,
                                        # used for the tracked PATH instead of just speed —
                                        # see mpc_controller_standalone.py's path_map_path param
-                                       # and USE_PRECOMPUTED_PATH in fsae_MPCTest/settings.py.
+                                       # and USE_PLANNER=False in fsae_MPCTest/settings.py (the
+                                       # offline equivalent -- no separate flag exists there).
             ],
         )
         self._v_max = self.get_parameter('v_max').get_parameter_value().double_value

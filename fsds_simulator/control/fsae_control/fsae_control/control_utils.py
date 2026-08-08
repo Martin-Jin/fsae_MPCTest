@@ -497,7 +497,9 @@ def load_path_profile_csv(csv_path: str):
     tuner/export_speed_profile.py, for use as a drop-in replacement of the
     live planner's /fsae/planning/selected_trajectory centreline.
 
-    See USE_PRECOMPUTED_PATH in fsae_MPCTest/settings.py: this removes the
+    See the "Offline parity note for the live ROS side's path_map_path param"
+    comment in fsae_MPCTest/settings.py (USE_PLANNER=False is the offline
+    equivalent -- no separate flag exists there): this removes the
     live planner (centerline_planner.py / boundary.py / cone_map.py) from the
     control loop entirely for a track that's already been mapped, isolating
     controller+plant tracking error from planner-induced path error (e.g. the

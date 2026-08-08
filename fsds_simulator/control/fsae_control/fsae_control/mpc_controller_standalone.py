@@ -110,7 +110,8 @@ class MPCControllerStandaloneNode(Node):
                 ('path_map_path', ''),  # '' -> live /fsae/planning/selected_trajectory
                                        # (default); else the SAME kind of CSV as map_path,
                                        # used for the tracked PATH instead of just speed —
-                                       # see USE_PRECOMPUTED_PATH in fsae_MPCTest/settings.py.
+                                       # see USE_PLANNER=False in fsae_MPCTest/settings.py (the
+                                       # offline equivalent -- no separate flag exists there).
                                        # Removes centerline_planner.py from the control loop
                                        # entirely, to isolate controller/plant tracking error
                                        # from planner-induced path error.
