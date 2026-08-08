@@ -3298,11 +3298,130 @@ caveat), so no further mirroring was needed.
   template-weights pass is not enough to catch a trap that only some
   candidates fall into.
 
-**Not yet done**: re-running the random-vector sweep post-fix to quantify
-the new DNF rate (expect near-zero from `PATH_SUDDEN_TURN`'s geometry
-alone, but `PATH_HAIRPIN` and the template weights' own quality haven't
-been swept). The user's own retune with the fixed generator is the real
-test.
+**Not yet done at the time this was written, done in §47**: re-running the
+random-vector sweep post-fix to quantify the new DNF rate.
+
+## 47. §46 was necessary but not sufficient — the scoring gap it exposed let CMA-ES collapse `Q_diag[0]` and spin the live car out at the first corner
+
+Re-ran the random-vector sweep from §46 with the arc-length fix in place
+(same seed=0, same 2-path suite): **DNF rate dropped but did not go to
+near-zero as expected — still ~8/14 (57%)** in a partial run before being
+superseded by this section's finding. Traced one of the survivors: full
+25° lock sustained for 10+ consecutive steps while `v` (6-9 m/s) stayed
+well above the ~5.3 m/s the corner's 3.75 m radius allows — a genuine
+speed/braking-authority failure on a corner that is now hard-but-feasible
+(confirmed: steering-angle-vs-limit margin unchanged by this run, 22.5°
+needed vs 25° available), not a repeat of §46's geometric bug. So §46
+fixed the impossible case; a real, unforgiving corner remains, and a
+material fraction of the search space still fails it.
+
+**User ran a fresh tuning session post-§46-fix anyway** (Optuna TPE
+pre-search, same local 2-path `VALIDATION_SUITE` override) and reported
+the same symptom as before the fix: `best` score flat for 100+ trials.
+Result:
+
+```
+Q_diag      = [0.197, 4.495, 7.115, 7.311, 5.976, 0, 0, 0]
+R_diag      = [8.433, 2.072]
+R_rate_diag = [1.600, 3.275]
+```
+
+User: "terrible tracking, super low lateral weight and car doesn't even
+turn."
+
+**Confirmed live, not just suspected.** User loaded these weights onto
+the car and reported: at the first turn, "turned so late, it had to
+massively overcorrect and ended up going backwards," then the same thing
+again on the way back, "doing a loop of the starting area" before finally
+settling into the lap. Read `mpc_standalone_control_1786151512.csv`
+directly (`composite_score=13.0` = the DNF ceiling,
+`peak_lateral_error_m=1.43`, `steering_sat_ratio=0.31`) and traced the
+first event step-by-step: at `t=4.5s`, `v=16.2`, `e_psi` already -21.9°
+and growing. Steering pins at 25° by `t=5.0s` and **stays pinned for
+~2 seconds** while `e_psi` grows from -21.9° through -107°(!) — `yaw`
+tracks from 7.6° up through 180° (wrapping to -176.9° at `t=8.99s`,
+`v` bottoming at 0.32 m/s) and on to -79° before the car finally
+re-aligns with the path direction around `t=11.8s`. Not a figure of
+speech: the car does a genuine ~270°+ spin at the corner. "Went
+backwards"/"doing a loop" was the operator's accurate description of
+watching the heading wrap past ±180°, not the wheels actually reversing
+(`v_actual` never goes negative anywhere in the log). User separately
+reported the same weights track well on gradual turns and wobble on
+straights — both consistent with the same root cause (see below), not
+separate issues.
+
+**Root cause, once the actual Q_diag values were compared to the
+template, not just eyeballed as "low":**
+
+| idx | state | template | tuned | ratio |
+|---|---|---|---|---|
+| 0 | `e_y` (lateral position) | 5.652 | 0.197 | **0.035×** |
+| 1 | `e_y_dot` (lateral rate) | 0.316 | 4.495 | 14.2× |
+| 2 | `e_psi` (heading) | 2.798 | 7.115 | 2.5× |
+| 3 | `e_psi_dot` (heading rate) | 0.255 | 7.311 | 28.7× |
+| 4 | `e_v` (speed) | 0.684 | 5.976 | 8.7× |
+
+Not a uniform "gave up on tracking" — CMA-ES moved weight OFF position
+error and ONTO the rate-derivative terms, especially `e_psi_dot`
+(29× template). A controller penalised that heavily for changing heading
+quickly, while barely penalised for being laterally off-line, has every
+incentive to delay turning in (matches the late-turn-in symptom) and,
+once `e_psi` itself (weight 2.5× template) finally dominates enough to
+force a correction, the same heavy `e_psi_dot` penalty fights the
+correction's own yaw-rate — a plausible mechanism for why the recovery
+overshot into a near-full spin instead of settling cleanly. This is a
+tuning-and-scoring outcome, not a separate planner or MPC-formulation
+defect: every value CMA-ES touched is a normal, already-tunable `Q_diag`
+entry, moved to a real local optimum of the objective as currently
+written. The objective, not the MPC design, is what allowed the trade.
+
+**Why the objective allowed it.** Confirmed directly (not just inferred)
+that these weights are NOT bad everywhere: on `PATH_SUDDEN_TURN`/
+`PATH_HAIRPIN` in isolation they track tightly (`mean|e_y|=0.034m`,
+`max|e_y|=0.20m`, no DNF) — the exact suite CMA-ES is scored against never
+sees the failure mode the live car hit. On the recorded comp-test map
+(`tuner/recorded_map_rollout.py`) they do noticeably better than the
+TEMPLATE weights, which DNF on that map (`progress=0.61`) while the tuned
+weights complete it (`progress=0.97`, `score=0.70` vs the template's
+`12.3`) — but `steer_sat_pct=0.0` on that same recorded-map run is the
+offline signature of the same "doesn't turn hard" symptom the live log
+shows directly. So the fix genuinely improved robustness against DNF on
+the harder benchmark while silently trading away tracking authority in a
+way nothing in the score meaningfully punishes.
+
+**Fixed**: raised `Q_BOUNDS[0]`'s floor (the `e_y` multiplier) from `0.1`
+to `1.0` in `tuner/offline_tuner.py`, so `Q_diag[0]` can no longer be
+pushed below the template value (5.65) — the specific collapse observed
+here (`vec[0]≈0.035`) is now outside the search space entirely. Left
+`Q_BOUNDS[1]`/`[2]`/`[3]`/`[4]` untouched — the rate-derivative terms
+climbing high is a symptom of chasing the `e_y` collapse, not
+independently shown to be a problem, and constraining more than the one
+proven failure mode risks over-constraining the search for no measured
+benefit.
+
+**Deliberately not fixed here — the more complete fix.** This bound stops
+the specific collapse that already happened; it does not stop the
+scoring function from rewarding some other low-tracking-authority
+trade-off within the new, narrower space (e.g. `Q_diag[0]` sitting right
+at the new floor of 1.0, `e_y_dot`/`e_psi_dot` still elevated). A scoring
+term that directly penalises sustained low `steer_sat_pct` or long
+high-`|e_psi|` dwell time (mirroring `peak_lateral_error`'s existing
+role, but for control authority rather than tracking error) would close
+the gap at its source instead of by restricting the search space one
+bound at a time. Not implemented this session — flagged for whoever
+tunes `sim/scoring.py` next.
+
+**Validated:** `vec=ones(9)` (template weights) still scores identically
+to before this bound change on the full `VALIDATION_SUITE`
+(`PATH_SUDDEN_TURN`=1.22, `PATH_HAIRPIN`=0.98, etc. — unchanged, since
+the template's own `Q_diag[0]` multiplier is already 1.0, comfortably
+inside the raised floor). `tuner/offline_tuner.py` imports and its
+`bounds` list reflects the new floor correctly (checked directly, not
+inferred).
+
+**Not yet done**: a fresh tuning run with the raised floor, to confirm it
+actually stops CMA-ES from finding an equivalent collapse elsewhere in
+the now-narrower space, and a live re-test of whatever it produces.
 
 ## What generalises
 
@@ -3585,7 +3704,8 @@ test.
 | Sensor noise disabled in every offline comparison | **Found and fixed (§43), 2026-08-08.** `SLAM_NOISE_ENABLED`/`CONE_NOISE_ENABLED` were `False` for every offline run this whole session. At documented (1x) magnitude, enabling closes most of the reversal-rate gap (0.99→3.06/s, live is 3.48) but none of the mean\|e_y\| gap (stuck at 0.06-0.08 vs live's 0.346 across 1x-6x). Flipped to `True` by default — changes what `offline_tuner.py` optimises against |
 | Braking authority under-used approaching corners | **Measured (§44), 2026-08-08 — user's reported symptom, confirmed real.** At worst over-speed moments live: mean `a_cmd`=-0.76 m/s² vs -9.0 available (<9% used); offline: -2.58 vs -3.39 max ever reached. Planner already requests the slowdown in time in every case checked. Leading hypothesis for the remaining tuning-side contribution: `Q_diag[4]` too small relative to `Q_diag[0]`/`Q_diag[2]`; user retuning directly |
 | `curvature_speed()` could exceed `v_max` before a corner enters the scan window | **Root-caused and fixed (§45), 2026-08-08.** S33/S34's fix removed the upper clamp entirely on the curvature-measured path, not just the short-path `v_max_eff` ceiling it targeted. Confirmed live: `v_desired` reached 24.7 m/s vs `v_max`=15.0 in 8 episodes up to 3.4s, including the exact braking event examined in §44. Re-clamped to `v_max` (not `v_max_eff`) in all 3 copies. `PATH_SUDDEN_TURN` (DNF'd every prior run this session) now completes. Recorded-map ratios move substantially toward live on sat (0.38→0.83) and reversals (0.28→0.91) but overshoot past live on e_psi_mean (1.23) and remain far off on mean\|e_y\| (0.21). Not yet tested live. **Correction (§46): necessary but not sufficient** — masked, but did not fix, a second bug that made `PATH_SUDDEN_TURN`'s corner geometrically infeasible for most of the tuner's search space |
-| `offline_tuner.py`'s CMA-ES plateaued at a fixed score for 15+ generations on the user's local `["PATH_SUDDEN_TURN", "PATH_HAIRPIN"]` suite | **Root-caused and fixed (§46), 2026-08-08.** Not a search/local-optimum problem: 50% of a 30-vector random sweep across the full CMA-ES bounds DNF'd, clustering at identical scores (same failure, not scattered noise). Traced to `PATH_SUDDEN_TURN`'s corner requiring 30.6° of steer (vs `max_steer=25°`) — confirmed independent of weights by forcing full lock + full brake (-9.0 m/s², the true physical max) through the corner and still going off-track, at an identical score to 12 decimals. Cause: `_resample_path()` parameterised its clamped cubic spline by waypoint index, not arc-length, so the spline overshot at the straight-to-tight-arc junction (measured: index param → 0.00066 m effective radius vs the intended 4.5 m; arc-length param → 3.75 m). Fixed in `tuner/offline_tuner.py::_resample_path()` and its documented standalone copy `sim/track_io.py::_resample_dense()`. Verified all 10 synthetic paths now within the 25° steering limit. `PATH_SPIRAL` DNFs identically before/after (pre-existing, separate, not fixed) |
+| `offline_tuner.py`'s CMA-ES plateaued at a fixed score for 15+ generations on the user's local `["PATH_SUDDEN_TURN", "PATH_HAIRPIN"]` suite | **Root-caused and fixed (§46), 2026-08-08.** Not a search/local-optimum problem: 50% of a 30-vector random sweep across the full CMA-ES bounds DNF'd, clustering at identical scores (same failure, not scattered noise). Traced to `PATH_SUDDEN_TURN`'s corner requiring 30.6° of steer (vs `max_steer=25°`) — confirmed independent of weights by forcing full lock + full brake (-9.0 m/s², the true physical max) through the corner and still going off-track, at an identical score to 12 decimals. Cause: `_resample_path()` parameterised its clamped cubic spline by waypoint index, not arc-length, so the spline overshot at the straight-to-tight-arc junction (measured: index param → 0.00066 m effective radius vs the intended 4.5 m; arc-length param → 3.75 m). Fixed in `tuner/offline_tuner.py::_resample_path()` and its documented standalone copy `sim/track_io.py::_resample_dense()`. Verified all 10 synthetic paths now within the 25° steering limit. `PATH_SPIRAL` DNFs identically before/after (pre-existing, separate, not fixed). **Correction (§47): necessary but not sufficient** — the corner is now hard-but-feasible, not impossible, and the residual difficulty exposed a scoring gap that let CMA-ES collapse `Q_diag[0]` |
+| Post-§46 tuning run still plateaued; user re-tuned and got `Q_diag[0]`≈0.2 (vs template 5.65), confirmed live to spin the car out at the first corner | **Root-caused (§47), 2026-08-08.** Live log (`mpc_standalone_control_1786151512.csv`) directly confirms the symptom: `e_psi` grows to -107° while steering pins at 25° for ~2s, `yaw` wraps past ±180° (a genuine ~270°+ spin, not the wheels reversing — `v_actual` never goes negative), matching the user's own description exactly ("turned so late... ended up going backwards", "doing a loop of the starting area"). Root cause: CMA-ES moved weight OFF `e_y` (0.035× template) and ONTO `e_y_dot`/`e_psi_dot` (14×/29× template) — a real local optimum, not a bug in the planner or MPC formulation — because the objective doesn't punish it: these exact weights track tightly in isolation on `PATH_SUDDEN_TURN`/`PATH_HAIRPIN` (mean\|e_y\|=0.034m, no DNF) and actually beat the template on the recorded map (progress 0.97 vs template's DNF at 0.61), while `steer_sat_pct=0.0` on that same recorded-map run is the offline signature of the same low-authority failure the live log shows directly. **Fixed**: raised `Q_BOUNDS[0]`'s floor 0.1→1.0 in `tuner/offline_tuner.py`, closing off the specific collapse (`vec[0]≈0.035`) that already happened. **Deliberately not fixed**: the more complete fix — a scoring-side penalty for sustained low `steer_sat_pct`/high-`\|e_psi\|` dwell time — remains open, since the bound only blocks this one collapse, not every low-authority trade-off the current objective might still reward |
 | **Model the yaw cap offline** | **Done** — `alat_ceiling*` in `model/vehicle_physics.py`. Moves every metric toward the car (saturation 4.4→6.3%, a_lat max 14.06→10.53) but closes only part of the gap; live is still 21.1% saturation |
 | **Planner parity bug (`SimPlanner` call sites)** | **Fixed (§31), 2026-08-08.** Offline never passed `smooth_per_pt`/`look_radius`/`plan_horizon`/blend `alpha`/`horizon` to `build_path_walls()`/`blend_paths()`, silently using hardcoded defaults instead of `fsae_params.yaml`'s tuned values (2 of 5 coincidentally matched). Fix narrows the "unexplained gap" 17.43→10.68 pp in one step — bigger than every previously-tested plant/ceiling factor combined — and introduces a new recorded-map DNF at step 95. Weights may need re-tuning against the corrected planner |
 | **Recorded-map DNF (post-§31/braking-fix)** | **Root-caused and fixed (§33/§34), 2026-08-08.** Cause: `_build_wall_path`'s seed filter (`planning/boundary.py`, `fwd > 0.3`) discontinuously drops the nearest midpoint as the car's heading rotates through a corner. This is §19's `min_ahead`/chain-anchor discontinuity, pinned to the exact line. **Fix 1** (`curvature_speed`'s `v_max_eff` no longer reapplied after real curvature is measured) and **Fix 2** (seed filter loosened to `fwd > -0.5`) both shipped, mirrored to all 3 repos (AST-identical, confirmed). Initially reverted for raising `VALIDATION_SUITE`'s DNF count (0/5→1-2/5); re-shipped after recognising that check was the wrong direction here — the live car already DNFs/saturates far more than the offline sim, so the sim failing more after removing artificial forgiveness is closing the gap, not regressing (lesson 32). Produced the closest full-lap sim/live match in this document (§34: ratios 0.68-0.73 across every metric) |

@@ -156,8 +156,20 @@ TUNABLE_R_RATE_IDX = [0, 1]  # d(delta_cmd)/dt, d(a_cmd)/dt
 # Multiplicative bounds on each tunable weight (multiplier, not absolute value).
 # Floor of 0.1 allows reduction below the template; ceiling of 10.0 prevents
 # weights from becoming so large they dominate and mask tracking quality.
+#
+# Q_BOUNDS[0] (e_y, lateral position error) floor raised to 1.0, 2026-08-08:
+# at the 0.1 floor, a live run found Q_diag[0]=0.197 (2% of the template's
+# 5.65) alongside Q_diag[1]/Q_diag[3] (e_y_dot/e_psi_dot) driven to 14x/29x
+# template. The car didn't turn in until e_psi had already grown past -100
+# deg, then oversteered through a near-full spin recovering from it (see
+# fsae_logs/mpc_standalone_control_1786151512.csv). Scoring didn't punish
+# this enough on VALIDATION_SUITE/the recorded map for CMA-ES to avoid it —
+# see docs/sim_to_real_investigation.md S47. Floor prevents the collapse;
+# does not fix the underlying scoring gap (a scoring-side fix, penalising
+# low steering authority or sustained high |e_psi| directly, is the more
+# complete answer and remains open).
 Q_BOUNDS = {
-    0: (0.1, 10.0),
+    0: (1.0, 10.0),
     1: (0.1, 10.0),
     2: (0.1, 10.0),
     3: (0.1, 10.0),
