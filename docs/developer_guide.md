@@ -59,9 +59,12 @@ Either:
   recording, resimulated exactly as `SimPerception`/`SimPlanner` would drive
   it live. The centreline drawn on load is only a reconstruction for the
   oracle-mode reference path and initial camera framing (see
-  `sim/track_io.py`); with `USE_PLANNER = True` (the default), the actual
-  driving line during the rollout still comes from `SimPlanner` rebuilding
-  it cone-by-cone, exactly as for a synthetic path.
+  `sim/track_io.py`). With `USE_PLANNER = True`, the actual driving line
+  during the rollout instead comes from `SimPlanner` rebuilding it
+  cone-by-cone, exactly as for a synthetic path — but `USE_PLANNER = False`
+  is now the default (2026-08-08), so by default the rollout tracks this
+  reconstructed oracle path/speed profile directly, matching the live ROS
+  side's `path_map_path` mode.
 
 ### 4. (Optional) set initial conditions
 
@@ -124,8 +127,8 @@ Before running, confirm:
 - `MAX_EVALS` is set to a budget you're happy to wait for (a good run is
   20 minutes to a few hours depending on core count and `MAX_EVALS`).
 - `USE_PLANNER` reflects whether you want the tuner testing the full
-  perception/planning pipeline (`True`, default) or driving on the perfect
-  reference line (`False`, faster).
+  perception/planning pipeline (`True`) or driving on the perfect
+  reference line (`False`, default as of 2026-08-08, also faster).
 - `USE_OPTUNA_PRESEARCH` (default `True`) — set `False` to skip the short
   Optuna TPE search that runs before CMA-ES starts and seeds its starting
   point, falling back instead to the fixed geometric midpoint (see

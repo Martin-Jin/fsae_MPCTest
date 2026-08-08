@@ -13,11 +13,20 @@ after a plant change. This script makes it one command.
 Usage
 -----
     python3 -m tuner.recorded_map_rollout
+    python3 -m tuner.recorded_map_rollout --planner
     python3 -m tuner.recorded_map_rollout --mode pi --gain 450 --ceiling 6.6
     python3 -m tuner.recorded_map_rollout --no-ceiling
 
-Compare the output against the live car, measured on the same recorded map with
-the same tuned gains:
+Default (as of 2026-08-08) is the oracle/precomputed path, matching
+settings.USE_PLANNER=False — no planner/perception in the loop, and speed
+comes from the recorded track's own oracle profile. Pass --planner to run
+the planner-in-loop rollout instead (live-built centreline, perception
+mistakes included).
+
+Compare the output against the live car, measured on the same recorded map
+with the same tuned gains, PLANNER-IN-LOOP (--planner) — the default
+oracle-path run is not directly comparable to this table, since the live car
+always runs its own online planner:
 
     steering saturation  21.1 %
     |e_psi| mean / p90   15.9 / 42.0 deg
@@ -51,7 +60,7 @@ LIVE = {
 }
 
 
-def run(map_path, params, use_planner=True, continue_after_dnf=False):
+def run(map_path, params, use_planner=False, continue_after_dnf=False):
     path_X, path_Y, path_Psi, path_v, blue, yellow = load_recorded_track(map_path)
     dyn_max, num_steps = compute_step_budget(path_X, path_Y, path_v)
 
@@ -121,8 +130,10 @@ def main():
     ap.add_argument("--tau", type=float)
     ap.add_argument("--ceiling", type=float)
     ap.add_argument("--no-ceiling", action="store_true")
-    ap.add_argument("--oracle", action="store_true",
-                    help="track the global path instead of the planner")
+    ap.add_argument("--planner", action="store_true",
+                    help="run the planner-in-loop instead of tracking the "
+                         "precomputed/oracle path (default: oracle path, "
+                         "matching settings.USE_PLANNER=False)")
     ap.add_argument("--continue-after-dnf", action="store_true",
                     help="keep stepping past a DNF trigger (off-track/stall) "
                          "instead of stopping, to see whether/how the car "
@@ -143,9 +154,9 @@ def main():
     print(f"ceiling  : enabled={p.alat_ceiling_enabled} "
           f"mode={p.alat_ceiling_mode} level={p.alat_ceiling} "
           f"gain={p.alat_ceiling_gain} tau={p.alat_ceiling_tau}")
-    print(f"planner  : {'oracle path' if args.oracle else 'planner-in-loop'}\n")
+    print(f"planner  : {'planner-in-loop' if args.planner else 'oracle path'}\n")
 
-    s = summarise(run(args.map, p, use_planner=not args.oracle,
+    s = summarise(run(args.map, p, use_planner=args.planner,
                       continue_after_dnf=args.continue_after_dnf), p)
 
     print(f"{'metric':<22}{'sim':>10}{'live':>10}{'sim/live':>10}")

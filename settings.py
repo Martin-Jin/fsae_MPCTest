@@ -64,9 +64,11 @@ TERMINAL_Q_SCALE = 1.0
 # False = the tuner gives the car the exact, perfect racing line to follow.
 #         Much faster, useful for quickly testing whether the driving style
 #         itself (speed, smoothness) is good, but won't catch planner bugs.
-# Recommendation: leave as True. Only set False temporarily if you want much
-# faster tuning runs and are only tweaking driving feel, not perception.
-USE_PLANNER = True
+# Default changed to False (2026-08-08) to match the live ROS side's
+# path_map_path mode (precomputed path, no planner/perception in the loop) —
+# see the "Offline parity note" comment below. Set True to re-enable the
+# planner-in-loop rollout (perception mistakes, live-built centreline).
+USE_PLANNER = False
 
 # USE_PRECOMPUTED_SPEED_PROFILE — "For a track that's already been mapped
 # (cone positions known), skip the live per-tick speed re-derivation and use
@@ -95,7 +97,13 @@ USE_PLANNER = True
 #         car exploring an unknown track live.
 # False = unchanged: curvature_speed() on the live planner centreline
 #         every tick, as before.
-USE_PRECOMPUTED_SPEED_PROFILE = False
+#
+# No effect while USE_PLANNER=False above: with the planner disabled,
+# run_core_rollout() already always uses the oracle path_v profile for
+# speed regardless of this flag (rollout_core.py). Set True here only
+# matters if USE_PLANNER is switched back to True and you still want
+# precomputed speed instead of live curvature_speed().
+USE_PRECOMPUTED_SPEED_PROFILE = True
 
 # Offline parity note for the live ROS side's path_map_path param
 # (fsae_planning's mpc_controller.py / mpc_controller_standalone.py, which

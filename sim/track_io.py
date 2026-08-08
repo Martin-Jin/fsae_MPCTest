@@ -31,12 +31,13 @@ that local planner around the recorded lap reuses that safety for the static
 reconstruction too, keeping this path consistent with what SimPlanner actually
 drives (see CLAUDE.md: sim and live planning must stay numerically identical).
 
-This reconstructed centreline is a fallback/reference path only. When the GUI
-loads a recorded track with use_planner=True (the normal mode — see
-settings.USE_PLANNER), the actual driving line still comes from SimPlanner
+This reconstructed centreline is a fallback/reference path only. When
+use_planner=True (see settings.USE_PLANNER — default False as of
+2026-08-08), the actual driving line instead comes from SimPlanner
 rebuilding it cone-by-cone during the rollout, exactly as for a synthetic
-path; this module's reconstruction is only what oracle-mode tracking and the
-initial camera framing use.
+path; with the default use_planner=False, this module's reconstruction IS
+the tracked path (oracle-mode tracking), not just the initial camera
+framing.
 
 Does not require tuner/offline_tuner.py (which imports the optional `cma`
 dependency) — the resampling here is a standalone copy of that module's

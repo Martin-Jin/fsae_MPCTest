@@ -155,7 +155,7 @@ def generate_launch_description():
                 "`mpc` and `mpc_standalone`; ignored by `stanley`."
             )),
         DeclareLaunchArgument(
-            'use_precomputed_path', default_value='false',
+            'use_precomputed_path', default_value='true',
             description=(
                 "true -> track path_map_path's precomputed path instead of "
                 "subscribing to the live planner's "
