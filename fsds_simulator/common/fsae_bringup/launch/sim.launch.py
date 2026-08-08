@@ -26,13 +26,14 @@ from launch.substitutions import LaunchConfiguration, PythonExpression
 #                                                                        # below to change the default
 #                                                                        # instead of passing the flag
 #                                                                        # every launch.
-#   ros2 launch fsae_bringup sim.launch.py use_precomputed_path:=true   # track a precomputed path
-#                                                                        # instead of the live planner's
-#                                                                        # centreline -- removes
-#                                                                        # centerline_planner.py from the
-#                                                                        # loop entirely (planner-vs-
-#                                                                        # controller isolation). Off by
-#                                                                        # default -- see control.launch.py's
+#   ros2 launch fsae_bringup sim.launch.py use_precomputed_path:=false  # live planner centreline
+#                                                                        # instead of tracking a precomputed
+#                                                                        # path -- re-enables
+#                                                                        # centerline_planner.py in the
+#                                                                        # loop. On (oracle path) by
+#                                                                        # default, matching
+#                                                                        # use_precomputed_speed -- see
+#                                                                        # control.launch.py's
 #                                                                        # use_precomputed_path description.
 def generate_launch_description():
     launch_dir = os.path.join(get_package_share_directory('fsae_bringup'), 'launch')
@@ -105,12 +106,13 @@ def generate_launch_description():
                         "path_map_path description."),
         DeclareLaunchArgument(
             'use_precomputed_path',
-            default_value='false',
+            default_value='true',
             description="Passed through to control.launch.py — see that file's "
-                        "use_precomputed_path description. Off by default: "
-                        "this is a diagnostic/experiment mode (planner-vs-"
-                        "controller isolation), not a standing behaviour "
-                        "change like use_precomputed_speed."),
+                        "use_precomputed_path description. On by default, "
+                        "matching use_precomputed_speed: the standing "
+                        "configuration is oracle path + oracle speed. Set "
+                        "false for the planner-vs-controller isolation "
+                        "diagnostic (live planner centreline)."),
         include('perception.launch.py', {'full_track': full_track}),
         include('planning.launch.py',   {'planner': planner}),
         include('control.launch.py',    {
