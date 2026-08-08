@@ -142,16 +142,32 @@ current_recorded_track_idx = -1   # -1 = none loaded yet
 #   Right col: rows 0-4 = five equal-height buttons, rows 5-8 = telemetry box
 # All rows share the same height so buttons are uniform and the map simply
 # spans more of them.
-fig = plt.figure(figsize=(13.0, 8.0))
+fig = plt.figure(figsize=(13.0, 9.2))
 gs  = fig.add_gridspec(
-    9, 2,
+    10, 2,
     width_ratios=[3.8, 1.4],
-    height_ratios=[1, 1, 1, 1, 1, 1, 1, 1, 1],   # 9 equal rows
+    height_ratios=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1],   # 10 equal rows
     left=0.06, right=0.97, top=0.95, bottom=0.04,
     wspace=0.20, hspace=0.45,
 )
 
 ax_map = fig.add_subplot(gs[0:6, 0])   # Map spans rows 0-5 of left column
+
+# Speed profile — row 6 of left column, below the map. Plots v_target (the
+# MPC's commanded speed each step, post curvature/rate-limiting/gating —
+# what actually drives the controller) against v (achieved). A live vertical
+# marker tracks the scrub frame, so a "brakes too late" symptom is visible
+# directly as the gap between where v_target drops and where v catches up,
+# instead of having to infer it from the single-frame telemetry text alone.
+ax_speed = fig.add_subplot(gs[6, 0])
+(speed_target_line,) = ax_speed.plot([], [], "r-",  label="Target Speed", linewidth=1.5)
+(speed_actual_line,) = ax_speed.plot([], [], "b-",  label="Actual Speed", linewidth=1.5, alpha=0.8)
+(speed_scrub_marker,) = ax_speed.plot([], [], color="gray", linewidth=1.0, linestyle="--")
+ax_speed.set_xlabel("step", fontsize=8)
+ax_speed.set_ylabel("m/s", fontsize=8)
+ax_speed.tick_params(labelsize=7)
+ax_speed.grid(True, alpha=0.4)
+ax_speed.legend(loc="upper right", fontsize=7)
 
 # Plot lines — updated each scrub frame and during simulation
 (path_line,)         = ax_map.plot([], [], "r--",  label="Target Path",            linewidth=2)
@@ -169,17 +185,10 @@ ax_map.grid(True)
 ax_map.set_title("Robust High-Speed Path MPC Sandbox", fontweight="bold", fontsize=10)
 ax_map.legend(loc="upper right", fontsize=8)
 
-# ── Sliders — left column rows 6, 7, 8 (below map) ───────────────────────────
-ax_ey0   = fig.add_subplot(gs[6, 0])
-ax_epsi0 = fig.add_subplot(gs[7, 0])
-ax_scrub = fig.add_subplot(gs[8, 0])
-
-pos_map = ax_map.get_position()
-slider_w = pos_map.width * 0.9
-slider_x = pos_map.x0 + 0.08
-
-ax_ey0.set_position([slider_x, pos_map.y0 - 0.08, slider_w, 0.03])
-ax_epsi0.set_position([slider_x, pos_map.y0 - 0.14, slider_w, 0.03])
+# ── Sliders — left column rows 7, 8, 9 (below the speed profile) ─────────────
+ax_ey0   = fig.add_subplot(gs[7, 0])
+ax_epsi0 = fig.add_subplot(gs[8, 0])
+ax_scrub = fig.add_subplot(gs[9, 0])
 
 slider_ey0   = Slider(ax_ey0,   "Initial Lat Error", -4.0,  4.0,  valinit=0.0, valfmt="%0.1f m", color="orange")
 slider_epsi0 = Slider(ax_epsi0, "Initial Yaw Error", -30.0, 30.0, valinit=0.0, valfmt="%0.1f°",  color="orange")
@@ -209,10 +218,11 @@ btn_reset         = Button(ax_btn_reset,         "Reset Environment",   color="t
 btn_optimize      = Button(ax_btn_optimize,      "Show Metrics",        color="lightblue",   hovercolor="deepskyblue")
 btn_benchmark     = Button(ax_btn_benchmark,     "Benchmark All Paths", color="lightyellow", hovercolor="gold")
 
-# ── Telemetry panel — right column rows 6-8 (top-anchored below buttons) ──────
-# Spans three rows; text is top-anchored so it fills downward from just below
-# the last button, matching the map's vertical extent on the left.
-ax_info = fig.add_subplot(gs[6:9, 1])
+# ── Telemetry panel — right column rows 6-9 (top-anchored below buttons) ──────
+# Spans four rows; text is top-anchored so it fills downward from just below
+# the last button, matching the map+speed-profile's combined vertical extent
+# on the left (rows 0-6) plus the slider rows (7-9).
+ax_info = fig.add_subplot(gs[6:10, 1])
 ax_info.axis("off")
 
 # Telemetry text — full axes width, top-anchored, centred horizontally
@@ -760,6 +770,17 @@ def run_simulation(event):
         fontweight="bold", color="darkgreen",
     )
 
+    # Speed profile — static for the whole run; only the scrub marker moves
+    # (in update_scrub_frame). Drawn against step index, not distance, to
+    # match the scrub slider's own units.
+    steps = np.arange(len(history["v"]))
+    speed_target_line.set_data(steps, history["v_target"])
+    speed_actual_line.set_data(steps, history["v"])
+    ax_speed.set_xlim(0, max(1, len(steps) - 1))
+    v_lo = min(0.0, float(np.min(history["v_target"])), float(np.min(history["v"])))
+    v_hi = max(float(np.max(history["v_target"])), float(np.max(history["v"]))) * 1.1
+    ax_speed.set_ylim(v_lo, v_hi if v_hi > v_lo else v_lo + 1.0)
+
     # Set up time-scrub slider
     ax_scrub.set_visible(True)
     slider_scrub.valmax = len(history["X"]) - 1
@@ -898,6 +919,8 @@ def update_scrub_frame(val):
 
     car_x, car_y = get_car_triangle(h["X"][frame], h["Y"][frame], h["psi"][frame])
     vehicle_marker.set_data(car_x, car_y)
+
+    speed_scrub_marker.set_data([frame, frame], ax_speed.get_ylim())
 
     v_target_str = (
         f"{h['v_target'][frame]:6.2f} m/s"

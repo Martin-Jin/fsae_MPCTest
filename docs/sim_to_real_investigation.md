@@ -3574,6 +3574,43 @@ validation is offline-only (the recorded-map replay, and the export
 script's own dry run). The live-side code has not been launched on the
 car yet.
 
+## 49. The first live test of §48's feature ran on a stale `colcon build` — every symptom it "found" was old code
+
+After §48 shipped (S45's `v_max` clip, S46/S47's tuner fixes, and the whole
+precomputed-speed-profile feature), the live car was tested and still
+turned/braked late, with `v_desired` in the CSV log hitting 24.7 m/s against
+a configured `v_max=15.0` — exactly the S45 symptom, which should have been
+impossible with the clip in place.
+
+**Root cause: `ros2/install/` was 2-3 days stale relative to `ros2/src/`.**
+`git`/file mtimes on `control_utils.py` showed the source last edited
+2026-08-08 13:36 (the S45 clip), but the installed copy under
+`ros2/install/fsae_control/lib/python3.12/site-packages/fsae_control/control_utils.py`
+dated 2026-08-07 23:04 — and grepping it directly confirmed neither the
+`np.clip(v_target, v_min, v_max)` fix nor `load_speed_profile_csv`/
+`precomputed_speed_at` existed there at all. The installed `sim.launch.py`
+and `control.launch.py` were equally stale (2026-08-05). Every live run
+since S45 landed, including the one that reported this ticket, was
+therefore running pre-S45/S46/S47/S48 code — `colcon build` was never
+re-run after editing `src/`. Verified directly: computing
+`precomputed_speed_at()` in Python at the exact logged car position
+against the exported CSV returned 15.0, not 24.7 — proving the number in
+the log could not have come from either code path in the *current* source,
+live or oracle.
+
+**Fix**: `colcon build --packages-select fsae_control fsae_bringup` from
+`ros2/`, then confirmed via grep that the installed `control_utils.py` now
+contains both the clip and the new functions, and that `sim.launch.py`'s
+installed copy has `use_precomputed_speed`.
+
+**Consequence**: none of the "still turns/brakes too late" symptoms
+reported after S48 shipped are informative about S48, S47, or S45's actual
+effect — they describe pre-fix behaviour. Re-test on the car only after
+confirming (again) that `colcon build` has actually run since the last
+`src/` edit; a stale install is silent (`ros2 launch` doesn't warn), so this
+is easy to reintroduce by editing source and launching without rebuilding
+in between.
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
@@ -3846,6 +3883,7 @@ car yet.
 
 | item | status |
 |---|---|
+| First live test after §48 still turned/braked late, with `v_desired` hitting 24.7 m/s against `v_max=15.0` — the exact §45 symptom | **Root-caused (§49), 2026-08-08: not a code bug, a stale `colcon build`.** `ros2/install/` was 2-3 days behind `ros2/src/` — the installed `control_utils.py` had neither S45's `np.clip` fix nor §48's `load_speed_profile_csv`/`precomputed_speed_at` at all, confirmed by grepping the installed copy directly. Every live run since S45 landed was running pre-fix code. Fixed by rebuilding (`colcon build --packages-select fsae_control fsae_bringup`); verified the installed copy now matches `src/`. Re-test on the car needed — no result from current code exists yet |
 | **Fresh post-fix live log looked worse than pre-fix baselines** | **Explained, not a regression (§36).** Traced to two localized stall/tangle events (t=40s, t=150s) that drag the mean e_psi up while bulk-of-lap saturation/tracking is statistically unchanged from pre-fix logs. `steer_lp` and pose-age/delay hypotheses both checked and ruled out directly from log columns. Cause of the two stalls themselves not yet identified |
 | Speed-dependent `alat_ceiling(v)` | **Shipped (§37), 2026-08-08.** `max(7.5, 2.46+0.47*v)` — sweep's fit, only raises the ceiling above ~10.7 m/s, never lowers it. Validated: sweep MAE 0.87→0.72, 0 new `VALIDATION_SUITE` DNFs, recorded-map ratios unchanged-to-improved. `fsae_MPCTest`-only (no live plant model to mirror to). Not yet validated live |
 | Solver tolerance mismatch (1e-4 offline / 1e-5 live) | **Ruled out (§38), 2026-08-08.** Measured directly on the recorded map full-lap: byte-identical sat/e_psi/progress/score at both tolerances. OSQP already converges well inside 1e-4 on this QP; not a source of sim/live divergence |
