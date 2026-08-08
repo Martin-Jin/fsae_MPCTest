@@ -372,13 +372,28 @@ class MPCController:
 
         # ADAPTIVE_Q_SCALING_ENABLED (settings.py, fsae_MPCTest) — see
         # _adaptive_Q_scaling above and sim_to_real_investigation.md S42.
-        # ENABLED 2026-08-08 for a live A/B test: the small-error hunting
-        # this targets (35.6% reversal rate at |e_y|<0.05m) was measured
-        # live and NOT reproduced offline, so a live test is the only way to
-        # tell if this helps. Revert to False if it doesn't, or if it DNFs
-        # or otherwise misbehaves -- untested at this point, same caution as
-        # any first live try of a new weight-shaping change (c.f. S29).
-        self.adaptive_q_scaling_enabled = True
+        # Was ENABLED 2026-08-08 for a live A/B test (the small-error
+        # hunting this targets -- 35.6% reversal rate at |e_y|<0.05m -- was
+        # measured live and NOT reproduced offline, so a live test was the
+        # only way to tell if this helps).
+        # REVERTED to False 2026-08-08: a same-day log
+        # (mpc_standalone_control_1786163986.csv) showed steering pin at
+        # the 25 deg hard limit for a continuous 2.86s (t=5.78-8.64s) while
+        # e_psi grew past -112 deg and v_actual collapsed 8.4->2.6 m/s --
+        # this file's own late-turn-in symptom. In the 1s leading up to the
+        # pin (t=4.6-5.6s), e_y sat inside this scaling's soften-band
+        # (<0.3m, floor 0.5x), i.e. the lateral-error cost was actively
+        # discounted at exactly the moment the controller needed to commit
+        # to steering authority early. Not proven causal on its own (the
+        # fixed-time N=25 horizon and the planner's reference-heading lead
+        # -- see the module comments above and sim_to_real_investigation.md
+        # S26-S29/S47/S48 -- are independently-documented contributors to
+        # the same symptom), but this is the one live-tunable knob directly
+        # implicated by this measurement, so default back to matching
+        # settings.py/model_utils.py (both already default False; this was
+        # the one place still drifted True) pending a clean A/B re-test that
+        # isolates it from those other causes.
+        self.adaptive_q_scaling_enabled = False
 
         # ── Continuity memory ─────────────────────────────────────────
         self._delta_act:      float      = 0.0
