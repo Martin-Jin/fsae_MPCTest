@@ -13,6 +13,14 @@ CONTAINER_REPO_ROOT="$(dirname "$CONTAINER_ROS2_DIR")"
 # directory is where gui/simulation.py's RECORDED_TRACK_DIR looks for cone maps.
 MPCTEST_CONE_MAPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/cone_maps"
 
+# Precomputed-map toggles for the mpc/mpc_standalone controller (see
+# fsae_planning's README.md "Precomputed-map launch args" and sim.launch.py's
+# own DeclareLaunchArgument defaults for the full explanation). Set here so
+# they don't need to be typed on every launch; both default to matching
+# sim.launch.py's own defaults (true).
+USE_PRECOMPUTED_SPEED=true
+USE_PRECOMPUTED_PATH=true
+
 # Use the host's native ROS 2 install when available; otherwise fall back to Docker.
 if command -v ros2 >/dev/null 2>&1 && [ -f "$HOST_ROS2_DIR/install/local_setup.bash" ]; then
     USE_DOCKER=false
@@ -129,6 +137,31 @@ else
     echo "⚠️ Warning: Windows Simulator folder path not found!"
 fi
 
+# 2. Rebuild with --symlink-install so edits to src/ take effect immediately,
+# without a separate `colcon build` step. Plain `colcon build` COPIES Python
+# files into install/ at build time, so an edit to src/ after the last build
+# is silently invisible to `ros2 launch` until rebuilt — this bit twice in
+# one session (S49: a stale v_max clip; a stale Q_diag[4] weight straight
+# after). --symlink-install replaces the copy with a symlink for supported
+# files (this workspace's packages are all pure Python + ament_index
+# resources, so every affected file qualifies), so src/ IS the running code.
+# Safe to run every launch: colcon no-ops packages that are already built
+# and up to date.
+echo "[1.5/3] Building workspace (--symlink-install)..."
+if [ "$USE_DOCKER" = true ]; then
+    docker exec "$CONTAINER_NAME" bash -c "
+        source /opt/ros/jazzy/setup.bash && \
+        cd $CONTAINER_ROS2_DIR && \
+        colcon build --symlink-install
+    "
+else
+    bash -c "
+        source /opt/ros/jazzy/setup.bash && \
+        cd '$HOST_ROS2_DIR' && \
+        colcon build --symlink-install
+    "
+fi
+
 # 2. Launch ROS 2 Bridge in background
 echo "[2/3] Initializing fsds_ros2_bridge..."
 if [ "$USE_DOCKER" = true ]; then
@@ -153,6 +186,10 @@ sleep 2
 # sim.launch.py defaults to controller:=mpc_standalone and record_cones:=true,
 # so cone recording starts automatically alongside the stack (no separate
 # terminal needed).
+#
+# The precomputed-speed/path toggles (see fsae_planning's README.md
+# "Precomputed-map launch args") are set via USE_PRECOMPUTED_SPEED /
+# USE_PRECOMPUTED_PATH above, not here.
 echo "[3/3] Launching Autonomous Stack (Perception, Planner, Control, Cone Recorder)..."
 if [ "$USE_DOCKER" = true ]; then
     # No volume mount ties the container to this repo, so we can't write
@@ -163,14 +200,14 @@ if [ "$USE_DOCKER" = true ]; then
         source /opt/ros/jazzy/setup.bash && \
         cd $CONTAINER_ROS2_DIR && \
         source install/local_setup.bash && \
-        ros2 launch fsae_bringup sim.launch.py cone_out_path:=$CONTAINER_REPO_ROOT/cone_map.json
+        ros2 launch fsae_bringup sim.launch.py cone_out_path:=$CONTAINER_REPO_ROOT/cone_map.json log_dir:=$CONTAINER_REPO_ROOT/fsae_logs use_precomputed_speed:=$USE_PRECOMPUTED_SPEED use_precomputed_path:=$USE_PRECOMPUTED_PATH
     "
 else
     bash -c "
         source /opt/ros/jazzy/setup.bash && \
         cd '$HOST_ROS2_DIR' && \
         source install/local_setup.bash && \
-        ros2 launch fsae_bringup sim.launch.py cone_out_path:='$MPCTEST_CONE_MAPS_DIR/cone_map_$(date +%s).json'
+        ros2 launch fsae_bringup sim.launch.py cone_out_path:='$MPCTEST_CONE_MAPS_DIR/cone_map_$(date +%s).json' log_dir:='$HOST_REPO_ROOT/fsae_logs' use_precomputed_speed:=$USE_PRECOMPUTED_SPEED use_precomputed_path:=$USE_PRECOMPUTED_PATH
     "
 fi
 

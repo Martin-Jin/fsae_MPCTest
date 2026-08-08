@@ -24,6 +24,8 @@ setup(
             'mpc_controller            = fsae_control.mpc_controller:main',
             'mpc_controller_standalone = fsae_control.mpc_controller_standalone:main',
             'fsds_bridge               = fsae_control.fsds_bridge:main',
+            'steering_sysid            = fsae_control.steering_sysid:main',
+            'steering_step             = fsae_control.steering_step:main',
         ],
     },
 )

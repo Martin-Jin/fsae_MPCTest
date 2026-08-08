@@ -3544,9 +3544,15 @@ relationship to `fsae_MPCTest`'s location, since that repo lives entirely
 outside the ROS workspace. Whole flow: `python3 -m tuner.export_speed_profile`
 (from `fsae_MPCTest`, any time the map or the profile logic changes) →
 `launch_all.sh` (or a bare `ros2 launch fsae_bringup sim.launch.py`) picks it
-up automatically. Override per-run with
+up automatically. **2026-08-09 update**: both `ros2/launch_all.sh` and its
+`fsae_MPCTest/fsds_simulator/` mirror now set `USE_PRECOMPUTED_SPEED`/
+`USE_PRECOMPUTED_PATH` shell variables near the top of the script and pass
+them through to the `ros2 launch` line, so the default no longer needs
+editing inside `sim.launch.py`/`control.launch.py` — flip those two
+variables instead. Overriding per-run on the command line (e.g.
 `use_precomputed_speed:=false` to force live `curvature_speed()`, or
-`map_path:=/other/file.csv` to point at a different export.
+`map_path:=/other/file.csv` for a different export) still works identically
+underneath.
 
 **2026-08-08 follow-up — on by default, with a path-injection bug caught
 before it shipped that way.** Original version above defaulted
