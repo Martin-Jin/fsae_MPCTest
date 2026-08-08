@@ -3811,6 +3811,78 @@ that remains a manual-process risk, not a code fix can close.
 incident's root cause and fix (a rebuild) but not the structural fix (this
 section) that prevents the class of bug from recurring.
 
+## 53. Fixed-`N_HORIZON` increase (25→35): attempted, incomplete — not a finding either way
+
+§51 (the live `path_map_path` test, planner entirely out of the loop) still
+showed 19.5% steering saturation and a real high-`|e_psi|` episode, pointing
+at horizon length as the next suspect — `N_HORIZON=25 × DT=0.05s = 1.25s` is
+only ~20-22.5 m of look-ahead distance at 16-18 m/s (§48). A full
+speed-dependent horizon was ruled out as a first attempt: the solver
+(`controller/optimiser.py`, OSQP via cvxpy) relies on warm-starting/
+factorisation reuse across consecutive solves of a **fixed-size** QP, so a
+per-tick variable `N_HORIZON` would mean rebuilding the QP structure every
+tick — too large a real-time-performance change to attempt without dedicated
+design. The cheap alternative — just increasing the *fixed* `N_HORIZON`
+(same solver architecture, bigger fixed problem) — had never actually been
+tried, only diagnosed as plausible.
+
+**What happened**: an attempt to test `N_HORIZON=35` (and 45) against
+`tuner.recorded_map_rollout` was started but did not complete — the
+background session hit an unrelated environment failure (API session limit)
+mid-run, before reaching a solve-time measurement or a full before/after
+metrics table. `settings.py` was left with an uncommitted, **untested**
+`N_HORIZON=35` — reverted back to `25` rather than left half-applied or
+shipped on partial evidence, per this document's own standard (§46/§47/§50:
+a change ships only after it's shown to help without regressing elsewhere).
+
+**Status: genuinely open, not a negative result.** Do not read this section
+as "N_HORIZON=35 was tried and didn't work" — it was never actually measured.
+The idea itself is still worth testing: rerun
+`python3 -m tuner.recorded_map_rollout` at `N_HORIZON=25/35/45` (current
+`settings.py` weights), check steering_sat_ratio / \|e_psi\| mean+p90 /
+a_lat / completion against the current baseline, AND measure per-step solve
+time (the real-time budget is 0.05 s/step at 20 Hz — a longer horizon that
+approaches or exceeds that is not viable regardless of accuracy gains,
+independent of whether it helps in an offline rollout with no wall-clock
+constraint). If a value proves out, mirror it to every place `N_HORIZON`
+must match (search for "Must match N_horizon in simulation.py and N in
+control_utils.py exactly" in `settings.py`'s own comment) across all 3
+copies, exactly as §50/§52 did for their fixes — and flag it untested live
+until an actual car session confirms it, consistent with this document's
+"always validate on the car" rule.
+
+**Open/deferred table**: adds a row noting this attempt exists and is
+incomplete, so a future session does not need to rediscover why a fixed
+`N_HORIZON` bump is worth trying, but also does not mistake an interrupted
+attempt for a tested negative result.
+
+## 54. Three items reviewed and deliberately left open (not implemented this session)
+
+Three previously-identified proposals were reviewed against current evidence
+and consciously left unfixed, each for a distinct reason — recorded here so
+they are not silently dropped or mistaken for oversights:
+
+- **A scoring-side penalty for sustained low steering authority** (§47's
+  "deliberately not fixed" item — closing off every low-authority trade-off
+  the objective might reward, not just the one collapse `Q_BOUNDS[0]`'s new
+  floor already blocks). Not designed or shipped this session: changing what
+  `SCORE_WEIGHTS`/the composite score optimises toward is a tuning-philosophy
+  decision with real risk of distorting future CMA-ES runs if the penalty
+  shape is wrong (§47 is itself an example of an objective gap producing a
+  real live spin-out) — this needs the user's input on the intended trade-off
+  before a specific formula is worth drafting, not a unilateral design.
+- **Live validation of `alat_ceiling(v)`'s speed-dependence fix** (§37,
+  shipped `fsae_MPCTest`-only, marked "not yet validated live" since
+  shipping). Cannot be done from this environment — requires an actual car
+  session. Remains exactly as open as §37 already stated.
+- **A new attempt at the planner reference-heading fix** (§29). A first
+  candidate (a 90°/s symmetric reference-rate limiter) was already tried live
+  once and made saturation *worse* (21.1/26.4%→28.0%), for a specific,
+  understood reason (holding the reference back during turn-in defers the
+  heading deficit rather than removing it). Re-attempting this needs a
+  genuinely different idea, not a retry of the same limiter — none was
+  proposed or evaluated this session.
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
@@ -4083,6 +4155,8 @@ section) that prevents the class of bug from recurring.
 
 | item | status |
 |---|---|
+| Fixed `N_HORIZON` increase (25→35/45), cheap alternative to full speed-dependent horizon scaling | **Attempted, incomplete (§53), 2026-08-08.** Started to test against `tuner.recorded_map_rollout`; the run was interrupted by an unrelated environment failure before a metrics table or solve-time measurement was produced. `settings.py` reverted to `N_HORIZON=25` (was left uncommitted at 35, untested — not shipped on partial evidence). Genuinely open, not a negative result — see §53 for exactly what to re-run |
+| Scoring-side penalty for sustained low steering authority; live validation of `alat_ceiling(v)`; a new planner reference-heading fix attempt | **Reviewed, deliberately left open (§54), 2026-08-08.** Scoring penalty needs the user's tuning-philosophy input before a formula is worth drafting (real risk of a new §47-style objective-gap exploit if designed wrong). `alat_ceiling(v)` needs an actual car session, unchanged from §37. Reference-heading needs a genuinely new idea — the one candidate tried (§29) already failed live for an understood reason; retrying the same fix isn't worth it |
 | `curvature_speed()` apex blind-spot — window strides over short tight corners | **Root-caused and fixed (§50), 2026-08-08.** `scan_start` (1.5m) plus the moving-average centring offset (~2.0m) pushed the measurement window's effective start to 3.5m ahead of the car, comfortably skipping this corner's ~2-3m tight zone on every query — `v_target` rose monotonically through the whole corner instead of dipping near the true minimum. Fixed (`scan_start`→0.0, `dense_step`→0.5, `w`→3, decimation removed) in all 3 copies. Full-track validation: all 9 corners fixed, 0 regressions, overspeed fraction 42.5%→4.2% |
 | Build hygiene: stale `colcon build` recurred twice in one session | **Structurally fixed (§52), 2026-08-08.** Root cause of `--symlink-install` not actually symlinking Python files: `zip_safe=True` in all 4 `setup.py` files blocked setuptools develop-mode install. Fixed (`zip_safe=False`, full clean rebuild), and `colcon build --symlink-install` wired into `launch_all.sh` on every invocation so `src/` edits can no longer go stale through the normal entry point |
 | First live test after §48 still turned/braked late, with `v_desired` hitting 24.7 m/s against `v_max=15.0` — the exact §45 symptom | **Root-caused (§49), 2026-08-08: not a code bug, a stale `colcon build`.** `ros2/install/` was 2-3 days behind `ros2/src/` — the installed `control_utils.py` had neither S45's `np.clip` fix nor §48's `load_speed_profile_csv`/`precomputed_speed_at` at all, confirmed by grepping the installed copy directly. Every live run since S45 landed was running pre-fix code. Fixed by rebuilding (`colcon build --packages-select fsae_control fsae_bringup`); verified the installed copy now matches `src/`. Re-test on the car needed — no result from current code exists yet |
