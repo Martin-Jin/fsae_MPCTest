@@ -31,9 +31,7 @@ def generate_launch_description():
     controller = LaunchConfiguration('controller')
     log_csv = LaunchConfiguration('log_csv')
     log_dir = LaunchConfiguration('log_dir')
-    run_controller = IfCondition(
-        PythonExpression(["'", planner, "' != 'skidpad_planner'"])
-    )
+    map_path = LaunchConfiguration('map_path')
     # Map the friendly name to the package entry point; node name stays
     # 'controller' either way so all three read the `controller:` params block.
     controller_exec = PythonExpression([
@@ -45,6 +43,23 @@ def generate_launch_description():
     # /fsds/control_command) when the standalone MPC node is selected.
     run_bridge = IfCondition(
         PythonExpression(["'", controller, "' != 'mpc_standalone'"])
+    )
+    # map_path is an MPC-only param (mpc_controller.py / mpc_controller_standalone.py
+    # both declare_parameters it; stanley_controller.py does not) -- passing it
+    # unconditionally would raise ParameterNotDeclaredException on the default
+    # controller:=stanley. Only include it in the params list for mpc/mpc_standalone,
+    # via a separate Node() entry rather than branching one entry's params.
+    run_controller_mpc = IfCondition(
+        PythonExpression([
+            "'", planner, "' != 'skidpad_planner' and '", controller,
+            "' in ('mpc', 'mpc_standalone')"
+        ])
+    )
+    run_controller_non_mpc = IfCondition(
+        PythonExpression([
+            "'", planner, "' != 'skidpad_planner' and '", controller,
+            "' not in ('mpc', 'mpc_standalone')"
+        ])
     )
 
     return LaunchDescription([
@@ -58,13 +73,31 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'log_dir', default_value='',
             description="Controller CSV telemetry output dir ('' -> ~/fsae_logs)"),
+        DeclareLaunchArgument(
+            'map_path', default_value='',
+            description=(
+                "Path to a fsae_MPCTest tuner/export_speed_profile.py CSV. "
+                "'' (default) -> live curvature_speed() every tick, as before. "
+                "Set only for a track that's already been fully mapped -- see "
+                "mpc_controller_standalone.py's map_path param and S48 in "
+                "fsae_MPCTest/docs/sim_to_real_investigation.md. Applies to "
+                "both `mpc` and `mpc_standalone`; ignored by `stanley`."
+            )),
+        Node(
+            package='fsae_control',
+            executable=controller_exec,
+            name='controller',
+            output='screen',
+            parameters=[config, {'log_csv': log_csv, 'log_dir': log_dir, 'map_path': map_path}],
+            condition=run_controller_mpc,
+        ),
         Node(
             package='fsae_control',
             executable=controller_exec,
             name='controller',
             output='screen',
             parameters=[config, {'log_csv': log_csv, 'log_dir': log_dir}],
-            condition=run_controller,
+            condition=run_controller_non_mpc,
         ),
         Node(
             package='fsae_control',

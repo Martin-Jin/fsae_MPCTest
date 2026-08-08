@@ -391,3 +391,78 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
     # the point curvature is finally measured already faster than intended,
     # not just later than intended.
     return float(np.clip(v_target, v_min, v_max))
+
+
+def load_speed_profile_csv(csv_path: str):
+    """
+    Load a pre-computed (x, y, v_target) speed profile exported by
+    fsae_MPCTest's tuner/export_speed_profile.py.
+
+    For a track that's already been mapped, this replaces curvature_speed()'s
+    per-tick re-derivation with a lookup against the oracle profile computed
+    once, offline, from the WHOLE recorded map -- see
+    fsae_MPCTest/docs/sim_to_real_investigation.md S48 for why: the live-built
+    centreline is measurably shorter than curvature_speed()'s own assumed
+    scan_end=24m on effectively every tick (perception FOV clips laterally on
+    a corner before its forward window does), so the live planner is
+    permanently short of the lookahead its own braking-distance design
+    assumes. This bypasses that shortfall entirely for a known track, since
+    it needs no live cone visibility to know the target speed.
+
+    Deliberately does NOT depend on scipy or fsae_MPCTest's centreline
+    reconstruction (sim/track_io.py, which needs CubicSpline and a
+    planning/boundary.py march over the whole lap) -- that reconstruction
+    runs once, offline, when the CSV is exported; this is a plain reader so
+    the car's control package picks up no new dependency for it.
+
+    Parameters
+    ----------
+    csv_path : str   Path to a CSV with header "x,y,v_target" (comment lines
+                      starting with '#' are skipped).
+
+    Returns
+    -------
+    (path_X, path_Y, path_V) : tuple of np.ndarray, shape (n,)
+
+    Raises
+    ------
+    FileNotFoundError, ValueError : bad csv_path or malformed contents.
+    """
+    xs, ys, vs = [], [], []
+    with open(csv_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#') or line.startswith('x,y'):
+                continue
+            x_s, y_s, v_s = line.split(',')
+            xs.append(float(x_s))
+            ys.append(float(y_s))
+            vs.append(float(v_s))
+    if len(xs) < 2:
+        raise ValueError(f"{csv_path}: fewer than 2 valid rows")
+    return np.asarray(xs), np.asarray(ys), np.asarray(vs)
+
+
+def precomputed_speed_at(car_pos, path_X, path_Y, path_V) -> float:
+    """
+    Nearest-point lookup into a pre-computed speed profile (see
+    load_speed_profile_csv()).
+
+    Deliberately a plain nearest-point search, not a Frenet/arc-length
+    projection: the profile is dense (see export script, default 1000 pts
+    over a lap), so nearest-point error is small and this avoids needing the
+    heading/tangent bookkeeping a proper Frenet projection would add for a
+    speed lookup that only needs to be "close enough," unlike e_y/e_psi
+    tracking error, which does need that precision.
+
+    Parameters
+    ----------
+    car_pos : array-like, shape (2,)   Car's current [x, y] (global frame).
+    path_X, path_Y, path_V : np.ndarray, shape (n,)   From load_speed_profile_csv().
+
+    Returns
+    -------
+    float : v_target at the nearest profile point to car_pos.
+    """
+    d2 = (path_X - car_pos[0]) ** 2 + (path_Y - car_pos[1]) ** 2
+    return float(path_V[int(np.argmin(d2))])

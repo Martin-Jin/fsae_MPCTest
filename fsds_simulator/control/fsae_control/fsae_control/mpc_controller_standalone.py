@@ -65,7 +65,10 @@ from geometry_msgs.msg import PoseArray, PoseStamped
 from nav_msgs.msg import Odometry
 from rclpy.time import Time
 
-from fsae_control.control_utils import curvature_speed, tracking_error_speed_gate
+from fsae_control.control_utils import (
+    curvature_speed, load_speed_profile_csv, precomputed_speed_at,
+    tracking_error_speed_gate,
+)
 from fsae_control.mpc_core import MAX_STEER_RAD, MPCController
 from fsae_control.telemetry_logger import ControlLogger
 
@@ -97,10 +100,30 @@ class MPCControllerStandaloneNode(Node):
                 ('v_min', 1.5),       # m/s — minimum speed through tight corners
                 ('log_csv', False),   # write CSV telemetry to log_dir
                 ('log_dir', ''),      # '' -> ~/fsae_logs
+                ('map_path', ''),     # '' -> live curvature_speed() (default);
+                                       # else a fsae_MPCTest tuner/export_speed_profile.py
+                                       # CSV to use instead — see USE_PRECOMPUTED_SPEED_PROFILE
+                                       # in fsae_MPCTest/settings.py and S48 in
+                                       # sim_to_real_investigation.md for why.
             ],
         )
         self._v_max = self.get_parameter('v_max').get_parameter_value().double_value
         self._v_min = self.get_parameter('v_min').get_parameter_value().double_value
+
+        self._speed_profile = None  # (path_X, path_Y, path_V) or None
+        map_path = self.get_parameter('map_path').get_parameter_value().string_value
+        if map_path:
+            try:
+                self._speed_profile = load_speed_profile_csv(map_path)
+                self.get_logger().info(
+                    f'Loaded precomputed speed profile ({len(self._speed_profile[0])} pts) '
+                    f'from {map_path} — using it instead of live curvature_speed().'
+                )
+            except (OSError, ValueError) as exc:
+                self.get_logger().error(
+                    f'Failed to load map_path={map_path}: {exc}. '
+                    'Falling back to live curvature_speed().'
+                )
 
         self._telemetry = None
         if self.get_parameter('log_csv').get_parameter_value().bool_value:
@@ -249,13 +272,21 @@ class MPCControllerStandaloneNode(Node):
         # passing the whole path silently mis-measures both whenever the car is
         # past the path's first point. sim/rollout_core.py already sliced
         # (cl[cl_idx:]); this brings the live node into parity with it.
-        path_ahead = self._path_pts
-        if len(path_ahead) > 2:
-            i_near = int(np.argmin(np.linalg.norm(path_ahead - self._car_pos, axis=1)))
-            if i_near < len(path_ahead) - 2:
-                path_ahead = path_ahead[i_near:]
+        if self._speed_profile is not None:
+            # Track is already fully mapped (map_path param set) — look up
+            # the oracle speed target instead of re-deriving it from the
+            # live-built centreline. See load_speed_profile_csv()'s docstring
+            # and sim_to_real_investigation.md S48 for why.
+            path_X, path_Y, path_V = self._speed_profile
+            v_curv = precomputed_speed_at(self._car_pos, path_X, path_Y, path_V)
+        else:
+            path_ahead = self._path_pts
+            if len(path_ahead) > 2:
+                i_near = int(np.argmin(np.linalg.norm(path_ahead - self._car_pos, axis=1)))
+                if i_near < len(path_ahead) - 2:
+                    path_ahead = path_ahead[i_near:]
 
-        v_curv = curvature_speed(path_ahead, v_max=self._v_max, v_min=self._v_min)
+            v_curv = curvature_speed(path_ahead, v_max=self._v_max, v_min=self._v_min)
 
         # Scale the target down when we're failing to track. Uses the PREVIOUS
         # tick's errors (this tick's aren't known until the MPC solves), which

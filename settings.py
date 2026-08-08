@@ -68,6 +68,35 @@ TERMINAL_Q_SCALE = 1.0
 # faster tuning runs and are only tweaking driving feel, not perception.
 USE_PLANNER = True
 
+# USE_PRECOMPUTED_SPEED_PROFILE — "For a track that's already been mapped
+# (cone positions known), skip the live per-tick speed re-derivation and use
+# the full-map speed profile computed once, up front, from the whole path."
+#
+# curvature_speed() (sim/speed_profile.py) re-derives the target speed every
+# tick from only the sub-path currently visible/built — by design, since a
+# real car doesn't have the map on its first lap. But measured directly on
+# the recorded comp-test map (2026-08-08): the live-built centreline is
+# SHORTER than curvature_speed()'s own assumed scan_end=24m on 100% of
+# steps (median 21.6m, <15m on ~20% of steps, <10m on ~8% — almost
+# certainly at the sharper corners, where the perception FOV's lateral
+# window clips before its forward window does). That silently gives the
+# speed planner less runway than its own braking-distance design assumes,
+# on every tick — a second, independent contributor to "brakes too late"
+# alongside the MPC's own fixed-time (not fixed-distance) horizon (see
+# docs/sim_to_real_investigation.md S48).
+#
+# True  = once a recorded map is loaded (sim/track_io.load_recorded_track()),
+#         look up the target speed from that map's own oracle profile
+#         (path_v, computed non-causally from the WHOLE path via
+#         compute_speed_profile()) at the car's current position, instead
+#         of calling curvature_speed() on the live-built centreline.
+#         Only valid when the whole track is already mapped — this is
+#         explicitly the pre-mapped-track case, not a general fix for a
+#         car exploring an unknown track live.
+# False = unchanged: curvature_speed() on the live planner centreline
+#         every tick, as before.
+USE_PRECOMPUTED_SPEED_PROFILE = False
+
 # DELAY_STEPS — "How much lag is there between the car deciding to steer and
 # the wheels actually moving?"
 # Real hardware (radios, motors, computers) has a small delay before a

@@ -53,6 +53,7 @@ from settings import (
     CONE_NOISE_ENABLED, CONE_POS_JITTER_STD, CONE_NOISE_SEED,
     REF_HEADING_RATE_LIMIT_ENABLED, REF_HEADING_RISE_RATE,
     TERMINAL_Q_SCALE, ADAPTIVE_Q_SCALING_ENABLED,
+    USE_PRECOMPUTED_SPEED_PROFILE,
 )
 
 STALL_CHECK_INTERVAL = 60   # Steps between rolling stall checks (3 s at 20 Hz)
@@ -690,15 +691,30 @@ def run_core_rollout(
                 else:
                     ref_psi_prev = rpsi
 
-                # No pre-computed profile exists for a live-built centreline (see
-                # SimPlanner) — derive the target speed on-demand each step from
-                # the sub-path ahead of the car, exactly as the live ROS node does
-                # via control_utils.curvature_speed().
-                dists = np.linalg.norm(cl - car_pos_np, axis=1)
-                cl_idx = int(np.argmin(dists))
-                v_target = sp.curvature_speed(
-                    cl[cl_idx:], v_max=PLANNER_V_MAX, v_min=PLANNER_V_MIN
-                )
+                if USE_PRECOMPUTED_SPEED_PROFILE:
+                    # Track is already fully mapped (settings.py's
+                    # USE_PRECOMPUTED_SPEED_PROFILE) -- use the oracle speed
+                    # profile computed once from the WHOLE path (path_v_profile,
+                    # non-causal, see speed_profile.compute_speed_profile()) at
+                    # the car's current position, instead of re-deriving from
+                    # only the live-built sub-path. Bypasses the perception-FOV
+                    # lookahead shortfall measured in S48 (live centreline is
+                    # shorter than curvature_speed()'s own scan_end=24m on 100%
+                    # of recorded-map steps) entirely, since it needs no live
+                    # cone visibility at all for the speed target. idx is one
+                    # step stale here (updated later this loop, same as the
+                    # path_v_profile[idx] fallback below) -- accepted, not new.
+                    v_target = float(path_v_profile[idx])
+                else:
+                    # No pre-computed profile exists for a live-built centreline
+                    # (see SimPlanner) -- derive the target speed on-demand each
+                    # step from the sub-path ahead of the car, exactly as the
+                    # live ROS node does via control_utils.curvature_speed().
+                    dists = np.linalg.norm(cl - car_pos_np, axis=1)
+                    cl_idx = int(np.argmin(dists))
+                    v_target = sp.curvature_speed(
+                        cl[cl_idx:], v_max=PLANNER_V_MAX, v_min=PLANNER_V_MIN
+                    )
 
                 if want_history:
                     history["planner_X"].append(cl_x)

@@ -3423,6 +3423,98 @@ inferred).
 actually stops CMA-ES from finding an equivalent collapse elsewhere in
 the now-narrower space, and a live re-test of whatever it produces.
 
+## 48. Two independent lookahead shortfalls found, and a precomputed-speed-profile bypass added for a known/mapped track
+
+User re-tuned with more conservative weights and still saw late turn-in/
+braking live. Asked directly: is `curvature_speed()`'s lookahead actually
+working as designed? Investigated the lookahead budget end to end rather
+than the weights again, since §47 already showed weights alone aren't the
+whole story.
+
+**Finding 1 — perception FOV starves `curvature_speed()`'s own assumed
+scan window.** `curvature_speed()` assumes `scan_end=24m` of visible
+path (sized, per its own comment, so a tight hairpin is seen in time to
+brake for at a realistic deceleration). Measured directly on a recorded-
+map replay (template weights, `use_planner=True`): the live-built
+centreline handed to it is **shorter than 24m on 100% of steps**
+(median 21.6m), dropping under 15m on ~20% of steps and under 10m on ~8%
+— almost certainly at the sharper corners, where the perception FOV's
+rectangular window (`LOOK_AHEAD=25m` forward, `LOOK_WIDE=±10m` lateral,
+`sim/sim_track.py`) clips laterally before it clips forward. The
+function's braking-distance math (`A_BRAKE_PLAN`, `entry_margin`, the
+S45 `v_max` clamp) is all correct; it is just working with less runway
+than its own design assumes, on every single tick.
+
+**Finding 2 (from the user's own question) — the MPC's prediction
+horizon is fixed in TIME, not distance, and does not scale with speed.**
+`N_HORIZON=25` steps `× DT=0.05s = 1.25s` (confirmed against
+`mpc_controller.py`'s own docstring: "the MPC plans a 1.25 s horizon").
+At the ~16-18 m/s seen approaching the sharp corners in the logs, that's
+only **~20-22.5m of horizon distance** — comparable to or less than
+Finding 1's already-short centreline. `n_horizon`/`N_HORIZON` is a
+hardcoded constant everywhere it's used (checked across `controller/`,
+`sim/`, and every `tuner/*.py` caller; no variable-horizon logic exists
+anywhere in either stack). So the MPC's own optimisation window shrinks,
+in distance, exactly as speed rises and required braking distance grows
+— a second, independent contributor to "brakes too late," on top of
+§47's `Q_diag[0]` collapse and Finding 1's perception shortfall. **Not
+fixed this session** — user asked to scope it as a separate follow-up
+(a speed-scaling horizon trades off solver cost if done via more steps,
+or discretisation accuracy if done via a longer per-step `DT`; needs its
+own validation, not folded into this section's change).
+
+**Feature added (user's proposal): bypass Finding 1 entirely for an
+already-mapped track.** Cone-mapping happens on an earlier lap before a
+timed run in FSAE — so for a known track, there is no reason to re-derive
+the speed target from a truncated live-built centreline every tick when
+the WHOLE map's oracle profile (already computed non-causally by
+`compute_speed_profile()` for the offline oracle-tracking branch) is
+available. Added as an explicit override, not a replacement:
+
+- **Offline** (`fsae_MPCTest`): `settings.USE_PRECOMPUTED_SPEED_PROFILE`
+  (default `False`, unchanged behaviour). When `True`, `sim/rollout_core.py`'s
+  live-planner branch looks up `path_v_profile[idx]` (the oracle profile
+  already passed into `run_core_rollout()`) instead of calling
+  `sp.curvature_speed()` on the live-built sub-path. Verified: flag off
+  reproduces every prior `VALIDATION_SUITE` score exactly (byte-identical);
+  flag on produces a correctly-varying, corner-anticipating `v_target`
+  trace on the recorded map (checked directly, not inferred) — confirms
+  the override actually engages rather than silently no-op'ing.
+- **Live** (`ros2/src/fsae_planning`, mirrored to `fsds_simulator`): a new
+  `map_path` ROS param on both `mpc_controller.py` and
+  `mpc_controller_standalone.py` (`''` default = unchanged
+  `curvature_speed()` behaviour). Deliberately does NOT port
+  `sim/track_io.py`'s reconstruction (scipy `CubicSpline` +
+  `planning/boundary.py` centreline-walking) into the live package — that
+  would add a new dependency and a second copy of ~250 lines to keep in
+  sync forever for a value that only needs computing once per map. Instead:
+  a new offline tool, `tuner/export_speed_profile.py`, runs the existing
+  `load_recorded_track()` once and writes a plain `(x, y, v_target)` CSV;
+  the live side gained only `control_utils.load_speed_profile_csv()` (a
+  ~15-line reader) and `precomputed_speed_at()` (nearest-point lookup, no
+  scipy). `common/fsae_bringup/launch/control.launch.py` gained a
+  `map_path` launch arg — split into two `Node()` entries (mpc/
+  mpc_standalone vs stanley) since `map_path` is undeclared on
+  `stanley_controller.py` and passing it unconditionally would raise
+  `ParameterNotDeclaredException` on the default `controller:=stanley`.
+  Override is scoped to the SPEED target only — steering still uses the
+  live-built centreline, and the existing stale-path emergency-brake gate
+  is untouched, so a car running with `map_path` set still brakes
+  correctly if its live localisation/perception fails, same as before.
+
+**Validated:** all three touched live files (`control_utils.py`,
+`mpc_controller.py`, `mpc_controller_standalone.py`) confirmed AST-parseable
+and diff-identical to their `fsds_simulator` mirror after copying (not just
+after editing — copied post-edit and `diff -q`'d, per the standing parity
+rule). `control.launch.py` mirror copied and `diff -q`'d identical too.
+Offline flag validated as above.
+
+**Not yet done**: exporting a profile from the real `cone_map.json` and
+running it through `mpc_controller_standalone.py` live — this session's
+validation is offline-only (the recorded-map replay, and the export
+script's own dry run). The live-side code has not been launched on the
+car yet.
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
@@ -3706,6 +3798,7 @@ the now-narrower space, and a live re-test of whatever it produces.
 | `curvature_speed()` could exceed `v_max` before a corner enters the scan window | **Root-caused and fixed (§45), 2026-08-08.** S33/S34's fix removed the upper clamp entirely on the curvature-measured path, not just the short-path `v_max_eff` ceiling it targeted. Confirmed live: `v_desired` reached 24.7 m/s vs `v_max`=15.0 in 8 episodes up to 3.4s, including the exact braking event examined in §44. Re-clamped to `v_max` (not `v_max_eff`) in all 3 copies. `PATH_SUDDEN_TURN` (DNF'd every prior run this session) now completes. Recorded-map ratios move substantially toward live on sat (0.38→0.83) and reversals (0.28→0.91) but overshoot past live on e_psi_mean (1.23) and remain far off on mean\|e_y\| (0.21). Not yet tested live. **Correction (§46): necessary but not sufficient** — masked, but did not fix, a second bug that made `PATH_SUDDEN_TURN`'s corner geometrically infeasible for most of the tuner's search space |
 | `offline_tuner.py`'s CMA-ES plateaued at a fixed score for 15+ generations on the user's local `["PATH_SUDDEN_TURN", "PATH_HAIRPIN"]` suite | **Root-caused and fixed (§46), 2026-08-08.** Not a search/local-optimum problem: 50% of a 30-vector random sweep across the full CMA-ES bounds DNF'd, clustering at identical scores (same failure, not scattered noise). Traced to `PATH_SUDDEN_TURN`'s corner requiring 30.6° of steer (vs `max_steer=25°`) — confirmed independent of weights by forcing full lock + full brake (-9.0 m/s², the true physical max) through the corner and still going off-track, at an identical score to 12 decimals. Cause: `_resample_path()` parameterised its clamped cubic spline by waypoint index, not arc-length, so the spline overshot at the straight-to-tight-arc junction (measured: index param → 0.00066 m effective radius vs the intended 4.5 m; arc-length param → 3.75 m). Fixed in `tuner/offline_tuner.py::_resample_path()` and its documented standalone copy `sim/track_io.py::_resample_dense()`. Verified all 10 synthetic paths now within the 25° steering limit. `PATH_SPIRAL` DNFs identically before/after (pre-existing, separate, not fixed). **Correction (§47): necessary but not sufficient** — the corner is now hard-but-feasible, not impossible, and the residual difficulty exposed a scoring gap that let CMA-ES collapse `Q_diag[0]` |
 | Post-§46 tuning run still plateaued; user re-tuned and got `Q_diag[0]`≈0.2 (vs template 5.65), confirmed live to spin the car out at the first corner | **Root-caused (§47), 2026-08-08.** Live log (`mpc_standalone_control_1786151512.csv`) directly confirms the symptom: `e_psi` grows to -107° while steering pins at 25° for ~2s, `yaw` wraps past ±180° (a genuine ~270°+ spin, not the wheels reversing — `v_actual` never goes negative), matching the user's own description exactly ("turned so late... ended up going backwards", "doing a loop of the starting area"). Root cause: CMA-ES moved weight OFF `e_y` (0.035× template) and ONTO `e_y_dot`/`e_psi_dot` (14×/29× template) — a real local optimum, not a bug in the planner or MPC formulation — because the objective doesn't punish it: these exact weights track tightly in isolation on `PATH_SUDDEN_TURN`/`PATH_HAIRPIN` (mean\|e_y\|=0.034m, no DNF) and actually beat the template on the recorded map (progress 0.97 vs template's DNF at 0.61), while `steer_sat_pct=0.0` on that same recorded-map run is the offline signature of the same low-authority failure the live log shows directly. **Fixed**: raised `Q_BOUNDS[0]`'s floor 0.1→1.0 in `tuner/offline_tuner.py`, closing off the specific collapse (`vec[0]≈0.035`) that already happened. **Deliberately not fixed**: the more complete fix — a scoring-side penalty for sustained low `steer_sat_pct`/high-`\|e_psi\|` dwell time — remains open, since the bound only blocks this one collapse, not every low-authority trade-off the current objective might still reward |
+| Still turning/braking late after §47's fix — is `curvature_speed()`'s lookahead actually working? | **Two independent shortfalls found (§48), 2026-08-08.** (1) Perception FOV starves the function's own assumed `scan_end=24m`: measured on a recorded-map replay, the live-built centreline is shorter than 24m on 100% of steps (median 21.6m, <15m on ~20%, <10m on ~8%) — the math is correct, it just has less runway than it assumes. (2) User's own question, confirmed correct: `N_HORIZON=25 × DT=0.05s = 1.25s` is fixed in TIME, not distance, and never scales with speed anywhere in either stack — at 16-18 m/s that's only ~20-22.5m of horizon distance, comparable to (1)'s shortfall. Neither fixed directly this session (horizon-scaling scoped as its own follow-up, needs separate validation). **Feature added instead**: `settings.USE_PRECOMPUTED_SPEED_PROFILE` (offline) / `map_path` ROS param (live, both `mpc_controller.py` and `mpc_controller_standalone.py`) bypasses (1) entirely for an already-mapped track by looking up the WHOLE map's precomputed oracle speed profile instead of re-deriving it from a truncated live centreline every tick. New offline tool `tuner/export_speed_profile.py` avoids porting scipy/centreline-reconstruction into the live package. Speed-target only; steering and the stale-path emergency brake are untouched. Not yet run on the car |
 | **Model the yaw cap offline** | **Done** — `alat_ceiling*` in `model/vehicle_physics.py`. Moves every metric toward the car (saturation 4.4→6.3%, a_lat max 14.06→10.53) but closes only part of the gap; live is still 21.1% saturation |
 | **Planner parity bug (`SimPlanner` call sites)** | **Fixed (§31), 2026-08-08.** Offline never passed `smooth_per_pt`/`look_radius`/`plan_horizon`/blend `alpha`/`horizon` to `build_path_walls()`/`blend_paths()`, silently using hardcoded defaults instead of `fsae_params.yaml`'s tuned values (2 of 5 coincidentally matched). Fix narrows the "unexplained gap" 17.43→10.68 pp in one step — bigger than every previously-tested plant/ceiling factor combined — and introduces a new recorded-map DNF at step 95. Weights may need re-tuning against the corrected planner |
 | **Recorded-map DNF (post-§31/braking-fix)** | **Root-caused and fixed (§33/§34), 2026-08-08.** Cause: `_build_wall_path`'s seed filter (`planning/boundary.py`, `fwd > 0.3`) discontinuously drops the nearest midpoint as the car's heading rotates through a corner. This is §19's `min_ahead`/chain-anchor discontinuity, pinned to the exact line. **Fix 1** (`curvature_speed`'s `v_max_eff` no longer reapplied after real curvature is measured) and **Fix 2** (seed filter loosened to `fwd > -0.5`) both shipped, mirrored to all 3 repos (AST-identical, confirmed). Initially reverted for raising `VALIDATION_SUITE`'s DNF count (0/5→1-2/5); re-shipped after recognising that check was the wrong direction here — the live car already DNFs/saturates far more than the offline sim, so the sim failing more after removing artificial forgiveness is closing the gap, not regressing (lesson 32). Produced the closest full-lap sim/live match in this document (§34: ratios 0.68-0.73 across every metric) |
