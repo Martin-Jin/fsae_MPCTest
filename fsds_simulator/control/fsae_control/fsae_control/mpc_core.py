@@ -562,6 +562,7 @@ class MPCController:
         car_speed:     float,
         car_yaw_rate:  float,
         desired_speed: float,
+        car_vy:        float = 0.0,
     ) -> tuple[np.ndarray, float, dict]:
         """
         Calculates exact Frenet tracking errors to match offline evaluation.
@@ -618,7 +619,12 @@ class MPCController:
 
         # Heading error wrapped to [-pi, pi]
         e_psi = math.atan2(math.sin(car_yaw - path_yaw), math.cos(car_yaw - path_yaw))
-        e_yd  = car_speed * math.sin(e_psi)
+        # Matches vehicle_physics.py's plant_to_tracking_error /
+        # rollout_core.py's identical inline formula: e_y_dot needs both
+        # body-frame velocity components, not just forward speed — omitting
+        # car_vy silently drops this term whenever the car has real sideslip
+        # (car_vy defaults to 0.0 for callers that don't measure it).
+        e_yd  = car_speed * math.sin(e_psi) + car_vy * math.cos(e_psi)
 
         # Preview curvature lookup
         preview_dist = 1.0
@@ -760,6 +766,7 @@ class MPCController:
         desired_speed: float,
         car_yaw_rate:  float = 0.0,
         pose_age_s:    float = 0.0,
+        car_vy:        float = 0.0,
     ) -> tuple[float, float, float]:
         """
         Run one full MPC control step: extract tracking error -> discretise
@@ -776,12 +783,21 @@ class MPCController:
         car_yaw : float
             Vehicle heading (rad, global frame).
         car_speed : float
-            Vehicle forward speed magnitude (m/s); see _odom_cb note on how
-            this is measured upstream.
+            Vehicle forward (body-frame vx) speed (m/s); see _odom_cb note on
+            how this is measured upstream. Used for the plant discretisation
+            and gain scheduling, which are both parameterised on forward
+            speed alone — see rollout_core.py's identical vx_true usage.
         desired_speed : float
             Planner's requested speed (m/s); low-pass filtered internally.
         car_yaw_rate : float, optional
             Measured yaw rate (rad/s), defaults to 0.0 if unavailable.
+        car_vy : float, optional
+            Body-frame lateral velocity (m/s), defaults to 0.0. Used only in
+            _error_state's e_yd = vx*sin(e_psi) + vy*cos(e_psi) (matches
+            vehicle_physics.py's plant_to_tracking_error / rollout_core.py's
+            identical inline formula exactly). Callers that only have a
+            speed magnitude (no separate vx/vy) should leave this at 0.0
+            rather than passing the magnitude here.
         pose_age_s : float, optional
             How long ago (s) the pose above was actually measured (from the
             pose message's own timestamp, not callback receipt time — see
@@ -817,7 +833,7 @@ class MPCController:
         desired_speed = self._v_des_filtered
 
         x0, kappa, dbg = self._error_state(
-            path, car_pos, car_yaw, car_speed, car_yaw_rate, desired_speed,
+            path, car_pos, car_yaw, car_speed, car_yaw_rate, desired_speed, car_vy,
         )
 
         Ad, Bd = self._discrete_model(car_speed)

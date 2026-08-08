@@ -201,23 +201,21 @@ DELAY_JITTER_SEED = 12345
 # SLAM error: the car is punished for where it actually ends up, not for where
 # it thought it was.
 #
-# DEFAULT CHANGED TO ON 2026-08-08 (sim_to_real_investigation.md S43). The
-# reasoning above ("FSDS has no localisation error, so this would make
-# offline scores pessimistic") turned out to be incomplete: measured
-# directly against a fresh live log at these same default magnitudes,
-# turning this on moved steer_sat/e_psi_mean/reversals-per-s substantially
-# closer to live (reversals/s 0.99->3.06, right in live's 3.48; sat/e_psi
-# landed close too) without the seed instability or stall artifacts seen at
-# higher multipliers (tested 1x-10x; 6x+ started producing e_psi-inflating
-# stall events, 10x hung the rollout outright). This says pose noise at
-# THIS magnitude is a real, previously-untested contributor to the
-# reversal-rate/chatter gap this session chased through several other
-# routes first (adaptive_Q_scaling, braking authority). It did NOT close
-# the mean|e_y| gap (stayed ~0.06-0.08 across every multiplier tried vs
-# live's 0.346) -- that's a separate, still-open gap, not fixed by this.
-# Turn OFF only to reproduce a pre-S43 baseline number, or to isolate a
-# result from noise-driven variance while diagnosing something else.
-SLAM_NOISE_ENABLED = True
+# CHANGED TO ON 2026-08-08 (sim_to_real_investigation.md S43), then back OFF
+# 2026-08-08 (same day, later session): measured against that day's live log
+# it moved reversals/s 0.99->3.06, "right in live's 3.48" AT THE TIME. Live
+# has since been re-measured at 1.62 -- the calibration target moved and this
+# magnitude no longer matches it. Re-measured directly on the recorded map
+# (tuner.recorded_map_rollout --planner): with this ON, reversals/s=3.98-4.56
+# depending on N_HORIZON, vs live's current 1.62 (2.5-2.8x too high); with it
+# OFF, reversals/s=1.58 -- near-exact live parity. SLAM jitter (not cone
+# noise, tested separately) is the dominant contributor to the excess.
+# The mean|e_y| gap this was never meant to close (stayed ~0.06-0.08 across
+# every multiplier tried vs live's 0.346) is still separate and still open.
+# Turn back ON only after re-calibrating SLAM_POS_JITTER_STD/
+# SLAM_YAW_JITTER_STD against a current live log's reversals/s, not the
+# stale 3.48 target above.
+SLAM_NOISE_ENABLED = False
 
 # Two components, because they behave differently and the controller reacts to
 # them differently:
@@ -283,11 +281,14 @@ SLAM_NOISE_SEED = 24680
 # because there is no detection noise. This flag exists to make that (and any
 # other perception-noise-dependent behaviour) testable offline at all.
 #
-# DEFAULT CHANGED TO ON 2026-08-08, same measurement and same reasoning as
-# SLAM_NOISE_ENABLED above (sim_to_real_investigation.md S43) -- tested
-# together with SLAM noise, not isolated from it, so this flag's own
-# individual contribution vs SLAM noise's isn't separately measured.
-CONE_NOISE_ENABLED = True
+# CHANGED TO ON 2026-08-08, then back OFF 2026-08-08 (same day, later
+# session) alongside SLAM_NOISE_ENABLED above -- see that flag's comment for
+# the re-measurement against a current live log. Isolated from SLAM noise
+# this time (tuner.recorded_map_rollout --planner, SLAM off/cone on only):
+# reversals/s=2.28, moderately above live's current 1.62 but nowhere near
+# SLAM jitter's 4.56 alone -- cone noise is a smaller contributor to the
+# excess, not the dominant one.
+CONE_NOISE_ENABLED = False
 
 # Per-cone, per-frame position jitter (independent white noise, redrawn every
 # time a cone is returned as visible — NOT correlated frame-to-frame, unlike

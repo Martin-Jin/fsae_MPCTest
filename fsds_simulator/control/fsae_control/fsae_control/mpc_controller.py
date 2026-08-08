@@ -157,6 +157,7 @@ class MPCControllerNode(Node):
         self._v_des_prev: float | None = None
         self._car_yaw = 0.0
         self._car_speed = 0.0
+        self._car_vy = 0.0
         self._car_yaw_rate = 0.0
         self._pose_stamp = None
         self._have_pose = False
@@ -183,8 +184,13 @@ class MPCControllerNode(Node):
         self._path_stamp = self.get_clock().now()
 
     def _odom_cb(self, msg: Odometry) -> None:
+        # v.x/v.y are body-frame (sim_perception.py relays them unrotated
+        # from the bridge's already-body-frame odom) -- keep both instead of
+        # collapsing to hypot(), which silently drops the vy*cos(e_psi) term
+        # _error_state needs (see mpc_core.py's e_yd comment).
         v = msg.twist.twist.linear
-        self._car_speed = float(np.hypot(v.x, v.y))
+        self._car_speed = float(v.x)
+        self._car_vy = float(v.y)
         self._car_yaw_rate = float(msg.twist.twist.angular.z)
 
     def _pose_cb(self, msg: PoseStamped) -> None:
@@ -271,7 +277,7 @@ class MPCControllerNode(Node):
         self._mpc.compute(
             self._path, self._car_pos, self._car_yaw,
             self._car_speed, desired_speed, self._car_yaw_rate,
-            pose_age_s=pose_age_s,
+            pose_age_s=pose_age_s, car_vy=self._car_vy,
         )
         steering = float(self._mpc.last_telemetry.get('delta_cmd', 0.0))
 
