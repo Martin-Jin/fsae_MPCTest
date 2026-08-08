@@ -309,24 +309,15 @@ class MPCController:
         self.nx = 8
         self.nu = 2
 
-        # Tuned parameters — offline-tuner run of 08/07/26 11:16 (see
-        # fsae_MPCTest/"tuning history.txt"): "Retuned with unified scoring and
-        # simulation. Decent tracking performance and speed, just not the best at
-        # sudden corners."  Chosen over the later 10/07/26 set, whose own note
-        # flagged braking triggering much later in FSDS than in the MPC sim.
-        # Q_diag[3] (yaw-rate/e_psi_dot damping) manually corrected 2026-08-05,
-        # mirroring the same fix in fsae_MPCTest/settings.py: live standalone-ROS
-        # test data (mpc_standalone_control_*.csv, this file's own output) showed
-        # steering sign-reversal chatter almost every ~0.05s tick, worst in
-        # corners. The old value (0.1009...) was ~42:1 smaller than Q_diag[2]
-        # (heading error), giving the controller almost no cost on the yaw rate
-        # it uses to correct heading — a classic recipe for oscillation. Raised
-        # to 2.5 (just above Q_diag[1]=2.4068) so it's no longer the smallest of
-        # the five active Q entries. See settings.py's Q_diag comment for the
-        # full rationale — keep these two values in sync manually.
-        Q_diag      = [5.652309254831446, 0.3161236925233666, 2.798244246741331, 0.2546694567259241, 0.683532104837636, 0.0, 0.0, 0.0]
-        R_diag      = [9.217407925832218, 0.3382032665811773]
-        R_rate_diag = [2.9495178296071587, 9.460759229883873]
+        # Retuned 2026-08-08 — see fsae_MPCTest/"tuning history.txt"'s
+        # 08/08/26 17:36 entry (53.89 min Optuna+CMA-ES run, tuner score
+        # 0.6723) for provenance. This mirror was missing the sync; copied in
+        # to match settings.py's Q_diag/R_diag/R_rate_diag and the live
+        # copy's same three lists (ros2/src/fsae_planning/control/
+        # fsae_control/fsae_control/mpc_core.py) — keep all three identical.
+        Q_diag      = [9.642721455680089, 0.6429771471569046, 9.09754222209661, 0.10571694008486163, 9.715386646449979, 0.0, 0.0, 0.0]
+        R_diag      = [0.44113286130397317, 2.11423973420019]
+        R_rate_diag = [5.856634028761815, 0.6466599689268518]
 
         self.Q      = np.diag(Q_diag)
         self.R      = np.diag(R_diag)
