@@ -192,7 +192,7 @@ def tracking_error_speed_gate(e_y, e_psi,
 
 
 def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
-                    scan_start=1.5, scan_end=24.0, step=2.0, safety=1.0):
+                    scan_start=0.0, scan_end=24.0, step=2.0, safety=1.0):
     """
     Curvature-limited target speed over the next scan_end metres of the path.
 
@@ -219,6 +219,12 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
     2 m ahead give the same answer, so the profile can request a deceleration
     the car cannot produce. scan_end makes a corner VISIBLE in time; this makes
     the resulting target ACHIEVABLE.
+
+    scan_start=0.0 (was 1.5, fixed 2026-08-08 -- see fsae_MPCTest's
+    sim_to_real_investigation.md §50 and the APEX BLIND SPOT note in the dense
+    resample block below): curvature measurement now starts at the car's own
+    position rather than 1.5 m ahead of it, closing a dead zone that let
+    short, tight corners go entirely unmeasured.
     """
     n = len(waypoints)
     if n < 3:
@@ -240,27 +246,51 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
     # collapsing v_target and making it oscillate frame-to-frame — the "rapid
     # accel/decel" on straights.  Fix at the source: densely resample the scan
     # window and moving-average denoise it before measuring curvature.  A real
-    # corner is a sustained bend that survives the ~5 m smoothing; only the
-    # cm-scale wiggle is removed (this also stops noise from over-slowing corners).
+    # corner is a sustained bend that survives the smoothing; only the cm-scale
+    # wiggle is removed (this also stops noise from over-slowing corners).
     #
     # pts_s0 is the arc distance AHEAD OF THE CAR of pts[0].  It is not simply
     # scan_start in the dense branch: a width-w 'valid' moving average places its
-    # first output at the CENTRE of the first window, i.e. (w-1)/2 further along.
-    # Carrying it explicitly is what keeps the braking propagation below honest —
-    # deriving distances from pts alone silently loses this offset (it used to,
-    # by -2 m in the common w=5 case).
+    # first output at the CENTRE of the first window, i.e. (w-1)/2 * dense_step
+    # further along.  Carrying it explicitly is what keeps the braking propagation
+    # below honest — deriving distances from pts alone silently loses this offset.
+    #
+    # APEX BLIND SPOT (fixed 2026-08-08, see fsae_MPCTest's
+    # sim_to_real_investigation.md §50): scan_start=1.5 combined with the OLD
+    # dense_step=1.0/w=5 pushed pts_s0 (the effective start of curvature
+    # measurement) to scan_start + (w-1)/2*dense_step = 1.5 + 2.0 = 3.5 m ahead
+    # of the car. A short, tight corner whose curvature is only sustained over
+    # ~2-3 m of arc (measured on a recorded map: true tightest R≈5.7 m over a
+    # ~2-3 m apex zone) can be entirely inside that 3.5 m dead zone on every
+    # single query as the car approaches — the window strides clean over the
+    # apex and curvature_speed() reports a monotonically RISING target through
+    # the whole corner instead of dipping near the true minimum. The old
+    # [::2] decimation back to ~2 m triple spacing made this worse by halving
+    # the number of samples that could land inside a short apex zone.
+    #
+    # Fix: scan_start 1.5->0.0 (measure from the car's own position), dense_step
+    # 1.0->0.5 (finer sampling so a 2-3 m apex zone still gets several samples),
+    # w 5->3 (a narrower smoothing window so the apex isn't averaged away against
+    # its shallower neighbours), and the [::2] decimation REMOVED (the smoothed
+    # points are used directly as the triples, so no samples are thrown away in
+    # exactly the region that needed more of them). Full-track validation on
+    # the offline mirror (fsae_MPCTest/sim/speed_profile.py, numeric-parity
+    # counterpart of this function) found this closes the apex gap at every
+    # corner on a recorded map with zero regressions on straights — see
+    # sim_to_real_investigation.md §50.
     pts = None
     pts_s0 = scan_start
-    dense = np.arange(scan_start, hi, 1.0)
+    dense_step = 0.5
+    dense = np.arange(scan_start, hi, dense_step)
     if len(dense) >= 7:                       # room to smooth and still leave >=3 triples
         dx = np.interp(dense, arc, waypoints[:, 0])
         dy = np.interp(dense, arc, waypoints[:, 1])
-        w  = min(5, len(dense) - 4)           # 'valid' conv keeps len-w+1 >= 3 points
+        w  = min(3, len(dense) - 4)           # 'valid' conv keeps len-w+1 >= 3 points
         ker = np.ones(w) / w
         sx = np.convolve(dx, ker, mode='valid')
         sy = np.convolve(dy, ker, mode='valid')
-        pts = np.column_stack([sx, sy])[::2]  # back to ~2 m spacing for the triples
-        pts_s0 = scan_start + (w - 1) / 2.0
+        pts = np.column_stack([sx, sy])       # no decimation -- keep every smoothed sample
+        pts_s0 = scan_start + (w - 1) / 2.0 * dense_step
     if pts is None or len(pts) < 3:
         # Short scan window: no headroom to denoise — fall back to coarse sampling.
         sample_arcs = np.arange(scan_start, hi, step)

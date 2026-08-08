@@ -3611,6 +3611,121 @@ confirming (again) that `colcon build` has actually run since the last
 is easy to reintroduce by editing source and launching without rebuilding
 in between.
 
+## 50. `curvature_speed()` apex blind-spot: scan_start + smoothing offset strides over short tight corners
+
+Root-caused independently of the lookahead-budget work in §48: does
+`curvature_speed()` actually MEASURE the corner it's given, once it's in
+range? Checked directly on a real corner in the recorded map
+(`cone_map.json`, native path indices ~88-109), rather than assuming the
+lookahead-distance fixes in §48 were sufficient on their own.
+
+**Root cause.** `scan_start=1.5` plus the moving-average smoothing's own
+centring offset (`(w-1)/2` with the old `w=5`, `dense_step=1.0` →
+`+2.0 m`) together push `pts_s0` — the arc distance ahead of the car at
+which curvature measurement actually starts — to `1.5 + 2.0 = 3.5 m`
+ahead of the car on every query. This corner's tight-curvature zone spans
+only ~2-3 m of arc (native idx 88-109 covers ~9.4 m total; the true tight
+region idx 95-103 is ~2.7 m). A 3.5 m dead zone comfortably swallows a
+2-3 m apex, so the measurement window strides clean over it at every
+single query, both in the offline oracle profile
+(`compute_speed_profile()`'s pass 0, which calls
+`curvature_speed(pts[i:], ...)` at every path point) and in the live
+per-tick call from the planner's centreline.
+
+**Independent ground truth** (least-squares circle fit over a 5-point
+native window, ±2 samples ≈ ±1 m, centred at each of the 1000 native path
+points — computed directly from raw points, not via `curvature_speed()`
+itself): tightest point at native idx 99, `R=5.833 m`, true safe speed
+`v=sqrt(4.0·R)=4.83 m/s`. Matches the independently-reported R≈5.68 m /
+4.77 m/s from visual inspection of the same corner closely enough to
+confirm both are looking at the same apex.
+
+**Target-corner before/after** (`curvature_speed(pts[i:])` at each native
+index, OLD params vs NEW params, template weights/defaults otherwise):
+
+| native idx | OLD v_target | NEW v_target |
+|---|---|---|
+| 90 | 9.86 | 7.07 |
+| 94 | 10.91 | 5.96 |
+| 96 (near GT apex) | 11.65 | **5.85 (min)** |
+| 99 (true apex, R=5.83, GT v=4.83) | 12.98 | 6.35 |
+| 103 | 15.00 (v_max) | 7.59 |
+| 109 | 15.00 (v_max) | 10.45 |
+
+OLD rises monotonically 9.3→15.0 through the *entire* corner and never
+comes near the true minimum — the bug, confirmed directly. NEW dips to a
+clean minimum of 5.85 m/s right at the apex region (idx 95-96, GT apex at
+99, 3 samples away — inside the braking-distance margin's `entry_margin`
+by design), close to the 4.83 m/s true minimum with a sensible safety/
+braking margin, instead of missing it entirely.
+
+**Full-track validation** (all 1000 native points, `curvature_speed(pts[i:])`
+at every index, OLD vs NEW, checked against the same independent circle-fit
+ground truth at every point — not just the one target corner):
+
+- All **9 distinct corners** on the track (contiguous runs where GT radius
+  < 15 m) show the identical OLD failure mode: OLD stays at 9.4-10.4 m/s
+  regardless of true tightness (GT minimums range 4.39-6.66 m/s across the
+  9 corners), NEW dips to within 0.7-1.1 m/s of true minimum at every one.
+  Zero corners got worse.
+- Track-wide "overspeed" (predicted `v_target` exceeding the GT-safe speed
+  by >2 m/s, i.e. planning faster than the true corner supports) dropped
+  from **42.5% of points to 4.2%**.
+- **No straight-section regression.** GT-straight points (R>40 m, 481/1000
+  points): comparing frame-to-frame `|Δv|` (jitter) restricted to
+  consecutive-straight index pairs, OLD p95=0.239 m/s vs NEW p95=0.234
+  m/s — unchanged despite the smoothing window shrinking `w` 5→3. A
+  targeted check for "NEW<8 m/s but OLD≥8 m/s on a straight" (the
+  regression this shrink could plausibly cause) found only 5 points, all
+  at native idx 993-997 — the very end of the 1000-point array, where
+  `total < scan_start + step` triggers the pre-existing short-path
+  fallback identically in OLD and NEW (values match exactly, e.g. both
+  1.50 m/s at idx 995). Not a new regression; unaffected by this change.
+
+**Fix implemented** (`fsae_MPCTest/sim/speed_profile.py::curvature_speed()`,
+mirrored bit-for-bit — verified via AST diff of the function body excluding
+docstrings — to `ros2/src/fsae_planning/control/fsae_control/fsae_control/control_utils.py`
+and `fsae_MPCTest/fsds_simulator/control/fsae_control/fsae_control/control_utils.py`):
+`scan_start` 1.5→0.0, dense-resample step 1.0→0.5 m, moving-average window
+`w` 5→3, and the post-smoothing `[::2]` decimation removed (smoothed points
+used directly as the curvature triples). `pts_s0`'s `(w-1)/2` centring term
+updated to scale by the new `dense_step` (`(w-1)/2 * dense_step`) instead of
+assuming a hardcoded 1.0 m step. The module-level `CURVATURE_SPEED_SCAN_START`
+constant (read by `compute_speed_profile()`'s pass 0) updated 1.5→0.0 to
+match. Braking-distance propagation, the 3-point kappa running-mean, the
+final `v_max`/`v_min` clip, and the short-path fallback branch are
+unchanged in logic — only sampling/smoothing resolution changed.
+
+**Rollout validation** (`python3 -m tuner.recorded_map_rollout`, template
+Q/R weights, ceiling mode=pi/gain=450/tau=0.4, unchanged from CLAUDE.md's
+existing table):
+
+| metric | sim (before) | sim (after) | live |
+|---|---|---|---|
+| steering sat % | 9.90 | 10.68 | 21.10 |
+| \|e_psi\| mean (deg) | 8.31 | 9.16 | 15.90 |
+| \|e_psi\| p90 (deg) | 23.64 | 39.62 | 42.00 |
+| a_lat max | 10.68 | 10.42 | 12.34 |
+| a_lat > ceiling % | 7.92 | 6.80 | 9.80 |
+| reversals/s | 7.13 | 6.60 | 1.62 |
+| progress / DNF | 0.106, DNF@101 | 0.106, DNF@103 | — |
+
+Same DNF point (progress 0.106, step 101→103 — not materially different),
+same score (15.363) — no regression in completion. Every ratio-to-live
+metric moved toward or stayed close to live except reversals/s (already
+4× over live before this change, essentially unchanged). Notably
+`|e_psi| p90` moved from 0.56× live to 0.94× live — much closer, consistent
+with the sim previously under-measuring corner difficulty by planning too
+fast through tight corners it couldn't actually see the apex of.
+`python3 -m tuner.plant_openloop_validation` output is **byte-identical
+before and after** (confirmed via diff) — expected, since this change
+touches only the speed profile, not the plant.
+
+**Open/deferred table**: no prior row referenced this specific bug by name
+(§48's two lookahead-budget findings are a related but distinct mechanism —
+insufficient scan *range*, not a blind spot inside an in-range scan). This
+section is the first fix and documentation of it.
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**

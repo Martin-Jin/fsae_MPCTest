@@ -97,10 +97,21 @@ import math
 # v_target ~2.7 m/s) approached at v_max needs ~24 m to brake for at a
 # realistic achieved deceleration. A shorter scan sees the corner too late,
 # saturating steering and spinning out at corner entry (observed live).
+#
+# scan_start=0.0 (was 1.5, fixed 2026-08-08, see sim_to_real_investigation.md
+# §50): scan_start plus the moving-average's own centring offset
+# ((w-1)/2 * dense_step) together set how far ahead of the car curvature
+# actually starts being measured. At the old 1.5 + (5-1)/2*1.0 = 3.5 m, a
+# short, tight corner whose curvature is only sustained over ~2-3 m of arc
+# (measured: cone_map.json's native idx 88-109 apex) can sit entirely inside
+# that dead zone -- the window strides clean over the apex at every query, so
+# curvature_speed() never sees it and the target speed climbs monotonically
+# through the whole corner instead of dipping. Starting the scan at the car's
+# own position (0.0) removes that dead zone.
 CURVATURE_SPEED_V_MAX = 15.0
 CURVATURE_SPEED_V_MIN = 1.5
 CURVATURE_SPEED_A_LAT_MAX = 4.0
-CURVATURE_SPEED_SCAN_START = 1.5
+CURVATURE_SPEED_SCAN_START = 0.0
 CURVATURE_SPEED_SCAN_END = 24.0
 CURVATURE_SPEED_STEP = 2.0
 
@@ -486,7 +497,7 @@ def tracking_error_speed_gate(e_y, e_psi,
 
 
 def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
-                    scan_start=1.5, scan_end=24.0, step=2.0, safety=1.0):
+                    scan_start=0.0, scan_end=24.0, step=2.0, safety=1.0):
     """
     Curvature-limited target speed over the next scan_end metres of the path.
 
@@ -520,6 +531,11 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
     measure curvature at all -- once curvature has been measured, it is not
     reapplied on top of v_target (see the comment above the final return).
 
+    scan_start=0.0 (was 1.5, fixed 2026-08-08 — see sim_to_real_investigation.md
+    §50 and the APEX BLIND SPOT note below): curvature measurement now starts
+    at the car's own position rather than 1.5 m ahead of it, closing a dead
+    zone that let short, tight corners go entirely unmeasured.
+
     waypoints[0] is assumed to be the car's current position.
     """
     n = len(waypoints)
@@ -539,22 +555,46 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
     # per-point replanning jitter on straights doesn't read as spurious curvature.
     # pts_s0 is the arc distance AHEAD OF THE CAR of pts[0].  It is not simply
     # scan_start in the dense branch: a width-w 'valid' moving average places its
-    # first output at the CENTRE of the first window, i.e. (w-1)/2 further along.
-    # Carrying it explicitly is what keeps the braking propagation below honest —
-    # deriving distances from pts alone silently loses this offset (it used to,
-    # by -2 m in the common w=5 case).
+    # first output at the CENTRE of the first window, i.e. (w-1)/2 * dense_step
+    # further along.  Carrying it explicitly is what keeps the braking propagation
+    # below honest — deriving distances from pts alone silently loses this offset.
+    #
+    # APEX BLIND SPOT (fixed 2026-08-08, see sim_to_real_investigation.md §50):
+    # scan_start=1.5 combined with the OLD dense_step=1.0/w=5 pushed pts_s0 (the
+    # effective start of curvature measurement) to scan_start + (w-1)/2*dense_step
+    # = 1.5 + 2.0 = 3.5 m ahead of the car. A short, tight corner whose curvature
+    # is only sustained over ~2-3 m of arc (measured: cone_map.json native idx
+    # 88-109, true tightest R≈5.7 m at idx 99) can be entirely inside that 3.5 m
+    # dead zone on every single query as the car approaches — the window strides
+    # clean over the apex and curvature_speed() reports a monotonically RISING
+    # target through the whole corner instead of dipping near the true minimum.
+    # The old [::2] decimation back to ~2 m triple spacing made this worse by
+    # halving the number of samples that could land inside a short apex zone.
+    #
+    # Fix: scan_start 1.5->0.0 (measure from the car's own position), dense_step
+    # 1.0->0.5 (finer sampling so a 2-3 m apex zone still gets several samples),
+    # w 5->3 (a narrower smoothing window so the apex isn't averaged away against
+    # its shallower neighbours), and the [::2] decimation REMOVED (the smoothed
+    # points are used directly as the triples, so no samples are thrown away in
+    # exactly the region that needed more of them). Full-track validation (all
+    # ~1000 points of cone_map.json, every corner) found this closes the apex gap
+    # at every one of the 9 corners on the track with zero regressions: no
+    # straight-section point acquired a spurious low-speed dip despite the
+    # narrower smoothing window (frame-to-frame jitter on straights unchanged,
+    # p95 0.239->0.234 m/s). See sim_to_real_investigation.md §50 for the numbers.
     pts = None
     pts_s0 = scan_start
-    dense = np.arange(scan_start, hi, 1.0)
+    dense_step = 0.5
+    dense = np.arange(scan_start, hi, dense_step)
     if len(dense) >= 7:                       # room to smooth and still leave >=3 triples
         dx = np.interp(dense, arc, waypoints[:, 0])
         dy = np.interp(dense, arc, waypoints[:, 1])
-        w  = min(5, len(dense) - 4)           # 'valid' conv keeps len-w+1 >= 3 points
+        w  = min(3, len(dense) - 4)           # 'valid' conv keeps len-w+1 >= 3 points
         ker = np.ones(w) / w
         sx = np.convolve(dx, ker, mode='valid')
         sy = np.convolve(dy, ker, mode='valid')
-        pts = np.column_stack([sx, sy])[::2]  # back to ~2 m spacing for the triples
-        pts_s0 = scan_start + (w - 1) / 2.0
+        pts = np.column_stack([sx, sy])       # no decimation -- keep every smoothed sample
+        pts_s0 = scan_start + (w - 1) / 2.0 * dense_step
     if pts is None or len(pts) < 3:
         # Short scan window: no headroom to denoise — fall back to coarse sampling.
         sample_arcs = np.arange(scan_start, hi, step)
