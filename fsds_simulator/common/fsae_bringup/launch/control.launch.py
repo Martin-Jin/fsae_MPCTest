@@ -92,23 +92,45 @@ def generate_launch_description():
             'log_dir', default_value='',
             description="Controller CSV telemetry output dir ('' -> ~/fsae_logs)"),
         DeclareLaunchArgument(
-            'map_path', default_value='',
+            # Default matches launch_all.sh's fixed cone_out_path (repo-root
+            # cone_map.json) + tuner/export_speed_profile.py's own default
+            # output path -- so `python3 -m tuner.export_speed_profile` (run
+            # from fsae_MPCTest after a mapping lap) and this default agree
+            # on where the CSV lives, with no path to pass on the command line
+            # for the common case.
+            #
+            # Hardcoded absolute path, not derived from __file__ or
+            # get_package_share_directory(): both resolve to the INSTALLED
+            # copy under ros2/install/... at runtime (confirmed: this launch
+            # file is itself copied there by colcon build), which has no
+            # relationship to fsae_MPCTest's location -- that repo lives
+            # entirely outside the ROS workspace, so there is no path from
+            # anything ROS-visible to it. This matches WHERE launch_all.sh
+            # runs `ros2 launch` FROM (inside WSL/the Docker container, not
+            # Windows) -- update this line if the repo root ever moves.
+            'map_path',
+            default_value='/home/Formula-Student-Driverless-Simulator/fsae_MPCTest/tuner/speed_profile_export.csv',
             description=(
                 "Path to a fsae_MPCTest tuner/export_speed_profile.py CSV, "
                 "exported from a recorded cone map. Has no effect unless "
                 "use_precomputed_speed:=true. Applies to both `mpc` and "
-                "`mpc_standalone`; ignored by `stanley`."
+                "`mpc_standalone`; ignored by `stanley`. If the file doesn't "
+                "exist yet (e.g. a fresh checkout before the first "
+                "export_speed_profile.py run), the node logs an error at "
+                "startup and falls back to live curvature_speed() -- it does "
+                "not crash."
             )),
         DeclareLaunchArgument(
-            'use_precomputed_speed', default_value='false',
+            'use_precomputed_speed', default_value='true',
             description=(
-                "true  -> look up the target speed from map_path's precomputed "
-                "oracle profile instead of live curvature_speed() every tick. "
-                "Only valid for a track that's already been fully mapped -- see "
-                "mpc_controller_standalone.py's map_path param and S48 in "
-                "fsae_MPCTest/docs/sim_to_real_investigation.md. "
-                "false (default) -> unchanged live curvature_speed() behaviour, "
-                "regardless of what map_path is set to."
+                "true (default) -> look up the target speed from map_path's "
+                "precomputed oracle profile instead of live curvature_speed() "
+                "every tick. Only valid for a track that's already been fully "
+                "mapped -- see mpc_controller_standalone.py's map_path param "
+                "and S48 in fsae_MPCTest/docs/sim_to_real_investigation.md. "
+                "Set to false here (or on the command line) to go back to "
+                "unchanged live curvature_speed() behaviour regardless of "
+                "map_path."
             )),
         Node(
             package='fsae_control',
