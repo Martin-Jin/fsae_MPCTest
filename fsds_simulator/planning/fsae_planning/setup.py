@@ -16,7 +16,7 @@ setup(
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
     ],
     install_requires=['setuptools'],
-    zip_safe=True,
+    zip_safe=False,
     maintainer='UoA FSAE',
     maintainer_email='fsae@auckland.ac.nz',
     description='Simulator path planning: centerline and skidpad planners',

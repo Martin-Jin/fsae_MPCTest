@@ -35,6 +35,8 @@ def generate_launch_description():
     log_dir = LaunchConfiguration('log_dir')
     map_path = LaunchConfiguration('map_path')
     use_precomputed_speed = LaunchConfiguration('use_precomputed_speed')
+    path_map_path = LaunchConfiguration('path_map_path')
+    use_precomputed_path = LaunchConfiguration('use_precomputed_path')
     # Effective map_path handed to the node: '' whenever the feature is
     # switched off, regardless of what map_path itself is set to -- so
     # use_precomputed_speed:=false is a reliable one-flag disable without
@@ -48,6 +50,12 @@ def generate_launch_description():
     effective_map_path = IfElseSubstitution(
         EqualsSubstitution(use_precomputed_speed, 'true'),
         map_path,
+        '',
+    )
+    # Same pattern as effective_map_path, for the path-import toggle.
+    effective_path_map_path = IfElseSubstitution(
+        EqualsSubstitution(use_precomputed_path, 'true'),
+        path_map_path,
         '',
     )
     # Map the friendly name to the package entry point; node name stays
@@ -132,12 +140,42 @@ def generate_launch_description():
                 "unchanged live curvature_speed() behaviour regardless of "
                 "map_path."
             )),
+        DeclareLaunchArgument(
+            # Same file format/default location as map_path (in fact the same
+            # CSV works for both -- export_speed_profile.py writes x,y,psi,
+            # v_target together). Kept as a separate launch arg from map_path
+            # so the path and speed bypasses can be toggled independently.
+            'path_map_path',
+            default_value='/home/Formula-Student-Driverless-Simulator/fsae_MPCTest/tuner/speed_profile_export.csv',
+            description=(
+                "Path to a fsae_MPCTest tuner/export_speed_profile.py CSV, used "
+                "as the tracked PATH (not just speed) -- see "
+                "mpc_controller_standalone.py's path_map_path param. Has no "
+                "effect unless use_precomputed_path:=true. Applies to both "
+                "`mpc` and `mpc_standalone`; ignored by `stanley`."
+            )),
+        DeclareLaunchArgument(
+            'use_precomputed_path', default_value='false',
+            description=(
+                "true -> track path_map_path's precomputed path instead of "
+                "subscribing to the live planner's "
+                "/fsae/planning/selected_trajectory -- removes "
+                "centerline_planner.py from the control loop entirely, to "
+                "isolate controller/plant tracking error from planner-induced "
+                "path error. Only valid for a track that's already been fully "
+                "mapped. Off by default, unlike use_precomputed_speed: this is "
+                "a diagnostic/experiment mode, not a standing behaviour change."
+            )),
         Node(
             package='fsae_control',
             executable=controller_exec,
             name='controller',
             output='screen',
-            parameters=[config, {'log_csv': log_csv, 'log_dir': log_dir, 'map_path': effective_map_path}],
+            parameters=[config, {
+                'log_csv': log_csv, 'log_dir': log_dir,
+                'map_path': effective_map_path,
+                'path_map_path': effective_path_map_path,
+            }],
             condition=run_controller_mpc,
         ),
         Node(

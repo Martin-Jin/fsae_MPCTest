@@ -97,6 +97,17 @@ USE_PLANNER = True
 #         every tick, as before.
 USE_PRECOMPUTED_SPEED_PROFILE = False
 
+# Offline parity note for the live ROS side's path_map_path param
+# (fsae_planning's mpc_controller.py / mpc_controller_standalone.py, which
+# tracks a precomputed path instead of subscribing to the live planner's
+# centreline): the equivalent offline experiment is USE_PLANNER=False above
+# (or, for a recorded real track specifically, `python3 -m
+# tuner.recorded_map_rollout <map.json> --oracle`) — see that flag's own
+# comment for what it does. No separate flag needed here; USE_PLANNER=False
+# already removes the planner from the rollout and tracks path_X/path_Y/
+# path_Psi (the same oracle path tuner/export_speed_profile.py exports for
+# path_map_path) directly.
+
 # DELAY_STEPS — "How much lag is there between the car deciding to steer and
 # the wheels actually moving?"
 # Real hardware (radios, motors, computers) has a small delay before a

@@ -12,7 +12,7 @@ setup(
         ('share/' + package_name, ['package.xml']),
     ],
     install_requires=['setuptools'],
-    zip_safe=True,
+    zip_safe=False,
     maintainer='UoA FSAE',
     maintainer_email='fsae@auckland.ac.nz',
     description='Lateral/longitudinal control (Stanley + MPC) + FSDS command bridge for the simulator',

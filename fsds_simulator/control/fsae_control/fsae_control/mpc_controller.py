@@ -36,8 +36,8 @@ from nav_msgs.msg import Odometry
 from rclpy.time import Time
 
 from fsae_control.control_utils import (
-    curvature_speed, load_speed_profile_csv, precomputed_speed_at,
-    tracking_error_speed_gate,
+    curvature_speed, load_path_profile_csv, load_speed_profile_csv,
+    precomputed_speed_at, tracking_error_speed_gate,
 )
 from fsae_control.mpc_core import MPCController
 from fsae_control.telemetry_logger import ControlLogger
@@ -69,6 +69,11 @@ class MPCControllerNode(Node):
                                        # else a fsae_MPCTest tuner/export_speed_profile.py
                                        # CSV to use instead — see mpc_controller_standalone.py's
                                        # map_path param and S48 in sim_to_real_investigation.md.
+                ('path_map_path', ''),  # '' -> live /fsae/planning/selected_trajectory
+                                       # (default); else the SAME kind of CSV as map_path,
+                                       # used for the tracked PATH instead of just speed —
+                                       # see mpc_controller_standalone.py's path_map_path param
+                                       # and USE_PRECOMPUTED_PATH in fsae_MPCTest/settings.py.
             ],
         )
         self._v_max = self.get_parameter('v_max').get_parameter_value().double_value
@@ -88,6 +93,24 @@ class MPCControllerNode(Node):
                 self.get_logger().error(
                     f'Failed to load map_path={map_path}: {exc}. '
                     'Falling back to live curvature_speed().'
+                )
+
+        # Static precomputed path — see mpc_controller_standalone.py's
+        # identical field for the full rationale/safety discussion.
+        self._static_path: np.ndarray | None = None
+        path_map_path = self.get_parameter('path_map_path').get_parameter_value().string_value
+        if path_map_path:
+            try:
+                self._static_path = load_path_profile_csv(path_map_path)
+                self.get_logger().info(
+                    f'Loaded precomputed path ({len(self._static_path)} pts) from '
+                    f'{path_map_path} — planner output on /fsae/planning/selected_trajectory '
+                    'will be ignored.'
+                )
+            except (OSError, ValueError) as exc:
+                self.get_logger().error(
+                    f'Failed to load path_map_path={path_map_path}: {exc}. '
+                    'Falling back to the live planner topic.'
                 )
         self._delta_filt: float | None = None   # filtered steering state
 
@@ -109,7 +132,11 @@ class MPCControllerNode(Node):
 
         self.pub_cmd = self.create_publisher(AckermannDriveStamped, '/fsae/control/cmd_vel', 10)
 
-        self._path: np.ndarray = np.empty((0, 2))
+        self._path: np.ndarray = (
+            self._static_path if self._static_path is not None else np.empty((0, 2))
+        )
+        # Static path never goes stale (no topic to lose) — see the
+        # standalone node's identical field/comment.
         self._path_stamp = None
         self._car_pos = np.zeros(2)
         # Previous tick's speed target, for the rise-rate limiter. None = no
@@ -134,6 +161,10 @@ class MPCControllerNode(Node):
     # ------------------------------------------------------------------
 
     def _traj_cb(self, msg: PoseArray) -> None:
+        if self._static_path is not None:
+            # A precomputed path is active — ignore the live planner's output.
+            # See mpc_controller_standalone.py's _path_cb for the same guard.
+            return
         self._path = np.array(
             [[p.position.x, p.position.y] for p in msg.poses], dtype=np.float64
         ) if msg.poses else np.empty((0, 2))
@@ -162,10 +193,15 @@ class MPCControllerNode(Node):
         # No pose or no path yet, or the path has gone stale: publish nothing and
         # reset the MPC so it doesn't warm-start from a stale trajectory.  The
         # downstream fsds_bridge brakes on its own cmd_vel timeout.
-        path_stale = (
-            self._path_stamp is None
-            or (self.get_clock().now() - self._path_stamp).nanoseconds * 1e-9 > PATH_TIMEOUT
-        )
+        if self._static_path is not None:
+            # No topic backing this path, so "staleness" doesn't apply — see
+            # mpc_controller_standalone.py's Phase 2 for the same reasoning.
+            path_stale = False
+        else:
+            path_stale = (
+                self._path_stamp is None
+                or (self.get_clock().now() - self._path_stamp).nanoseconds * 1e-9 > PATH_TIMEOUT
+            )
         if not self._have_pose or len(self._path) < 2 or path_stale:
             self._mpc.reset()
             self._delta_filt = None   # drop filter state with the MPC warm-start
@@ -241,9 +277,14 @@ class MPCControllerNode(Node):
             # steering is already the roadwheel angle in radians here (this
             # node publishes an Ackermann steering_angle, not a normalised
             # FSDS command), so it is both the logged steer and delta_cmd.
-            path_age_s = None
-            if self._path_stamp is not None:
+            # See mpc_controller_standalone.py's identical logic for why a
+            # static path logs 0.0 rather than None.
+            if self._static_path is not None:
+                path_age_s = 0.0
+            elif self._path_stamp is not None:
                 path_age_s = (self.get_clock().now() - self._path_stamp).nanoseconds * 1e-9
+            else:
+                path_age_s = None
             self._telemetry.log_control(
                 t, self._car_pos[0], self._car_pos[1], self._car_yaw,
                 self._car_speed, desired_speed, steering,

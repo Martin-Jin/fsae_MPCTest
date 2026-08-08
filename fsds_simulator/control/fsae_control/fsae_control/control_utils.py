@@ -393,6 +393,41 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
     return float(np.clip(v_target, v_min, v_max))
 
 
+def _load_profile_csv(csv_path: str):
+    """
+    Shared reader for fsae_MPCTest's tuner/export_speed_profile.py CSVs
+    (header "x,y,psi,v_target"; comment lines starting with '#' skipped).
+
+    Deliberately does NOT depend on scipy or fsae_MPCTest's centreline
+    reconstruction (sim/track_io.py, which needs CubicSpline and a
+    planning/boundary.py march over the whole lap) -- that reconstruction
+    runs once, offline, when the CSV is exported; this is a plain reader so
+    the car's control package picks up no new dependency for it.
+
+    Returns
+    -------
+    (path_X, path_Y, path_Psi, path_V) : tuple of np.ndarray, shape (n,)
+
+    Raises
+    ------
+    FileNotFoundError, ValueError : bad csv_path or malformed contents.
+    """
+    xs, ys, psis, vs = [], [], [], []
+    with open(csv_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#') or line.startswith('x,y'):
+                continue
+            x_s, y_s, psi_s, v_s = line.split(',')
+            xs.append(float(x_s))
+            ys.append(float(y_s))
+            psis.append(float(psi_s))
+            vs.append(float(v_s))
+    if len(xs) < 2:
+        raise ValueError(f"{csv_path}: fewer than 2 valid rows")
+    return np.asarray(xs), np.asarray(ys), np.asarray(psis), np.asarray(vs)
+
+
 def load_speed_profile_csv(csv_path: str):
     """
     Load a pre-computed (x, y, v_target) speed profile exported by
@@ -409,16 +444,10 @@ def load_speed_profile_csv(csv_path: str):
     assumes. This bypasses that shortfall entirely for a known track, since
     it needs no live cone visibility to know the target speed.
 
-    Deliberately does NOT depend on scipy or fsae_MPCTest's centreline
-    reconstruction (sim/track_io.py, which needs CubicSpline and a
-    planning/boundary.py march over the whole lap) -- that reconstruction
-    runs once, offline, when the CSV is exported; this is a plain reader so
-    the car's control package picks up no new dependency for it.
-
     Parameters
     ----------
-    csv_path : str   Path to a CSV with header "x,y,v_target" (comment lines
-                      starting with '#' are skipped).
+    csv_path : str   Path to a CSV with header "x,y,psi,v_target" (comment
+                      lines starting with '#' are skipped).
 
     Returns
     -------
@@ -428,19 +457,44 @@ def load_speed_profile_csv(csv_path: str):
     ------
     FileNotFoundError, ValueError : bad csv_path or malformed contents.
     """
-    xs, ys, vs = [], [], []
-    with open(csv_path) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith('#') or line.startswith('x,y'):
-                continue
-            x_s, y_s, v_s = line.split(',')
-            xs.append(float(x_s))
-            ys.append(float(y_s))
-            vs.append(float(v_s))
-    if len(xs) < 2:
-        raise ValueError(f"{csv_path}: fewer than 2 valid rows")
-    return np.asarray(xs), np.asarray(ys), np.asarray(vs)
+    path_X, path_Y, _path_Psi, path_V = _load_profile_csv(csv_path)
+    return path_X, path_Y, path_V
+
+
+def load_path_profile_csv(csv_path: str):
+    """
+    Load a pre-computed (x, y) path exported by fsae_MPCTest's
+    tuner/export_speed_profile.py, for use as a drop-in replacement of the
+    live planner's /fsae/planning/selected_trajectory centreline.
+
+    See USE_PRECOMPUTED_PATH in fsae_MPCTest/settings.py: this removes the
+    live planner (centerline_planner.py / boundary.py / cone_map.py) from the
+    control loop entirely for a track that's already been mapped, isolating
+    controller+plant tracking error from planner-induced path error (e.g. the
+    known centreline curvature-spike defect -- see
+    fsae_MPCTest/docs/planning_control_sync.md).
+
+    psi is exported but not returned here: MPCController._error_state()
+    already derives path heading from consecutive waypoints (atan2 of the
+    segment direction, the same convention centerline_planner.py's published
+    PoseArray uses), so the (n,2) array below is a direct substitute for the
+    live topic's path with no interface change to mpc_core.py.
+
+    Parameters
+    ----------
+    csv_path : str   Path to a CSV with header "x,y,psi,v_target" (comment
+                      lines starting with '#' are skipped).
+
+    Returns
+    -------
+    path : np.ndarray, shape (n, 2)   [x, y] waypoints, global frame.
+
+    Raises
+    ------
+    FileNotFoundError, ValueError : bad csv_path or malformed contents.
+    """
+    path_X, path_Y, _path_Psi, _path_V = _load_profile_csv(csv_path)
+    return np.column_stack([path_X, path_Y])
 
 
 def precomputed_speed_at(car_pos, path_X, path_Y, path_V) -> float:

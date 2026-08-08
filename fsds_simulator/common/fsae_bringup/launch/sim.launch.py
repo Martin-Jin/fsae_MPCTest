@@ -26,6 +26,14 @@ from launch.substitutions import LaunchConfiguration, PythonExpression
 #                                                                        # below to change the default
 #                                                                        # instead of passing the flag
 #                                                                        # every launch.
+#   ros2 launch fsae_bringup sim.launch.py use_precomputed_path:=true   # track a precomputed path
+#                                                                        # instead of the live planner's
+#                                                                        # centreline -- removes
+#                                                                        # centerline_planner.py from the
+#                                                                        # loop entirely (planner-vs-
+#                                                                        # controller isolation). Off by
+#                                                                        # default -- see control.launch.py's
+#                                                                        # use_precomputed_path description.
 def generate_launch_description():
     launch_dir = os.path.join(get_package_share_directory('fsae_bringup'), 'launch')
     planner = LaunchConfiguration('planner')
@@ -36,6 +44,8 @@ def generate_launch_description():
     log_dir = LaunchConfiguration('log_dir')
     map_path = LaunchConfiguration('map_path')
     use_precomputed_speed = LaunchConfiguration('use_precomputed_speed')
+    path_map_path = LaunchConfiguration('path_map_path')
+    use_precomputed_path = LaunchConfiguration('use_precomputed_path')
 
     # Skidpad needs the whole cone map up front to reconstruct the figure-8.
     full_track = PythonExpression(
@@ -88,12 +98,26 @@ def generate_launch_description():
                         "override with use_precomputed_speed:=false on the "
                         "command line) to switch every mpc/mpc_standalone run "
                         "back to live curvature_speed()."),
+        DeclareLaunchArgument(
+            'path_map_path',
+            default_value='/home/Formula-Student-Driverless-Simulator/fsae_MPCTest/tuner/speed_profile_export.csv',
+            description="Passed through to control.launch.py — see that file's "
+                        "path_map_path description."),
+        DeclareLaunchArgument(
+            'use_precomputed_path',
+            default_value='false',
+            description="Passed through to control.launch.py — see that file's "
+                        "use_precomputed_path description. Off by default: "
+                        "this is a diagnostic/experiment mode (planner-vs-"
+                        "controller isolation), not a standing behaviour "
+                        "change like use_precomputed_speed."),
         include('perception.launch.py', {'full_track': full_track}),
         include('planning.launch.py',   {'planner': planner}),
         include('control.launch.py',    {
             'planner': planner, 'controller': controller,
             'log_csv': log_csv, 'log_dir': log_dir,
             'map_path': map_path, 'use_precomputed_speed': use_precomputed_speed,
+            'path_map_path': path_map_path, 'use_precomputed_path': use_precomputed_path,
         }),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(launch_dir, 'cone_recorder.launch.py')),

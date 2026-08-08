@@ -1,6 +1,6 @@
 """
-Export a recorded cone map's oracle speed profile to a lightweight CSV the
-LIVE ROS node can load directly.
+Export a recorded cone map's oracle path + speed profile to a lightweight CSV
+the LIVE ROS node can load directly.
 
 Why this exists
 ----------------
@@ -14,9 +14,13 @@ would add a new scipy dependency and a second copy of that reconstruction
 logic to keep in sync forever (see docs/sim_to_real_investigation.md S48).
 
 Instead: do the heavy reconstruction HERE, offline, once per map, and write
-out just the three arrays the live node actually needs (x, y, v_target). The
-live loader (control_utils.load_speed_profile_csv(), fsae_planning repo) is
-a ~15-line CSV reader with no scipy and no boundary.py port.
+out just the four arrays the live node actually needs (x, y, psi, v_target).
+The live loader (control_utils.load_speed_profile_csv() /
+load_path_profile_csv(), fsae_planning repo) is a ~15-line CSV reader with no
+scipy and no boundary.py port. psi is exported alongside x/y so a live
+consumer that wants the path itself (not just the speed lookup) doesn't have
+to re-derive heading from consecutive points if it would rather use the
+spline-fit heading directly — see USE_PRECOMPUTED_PATH in settings.py.
 
 Re-run this whenever the map changes (a new cone_recorder capture, or a
 speed_profile.py change that would alter the oracle profile).
@@ -45,12 +49,12 @@ DEFAULT_OUT = os.path.join(_HERE, "speed_profile_export.csv")
 def export(map_path: str, out_path: str) -> None:
     path_X, path_Y, path_Psi, path_v, _blue, _yellow = load_recorded_track(map_path)
     with open(out_path, "w") as f:
-        f.write("# x,y,v_target -- oracle speed profile exported by "
+        f.write("# x,y,psi,v_target -- oracle path + speed profile exported by "
                 "tuner.export_speed_profile from a cone_recorder map.\n")
         f.write(f"# source_map={os.path.abspath(map_path)}\n")
-        f.write("x,y,v_target\n")
-        for x, y, v in zip(path_X, path_Y, path_v):
-            f.write(f"{x:.4f},{y:.4f},{v:.4f}\n")
+        f.write("x,y,psi,v_target\n")
+        for x, y, psi, v in zip(path_X, path_Y, path_Psi, path_v):
+            f.write(f"{x:.4f},{y:.4f},{psi:.5f},{v:.4f}\n")
     print(f"Wrote {len(path_X)} points -> {out_path}")
     print(f"v_target range: {path_v.min():.2f} - {path_v.max():.2f} m/s")
 

@@ -42,7 +42,9 @@ CONTROL LOOP PHASES (see _control_loop)
   Phase 2 — Emergency brake if the planner path is missing/stale (>TARGET_TIMEOUT
             old) or has fewer than 2 points, or the SLAM pose hasn't arrived yet;
             also resets the MPC so it doesn't warm-start from a stale trajectory
-            once the path returns.
+            once the path returns. When path_map_path is set, the path can
+            never be "stale" (see that param's declaration) — only the pose
+            check still applies.
   Phase 3 — Normal MPC solve via MPCController.compute().
   Phase 4 — Cone-proximity brake override: hard-overrides the MPC's
             throttle/brake (not steering) if a cone is inside the dynamic
@@ -66,8 +68,8 @@ from nav_msgs.msg import Odometry
 from rclpy.time import Time
 
 from fsae_control.control_utils import (
-    curvature_speed, load_speed_profile_csv, precomputed_speed_at,
-    tracking_error_speed_gate,
+    curvature_speed, load_path_profile_csv, load_speed_profile_csv,
+    precomputed_speed_at, tracking_error_speed_gate,
 )
 from fsae_control.mpc_core import MAX_STEER_RAD, MPCController
 from fsae_control.telemetry_logger import ControlLogger
@@ -105,6 +107,13 @@ class MPCControllerStandaloneNode(Node):
                                        # CSV to use instead — see USE_PRECOMPUTED_SPEED_PROFILE
                                        # in fsae_MPCTest/settings.py and S48 in
                                        # sim_to_real_investigation.md for why.
+                ('path_map_path', ''),  # '' -> live /fsae/planning/selected_trajectory
+                                       # (default); else the SAME kind of CSV as map_path,
+                                       # used for the tracked PATH instead of just speed —
+                                       # see USE_PRECOMPUTED_PATH in fsae_MPCTest/settings.py.
+                                       # Removes centerline_planner.py from the control loop
+                                       # entirely, to isolate controller/plant tracking error
+                                       # from planner-induced path error.
             ],
         )
         self._v_max = self.get_parameter('v_max').get_parameter_value().double_value
@@ -123,6 +132,26 @@ class MPCControllerStandaloneNode(Node):
                 self.get_logger().error(
                     f'Failed to load map_path={map_path}: {exc}. '
                     'Falling back to live curvature_speed().'
+                )
+
+        # Static precomputed path (see path_map_path above). Loaded once at
+        # startup; self._path_pts is populated from this immediately and never
+        # overwritten by _path_cb while it is set, so Phase 2/3 below don't
+        # need to know which source is active. None = normal live-topic mode.
+        self._static_path: np.ndarray | None = None
+        path_map_path = self.get_parameter('path_map_path').get_parameter_value().string_value
+        if path_map_path:
+            try:
+                self._static_path = load_path_profile_csv(path_map_path)
+                self.get_logger().info(
+                    f'Loaded precomputed path ({len(self._static_path)} pts) from '
+                    f'{path_map_path} — planner output on /fsae/planning/selected_trajectory '
+                    'will be ignored.'
+                )
+            except (OSError, ValueError) as exc:
+                self.get_logger().error(
+                    f'Failed to load path_map_path={path_map_path}: {exc}. '
+                    'Falling back to the live planner topic.'
                 )
 
         self._telemetry = None
@@ -151,7 +180,12 @@ class MPCControllerStandaloneNode(Node):
         self.pub_cmd = self.create_publisher(ControlCommand, '/fsds/control_command', 10)
 
         self._go_received = False
-        self._path_pts: np.ndarray = np.empty((0, 2))
+        self._path_pts: np.ndarray = (
+            self._static_path if self._static_path is not None else np.empty((0, 2))
+        )
+        # Static path never goes stale (no topic to lose) — treated as
+        # "always fresh" by never being touched by the staleness check below,
+        # rather than by faking a stamp that keeps advancing on its own.
         self._path_stamp = None
         self._have_pose = False
         self._car_pos = np.zeros(2)
@@ -191,6 +225,11 @@ class MPCControllerStandaloneNode(Node):
             self.get_logger().info('GO signal received.')
 
     def _path_cb(self, msg: PoseArray) -> None:
+        if self._static_path is not None:
+            # A precomputed path is active — centerline_planner.py's output is
+            # ignored entirely (still subscribed so the topic doesn't dangle,
+            # but never written to self._path_pts). See path_map_path above.
+            return
         self._path_pts = np.array(
             [[p.position.x, p.position.y] for p in msg.poses], dtype=np.float64
         ) if msg.poses else np.empty((0, 2))
@@ -251,10 +290,19 @@ class MPCControllerStandaloneNode(Node):
             return
 
         # ── Phase 2: emergency brake on stale/missing path or pose ──────
-        path_stale = (
-            self._path_stamp is None
-            or (self.get_clock().now() - self._path_stamp).nanoseconds * 1e-9 > PATH_TIMEOUT
-        )
+        # A static precomputed path has no topic to go stale — its
+        # "freshness" is meaningless, so the only thing that can fail here is
+        # the live pose (still checked below via self._have_pose), exactly
+        # the safety net path_map_path's docstring promises: a car running
+        # with a precomputed path still brakes correctly if its live
+        # localisation fails, same as before.
+        if self._static_path is not None:
+            path_stale = False
+        else:
+            path_stale = (
+                self._path_stamp is None
+                or (self.get_clock().now() - self._path_stamp).nanoseconds * 1e-9 > PATH_TIMEOUT
+            )
         if not self._have_pose or path_stale or len(self._path_pts) < 2:
             cmd.throttle, cmd.steering, cmd.brake = 0.0, 0.0, 1.0
             self._mpc.reset()
@@ -358,10 +406,18 @@ class MPCControllerStandaloneNode(Node):
                 a_cmd = min(a_cmd, -float(cmd.brake) * self._mpc.a_max_brake)
             # Age of the planner path this solve consumed. The path arrives at
             # ~1 Hz while this loop runs at 20 Hz, so it is routinely ~20 ticks
-            # old; logging it makes that concrete instead of inferred.
-            path_age_s = None
-            if self._path_stamp is not None:
+            # old; logging it makes that concrete instead of inferred. A static
+            # precomputed path (self._static_path set) is logged as exactly
+            # 0.0 rather than None — it is never stale by construction, and
+            # 0.0 keeps this column numeric for any downstream analysis that
+            # assumes path_age_s is always a float (see fsae_MPCTest's
+            # telemetry_logger.py mirror, which must match this convention).
+            if self._static_path is not None:
+                path_age_s = 0.0
+            elif self._path_stamp is not None:
                 path_age_s = (self.get_clock().now() - self._path_stamp).nanoseconds * 1e-9
+            else:
+                path_age_s = None
             self._telemetry.log_control(
                 t, self._car_pos[0], self._car_pos[1], self._car_yaw,
                 self._car_speed, self._desired_speed, steer_rad,

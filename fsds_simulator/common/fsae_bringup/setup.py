@@ -17,7 +17,7 @@ setup(
         (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
     ],
     install_requires=['setuptools'],
-    zip_safe=True,
+    zip_safe=False,
     maintainer='UoA FSAE',
     maintainer_email='fsae@auckland.ac.nz',
     description='Top-level launch composition + central parameter config for the simulator stack',
