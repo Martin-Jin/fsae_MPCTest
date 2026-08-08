@@ -3726,6 +3726,91 @@ touches only the speed profile, not the plant.
 insufficient scan *range*, not a blind spot inside an in-range scan). This
 section is the first fix and documentation of it.
 
+## 51. §48's `path_map_path` feature tested live: a large real improvement, not a full fix
+
+§48's `use_precomputed_path`/`path_map_path` (a separate, independently-shipped
+feature that bypasses live planning — `centerline_planner.py`/`boundary.py`/
+`cone_map.py` — entirely, tracking §48's exported oracle path+psi CSV instead
+of `/fsae/planning/selected_trajectory`, isolating controller+plant tracking
+error from planner-induced path error) had not been run on the car as of §48's
+writing. It has now (`mpc_standalone_control_1786158245.csv`, confirmed
+`tag=mpc_standalone` throughout — no mixed-in Stanley mapping lap).
+
+| metric | pre-feature (§49 baseline, post-rebuild) | with `path_map_path` |
+|---|---|---|
+| steering sat % | 49.9 / 55.3 (two runs) | **19.5** |
+| RMSE (m) | ~1.00–1.09 | **0.594** |
+| peak \|e_y\| (m) | — | 1.534 |
+| n_steps | — | 4016 (200.8 s) |
+
+A large, real improvement — steering saturation roughly halved to a third of
+its pre-feature value, RMSE nearly halved. **Not a full fix**: still ~4× the
+offline sim's ~4.8% saturation target (CLAUDE.md's headline table), and the
+log has a genuine remaining problem, not just residual noise: `max|e_psi|` =
+107.2° at t=42.66s, `max|e_y|` = 1.534 m at t=39.01s, and 59 distinct
+saturation episodes concentrated around t≈39–43s, the longest running 48
+ticks (2.4 s) continuously. Composite score (13.0) is the known "car never
+reaches path end" live-scoring artifact (see the Open/deferred table's
+"Live scorer reports `13.0`" row) and is not informative here on its own.
+
+**Interpretation.** With the live planner entirely out of the loop, the
+remaining ~19.5% saturation and the t≈39–43s episode are attributable only to
+controller+plant tracking of a *fixed, known-good* path — i.e., they are not
+explained by planner-induced path error (curvature spikes, reference-heading
+lead, the §50 apex blind-spot, etc. — all upstream of this test by
+construction). This narrows the residual gap to the same territory §48 already
+flagged as unresolved: the MPC's fixed-time (not fixed-distance) horizon
+(`N_HORIZON=25 × DT=0.05s = 1.25s`, ~20–22.5 m at 16–18 m/s) and/or plant
+tracking dynamics. Horizon scaling (proposed in §48, still unimplemented) is
+the next thing this result motivates testing, not a new lead.
+
+**Open/deferred table**: the §48 row's "Not yet run on the car" is superseded
+by this section for the `path_map_path` half of §48 (the precomputed-*speed*
+half, `use_precomputed_speed`, was already live-tested per §49's own history
+and is a separate flag).
+
+## 52. Build hygiene: `colcon build --symlink-install` needs `zip_safe=False`, wired into `launch_all.sh`
+
+§49 root-caused one stale-build incident (a 2-3 day old `ros2/install/`).
+A second, independent stale-build incident recurred the same session
+afterward (`mpc_core.py`'s installed `Q_diag[4]=10.926...` vs a source edit
+of `1.926...`, found the same way — `stat` mtimes plus a direct `diff` against
+the installed copy) — confirming this is a systemic risk, not a one-off, and
+worth closing structurally rather than relying on remembering to rebuild.
+
+**Why `--symlink-install` alone didn't work.** `colcon build --symlink-install`
+is documented to replace copied files with symlinks so edits to `src/` take
+effect without a rebuild. Tried directly: only `share/.../launch/*.py` files
+became real symlinks; `site-packages/fsae_control/mpc_core.py` (and the other
+Python modules) remained plain copies even under `--symlink-install`.
+Root cause: all four `setup.py` files in `ros2/src/fsae_planning` had
+`zip_safe=True`, which blocks setuptools' develop-mode install that
+`ament_python`'s `--symlink-install` support depends on for Python sources.
+
+**Fix.** `zip_safe=True` → `False` in `control/fsae_control/setup.py`,
+`planning/fsae_planning/setup.py`, `perception/fsae_sim_perception/setup.py`,
+and `common/fsae_bringup/setup.py` (mirrored identically to the four matching
+`fsds_simulator/.../setup.py` files, already committed there in `5d4862c`).
+Required a full clean rebuild afterward (`rm -rf build install log && colcon
+build --symlink-install`) — colcon does not retroactively convert an existing
+copy-mode install to symlink-mode in place. Verified via direct Python import
+resolution: `fsae_control.mpc_core.__file__` now resolves through
+`site-packages/fsae-control.egg-link` → a `build/fsae_control` symlink →
+`src/fsae_planning/control/fsae_control/fsae_control/mpc_core.py` — i.e.
+editing source requires no rebuild at all for Python changes to take effect.
+
+**Wired into `launch_all.sh`** (outer repo, not `fsae_MPCTest`) as a new step
+between the Windows simulator launch and the ROS2 bridge launch: runs
+`colcon build --symlink-install` unconditionally on every invocation (a no-op
+when nothing changed, per colcon's own up-to-date check), so this class of
+staleness cannot recur through the normal entry point. Does not fix a manual
+`ros2 launch` invoked outside `launch_all.sh` without a rebuild in between —
+that remains a manual-process risk, not a code fix can close.
+
+**Open/deferred table**: no prior row covered this — §49 documented one
+incident's root cause and fix (a rebuild) but not the structural fix (this
+section) that prevents the class of bug from recurring.
+
 ## What generalises
 
 1. **Closed-loop data cannot separate plant faults from controller faults.**
@@ -3998,6 +4083,8 @@ section is the first fix and documentation of it.
 
 | item | status |
 |---|---|
+| `curvature_speed()` apex blind-spot — window strides over short tight corners | **Root-caused and fixed (§50), 2026-08-08.** `scan_start` (1.5m) plus the moving-average centring offset (~2.0m) pushed the measurement window's effective start to 3.5m ahead of the car, comfortably skipping this corner's ~2-3m tight zone on every query — `v_target` rose monotonically through the whole corner instead of dipping near the true minimum. Fixed (`scan_start`→0.0, `dense_step`→0.5, `w`→3, decimation removed) in all 3 copies. Full-track validation: all 9 corners fixed, 0 regressions, overspeed fraction 42.5%→4.2% |
+| Build hygiene: stale `colcon build` recurred twice in one session | **Structurally fixed (§52), 2026-08-08.** Root cause of `--symlink-install` not actually symlinking Python files: `zip_safe=True` in all 4 `setup.py` files blocked setuptools develop-mode install. Fixed (`zip_safe=False`, full clean rebuild), and `colcon build --symlink-install` wired into `launch_all.sh` on every invocation so `src/` edits can no longer go stale through the normal entry point |
 | First live test after §48 still turned/braked late, with `v_desired` hitting 24.7 m/s against `v_max=15.0` — the exact §45 symptom | **Root-caused (§49), 2026-08-08: not a code bug, a stale `colcon build`.** `ros2/install/` was 2-3 days behind `ros2/src/` — the installed `control_utils.py` had neither S45's `np.clip` fix nor §48's `load_speed_profile_csv`/`precomputed_speed_at` at all, confirmed by grepping the installed copy directly. Every live run since S45 landed was running pre-fix code. Fixed by rebuilding (`colcon build --packages-select fsae_control fsae_bringup`); verified the installed copy now matches `src/`. Re-test on the car needed — no result from current code exists yet |
 | **Fresh post-fix live log looked worse than pre-fix baselines** | **Explained, not a regression (§36).** Traced to two localized stall/tangle events (t=40s, t=150s) that drag the mean e_psi up while bulk-of-lap saturation/tracking is statistically unchanged from pre-fix logs. `steer_lp` and pose-age/delay hypotheses both checked and ruled out directly from log columns. Cause of the two stalls themselves not yet identified |
 | Speed-dependent `alat_ceiling(v)` | **Shipped (§37), 2026-08-08.** `max(7.5, 2.46+0.47*v)` — sweep's fit, only raises the ceiling above ~10.7 m/s, never lowers it. Validated: sweep MAE 0.87→0.72, 0 new `VALIDATION_SUITE` DNFs, recorded-map ratios unchanged-to-improved. `fsae_MPCTest`-only (no live plant model to mirror to). Not yet validated live |
@@ -4007,10 +4094,10 @@ section is the first fix and documentation of it.
 | Small-error steering hunting | **Real on one live log, NOT reproduced offline (§42), 2026-08-08.** Reversal rate rises to 35.6% as \|e_y\|→0 live (opposite trend offline at the time). `adaptive_Q_scaling()` added. Enabled live 2026-08-08 for an A/B test (user's own call) — fresh log shows broad improvement (sat 27.0%→20.8%, e_psi mean 23.6°→16.9°) but reversals/s got WORSE (1.99→3.48) and the small-error reversal-rate pattern got worse too (35.6%→46.9% at \|e_y\|<0.05m) even though the car now spends more time there (1.9%→5.4%) — a mixed result, not a clean win on the specific symptom it targeted |
 | Sensor noise disabled in every offline comparison | **Found and fixed (§43), 2026-08-08.** `SLAM_NOISE_ENABLED`/`CONE_NOISE_ENABLED` were `False` for every offline run this whole session. At documented (1x) magnitude, enabling closes most of the reversal-rate gap (0.99→3.06/s, live is 3.48) but none of the mean\|e_y\| gap (stuck at 0.06-0.08 vs live's 0.346 across 1x-6x). Flipped to `True` by default — changes what `offline_tuner.py` optimises against |
 | Braking authority under-used approaching corners | **Measured (§44), 2026-08-08 — user's reported symptom, confirmed real.** At worst over-speed moments live: mean `a_cmd`=-0.76 m/s² vs -9.0 available (<9% used); offline: -2.58 vs -3.39 max ever reached. Planner already requests the slowdown in time in every case checked. Leading hypothesis for the remaining tuning-side contribution: `Q_diag[4]` too small relative to `Q_diag[0]`/`Q_diag[2]`; user retuning directly |
-| `curvature_speed()` could exceed `v_max` before a corner enters the scan window | **Root-caused and fixed (§45), 2026-08-08.** S33/S34's fix removed the upper clamp entirely on the curvature-measured path, not just the short-path `v_max_eff` ceiling it targeted. Confirmed live: `v_desired` reached 24.7 m/s vs `v_max`=15.0 in 8 episodes up to 3.4s, including the exact braking event examined in §44. Re-clamped to `v_max` (not `v_max_eff`) in all 3 copies. `PATH_SUDDEN_TURN` (DNF'd every prior run this session) now completes. Recorded-map ratios move substantially toward live on sat (0.38→0.83) and reversals (0.28→0.91) but overshoot past live on e_psi_mean (1.23) and remain far off on mean\|e_y\| (0.21). Not yet tested live. **Correction (§46): necessary but not sufficient** — masked, but did not fix, a second bug that made `PATH_SUDDEN_TURN`'s corner geometrically infeasible for most of the tuner's search space |
+| `curvature_speed()` could exceed `v_max` before a corner enters the scan window | **Root-caused and fixed (§45), 2026-08-08.** S33/S34's fix removed the upper clamp entirely on the curvature-measured path, not just the short-path `v_max_eff` ceiling it targeted. Confirmed live: `v_desired` reached 24.7 m/s vs `v_max`=15.0 in 8 episodes up to 3.4s, including the exact braking event examined in §44. Re-clamped to `v_max` (not `v_max_eff`) in all 3 copies. `PATH_SUDDEN_TURN` (DNF'd every prior run this session) now completes. Recorded-map ratios move substantially toward live on sat (0.38→0.83) and reversals (0.28→0.91) but overshoot past live on e_psi_mean (1.23) and remain far off on mean\|e_y\| (0.21). **Tested live since (§49, §51): confirmed present via a stale-build incident that briefly reverted its effect (§49), then confirmed active in the current build.** **Correction (§46): necessary but not sufficient** — masked, but did not fix, a second bug that made `PATH_SUDDEN_TURN`'s corner geometrically infeasible for most of the tuner's search space |
 | `offline_tuner.py`'s CMA-ES plateaued at a fixed score for 15+ generations on the user's local `["PATH_SUDDEN_TURN", "PATH_HAIRPIN"]` suite | **Root-caused and fixed (§46), 2026-08-08.** Not a search/local-optimum problem: 50% of a 30-vector random sweep across the full CMA-ES bounds DNF'd, clustering at identical scores (same failure, not scattered noise). Traced to `PATH_SUDDEN_TURN`'s corner requiring 30.6° of steer (vs `max_steer=25°`) — confirmed independent of weights by forcing full lock + full brake (-9.0 m/s², the true physical max) through the corner and still going off-track, at an identical score to 12 decimals. Cause: `_resample_path()` parameterised its clamped cubic spline by waypoint index, not arc-length, so the spline overshot at the straight-to-tight-arc junction (measured: index param → 0.00066 m effective radius vs the intended 4.5 m; arc-length param → 3.75 m). Fixed in `tuner/offline_tuner.py::_resample_path()` and its documented standalone copy `sim/track_io.py::_resample_dense()`. Verified all 10 synthetic paths now within the 25° steering limit. `PATH_SPIRAL` DNFs identically before/after (pre-existing, separate, not fixed). **Correction (§47): necessary but not sufficient** — the corner is now hard-but-feasible, not impossible, and the residual difficulty exposed a scoring gap that let CMA-ES collapse `Q_diag[0]` |
 | Post-§46 tuning run still plateaued; user re-tuned and got `Q_diag[0]`≈0.2 (vs template 5.65), confirmed live to spin the car out at the first corner | **Root-caused (§47), 2026-08-08.** Live log (`mpc_standalone_control_1786151512.csv`) directly confirms the symptom: `e_psi` grows to -107° while steering pins at 25° for ~2s, `yaw` wraps past ±180° (a genuine ~270°+ spin, not the wheels reversing — `v_actual` never goes negative), matching the user's own description exactly ("turned so late... ended up going backwards", "doing a loop of the starting area"). Root cause: CMA-ES moved weight OFF `e_y` (0.035× template) and ONTO `e_y_dot`/`e_psi_dot` (14×/29× template) — a real local optimum, not a bug in the planner or MPC formulation — because the objective doesn't punish it: these exact weights track tightly in isolation on `PATH_SUDDEN_TURN`/`PATH_HAIRPIN` (mean\|e_y\|=0.034m, no DNF) and actually beat the template on the recorded map (progress 0.97 vs template's DNF at 0.61), while `steer_sat_pct=0.0` on that same recorded-map run is the offline signature of the same low-authority failure the live log shows directly. **Fixed**: raised `Q_BOUNDS[0]`'s floor 0.1→1.0 in `tuner/offline_tuner.py`, closing off the specific collapse (`vec[0]≈0.035`) that already happened. **Deliberately not fixed**: the more complete fix — a scoring-side penalty for sustained low `steer_sat_pct`/high-`\|e_psi\|` dwell time — remains open, since the bound only blocks this one collapse, not every low-authority trade-off the current objective might still reward |
-| Still turning/braking late after §47's fix — is `curvature_speed()`'s lookahead actually working? | **Two independent shortfalls found (§48), 2026-08-08.** (1) Perception FOV starves the function's own assumed `scan_end=24m`: measured on a recorded-map replay, the live-built centreline is shorter than 24m on 100% of steps (median 21.6m, <15m on ~20%, <10m on ~8%) — the math is correct, it just has less runway than it assumes. (2) User's own question, confirmed correct: `N_HORIZON=25 × DT=0.05s = 1.25s` is fixed in TIME, not distance, and never scales with speed anywhere in either stack — at 16-18 m/s that's only ~20-22.5m of horizon distance, comparable to (1)'s shortfall. Neither fixed directly this session (horizon-scaling scoped as its own follow-up, needs separate validation). **Feature added instead**: `settings.USE_PRECOMPUTED_SPEED_PROFILE` (offline) / `map_path`+`use_precomputed_speed` ROS params (live, both `mpc_controller.py` and `mpc_controller_standalone.py`, plus a `control.launch.py` toggle) bypasses (1) entirely for an already-mapped track by looking up the WHOLE map's precomputed oracle speed profile instead of re-deriving it from a truncated live centreline every tick. New offline tool `tuner/export_speed_profile.py` avoids porting scipy/centreline-reconstruction into the live package. Speed-target only; steering and the stale-path emergency brake are untouched. Caught in review before shipping: the launch-file toggle's first draft built a `PythonExpression` by string-concatenating `map_path` into Python source text, which breaks on a Windows path's backslashes (confirmed: raises a `unicodeescape` `SyntaxError`) — fixed with `IfElseSubstitution`/`EqualsSubstitution`, which pass the path through as data instead. **Follow-up (2026-08-08, same day): defaulted to ON.** `use_precomputed_speed` now defaults `true` in both `control.launch.py` and `sim.launch.py` (the file `launch_all.sh` actually calls — the original version wasn't wired through it at all, so it was unreachable from the normal entry point regardless of its default). `map_path` defaults to a hardcoded absolute path matching `export_speed_profile.py`'s own default output — caught and rejected an `os.path.expanduser('~/...')`-based "portable" default in the same pass: this launch file is copied into `ros2/install/...` by colcon at build time (confirmed via `find`, not assumed), so anything derived from its own location resolves in the wrong tree; `fsae_MPCTest` is outside the ROS workspace entirely, with no path to it from anything ROS-visible. Not yet run on the car |
+| Still turning/braking late after §47's fix — is `curvature_speed()`'s lookahead actually working? | **Two independent shortfalls found (§48), 2026-08-08.** (1) Perception FOV starves the function's own assumed `scan_end=24m`: measured on a recorded-map replay, the live-built centreline is shorter than 24m on 100% of steps (median 21.6m, <15m on ~20%, <10m on ~8%) — the math is correct, it just has less runway than it assumes. (2) User's own question, confirmed correct: `N_HORIZON=25 × DT=0.05s = 1.25s` is fixed in TIME, not distance, and never scales with speed anywhere in either stack — at 16-18 m/s that's only ~20-22.5m of horizon distance, comparable to (1)'s shortfall. Neither fixed directly this session (horizon-scaling scoped as its own follow-up, needs separate validation). **Feature added instead**: `settings.USE_PRECOMPUTED_SPEED_PROFILE` (offline) / `map_path`+`use_precomputed_speed` ROS params (live, both `mpc_controller.py` and `mpc_controller_standalone.py`, plus a `control.launch.py` toggle) bypasses (1) entirely for an already-mapped track by looking up the WHOLE map's precomputed oracle speed profile instead of re-deriving it from a truncated live centreline every tick. New offline tool `tuner/export_speed_profile.py` avoids porting scipy/centreline-reconstruction into the live package. Speed-target only; steering and the stale-path emergency brake are untouched. Caught in review before shipping: the launch-file toggle's first draft built a `PythonExpression` by string-concatenating `map_path` into Python source text, which breaks on a Windows path's backslashes (confirmed: raises a `unicodeescape` `SyntaxError`) — fixed with `IfElseSubstitution`/`EqualsSubstitution`, which pass the path through as data instead. **Follow-up (2026-08-08, same day): defaulted to ON.** `use_precomputed_speed` now defaults `true` in both `control.launch.py` and `sim.launch.py` (the file `launch_all.sh` actually calls — the original version wasn't wired through it at all, so it was unreachable from the normal entry point regardless of its default). `map_path` defaults to a hardcoded absolute path matching `export_speed_profile.py`'s own default output — caught and rejected an `os.path.expanduser('~/...')`-based "portable" default in the same pass: this launch file is copied into `ros2/install/...` by colcon at build time (confirmed via `find`, not assumed), so anything derived from its own location resolves in the wrong tree; `fsae_MPCTest` is outside the ROS workspace entirely, with no path to it from anything ROS-visible. **`path_map_path` now run on the car (§51), 2026-08-08: sat 49.9/55.3%→19.5%, RMSE ~1.0-1.09→0.594 — a large improvement, not a full fix (still ~4× the sim's 4.8% target, a genuine t≈39-43s episode remains).** `use_precomputed_speed` was already covered by §49's own history |
 | **Model the yaw cap offline** | **Done** — `alat_ceiling*` in `model/vehicle_physics.py`. Moves every metric toward the car (saturation 4.4→6.3%, a_lat max 14.06→10.53) but closes only part of the gap; live is still 21.1% saturation |
 | **Planner parity bug (`SimPlanner` call sites)** | **Fixed (§31), 2026-08-08.** Offline never passed `smooth_per_pt`/`look_radius`/`plan_horizon`/blend `alpha`/`horizon` to `build_path_walls()`/`blend_paths()`, silently using hardcoded defaults instead of `fsae_params.yaml`'s tuned values (2 of 5 coincidentally matched). Fix narrows the "unexplained gap" 17.43→10.68 pp in one step — bigger than every previously-tested plant/ceiling factor combined — and introduces a new recorded-map DNF at step 95. Weights may need re-tuning against the corrected planner |
 | **Recorded-map DNF (post-§31/braking-fix)** | **Root-caused and fixed (§33/§34), 2026-08-08.** Cause: `_build_wall_path`'s seed filter (`planning/boundary.py`, `fwd > 0.3`) discontinuously drops the nearest midpoint as the car's heading rotates through a corner. This is §19's `min_ahead`/chain-anchor discontinuity, pinned to the exact line. **Fix 1** (`curvature_speed`'s `v_max_eff` no longer reapplied after real curvature is measured) and **Fix 2** (seed filter loosened to `fwd > -0.5`) both shipped, mirrored to all 3 repos (AST-identical, confirmed). Initially reverted for raising `VALIDATION_SUITE`'s DNF count (0/5→1-2/5); re-shipped after recognising that check was the wrong direction here — the live car already DNFs/saturates far more than the offline sim, so the sim failing more after removing artificial forgiveness is closing the gap, not regressing (lesson 32). Produced the closest full-lap sim/live match in this document (§34: ratios 0.68-0.73 across every metric) |
