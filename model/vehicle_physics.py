@@ -185,7 +185,13 @@ class VehicleParams:
         self.max_steer_rate  = np.radians(180.0)
         # FS EV peak acceleration ~12 m/s² (0→17 m/s in ~2 s); braking ~9 m/s² (~0.9g).
         self.max_accel       = 12.0              # Max longitudinal acceleration (m/s²)
-        self.max_accel_brake = -9.0             # Max longitudinal braking (m/s²)
+        # Lowered 9.0 -> 7.0 (2026-08-08), matching mpc_core.py's MAX_BRAKE --
+        # live bracketing experiment, not a measured value. See that constant's
+        # comment for the full rationale (no FSDS-measured confirmation exists
+        # for either 9.0 or 7.0; offline the MPC never commanded braking
+        # anywhere near -9.0 regardless of weighting). Keep numerically
+        # identical to mpc_core.py while this experiment is live.
+        self.max_accel_brake = -7.0             # Max longitudinal braking (m/s²)
         # This project's real car tops out at ~60 km/h (16.7 m/s) — a slower
         # autonomous test platform, not FSDS's own ~27 m/s simulator ceiling.
         self.max_v = 16.7 # Maximum possible speed the vehicle can go

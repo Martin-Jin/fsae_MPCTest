@@ -33,7 +33,20 @@ from sim.sim_track import TRACK_HALF_WIDTH
 #   - Typical adjustment: change by 5 steps (0.25 s) at a time. Must match
 #     N_horizon in simulation.py and N in control_utils.py exactly, or the
 #     weights tuned here won't behave the same on the real car.
-N_HORIZON = 25
+# Changed 25 -> 35 (2026-08-08): swept on PATH_SUDDEN_TURN (long straight ->
+# sharp 90 deg, R=4.5m) with use_planner=False, current Q_diag/R_diag/
+# R_rate_diag -- N=35 was the peak (peak lateral error 0.527m -> 0.450m,
+# score 0.474 -> 0.441; N=50/70 drift slightly worse again, so this is a
+# real optimum, not "higher is always better"). Neutral on the full recorded
+# map (score 0.411 -> 0.412, sat% unchanged at 0.00) -- helps the sharp-corner
+# case, doesn't cost anything elsewhere. Does NOT fix the late-turn-in/
+# saturation failure mode itself: commit timing barely moved (5.95s -> 6.0s)
+# because the reference heading is genuinely ~0 until the car's own
+# arc-length position reaches the corner's start -- there's no earlier
+# signal for a longer horizon to react to. See sim_to_real_investigation.md
+# for the fuller writeup (terminal_scale and R_rate were swept too and
+# ruled out as the commit-timing driver).
+N_HORIZON = 35
 
 # TERMINAL_Q_SCALE — "How much extra does the controller care about where it
 # ends up at the very end of its plan, compared to every other step?"
@@ -427,9 +440,31 @@ ADAPTIVE_Q_SCALING_ENABLED = False
 # heading/speed tracking aren't sacrificed outright. CMA-ES should still
 # re-tune this properly in a full run — this is a manual corrective starting
 # point, not a final value.
-Q_diag      = [9.642721455680089, 0.6429771471569046, 9.09754222209661, 0.10571694008486163, 9.715386646449979, 0.0, 0.0, 0.0]
-R_diag      = [0.44113286130397317, 2.11423973420019]
-R_rate_diag = [5.856634028761815, 0.6466599689268518]
+Q_diag      = [9.642721455680089, 0.6429771471569046, 9.09754222209661, 0.10571694008486163, 3.715386646449979, 0.0, 0.0, 0.0]
+R_diag      = [0.84113286130397317, 0.5285599335500475]
+R_rate_diag = [1.856634028761815, 0.6466599689268518]
+# Three further hand edits 2026-08-08 (live edits, resynced here), all part
+# of chasing live accel/brake jitter on straights (accel_rms_mps2 2.67 after
+# R_diag[1]'s 0.25x cut, 2.06 after Q_diag[4]'s cut below, 1.81 after this
+# round -- measurably better each time but not eliminated; not yet
+# reproduced offline on the recorded map/oracle profile, so these are live
+# hand-tuning steps, not offline-validated optima like R_diag[1]):
+#   Q_diag[4] (speed error): 9.715386646449979 -> 3.715386646449979
+#   R_diag[0] (steering effort): 0.44113286130397317 -> 0.84113286130397317
+#   R_rate_diag[0] (steering-rate): 5.856634028761815 -> 1.856634028761815
+# CMA-ES should re-tune properly in a full run once the jitter's root cause
+# is understood -- these are corrective, not final, values.
+# R_diag[1] (accel/brake effort cost) lowered 2.11423973420019 -> 0.25x
+# (2026-08-08): swept on PATH_SUDDEN_TURN with use_planner=False, N_HORIZON=35
+# (see that setting's own comment) -- the MPC was only commanding ~-3.0 to
+# -3.2 m/s^2 of braking approaching the corner, about a third of the
+# vehicle's actual -9.0 m/s^2 limit, leaving a ~2 m/s speed-tracking gap
+# (v vs v_target) right at corner entry. 0.25x closes about half that gap
+# (2.13 -> 1.15 m/s), peak e_y 0.450 -> 0.398m, score 0.441 -> 0.420. Below
+# 0.25x it plateaus/slightly reverses (0.05x-0.02x actually re-widened the
+# gap to ~1.0-1.06m and score ticked back up), so this is a real optimum,
+# not "lower is always better" -- unlike R_rate and terminal_scale, which
+# were also swept on the same corner and had no effect on commit timing.
 
 
 # ==============================================================================

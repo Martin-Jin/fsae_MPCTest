@@ -559,6 +559,26 @@ jitter models a *varying* delay, whereas this was a *systematically halved
 measurement rate*. Those are different failure modes and the jitter knob will
 not reproduce it.
 
+**A sibling bug, same root cause class, found and fixed 2026-08-08** (see
+`sim_to_real_investigation.md` §55): the fix above makes `pose_rate` keep up
+with the controller, but it did not guarantee that a given `car_position`
+sample and the `car_speed`/`car_yaw_rate` the controller read *at the same
+tick* came from the same underlying odom instant — `mpc_controller.py`/
+`mpc_controller_standalone.py` subscribed to the raw 250 Hz
+`/fsds/testing_only/odom` directly for speed/yaw-rate, a second, independent
+subscription racing `sim_perception.py`'s own separate subscription to the
+same publisher (the one that produces `car_position`). This is a
+**cross-topic snapshot mismatch**, not a rate mismatch — different mechanism,
+same underlying cause (`sim_perception.py`'s publish timing not actually
+delivering what a downstream consumer assumes). Fixed by adding
+`/fsae/slam/car_odom` (`nav_msgs/Odometry`), published from the exact same
+`_odom_cb`-updated state and the exact same 20 Hz timer tick as
+`car_position`, and switching both MPC controllers to read speed/yaw-rate
+from it instead of the raw topic. Same "no offline mirror needed" reasoning
+applies: `sim/rollout_core.py` has one single, internally-consistent plant
+state at every instant, so it never had an equivalent of two racing
+subscriptions to begin with.
+
 ## Delay realism: why the tuner under-reproduces live chatter
 
 The offline rollout applies a fixed `DELAY_STEPS` lag and `predict_ahead()`

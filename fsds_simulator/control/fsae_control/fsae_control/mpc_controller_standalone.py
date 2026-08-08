@@ -24,7 +24,15 @@ current fsae_planning topics/messages.
 
     in   /fsae/planning/selected_trajectory  geometry_msgs/PoseArray        planner centreline
     in   /fsae/slam/car_position             geometry_msgs/PoseStamped      x,y in position; yaw in orientation.w
-    in   /fsds/testing_only/odom             nav_msgs/Odometry              speed + yaw-rate feedback
+    in   /fsae/slam/car_odom                 nav_msgs/Odometry              speed + yaw-rate feedback; SAME
+                                                                             snapshot as car_position above
+                                                                             (both from sim_perception.py's
+                                                                             one _odom_cb per tick — see that
+                                                                             node's "Speed/yaw-rate
+                                                                             synchronisation" docstring note.
+                                                                             Do NOT subscribe to the raw
+                                                                             /fsds/testing_only/odom directly:
+                                                                             that was the bug this fixed.)
     in   /fsds/signal/go                     fs_msgs/GoSignal               race start
     in   /fsae/perception/cone_detection     fsae_interfaces/ConeDetection  proximity e-brake (car-local frame)
     out  /fsds/control_command                fs_msgs/ControlCommand
@@ -171,8 +179,14 @@ class MPCControllerStandaloneNode(Node):
             PoseArray, '/fsae/planning/selected_trajectory', self._path_cb, 10)
         self.create_subscription(
             PoseStamped, '/fsae/slam/car_position', self._pose_cb, 10)
+        # /fsae/slam/car_odom, NOT the raw /fsds/testing_only/odom -- see this
+        # file's own docstring "Speed/yaw-rate synchronisation" note and
+        # sim_perception.py's identical one. Subscribing to the raw topic
+        # directly raced sim_perception's own separate subscription to the
+        # same 250 Hz publisher, so car_speed/car_yaw_rate could reflect a
+        # different odom instant than car_pos/car_yaw on any given tick.
         self.create_subscription(
-            Odometry, '/fsds/testing_only/odom', self._odom_cb, sensor_qos)
+            Odometry, '/fsae/slam/car_odom', self._odom_cb, sensor_qos)
         self.create_subscription(
             GoSignal, '/fsds/signal/go', self._go_cb, 10)
         self.create_subscription(
@@ -208,7 +222,7 @@ class MPCControllerStandaloneNode(Node):
         self._cone_reset_done = False
 
         dt = 1.0 / CONTROL_HZ
-        self._mpc = MPCController(dt=dt, N=25)
+        self._mpc = MPCController(dt=dt, N=35)
 
         self.create_timer(dt, self._control_loop)
         self.get_logger().info(
@@ -244,6 +258,7 @@ class MPCControllerStandaloneNode(Node):
         self._have_pose = True
 
     def _odom_cb(self, msg: Odometry) -> None:
+        # msg is /fsae/slam/car_odom -- see this class's subscription comment.
         v = msg.twist.twist.linear
         self._car_speed = float(np.hypot(v.x, v.y))
         self._car_yaw_rate = float(msg.twist.twist.angular.z)
@@ -341,8 +356,17 @@ class MPCControllerStandaloneNode(Node):
         # tick's errors (this tick's aren't known until the MPC solves), which
         # is one 50 ms step of lag — negligible next to the error timescales
         # this responds to. See control_utils.tracking_error_speed_gate.
-        tel = self._mpc.last_telemetry
-        gate = tracking_error_speed_gate(tel.get('e_y', 0.0), tel.get('e_psi', 0.0))
+        #
+        # DISABLED when self._speed_profile is set (2026-08-08, temporary) --
+        # see the live copy of this file
+        # (ros2/src/fsae_planning/control/fsae_control/fsae_control/
+        # mpc_controller_standalone.py) for the full rationale and the live
+        # measurement that motivated it.
+        if self._speed_profile is not None:
+            gate = 1.0
+        else:
+            tel = self._mpc.last_telemetry
+            gate = tracking_error_speed_gate(tel.get('e_y', 0.0), tel.get('e_psi', 0.0))
         # Never gate below v_min: the car still needs authority to steer back.
         self._desired_speed = max(self._v_min, v_curv * gate)
 

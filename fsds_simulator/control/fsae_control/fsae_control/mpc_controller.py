@@ -8,7 +8,12 @@ fsds_bridge (speed->throttle/brake, GO gating, cone e-brake) is unchanged.
 
     in   /fsae/planning/selected_trajectory  geometry_msgs/PoseArray   path to follow
     in   /fsae/slam/car_position             geometry_msgs/PoseStamped x,y in position; yaw in orientation.w
-    in   /fsds/testing_only/odom             nav_msgs/Odometry         speed + yaw-rate feedback
+    in   /fsae/slam/car_odom                 nav_msgs/Odometry         speed + yaw-rate feedback; SAME
+                                                                        snapshot as car_position above (see
+                                                                        sim_perception.py's "Speed/yaw-rate
+                                                                        synchronisation" docstring note — do
+                                                                        NOT subscribe to the raw
+                                                                        /fsds/testing_only/odom directly)
     out  /fsae/control/cmd_vel               ackermann_msgs/AckermannDriveStamped  speed + steering_angle
 
 The optimiser (mpc_core.MPCController) is a linear time-varying MPC ported from
@@ -129,7 +134,13 @@ class MPCControllerNode(Node):
 
         self.create_subscription(PoseArray, '/fsae/planning/selected_trajectory', self._traj_cb, 10)
         self.create_subscription(PoseStamped, '/fsae/slam/car_position', self._pose_cb, 10)
-        self.create_subscription(Odometry, '/fsds/testing_only/odom', self._odom_cb, sensor_qos)
+        # /fsae/slam/car_odom, NOT the raw /fsds/testing_only/odom -- see this
+        # file's own docstring and sim_perception.py's "Speed/yaw-rate
+        # synchronisation" note. The raw topic raced sim_perception's own
+        # separate subscription to the same 250 Hz publisher, so car_speed/
+        # car_yaw_rate could reflect a different odom instant than
+        # car_pos/car_yaw on any given tick.
+        self.create_subscription(Odometry, '/fsae/slam/car_odom', self._odom_cb, sensor_qos)
 
         self.pub_cmd = self.create_publisher(AckermannDriveStamped, '/fsae/control/cmd_vel', 10)
 
@@ -151,7 +162,7 @@ class MPCControllerNode(Node):
         self._have_pose = False
 
         dt = 1.0 / CONTROL_HZ
-        self._mpc = MPCController(dt=dt, N=25)
+        self._mpc = MPCController(dt=dt, N=35)
 
         self.create_timer(dt, self._control_step)
 
@@ -232,8 +243,14 @@ class MPCControllerNode(Node):
 
             v_curv = curvature_speed(path_ahead, v_max=self._v_max, v_min=self._v_min)
 
-        tel = self._mpc.last_telemetry
-        gate = tracking_error_speed_gate(tel.get('e_y', 0.0), tel.get('e_psi', 0.0))
+        # DISABLED when self._speed_profile is set (2026-08-08, temporary) --
+        # see mpc_controller_standalone.py's identical gate for the full
+        # rationale and the live measurement that motivated it.
+        if self._speed_profile is not None:
+            gate = 1.0
+        else:
+            tel = self._mpc.last_telemetry
+            gate = tracking_error_speed_gate(tel.get('e_y', 0.0), tel.get('e_psi', 0.0))
         desired_speed = max(self._v_min, v_curv * gate)
 
         if self._v_des_prev is not None:

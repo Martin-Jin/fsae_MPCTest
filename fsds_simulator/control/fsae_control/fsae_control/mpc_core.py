@@ -71,7 +71,7 @@ controller.
 USED BY
 -------
   mpc_controller.py and mpc_controller_standalone.py — each constructs its
-                    own MPCController(dt=0.05, N=25) in __init__ and calls
+                    own MPCController(dt=0.05, N=35) in __init__ and calls
                     .compute() every 20 Hz tick, .reset() on stale path /
                     cone-brake fail-safes.
 """
@@ -88,7 +88,10 @@ from scipy.linalg import expm
 # (fsae_control.control_utils / fsds_bridge); upstream used 35deg.
 MAX_STEER_RAD: float = math.radians(25.0)
 MAX_ACCEL: float = 12.0
-MAX_BRAKE: float = 9.0
+# Lowered 9.0 -> 7.0 (2026-08-08) -- see the live copy's comment
+# (ros2/src/fsae_planning/control/fsae_control/fsae_control/mpc_core.py) for
+# the full rationale. Live bracketing experiment, not a measured value.
+MAX_BRAKE: float = 7.0
 
 # ── Reference-heading rate limit ─────────────────────────────────────────────
 # Mirrors fsae_MPCTest/sim/rollout_core.py's REF_HEADING_RATE_LIMIT_ENABLED /
@@ -241,8 +244,8 @@ class MPCController:
     """
     def __init__(
         self,
-        dt: float = 0.05, 
-        N:  int   = 25, 
+        dt: float = 0.05,
+        N:  int   = 35,
     ) -> None:
         """
         Parameters
@@ -253,8 +256,10 @@ class MPCController:
             and mpc_controller_standalone.py) so the discretised model's
             predictions align with real elapsed time.
         N : int
-            MPC horizon length in steps (25 -> 1.25 s lookahead at dt=0.05).
-            Must match settings.N_HORIZON for tuned weights to transfer.
+            MPC horizon length in steps (35 -> 1.75 s lookahead at dt=0.05;
+            changed from 25 2026-08-08, see settings.N_HORIZON's comment for
+            the sweep that found this optimum). Must match settings.N_HORIZON
+            for tuned weights to transfer.
 
         Vehicle geometry/dynamics constants (lf, lr, m, Iz, Cf, Cr,
         tau_delta, tau_a) are hardcoded here rather than imported from
@@ -315,9 +320,20 @@ class MPCController:
         # to match settings.py's Q_diag/R_diag/R_rate_diag and the live
         # copy's same three lists (ros2/src/fsae_planning/control/
         # fsae_control/fsae_control/mpc_core.py) — keep all three identical.
-        Q_diag      = [9.642721455680089, 0.6429771471569046, 9.09754222209661, 0.10571694008486163, 9.715386646449979, 0.0, 0.0, 0.0]
-        R_diag      = [0.44113286130397317, 2.11423973420019]
-        R_rate_diag = [5.856634028761815, 0.6466599689268518]
+        # R_diag[1] further lowered 2.11423973420019 -> 0.25x (2026-08-08) --
+        # see settings.py's R_diag comment for the PATH_SUDDEN_TURN sweep
+        # that found this optimum (closes ~half the pre-corner speed-tracking
+        # gap; below 0.25x it plateaus/reverses).
+        # Three further hand edits 2026-08-08 chasing live accel/brake jitter
+        # on straights -- see settings.py's comment for the measured
+        # accel_rms_mps2 progression and caveat that these are live hand-tuning
+        # steps, not offline-validated optima:
+        #   Q_diag[4]: 9.715386646449979 -> 3.715386646449979
+        #   R_diag[0]: 0.44113286130397317 -> 0.84113286130397317
+        #   R_rate_diag[0]: 5.856634028761815 -> 1.856634028761815
+        Q_diag      = [9.642721455680089, 0.6429771471569046, 9.09754222209661, 0.10571694008486163, 3.715386646449979, 0.0, 0.0, 0.0]
+        R_diag      = [0.84113286130397317, 0.5285599335500475]
+        R_rate_diag = [1.856634028761815, 0.6466599689268518]
 
         self.Q      = np.diag(Q_diag)
         self.R      = np.diag(R_diag)

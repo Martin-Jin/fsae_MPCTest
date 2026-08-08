@@ -13,6 +13,9 @@ republishes it on the exact topics/messages the car stack expects.
 
     out  /fsae/slam/car_position   geometry_msgs/PoseStamped     x,y in position; yaw in orientation.w;
                                                                   header.stamp = odom's own measurement time
+    out  /fsae/slam/car_odom       nav_msgs/Odometry             SAME snapshot as car_position (position/
+                                                                  yaw in pose, speed/yaw-rate in twist) --
+                                                                  see "Speed/yaw-rate synchronisation" below
     out  /fsae/slam/left_track     fsae_interfaces/Track         blue (left) boundary, global frame
     out  /fsae/slam/right_track    fsae_interfaces/Track         yellow (right) boundary, global frame
     out  /fsae/perception/cone_detection  fsae_interfaces/ConeDetection  local-frame detections + car_pose
@@ -54,6 +57,38 @@ odometry + `cone_mapper` and has all three.  Anything tuned against this node
 is therefore optimistic about localisation quality.  The offline tuner models
 this gap explicitly via `SLAM_NOISE_ENABLED` in fsae_MPCTest/settings.py
 (default off, precisely because FSDS has no such error).
+
+Speed/yaw-rate synchronisation (2026-08-08)
+--------------------------------------------
+mpc_controller.py / mpc_controller_standalone.py used to get car_pos/car_yaw
+from /fsae/slam/car_position (this node's 20 Hz relay, above) but car_speed/
+car_yaw_rate from their OWN separate subscription directly to the raw 250 Hz
+/fsds/testing_only/odom topic. Those are two independent subscriptions
+racing the same 250 Hz publisher — nothing guarantees the "latest" sample
+each one holds at any given 20 Hz control tick came from the same underlying
+odom instant, so the MPC's x0 could be built from a position/heading snapshot
+and a speed/yaw-rate snapshot up to ~1/pose_rate apart, with that gap
+jittering tick to tick depending on subscription callback scheduling.
+
+Live-only symptom this produced: small, semi-random-looking accel/brake
+oscillation concentrated in curves (where e_y/e_psi/speed are all changing
+together, so a timing mismatch between them matters) rather than on flat
+straights (nothing changing, so a stale twist barely matters) -- reproduced
+in an open-loop replay of the exact logged state sequence through the real
+QP (confirms the QP correctly reacts to whatever e_v it's given -- it isn't
+inventing the oscillation), but NOT reproduced in a closed-loop offline
+rollout of the same corner on the same map with identical weights (the
+offline plant has one single, internally-consistent state at every instant,
+so it has no mechanism to produce this). See mpc_standalone_control_
+1786180405.csv, t=23-25s for the measurement.
+
+Fixed by publishing /fsae/slam/car_odom (nav_msgs/Odometry) from this node's
+_odom_cb-updated state at the SAME 20 Hz timer tick as car_position, so pose
+and twist the controller reads for one solve are guaranteed to originate
+from one atomic snapshot. car_position (PoseStamped) is kept publishing
+unchanged for centerline_planner.py / stanley_controller.py / cone_recorder.py
+/ skidpad_planner.py, none of which need speed -- only the two MPC
+controllers were switched to car_odom.
 """
 import math
 
@@ -118,6 +153,7 @@ class SimPerception(Node):
         self.create_subscription(Odometry, '/fsds/testing_only/odom', self._odom_cb, sensor_qos)
 
         self.pub_pose  = self.create_publisher(PoseStamped,   '/fsae/slam/car_position',        10)
+        self.pub_odom  = self.create_publisher(Odometry,      '/fsae/slam/car_odom',            10)
         self.pub_left  = self.create_publisher(Track,         '/fsae/slam/left_track',          10)
         self.pub_right = self.create_publisher(Track,         '/fsae/slam/right_track',         10)
         self.pub_det   = self.create_publisher(ConeDetection, '/fsae/perception/cone_detection', 10)
@@ -130,6 +166,13 @@ class SimPerception(Node):
         self._car_x = 0.0
         self._car_y = 0.0
         self._car_yaw = 0.0
+        # Speed/yaw-rate, set alongside car_x/y/yaw in the SAME _odom_cb call
+        # so car_odom's twist and pose always originate from one atomic
+        # snapshot -- see the module docstring's "Speed/yaw-rate
+        # synchronisation" note for why this matters.
+        self._car_vx = 0.0
+        self._car_vy = 0.0
+        self._car_yaw_rate = 0.0
         self._odom_stamp = None
 
         # Two timers, deliberately at different rates — see the module
@@ -178,6 +221,13 @@ class SimPerception(Node):
         siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
         self._car_yaw = math.atan2(siny_cosp, cosy_cosp)
+        # Set in the SAME callback invocation as position/yaw above, so
+        # car_odom's pose and twist always come from one atomic odom sample
+        # — see the module docstring's "Speed/yaw-rate synchronisation" note.
+        v = msg.twist.twist.linear
+        self._car_vx = v.x
+        self._car_vy = v.y
+        self._car_yaw_rate = msg.twist.twist.angular.z
         self._odom_stamp = msg.header.stamp
         self._have_odom = True
 
@@ -219,6 +269,27 @@ class SimPerception(Node):
         msg.pose.orientation.w = float(self._car_yaw)
         return msg
 
+    def _car_odom_msg(self) -> Odometry:
+        """
+        Same snapshot as _car_pose_msg() (both read _car_x/_car_y/_car_yaw/
+        _car_vx/_car_vy/_car_yaw_rate, all set together in _odom_cb) --
+        see the module docstring's "Speed/yaw-rate synchronisation" note.
+        Unlike car_position's repurposed orientation.w convention, this uses
+        a real quaternion (nav_msgs/Odometry consumers expect one).
+        """
+        msg = Odometry()
+        msg.header.stamp = self._odom_stamp
+        msg.header.frame_id = 'map'
+        msg.pose.pose.position.x = float(self._car_x)
+        msg.pose.pose.position.y = float(self._car_y)
+        half_yaw = 0.5 * self._car_yaw
+        msg.pose.pose.orientation.z = float(math.sin(half_yaw))
+        msg.pose.pose.orientation.w = float(math.cos(half_yaw))
+        msg.twist.twist.linear.x = float(self._car_vx)
+        msg.twist.twist.linear.y = float(self._car_vy)
+        msg.twist.twist.angular.z = float(self._car_yaw_rate)
+        return msg
+
     @staticmethod
     def _global_track(cones: np.ndarray) -> Track:
         msg = Track()
@@ -243,10 +314,16 @@ class SimPerception(Node):
         Pose-only tick, run at pose_rate (default 20 Hz to match the
         controller).  Deliberately does NOT touch the cone map — see the
         class docstring's "Two publish rates" note for why these are split.
+
+        Publishes car_position and car_odom back-to-back from the SAME
+        _car_x/_car_y/_car_yaw/_car_vx/_car_vy/_car_yaw_rate snapshot -- see
+        the module docstring's "Speed/yaw-rate synchronisation" note. Do not
+        call _odom_cb or otherwise refresh state between these two publishes.
         """
         if not self._have_odom:
             return
         self.pub_pose.publish(self._car_pose_msg())
+        self.pub_odom.publish(self._car_odom_msg())
 
     def _publish_cones(self) -> None:
         """

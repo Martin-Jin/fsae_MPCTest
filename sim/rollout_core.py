@@ -749,9 +749,13 @@ def run_core_rollout(
         # command acceleration — while the car is badly off-line with steering
         # already saturated, which is unrecoverable.
         #
-        # Applied to every branch above (planner, planner-fallback, oracle) so
-        # the offline speed target is produced the same way in all of them.
-        v_target = max(PLANNER_V_MIN, v_target * sp.tracking_error_speed_gate(e_y, e_psi))
+        # DISABLED for the oracle branch (use_planner=False, the `else` above)
+        # as of 2026-08-08, temporary -- mirrors mpc_controller_standalone.py's
+        # identical live-side gate, disabled when self._speed_profile is set.
+        # Still applied to the planner / planner-fallback branches, where the
+        # live-planner failure mode this gate exists for can still occur.
+        gate = 1.0 if not use_planner else sp.tracking_error_speed_gate(e_y, e_psi)
+        v_target = max(PLANNER_V_MIN, v_target * gate)
         if v_des_prev is not None:
             v_target = min(v_target, v_des_prev + SPEED_TARGET_RISE_RATE * DT)
         v_des_prev = v_target

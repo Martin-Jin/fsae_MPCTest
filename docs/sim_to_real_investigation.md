@@ -3813,6 +3813,15 @@ section) that prevents the class of bug from recurring.
 
 ## 53. Fixed-`N_HORIZON` increase (25→35): attempted, incomplete — not a finding either way
 
+**Superseded by §55.** The sweep this section calls for was completed:
+`N_HORIZON=35` is a real, non-trivial optimum on the synthetic sudden-turn
+corner (not "higher is better" — 50/70 drift slightly worse again), neutral
+on the full recorded map, and shipped to all 3 copies. §55 also found it does
+NOT move the late-turn-in commit timing itself — that's a separate,
+geometry-vs-yaw-dynamics limit, not something any horizon length fixes. Read
+the rest of this section only for the historical reasoning on why a
+fixed-size (not speed-dependent) horizon was the right cheap experiment.
+
 §51 (the live `path_map_path` test, planner entirely out of the loop) still
 showed 19.5% steering saturation and a real high-`|e_psi|` episode, pointing
 at horizon length as the next suspect — `N_HORIZON=25 × DT=0.05s = 1.25s` is
@@ -3882,6 +3891,157 @@ they are not silently dropped or mistaken for oversights:
   heading deficit rather than removing it). Re-attempting this needs a
   genuinely different idea, not a retry of the same limiter — none was
   proposed or evaluated this session.
+
+## 55. §53's `N_HORIZON` sweep completed, plus a chain of live-only findings from a single reported symptom ("sudden turn now succeeds, but the car starts-stops-starts on straights")
+
+§53 left `N_HORIZON=25/35/45` genuinely untested after an interrupted attempt.
+Completed this session against `tuner.recorded_map_rollout` and a synthetic
+`PATH_SUDDEN_TURN` (long straight -> sharp 90° R=4.5m, `use_planner=False`,
+current tuned weights): `N=25` had peak `|e_y|`=0.527m, score 0.474; `N=35`
+improved to 0.450m/0.441 (commit-to-corner timing itself barely moved,
+5.95s -> 6.0s); `N=50`/`N=70` drifted slightly worse again. **`N=35` is a real,
+non-trivial optimum, not "higher is better."** Neutral on the full recorded
+map (score 0.411 -> 0.412, sat% unchanged at 0.00). Shipped: `N_HORIZON=35`
+in `settings.py`, `mpc_core.py` (both copies), and the two node files'
+`MPCController(N=...)` call sites (`mpc_controller.py`,
+`mpc_controller_standalone.py`, both copies).
+
+Two other cost-structure levers were swept the same way and **ruled out** as
+levers on the late-turn-in symptom specifically (both still real, separate
+findings, kept below): `TERMINAL_Q_SCALE` 1x-8x moved peak `|e_y|` only
+~18% and never moved commit timing; `R_rate_diag[0]` (steering-rate cost)
+0.05x-1x also never moved commit timing and made pre-corner reversal rate
+*worse* as it dropped. **Root mechanism, confirmed directly from the state
+trace**: `e_psi` is genuinely ~0° until the car's own arc-length position
+physically reaches the synthetic corner's start (s=60m) — the reference has
+zero curvature before that point by construction, so there is no earlier
+signal for any weight or horizon setting to react to. This is a
+geometry-vs-yaw-dynamics limit (a step change in required curvature at
+~7-10 m/s, faster than the plant + `tau_delta`=0.08s actuator lag can track),
+not a tunable weight problem, on this specific synthetic corner.
+
+**A separate, real bug found investigating why the car still braked too
+late/too little into that same corner**: at the exact QP level, live commanded
+only ~-3.0 to -3.2 m/s² of braking approaching it — about a third of
+`MAX_BRAKE`=9.0 — leaving a ~2 m/s speed-tracking gap at corner entry,
+regardless of `Q`/`R_rate`/`terminal_scale` sweeps. Two independent live
+edits chased this (both offline-swept before shipping): `R_diag[1]`
+(accel-effort cost) lowered to 0.25x — a real, non-trivial optimum (peak
+speed gap 2.13 -> 1.15 m/s, score 0.441 -> 0.420, plateaus/reverses below
+0.25x) — and, per the user's own request, `MAX_BRAKE`/`max_accel_brake`
+lowered 9.0 -> 7.0 m/s² as a **live bracketing experiment, explicitly not a
+measured value** (unlike mass/the lateral-accel ceiling/the steering-rate
+floor, `MAX_ACCEL`/`MAX_BRAKE` have no open-loop system-ID confirmation —
+see the note this leaves in `mpc_core.py`'s own comment for the follow-up:
+re-measure via a fixed-brake-from-known-speed test mirroring
+`run_steering_sysid.sh`, the same method already used for steering). The
+user separately hand-lowered `Q_diag[4]` (speed error) 9.72 -> 3.72 and
+`R_diag[0]` (steering effort) 0.441 -> 0.841 live, chasing a residual
+accel/brake jitter (`accel_rms_mps2` 2.67 -> 2.06 -> 1.81 across these
+edits) — all three now resynced across `mpc_core.py`, `settings.py`, and the
+`fsds_simulator` mirror; flagged in `settings.py`'s comment as live
+hand-tuning steps, not offline-validated optima like `R_diag[1]`, since
+none of this jitter reproduces in a closed-loop offline replay of the same
+weights on the recorded map (see below) — CMA-ES should re-tune all of Q/R
+properly once the two remaining bugs below are understood.
+
+**A second real, independent bug, found chasing the residual jitter**:
+`tracking_error_speed_gate()` (multiplies the curvature-based speed target
+down when tracking error is large — see this document's `control_utils.py`
+row) was applied unconditionally, including when `use_precomputed_path`/
+`self._speed_profile is not None` (i.e. the live planner is entirely out of
+the loop, per §51). The gate's own docstring rationale is a live-planner
+failure mode (a bad live-built path while the car is still drifting back
+onto it); with a static, known-good oracle path there is no such failure
+mode for it to guard against, and it is **unsmoothed** (unlike the
+speed-target rise-rate limiter, decreases pass through instantly). Measured
+directly (`mpc_standalone_control_1786178292.csv`, t=53.28-53.71s): `e_y`
+growing fast (-0.69 -> -1.53m over 5 ticks) swept through the gate's active
+band (`ey_lo`=0.5 to `ey_hi`=2.0) at the same time `v_curv` was already
+falling, compounding into a sharp uncapped `v_desired` step (8.20 -> 6.53 ->
+4.09 m/s in 0.1s) that hit the MPC as a target-speed cliff, producing
+erratic `a_cmd` right after (-1.06/-0.46/+0.14 then slamming to -7.0 three
+ticks later). **Fixed**: the gate now evaluates to a no-op (`gate = 1.0`)
+whenever a precomputed path is active (live: gated on
+`self._speed_profile is not None`, both `mpc_controller.py` and
+`mpc_controller_standalone.py`, both copies; offline:
+`sim/rollout_core.py`, gated on `use_planner` — a no-op change confirmed by
+the offline oracle-mode score being bit-identical before/after, since that
+mode never exercised the gate this way in the first place). **Verified
+live**: the class of single-tick `|dv|>1.0 m/s` `v_desired` jumps this
+produced dropped from 2 (including the -2.45 m/s cliff above) to 0 in the
+next full-length run (`mpc_standalone_control_1786180405.csv`, 5612 steps/
+280.9s), and `accel_rms_mps2` improved to 1.44 — the best of the whole
+session's progression.
+
+**A residual jitter survived all of the above, and is NOT a weight-tuning
+problem.** Rate is essentially unchanged before/after the gate fix (0.675 ->
+0.708 windows/s of a >=2-sign-flip pattern on a near-flat speed target), and
+it occurs ONLY at moderate speed (5-8 m/s) in sustained gentle curves — never
+once on a genuine flat, high-speed straight (0 such windows in 280.9s of the
+post-gate-fix run). Three checks, each ruling out one candidate mechanism:
+(1) an **open-loop replay** of the exact logged `e_y`/`e_psi`/speed sequence
+through the real `MPCController._solve_qp()` (not a fresh closed-loop
+rollout — no plant, no warm-start chaining from a synthetic path) reproduces
+a similarly-shaped `a_cmd` oscillation, but (2) zeroing `Q_diag[0]`/
+`Q_diag[2]` (the lateral-cost terms) in that same replay barely changes the
+oscillation's range/std — **rules out lateral/longitudinal QP coupling** as
+the driver; the QP is just correctly reacting to an `e_v` that is *already*
+oscillating in the log (`v_actual` swinging across `v_desired` 5+ times in
+2s while `v_desired` itself moves smoothly). (3) A **closed-loop offline
+replay of the identical corner** (same map, same weights, same
+`MAX_BRAKE=7.0`, `use_planner=False`) produces a single smooth
+deceleration-then-recovery cycle in `e_v`/`a_cmd` at that exact location —
+not the repeated multi-cycle sign-flipping seen live. **Conclusion: this is
+a live-only phenomenon the offline plant model cannot reproduce, and no
+further Q/R/R_rate tuning is expected to fix it**, since the QP is behaving
+correctly given its inputs and the offline sim, given the identical inputs
+in closed loop, never oscillates at all.
+
+**Root cause, found and fixed**: `car_pos`/`car_yaw` (fed into
+`_error_state()`) and `car_speed`/`car_yaw_rate` (fed directly into `x0`)
+came from two *independent* ROS subscriptions racing the same underlying
+250 Hz AirSim odom stream — `car_pos`/`car_yaw` via `sim_perception.py`'s
+own 20 Hz relay (`/fsae/slam/car_position`, itself just forwarding whatever
+odom sample its own separate `_odom_cb` last received before its 20 Hz
+timer fired), `car_speed`/`car_yaw_rate` via the controller's own direct
+subscription to the raw `/fsds/testing_only/odom` (250 Hz). Nothing
+guaranteed these reflected the same underlying instant; the resulting
+position/heading vs. speed/yaw-rate mismatch could be up to ~1/pose_rate
+(50ms) and jittered tick to tick with subscription callback scheduling —
+present in EVERY `mpc_standalone` run regardless of precomputed-path/
+live-planner mode, since it is purely a localisation-timing bug, upstream of
+and unrelated to path source. This matters *because* it has no offline
+counterpart at all: the offline plant has one single, internally-consistent
+state at every instant, which is exactly why check (3) above could not
+reproduce it. This is the same family of bug as this document's
+`planning_control_sync.md` "Measurement rate: pose must keep up with the
+controller" entry (a prior pose/cone timer-rate mismatch, fixed by splitting
+timers) — same root cause class (`sim_perception.py`'s publish timing not
+actually delivering what a consumer assumes), different specific mechanism
+(cross-topic snapshot mismatch, not a rate mismatch).
+
+**Fixed**: `sim_perception.py` now also publishes `/fsae/slam/car_odom`
+(`nav_msgs/Odometry`) from the SAME `_odom_cb`-updated snapshot and the SAME
+20 Hz timer tick as `/fsae/slam/car_position` (`_publish_pose()` publishes
+both back-to-back with no state refresh between them). Both
+`mpc_controller.py` and `mpc_controller_standalone.py` (both copies) now
+subscribe to `car_odom` instead of the raw odom topic for speed/yaw-rate;
+`_odom_cb`'s body is unchanged, only its subscription source moved.
+Consumers that only need position/yaw (`centerline_planner.py`,
+`stanley_controller.py`, `cone_recorder.py`, `skidpad_planner.py`) are
+untouched. No offline-side change needed or made — `sim/rollout_core.py`
+has no equivalent of two racing subscriptions to begin with. **Not yet
+tested live as of this entry** — the fix was shipped and the workspace
+rebuilt, but no post-fix log exists yet; the specific prediction to check is
+that the curve-only jitter pattern (points (1)-(3) above) should disappear
+or shrink substantially, since this was the one candidate mechanism left
+standing after ruling out the QP/cost-structure explanations.
+
+**Open/deferred table**: supersedes §53's row (N_HORIZON is now tested and
+shipped, not incomplete). Adds new rows for the `tracking_error_speed_gate`
+fix (verified live) and the car_odom desync fix (shipped, not yet verified
+live).
 
 ## What generalises
 
@@ -4140,30 +4300,39 @@ they are not silently dropped or mistaken for oversights:
 
 ## Open / deferred
 
-> **State as of end of session, 2026-08-08 (post-§54).** The main
+> **State as of end of session, 2026-08-08 (post-§55).** The main
 > investigation — why live saturates/tracks worse than `fsae_MPCTest` — is
 > **not closed**. The last full re-measurement of the headline gap is still
-> §33 (91.1% of the saturation gap unexplained); nothing in §50–§54 re-ran
+> §33 (91.1% of the saturation gap unexplained); nothing in §50–§55 re-ran
 > that specific measurement, so treat 91.1% as the current number until it
 > is re-measured against §50's fix. What this session added: §50 fixed a
 > real bug (`curvature_speed()`'s apex blind-spot, all 3 copies, validated
 > offline against all 9 recorded-map corners); §51 got a live result with
 > the planner entirely removed from the loop (`path_map_path`) — saturation
 > fell from ~50-55% to 19.5%, a large real improvement, but still ~4× the
-> sim's ~4.8% target, meaning the residual is in controller/plant tracking,
-> not planner path quality; §52 closed a build-hygiene bug that had been
-> corrupting earlier live test results; §53 is an **untested, not
-> tried-and-failed** attempt at increasing the MPC's fixed horizon length
-> (`N_HORIZON`), interrupted before producing a result; §54 is three ideas
-> reviewed and deliberately deferred, not attempted. **Most promising next
-> lever, per §51's own conclusion**: `N_HORIZON` (currently a fixed 25 steps
-> × 0.05s = 1.25s of look-ahead time, ~20-22.5m of look-ahead distance at
-> 16-18 m/s — see §48/§53) is the leading untested suspect, since §51 already
-> isolated out planner-induced path error and the gap remained. §53 records
-> exactly what to re-run to test it properly (a full `N_HORIZON=25/35/45`
-> sweep against `tuner.recorded_map_rollout`, including a solve-time-per-step
-> check against the 0.05s/20Hz real-time budget) before anyone re-attempts it
-> blind.
+> sim's ~4.8% target; §52 closed a build-hygiene bug that had been
+> corrupting earlier live test results; §54 is three ideas reviewed and
+> deliberately deferred, not attempted; **§55 closed out §53's `N_HORIZON`
+> sweep (35 shipped, a real optimum, but does not move late-turn-in commit
+> timing) and root-caused two further live-only bugs from a single reported
+> symptom** — an unsmoothed `tracking_error_speed_gate()` firing even with
+> a precomputed path active (fixed, verified live: eliminated every
+> single-tick `|dv|>1.0 m/s` `v_desired` jump in the next full run), and a
+> car_pos/car_yaw vs. car_speed/car_yaw_rate synchronisation bug
+> (`car_pos`/`car_yaw` via `sim_perception.py`'s 20 Hz relay,
+> `car_speed`/`car_yaw_rate` via a separate raw 250 Hz subscription racing
+> the same publisher — fixed by publishing both from one atomic snapshot on
+> a new `/fsae/slam/car_odom` topic, **not yet verified live as of this
+> entry**). **Most promising next lever, now that both of §55's bugs are
+> fixed and the horizon is no longer the leading suspect**: re-run §51's
+> `path_map_path` live test against the current build and re-measure
+> against §33's 91.1% figure — if the residual gap is still large after
+> the car_odom fix is confirmed live, the next candidate is the
+> geometry-vs-yaw-dynamics limit §55 found on the sudden-turn corner (a
+> real corner tighter than the plant's yaw-rate capability at the approach
+> speed, which no MPC weight or horizon setting can correct — needs either
+> a slower approach speed for that corner class or accepting the residual
+> as a physical limit, not a controller bug).
 
 > **§12–§30 predate §31; §33 is the current re-measurement.** A real parity
 > bug in `sim/sim_track.py::SimPlanner` (offline never passed the live-tuned
@@ -4180,7 +4349,10 @@ they are not silently dropped or mistaken for oversights:
 
 | item | status |
 |---|---|
-| Fixed `N_HORIZON` increase (25→35/45), cheap alternative to full speed-dependent horizon scaling | **Attempted, incomplete (§53), 2026-08-08.** Started to test against `tuner.recorded_map_rollout`; the run was interrupted by an unrelated environment failure before a metrics table or solve-time measurement was produced. `settings.py` reverted to `N_HORIZON=25` (was left uncommitted at 35, untested — not shipped on partial evidence). Genuinely open, not a negative result — see §53 for exactly what to re-run |
+| Fixed `N_HORIZON` increase (25→35/45), cheap alternative to full speed-dependent horizon scaling | **Root-caused, tested, and shipped (§55), 2026-08-08.** `N_HORIZON=35` is a real, non-trivial optimum on the synthetic sudden-turn corner (peak `\|e_y\|` 0.527→0.450m, score 0.474→0.441; N=50/70 drift slightly worse again), neutral on the full recorded map. Shipped to all copies. Does NOT move the late-turn-in commit timing itself — that's a separate, unfitted geometry-vs-yaw-dynamics limit (the reference has zero curvature signal before the car's own position reaches the corner, so no horizon length gives it anything earlier to react to) |
+| Unsmoothed `tracking_error_speed_gate()` firing even when a precomputed path is active | **Root-caused and fixed (§55), 2026-08-08.** The gate's rationale (a live-planner failure mode) doesn't apply with a static oracle path, and unlike the rise-rate limiter it isn't smoothed — a fast-growing `e_y` sweeping through its active band compounded with an already-falling `v_curv` into a sharp, uncapped `v_desired` step (measured: 8.20→6.53→4.09 m/s in 0.1s), producing erratic `a_cmd` right after. Fixed: no-op whenever a precomputed path is active, live (both node files, both copies) and offline (`sim/rollout_core.py`, gated on `use_planner`). **Verified live**: single-tick `\|dv\|>1.0 m/s` `v_desired` jumps 2→0 in the next full run; `accel_rms_mps2` improved to 1.44, best of the session |
+| `car_pos`/`car_yaw` vs. `car_speed`/`car_yaw_rate` desynchronisation — two independent subscriptions racing the same 250 Hz odom publisher | **Root-caused and fixed (§55), 2026-08-08.** No guarantee the two reflected the same odom instant on any given 20 Hz tick; gap jittered with subscription callback scheduling. Present in every `mpc_standalone` run regardless of path source (purely a localisation-timing bug). Confirmed via an open-loop QP replay (rules out lateral/longitudinal coupling) and a closed-loop offline replay of the identical corner (never oscillates — no equivalent of two racing subscriptions offline). Fixed: `sim_perception.py` now publishes `/fsae/slam/car_odom` from the same atomic snapshot as `/fsae/slam/car_position`; both MPC controllers switched to it. **Not yet verified live as of this entry** |
+| Scoring-side penalty for sustained low steering authority; live validation of `alat_ceiling(v)`; a new planner reference-heading fix attempt | **Reviewed, deliberately left open (§54), 2026-08-08.** Scoring penalty needs the user's tuning-philosophy input before a formula is worth drafting (real risk of a new §47-style objective-gap exploit if designed wrong). `alat_ceiling(v)` needs an actual car session, unchanged from §37. Reference-heading needs a genuinely new idea — the one candidate tried (§29) already failed live for an understood reason; retrying the same fix isn't worth it |
 | Scoring-side penalty for sustained low steering authority; live validation of `alat_ceiling(v)`; a new planner reference-heading fix attempt | **Reviewed, deliberately left open (§54), 2026-08-08.** Scoring penalty needs the user's tuning-philosophy input before a formula is worth drafting (real risk of a new §47-style objective-gap exploit if designed wrong). `alat_ceiling(v)` needs an actual car session, unchanged from §37. Reference-heading needs a genuinely new idea — the one candidate tried (§29) already failed live for an understood reason; retrying the same fix isn't worth it |
 | `curvature_speed()` apex blind-spot — window strides over short tight corners | **Root-caused and fixed (§50), 2026-08-08.** `scan_start` (1.5m) plus the moving-average centring offset (~2.0m) pushed the measurement window's effective start to 3.5m ahead of the car, comfortably skipping this corner's ~2-3m tight zone on every query — `v_target` rose monotonically through the whole corner instead of dipping near the true minimum. Fixed (`scan_start`→0.0, `dense_step`→0.5, `w`→3, decimation removed) in all 3 copies. Full-track validation: all 9 corners fixed, 0 regressions, overspeed fraction 42.5%→4.2% |
 | Build hygiene: stale `colcon build` recurred twice in one session | **Structurally fixed (§52), 2026-08-08.** Root cause of `--symlink-install` not actually symlinking Python files: `zip_safe=True` in all 4 `setup.py` files blocked setuptools develop-mode install. Fixed (`zip_safe=False`, full clean rebuild), and `colcon build --symlink-install` wired into `launch_all.sh` on every invocation so `src/` edits can no longer go stale through the normal entry point |
