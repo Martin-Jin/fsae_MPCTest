@@ -98,6 +98,26 @@ PATH_TIMEOUT         = 0.5    # s — reset the MPC if no fresh trajectory withi
 # true straight; it only suppresses planner-induced target jitter.
 SPEED_TARGET_RISE_RATE = 2.0
 
+# Max rate (gate-units/s, gate in [floor, 1.0]) at which
+# tracking_error_speed_gate()'s output may change per tick, in EITHER
+# direction. Without this, a fast-growing e_y sweeping through the gate's
+# active band (ey_lo=0.5 to ey_hi=2.0) can compound with a simultaneously
+# falling curvature-based speed target into a sharp single-tick v_desired
+# drop that bypasses SPEED_TARGET_RISE_RATE (that limiter only bounds RISES)
+# and produces erratic a_cmd right after (measured: mpc_standalone_control_
+# 1786178292.csv, t=53.28-53.71s, v_desired 8.20->6.53->4.09 m/s over 3
+# ticks, a_cmd swinging -1.06/-0.46/+0.14 then slamming to -7.0). That
+# measurement is why the gate was disabled outright for precomputed-speed
+# runs (2026-08-08) rather than smoothed — this rate limit is the smoothed
+# alternative: it spreads the same total slowdown over ~0.35s (a full
+# 1.0->0.3 span at this rate) instead of one tick, keeping the safety
+# response (the car DOES still slow down when tracking badly) while
+# removing the single-tick cliff that caused the erratic a_cmd. Sized to
+# the same order of magnitude as SPEED_TARGET_RISE_RATE by design choice,
+# not measurement — re-tune against a live/offline A-B run if it turns out
+# to still cost real safety margin (too slow) or still chatter (too fast).
+GATE_RATE_LIMIT = 2.0
+
 
 class MPCControllerStandaloneNode(Node):
     def __init__(self):
@@ -214,6 +234,10 @@ class MPCControllerStandaloneNode(Node):
         # history yet (first tick after start or after a reset), so the first
         # target passes through unlimited rather than ramping up from zero.
         self._v_des_prev: float | None = None
+        # Previous tick's tracking-error speed gate, for GATE_RATE_LIMIT below.
+        # None = no history yet, so the first gate value passes through
+        # unlimited (nothing to ramp from).
+        self._gate_prev: float | None = None
 
         # Cones arrive already in the car-LOCAL frame (see ConeDetection.msg /
         # fsae_sim_perception's sim_perception.py), so no car_pos/car_yaw
@@ -329,6 +353,7 @@ class MPCControllerStandaloneNode(Node):
             cmd.throttle, cmd.steering, cmd.brake = 0.0, 0.0, 1.0
             self._mpc.reset()
             self._v_des_prev = None   # don't ramp from a pre-fail-safe target
+            self._gate_prev = None    # ditto for the tracking-error speed gate
             self._publish(cmd)
             self.get_logger().warn(
                 'Trajectory path lost or stale — emergency braking.', throttle_duration_sec=1.0)
@@ -363,16 +388,31 @@ class MPCControllerStandaloneNode(Node):
         # is one 50 ms step of lag — negligible next to the error timescales
         # this responds to. See control_utils.tracking_error_speed_gate.
         #
-        # DISABLED when self._speed_profile is set (2026-08-08, temporary) --
-        # see the live copy of this file
-        # (ros2/src/fsae_planning/control/fsae_control/fsae_control/
-        # mpc_controller_standalone.py) for the full rationale and the live
-        # measurement that motivated it.
-        if self._speed_profile is not None:
-            gate = 1.0
-        else:
-            tel = self._mpc.last_telemetry
-            gate = tracking_error_speed_gate(tel.get('e_y', 0.0), tel.get('e_psi', 0.0))
+        # Re-enabled for precomputed-speed runs (2026-08-09) via GATE_RATE_LIMIT
+        # instead of left disabled: disabling it entirely (2026-08-08) traded
+        # away its whole purpose -- with no gate, a precomputed-path run that
+        # drifts badly off-line keeps commanding full track speed regardless,
+        # observed driving fast while significantly off-track. The original
+        # problem was never the gate existing, it was that it applied
+        # UNSMOOTHED (unlike the rise-rate limiter below, which only limits
+        # increases): a fast-growing e_y sweeping through the gate's active
+        # band (ey_lo=0.5 to ey_hi=2.0) compounded with a simultaneously-
+        # falling v_curv into a sharp v_desired step that bypassed the rise
+        # limiter (decreases pass through instantly) and hit the MPC as a
+        # sudden target-speed cliff, producing erratic a_cmd right after
+        # (mpc_standalone_control_1786178292.csv, t=53.28-53.71s: e_y
+        # -0.69->-1.53m over 5 ticks, v_desired 8.20->6.53->4.09, a_cmd
+        # swinging -1.06/-0.46/+0.14 then slamming to -7.0 three ticks later).
+        # Rate-limiting the gate itself spreads the same total slowdown over
+        # several ticks instead of one, keeping the safety response while
+        # removing the cliff — see GATE_RATE_LIMIT's own comment.
+        tel = self._mpc.last_telemetry
+        raw_gate = tracking_error_speed_gate(tel.get('e_y', 0.0), tel.get('e_psi', 0.0))
+        if self._gate_prev is not None:
+            max_step = GATE_RATE_LIMIT / CONTROL_HZ
+            raw_gate = float(np.clip(raw_gate, self._gate_prev - max_step, self._gate_prev + max_step))
+        self._gate_prev = raw_gate
+        gate = raw_gate
         # Never gate below v_min: the car still needs authority to steer back.
         self._desired_speed = max(self._v_min, v_curv * gate)
 
@@ -408,6 +448,7 @@ class MPCControllerStandaloneNode(Node):
             if self._cone_brake_duration >= CONE_RESET_THRESHOLD and not self._cone_reset_done:
                 self._mpc.reset()
                 self._v_des_prev = None   # see the stale-path reset above
+                self._gate_prev = None
                 self._cone_reset_done = True
             self.get_logger().warn(
                 f'Cone proximity brake active ({self._cone_brake_duration:.2f} s).',

@@ -47,6 +47,9 @@ def generate_launch_description():
     use_precomputed_speed = LaunchConfiguration('use_precomputed_speed')
     path_map_path = LaunchConfiguration('path_map_path')
     use_precomputed_path = LaunchConfiguration('use_precomputed_path')
+    v_max = LaunchConfiguration('v_max')
+    v_min = LaunchConfiguration('v_min')
+    stanley_gain = LaunchConfiguration('stanley_gain')
 
     # Skidpad needs the whole cone map up front to reconstruct the figure-8.
     full_track = PythonExpression(
@@ -113,6 +116,15 @@ def generate_launch_description():
                         "configuration is oracle path + oracle speed. Set "
                         "false for the planner-vs-controller isolation "
                         "diagnostic (live planner centreline)."),
+        DeclareLaunchArgument(
+            'v_max', default_value='15.0',
+            description='m/s -- top speed on straights (overrides fsae_params.yaml controller.v_max)'),
+        DeclareLaunchArgument(
+            'v_min', default_value='1.5',
+            description='m/s -- minimum speed through tight corners (overrides fsae_params.yaml controller.v_min)'),
+        DeclareLaunchArgument(
+            'stanley_gain', default_value='1.0',
+            description='cross-track gain k_cte, stanley only (overrides fsae_params.yaml controller.stanley_gain)'),
         include('perception.launch.py', {'full_track': full_track}),
         include('planning.launch.py',   {'planner': planner}),
         include('control.launch.py',    {
@@ -120,6 +132,7 @@ def generate_launch_description():
             'log_csv': log_csv, 'log_dir': log_dir,
             'map_path': map_path, 'use_precomputed_speed': use_precomputed_speed,
             'path_map_path': path_map_path, 'use_precomputed_path': use_precomputed_path,
+            'v_max': v_max, 'v_min': v_min, 'stanley_gain': stanley_gain,
         }),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(launch_dir, 'cone_recorder.launch.py')),

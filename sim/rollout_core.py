@@ -73,6 +73,12 @@ PLANNER_V_MIN = 1.5
 # planner's frame-to-frame curvature jitter without capping real acceleration.
 SPEED_TARGET_RISE_RATE = 2.0
 
+# Max rate (gate-units/s) at which tracking_error_speed_gate()'s output may
+# change per tick, in either direction. Mirrors
+# mpc_controller_standalone.GATE_RATE_LIMIT — keep the two in sync. See that
+# constant's own comment for the full rationale.
+GATE_RATE_LIMIT = 2.0
+
 
 def _normalize_angle(angle):
     """Wrap an angle to (−π, π] using atan2."""
@@ -537,6 +543,9 @@ def run_core_rollout(
     # Previous step's speed target, for the rise-rate limiter above.
     v_des_prev = None
 
+    # Previous step's tracking-error speed gate, for GATE_RATE_LIMIT above.
+    gate_prev = None
+
     # Previous step's LIMITED reference heading, for REF_HEADING_RATE_LIMIT.
     # Unwrapped/continuous (not [-pi, pi]) so consecutive limiting steps
     # compose correctly across the wrap boundary.
@@ -749,12 +758,17 @@ def run_core_rollout(
         # command acceleration — while the car is badly off-line with steering
         # already saturated, which is unrecoverable.
         #
-        # DISABLED for the oracle branch (use_planner=False, the `else` above)
-        # as of 2026-08-08, temporary -- mirrors mpc_controller_standalone.py's
-        # identical live-side gate, disabled when self._speed_profile is set.
-        # Still applied to the planner / planner-fallback branches, where the
-        # live-planner failure mode this gate exists for can still occur.
-        gate = 1.0 if not use_planner else sp.tracking_error_speed_gate(e_y, e_psi)
+        # Re-enabled for the oracle branch (2026-08-09) via GATE_RATE_LIMIT --
+        # see mpc_controller_standalone.py's identical comment for the full
+        # rationale (disabling it outright traded away its whole purpose;
+        # smoothing its rate of change removes the sharp-cliff side effect
+        # that caused it to be disabled instead).
+        raw_gate = sp.tracking_error_speed_gate(e_y, e_psi)
+        if gate_prev is not None:
+            max_step = GATE_RATE_LIMIT * DT
+            raw_gate = float(np.clip(raw_gate, gate_prev - max_step, gate_prev + max_step))
+        gate_prev = raw_gate
+        gate = raw_gate
         v_target = max(PLANNER_V_MIN, v_target * gate)
         if v_des_prev is not None:
             v_target = min(v_target, v_des_prev + SPEED_TARGET_RISE_RATE * DT)

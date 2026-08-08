@@ -37,6 +37,9 @@ def generate_launch_description():
     use_precomputed_speed = LaunchConfiguration('use_precomputed_speed')
     path_map_path = LaunchConfiguration('path_map_path')
     use_precomputed_path = LaunchConfiguration('use_precomputed_path')
+    v_max = LaunchConfiguration('v_max')
+    v_min = LaunchConfiguration('v_min')
+    stanley_gain = LaunchConfiguration('stanley_gain')
     # Effective map_path handed to the node: '' whenever the feature is
     # switched off, regardless of what map_path itself is set to -- so
     # use_precomputed_speed:=false is a reliable one-flag disable without
@@ -168,6 +171,22 @@ def generate_launch_description():
                 "standing configuration is oracle path + oracle speed, "
                 "planner-in-loop is the opt-in diagnostic mode."
             )),
+        # v_max/v_min/stanley_gain: overrides the shared controller.ros__parameters
+        # block in fsae_params.yaml (applies to stanley, mpc, and mpc_standalone
+        # alike -- the node name is 'controller' for all three). Defaults match
+        # that file's current values exactly, so leaving these unset on the
+        # command line changes nothing; pass e.g. v_max:=3.0 for a one-off slow
+        # lap (cone-map recording, characterisation runs) without editing the
+        # shared config file.
+        DeclareLaunchArgument(
+            'v_max', default_value='15.0',
+            description='m/s -- top speed on straights (overrides fsae_params.yaml controller.v_max)'),
+        DeclareLaunchArgument(
+            'v_min', default_value='1.5',
+            description='m/s -- minimum speed through tight corners (overrides fsae_params.yaml controller.v_min)'),
+        DeclareLaunchArgument(
+            'stanley_gain', default_value='1.0',
+            description='cross-track gain k_cte (overrides fsae_params.yaml controller.stanley_gain)'),
         Node(
             package='fsae_control',
             executable=controller_exec,
@@ -177,6 +196,10 @@ def generate_launch_description():
                 'log_csv': log_csv, 'log_dir': log_dir,
                 'map_path': effective_map_path,
                 'path_map_path': effective_path_map_path,
+                'v_max': v_max, 'v_min': v_min,
+                # stanley_gain deliberately omitted here: neither
+                # mpc_controller.py nor mpc_controller_standalone.py declares
+                # it, so passing it would raise ParameterNotDeclaredException.
             }],
             condition=run_controller_mpc,
         ),
@@ -185,7 +208,10 @@ def generate_launch_description():
             executable=controller_exec,
             name='controller',
             output='screen',
-            parameters=[config, {'log_csv': log_csv, 'log_dir': log_dir}],
+            parameters=[config, {
+                'log_csv': log_csv, 'log_dir': log_dir,
+                'v_max': v_max, 'v_min': v_min, 'stanley_gain': stanley_gain,
+            }],
             condition=run_controller_non_mpc,
         ),
         Node(
