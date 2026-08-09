@@ -88,9 +88,6 @@ from scipy.linalg import expm
 # (fsae_control.control_utils / fsds_bridge); upstream used 35deg.
 MAX_STEER_RAD: float = math.radians(25.0)
 MAX_ACCEL: float = 12.0
-# Unlike mass, the lateral-accel ceiling, and the steering-rate floor, this
-# has no direct FSDS open-loop system-ID confirmation — see
-# sim_to_real_investigation.md before treating it as final.
 MAX_BRAKE: float = 7.0
 
 # ── Reference-heading rate limit ─────────────────────────────────────────────
@@ -101,8 +98,7 @@ MAX_BRAKE: float = 7.0
 # rise limiter, there is no "always safe" direction for a heading reference.
 # Disabled: tried live and made steering saturation worse (holding the
 # reference back during turn-in leaves a larger heading deficit to claw back
-# later). Do not re-enable without a fresh offline test against a synthetic
-# slalom path first — see sim_to_real_investigation.md.
+# later). Re-test against a synthetic slalom path offline before re-enabling.
 REF_HEADING_RATE_LIMIT_ENABLED: bool = False
 REF_HEADING_RISE_RATE_DEG_S: float = 90.0
 
@@ -169,15 +165,46 @@ def _adaptive_R_scaling(vx: float, R_base: np.ndarray) -> np.ndarray:
     return R
 
 
-def _adaptive_R_rate(kappa: float, R_rate_base: np.ndarray) -> np.ndarray:
+def _adaptive_R_rate(kappa: float, R_rate_base: np.ndarray, disable_in_corners: bool = False) -> np.ndarray:
     """
     Curvature-dependent steering-jerk softening: relaxes the steering
     rate-of-change cost in sharp corners (floor at 0.55) so the controller
     isn't over-penalised for the extra steering rate a tight corner demands.
     Mirrors model_utils.adaptive_R_rate in fsae_MPCTest — keep both floors
     in sync manually.
+
+    disable_in_corners: TEMPORARY/EXPERIMENTAL, NOT VALIDATED. False
+    (default) preserves the softening above. True uses a
+    kappa_straight=0.1 "cornering" cutoff: once |kappa| exceeds it,
+    softening is switched off and R_rate[0,0] gets the full, unscaled
+    baseline cost instead -- deliberately undoing the softening this
+    function exists to provide.
     """
-    scale = max(0.55, 1.0 / (1.0 + 3.0 * abs(kappa)))
+    kappa_straight = 0.1
+    if disable_in_corners and abs(kappa) > kappa_straight:
+        scale = 1.0
+    else:
+        scale = max(0.55, 1.0 / (1.0 + 3.0 * abs(kappa)))
+    R = R_rate_base.copy()
+    R[0, 0] *= scale
+    return R
+
+
+def _steer_rate_anti_hunt(kappa: float, e_y: float, R_rate_base: np.ndarray, enabled: bool) -> np.ndarray:
+    """
+    TEMPORARY/EXPERIMENTAL, NOT VALIDATED: heavily penalise steering
+    rate-of-change on top of _adaptive_R_rate's existing curvature softening,
+    but only when the car is already centred (|e_y| small) AND not currently
+    curving (kappa small). "Corner ahead" is NOT a path lookahead here -- it
+    reuses the same causal, current-curvature kappa as _adaptive_R_rate, so
+    it cannot anticipate a corner before the car is already turning into it.
+    Mirrors model_utils.steer_rate_anti_hunt in fsae_MPCTest -- keep both
+    thresholds in sync manually. enabled=False returns R_rate_base untouched.
+    """
+    if not enabled:
+        return R_rate_base
+    kappa_straight, ey_low, boost = 0.02, 0.05, 3.0
+    scale = boost if (abs(kappa) <= kappa_straight and abs(e_y) <= ey_low) else 1.0
     R = R_rate_base.copy()
     R[0, 0] *= scale
     return R
@@ -290,11 +317,9 @@ class MPCController:
         # Keep numerically identical to fsae_MPCTest/settings.py's
         # Q_diag/R_diag/R_rate_diag and the same three lists in
         # fsds_simulator's copy of this file (see CLAUDE.md's parity rule).
-        # Check tuning_history.txt for the latest tuned/validated set before
-        # assuming these are current — fetch fsae_MPCTest's origin/main first.
-        Q_diag      = [8.835061533166446, 0.10074710969078902, 3.121860429243342, 0.10204777472070867, 9.944842732101566, 0.0, 0.0, 0.0]
-        R_diag      = [0.96036050771207, 2.7854960715243156]
-        R_rate_diag = [1.10425012508917786, 2.60031073385853]
+        Q_diag      = [5.235061533166446, 0.20074710969078902, 1.521860429243342, 0.50204777472070867, 3.544842732101566, 0.0, 0.0, 0.0]
+        R_diag      = [1.16036050771207, 2.054960715243156]
+        R_rate_diag = [2.10425012508917786, 2.60031073385853]
 
         self.Q      = np.diag(Q_diag)
         self.R      = np.diag(R_diag)
@@ -327,12 +352,59 @@ class MPCController:
         self.terminal_scale = 1.0
 
         # ADAPTIVE_Q_SCALING_ENABLED (settings.py, fsae_MPCTest) — see
-        # _adaptive_Q_scaling above. Disabled: a live A/B test found it
-        # coincided with a bad late-turn-in episode (the lateral-error cost
-        # was discounted at exactly the moment the controller needed to
-        # commit to steering authority early). Not proven solely causal —
-        # see sim_to_real_investigation.md before re-enabling.
-        self.adaptive_q_scaling_enabled = False
+        # _adaptive_Q_scaling above. Re-enabled 2026-08-09 to match the live
+        # controller; re-verify against the late-turn-in A/B concern noted
+        # previously before trusting this long-term.
+        self.adaptive_q_scaling_enabled = True
+
+        # STEER_RATE_ANTI_HUNT_ENABLED (settings.py, fsae_MPCTest) — see
+        # _steer_rate_anti_hunt above. Temporary experiment requested to
+        # suppress low-error steering hunt; NOT validated against a live
+        # log or VALIDATION_SUITE. Default off, inlined per the standing
+        # no-settings.py-on-the-car rule; keep in sync with fsae_MPCTest's
+        # copy while this is being tried.
+        self.steer_rate_anti_hunt_enabled = True
+
+        # ADAPTIVE_R_RATE_DISABLE_IN_CORNERS (settings.py, fsae_MPCTest) —
+        # see _adaptive_R_rate's disable_in_corners param above. Temporary
+        # experiment requested to test switching off the curvature-based
+        # steering-rate softening once cornering; NOT validated. Tried
+        # enabled 2026-08-09 (kappa_straight raised to 0.1 first) but caused
+        # severe lag specifically in corners -- the discontinuous
+        # R_rate[0,0] jump at the kappa_straight crossing likely spikes QP
+        # solver iterations / invalidates warm-starts every tick near the
+        # threshold. Reverted to False the same day. Inlined per the
+        # standing no-settings.py-on-the-car rule; keep in sync with
+        # fsae_MPCTest's copy while this is being tried.
+        self.adaptive_r_rate_disable_in_corners = False
+
+        # DELAY_COMPENSATION_ENABLED — TEMPORARY/EXPERIMENTAL, NOT VALIDATED.
+        # Master switch for _update_n_delay()/predict_ahead() (see both
+        # above). Added 2026-08-09 to test a hypothesis: n_delay was observed
+        # swinging 0->6 in ~10s blocks on a live standalone log
+        # (mpc_standalone_control_1786273193.csv), and steering-reversal rate
+        # on straight sections was 18x higher during high-n_delay windows
+        # (33.3% vs 1.8%) despite e_y barely moving -- i.e. predict_ahead()'s
+        # rollforward may itself be injecting the chatter rather than
+        # compensating for real lag. False (set here) skips
+        # _update_n_delay()/predict_ahead() entirely: x0 is solved raw, with
+        # zero delay compensation, to isolate whether this mechanism is the
+        # cause. Not a fix either way -- if disabling it removes the
+        # chatter, the next step is to find why pose_age_s/n_delay swing so
+        # widely in the first place, not to leave compensation off
+        # permanently.
+        #
+        # RESULT (2026-08-09, mpc_standalone_control_1786274337.csv): worse,
+        # not better. rmse 0.497->0.677, steering_sat_ratio 0.267->0.517,
+        # |e_psi| up to 125 deg, half the run pinned at the 25 deg steer
+        # limit. pose_age_s did NOT go away with compensation off (still
+        # swinging ~0-0.4s in the same ~10s blocks) -- it just went
+        # uncorrected instead of jittering the correction. Reversal rate did
+        # drop (0.067->0.029), so the mechanism isn't imaginary, but the net
+        # effect of disabling compensation outright is worse than the
+        # chatter it was meant to isolate. Restored to True; the real fix is
+        # stabilising pose_age_s upstream, not leaving this off.
+        self.delay_compensation_enabled = True
 
         # ── Continuity memory ─────────────────────────────────────────
         self._delta_act:      float      = 0.0
@@ -778,13 +850,21 @@ class MPCController:
         # raw from this tick's pose_age_s — see the _POSE_AGE_LP_ALPHA /
         # _N_DELAY_HYSTERESIS notes at module scope for why a jittering
         # n_delay is itself a source of oscillation.
-        n_delay = self._update_n_delay(pose_age_s)
-        if n_delay > 0 and len(self._u_history) > 0:
-            pending_cmds = list(self._u_history)[-n_delay:]
-            x0 = predict_ahead(x0, Ad, Bd, pending_cmds)
+        if self.delay_compensation_enabled:
+            n_delay = self._update_n_delay(pose_age_s)
+            if n_delay > 0 and len(self._u_history) > 0:
+                pending_cmds = list(self._u_history)[-n_delay:]
+                x0 = predict_ahead(x0, Ad, Bd, pending_cmds)
+        else:
+            n_delay = 0
 
         R_scaled      = _adaptive_R_scaling(car_speed, self.R)
-        R_rate_scaled = _adaptive_R_rate(kappa, self.R_rate)
+        R_rate_scaled = _adaptive_R_rate(
+            kappa, self.R_rate, disable_in_corners=self.adaptive_r_rate_disable_in_corners
+        )
+        R_rate_scaled = _steer_rate_anti_hunt(
+            kappa, x0[0], R_rate_scaled, self.steer_rate_anti_hunt_enabled
+        )
         # x0[0] is e_y (delay-compensated, if n_delay>0 above rolled it
         # forward) -- compute() has no bare e_y in scope, only x0.
         Q_scaled      = _adaptive_Q_scaling(x0[0], self.Q, self.adaptive_q_scaling_enabled)

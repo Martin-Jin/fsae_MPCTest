@@ -86,7 +86,7 @@ def curvature_estimate(state):
     return abs(r / vx)         # |κ| = |r| / vx  (always positive)
 
 
-def adaptive_R_rate(kappa, R_rate_base):
+def adaptive_R_rate(kappa, R_rate_base, disable_in_corners=False):
     """
     Scale the steering rate-of-change cost R_rate[0,0] based on path curvature.
 
@@ -103,17 +103,15 @@ def adaptive_R_rate(kappa, R_rate_base):
     At κ = 0.2 (R=5 m tight turn): scale = 0.63 → more softening
     At κ → ∞:                       scale → 0.55 → floor (55% of base)
 
-    Floor raised from 0.35 to 0.55 on 2026-08-05: live standalone-ROS test
-    data (mpc_standalone_control_*.csv) showed steering sign-reversal chatter
-    getting measurably worse in corners (steer swinging +-40-57 deg, near-
-    continuous reversals) — this floor was relaxing the one cost term that
-    directly discourages rapid steer-sign-flipping exactly where the data
-    showed reversals getting worse, working against damping instead of with
-    it. 0.55 keeps some softening available in genuinely tight corners (where
-    the vehicle does need to change steering direction quickly) while no
-    longer cutting the rate penalty by nearly two-thirds at high curvature.
-    The floor still ensures the rate cost never fully vanishes, which would
-    allow arbitrarily rapid steering oscillations.
+    The floor is kept fairly high (0.55, not lower) because over-relaxing
+    this cost is exactly what lets steering sign-reversal chatter grow in
+    corners: R_rate[0,0] is the one cost term that directly discourages
+    rapid steer-sign-flipping, so cutting it hard at high curvature works
+    against damping instead of with it. 0.55 keeps some softening available
+    in genuinely tight corners (where the vehicle does need to change
+    steering direction quickly) while still ensuring the rate cost never
+    fully vanishes, which would allow arbitrarily rapid steering
+    oscillations.
 
     Only R_rate[0,0] (steering rate penalty) is modified. R_rate[1,1]
     (acceleration rate penalty) is unchanged: longitudinal jerk is less
@@ -127,6 +125,16 @@ def adaptive_R_rate(kappa, R_rate_base):
     R_rate_base : np.ndarray, shape (2, 2)
         Base rate-of-change cost matrix, typically the tuned R_rate from
         tuner/offline_tuner.py or gui/simulation.py. Not modified in-place.
+    disable_in_corners : bool, optional
+        TEMPORARY/EXPERIMENTAL, NOT VALIDATED. False (default) preserves the
+        original continuous softening above. True uses a kappa_straight=0.1
+        cutoff (raised 2026-08-09 from 0.02 so only sharp corners trigger
+        this) to mean "not cornering": below it, softening still applies as
+        normal (it barely does anything that close to straight anyway); at
+        or above it ("cornering"), softening is switched off entirely and
+        R_rate[0,0] gets the full, unscaled baseline cost -- deliberately
+        undoing the softening this function exists to provide, so only
+        enable this to test the effect, not as a validated tuning choice.
 
     Returns
     -------
@@ -137,9 +145,72 @@ def adaptive_R_rate(kappa, R_rate_base):
     Called by: tuner/offline_tuner.py (run_headless_rollout),
                gui/simulation.py (simulate_closed_loop)
     """
-    R     = np.array(R_rate_base, copy=True)          # Never mutate the caller's matrix
-    scale = max(0.55, 1.0 / (1.0 + 3.0 * kappa))     # Saturating softening: 1.0 at κ=0, floor at 0.55
+    R = np.array(R_rate_base, copy=True)          # Never mutate the caller's matrix
+    kappa_straight = 0.1
+    if disable_in_corners and abs(kappa) > kappa_straight:
+        scale = 1.0                                     # Cornering -> no softening, full baseline cost
+    else:
+        scale = max(0.55, 1.0 / (1.0 + 3.0 * kappa))    # Saturating softening: 1.0 at κ=0, floor at 0.55
     R[0, 0] *= scale                                    # Apply only to steering rate cost
+    return R
+
+
+def steer_rate_anti_hunt(kappa, e_y, R_rate_base, enabled=False):
+    """
+    TEMPORARY/EXPERIMENTAL (fsds sim only, off by default): heavily penalise
+    steering-rate-of-change when the car is already centred on the path AND
+    not currently in a corner, to suppress small-error steering hunt/chatter.
+
+    This stacks on top of (does not replace) adaptive_R_rate: adaptive_R_rate
+    only ever softens R_rate[0,0] below the tuned baseline for corners; this
+    function multiplies in an additional boost ABOVE 1.0 when both of the
+    following hold:
+      - kappa is near zero (car isn't currently curving -- proxy for "no
+        corner right now"; this is the SAME causal, current-state curvature
+        signal adaptive_R_rate uses, not a path lookahead, so it cannot
+        anticipate a corner the car hasn't reached yet)
+      - |e_y| is small (car is already close to the centreline)
+
+    NOT VALIDATED. Added as a quick experiment, gated behind
+    STEER_RATE_ANTI_HUNT_ENABLED (default False in settings.py) so it can be
+    tried and ripped out without affecting any existing tuned behaviour.
+    Mirrors adaptive_Q_scaling's opt-in pattern: disabled callers get
+    R_rate_base back completely unmodified.
+
+    Parameters
+    ----------
+    kappa : float
+        Current path curvature estimate from curvature_estimate() (1/m).
+    e_y : float
+        Current lateral deviation from the path centreline (m). Sign does
+        not matter; only magnitude is used.
+    R_rate_base : np.ndarray, shape (2, 2)
+        Rate-of-change cost matrix to boost -- pass the ALREADY
+        curvature-softened output of adaptive_R_rate so the two compose
+        rather than one undoing the other.
+    enabled : bool, optional
+        Master off-switch. False (default) returns R_rate_base completely
+        unmodified -- not even copied.
+
+    Returns
+    -------
+    R : np.ndarray
+        R_rate_base unchanged if enabled=False. Otherwise a copy with
+        R[0,0] boosted when kappa and |e_y| are both small.
+
+    Called by: sim/rollout_core.py (run_core_rollout), opt-in only
+    """
+    if not enabled:
+        return R_rate_base
+
+    kappa_straight, ey_low, boost = 0.02, 0.05, 3.0
+    if kappa <= kappa_straight and abs(e_y) <= ey_low:
+        scale = boost
+    else:
+        scale = 1.0
+
+    R = np.array(R_rate_base, copy=True)
+    R[0, 0] *= scale
     return R
 
 
@@ -150,25 +221,19 @@ def adaptive_Q_scaling(e_y, Q_base, enabled=False):
 
     WHY THIS EXISTS
     ----------------
-    Added 2026-08-08 after a live log (mpc_standalone_control_1786101462.csv)
-    showed reversal rate INCREASING as |e_y| got smaller: 35.6% of ticks
-    reverse steering sign at |e_y|<0.05 m, dropping monotonically to 2.4% at
-    |e_y|>0.6 m. Only 1.9% of the lap sat at |e_y|<0.05 m -- the car almost
-    never settles onto the centreline, it darts across it (a single
-    contiguous stretch showed e_y swinging -0.033 -> -0.24 -> -0.033 m across
-    two 0.05s ticks while steer swung 2-11 deg). A quadratic cost with no
-    dead zone has the same proportional "pull" toward zero error regardless
-    of how small the error already is, which is a plausible contributor to a
-    self-reinforcing correct-overcorrect cycle right at the point the
-    controller should be settling, not correcting.
+    Motivated by a live-only symptom: steering sign-reversal rate rising as
+    |e_y| gets smaller, i.e. the car darts across the centreline rather than
+    settling onto it. A quadratic cost with no dead zone has the same
+    proportional "pull" toward zero error regardless of how small the error
+    already is, which is a plausible contributor to a self-reinforcing
+    correct-overcorrect cycle right at the point the controller should be
+    settling, not correcting.
 
-    Checked and NOT REPRODUCED on the offline recorded-map rollout in its
-    current tuned state: there, reversal rate INCREASES with |e_y| (7.05% at
-    <0.05m rising to 10.91% at 0.15-0.3m), the opposite trend. This may be a
-    live-only symptom (sensor/state noise, delay-compensation dynamics, or
-    the plant behaving differently from the model near zero slip) rather
-    than something the offline plant reproduces -- see
-    sim_to_real_investigation.md S42 for the full comparison. Implemented
+    This trend has NOT been reproduced on the offline recorded-map rollout —
+    there, reversal rate instead increases with |e_y|, the opposite trend.
+    This may be a live-only symptom (sensor/state noise, delay-compensation
+    dynamics, or the plant behaving differently from the model near zero
+    slip) rather than something the offline plant reproduces. Implemented
     here anyway, DISABLED BY DEFAULT, so it exists to test against a live
     log without risking any offline-tuned behaviour changing silently.
 

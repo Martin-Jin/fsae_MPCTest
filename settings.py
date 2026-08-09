@@ -33,30 +33,14 @@ from sim.sim_track import TRACK_HALF_WIDTH
 #   - Typical adjustment: change by 5 steps (0.25 s) at a time. Must match
 #     N_horizon in simulation.py and N in control_utils.py exactly, or the
 #     weights tuned here won't behave the same on the real car.
-# Changed 25 -> 35 (2026-08-08): swept on PATH_SUDDEN_TURN (long straight ->
-# sharp 90 deg, R=4.5m) with use_planner=False, current Q_diag/R_diag/
-# R_rate_diag -- N=35 was the peak (peak lateral error 0.527m -> 0.450m,
-# score 0.474 -> 0.441; N=50/70 drift slightly worse again, so this is a
-# real optimum, not "higher is always better"). Neutral on the full recorded
-# map (score 0.411 -> 0.412, sat% unchanged at 0.00) -- helps the sharp-corner
-# case, doesn't cost anything elsewhere. Does NOT fix the late-turn-in/
-# saturation failure mode itself: commit timing barely moved (5.95s -> 6.0s)
-# because the reference heading is genuinely ~0 until the car's own
-# arc-length position reaches the corner's start -- there's no earlier
-# signal for a longer horizon to react to. See sim_to_real_investigation.md
-# for the fuller writeup (terminal_scale and R_rate were swept too and
-# ruled out as the commit-timing driver).
 N_HORIZON = 35
 
 # TERMINAL_Q_SCALE — "How much extra does the controller care about where it
 # ends up at the very end of its plan, compared to every other step?"
-# Added 2026-08-08 (sim_to_real_investigation.md S40): with no
-# terminal cost or constraint, the MPC has exactly the same incentive to
-# track well at the last predicted step as at every other step, and no
-# incentive at all to leave itself in a good position for what happens just
-# past the horizon. This affects BOTH stacks identically (mpc_core.py has
-# the same gap) since it's a genuine structural omission, not a sim/live
-# mismatch.
+# With no terminal cost or constraint, the MPC has exactly the same incentive
+# to track well at the last predicted step as at every other step, and no
+# incentive to leave itself in a good position for what happens just past the
+# horizon. This affects both stacks identically (mpc_core.py has the same gap).
 # 1.0 = no-op (the only value ever validated against the current Q_diag/
 #       R_diag/R_rate_diag tuning -- this is what every existing tuned
 #       weight set assumes).
@@ -77,10 +61,10 @@ TERMINAL_Q_SCALE = 1.0
 # False = the tuner gives the car the exact, perfect racing line to follow.
 #         Much faster, useful for quickly testing whether the driving style
 #         itself (speed, smoothness) is good, but won't catch planner bugs.
-# Default changed to False (2026-08-08) to match the live ROS side's
-# path_map_path mode (precomputed path, no planner/perception in the loop) —
-# see the "Offline parity note" comment below. Set True to re-enable the
-# planner-in-loop rollout (perception mistakes, live-built centreline).
+# Default is False to match the live ROS side's path_map_path mode
+# (precomputed path, no planner/perception in the loop) — see the "Offline
+# parity note" comment below. Set True to re-enable the planner-in-loop
+# rollout (perception mistakes, live-built centreline).
 USE_PLANNER = False
 
 # USE_PRECOMPUTED_SPEED_PROFILE — "For a track that's already been mapped
@@ -89,16 +73,11 @@ USE_PLANNER = False
 #
 # curvature_speed() (sim/speed_profile.py) re-derives the target speed every
 # tick from only the sub-path currently visible/built — by design, since a
-# real car doesn't have the map on its first lap. But measured directly on
-# the recorded comp-test map (2026-08-08): the live-built centreline is
-# SHORTER than curvature_speed()'s own assumed scan_end=24m on 100% of
-# steps (median 21.6m, <15m on ~20% of steps, <10m on ~8% — almost
-# certainly at the sharper corners, where the perception FOV's lateral
-# window clips before its forward window does). That silently gives the
-# speed planner less runway than its own braking-distance design assumes,
-# on every tick — a second, independent contributor to "brakes too late"
-# alongside the MPC's own fixed-time (not fixed-distance) horizon (see
-# docs/sim_to_real_investigation.md S48).
+# real car doesn't have the map on its first lap. But the live-built
+# centreline is frequently shorter than curvature_speed()'s own assumed
+# scan_end=24m (the perception FOV's lateral window clips before its forward
+# window does at sharper corners), silently giving the speed planner less
+# runway than its own braking-distance design assumes.
 #
 # True  = once a recorded map is loaded (sim/track_io.load_recorded_track()),
 #         look up the target speed from that map's own oracle profile
@@ -359,54 +338,64 @@ PLANNER_PATH_BLEND = 0.4        # 0<a<=1; temporal EMA weight toward each freshl
 
 # REF_HEADING_RISE_RATE — "How fast is the planner's steering target allowed
 # to swing before we start holding it back?"
-# sim_to_real_investigation.md S26/S27 found the planner's published centreline
-# sometimes points much further into an upcoming corner than the car has
-# actually turned yet ("anticipating" a corner early) — a real but sustained
-# effect (not a single bad frame), concentrated at sharp braking corners, and
-# strongly linked to steering saturation (up to 18x more likely on the ticks
-# where this happens). This limiter caps how fast the reference heading the
-# controller tracks (ref_psi) is allowed to change per second, exactly like
-# SPEED_TARGET_RISE_RATE already does for the speed target — the raw
-# direction is still used once the car catches up, this only slows how fast
-# the TARGET moves, so the controller isn't asked to snap onto a heading the
-# car has no chance of reaching yet.
+# The planner's published centreline can point further into an upcoming
+# corner than the car has actually turned yet ("anticipating" a corner
+# early), which is strongly linked to steering saturation. This limiter caps
+# how fast the reference heading the controller tracks (ref_psi) is allowed
+# to change per second, exactly like SPEED_TARGET_RISE_RATE does for the
+# speed target — the raw direction is still used once the car catches up,
+# this only slows how fast the target moves.
 #   - Increase it (or disable): the controller reacts to the planner's full
-#     corner-anticipation immediately — can drive the reported saturation gap
-#     in S26/S27 but may also mean earlier, more confident turn-in.
+#     corner-anticipation immediately — may mean earlier, more confident turn-in.
 #   - Decrease it: smoother, later turn-in, but risks entering a tight corner
 #     with too little heading correction already applied ("understeering in").
-#   - Units: deg/s. Only the MAGNITUDE of change is capped; sign (turning
+#   - Units: deg/s. Only the magnitude of change is capped; sign (turning
 #     left vs. right) is never touched, so this cannot reverse a correction.
-#
-# MEASURED (sim_to_real_investigation.md S28): 90 is the tightest value with
-# NO DNF anywhere in settings.VALIDATION_SUITE. It cuts recorded-map
-# saturation 4.62%->3.07% and suite-mean saturation 8.99%->6.02% with no
-# per-path regression. Values below ~85 look even better on the recorded map
-# (65 reaches 0.00% saturation there) but DNF PATH_MICRO_SLALOM off-track —
-# the reference is held back so hard the car cannot keep up on a fast, tight
-# slalom. Do not lower this without re-running
-# tuner/ref_heading_limiter_suite_check.py; the recorded map alone hid this
-# failure mode completely.
-# Default OFF until validated live — see S28 for the full sweep before
-# enabling on the car.
+# Lowering below ~85 risks DNFing a fast, tight slalom off-track (the
+# reference is held back so hard the car cannot keep up) — re-run
+# tuner/ref_heading_limiter_suite_check.py before changing this.
+# Default off until validated live.
 REF_HEADING_RATE_LIMIT_ENABLED = False
 REF_HEADING_RISE_RATE = 90.0   # deg/s — only used when the flag above is True
 
 # ADAPTIVE_Q_SCALING_ENABLED — "Should the controller relax its lateral-error
 # penalty when it's already close to the centreline, to stop small-error
-# hunting?"
-# Added 2026-08-08 after a live log showed steering-reversal rate
-# INCREASING as |e_y| got smaller (35.6% of ticks at |e_y|<0.05 m, down to
-# 2.4% at |e_y|>0.6 m) — the car darting back and forth across the
-# centreline instead of settling onto it. See
-# controller/model_utils.py::adaptive_Q_scaling for the full mechanism and
-# sim_to_real_investigation.md S42 for the measurement.
-# NOT REPRODUCED on the offline recorded-map rollout as currently tuned
-# (there, reversal rate rises WITH |e_y|, the opposite trend) — this may be
-# a live-only symptom. Default OFF until validated: re-run
-# VALIDATION_SUITE/recorded-map for new DNFs before enabling, then validate
-# on a live log the same way S28's reference-heading limiter was.
-ADAPTIVE_Q_SCALING_ENABLED = False
+# hunting?" See controller/model_utils.py::adaptive_Q_scaling for the full
+# mechanism. Not reproduced on the offline recorded-map rollout as currently
+# tuned (there, steering-reversal rate rises WITH |e_y|, the opposite trend
+# seen live) — may be a live-only symptom. Enabled 2026-08-09 to match the
+# live controller; re-run VALIDATION_SUITE/recorded-map for new DNFs if
+# re-tuning around this.
+ADAPTIVE_Q_SCALING_ENABLED = True
+
+# STEER_RATE_ANTI_HUNT_ENABLED — TEMPORARY/EXPERIMENTAL, fsds sim only.
+# Heavily penalises steering-rate-of-change on top of adaptive_R_rate's
+# existing curvature softening, but only when the car is already centred
+# (|e_y| small) AND not currently curving (kappa small) -- see
+# controller/model_utils.py::steer_rate_anti_hunt for the exact thresholds
+# and mechanism. "Corner ahead" is NOT detected via path lookahead here --
+# it reuses the same causal, current-curvature signal as adaptive_R_rate, so
+# it cannot anticipate a corner before the car is already turning into it.
+# NOT VALIDATED against VALIDATION_SUITE/recorded-map or any live log.
+# Enabled 2026-08-09 to match the live controller.
+STEER_RATE_ANTI_HUNT_ENABLED = True
+
+# ADAPTIVE_R_RATE_DISABLE_IN_CORNERS — TEMPORARY/EXPERIMENTAL, fsds sim only.
+# adaptive_R_rate (above STEER_RATE_ANTI_HUNT_ENABLED's mechanism, see
+# controller/model_utils.py::adaptive_R_rate) normally SOFTENS the steering
+# rate-of-change cost continuously as curvature rises, so the controller
+# isn't over-penalised for the extra steering rate a corner demands. Setting
+# this True switches that softening off once kappa exceeds adaptive_R_rate's
+# own kappa_straight cutoff (raised 2026-08-09 to 0.1 so only sharp corners
+# trigger it -- no longer tied to steer_rate_anti_hunt's separate 0.02
+# threshold): in a corner, R_rate[0,0] gets the full, unscaled baseline cost
+# instead of being relaxed. This deliberately undoes the softening
+# adaptive_R_rate exists to provide -- NOT VALIDATED. Tried enabled
+# 2026-08-09 but caused severe lag specifically in corners -- the
+# discontinuous R_rate[0,0] jump at the kappa_straight crossing likely
+# spikes QP solver iterations / invalidates warm-starts every tick near the
+# threshold. Reverted to False the same day.
+ADAPTIVE_R_RATE_DISABLE_IN_CORNERS = False
 
 # ------------------------------------------------------------------------------
 # Cost function weights (for simulator only)
@@ -424,48 +413,9 @@ ADAPTIVE_Q_SCALING_ENABLED = False
 # fix that particular error, at the cost of everything else. Change any
 # single number by no more than 20-30% at a time and re-test — small changes
 # can have surprisingly large effects because they interact with each other.
-# Q_diag[3] (yaw-rate/e_psi_dot damping) manually corrected 2026-08-05: live
-# standalone-ROS test data (mpc_standalone_control_*.csv) showed steering
-# sign-reversal chatter almost every ~0.05s tick, worst in corners (steer
-# swinging +-40-57 deg, yaw_rate swinging +0.9/-1.1 rad/s within a few
-# hundred ms), but present even on near-straight sections with e_psi ~0-3 deg.
-# The old value (0.1009...) was ~42:1 smaller than Q_diag[2] (heading error)
-# and ~65:1 smaller than Q_diag[4] (speed error) — by far the smallest of the
-# five active Q entries, so the controller had almost no cost on the yaw rate
-# it uses to correct heading, a classic recipe for state-feedback overshoot/
-# oscillation. This is a large jump rather than the usual 20-30% nudge
-# because the prior value was disproportionately small, not just mistuned —
-# a small nudge would have left the same qualitative imbalance. Raised to
-# 2.5: just above Q_diag[1] (e_y_dot, 2.4068) so yaw-rate damping is no
-# longer the smallest term, while staying below Q_diag[2]/Q_diag[4] so
-# heading/speed tracking aren't sacrificed outright. CMA-ES should still
-# re-tune this properly in a full run — this is a manual corrective starting
-# point, not a final value.
-Q_diag      = [8.835061533166446, 0.10074710969078902, 3.121860429243342, 0.10204777472070867, 9.944842732101566, 0.0, 0.0, 0.0]
-R_diag      = [0.96036050771207, 2.7854960715243156]
-R_rate_diag = [1.10425012508917786, 2.60031073385853]
-# Three further hand edits 2026-08-08 (live edits, resynced here), all part
-# of chasing live accel/brake jitter on straights (accel_rms_mps2 2.67 after
-# R_diag[1]'s 0.25x cut, 2.06 after Q_diag[4]'s cut below, 1.81 after this
-# round -- measurably better each time but not eliminated; not yet
-# reproduced offline on the recorded map/oracle profile, so these are live
-# hand-tuning steps, not offline-validated optima like R_diag[1]):
-#   Q_diag[4] (speed error): 9.715386646449979 -> 3.715386646449979
-#   R_diag[0] (steering effort): 0.44113286130397317 -> 0.84113286130397317
-#   R_rate_diag[0] (steering-rate): 5.856634028761815 -> 1.856634028761815
-# CMA-ES should re-tune properly in a full run once the jitter's root cause
-# is understood -- these are corrective, not final, values.
-# R_diag[1] (accel/brake effort cost) lowered 2.11423973420019 -> 0.25x
-# (2026-08-08): swept on PATH_SUDDEN_TURN with use_planner=False, N_HORIZON=35
-# (see that setting's own comment) -- the MPC was only commanding ~-3.0 to
-# -3.2 m/s^2 of braking approaching the corner, about a third of the
-# vehicle's actual -9.0 m/s^2 limit, leaving a ~2 m/s speed-tracking gap
-# (v vs v_target) right at corner entry. 0.25x closes about half that gap
-# (2.13 -> 1.15 m/s), peak e_y 0.450 -> 0.398m, score 0.441 -> 0.420. Below
-# 0.25x it plateaus/slightly reverses (0.05x-0.02x actually re-widened the
-# gap to ~1.0-1.06m and score ticked back up), so this is a real optimum,
-# not "lower is always better" -- unlike R_rate and terminal_scale, which
-# were also swept on the same corner and had no effect on commit timing.
+Q_diag      = [5.235061533166446, 0.20074710969078902, 1.521860429243342, 0.50204777472070867, 3.544842732101566, 0.0, 0.0, 0.0]
+R_diag      = [1.16036050771207, 2.054960715243156]
+R_rate_diag = [2.10425012508917786, 2.60031073385853]
 
 
 # ==============================================================================
