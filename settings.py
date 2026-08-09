@@ -380,22 +380,62 @@ ADAPTIVE_Q_SCALING_ENABLED = True
 # Enabled 2026-08-09 to match the live controller.
 STEER_RATE_ANTI_HUNT_ENABLED = True
 
-# ADAPTIVE_R_RATE_DISABLE_IN_CORNERS — TEMPORARY/EXPERIMENTAL, fsds sim only.
-# adaptive_R_rate (above STEER_RATE_ANTI_HUNT_ENABLED's mechanism, see
+# ADAPTIVE_R_RATE_ENABLE_IN_CORNERS — TEMPORARY/EXPERIMENTAL, fsds sim only.
+# (Renamed from ADAPTIVE_R_RATE_DISABLE_IN_CORNERS, whose True/False
+# polarity was inverted from what the name suggested.) adaptive_R_rate
+# (above STEER_RATE_ANTI_HUNT_ENABLED's mechanism, see
 # controller/model_utils.py::adaptive_R_rate) normally SOFTENS the steering
 # rate-of-change cost continuously as curvature rises, so the controller
-# isn't over-penalised for the extra steering rate a corner demands. Setting
-# this True switches that softening off once kappa exceeds adaptive_R_rate's
-# own kappa_straight cutoff (raised 2026-08-09 to 0.1 so only sharp corners
-# trigger it -- no longer tied to steer_rate_anti_hunt's separate 0.02
-# threshold): in a corner, R_rate[0,0] gets the full, unscaled baseline cost
-# instead of being relaxed. This deliberately undoes the softening
-# adaptive_R_rate exists to provide -- NOT VALIDATED. Tried enabled
-# 2026-08-09 but caused severe lag specifically in corners -- the
-# discontinuous R_rate[0,0] jump at the kappa_straight crossing likely
+# isn't over-penalised for the extra steering rate a corner demands. Keep
+# this True to keep that reduction ACTIVE in corners via the continuous
+# curve (no threshold, no discontinuity) -- this is the setting you want if
+# the goal is "reduce R_rate when turning". Setting this False switches
+# softening off once kappa exceeds adaptive_R_rate's own kappa_straight
+# cutoff (0.03): in a corner, R_rate[0,0] gets the full, unscaled baseline
+# cost instead of being relaxed -- the opposite of reduction. NOT VALIDATED.
+# Tried disabled 2026-08-09 but caused severe lag specifically in corners --
+# the discontinuous R_rate[0,0] jump at the kappa_straight crossing likely
 # spikes QP solver iterations / invalidates warm-starts every tick near the
-# threshold. Reverted to False the same day.
-ADAPTIVE_R_RATE_DISABLE_IN_CORNERS = False
+# threshold. Reverted the same day.
+ADAPTIVE_R_RATE_ENABLE_IN_CORNERS = True
+
+# ADAPTIVE_Q_LOOKAHEAD_ENABLED — TEMPORARY/EXPERIMENTAL, fsds sim only.
+# Scans a speed-scaled window of path AHEAD of the car (not just the current
+# point) for the sharpest curvature coming up, and uses that to anticipate
+# corners instead of only reacting once the car is already turning:
+#   - boosts Q[0,0] (lateral error) and Q[2,2] (heading error) approaching a
+#     corner, so the controller commits steering authority before the car
+#     drifts off-line, not after
+#   - relaxes Q[3,3] (yaw rate) approaching a corner, so a high straight-line
+#     yaw-rate penalty doesn't itself make turn-in feel slow/late
+#   - keeps boosting Q[2,2] for a short distance AFTER the corner (the "exit"
+#     boost), scaled by how sharp that corner was
+#   - on a genuinely clear straight (no curvature anywhere in the window),
+#     softens Q[0,0] and boosts Q[2,2]/Q[3,3]/R[0,0] slightly, to keep the
+#     car pointed straighter and damp small yaw wander
+# See controller/model_utils.py::adaptive_Q_lookahead for the exact formulas.
+# All of the above is scaled by corner DEMAND (kappa_max_abs / kappa_limit(v),
+# i.e. "how much of the car's available grip at this speed does this corner
+# need"), not raw curvature — a gradual sweeper taken fast and a tight corner
+# taken slow can demand the same thing, and scoring by raw curvature alone
+# made the configured boost ceilings almost unreachable on real corners.
+# ADAPTIVE_Q_DEMAND_NORMALISED=False restores the old raw-curvature curve for
+# A/B comparison. A separate U-turn detector (accumulated heading change
+# over the lookahead window, not peak curvature) adds extra Q[0,0]/Q[2,2]
+# boost and Q[3,3] relaxation for long, gradual U-turns that a peak-curvature
+# signal alone would under-boost (a wide U-turn's peak curvature can look
+# like a mild bend even though it demands a huge total rotation). NOT
+# VALIDATED against VALIDATION_SUITE/recorded-map or any live log.
+ADAPTIVE_Q_LOOKAHEAD_ENABLED = True
+ADAPTIVE_Q_DEMAND_NORMALISED = True
+
+# STEER_EFFORT_STRAIGHT_BOOST_ENABLED — TEMPORARY/EXPERIMENTAL, fsds sim
+# only. Makes steering EFFORT (R[0,0], how far the wheel is turned — not its
+# rate of change, which STEER_RATE_ANTI_HUNT_ENABLED already covers)
+# expensive on a clear straight, fading back to baseline sharply as soon as
+# a corner enters the lookahead window. See
+# controller/model_utils.py::steer_effort_straight_boost. NOT VALIDATED.
+STEER_EFFORT_STRAIGHT_BOOST_ENABLED = True
 
 # ------------------------------------------------------------------------------
 # Cost function weights (for simulator only)
@@ -408,14 +448,32 @@ ADAPTIVE_R_RATE_DISABLE_IN_CORNERS = False
 # three lists it prints out at the end here, replacing the old ones.
 #
 # If you do want to nudge one manually: each list has one number per "thing
-# the car cares about" (see bicycle_model.py's STATE VECTOR comment for what
-# each position in Q_diag means). Bigger number = the car tries harder to
-# fix that particular error, at the cost of everything else. Change any
-# single number by no more than 20-30% at a time and re-test — small changes
-# can have surprisingly large effects because they interact with each other.
-Q_diag      = [5.235061533166446, 0.20074710969078902, 1.521860429243342, 0.50204777472070867, 3.544842732101566, 0.0, 0.0, 0.0]
-R_diag      = [1.16036050771207, 2.054960715243156]
-R_rate_diag = [2.10425012508917786, 2.60031073385853]
+# the car cares about". Bigger number = the car tries harder to fix that
+# particular error, at the cost of everything else. Change any single number
+# by no more than 20-30% at a time and re-test — small changes can have
+# surprisingly large effects because they interact with each other.
+#
+# Q_diag index -> state penalised (see bicycle_model.py's STATE VECTOR comment
+# for the full state definitions):
+#   [0] e_y        lateral deviation from path centreline (m)
+#   [1] e_y_dot    rate of change of lateral deviation (m/s)
+#   [2] e_psi      heading error relative to path tangent (rad)
+#   [3] e_psi_dot  yaw rate (rad/s)
+#   [4] e_v        speed error: vx - v_target (m/s)
+#   [5] e_a        unused (always 0.0, kept for structural consistency only)
+#   [6] delta_act  actuator-lagged steering angle (rad) -- always 0.0, no
+#                  tuned weight sets this state
+#   [7] a_act      actuator-lagged acceleration (m/s^2) -- always 0.0, ditto
+Q_diag      = [5.20, 0.2, 1.52, 0.50, 3.5, 0.0, 0.0, 0.0]
+# R_diag index -> input penalised:
+#   [0] delta_cmd  steering command effort (rad)
+#   [1] a_cmd      acceleration command effort (m/s^2)
+R_diag      = [1.16, 1.15]
+# R_rate_diag index -> input RATE-OF-CHANGE penalised (tick-to-tick jerk, not
+# the input itself):
+#   [0] delta_cmd  steering rate of change
+#   [1] a_cmd      acceleration rate of change
+R_rate_diag = [2.1, 2.6]
 
 
 # ==============================================================================

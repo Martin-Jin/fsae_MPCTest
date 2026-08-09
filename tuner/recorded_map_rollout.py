@@ -17,8 +17,8 @@ Usage
     python3 -m tuner.recorded_map_rollout --mode pi --gain 450 --ceiling 6.6
     python3 -m tuner.recorded_map_rollout --no-ceiling
 
-Default (as of 2026-08-08) is the oracle/precomputed path, matching
-settings.USE_PLANNER=False — no planner/perception in the loop, and speed
+Default is the oracle/precomputed path, matching settings.USE_PLANNER=False
+— no planner/perception in the loop, and speed
 comes from the recorded track's own oracle profile. Pass --planner to run
 the planner-in-loop rollout instead (live-built centreline, perception
 mistakes included).

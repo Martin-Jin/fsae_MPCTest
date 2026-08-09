@@ -4,12 +4,12 @@ applied together, rather than one at a time?
 
 Why this exists
 ----------------
-sim_to_real_investigation.md S13's gap_attribution_ledger tested every
-plant/ceiling factor ONE AT A TIME and found each individual effect (0.3-2.1
-pp) is smaller than the suite's own run-to-run std (5-6 pp) -- individually
-indistinguishable from noise. But that says nothing about whether several
-small, independent, non-redundant effects combine additively (or worse)
-when stacked, which single-factor A/B testing can never reveal.
+gap_attribution_ledger tests every plant/ceiling factor ONE AT A TIME, and
+each individual effect there is smaller than the suite's own run-to-run
+std -- individually indistinguishable from noise. But that says nothing
+about whether several small, independent, non-redundant effects combine
+additively (or worse) when stacked, which single-factor A/B testing can
+never reveal.
 
 This combines three factors that are each already-modelled (not invented
 here) and target DIFFERENT subsystems, so they are not redundant with each
@@ -17,8 +17,8 @@ other or with the eliminated mu/C_f tyre-fit approach (CLAUDE.md's standing
 warning is specifically about imitating the ceiling's effect via tyre grip
 -- none of these three do that):
 
-  1. Ceiling level lowered to 6.5 (already measured individually, factor E
-     in S13's ledger: 4.80% -> 6.90% on the recorded map, no DNF there).
+  1. Ceiling level lowered to 6.5 (already measured individually in
+     gap_attribution_ledger, with no DNF on the recorded map).
   2. SLAM_NOISE_ENABLED=True at its documented defaults -- models the real
      car's localisation error (FSDS itself has perfect pose; this is off by
      default specifically because it targets the REAL car, which is exactly
@@ -29,11 +29,10 @@ warning is specifically about imitating the ceiling's effect via tyre grip
 
 None of these three individually moved the aggregate number much. This
 script checks all 2^3 = 8 combinations (including each alone, for a direct
-comparison against the S13 point estimates) on both the recorded map
-(live-comparable, n=1) and VALIDATION_SUITE (variance-comparable, n=5),
-with DNF checked in every cell -- S28 already taught this investigation
-that a combination which looks good on the recorded map alone can hide a
-DNF the suite would catch.
+comparison against the single-factor point estimates) on both the recorded
+map (live-comparable, n=1) and VALIDATION_SUITE (variance-comparable, n=5),
+with DNF checked in every cell -- a combination that looks good on the
+recorded map alone can still hide a DNF the suite would catch.
 
 Usage
 -----
@@ -132,7 +131,7 @@ def run_suite(params, slam_on, cone_on):
 
 def main():
     import settings as S
-    live_sat_range = "21.1 - 28.0"  # see S0/S17/S23/S29
+    live_sat_range = "21.1 - 28.0"  # observed range of live steering-saturation %
 
     print(f"LIVE saturation observed so far: {live_sat_range}%\n")
     print(f"{'ceiling6.5':>11} {'slam':>5} {'cone':>5}   "
@@ -155,11 +154,11 @@ def main():
             print(f"             -> suite DNF on: {suite['dnf_paths']}")
 
     print()
-    print("Baseline (all False) is the S13/S0 reference point. Compare each")
+    print("Baseline (all False) is the reference point. Compare each")
     print("combination's recorded-map sat% against it, and check the suite")
     print("std to judge whether any increase is distinguishable from noise")
-    print("(per S13: individual effects of 0.3-2.1pp were NOT distinguishable")
-    print("from a 5-6pp suite std -- the same standard applies here).")
+    print("(individual single-factor effects were not distinguishable from")
+    print("the suite std -- the same standard applies here).")
 
 
 if __name__ == "__main__":

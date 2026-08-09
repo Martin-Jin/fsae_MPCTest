@@ -137,21 +137,17 @@ class VehicleParams:
         COASTING_SCALE = 3.0 # < 1.0 = Rolls further, > 1.0 = Stops faster
 
         # ── Geometry ────────────────────────────────────────────────────────
-        # lf/lr/Iz corrected 2026-08-08 to match the live mpc_core.py, which
-        # had already made this exact correction (2026-08-07) but only on the
-        # live side -- a one-sided fix that silently violated this repo's own
-        # plant/model parity rule. Neither set of values is measured (the true
-        # lf/lr/Iz aren't in the FSDS repo -- they live in git-LFS .uasset
-        # binaries) so this is not "picking the more correct guess", it's
-        # applying the live author's own already-documented reasoning here
-        # too: lf=0.85 > lr=0.70 (the old value here) makes the bicycle model
-        # OVERSTEER (understeer gradient K_us < 0, v_crit ~35 m/s) -- a
-        # needless stability risk on a car whose real balance can't be
-        # measured. lf < lr instead makes it UNDERSTEER (stable at every
-        # speed). Iz ~= m*lf*lr (~151.7) is the standard yaw-inertia estimate;
-        # the old value of 110 under-estimated it, making the model expect a
-        # twitchier car than reality. See mpc_core.py's identical comment for
-        # the full rationale -- keep these two files in sync manually.
+        # lf/lr/Iz must match the live mpc_core.py exactly (see this repo's
+        # plant/model parity rule). Neither set of values is measured (the
+        # true lf/lr/Iz aren't in the FSDS repo -- they live in git-LFS
+        # .uasset binaries), so these are a deliberate choice, not a guess:
+        # lf=0.85 > lr=0.70 would make the bicycle model OVERSTEER
+        # (understeer gradient K_us < 0, v_crit ~35 m/s) -- a needless
+        # stability risk on a car whose real balance can't be measured.
+        # lf < lr instead makes it UNDERSTEER (stable at every speed).
+        # Iz ~= m*lf*lr (~151.7) is the standard yaw-inertia estimate; a
+        # smaller value under-estimates it, making the model expect a
+        # twitchier car than reality. Keep these two files in sync manually.
         self.lf    = 0.70     # Distance from CoM to front axle (m)
         self.lr    = 0.85     # Distance from CoM to rear  axle (m)
         self.m     = 255.0    # Total vehicle mass including driver (kg)
@@ -185,12 +181,10 @@ class VehicleParams:
         self.max_steer_rate  = np.radians(180.0)
         # FS EV peak acceleration ~12 m/s² (0→17 m/s in ~2 s); braking ~9 m/s² (~0.9g).
         self.max_accel       = 12.0              # Max longitudinal acceleration (m/s²)
-        # Lowered 9.0 -> 7.0 (2026-08-08), matching mpc_core.py's MAX_BRAKE --
-        # live bracketing experiment, not a measured value. See that constant's
-        # comment for the full rationale (no FSDS-measured confirmation exists
-        # for either 9.0 or 7.0; offline the MPC never commanded braking
-        # anywhere near -9.0 regardless of weighting). Keep numerically
-        # identical to mpc_core.py while this experiment is live.
+        # Matches mpc_core.py's MAX_BRAKE. Not an FSDS-measured value; the MPC
+        # never commands braking anywhere near this limit regardless of
+        # weighting, so it acts as a backstop rather than an active bound.
+        # Keep numerically identical to mpc_core.py.
         self.max_accel_brake = -7.0             # Max longitudinal braking (m/s²)
         # This project's real car tops out at ~60 km/h (16.7 m/s) — a slower
         # autonomous test platform, not FSDS's own ~27 m/s simulator ceiling.
@@ -203,10 +197,9 @@ class VehicleParams:
         # the real one cannot, never saturates its steering, and every weight
         # set tuned against it assumes authority the car does not have.
         #
-        # Measured 2026-08-06 by open-loop system-ID and a step-input test;
-        # full derivation in docs/planning_control_sync.md ->
+        # Measured by open-loop system-ID and a step-input test; full
+        # derivation in docs/planning_control_sync.md ->
         # "MECHANISM: a dynamically-enforced lateral-acceleration ceiling".
-        # Investigation history: docs/sim_to_real_investigation.md.
         #
         # NOTE this is a model of FSDS's behaviour, NOT of the physical car.
         # It is enabled because weights are tuned against FSDS and validated on
@@ -214,36 +207,29 @@ class VehicleParams:
         # plant (e.g. when modelling the real vehicle).
         self.alat_ceiling_enabled = True
         self.alat_ceiling = 7.5    # Legacy flat value; kept as the low-speed floor, see below
-        # Speed-dependence of the ceiling (m/s² per m/s), added 2026-08-08.
+        # Speed-dependence of the ceiling (m/s² per m/s).
         #
-        # The flat 7.5 was deliberately not fitted to speed (§12.4 in
-        # sim_to_real_investigation.md: only 16 points, one run). Confirmed
-        # real and refit (§35) with two independent measurements that agree
-        # on SHAPE (rises with speed) but disagree on LEVEL:
-        #   step test (15s hold, straight-line):  ceiling(v) = 6.00 + 0.25*v
-        #   sweep (sustained circular orbit):      ceiling(v) = 2.46 + 0.47*v
-        # Naive pooling fits worse (R²=0.67) than either alone (0.86 / 0.89)
-        # because the offset between them is not constant -- do not average.
+        # Two independent measurements agree on SHAPE (rises with speed) but
+        # disagree on LEVEL:
+        #   step test (straight-line hold):    ceiling(v) = 6.00 + 0.25*v
+        #   sweep (sustained circular orbit):   ceiling(v) = 2.46 + 0.47*v
+        # Naive pooling fits worse than either alone because the offset
+        # between them is not constant -- do not average them.
         #
-        # Using the SWEEP's fit directly (sustained circular orbit is the
-        # closer match to a lap than a single straight-line hold; §35, a
-        # judgement call -- re-open if live validation disagrees). The line
-        # matches the sweep's 3 measured points closely across 8-14 m/s
-        # (6.22/7.63/9.04 predicted vs 6.45/7.54/9.26 measured).
+        # Using the sweep's fit directly: a sustained circular orbit is the
+        # closer match to a lap than a single straight-line hold (a judgement
+        # call -- re-open if live validation disagrees).
         #
-        # Below ~6 m/s the sysid table shows the cap does NOT engage at all
-        # (s~1.0, car unconstrained -- docs/planning_control_sync.md), but the
-        # raw line drops to 2.46-5.28 m/s² there, which is not "unconstrained,"
-        # it is "constrained to an unphysically low value." The fit only
-        # covers the engaged regime (8-14 m/s) and must not be extrapolated
-        # below it. Applying alat_lim as max(alat_ceiling, line(v)) -- see
-        # ceiling_value() below -- makes the effective ceiling the ORIGINAL
-        # flat 7.5 everywhere the line would sit below it (v <~ 10.7 m/s) and
-        # only lets the line take over where it actually rises above 7.5
-        # (v >~ 10.7 m/s, matching the measured 9.26 @ 14). This changes
-        # nothing below ~11 m/s versus the old flat model and only raises the
-        # ceiling at higher speed, which is the direction both the step and
-        # sweep data agree on.
+        # Below ~6 m/s the cap does not engage at all (car unconstrained --
+        # see docs/planning_control_sync.md), but the raw line drops well
+        # below the flat value there, which is not "unconstrained," it is
+        # "constrained to an unphysically low value." The fit only covers the
+        # engaged regime and must not be extrapolated below it. Applying
+        # alat_lim as max(alat_ceiling, line(v)) -- see ceiling_value() below
+        # -- makes the effective ceiling the flat value everywhere the line
+        # would sit below it, and only lets the line take over where it
+        # actually rises above the flat value at higher speed, which is the
+        # direction both the step and sweep data agree on.
         self.alat_ceiling_slope = 0.47   # m/s² per m/s (sweep fit slope)
         self.alat_ceiling_intercept = 2.46  # m/s² (sweep fit intercept)
         # How the restoring moment responds to exceeding the ceiling.
@@ -253,61 +239,48 @@ class VehicleParams:
         #          tuner/plant_openloop_validation.py --ab can reproduce the
         #          measurement that rejected it. Do not use it for tuning.
         #
-        # Why the law changed (2026-08-07). A proportional term needs a finite
-        # error to generate any output, so its equilibrium MUST sit above the
-        # setpoint. That made the two published "false starts" two horns of one
-        # structural flaw rather than a bad gain, and measuring the trade-off
-        # curve makes it explicit — no proportional gain fits both targets:
-        #
-        #    gain    settled (meas 7.68)    peak (meas 10.42)
-        #     300         9.51  (+1.83)        10.84  (+0.42)
-        #     700         8.65  (+0.97)        10.11  (-0.31)   <- shipped
-        #    3000         7.83  (+0.15)         8.74  (-1.68)
-        #    6000         7.67  (-0.01)         7.87  (-2.55)
-        #
-        # Fitting the peak left SUSTAINED cornering 13% high; fitting the
-        # settled value flattened the excursions and DNF'd the lap. The
-        # integral law removes the trade-off: it can only stop growing when the
-        # excess is zero, so the settled value is pinned AT the ceiling by
-        # STRUCTURE for any gain, leaving one free parameter for the transient.
+        # Why the integral law rather than a proportional one. A proportional
+        # term needs a finite error to generate any output, so its
+        # equilibrium MUST sit above the setpoint -- no proportional gain can
+        # fit both the settled cornering level and the transient peak at
+        # once; fitting the peak leaves sustained cornering too high, and
+        # fitting the settled value flattens the excursions and risks a DNF.
+        # The integral law removes the trade-off: it can only stop growing
+        # when the excess is zero, so the settled value is pinned AT the
+        # ceiling by structure for any gain, leaving one free parameter for
+        # the transient.
         #
         # Verify with:  python3 -m tuner.plant_openloop_validation --ab
         self.alat_ceiling_mode = 'pi'
         # Restoring yaw moment per unit of accumulated excess (N·m per m/s²).
         #
-        # Fitted to the measured PEAK a_lat ONLY (10.37 here against 10.42
-        # measured). The settled value is NOT fitted — it falls out of the
-        # integral structure at 7.50 against 7.68 measured, inside the
-        # 7.29-7.80 spread across the measured speeds.
+        # Fitted to the measured peak a_lat only. The settled value is NOT
+        # fitted — it falls out of the integral structure at the ceiling,
+        # matching the measured settled level within the spread across
+        # measured speeds.
         #
-        # Validated against the SWEEP, which no fit has seen (sustained
-        # cornering over a long orbit, the regime that builds heading error on
-        # a lap). Capped-point error improves 5x over the proportional law:
-        #   mean err +1.41 -> +0.29 m/s², MAE 1.60 -> 0.87.
+        # Validated against the sweep (sustained cornering over a long orbit,
+        # the regime that builds heading error on a lap), which no fit has
+        # seen, and improves substantially on the capped-point error of the
+        # proportional law.
         self.alat_ceiling_gain = 450.0
         # Time constant (s) over which the restoring moment builds. The term
         # lags the excess, so yaw exceeds the ceiling before being pulled back
         # — that lag is what produces the measured overshoot. A memoryless
         # version engages instantly and cannot overshoot at all.
         #
-        # MEASURED 2026-08-07 with a longer step_s=8.0 (repeats=2, 12 trials).
-        # The original 3 s hold gave a decay too scattered to fit (median
-        # 0.08 s over a 0.04-1.06 s range). At 8 s, fitting peak/final decay
-        # gives a tight median 0.35 s (11/12 trials within 0.28-0.46 s; one
-        # 0.88 s outlier at 5.1 m/s, right at the cap's speed threshold).
+        # Measured from a long step-hold (fitting peak and final decay gives
+        # a tight result across trials); a short hold gives a decay too
+        # scattered to fit reliably.
         #
         # Under the integral law the settled value does not depend on tau at
         # all (structure pins it at the ceiling regardless), so tau affects
-        # ONLY the transient peak. Refitting to this measurement's peak alone
-        # (0.25 -> 0.40; 0.35 rounds to a worse peak fit here) takes the model
-        # from -0.45 to -0.04 m/s² peak error, with no change to the settled
-        # fit or to the SWEEP validation (which only measures steady state).
+        # ONLY the transient peak.
         #
-        # Confirmed no further decay 3-8 s into the hold (a_lat flat within
-        # noise at the 3/5/8 s marks across all 12 trials) — the step test's
-        # ~7.5 short/medium-term settle and the sweep's lower long-orbit value
-        # (6.1-8.1, see alat_ceiling above) are not the same regime reconciling
-        # via slow decay; that disagreement is still open.
+        # No further decay is seen well into the hold — the step test's
+        # short/medium-term settle and the sweep's lower long-orbit value
+        # (see alat_ceiling above) are not the same regime reconciling via
+        # slow decay; that disagreement is still open.
         #
         # Re-measure via: ros2/run_steering_step.sh --no-sim
         #   -p 'speeds:=[5.0,8.0,12.0]' -p 'steer_cmds:=[0.6,1.0]'
@@ -315,9 +288,8 @@ class VehicleParams:
         # then python3 -m tuner.plant_openloop_validation
         #
         # STILL WORTH RE-CHECKING: a term taking too long to build did nothing
-        # during turn-in and DNF'd the car once before (tau=1.0, see the 2026-08
-        # note in docs/sim_to_real_investigation.md §10). 0.40 s is well inside
-        # what corners (~0.4 s to arrive) tolerate and does not DNF the recorded
+        # during turn-in and DNF'd the car once before. The current value is
+        # well inside what corners tolerate and does not DNF the recorded
         # map, but re-verify after any planner change that shortens corner
         # entry time.
         self.alat_ceiling_tau = 0.40
@@ -464,7 +436,7 @@ class VehicleParams:
         """
         Speed-dependent sustained lateral-accel ceiling (m/s²). See the
         alat_ceiling*/alat_ceiling_slope/alat_ceiling_intercept comments
-        above for the derivation (§35, sim_to_real_investigation.md).
+        above for the derivation.
 
         max(flat, line) so this never lowers the ceiling below the
         already-validated flat value -- it only raises it at higher speed,
@@ -1078,36 +1050,34 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
         # ── 18b. FSDS lateral-acceleration ceiling ────────────────────────────
         # FSDS enforces a lateral-acceleration ceiling of ~7.5 m/s² that this
         # plant does not otherwise have — the single largest sim-to-real
-        # discrepancy, and the cause of the 21% steering saturation seen on
-        # every live lap.  Measured 2026-08-06 by open-loop system-ID; see
+        # discrepancy, and the cause of the steering saturation seen on every
+        # live lap. Measured by open-loop system-ID; see
         # docs/planning_control_sync.md -> "MECHANISM: a dynamically-enforced
         # lateral-acceleration ceiling".
         #
         # It is modelled as a restoring yaw moment rather than a clip because
         # the measurements show BOTH signatures:
-        #   - a cap: at 8 m/s, 0.60 and 1.00 steering settle to the same yaw
-        #     rate (0.93-0.96 vs 0.90-0.94 rad/s) despite a 67% larger command
-        #   - an overshoot: yaw peaks ~30% above the settled value, reaching
-        #     10.9 m/s² against the ~7.5 ceiling, then decays
+        #   - a cap: at a fixed speed, a much larger steering command settles
+        #     to nearly the same yaw rate
+        #   - an overshoot: yaw peaks well above the settled value before
+        #     decaying back to it
         # A hard clip reproduces the steady state but removes the turn-in
         # transient, which is exactly what the MPC reacts to.
         #
-        # What is held constant is LATERAL ACCELERATION, not yaw rate: settled
-        # a_lat is 7.80 m/s² at 8 m/s and 7.29 at 12 m/s (1.07x spread) while
-        # yaw rate varies 1.56x. Below the ceiling the car is unconstrained,
-        # which is why the sweep measured s ~ 1.0 under ~6 m/s.
-        # The restoring term is a STATE that builds over time, not a function of
-        # the instantaneous excess. That is what produces the measured overshoot:
-        # a memoryless term engages the moment the ceiling is crossed and can
-        # never overshoot it (verified — every (gain, soft) pairing tried gave
-        # 0.0% overshoot, against ~30% measured).
+        # What is held constant is LATERAL ACCELERATION, not yaw rate: the
+        # settled a_lat is nearly flat across speed while yaw rate varies far
+        # more. Below the ceiling the car is unconstrained.
+        # The restoring term is a STATE that builds over time, not a function
+        # of the instantaneous excess. That is what produces the measured
+        # overshoot: a memoryless term engages the moment the ceiling is
+        # crossed and can never overshoot it.
         #
         # It ACCUMULATES the excess (mode 'pi') rather than tracking it
-        # (mode 'p'). Corrected 2026-08-07: tracking the excess makes this a
-        # proportional controller, which needs a standing error to produce any
-        # output and therefore settles ABOVE the ceiling — it left sustained
-        # cornering 13% high, and no gain could fix both that and the peak.
-        # See VehicleParams.alat_ceiling_mode for the measured trade-off curve.
+        # (mode 'p'). Tracking the excess makes this a proportional
+        # controller, which needs a standing error to produce any output and
+        # therefore settles ABOVE the ceiling — no gain can fix both the
+        # settled level and the peak at once.
+        # See VehicleParams.alat_ceiling_mode for the trade-off this avoids.
         if p.alat_ceiling_enabled:
             ceiling_now = p.alat_ceiling_at(vx_safe)
             if p.alat_ceiling_mode == 'pi':

@@ -157,17 +157,16 @@ TUNABLE_R_RATE_IDX = [0, 1]  # d(delta_cmd)/dt, d(a_cmd)/dt
 # Floor of 0.1 allows reduction below the template; ceiling of 10.0 prevents
 # weights from becoming so large they dominate and mask tracking quality.
 #
-# Q_BOUNDS[0] (e_y, lateral position error) floor raised to 1.0, 2026-08-08:
-# at the 0.1 floor, a live run found Q_diag[0]=0.197 (2% of the template's
-# 5.65) alongside Q_diag[1]/Q_diag[3] (e_y_dot/e_psi_dot) driven to 14x/29x
-# template. The car didn't turn in until e_psi had already grown past -100
-# deg, then oversteered through a near-full spin recovering from it (see
-# fsae_logs/mpc_standalone_control_1786151512.csv). Scoring didn't punish
-# this enough on VALIDATION_SUITE/the recorded map for CMA-ES to avoid it —
-# see docs/sim_to_real_investigation.md S47. Floor prevents the collapse;
-# does not fix the underlying scoring gap (a scoring-side fix, penalising
-# low steering authority or sustained high |e_psi| directly, is the more
-# complete answer and remains open).
+# Q_BOUNDS[0] (e_y, lateral position error) floor raised to 1.0: at a lower
+# floor, CMA-ES has found weight sets that let e_y's cost collapse nearly to
+# zero while e_y_dot/e_psi_dot were driven far above the template. On the
+# car this let heading error grow very large before the car turned in at
+# all, then oversteer through a near-full spin recovering from it. Scoring
+# didn't punish this enough on VALIDATION_SUITE/the recorded map for CMA-ES
+# to avoid it. The floor prevents the collapse; it does not fix the
+# underlying scoring gap (a scoring-side fix, penalising low steering
+# authority or sustained high |e_psi| directly, is the more complete answer
+# and remains open).
 Q_BOUNDS = {
     0: (1.0, 10.0),
     1: (0.1, 10.0),
@@ -728,7 +727,7 @@ def run_headless_rollout(
                          or didn't finish. Deliberately separated from the
                          feasible band so no quality score can promote a
                          failed run above a completed one.
-        These figures are NOT comparable to scores logged before 2026-08-06;
+        These figures are NOT comparable to older scoring-formula scores;
         see the closed-book header in tuning history.txt.
 
     Called by: _score_task() (from pool.map in parallel_evaluate_candidate),
@@ -854,15 +853,14 @@ def _aggregate_task_scores(task_scores):
     on average but catastrophically fail on one path type — a real risk when
     the validation suite has diverse track geometries.
 
-    WHY A QUANTILE RATHER THAN max() (changed 2026-08-06)
-    ------------------------------------------------------
+    WHY A QUANTILE RATHER THAN max()
+    ---------------------------------
     This used to be a hard `max(scores)`. Combined with the flat DNF_PENALTY
     (+3.0, +6.0 if off-track), that let ONE unlucky task out of ten dominate
-    the objective. Measured in the step-2 probe batch: a plausible,
-    hand-reasonable gain set ("F_mid_balanced") went from roughly -0.2 to
-    +2.15 — ranking 3rd-WORST of six, below two deliberately pathological
-    sets — because a single one of its ten tasks DNF'd. With `max`, the
-    0.3 coefficient applied to a +3.0 penalty moves the objective by ~0.9
+    the objective: a plausible, hand-reasonable gain set could rank near the
+    bottom of a comparison, below deliberately pathological sets, purely
+    because a single one of its ten tasks DNF'd. With `max`, the 0.3
+    coefficient applied to a +3.0 penalty moves the objective substantially
     regardless of how good the other nine tasks were.
 
     That is a discontinuous, high-variance signal for CMA-ES: a gain set

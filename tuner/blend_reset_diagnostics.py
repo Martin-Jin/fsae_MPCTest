@@ -4,12 +4,12 @@ resulting heading discontinuity is, on the offline sim.
 
 Why this exists
 ----------------
-docs/sim_to_real_investigation.md (S12.8/12.9) found that BOTH stacks chase a
-reference heading that swings faster than the car can ever yaw, and that this
-drives 78-100% of heading-error growth -- but the residual saturation gap
-between live (21.1%) and sim (~5%) was NOT explained by any plant/ceiling
-parameter tested (see tuner/gap_attribution_ledger.py). That rules out the
-*plant*; it does not rule out the *planner*.
+Investigation found that BOTH stacks chase a reference heading that swings
+faster than the car can ever yaw, and that this drives most of the
+heading-error growth -- but the residual saturation gap between live and
+sim was NOT explained by any plant/ceiling parameter tested (see
+tuner/gap_attribution_ledger.py). That rules out the *plant*; it does not
+rule out the *planner*.
 
 planning/path_utils.py's blend_paths() already exists specifically to prevent
 successive from-scratch centreline rebuilds from producing a heading jump
@@ -152,7 +152,7 @@ def main():
     print()
     print("NOTE: this is the SIM side only. There is no live control log in")
     print("this environment to compute the matching live-side reset rate for")
-    print("comparison -- see docs/sim_to_real_investigation.md for why.")
+    print("comparison.")
 
 
 if __name__ == "__main__":

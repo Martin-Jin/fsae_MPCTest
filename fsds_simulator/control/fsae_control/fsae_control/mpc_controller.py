@@ -78,7 +78,7 @@ class MPCControllerNode(Node):
                 ('map_path', ''),     # '' -> live curvature_speed() (default);
                                        # else a fsae_MPCTest tuner/export_speed_profile.py
                                        # CSV to use instead — see mpc_controller_standalone.py's
-                                       # map_path param and S48 in sim_to_real_investigation.md.
+                                       # map_path param.
                 ('path_map_path', ''),  # '' -> live /fsae/planning/selected_trajectory
                                        # (default); else the SAME kind of CSV as map_path,
                                        # used for the tracked PATH instead of just speed —

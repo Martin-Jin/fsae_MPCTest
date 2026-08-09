@@ -11,7 +11,7 @@ walking logic (planning/boundary.build_path_walls(), marched over the whole
 lap) that fsae_planning's live ROS package does not otherwise use anywhere.
 Porting all of that into the car's control package just to read one array
 would add a new scipy dependency and a second copy of that reconstruction
-logic to keep in sync forever (see docs/sim_to_real_investigation.md S48).
+logic to keep in sync forever.
 
 Instead: do the heavy reconstruction HERE, offline, once per map, and write
 out just the four arrays the live node actually needs (x, y, psi, v_target).

@@ -24,51 +24,37 @@ Set the `full_track` parameter true to publish the entire map every frame (used 
 the skidpad planner, which reconstructs the whole figure-8 up front); the default
 (false) publishes only the forward window, matching normal driving.
 
-Two publish rates (`pose_rate` 20 Hz, `cone_rate` 10 Hz)
---------------------------------------------------------
-Pose and cones are published on SEPARATE timers, and this matters.
+Two publish rates (`pose_rate` 20 Hz, `cone_rate` 10 Hz): pose and cones are
+published on separate timers. `pose_rate` must be >= the controller's rate
+(`CONTROL_HZ = 20` in mpc_controller_standalone.py) — if the MPC re-solves
+against an unchanged pose on some ticks, the pose jumps multiple steps' worth
+at once on the next tick and the controller over-corrects (catch-up jumps
+rather than smooth motion). The FSDS bridge itself publishes odom at 250 Hz,
+so this node's own publish rate is the only possible bottleneck. Cones stay
+at 10 Hz — cropping the oracle map and building three messages is the
+expensive part of this node, and the planner gains nothing from running it
+at the control rate.
 
-`pose_rate` must be >= the controller's rate (`CONTROL_HZ = 20` in
-mpc_controller_standalone.py) — if the MPC re-solves against an unchanged
-pose on some ticks, `e_y` doesn't move on a frozen tick, so the controller
-reads its own correction as having failed and pushes harder; the next tick
-the pose jumps multiple steps' worth at once and it over-corrects back
-(catch-up jumps rather than smooth motion). The FSDS bridge itself publishes
-odom at 250 Hz, so this node's own publish rate is the only possible
-bottleneck.
+Known limitation: this node is not a SLAM stand-in for accuracy, only for
+range. The pose it publishes is FSDS ground truth, copied verbatim: no noise,
+no drift, no estimation lag. The offline tuner models this gap explicitly via
+`SLAM_NOISE_ENABLED` in fsae_MPCTest/settings.py (default off, since FSDS has
+no such error).
 
-Cones stay at 10 Hz on purpose.  Cropping the oracle map and building three
-messages is the expensive part of this node, and the planner gains nothing from
-it running at the control rate.
-
-KNOWN LIMITATION — this node is not a SLAM stand-in for accuracy, only for
-range.  The pose it publishes is FSDS ground truth, copied verbatim: no noise,
-no drift, no estimation lag.  The real car's pose comes from ZED visual
-odometry + `cone_mapper` and has all three.  Anything tuned against this node
-is therefore optimistic about localisation quality.  The offline tuner models
-this gap explicitly via `SLAM_NOISE_ENABLED` in fsae_MPCTest/settings.py
-(default off, precisely because FSDS has no such error).
-
-Speed/yaw-rate synchronisation
--------------------------------
-mpc_controller.py / mpc_controller_standalone.py get car_pos/car_yaw AND
-car_speed/car_yaw_rate from /fsae/slam/car_odom (this node's 20 Hz relay),
-NOT from a separate direct subscription to the raw 250 Hz
+Speed/yaw-rate synchronisation: mpc_controller.py / mpc_controller_standalone.py
+get car_pos/car_yaw AND car_speed/car_yaw_rate from /fsae/slam/car_odom (this
+node's 20 Hz relay), not from a separate direct subscription to the raw 250 Hz
 /fsds/testing_only/odom topic. Two independent subscriptions racing the same
-250 Hz publisher have no guarantee the "latest" sample each holds at any
-given 20 Hz control tick came from the same underlying odom instant, so the
-MPC's x0 could be built from a position/heading snapshot and a speed/yaw-rate
-snapshot up to ~1/pose_rate apart — a gap that jitters tick to tick depending
-on subscription callback scheduling, producing small accel/brake oscillation
-concentrated in curves.
-
-/fsae/slam/car_odom is published from this node's _odom_cb-updated state at
-the SAME 20 Hz timer tick as car_position, so pose and twist the controller
-reads for one solve are guaranteed to originate from one atomic snapshot.
-car_position (PoseStamped) is kept publishing unchanged for
+250 Hz publisher have no guarantee the "latest" sample each holds at a given
+20 Hz control tick came from the same underlying odom instant, so the MPC's
+x0 could be built from a position/heading snapshot and a speed/yaw-rate
+snapshot up to ~1/pose_rate apart, producing small accel/brake oscillation
+concentrated in curves. /fsae/slam/car_odom is published from this node's
+_odom_cb-updated state at the same 20 Hz timer tick as car_position, so pose
+and twist the controller reads for one solve always originate from one atomic
+snapshot. car_position (PoseStamped) keeps publishing unchanged for
 centerline_planner.py / stanley_controller.py / cone_recorder.py /
-skidpad_planner.py, none of which need speed — only the two MPC controllers
-use car_odom.
+skidpad_planner.py, none of which need speed.
 """
 import math
 

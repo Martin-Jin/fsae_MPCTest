@@ -137,8 +137,7 @@ def generate_launch_description():
                 "true (default) -> look up the target speed from map_path's "
                 "precomputed oracle profile instead of live curvature_speed() "
                 "every tick. Only valid for a track that's already been fully "
-                "mapped -- see mpc_controller_standalone.py's map_path param "
-                "and S48 in fsae_MPCTest/docs/sim_to_real_investigation.md. "
+                "mapped -- see mpc_controller_standalone.py's map_path param. "
                 "Set to false here (or on the command line) to go back to "
                 "unchanged live curvature_speed() behaviour regardless of "
                 "map_path."
@@ -166,10 +165,9 @@ def generate_launch_description():
                 "centerline_planner.py from the control loop entirely, to "
                 "isolate controller/plant tracking error from planner-induced "
                 "path error. Only valid for a track that's already been fully "
-                "mapped. On by default, matching use_precomputed_speed and "
-                "fsae_MPCTest's settings.USE_PLANNER=False: the "
-                "standing configuration is oracle path + oracle speed, "
-                "planner-in-loop is the opt-in diagnostic mode."
+                "mapped. On by default, matching "
+                "use_precomputed_speed -- set false for the planner-in-loop "
+                "diagnostic/experiment mode instead."
             )),
         # v_max/v_min/stanley_gain: overrides the shared controller.ros__parameters
         # block in fsae_params.yaml (applies to stanley, mpc, and mpc_standalone

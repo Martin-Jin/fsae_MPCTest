@@ -126,8 +126,7 @@ class MPCControllerStandaloneNode(Node):
                 ('map_path', ''),     # '' -> live curvature_speed() (default);
                                        # else a fsae_MPCTest tuner/export_speed_profile.py
                                        # CSV to use instead — see USE_PRECOMPUTED_SPEED_PROFILE
-                                       # in fsae_MPCTest/settings.py and S48 in
-                                       # sim_to_real_investigation.md for why.
+                                       # in fsae_MPCTest/settings.py.
                 ('path_map_path', ''),  # '' -> live /fsae/planning/selected_trajectory
                                        # (default); else the SAME kind of CSV as map_path,
                                        # used for the tracked PATH instead of just speed —
@@ -363,8 +362,7 @@ class MPCControllerStandaloneNode(Node):
         if self._speed_profile is not None:
             # Track is already fully mapped (map_path param set) — look up
             # the oracle speed target instead of re-deriving it from the
-            # live-built centreline. See load_speed_profile_csv()'s docstring
-            # and sim_to_real_investigation.md S48 for why.
+            # live-built centreline. See load_speed_profile_csv()'s docstring.
             path_X, path_Y, path_V = self._speed_profile
             v_curv = precomputed_speed_at(self._car_pos, path_X, path_Y, path_V)
         else:

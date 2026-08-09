@@ -32,12 +32,11 @@ reconstruction too, keeping this path consistent with what SimPlanner actually
 drives (see CLAUDE.md: sim and live planning must stay numerically identical).
 
 This reconstructed centreline is a fallback/reference path only. When
-use_planner=True (see settings.USE_PLANNER — default False as of
-2026-08-08), the actual driving line instead comes from SimPlanner
-rebuilding it cone-by-cone during the rollout, exactly as for a synthetic
-path; with the default use_planner=False, this module's reconstruction IS
-the tracked path (oracle-mode tracking), not just the initial camera
-framing.
+use_planner=True (see settings.USE_PLANNER — default False), the actual
+driving line instead comes from SimPlanner rebuilding it cone-by-cone
+during the rollout, exactly as for a synthetic path; with the default
+use_planner=False, this module's reconstruction IS the tracked path
+(oracle-mode tracking), not just the initial camera framing.
 
 Does not require tuner/offline_tuner.py (which imports the optional `cma`
 dependency) — the resampling here is a standalone copy of that module's

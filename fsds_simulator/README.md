@@ -5,10 +5,8 @@ This folder is a **staging mirror** of the live
 file lives at the exact relative path colcon expects, so this folder alone (plus
 FSDS itself and the two message repos below) is enough to build and run the full
 autonomous stack: `centerline_planner`, and either the `stanley` or `mpc`/`mpc_standalone`
-controller, plus the two open-loop steering diagnostics (`steering_sysid`/`steering_step`).
-Every node/package file is byte-for-byte identical to its live counterpart; the two
-top-level launcher scripts (`launch_all.sh` and the `run_steering_*.sh` diagnostics
-below) are the one exception — see "What's here but adapted" below. See the parent
+controller. Every node/package file is byte-for-byte identical to its live counterpart;
+`launch_all.sh` is the one exception — see "What's here but adapted" below. See the parent
 repo's [docs/planning_control_sync.md](../docs/planning_control_sync.md)
 for the exact file-by-file mapping, what is deliberately *not* mirrored, and the resync
 procedure.
@@ -22,8 +20,6 @@ hold a ready-to-build copy of the ROS 2 side.
 ```
 fsds_simulator/
 ├── launch_all.sh                # one-command launcher (adapted paths, see below)
-├── run_steering_sysid.sh        # open-loop steering system-ID harness (adapted paths)
-├── run_steering_step.sh         # step-input transient-ID harness (adapted paths)
 ├── common/
 │   ├── fsae_interfaces/        # vendored msgs (Track, ConeDetection, …)
 │   └── fsae_bringup/           # fsae_params.yaml + launch composition (sim.launch.py)
@@ -34,7 +30,6 @@ fsds_simulator/
 └── control/
     └── fsae_control/           # stanley_controller / mpc_controller / mpc_controller_standalone
                                  # + fsds_bridge (cmd_vel → FSDS) + mpc_core (shared MPC QP)
-                                 # + steering_sysid / steering_step (open-loop diagnostics)
                                  # + scoring.py (live/offline score parity, see planning_control_sync.md)
 ```
 
@@ -101,42 +96,17 @@ setup before relying on it; it is not a drop-in script.
 ./launch_all.sh
 ```
 
-### Open-loop steering diagnostics (`run_steering_sysid.sh` / `run_steering_step.sh`)
-
-Two standalone experiments that drive FSDS directly (bypassing the planner/controller
-entirely) to characterise the car's actual steering response — see
-[docs/planning_control_sync.md](../docs/planning_control_sync.md)'s "MEASURED: the
-car's yaw response is ~3× weaker than commanded" section (`steering_sysid`) and "The
-open-loop experiment" subsection right after it (`steering_step`) for why these exist
-and what they found. Same one-command pattern and the same machine-adaptation caveat
-as `launch_all.sh`:
-
-```bash
-./run_steering_sysid.sh              # sweep: speed x steering -> achieved yaw rate
-./run_steering_sysid.sh --quick       # fewer points, faster check
-./run_steering_step.sh                # step input: identify the yaw-cap mechanism
-./run_steering_step.sh --quick
-```
-
-Both **refuse to start** if a controller node (`mpc_controller`/`fsds_bridge`/
-`stanley`) is already publishing to `/fsds/control_command` — that would interleave
-commands and corrupt the measurement. Run them on an empty map; the car circles near
-its start point but does not brake for cones.
-
 ## What's here but adapted (not byte-identical)
 
-`launch_all.sh`, `run_steering_sysid.sh`, and `run_steering_step.sh` all hardcode
-machine-specific paths (Windows FSDS install location, this host's ROS 2 workspace
-path, log output directory) — copied from the live scripts and then edited to this
-repo owner's own machine, the same way you'd need to edit them again for yours.
-Every other file in this mirror is a byte-for-byte copy.
+`launch_all.sh` hardcodes machine-specific paths (Windows FSDS install location,
+this host's ROS 2 workspace path, log output directory) — copied from the live
+script and then edited to this repo owner's own machine, the same way you'd need
+to edit it again for yours. Every other file in this mirror is a byte-for-byte copy.
 
 ## What's deliberately not here
 
 - `fsds_ros2_bridge` itself — part of FSDS, not this stack.
 - Anything under `ros2/src/fsae_planning`'s `.git/`, `build/`, `install/`, `log/`,
   `__pycache__/` — build artifacts, not source.
-- `tuner/steering_sysid_analysis.py` / `steering_step_analysis.py` — the analysis
-  scripts the two harnesses above call out to. They live in this repo's own
-  `tuner/` directory already (not under `fsds_simulator/`), since they're
-  `fsae_MPCTest`-only tooling with nothing upstream to mirror.
+- `steering_sysid.py` / `steering_step.py` and their harness scripts — standalone
+  open-loop diagnostics, not part of the MPC controller's runtime dependencies.

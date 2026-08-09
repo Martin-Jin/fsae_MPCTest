@@ -166,12 +166,12 @@ summary; **read the comments in `settings.py` before changing anything.**
 ### General system configuration
 | Setting | What it controls |
 |---|---|
-| `N_HORIZON` | How many 0.05 s steps ahead the MPC plans each solve (25 = 1.25 s look-ahead). Must match `N_horizon` in `gui/simulation.py` and `N` in `mpc_core.py`. |
+| `N_HORIZON` | How many 0.05 s steps ahead the MPC plans each solve (35 = 1.75 s look-ahead). Must match `N_horizon` in `gui/simulation.py` and `N` in `mpc_core.py`. |
 | `USE_PLANNER` | Whether the tuner drives using the full simulated perception/planning pipeline (`True`) or the perfect reference path (`False`). |
 | `DELAY_STEPS` | Simulated lag (in 0.05 s steps) between a command being decided and applied — for testing robustness to real actuator/network delay. `sim/rollout_core.py`'s `predict_ahead()` forward-simulates the MPC's state through the commands already queued before each solve, so nonzero values no longer cause the oscillation/DNF behavior seen before that fix — validated across `DELAY_STEPS` 1-8. |
 | `DELAY_JITTER_STEPS` | Std-dev (in steps) of the error between the *true* delay applied to the plant and the delay the controller *believes* it has. `DELAY_STEPS` alone is compensated exactly by `predict_ahead()`, which the real car can never do — it estimates lag from a jittering pose timestamp. Default `0.2` matches measured live loop jitter (σ ≈ 0.0092 s). `0.0` restores the old optimistic behaviour. |
 | `DELAY_JITTER_SEED` | Fixed seed for the above, so rollouts stay reproducible and CMA-ES compares candidates fairly. Change only to check a tuned result isn't overfitted to one jitter sequence. |
-| `SLAM_NOISE_ENABLED` | **Default ON as of 2026-08-08** (was off). Adds jitter + slow drift to the pose the controller/planner *see*, leaving the plant and the score on ground truth. Models the REAL car's ZED-odometry/`cone_mapper` error, which FSDS does not have (its `sim_perception` republishes ground-truth odom). Flipped on after measuring, against a fresh live log, that it closes most of the steer-saturation/e_psi/reversal-rate gap at its default magnitude — see `sim_to_real_investigation.md` S43. See [`planning_control_sync.md`](planning_control_sync.md)'s "Simulator fidelity limits". |
+| `SLAM_NOISE_ENABLED` | Default off. Adds jitter + slow drift to the pose the controller/planner *see*, leaving the plant and the score on ground truth. Models the REAL car's ZED-odometry/`cone_mapper` error, which FSDS does not have (its `sim_perception` republishes ground-truth odom). See [`planning_control_sync.md`](planning_control_sync.md)'s "Simulator fidelity limits". |
 | `SLAM_POS_JITTER_STD` / `SLAM_YAW_JITTER_STD` | Per-step white noise on the estimated pose (2 cm / 0.3°). This is the component that provokes chatter. |
 | `SLAM_POS_DRIFT_STD` / `SLAM_YAW_DRIFT_STD` / `SLAM_DRIFT_TAU` | Slow Ornstein–Uhlenbeck drift (5 cm / 0.5°, 5 s time constant) — wanders and self-corrects like SLAM between loop closures, rather than random-walking away. |
 | `SLAM_NOISE_SEED` | Fixed seed, same fairness rationale as `DELAY_JITTER_SEED`. |
@@ -208,15 +208,15 @@ that seeds CMA-ES's starting point; see
 
 ### Scoring weights
 
-`SCORE_WEIGHTS` — the 12-entry array defining what "good driving" means:
+`SCORE_WEIGHTS` — the 13-entry array defining what "good driving" means:
 how much each of the 12 measured aspects of a rollout (tracking error,
 smoothness, steering effort, saturation, jerk, etc.) contributes to the
 final composite score the tuner minimises. `tuner/offline_tuner.py` asserts
-these sum to ~1.0, but since the 12 metrics are on very different natural
+these sum to ~1.0, but since the 13 metrics are on very different natural
 scales (mixed m²/rad² RMS terms, radians, m/s², unitless ratios, a per-step
 rate), relative priority is actually set by weight × typical magnitude, not
 the weight alone — see [The Composite Score](#the-composite-score) for
-exactly what each of the 12 metrics measures, its rough typical magnitude,
+exactly what each of the 13 metrics measures, its rough typical magnitude,
 and how they combine.
 
 `VALIDATION_SUITE` — which of the synthetic corner-shape paths (defined in
@@ -426,7 +426,7 @@ At every control tick (20 Hz), the controller:
 
 1. Measures the current tracking error (`x0`).
 2. Predicts, using a simplified **linear** model, what the tracking error
-   would do over the next `N_HORIZON` steps (1.25 s) for every possible
+   would do over the next `N_HORIZON` steps (1.75 s) for every possible
    sequence of steering/throttle commands.
 3. Solves for the sequence that minimises a cost (tracking error + control
    effort + smoothness), subject to hard limits (max steering angle, max
@@ -480,7 +480,7 @@ profile.** `desired_speed` is looked up/computed once per solve (from
 previously — see "Planner/Speed-Profile Architecture" below) and baked into
 `x0[4]` as a single scalar; nothing in `Ad`/`Bd` re-references it at later
 horizon steps, so the cost function penalises deviation from *the same*
-target speed across all `N` steps (1.25 s), not the true curvature-limited
+target speed across all `N` steps (1.75 s), not the true curvature-limited
 speed at each predicted future position. This is a deliberate receding-horizon
 simplification — the controller re-solves every 50 ms with a freshly
 recomputed `desired_speed`, so a stale in-horizon reference self-corrects
@@ -1008,25 +1008,225 @@ sits in the same speed range where the kinematic→dynamic model blend
 transitions (1-2.5 m/s), so extra steering conservatism ramps up exactly
 where the internal prediction model itself becomes less certain.
 
-**`adaptive_R_rate(kappa, R_rate)`** — softens the steering *jerk* penalty
-in tight corners:
+**`adaptive_R_rate(kappa, R_rate, enable_in_corners=True, kappa_max_abs=0.0)`**
+— softens the steering *jerk* penalty in tight corners, via two floors that
+combine with `min()` (whichever is more aggressive wins):
 
 ```
-scale = max(0.35, 1 / (1 + 3·κ))       # → 1.0 at κ=0 (straight), → 0.35 floor at high κ
+during_scale   = max(0.625, 1 / (1 + 3·κ))                  # current-position curvature
+entering_scale = max(0.85,  1 / (1 + 4·kappa_max_abs))       # lookahead curvature
+scale = min(during_scale, entering_scale)
 ```
 
 `κ` (curvature) is estimated causally from the plant's own current yaw rate
 and speed (`curvature_estimate()`: `κ = |yaw_rate| / vx`) — it reflects the
-curvature the car is *currently experiencing*, not a look-ahead of the path
-geometry. In a straight, the full smoothness penalty applies (discourage
-unnecessary steering jitter). In a tight corner, the penalty is floored at
-35% of base rather than removed entirely — enough softening to let the
+curvature the car is *currently experiencing*. `kappa_max_abs` is the
+lookahead scan's peak curvature (see **Lookahead corner anticipation**
+below) — a shallower, earlier floor that softens the cost slightly *before*
+the car reaches a corner, not just once it's already turning. In a straight,
+the full smoothness penalty applies. In a tight corner, the penalty is
+floored rather than removed entirely — enough softening to let the
 controller make the fast steering changes a tight corner demands, without
 ever allowing the rate cost to vanish completely (which would permit
-arbitrarily rapid, oscillatory steering).
+arbitrarily rapid, oscillatory steering). The during-floor was raised from
+an earlier 0.55 to 0.625 after a live run with the entering floor at 0.85
+showed steering oscillating through zero several times per second
+mid-corner while `e_y`/`e_psi` stayed small — under-damped steering-rate
+hunt, not a tracking-error problem, so the fix was less rate-cost softening
+while actually turning, not more lateral/heading authority.
 
 Both functions return a **copy** of the base matrix — the tuned weights in
 `settings.py` are never mutated, only scaled per-tick on top of.
+
+**`adaptive_Q_scaling(e_y, Q, enabled)`** — softens the lateral-error cost
+`Q[0,0]` when the car is already close to the centreline, to reduce
+small-error hunting/chatter:
+
+```
+scale = floor                                            |e_y| <= ey_lo (0.05 m)
+scale = floor + (1-floor)*(|e_y|-ey_lo)/(ey_hi-ey_lo)     ey_lo < |e_y| < ey_hi (0.3 m)
+scale = 1.0                                               |e_y| >= ey_hi
+```
+
+- **Why:** steering sign-reversal rate was observed rising as `|e_y|` gets
+  *smaller* live — the car darting across the centreline rather than
+  settling onto it. A quadratic cost pulls toward zero error with the same
+  proportional strength no matter how small the error already is, a
+  plausible contributor to a correct-overcorrect cycle right where the
+  controller should be settling, not correcting.
+- **Status:** `ADAPTIVE_Q_SCALING_ENABLED = True` in `settings.py` (**enabled
+  by default since 2026-08-09**, to match the live controller). Still not
+  reproduced on the offline recorded-map rollout — there, reversal rate
+  rises *with* `|e_y|`, the opposite direction — so it may be a live-only
+  symptom of sensor noise, delay-compensation dynamics, or the plant
+  behaving differently from the linear model near zero slip. Re-validate
+  against `VALIDATION_SUITE`/the recorded map before any further re-tuning
+  around it.
+
+**`enable_in_corners` (an `adaptive_R_rate` parameter, on by default)** —
+renamed from `disable_in_corners`, whose `True`/`False` polarity was inverted
+from what the name suggested. Setting it `False` *undoes* `adaptive_R_rate`'s
+softening once estimated curvature exceeds a small "cornering" threshold
+(`kappa_straight = 0.03`), restoring the full unscaled `R_rate[0,0]` baseline
+instead. Tried disabled and reverted the same day: it caused severe lag
+specifically in corners, most likely because the discontinuous cost jump at
+the threshold crossing spikes QP solver iterations and invalidates
+warm-starts on ticks straddling it. Kept in the code, gated on (softening
+active, the setting that avoids the discontinuity), as a documented dead end
+rather than deleted, so it isn't accidentally re-tried without this context.
+
+**`steer_rate_anti_hunt(kappa, e_y, R_rate, enabled, e_psi=0.0)`** — stacks on
+top of `adaptive_R_rate` (not a replacement): multiplies `R_rate[0,0]` **up**
+by a fixed boost ceiling (6.0×) instead of softening it, strongest when the
+car is simultaneously straight (`κ` near zero), centred (`|e_y|` small), *and*
+well-aligned (`|e_psi|` small):
+
+```
+boost_kappa = 1 / (1 + 60·|κ|)
+boost_ey    = 1 / (1 + 30·|e_y|)
+boost_epsi  = 1 / (1 + 23·|e_psi|)
+scale = 1 + (6.0 - 1) · boost_kappa · boost_ey · boost_epsi
+```
+
+- Each factor saturates independently toward 1.0 as its input shrinks, so
+  the full ceiling only applies when all three are near their "straight,
+  centred, aligned" ideal, fading smoothly (never snapping) as any one of
+  them grows.
+- **Why `e_psi`:** guards against a car that enters a straight *misaligned*
+  (large `|e_psi|`, small `|e_y|` — e.g. just exited a corner still pointed
+  the wrong way). Without it, `κ`/`e_y` alone can't distinguish "straight
+  and correctly aligned" from "straight but needs to yaw back into line",
+  making exactly the correction it needs artificially expensive.
+- **What it covers:** the "already on the line, not cornering" regime
+  `adaptive_R_rate` alone doesn't address — that function only ever softens
+  the rate cost for corners, never stiffens it for straights.
+- **Status:** `STEER_RATE_ANTI_HUNT_ENABLED = True` in `settings.py`
+  (**enabled by default since 2026-08-09**). Experimental, not validated.
+
+**Lookahead corner anticipation (`adaptive_Q_lookahead`, `ADAPTIVE_Q_LOOKAHEAD_ENABLED`)**
+— every mechanism above reacts to curvature the car is *at* or *currently
+experiencing*. This one instead scans a speed-scaled window of path ahead
+(`lookahead_curvature_profile(path, base_idx, lookahead_dist)`, with
+`lookahead_dist = clip(vx · 1.13 s, 3 m, 17 m)`) for the sharpest curvature
+coming up (`kappa_max_abs`) and the total accumulated heading change over
+that window, and uses both to shape `Q` before the car ever goes off-line:
+
+- **Approaching a corner:** boosts `Q[0,0]` (lateral error, ceiling 2.0×) and
+  `Q[2,2]` (heading error, ceiling 1.5×) so the controller commits steering
+  authority *before* drifting, and relaxes `Q[3,3]` (yaw rate, floor 0.5×) so
+  a high straight-line yaw-rate penalty doesn't itself make turn-in feel
+  slow. Added after a live log showed the car turning in too gradually —
+  steer only started ramping ~0.6 s before saturating at `MAX_STEER_RAD`
+  while `e_y` had already grown to -1.86 m.
+- **Exiting a corner:** continues boosting `Q[2,2]` for a short distance
+  afterward (`lookahead_exit_boost`'s `decay_dist`, hardcoded to 5 m — not a
+  `settings.py` flag), linear decay, scaled by how sharp that corner was.
+  Uses a rising-edge-after-a-clear peak detector (`update_lookahead_peak`),
+  not a running maximum — a running maximum would silently fail to
+  re-trigger on a second corner of equal or lesser curvature than an
+  earlier one, which is an ordinary case (most tracks reuse corner radii),
+  not a rare edge case.
+- **On a clear straight** (`kappa_max_abs → 0`): softens `Q[0,0]` (floor
+  0.7×) and mildly boosts `Q[2,2]`/`Q[3,3]` (ceilings 1.1×/1.5×), fading back
+  to baseline as a corner enters the window — added after residual hunting
+  persisted despite the boosts above. `Q[2,2]`'s ceiling is kept small on
+  purpose: a stronger heading-error weight on a straight amplifies the QP's
+  reaction to ordinary heading noise, the exact small-error hunting
+  `adaptive_Q_scaling` exists to fight elsewhere.
+
+**Demand normalisation** (`ADAPTIVE_Q_DEMAND_NORMALISED`, on by default) —
+the boost curves above are driven by corner **demand**, not raw curvature:
+
+```
+kappa_limit(v) = a_lat_ceiling(v) / v²    # tightest curvature holdable before FSDS's lateral-accel ceiling binds
+demand         = kappa_max_abs / kappa_limit(v)
+```
+
+(`a_lat_ceiling` mirrors `model/vehicle_physics.py`'s `alat_ceiling_at()`).
+Demand ≈ 0 means straight, ≈ 1 means "this corner needs everything available
+at this speed", > 1 means it cannot be held (must slow).
+
+- **Why not raw curvature:** the raw-curvature curve (`K = 8` gain) turned
+  out badly mis-scaled against real corner radii — the whole range of
+  curvatures the car can actually drive sat in the flat, low-response part
+  of the curve, so raising the boost ceiling barely changed anything:
+
+  | Corner | Raw curvature | Boost reached (raw-`K=8` curve) |
+  |---|---|---|
+  | Gradual sweeper (R=40 m) | κ=0.025 | 17% |
+  | Typical corner (R=12 m) | κ=0.083 | 40% |
+
+- **Why demand fixes it:** scale-free and speed-aware, so a gradual sweeper
+  taken fast and a tight corner taken slow are judged by the same criterion
+  — one set of constants covers both instead of needing a hand-tuned
+  threshold per corner type.
+- Setting the flag `False` restores the legacy raw-curvature curve for A/B
+  comparison.
+
+**U-turn detection** — every boost above keys off `kappa_max_abs`, i.e. peak
+curvature *magnitude*, which under-scores a long, gradual U-turn: large
+radius means unremarkable peak curvature even though it demands a huge total
+rotation.
+
+- **Mechanism:** `lookahead_curvature_profile` also returns the accumulated
+  `|heading change|` over the window. Past 60° of accumulated turning, an
+  extra multiplicative boost applies to `Q[0,0]`/`Q[2,2]` (ceiling 1.6× each)
+  and `Q[3,3]` (floor 0.6×), scaling to full strength by 120°.
+- **Why 60°, not the 90° "U-turn" implies:** the threshold is measured
+  *within* the lookahead window, not over the whole corner — 17 m of arc at
+  a 12 m corner radius only subtends ~81°, so a 90° threshold could never
+  fire on approach.
+- **Scope limit:** this only helps *before* a corner, while steering is
+  still unsaturated. On the log that motivated it, the controller was
+  already at the full steering stop for over a second mid-corner with
+  achieved curvature varying 6× with speed alone — the binding constraint
+  there was FSDS's lateral-acceleration ceiling, not steering angle, and no
+  `Q` boost can add steering that is already saturated.
+
+Composition order matters: the lookahead boost is applied to `Q` *first*,
+then `adaptive_Q_scaling`'s centred-softening multiplies on top of that
+result — so a corner boost is never silently cancelled by the
+centred-softening floor, while both stay continuous with no discontinuous
+override between them. Experimental, not validated.
+
+**Straight-line steering-effort boost (`steer_effort_straight_boost`,
+`STEER_EFFORT_STRAIGHT_BOOST_ENABLED`)** — the `R[0,0]` (steering *effort* —
+how far the wheel is turned, distinct from `R_rate[0,0]`'s *rate of change*,
+already covered by `steer_rate_anti_hunt`) counterpart of the straight-line
+`Q` boosts above: 1.5× on a clear straight, fading — much more sharply than
+the `Q`-side boosts (`k = 20` vs `8`) — toward 1.0 as a corner enters the
+lookahead window, so it collapses to baseline almost as soon as a real turn
+is asked for rather than lingering into it. Composes multiplicatively with
+`adaptive_R_scaling`'s existing speed-dependent scaling on `R[0,0]`.
+Experimental, not validated.
+
+**Delay compensation (`mpc_core.py`'s `predict_ahead()` / `_update_n_delay()`,
+live controller only)** — the live car's perception→planning→control→actuation
+latency is unknown and time-varying, unlike the offline simulator's fixed
+`DELAY_STEPS`.
+
+- **Mechanism:** each solve is told how old the pose it's using actually is
+  (`pose_age_s`, from the pose message's own timestamp), converts that into
+  an integer step count, and rolls the error state forward through that
+  many recently-issued commands before solving — so the QP plans against
+  the state the car will actually be in, not a stale measurement.
+- **Why filtered first:** the raw step count is low-pass filtered and
+  hysteresis-gated before use. Ordinary control-loop jitter would otherwise
+  flip the raw `round(pose_age_s / dt)` between adjacent integers tick to
+  tick, and each flip discontinuously changes how far the state gets rolled
+  forward — injecting a step disturbance into the QP at the control rate
+  purely from measurement noise, independent of any real latency change.
+
+**Tracking-error speed gate (`control_utils.tracking_error_speed_gate()`,
+both live nodes)** — `curvature_speed()`'s target only looks at path shape,
+with no way to know whether the car is actually near that path right now.
+
+- **Mechanism:** scales the speed target down (linear ramp, floored so the
+  car always retains enough speed to steer) once lateral or heading
+  tracking error grows large.
+- **Rise-rate limiter:** paired with a cap on how fast the resulting speed
+  target may *rise* — braking is never delayed, only the "speed up"
+  direction is capped — so the target doesn't jump around tick to tick.
 
 ### Where this is duplicated, and why
 
@@ -1233,7 +1433,7 @@ the GUI and the same path scored offline produce matching numbers — there
 is exactly one implementation of the scoring maths, not two independently
 maintained copies.
 
-### The 12 metrics
+### The 13 metrics
 
 Accumulated once per simulation step via `RolloutMetrics.add_step()`, then
 normalised (mostly to RMS values) at the end via `.finalize()`:
@@ -1252,6 +1452,7 @@ normalised (mostly to RMS values) at the end via `.finalize()`:
 | 9 | `steering_reversal_rms` | Magnitude-weighted RMS of steering sign-flip swings (beyond a 0.02 rad noise gate): `sqrt(Σ swing² / n steps)`, where `swing = |u_steer| + |u_steer_prev|` at the moment of the flip. A tiny back-and-forth trim wiggle contributes almost nothing while a large aggressive swing dominates (squared), which is what distinguishes controller hunting/dithering from a twisty path (S-bends, slaloms) legitimately demanding more frequent-but-small direction changes — a flat per-flip count couldn't tell those apart. The raw reversal count and its per-step rate are still reported separately as informational-only fields (`steering_reversals`, `steering_reversal_rate` in the returned dict) alongside it. |
 | 10 | `peak_lateral_error` | The single worst `|e_y|` reached at any point — a safety-margin measure independent of the average. |
 | 11 | `speed_rmse` | RMS of `v_actual - v_target` — how well the car tracks the planner's requested speed. |
+| 12 | `accel_reversal_rms` | The same magnitude-weighted reversal construction as `steering_reversal_rms` (metric 9), applied to `u_opt[1]` (`a_cmd`) instead of `u_opt[0]` (`delta_cmd`), with a 0.02 m/s² noise gate in place of the steering metric's 0.02 rad. `steering_reversal_rms` only ever looks at the steering command, so without this nothing in the score discourages `a_cmd` oscillating across zero even though the same accel/brake chatter concern applies. Keyword-only with a default value so callers written before this metric existed keep working unmodified. |
 
 ### Combining into one score
 
@@ -1354,7 +1555,7 @@ not here.
 |---|---|
 | `gui/simulation.py` | Interactive matplotlib GUI — draw/load a path, run one closed-loop rollout, scrub through history, view metrics. Thin wrapper around `rollout_core.run_core_rollout(want_history=True)`. |
 | `sim/rollout_core.py` | The single shared closed-loop rollout loop used by both `gui/simulation.py` and `tuner/offline_tuner.py`. Not GUI-safe to import from `gui/simulation.py`'s multiprocessing workers, so it's split out into its own dependency-light module. |
-| `sim/scoring.py` | The single implementation of the 12-metric accumulation and composite score. See [The Composite Score](#the-composite-score). |
+| `sim/scoring.py` | The single implementation of the 13-metric accumulation and composite score. See [The Composite Score](#the-composite-score). |
 | `model/bicycle_model.py` | Builds the MPC's linear 8-state prediction model. See [How the MPC Works](#how-the-mpc-works). |
 | `controller/model_utils.py` | Runtime curvature/speed-based rescaling of `R`/`R_rate`. See [Adaptive gain scheduling](#adaptive-gain-scheduling-controllermodel_utilspy). |
 | `controller/optimiser.py` | The parameterised CVXPY/OSQP QP formulation and solve. See [The cost function and QP](#the-cost-function-and-qp-controlleroptimiserpy). |

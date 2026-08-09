@@ -101,12 +101,11 @@ def compute_composite_score(
     rollout length or shrinking with DT.
 
     accel_reversal_rms is the identical construction applied to u_opt[1]
-    (a_cmd) instead of u_opt[0] (delta_cmd) — added 2026-08-08 after live
-    logs showed persistent throttle/brake sign-flip chatter with no
-    corresponding cost term: steering_reversal_rms only ever looks at
-    u_opt[0], so nothing in the score discouraged a_cmd from oscillating
-    across zero even though the same magnitude-weighted-swing rationale
-    applies identically to accel/brake effort.
+    (a_cmd) instead of u_opt[0] (delta_cmd): steering_reversal_rms only ever
+    looks at u_opt[0], so without this nothing in the score discourages
+    a_cmd from oscillating across zero even though the same
+    magnitude-weighted-swing rationale applies identically to accel/brake
+    effort.
     """
     metrics = np.array(
         [

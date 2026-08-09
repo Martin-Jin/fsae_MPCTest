@@ -1,108 +1,49 @@
 """
 Lightweight CSV telemetry logger for the control nodes (debug/tuning aid).
 
-Both controllers (Stanley, MPC) can write two compact CSVs so we can separate
-planner problems from controller problems offline.  On close() the control CSV
-is rewritten with a scored, commented header block (see "SCORE HEADER" below).
+Both controllers (Stanley, MPC) can write two compact CSVs so planner problems
+can be separated from controller problems offline. On close() the control CSV
+is rewritten with a scored, commented header block (see "Score header" below).
 
 Why CSV and not rosbag: the tracking errors e_y / e_psi are computed inside the
-controller and never published to a topic, so rosbag can't see them — yet they
-are exactly what distinguishes "path is wiggly" (small e_y, wiggly path) from
-"controller oscillates" (steer + e_y swing on a smooth path).  CSV is also far
-smaller (~100 KB/min) and directly plottable.
+controller and never published to a topic, so rosbag can't see them, and they
+are what distinguishes "path is wiggly" from "controller oscillates". CSV is
+also far smaller (~100 KB/min) and directly plottable.
 
-
-COORDINATE FRAME
-================
-Everything positional is in the simulator's **global ENU frame**: x = east,
-y = north, z = up, x pointing forward at spawn, rotations right-handed, yaw
-zero when facing +x/east (docs/coordinate-frames.md).  There is NO frame
-conversion anywhere in this logger — car_x/car_y/car_yaw are written exactly
-as the controller received them from the pose topic, and the path CSV's x/y
-come from the same global-frame planner waypoints the MPC solves against.  So
-control rows and path rows are directly overlayable on one plot with no
-transform.  (The cone-proximity check in mpc_controller_standalone.py does work
-in the car-local frame, but none of those values are logged here.)
-
-The two error signals are Frenet-style, measured at the **front axle**
-(car_pos advanced by lf along the heading), relative to the nearest planner
-path segment — not relative to the world frame:
+Coordinate frame: everything positional is in the simulator's global ENU frame
+(x = east, y = north, yaw zero at +x/east), written with no conversion, so
+control rows and path rows overlay directly on one plot. e_y/e_psi are
+Frenet-style, measured at the front axle relative to the nearest planner path
+segment:
   e_y   > 0  → front axle is to the LEFT of the path      (metres)
   e_psi > 0  → car heading is rotated CCW (left) of the path tangent
-Both signs follow from the ENU right-handed convention (+y is left of +x), and
-are SHARED by both controllers so A/B plots overlay.
 
+Time: `t` is run-relative seconds starting at 0.0 (first logged sample), not a
+ROS epoch stamp; the epoch of that origin is preserved in the header as
+`t0_epoch_s`. Both CSVs share one origin.
 
-TIME
-====
-`t` is seconds since the logger was constructed — i.e. **run-relative time
-starting at 0.0**, not a ROS epoch stamp.  Callers still pass their absolute
-ROS clock reading; the logger subtracts the first sample it sees.  The raw
-epoch of that t=0 origin is preserved in the header (`t0_epoch_s`) so a run can
-still be lined up against a rosbag if needed.  Both CSVs share the same origin,
-so control and path rows remain directly comparable.
+Control CSV columns: t, car_x, car_y, car_yaw, v_actual, v_desired, steer_deg,
+e_y, e_psi_deg, yaw_rate, delta_cmd (rad), a_cmd (m/s^2), solver_failed,
+inaccurate, plus the latency diagnostics pose_age_s/path_age_s/n_delay/
+solve_ms/cmd_latency_ms. delta_cmd/a_cmd are logged in the MPC's own units
+rather than normalised FSDS command units so the score can be recomputed from
+the file without re-deriving the scaling.
 
+Path CSV columns: t, idx, x, y — waypoint snapshots at ~1 Hz.
 
-COLUMNS — control CSV
-=====================
-  t             s        Run-relative time, 0.0 at first logged control step
-  car_x         m        Global ENU east position of the car reference point
-  car_y         m        Global ENU north position
-  car_yaw       rad      Global ENU heading, right-handed, 0 = +x/east
-  v_actual      m/s      Measured forward speed magnitude
-  v_desired     m/s      Planner/curvature target speed (post-filtering)
-  steer_deg     deg      Commanded ROADWHEEL angle, +ve = left turn
-  e_y           m        Lateral path error at front axle, +ve = left of path
-  e_psi_deg     deg      Heading error vs path tangent, +ve = CCW/left
-  yaw_rate      rad/s    Measured yaw rate, +ve = CCW/left
-  delta_cmd     rad      MPC's commanded steering (u[0]); steer_deg in radians
-  a_cmd         m/s^2    MPC's commanded longitudinal accel (u[1]), -ve = brake
-  solver_failed 0/1      1 if the MPC solve failed this step
-  inaccurate    0/1      1 if the solver returned OPTIMAL_INACCURATE
+Units contract: log_control()'s steer_rad/e_psi_rad are radians and converted
+to degrees on write. Callers must not pass the normalised ControlCommand.steering
+([-1, 1]) — scale it by MAX_STEER_RAD first, or steer_deg silently inflates by
+~2.3x while still looking plausible.
 
-delta_cmd/a_cmd are logged in the MPC's own units (rad, m/s^2) rather than
-normalised FSDS command units precisely so the score below can be computed
-from the file without re-deriving the scaling.
-
-COLUMNS — path CSV
-==================
-  t             s        Run-relative time of this path snapshot (~1 Hz)
-  idx           -        Waypoint index within that snapshot
-  x, y          m        Global ENU waypoint position (same frame as car_x/y)
-
-
-UNITS CONTRACT
-==============
-log_control()'s steer_rad and e_psi_rad are RADIANS and are converted to
-degrees on write.  Callers driving FSDS must NOT pass the normalised
-ControlCommand.steering ([-1, 1]); scale it back by MAX_STEER_RAD first.  Doing
-otherwise silently produces a steer_deg column inflated by 180/(pi*MAX_STEER_RAD)
-(~2.3x at a 25 deg limit) that still looks plausible — this bug hid live
-slew-rate saturation for an entire tuning cycle.
-
-
-SCORE HEADER
-============
-close() prepends a `#`-commented block holding the composite score and all
-component metrics, computed by fsae_control.scoring — a verbatim copy of
-fsae_MPCTest/sim/scoring.py.  A live run and an offline tuner rollout are
-therefore graded by identical maths and are directly comparable.
-
-Every header line starts with `#`, so `pandas.read_csv(path, comment='#')`
-parses the file unchanged.  numpy's genfromtxt does NOT skip comment lines
-when locating the `names=True` row, so it needs the count explicitly:
-
-    n = sum(1 for l in open(path) if l.startswith('#'))
-    np.genfromtxt(path, delimiter=',', names=True, skip_header=n)
-
-The metrics are also returned directly from close(), so tooling generally
-does not need to parse them back out of the header at all.
-
-Caveat recorded in the header as `score_is_partial`: the live car cannot
-measure `time_bonus` (needs a known step budget) or `offtrack` (needs
-ground-truth track edges).  When the caller supplies neither, those terms are
-0.0/False and the score is comparable to an offline score only in its
-weighted-metric component.
+Score header: close() prepends a `#`-commented block with the composite score
+and every component metric, computed by fsae_control.scoring — a verbatim
+copy of fsae_MPCTest/sim/scoring.py, so a live run is directly comparable to
+an offline tuner rollout. `pandas.read_csv(path, comment='#')` parses the file
+unchanged; numpy's genfromtxt needs `skip_header=<count of '#' lines>` since it
+doesn't skip comments when locating the `names=True` row. The car can't
+measure `time_bonus` or `offtrack`, so when the caller supplies neither those
+terms are 0.0/False and the header records `score_is_partial`.
 """
 import csv
 import math
@@ -131,13 +72,10 @@ class ControlLogger:
              'steer_deg', 'e_y', 'e_psi_deg', 'yaw_rate',
              'delta_cmd', 'a_cmd', 'solver_failed', 'inaccurate',
              # ── Latency diagnostics ──────────────────────────────────────
-             # Added to answer a specific question: the offline simulator
-             # assumes DELAY_STEPS=1 (50 ms) of actuation lag and a perfectly
-             # uniform 20 Hz loop, and does NOT reproduce the sustained
-             # heading error seen on the car (live |e_psi| mean 15.9 deg /
-             # p90 42.0 vs sim 6.0 / 13.8 on the same map with the same
-             # gains). These five columns measure the real latency chain so
-             # that assumption can be checked rather than trusted.
+             # These five columns measure the real latency chain (perception
+             # + planning + control + actuation) so it can be checked against
+             # the offline simulator's fixed-delay assumption rather than
+             # trusted blindly.
              'pose_age_s',      # age of the pose the solve used, seconds
              'path_age_s',      # age of the planner path the solve used
              'n_delay',         # rollforward depth the controller chose

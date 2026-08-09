@@ -46,7 +46,7 @@ sim_perception:
 # tight hairpin (~2 m radius, v_target ~2.7 m/s) approached at v_max needs
 # ~24 m to brake for at a realistic achieved deceleration; a shorter horizon
 # reveals such a corner too late, saturating steering and spinning out at
-# corner entry (observed on the live stack, see fsae_planning_changes.md).
+# corner entry.
 # `path_blend` (0<a<=1): temporal EMA weight toward each freshly-planned path, so
 # successive paths ease between frames instead of jumping (which the controller
 # tracks as a jerk). 1.0 disables blending; smaller = smoother/laggier.

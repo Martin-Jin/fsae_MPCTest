@@ -37,6 +37,8 @@ from controller.optimiser import solve_mpc
 from sim.sim_track import SimPerception, SimPlanner, calculate_dynamic_max_steps
 from controller.model_utils import (
     curvature_estimate, adaptive_R_rate, adaptive_R_scaling, adaptive_Q_scaling,
+    steer_rate_anti_hunt, lookahead_curvature_profile, update_lookahead_peak,
+    adaptive_Q_lookahead, steer_effort_straight_boost,
 )
 from sim.scoring import RolloutMetrics
 import sim.speed_profile as sp
@@ -53,7 +55,10 @@ from settings import (
     CONE_NOISE_ENABLED, CONE_POS_JITTER_STD, CONE_NOISE_SEED,
     REF_HEADING_RATE_LIMIT_ENABLED, REF_HEADING_RISE_RATE,
     TERMINAL_Q_SCALE, ADAPTIVE_Q_SCALING_ENABLED,
-    USE_PRECOMPUTED_SPEED_PROFILE,
+    USE_PRECOMPUTED_SPEED_PROFILE, STEER_RATE_ANTI_HUNT_ENABLED,
+    ADAPTIVE_R_RATE_ENABLE_IN_CORNERS,
+    ADAPTIVE_Q_LOOKAHEAD_ENABLED, ADAPTIVE_Q_DEMAND_NORMALISED,
+    STEER_EFFORT_STRAIGHT_BOOST_ENABLED,
 )
 
 STALL_CHECK_INTERVAL = 60   # Steps between rolling stall checks (3 s at 20 Hz)
@@ -90,15 +95,14 @@ def _rate_limit_ref_psi(ref_psi_raw, ref_psi_prev, max_rate_rad_per_s, dt):
     Cap how fast the reference heading (ref_psi) is allowed to change per
     tick, same shape as SPEED_TARGET_RISE_RATE's cap on v_target.
 
-    Why this exists: sim_to_real_investigation.md S26/S27. Most of the
-    planner's reference-heading swing is real track geometry, but a
-    tail-concentrated excess — the reference correctly anticipating a sharp
-    corner earlier than the car has actually yawed — is strongly linked to
-    steering saturation (measured there, not assumed here). Limiting only the
-    RATE (never the final direction — once the car catches up, the raw
-    reference is reached again) trades slightly later turn-in commitment for
-    not asking the controller to snap onto a heading the car has no chance of
-    reaching yet.
+    Why this exists: most of the planner's reference-heading swing is real
+    track geometry, but a tail-concentrated excess — the reference correctly
+    anticipating a sharp corner earlier than the car has actually yawed — is
+    strongly linked to steering saturation. Limiting only the RATE (never
+    the final direction — once the car catches up, the raw reference is
+    reached again) trades slightly later turn-in commitment for not asking
+    the controller to snap onto a heading the car has no chance of reaching
+    yet.
 
     Symmetric (limits swings in either direction) — unlike
     SPEED_TARGET_RISE_RATE, which only limits increases because slowing down
@@ -152,13 +156,13 @@ class SlamNoise:
     e_y/e_psi — the signals the MPC steers on. A pose that jitters makes the
     measured error jitter, and an under-damped controller chases it.
 
-    NOT the cause of the observed FSDS chatter. mpc_standalone_control_
-    1785976976.csv came from FSDS, where the pose is already exact, so pose
-    noise cannot explain it. That log's ~1441 reversals were caused by (a) the
-    steering slew limit binding on 41% of steps and (b) sim_perception
-    publishing the pose at 10 Hz against a 20 Hz control loop, so half of all
-    MPC solves re-used an unchanged pose. Both are fixed elsewhere; this class
-    is for the REAL car's localisation error, and defaults to off.
+    NOT the cause of the observed FSDS chatter: FSDS's pose is already exact,
+    so pose noise cannot explain steering reversal chatter seen there. That
+    was instead caused by (a) the steering slew limit binding on a large
+    fraction of steps and (b) sim_perception publishing the pose at a lower
+    rate than the control loop, so many MPC solves re-used an unchanged
+    pose. Both are fixed elsewhere; this class is for the REAL car's
+    localisation error, and defaults to off.
 
     Model
     -----
@@ -254,7 +258,7 @@ class ConeNoise:
 class PoseFeedHold:
     """
     Models the live pose feed REPEATING the previous measurement instead of
-    delivering a fresh one — the dominant sim-to-real gap, measured 2026-08-06.
+    delivering a fresh one — the dominant sim-to-real gap.
 
     WHY THIS EXISTS
     ---------------
@@ -265,20 +269,15 @@ class PoseFeedHold:
     intermittently stops publishing, and the controller re-uses the last pose
     it received while the car keeps moving.
 
-    Measured from live telemetry (mpc_standalone_control_1786007642 and
-    ...614, same track, same tuned gains, differing only in how badly the feed
-    stalled):
-
-                              normal run      failed run
-        fresh-pose rate       18.9 Hz         6.4 Hz
-        repeated ticks        5.3%            60.7%
-        longest hold          5 ticks (0.25s) 20 ticks (0.99s)
-        peak pose_age         347 ms          1242 ms
-
-    In the failed run the pose froze for ~1 s at 14 m/s — the car travelled
-    ~17 m with no positional update, and when the feed resumed the heading
-    error was unrecoverable (105 deg) and it spun. Both runs used identical
-    weights on identical track; the only difference was the feed.
+    Measured from live telemetry across runs on the same track and same
+    tuned gains, differing only in how badly the feed stalled: a healthy run
+    has a low repeated-tick rate and short holds, while a degraded run can
+    see the majority of ticks repeating with holds approaching a second. In
+    one such degraded run the pose froze for roughly a second at speed —
+    enough distance travelled with no positional update that, when the feed
+    resumed, the heading error was unrecoverable and the car spun. Both runs
+    used identical weights on identical track; the only difference was the
+    feed.
 
     This is NOT the same thing as DELAY_STEPS or DELAY_JITTER_STEPS:
       - DELAY_STEPS delays a pose that is still FRESH each tick.
@@ -543,6 +542,19 @@ def run_core_rollout(
     # Previous step's speed target, for the rise-rate limiter above.
     v_des_prev = None
 
+    # Stacked (N,2) path array for lookahead_curvature_profile's forward scan
+    # (ADAPTIVE_Q_LOOKAHEAD) -- built once, not per-step.
+    path_xy = np.column_stack([path_X, path_Y])
+
+    # ADAPTIVE_Q_LOOKAHEAD peak-tracker state -- see model_utils.py's
+    # update_lookahead_peak. dist_since_peak starts at +inf so
+    # lookahead_exit_boost is a no-op until the first corner peak is seen.
+    lookahead_peak_state = {
+        "last_peak_kappa_abs": 0.0,
+        "dist_since_peak": float("inf"),
+        "armed_for_next_peak": True,
+    }
+
     # Previous step's tracking-error speed gate, for GATE_RATE_LIMIT above.
     gate_prev = None
 
@@ -685,11 +697,11 @@ def run_core_rollout(
                 rpsi = psi_est - e_psi
 
                 # ── Reference-heading rate limit (settings.REF_HEADING_RATE_LIMIT_ENABLED) ──
-                # See sim_to_real_investigation.md S26/S27 and _rate_limit_ref_psi's
-                # own docstring for the mechanism. Only applied here (the live
-                # planner branch) — the fallback/oracle branches below reference
-                # path_X/path_Y/path_Psi, the fixed geometric path S26 showed does
-                # NOT carry this excess, so there is nothing to limit there.
+                # See _rate_limit_ref_psi's own docstring for the mechanism.
+                # Only applied here (the live planner branch) — the
+                # fallback/oracle branches below reference path_X/path_Y/
+                # path_Psi, the fixed geometric path that does NOT carry this
+                # excess, so there is nothing to limit there.
                 if REF_HEADING_RATE_LIMIT_ENABLED:
                     rpsi_limited = _rate_limit_ref_psi(
                         rpsi, ref_psi_prev, np.radians(REF_HEADING_RISE_RATE), DT
@@ -707,12 +719,12 @@ def run_core_rollout(
                     # non-causal, see speed_profile.compute_speed_profile()) at
                     # the car's current position, instead of re-deriving from
                     # only the live-built sub-path. Bypasses the perception-FOV
-                    # lookahead shortfall measured in S48 (live centreline is
-                    # shorter than curvature_speed()'s own scan_end=24m on 100%
-                    # of recorded-map steps) entirely, since it needs no live
-                    # cone visibility at all for the speed target. idx is one
-                    # step stale here (updated later this loop, same as the
-                    # path_v_profile[idx] fallback below) -- accepted, not new.
+                    # lookahead shortfall entirely (the live centreline is
+                    # typically shorter than curvature_speed()'s own scan
+                    # horizon), since it needs no live cone visibility at all
+                    # for the speed target. idx is one step stale here
+                    # (updated later this loop, same as the path_v_profile[idx]
+                    # fallback below) -- accepted, not new.
                     v_target = float(path_v_profile[idx])
                 else:
                     # No pre-computed profile exists for a live-built centreline
@@ -758,11 +770,11 @@ def run_core_rollout(
         # command acceleration — while the car is badly off-line with steering
         # already saturated, which is unrecoverable.
         #
-        # Re-enabled for the oracle branch (2026-08-09) via GATE_RATE_LIMIT --
-        # see mpc_controller_standalone.py's identical comment for the full
-        # rationale (disabling it outright traded away its whole purpose;
-        # smoothing its rate of change removes the sharp-cliff side effect
-        # that caused it to be disabled instead).
+        # Applied to the oracle branch via GATE_RATE_LIMIT -- see
+        # mpc_controller_standalone.py's identical comment for the full
+        # rationale (disabling the gate outright trades away its whole
+        # purpose; smoothing its rate of change removes the sharp-cliff
+        # side effect that motivated disabling it in the first place).
         raw_gate = sp.tracking_error_speed_gate(e_y, e_psi)
         if gate_prev is not None:
             max_step = GATE_RATE_LIMIT * DT
@@ -831,11 +843,52 @@ def run_core_rollout(
             e_y, e_y_dot, e_psi, state[5], vx_true - v_target, 0.0, state[6], state[7],
         ])
 
+        # ── Lookahead curvature scan (ADAPTIVE_Q_LOOKAHEAD) ─────────────────
+        # Distinct from the single-point curvature_estimate() below (which
+        # drives adaptive_R_rate/steer_rate_anti_hunt): scans the whole
+        # speed-scaled window ahead for the largest |curvature| and the
+        # total accumulated heading change, so the Q boost can anticipate a
+        # corner before the car reaches it, and a long gradual U-turn is
+        # recognised even with unremarkable peak curvature.
+        lookahead_dist = float(np.clip(vx_true * 1.13, 3.0, 17.0))
+        (kappa_max_abs, _lookahead_idx, _lookahead_peak_dist,
+         lookahead_heading_change) = lookahead_curvature_profile(
+            path_xy, idx, lookahead_dist
+        )
+
         # ── Adaptive gain scaling ────────────────────────────────────────────
         kappa = curvature_estimate(state)
-        R_rate_scaled = adaptive_R_rate(kappa, R_rate)
+        R_rate_scaled = adaptive_R_rate(
+            kappa, R_rate, enable_in_corners=ADAPTIVE_R_RATE_ENABLE_IN_CORNERS,
+            kappa_max_abs=kappa_max_abs,
+        )
+        R_rate_scaled = steer_rate_anti_hunt(
+            kappa, e_y, R_rate_scaled, enabled=STEER_RATE_ANTI_HUNT_ENABLED, e_psi=e_psi
+        )
         R_scaled = adaptive_R_scaling(vx, R)
-        Q_scaled = adaptive_Q_scaling(e_y, Q, enabled=ADAPTIVE_Q_SCALING_ENABLED)
+        if STEER_EFFORT_STRAIGHT_BOOST_ENABLED:
+            R_scaled = R_scaled.copy()
+            R_scaled[0, 0] *= steer_effort_straight_boost(kappa_max_abs)
+
+        # ── Lookahead corner-anticipation Q-boost (ADAPTIVE_Q_LOOKAHEAD) ────
+        # Applied to Q FIRST, then adaptive_Q_scaling's centred-softening
+        # multiplies on top of the result below -- see model_utils.py's
+        # module docstring for why this ordering avoids the corner boost
+        # being silently cancelled by the centred-softening floor while
+        # keeping both continuous.
+        if ADAPTIVE_Q_LOOKAHEAD_ENABLED:
+            lookahead_peak_state = update_lookahead_peak(
+                lookahead_peak_state, kappa_max_abs, vx_true, DT
+            )
+        Q_base = adaptive_Q_lookahead(
+            Q, kappa_max_abs, vx_true,
+            lookahead_peak_state["last_peak_kappa_abs"],
+            lookahead_peak_state["dist_since_peak"],
+            lookahead_heading_change,
+            enabled=ADAPTIVE_Q_LOOKAHEAD_ENABLED,
+            demand_normalised=ADAPTIVE_Q_DEMAND_NORMALISED,
+        )
+        Q_scaled = adaptive_Q_scaling(e_y, Q_base, enabled=ADAPTIVE_Q_SCALING_ENABLED)
         Ad, Bd = model_lookup(vx, DT)
 
         # ── Delay compensation ───────────────────────────────────────────────

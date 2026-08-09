@@ -91,7 +91,7 @@ together.
 
 ### 7. Score it
 
-Click **Show Metrics** to print a full 12-metric breakdown to the console
+Click **Show Metrics** to print a full 13-metric breakdown to the console
 (see [Composite Score](architecture.md#the-composite-score) below) and show a one-line
 summary in the plot title. Click **Benchmark All Paths** to run every
 synthetic path 3× each with the currently loaded weights and print a
@@ -279,9 +279,8 @@ ros2 launch fsae_bringup sim.launch.py record_cones:=false          # skip cone_
 /fsds/testing_only/track       → sim_perception   → /fsae/slam/left_track
                                                    → /fsae/slam/right_track
                                                    → /fsae/perception/cone_detection
-/fsds/testing_only/odom        → sim_perception
+/fsds/testing_only/odom        → sim_perception   → /fsae/slam/car_odom
                                   centerline_planner (via car_position)
-                                  mpc_controller_standalone
 
 /fsae/slam/left_track,
 /fsae/slam/right_track,
@@ -289,7 +288,11 @@ ros2 launch fsae_bringup sim.launch.py record_cones:=false          # skip cone_
 
 /fsae/planning/selected_trajectory  → mpc_controller_standalone   → /fsds/control_command
 /fsae/slam/car_position             → mpc_controller_standalone
-/fsds/testing_only/odom             → mpc_controller_standalone
+/fsae/slam/car_odom                 → mpc_controller_standalone  (SAME snapshot as car_position;
+                                                                   see sim_perception.py's "Speed/
+                                                                   yaw-rate synchronisation" note —
+                                                                   do NOT use the raw
+                                                                   /fsds/testing_only/odom directly)
 /fsae/perception/cone_detection     → mpc_controller_standalone  (cone proximity brake)
 
 /fsds/signal/go                → mpc_controller_standalone  (unlock)
@@ -372,6 +375,42 @@ Docker path can't reach that directory directly (no volume mount ties the
 container to this repo), so it still falls back to
 `<FSDS repo root>/cone_map.json` — copy that file into
 `fsds_simulator/cone_maps/` manually to load it.
+
+### CSV telemetry logging
+
+Every controller node (`stanley_controller.py`, `mpc_controller.py`,
+`mpc_controller_standalone.py`) can optionally write two CSVs per run —
+per-control-step telemetry and periodic path snapshots — via
+`telemetry_logger.ControlLogger`. **Off by default**, same toggle pattern as
+`cone_recorder` above: a ROS parameter, not a separate node or launch flag.
+
+```bash
+ros2 launch fsae_bringup sim.launch.py log_csv:=true                          # -> ~/fsae_logs
+ros2 launch fsae_bringup sim.launch.py log_csv:=true log_dir:=/path/to/logs   # custom output dir
+ros2 launch fsae_bringup sim.launch.py                                        # logging off (default)
+```
+
+Or directly on a `ros2 run`/node if you're not going through `sim.launch.py`:
+
+```bash
+ros2 run fsae_control mpc_controller_standalone --ros-args -p log_csv:=true -p log_dir:=/path/to/logs
+```
+
+Each run writes `<tag>_control_<timestamp>.csv` (one row per 20 Hz control
+step: position, heading, speed, tracking error, commanded steering/accel,
+solver health, and the latency-diagnostic columns) and
+`<tag>_path_<timestamp>.csv` (path snapshots at ~1 Hz) into `log_dir`
+(`~/fsae_logs` if unset). On shutdown, the control CSV is rewritten with a
+`#`-commented header holding the run's composite score, computed by the exact
+same maths as the offline tuner — see
+[The Composite Score](architecture.md#the-composite-score) and
+`fsae_control/telemetry_logger.py`'s module docstring for the full column
+reference and units.
+
+Logging and cone recording are independent toggles and can be combined freely
+(`log_csv:=true record_cones:=true`) — a common pattern for a validation lap
+you want to both replay through the CSV telemetry and reload into the GUI as
+a recorded track.
 
 ### Launching nodes with FSDS on Windows (WSL + Docker)
 

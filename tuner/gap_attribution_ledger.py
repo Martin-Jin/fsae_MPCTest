@@ -154,7 +154,7 @@ def main():
     print(f"LIVE saturation (recorded map): {live_sat:.2f}%\n")
 
     factors = [
-        ("A. no ceiling at all (pre-2026-08-06 baseline)", no_ceiling_params),
+        ("A. no ceiling at all (original baseline)", no_ceiling_params),
         ("B. ceiling, PROPORTIONAL law (gain=700, tau=0.25)", proportional_law_params),
         ("C. ceiling, INTEGRAL law, OLD tau=0.25 (gain=450)", integral_law_old_tau_params),
         ("D. ceiling, INTEGRAL law, MEASURED tau=0.40 (shipped)", shipped_params),

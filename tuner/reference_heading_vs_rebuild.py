@@ -4,14 +4,13 @@ can yaw, and does that correlate with how much the rebuild moved that tick?
 
 Why this exists
 ----------------
-tuner/blend_reset_diagnostics.py (sim_to_real_investigation.md S14) showed
-blend_paths()'s reset_dist=2.0m bypass fires 0/1038 times on the recorded
-map -- so the *bypass* cannot explain the reference-heading swings that
-S12.8 measured (both stacks chase a reference swinging faster than either
-car can yaw, 78-100% of heading-error growth). That leaves two live
-possibilities for the *blended* (alpha=0.4 EMA) path, which is what
-actually gets published on every single one of those 1038 recorded-map
-ticks:
+tuner/blend_reset_diagnostics.py showed blend_paths()'s reset_dist=2.0m
+bypass essentially never fires on the recorded map -- so the *bypass*
+cannot explain the reference-heading swings observed (both stacks chase a
+reference swinging faster than either car can yaw, which drives most of
+the heading-error growth). That leaves two live possibilities for the
+*blended* (alpha=0.4 EMA) path, which is what actually gets published on
+nearly every recorded-map tick:
 
   1. alpha=0.4 blending is itself insufficient -- even a moderate,
      sub-threshold rebuild jump, blended at 40% weight per tick, could

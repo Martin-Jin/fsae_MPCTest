@@ -1,25 +1,28 @@
 """
-Cross-check: are the high-excess ticks found in S26 the same anchor/seed-jump
-mechanism S19 identified, or a distinct one?
+Cross-check: are ticks where the planner's online reference heading swings
+much faster than a fixed geometric reference demands explained by the
+anchor/seed-jump artifact in the boundary-planner's midpoint selection, or
+by a distinct mechanism?
 
 Why this exists
 ----------------
-S26 (sim_to_real_investigation.md) found that on 5.8% of ticks, the
-planner's online reference heading swings 1.87-3.51x faster than a fixed
-geometric reference demands, and those ticks carry an 18x higher immediate
-steering-saturation rate. It named S19's `min_ahead` anchor-jump artifact
-(filter_cones_window's forward cutoff dropping the nearest surviving
-midpoint as the car's pose crosses it) as a plausible but UNCONFIRMED cause
-of the same events, and left this cross-check as the explicit next step.
+A small fraction of ticks show the planner's online reference heading
+swinging several times faster than a fixed geometric reference would
+demand, and those ticks carry a much higher immediate steering-saturation
+rate. A plausible but unconfirmed cause is the seed-midpoint anchor-jump
+artifact: filter_cones_window's forward cutoff can drop the nearest
+surviving midpoint as the car's pose crosses it, causing the path-build
+seed to jump discontinuously. This script is the cross-check for that
+hypothesis.
 
-This script re-runs the same rollout, wraps build_path_walls() the same
-non-invasive way S14/S19 did for blend_paths(), and captures per-tick:
+It re-runs the rollout, wraps build_path_walls() non-invasively (same
+approach used to instrument blend_paths() elsewhere), and captures per-tick:
   - the identity (position) of the nearest-ahead midpoint that seeds
     _build_wall_path's chain
   - the raw (pre-blend) centreline's near-field tangent direction
 
-then reports, for each S26 high-excess tick, whether the seed midpoint
-changed discontinuously at that tick (S19's mechanism) or not (something
+then reports, for each high-excess tick, whether the seed midpoint changed
+discontinuously at that tick (the seed-jump mechanism) or not (something
 else -- e.g. a genuine sign-reversal corner transition, or a different
 planner mechanism entirely).
 
@@ -127,7 +130,7 @@ def main():
     dref_geom = np.degrees(np.gradient(ref_psi_geom, dt))
     excess = np.abs(dref_planner) - np.abs(dref_geom)
 
-    # Seed-jump distance tick-to-tick (S19's mechanism signature).
+    # Seed-jump distance tick-to-tick (the anchor-jump mechanism signature).
     seed_jump = np.full(n, np.nan)
     for i in range(1, n):
         if seeds[i] is not None and seeds[i - 1] is not None:
@@ -146,15 +149,16 @@ def main():
         print(f"{i:5d} {i*dt:7.2f} {excess[i]:8.1f} {sj_s:>10s} {rt_s} {u_steer[i]:8.3f}")
 
     print()
-    # A seed jump >1.0 m in one tick is the S19 signature (its worked example
-    # jumped ~4m while the car moved 0.87m); flag ticks meeting that bar.
-    s19_like = np.isfinite(seed_jump) & (seed_jump > 1.0)
-    overlap = np.intersect1d(hi, np.where(s19_like)[0])
-    print(f"High-excess ticks explained by a >1m seed-midpoint jump "
-          f"(S19-like): {len(overlap)} / {len(hi)}")
+    # A seed jump >1.0 m in one tick is the anchor-jump signature (a
+    # discontinuous jump in the seed midpoint far larger than the car's own
+    # motion that tick); flag ticks meeting that bar.
+    seed_jump_like = np.isfinite(seed_jump) & (seed_jump > 1.0)
+    overlap = np.intersect1d(hi, np.where(seed_jump_like)[0])
+    print(f"High-excess ticks explained by a >1m seed-midpoint jump: "
+          f"{len(overlap)} / {len(hi)}")
     if len(hi) > 0:
         print(f"  -> {100*len(overlap)/len(hi):.0f}% of high-excess ticks "
-              f"coincide with a S19-style seed discontinuity")
+              f"coincide with a seed discontinuity")
     print()
     print("Ticks NOT explained by a seed jump point to a distinct mechanism")
     print("(e.g. a genuine sign-reversal corner transition, or something in")

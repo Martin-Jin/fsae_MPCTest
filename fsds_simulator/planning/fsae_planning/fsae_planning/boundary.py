@@ -45,7 +45,7 @@ _WALL_MAX_TURN_COS  = -0.5
 # once the MPC's own speed-request low-pass and rate limits are accounted for);
 # the previous 15 m horizon only revealed such a corner a couple of car-lengths
 # before the car needed to already be nearly stopped, causing steering
-# saturation and a spin-out (see fsae_planning_changes.md).
+# saturation and a spin-out.
 _WALL_PLAN_HORIZON  = 25.0
 
 
@@ -243,29 +243,22 @@ def _build_wall_path(
     cos_y, sin_y = math.cos(car_yaw), math.sin(car_yaw)
     heading = np.array([cos_y, sin_y], dtype=np.float64)
 
-    # Seed: nearest midpoint that isn't clearly BEHIND the car.
+    # Seed: nearest midpoint that isn't clearly behind the car.
     #
-    # A hard `fwd > 0.3` gate (the previous version) discards a midpoint
-    # outright the instant its heading-frame forward projection dips at or
-    # below the cutoff -- which happens as the car's heading rotates through
-    # a corner even while the midpoint is still the closest point on the
-    # track and hasn't moved. Losing the nearest, ~1 m midpoint then forces
-    # the seed to jump to the next surviving one, which in a corner (where
-    # midpoints are sparser) can be several metres further away -- while the
-    # car itself moved a few tens of cm. That discontinuous jump in the
-    # published path's own near-field anchor deletes a real corner from the
-    # plan right as the car needs to react to it (measured directly: two
-    # consecutive control ticks, car displacement 0.5 m, seed jumped from
-    # dist 1.09 to 4.72 m -- see sim_to_real_investigation.md S33/S19).
+    # A hard `fwd > 0.3` gate discards a midpoint outright the instant its
+    # heading-frame forward projection dips at or below the cutoff, which
+    # happens as the car's heading rotates through a corner even while the
+    # midpoint is still the closest point on the track and hasn't moved.
+    # Losing the nearest midpoint then forces the seed to jump to the next
+    # surviving one, which in a corner (where midpoints are sparser) can be
+    # several metres further away — a discontinuous jump in the published
+    # path's own near-field anchor right as the car needs to react to it.
     #
-    # Fix: reject only midpoints CLEARLY behind the car (a small negative
-    # margin, not a positive one) so a near midpoint stays eligible through
-    # the exact heading range where the old cutoff discarded it, and among
-    # eligible points always take the nearest -- same selection rule as
-    # before, just a threshold that does not discontinuously exclude the
-    # single closest point mid-corner. Falls back to the nearest midpoint
-    # overall if literally everything is behind (a sharp bend right at the
-    # car), same as before.
+    # Fix: reject only midpoints clearly behind the car (a small negative
+    # margin, not a positive one), so a near midpoint stays eligible through
+    # the heading range where the old cutoff discarded it, and among eligible
+    # points always take the nearest. Falls back to the nearest midpoint
+    # overall if literally everything is behind (a sharp bend right at the car).
     fwd = (midpoints - car_pos) @ heading
     forward_idx = np.where(fwd > -0.5)[0]
     if len(forward_idx) == 0:

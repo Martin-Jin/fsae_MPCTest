@@ -2,10 +2,10 @@
 Does REF_HEADING_RATE_LIMIT's recorded-map improvement (tuner/ref_heading_limiter_ab.py)
 hold across settings.VALIDATION_SUITE, or is it a one-map artifact?
 
-Per the standing rig-validation lesson (sim_to_real_investigation.md S12.10/
-S13 — "the absence of this check is exactly how the 13% sustained-cornering
-surplus survived a refit"), any candidate improvement must be checked against
-the synthetic suite before being trusted, not just the one recorded map.
+Per the standing rig-validation lesson -- a plausible-looking improvement on
+a single recorded map can hide a regression a wider sweep would catch --
+any candidate improvement must be checked against the synthetic suite
+before being trusted, not just the one recorded map.
 
 Usage
 -----

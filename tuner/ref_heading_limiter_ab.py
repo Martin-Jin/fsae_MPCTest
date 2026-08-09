@@ -1,6 +1,6 @@
 """
 A/B test: does REF_HEADING_RATE_LIMIT (settings.py) close any of the
-saturation gap identified in sim_to_real_investigation.md S26/S27?
+steering-saturation gap between sim and live?
 
 Sweeps REF_HEADING_RISE_RATE against the disabled baseline on the recorded
 map. Patches sim.rollout_core's already-imported module attributes directly

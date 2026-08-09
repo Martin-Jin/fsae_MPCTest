@@ -81,13 +81,14 @@ from settings import (
     ROLLOUT_EPS,
     Q_diag,
     R_diag,
-    R_rate_diag
+    R_rate_diag,
+    N_HORIZON,
 )
 
 # ==========================================
 # SETUP AND CONFIGURATION
 # ==========================================
-N_horizon = 25      # MPC prediction horizon (steps = 1.25 s of look-ahead at 20 Hz)
+N_horizon = N_HORIZON  # MPC prediction horizon (steps); see settings.N_HORIZON
 v_ref     = 7.0     # Fallback constant speed (m/s); only used if path_v_profile is empty
 
 # ── MPC Cost Weight Matrices ───────────────────────────────────────────────────

@@ -111,13 +111,12 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max, du_max=None, terminal_scale=
         Extra multiplier on the state cost applied ONLY to the terminal state
         x[:,N], on top of the existing (unscaled) per-step cost it already
         gets from the uniform sum over all N+1 columns. 1.0 (default) is a
-        no-op -- exactly the pre-2026-08-08 behaviour, no terminal weighting
-        at all. Added to close a structural gap: with no terminal cost or
-        constraint, the MPC has no reason to prefer trajectories that leave
-        it in a good position at the end of the horizon, which can show up
-        as myopic behaviour right at the horizon boundary. >1.0 adds weight;
-        NOT the same knob as settings.Q_diag, which scales every step
-        equally including this one.
+        no-op: no terminal weighting at all. This closes a structural gap:
+        with no terminal cost or constraint, the MPC has no reason to prefer
+        trajectories that leave it in a good position at the end of the
+        horizon, which can show up as myopic behaviour right at the horizon
+        boundary. >1.0 adds weight; NOT the same knob as settings.Q_diag,
+        which scales every step equally including this one.
 
     Returns
     -------
@@ -159,9 +158,9 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max, du_max=None, terminal_scale=
 
     # Terminal cost: EXTRA weight on the final predicted state x[:,N], on top
     # of the per-step weight it already receives above. terminal_scale=1.0
-    # (default) makes this term's coefficient zero -- a pure no-op, matching
-    # the pre-2026-08-08 behaviour where every column including the terminal
-    # one was weighted identically. See init_parameterized_mpc's docstring.
+    # (default) makes this term's coefficient zero -- a pure no-op, i.e.
+    # every column including the terminal one is weighted identically.
+    # See init_parameterized_mpc's docstring.
     if terminal_scale != 1.0:
         cost += (terminal_scale - 1.0) * cp.sum_squares(
             cp.multiply(sqrtQ_param[:, 0], x[:, N])
@@ -215,8 +214,8 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max, du_max=None, terminal_scale=
     # weights tuned here did not transfer faithfully. Mirrors mpc_core.py's
     # du_max (see that file for how the 180 deg/s figure was measured).
     #
-    # Step-0 constraint against u_prev, added 2026-08-08 to close a second
-    # parity gap: mpc_core.py hard-constrains `u[:,0] - uprev_p` (its own
+    # Step-0 constraint against u_prev closes a second parity gap:
+    # mpc_core.py hard-constrains `u[:,0] - uprev_p` (its own
     # separate raw-u_prev Parameter, not the sqrtR_rate-weighted one used in
     # the cost), so live could never jump more than du_max from the last
     # applied command on the very first predicted step. Offline previously
