@@ -3,5 +3,12 @@ __pycache__/
 CLAUDE.md
 todo.md
 /fsae_planning/
-/tuner/speed_profile_export.csv
-/tuner/raceline_export.csv
+
+# tuner/speed_profile_export.csv and tuner/raceline_export.csv were
+# ignored as regenerable artifacts until 2026-08-10. They are now
+# tracked: sim.launch.py's path_map_path default points at
+# raceline_export.csv, so it is a runtime dependency of the default
+# launch config, not a throwaway output -- an ignored copy would
+# leave a fresh clone pointing at a missing file. Regenerate with
+#   python3 -m tuner.raceline_optimizer      (raceline)
+#   python3 -m tuner.export_speed_profile    (centreline + speeds)

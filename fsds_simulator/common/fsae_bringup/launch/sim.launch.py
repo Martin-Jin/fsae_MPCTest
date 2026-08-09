@@ -17,24 +17,22 @@ from launch.substitutions import LaunchConfiguration, PythonExpression
 #   ros2 launch fsae_bringup sim.launch.py record_cones:=false          # skip cone_recorder
 #   ros2 launch fsae_bringup sim.launch.py use_precomputed_speed:=false # live curvature_speed()
 #                                                                        # instead of the mapped-track
-#                                                                        # speed profile (see S48,
-#                                                                        # fsae_MPCTest/docs/
-#                                                                        # sim_to_real_investigation.md).
+#                                                                        # speed profile.
 #                                                                        # On (mapped-track profile) by
 #                                                                        # default -- edit this file's
 #                                                                        # use_precomputed_speed default
 #                                                                        # below to change the default
 #                                                                        # instead of passing the flag
 #                                                                        # every launch.
-#   ros2 launch fsae_bringup sim.launch.py use_precomputed_path:=false  # live planner centreline
-#                                                                        # instead of tracking a precomputed
-#                                                                        # path -- re-enables
-#                                                                        # centerline_planner.py in the
-#                                                                        # loop. On (oracle path) by
-#                                                                        # default, matching
-#                                                                        # use_precomputed_speed -- see
-#                                                                        # control.launch.py's
-#                                                                        # use_precomputed_path description.
+#   ros2 launch fsae_bringup sim.launch.py use_precomputed_path:=false  # live planner's centreline
+#                                                                        # (centerline_planner.py) instead
+#                                                                        # of the precomputed oracle path
+#                                                                        # -- planner-vs-controller
+#                                                                        # isolation / live-planner-in-loop
+#                                                                        # experiment mode. Precomputed
+#                                                                        # path is on by default -- see
+#                                                                        # this file's use_precomputed_path
+#                                                                        # default below to change it.
 def generate_launch_description():
     launch_dir = os.path.join(get_package_share_directory('fsae_bringup'), 'launch')
     planner = LaunchConfiguration('planner')
@@ -104,18 +102,34 @@ def generate_launch_description():
                         "back to live curvature_speed()."),
         DeclareLaunchArgument(
             'path_map_path',
-            default_value='/home/Formula-Student-Driverless-Simulator/fsae_MPCTest/tuner/speed_profile_export.csv',
+            default_value='/home/Formula-Student-Driverless-Simulator/fsae_MPCTest/tuner/raceline_export.csv',
             description="Passed through to control.launch.py — see that file's "
-                        "path_map_path description."),
+                        "path_map_path description. Switched 2026-08-10 from "
+                        "speed_profile_export.csv (the centreline) to "
+                        "raceline_export.csv (tuner/raceline_optimizer.py's "
+                        "minimum-time line) so the tracked geometry actually "
+                        "contains the widen-entry/clip-apex shape a corner "
+                        "needs -- the MPC's optimum is always e_y=0 on "
+                        "whatever path it is given, so it can never invent a "
+                        "racing line from a centreline reference no matter how "
+                        "Q/R are tuned. Same x,y,psi,v_target format, so this "
+                        "is a drop-in swap. NOTE: only the GEOMETRY is used "
+                        "while use_precomputed_speed:=false (launch_all.sh's "
+                        "default) -- the raceline's own v_target (min 5.89 m/s "
+                        "vs the centreline's 2.13) is NOT applied, which keeps "
+                        "this a clean line-only experiment rather than also "
+                        "raising corner entry speed."),
         DeclareLaunchArgument(
             'use_precomputed_path',
             default_value='true',
             description="Passed through to control.launch.py — see that file's "
-                        "use_precomputed_path description. On by default, "
-                        "matching use_precomputed_speed: the standing "
-                        "configuration is oracle path + oracle speed. Set "
-                        "false for the planner-vs-controller isolation "
-                        "diagnostic (live planner centreline)."),
+                        "use_precomputed_path description. On by default: "
+                        "matches use_precomputed_speed's default so "
+                        "mpc_standalone tracks the precomputed "
+                        "oracle path/speed pair by default, planner out of "
+                        "the loop. Override with use_precomputed_path:=false "
+                        "on the command line for the planner-vs-controller "
+                        "isolation / live-planner-in-loop experiment mode."),
         DeclareLaunchArgument(
             'v_max', default_value='15.0',
             description='m/s -- top speed on straights (overrides fsae_params.yaml controller.v_max)'),
