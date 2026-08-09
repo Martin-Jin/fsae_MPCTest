@@ -29,22 +29,13 @@ Two publish rates (`pose_rate` 20 Hz, `cone_rate` 10 Hz)
 Pose and cones are published on SEPARATE timers, and this matters.
 
 `pose_rate` must be >= the controller's rate (`CONTROL_HZ = 20` in
-mpc_controller_standalone.py).  Both used to share one 10 Hz timer, which meant
-the 20 Hz MPC re-solved against an unchanged pose on every second tick.
-Measured in `mpc_standalone_control_1785976976.csv`: `car_x`/`car_y` were
-byte-identical to the previous row on **50.5%** of control steps (effective
-pose rate 9.9 Hz), and freeze runs were almost all exactly one tick long
-(766 of 829) — the signature of a 2:1 rate mismatch.
-
-That produced real steering oscillation.  On a frozen tick the car had actually
-travelled a median 0.33 m (max 0.63 m) and rotated a median 0.84 deg, but `e_y`
-did not move, so the controller read its own correction as having failed and
-pushed harder; the next tick the pose jumped two steps' worth at once and it
-over-corrected back.  24 steps in that log show `|de_y|` exceeding `v*dt` —
-lateral error changing faster than the car could physically move, i.e. catch-up
-jumps rather than motion.  Note the underlying data was never the limit: the
-FSDS bridge publishes odom at 250 Hz (`update_odom_every_n_sec: 0.004`); this
-node was the bottleneck.
+mpc_controller_standalone.py) — if the MPC re-solves against an unchanged
+pose on some ticks, `e_y` doesn't move on a frozen tick, so the controller
+reads its own correction as having failed and pushes harder; the next tick
+the pose jumps multiple steps' worth at once and it over-corrects back
+(catch-up jumps rather than smooth motion). The FSDS bridge itself publishes
+odom at 250 Hz, so this node's own publish rate is the only possible
+bottleneck.
 
 Cones stay at 10 Hz on purpose.  Cropping the oracle map and building three
 messages is the expensive part of this node, and the planner gains nothing from
@@ -58,37 +49,26 @@ is therefore optimistic about localisation quality.  The offline tuner models
 this gap explicitly via `SLAM_NOISE_ENABLED` in fsae_MPCTest/settings.py
 (default off, precisely because FSDS has no such error).
 
-Speed/yaw-rate synchronisation (2026-08-08)
---------------------------------------------
-mpc_controller.py / mpc_controller_standalone.py used to get car_pos/car_yaw
-from /fsae/slam/car_position (this node's 20 Hz relay, above) but car_speed/
-car_yaw_rate from their OWN separate subscription directly to the raw 250 Hz
-/fsds/testing_only/odom topic. Those are two independent subscriptions
-racing the same 250 Hz publisher — nothing guarantees the "latest" sample
-each one holds at any given 20 Hz control tick came from the same underlying
-odom instant, so the MPC's x0 could be built from a position/heading snapshot
-and a speed/yaw-rate snapshot up to ~1/pose_rate apart, with that gap
-jittering tick to tick depending on subscription callback scheduling.
+Speed/yaw-rate synchronisation
+-------------------------------
+mpc_controller.py / mpc_controller_standalone.py get car_pos/car_yaw AND
+car_speed/car_yaw_rate from /fsae/slam/car_odom (this node's 20 Hz relay),
+NOT from a separate direct subscription to the raw 250 Hz
+/fsds/testing_only/odom topic. Two independent subscriptions racing the same
+250 Hz publisher have no guarantee the "latest" sample each holds at any
+given 20 Hz control tick came from the same underlying odom instant, so the
+MPC's x0 could be built from a position/heading snapshot and a speed/yaw-rate
+snapshot up to ~1/pose_rate apart — a gap that jitters tick to tick depending
+on subscription callback scheduling, producing small accel/brake oscillation
+concentrated in curves.
 
-Live-only symptom this produced: small, semi-random-looking accel/brake
-oscillation concentrated in curves (where e_y/e_psi/speed are all changing
-together, so a timing mismatch between them matters) rather than on flat
-straights (nothing changing, so a stale twist barely matters) -- reproduced
-in an open-loop replay of the exact logged state sequence through the real
-QP (confirms the QP correctly reacts to whatever e_v it's given -- it isn't
-inventing the oscillation), but NOT reproduced in a closed-loop offline
-rollout of the same corner on the same map with identical weights (the
-offline plant has one single, internally-consistent state at every instant,
-so it has no mechanism to produce this). See mpc_standalone_control_
-1786180405.csv, t=23-25s for the measurement.
-
-Fixed by publishing /fsae/slam/car_odom (nav_msgs/Odometry) from this node's
-_odom_cb-updated state at the SAME 20 Hz timer tick as car_position, so pose
-and twist the controller reads for one solve are guaranteed to originate
-from one atomic snapshot. car_position (PoseStamped) is kept publishing
-unchanged for centerline_planner.py / stanley_controller.py / cone_recorder.py
-/ skidpad_planner.py, none of which need speed -- only the two MPC
-controllers were switched to car_odom.
+/fsae/slam/car_odom is published from this node's _odom_cb-updated state at
+the SAME 20 Hz timer tick as car_position, so pose and twist the controller
+reads for one solve are guaranteed to originate from one atomic snapshot.
+car_position (PoseStamped) is kept publishing unchanged for
+centerline_planner.py / stanley_controller.py / cone_recorder.py /
+skidpad_planner.py, none of which need speed — only the two MPC controllers
+use car_odom.
 """
 import math
 

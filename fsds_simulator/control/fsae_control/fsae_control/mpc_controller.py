@@ -55,6 +55,11 @@ CONTROL_HZ    = 20.0   # must match MPCController(dt=0.05); dt = 1 / CONTROL_HZ
 # are never rate-limited; delaying a genuine brake request is the failure this
 # is meant to prevent.
 SPEED_TARGET_RISE_RATE = 2.0
+# Max rate (gate-units/s) at which tracking_error_speed_gate()'s output may
+# change per tick, in either direction. Mirrors
+# mpc_controller_standalone.GATE_RATE_LIMIT — keep both in sync, see that
+# constant's own comment for the rationale.
+GATE_RATE_LIMIT = 2.0
 PATH_TIMEOUT  = 0.5    # s — reset the MPC if no fresh trajectory within this window
 
 
@@ -155,6 +160,8 @@ class MPCControllerNode(Node):
         # history (start, or after a fail-safe reset) -> first target passes
         # through unlimited instead of ramping up from zero.
         self._v_des_prev: float | None = None
+        # Previous tick's tracking-error speed gate, for GATE_RATE_LIMIT below.
+        self._gate_prev: float | None = None
         self._car_yaw = 0.0
         self._car_speed = 0.0
         self._car_vy = 0.0
@@ -224,20 +231,20 @@ class MPCControllerNode(Node):
             self._mpc.reset()
             self._delta_filt = None   # drop filter state with the MPC warm-start
             self._v_des_prev = None   # don't ramp from a pre-fail-safe target
+            self._gate_prev = None    # ditto for the tracking-error speed gate
             return
 
         # Slice from the car's nearest point, gate on tracking error, and
         # rate-limit rises — identical to mpc_controller_standalone.py's
         # Phase 3; see that file and control_utils.tracking_error_speed_gate
-        # for the measurements behind each. This node forwards the result
+        # for the rationale behind each. This node forwards the result
         # through cmd_vel to fsds_bridge's speed loop rather than using the
         # MPC's own accel, but the speed TARGET must be derived the same way
         # in both nodes or they diverge in exactly the regime that matters.
         if self._speed_profile is not None:
             # Track is already fully mapped (map_path param set) — look up
             # the oracle speed target instead of re-deriving it from the
-            # live-built centreline. See load_speed_profile_csv()'s docstring
-            # and sim_to_real_investigation.md S48 for why.
+            # live-built centreline. See load_speed_profile_csv()'s docstring.
             path_X, path_Y, path_V = self._speed_profile
             v_curv = precomputed_speed_at(self._car_pos, path_X, path_Y, path_V)
         else:
@@ -249,14 +256,16 @@ class MPCControllerNode(Node):
 
             v_curv = curvature_speed(path_ahead, v_max=self._v_max, v_min=self._v_min)
 
-        # DISABLED when self._speed_profile is set (2026-08-08, temporary) --
-        # see mpc_controller_standalone.py's identical gate for the full
-        # rationale and the live measurement that motivated it.
-        if self._speed_profile is not None:
-            gate = 1.0
-        else:
-            tel = self._mpc.last_telemetry
-            gate = tracking_error_speed_gate(tel.get('e_y', 0.0), tel.get('e_psi', 0.0))
+        # Gate's own output is rate-limited (GATE_RATE_LIMIT) so its
+        # tick-to-tick change is bounded — see that constant's comment and
+        # mpc_controller_standalone.py's identical logic.
+        tel = self._mpc.last_telemetry
+        raw_gate = tracking_error_speed_gate(tel.get('e_y', 0.0), tel.get('e_psi', 0.0))
+        if self._gate_prev is not None:
+            max_step = GATE_RATE_LIMIT / CONTROL_HZ
+            raw_gate = float(np.clip(raw_gate, self._gate_prev - max_step, self._gate_prev + max_step))
+        self._gate_prev = raw_gate
+        gate = raw_gate
         desired_speed = max(self._v_min, v_curv * gate)
 
         if self._v_des_prev is not None:

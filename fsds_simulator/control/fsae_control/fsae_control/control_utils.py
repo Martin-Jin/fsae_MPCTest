@@ -147,30 +147,22 @@ def tracking_error_speed_gate(e_y, e_psi,
 
     WHY THIS EXISTS
     ---------------
-    curvature_speed() looks only at the SHAPE of the path ahead.  It has no
+    curvature_speed() looks only at the SHAPE of the path ahead. It has no
     idea where the car actually is relative to it, so it will happily command
-    full speed down a straight while the car is 3 m off-line and pointing 60
-    deg the wrong way.  That is exactly how the lap-2 failure in
-    mpc_standalone_control_1785980686.csv became unrecoverable: with |e_y| >
-    1.5 m the mean commanded speed was still 7.3 m/s (peaking at 15.0), and at
-    t=85.5-86.6 s the car held full 25 deg lock while being told to ACCELERATE
-    from 4.8 to 9.3 m/s.  Steering was saturated 49.9% of that lap — no
-    steering command can recover a corner the car is being driven faster into.
-
-    Slowing down is the only remaining control authority once steering
-    saturates, so the speed target must respond to tracking error, not just to
-    path geometry.
+    full speed down a straight while the car is badly off-line and pointing
+    the wrong way. No steering command can recover a corner the car is being
+    driven faster into once steering saturates — slowing down is the only
+    remaining control authority, so the speed target must respond to
+    tracking error, not just to path geometry.
 
     SHAPE
     -----
     Linear ramp on each of |e_y| and |e_psi|, taking the WORST (minimum) of the
     two — being badly misaligned is dangerous even when laterally close, and
-    vice versa.  Below *_lo the gate is exactly 1.0, so normal driving is
-    completely unaffected (measured on the clean middle of that same log: gate
-    < 0.99 on only 1.6% of ticks, mean 0.998).  Above *_hi it saturates at
-    `floor` rather than 0 — the car still needs enough speed to steer and to
-    make progress back to the path; cutting to a standstill mid-track is its
-    own failure mode.
+    vice versa. Below *_lo the gate is exactly 1.0, so normal driving is
+    unaffected. Above *_hi it saturates at `floor` rather than 0 — the car
+    still needs enough speed to steer and to make progress back to the path;
+    cutting to a standstill mid-track is its own failure mode.
 
     Parameters
     ----------
@@ -205,12 +197,12 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
     the final return).  waypoints[0] is assumed to be the car's current
     position.
 
-    scan_end=24 m (was 14 m): a tight hairpin (~2 m radius, v_target ~2.7 m/s)
+    scan_end=24 m: a tight hairpin (~2 m radius, v_target ~2.7 m/s)
     approached at v_max needs ~24 m to brake for at a realistic achieved
     deceleration, not the raw a_max_brake limit. A shorter scan sees the
     corner too late for the car to shed enough speed, saturating steering and
-    spinning out at corner entry (observed on the live fsae_planning stack;
-    kept in sync with the planner's own lookahead there).
+    spinning out at corner entry. Kept in sync with the planner's own
+    lookahead.
 
     The returned target also accounts for BRAKING DISTANCE (see the propagation
     block below): each corner in the scan window is converted to the fastest
@@ -220,11 +212,9 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
     the car cannot produce. scan_end makes a corner VISIBLE in time; this makes
     the resulting target ACHIEVABLE.
 
-    scan_start=0.0 (was 1.5, fixed 2026-08-08 -- see fsae_MPCTest's
-    sim_to_real_investigation.md §50 and the APEX BLIND SPOT note in the dense
-    resample block below): curvature measurement now starts at the car's own
-    position rather than 1.5 m ahead of it, closing a dead zone that let
-    short, tight corners go entirely unmeasured.
+    scan_start=0.0: curvature measurement starts at the car's own position
+    (not ahead of it), avoiding a dead zone that would let short, tight
+    corners go entirely unmeasured — see the APEX BLIND SPOT note below.
     """
     n = len(waypoints)
     if n < 3:
@@ -255,29 +245,16 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
     # further along.  Carrying it explicitly is what keeps the braking propagation
     # below honest — deriving distances from pts alone silently loses this offset.
     #
-    # APEX BLIND SPOT (fixed 2026-08-08, see fsae_MPCTest's
-    # sim_to_real_investigation.md §50): scan_start=1.5 combined with the OLD
-    # dense_step=1.0/w=5 pushed pts_s0 (the effective start of curvature
-    # measurement) to scan_start + (w-1)/2*dense_step = 1.5 + 2.0 = 3.5 m ahead
-    # of the car. A short, tight corner whose curvature is only sustained over
-    # ~2-3 m of arc (measured on a recorded map: true tightest R≈5.7 m over a
-    # ~2-3 m apex zone) can be entirely inside that 3.5 m dead zone on every
-    # single query as the car approaches — the window strides clean over the
-    # apex and curvature_speed() reports a monotonically RISING target through
-    # the whole corner instead of dipping near the true minimum. The old
-    # [::2] decimation back to ~2 m triple spacing made this worse by halving
-    # the number of samples that could land inside a short apex zone.
-    #
-    # Fix: scan_start 1.5->0.0 (measure from the car's own position), dense_step
-    # 1.0->0.5 (finer sampling so a 2-3 m apex zone still gets several samples),
-    # w 5->3 (a narrower smoothing window so the apex isn't averaged away against
-    # its shallower neighbours), and the [::2] decimation REMOVED (the smoothed
-    # points are used directly as the triples, so no samples are thrown away in
-    # exactly the region that needed more of them). Full-track validation on
-    # the offline mirror (fsae_MPCTest/sim/speed_profile.py, numeric-parity
-    # counterpart of this function) found this closes the apex gap at every
-    # corner on a recorded map with zero regressions on straights — see
-    # sim_to_real_investigation.md §50.
+    # APEX BLIND SPOT: a short, tight corner's curvature can be sustained
+    # over only ~2-3 m of arc. If the effective start of curvature
+    # measurement (scan_start plus the moving-average's own centring offset)
+    # sits further ahead than that, the window strides clean over the apex
+    # every query, and curvature_speed() reports a monotonically RISING
+    # target through the whole corner instead of dipping near the true
+    # minimum. scan_start=0.0, a fine dense_step (0.5), and a narrow
+    # smoothing window (w<=3, no decimation) exist specifically to keep the
+    # effective measurement start close to the car and leave enough samples
+    # inside a short apex zone to be seen at all.
     pts = None
     pts_s0 = scan_start
     dense_step = 0.5
@@ -302,13 +279,9 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
         pts_s0 = scan_start
 
     # Collect every triple's Menger curvature, then reduce.  Taking the raw MAX
-    # (the original behaviour) lets a SINGLE bad triple set the speed for the
-    # whole scan window, and the planner does emit those: measured on
-    # mpc_standalone_path_1785980686.csv, peak kappa across consecutive
-    # ~1 s snapshots of the same physical corner swung R=5.3 m -> 32.3 m ->
-    # 4.2 m -> 1.0 m, with a lap-2 worst case of R=0.14 m — not a real corner,
-    # a centreline-fit artifact.  Since v = sqrt(a_lat/kappa), that made
-    # v_target swing 4.7 -> 16.7 -> 6.0 m/s frame to frame.
+    # lets a SINGLE bad triple set the speed for the whole scan window, and
+    # the planner does emit those — a frame-to-frame centreline-fit artifact,
+    # not a real corner, that would otherwise swing v_target wildly.
     # kappa_at[j] records which pts index kappas[j] is centred on.  A degenerate
     # triple is skipped, so the two lists would otherwise drift out of step and
     # every later curvature would be attributed to the wrong distance.
@@ -337,8 +310,8 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
     # short running mean; an isolated fit artifact is averaged down.  Reduce
     # with a max over the SMOOTHED series rather than a percentile of the raw
     # one: the scan window only yields ~7 triples, so a p75/p90 is both noisy
-    # AND biased upward (measured: p75 pushed v_target to 20 m/s on paths where
-    # the raw max said 5 — dangerously fast, the wrong direction to err).
+    # AND biased upward (a percentile can push v_target well above what the
+    # raw max would say — dangerously fast, the wrong direction to err).
     # This keeps a sustained bend fully authoritative while refusing to let one
     # point dominate.
     # The 'valid' 3-point mean drops one entry at each end, so the surviving
@@ -370,9 +343,6 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
     # Distances: each surviving entry k[j] is centred on pts[k_at[j]], whose
     # distance ahead of the car is pts_s0 (where pts[0] actually sits, INCLUDING
     # the moving-average centre shift) plus the arc length along pts to there.
-    # A previous version assumed a fixed "+2" index offset instead, which was
-    # wrong in both directions depending on which sampling branch ran: -2 m in
-    # the common smoothed case and +2 m in the coarse short-path case.
     #
     # CORNER_ENTRY_MARGIN: a curvature sample describes the middle of a bend, but
     # the car must already be AT corner speed by the bend's ENTRY, which is
@@ -398,28 +368,22 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
     v_allowed = np.sqrt(v_corner ** 2 + 2.0 * A_BRAKE_PLAN * d_ahead)
     v_target = float(np.min(v_allowed))
 
-    # v_max_eff (the SHORT-PATH-scaled ceiling) is NOT reapplied here -- that
-    # part of the S33/S34 reasoning still holds: it exists purely for the two
-    # early-return "not enough path to measure curvature at all" cases above,
-    # and reapplying it here would only ever make a validly-measured tight
-    # corner's target MORE restrictive using a cruder signal than v_target
-    # already used.
+    # v_max_eff (the SHORT-PATH-scaled ceiling) is NOT reapplied here — it
+    # exists purely for the two early-return "not enough path to measure
+    # curvature at all" cases above, and reapplying it here would only ever
+    # make a validly-measured tight corner's target MORE restrictive using a
+    # cruder signal than v_target already used.
     #
-    # v_max ITSELF is re-clamped here (added 2026-08-08, S45) -- this was
-    # missed by the S33/S34 fix and is a distinct question from v_max_eff.
-    # On a straight approach, before a corner enters the scan window, kappa
-    # is measured near zero, so v_corner = safety*sqrt(a_lat_max/kappa) and
-    # therefore v_target can be arbitrarily large -- there is nothing else in
-    # this function that bounds the upper end once curvature has been
-    # measured at all. Confirmed live: mpc_standalone_control_1786140619.csv
-    # shows v_desired (the FILTERED target the MPC actually reacts to) reach
-    # 24.7 m/s against v_max=15.0, in 8 distinct episodes up to 3.4s long,
-    # including exactly the corner-entry window of a "brakes too late" event
-    # the user reported. A target above the car's own configured top speed
-    # eats into the braking-distance margin curvature_speed()'s whole design
-    # (A_BRAKE_PLAN, scan_end=24m) assumes is available -- the car arrives at
-    # the point curvature is finally measured already faster than intended,
-    # not just later than intended.
+    # v_max ITSELF is re-clamped here, distinct from v_max_eff above: on a
+    # straight approach, before a corner enters the scan window, kappa is
+    # measured near zero, so v_corner = safety*sqrt(a_lat_max/kappa) and
+    # therefore v_target can be arbitrarily large — nothing else in this
+    # function bounds the upper end once curvature has been measured at all.
+    # A target above the car's own configured top speed eats into the
+    # braking-distance margin curvature_speed()'s whole design (A_BRAKE_PLAN,
+    # scan_end=24m) assumes is available — the car arrives at the point
+    # curvature is finally measured already faster than intended, not just
+    # later than intended.
     return float(np.clip(v_target, v_min, v_max))
 
 
@@ -465,14 +429,14 @@ def load_speed_profile_csv(csv_path: str):
 
     For a track that's already been mapped, this replaces curvature_speed()'s
     per-tick re-derivation with a lookup against the oracle profile computed
-    once, offline, from the WHOLE recorded map -- see
-    fsae_MPCTest/docs/sim_to_real_investigation.md S48 for why: the live-built
-    centreline is measurably shorter than curvature_speed()'s own assumed
-    scan_end=24m on effectively every tick (perception FOV clips laterally on
-    a corner before its forward window does), so the live planner is
-    permanently short of the lookahead its own braking-distance design
-    assumes. This bypasses that shortfall entirely for a known track, since
-    it needs no live cone visibility to know the target speed.
+    once, offline, from the WHOLE recorded map. The live-built centreline is
+    measurably shorter than curvature_speed()'s own assumed scan_end=24m on
+    effectively every tick (perception FOV clips laterally on a corner before
+    its forward window does), so the live planner is permanently short of
+    the lookahead its own braking-distance design assumes — this bypasses
+    that shortfall entirely for a known track, since it needs no live cone
+    visibility to know the target speed. See
+    fsae_MPCTest/docs/sim_to_real_investigation.md for the measurement.
 
     Parameters
     ----------

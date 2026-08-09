@@ -165,8 +165,7 @@ class SteeringSysId(Node):
                 # orbit is ~86 m across, not the ~23 m a near-neutral estimate
                 # predicts. Underestimating K lets unfittable points into the
                 # plan, where they trip the geofence on every lap and starve
-                # the sweep of time (measured: 126 fence triggers, 16/20
-                # points done). Assuming the worst simply skips them.
+                # the sweep of time. Assuming the worst simply skips them.
                 r_est = (1.55 + K_US_ESTIMATE * float(v) ** 2) / delta
                 if 2.0 * r_est > self.max_radius * 0.9:
                     skipped.append((float(v), float(sc), r_est))
@@ -365,11 +364,10 @@ class SteeringSysId(Node):
 
         # Reach the target speed while ALREADY TURNING, not in a straight line.
         #
-        # Straight-line settling was the original design and it does not fit in
-        # any usable area: at 14 m/s, 4 s of settling plus 2.5 s of hold plus
-        # 2 s of recording carries the car ~120 m downrange, so every point
-        # ended outside the fence and the sweep spent its time returning
-        # instead of measuring (measured: 10-15 of 25 points in 25 min).
+        # Straight-line settling does not fit in any usable area: at 14 m/s,
+        # 4 s of settling plus 2.5 s of hold plus 2 s of recording carries the
+        # car ~120 m downrange, so every point ends outside the fence and the
+        # sweep spends its time returning instead of measuring.
         #
         # Turning throughout keeps the car on a closed circle whose radius is
         # set by the test point itself, so it never travels away from home.
@@ -404,8 +402,7 @@ class SteeringSysId(Node):
         elif self._phase == Phase.RETURN:
             # Steer back toward the start point.  Each test point leaves the
             # car pointing somewhere new, so without this the offsets compound
-            # and the car walks off across the map (measured: 103 m of drift
-            # before hitting a wall on the first real run).
+            # and the car walks off across the map.
             applied_steer = self._steer_toward_home()
             target_v = RETURN_SPEED
             if self._dist_home() < self.home_radius * 0.5 or elapsed > 25.0:

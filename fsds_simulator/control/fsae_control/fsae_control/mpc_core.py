@@ -88,30 +88,21 @@ from scipy.linalg import expm
 # (fsae_control.control_utils / fsds_bridge); upstream used 35deg.
 MAX_STEER_RAD: float = math.radians(25.0)
 MAX_ACCEL: float = 12.0
-# Lowered 9.0 -> 7.0 (2026-08-08) -- see the live copy's comment
-# (ros2/src/fsae_planning/control/fsae_control/fsae_control/mpc_core.py) for
-# the full rationale. Live bracketing experiment, not a measured value.
+# Unlike mass, the lateral-accel ceiling, and the steering-rate floor, this
+# has no direct FSDS open-loop system-ID confirmation — see
+# sim_to_real_investigation.md before treating it as final.
 MAX_BRAKE: float = 7.0
 
 # ── Reference-heading rate limit ─────────────────────────────────────────────
 # Mirrors fsae_MPCTest/sim/rollout_core.py's REF_HEADING_RATE_LIMIT_ENABLED /
 # REF_HEADING_RISE_RATE / _rate_limit_ref_psi — keep all three in sync.
-# See sim_to_real_investigation.md S26-S28: the planner's published centreline
-# sometimes anticipates a sharp corner earlier than the car has actually
-# yawed yet, a sustained (not single-frame) effect strongly linked to
-# steering saturation. This caps how fast the tracked reference heading
-# (path_yaw in _error_state) may change per tick, symmetric in both
-# directions — unlike the speed-target rise limiter, there is no "always
-# safe" direction for a heading reference. MEASURED value: 90 deg/s is the
-# tightest rate with no DNF across settings.VALIDATION_SUITE offline; do not
-# tighten this without re-running tuner/ref_heading_limiter_suite_check.py —
-# tighter values look better on the recorded map alone but DNF a fast slalom.
-# TRIED LIVE 2026-08-07 at 90 deg/s (see sim_to_real_investigation.md S29):
-# made saturation WORSE (21.1%/26.4% baselines -> 28.0%), via the same
-# failure mode S28 found offline on PATH_MICRO_SLALOM (holding the reference
-# back during turn-in leaves a larger heading deficit to claw back later).
-# Do not re-enable without a new offline test against a synthetic path
-# shaped like that failure first — see S29 for what to check.
+# Caps how fast the tracked reference heading (path_yaw in _error_state) may
+# change per tick, symmetric in both directions — unlike the speed-target
+# rise limiter, there is no "always safe" direction for a heading reference.
+# Disabled: tried live and made steering saturation worse (holding the
+# reference back during turn-in leaves a larger heading deficit to claw back
+# later). Do not re-enable without a fresh offline test against a synthetic
+# slalom path first — see sim_to_real_investigation.md.
 REF_HEADING_RATE_LIMIT_ENABLED: bool = False
 REF_HEADING_RISE_RATE_DEG_S: float = 90.0
 
@@ -127,13 +118,12 @@ MAX_DELAY_COMPENSATION_STEPS: int = 6   # cap: a bigger measured age is clamped,
 _PREDICT_EPSI_CLIP: float = 0.5         # rad (~28.6°) — small-angle bound, see predict_ahead
 
 # ── n_delay stabilisation ───────────────────────────────────────────────────
-# pose_age_s is noisy: the control loop's own jitter (measured dt median
-# 0.050 s but max 0.121 s in mpc_standalone_control_1785976976.csv) makes a
-# raw round(pose_age_s / dt) flip between adjacent step counts tick to tick.
-# Each flip changes how many commands predict_ahead() rolls x0 through, so x0
-# jumps discontinuously between rollforward depths on consecutive solves —
-# injecting step changes into the state the QP sees at exactly the frequency
-# of the observed steering chatter. Two guards, applied in compute():
+# pose_age_s is noisy: control-loop jitter makes a raw round(pose_age_s / dt)
+# flip between adjacent step counts tick to tick. Each flip changes how many
+# commands predict_ahead() rolls x0 through, so x0 jumps discontinuously
+# between rollforward depths on consecutive solves — injecting step changes
+# into the state the QP sees at the control rate. Two guards, applied in
+# compute():
 #   1. Low-pass pose_age_s so a single late message can't move the step count.
 #   2. Hysteresis on the resulting integer: only change n_delay when the
 #      filtered estimate is clearly past the midpoint of the current bin, so
@@ -181,13 +171,11 @@ def _adaptive_R_scaling(vx: float, R_base: np.ndarray) -> np.ndarray:
 
 def _adaptive_R_rate(kappa: float, R_rate_base: np.ndarray) -> np.ndarray:
     """
-    Curvature-dependent steering-jerk softening.
-    Softens slew penalty in sharp corners (floor at 0.55 — raised from 0.35
-    on 2026-08-05, mirroring model_utils.adaptive_R_rate in fsae_MPCTest: the
-    old floor relaxed the rate-of-change cost — the one term that directly
-    discourages rapid steer-sign-flipping — exactly where live standalone-ROS
-    test data showed reversal chatter getting worse. See that function's
-    docstring for the full rationale; keep both floors in sync manually).
+    Curvature-dependent steering-jerk softening: relaxes the steering
+    rate-of-change cost in sharp corners (floor at 0.55) so the controller
+    isn't over-penalised for the extra steering rate a tight corner demands.
+    Mirrors model_utils.adaptive_R_rate in fsae_MPCTest — keep both floors
+    in sync manually.
     """
     scale = max(0.55, 1.0 / (1.0 + 3.0 * abs(kappa)))
     R = R_rate_base.copy()
@@ -200,8 +188,7 @@ def _adaptive_Q_scaling(e_y: float, Q_base: np.ndarray, enabled: bool) -> np.nda
     Soften the lateral-error cost Q[0,0] when already close to the
     centreline, to reduce small-error hunting/chatter. Mirrors
     model_utils.adaptive_Q_scaling in fsae_MPCTest — see that function's
-    docstring for the full mechanism, live-log measurement, and why this is
-    disabled by default (added 2026-08-08, sim_to_real_investigation.md S42).
+    docstring for the full mechanism and why this is disabled by default.
     enabled=False returns Q_base untouched.
     """
     if not enabled:
@@ -256,10 +243,8 @@ class MPCController:
             and mpc_controller_standalone.py) so the discretised model's
             predictions align with real elapsed time.
         N : int
-            MPC horizon length in steps (35 -> 1.75 s lookahead at dt=0.05;
-            changed from 25 2026-08-08, see settings.N_HORIZON's comment for
-            the sweep that found this optimum). Must match settings.N_HORIZON
-            for tuned weights to transfer.
+            MPC horizon length in steps (35 -> 1.75 s lookahead at dt=0.05).
+            Must match settings.N_HORIZON for tuned weights to transfer.
 
         Vehicle geometry/dynamics constants (lf, lr, m, Iz, Cf, Cr,
         tau_delta, tau_a) are hardcoded here rather than imported from
@@ -271,29 +256,20 @@ class MPCController:
         self.N  = N
 
         # ── Vehicle geometry & dynamics  ─────
-        # FSDS-matched values.  Mass 255 kg is confirmed from the sim
-        # (docs/vehicle_model.md).  The true lf/lr, Iz and Cf/Cr are NOT in the
+        # FSDS-matched values. Mass 255 kg is confirmed from the sim
+        # (docs/vehicle_model.md). The true lf/lr, Iz and Cf/Cr are NOT in the
         # FSDS repo (they live in git-LFS .uasset binaries), so these are chosen
         # from physical reasoning rather than read off:
         #   - lf < lr (CoG biased toward the front axle) makes the bicycle model
         #     UNDERSTEER (understeer gradient K_us > 0), i.e. stable at every
-        #     speed.  The upstream lf=0.85 > lr=0.70 was oversteer-prone
-        #     (K_us < 0, v_crit ~35 m/s) — a needless stability risk on a car
-        #     whose real balance we can't measure.  Swapped for margin.
-        #   - Iz ~= m*lf*lr (~152) is the standard yaw-inertia estimate; the
-        #     upstream 110 under-estimated it, making the model expect a twitchier
-        #     car than reality.
+        #     speed — a needless oversteer stability risk otherwise, on a car
+        #     whose real balance we can't measure.
+        #   - Iz ~= m*lf*lr (~152) is the standard yaw-inertia estimate.
         # Wheelbase L = lf + lr = 1.55 m is an estimate for a FS car (the FSDS
         # collision box is 1.80 m long — an upper bound on car length, not the
-        # wheelbase).  Refine all of these via system-ID on the running sim.
-        #
-        # 2026-08-08: vehicle_physics.py's own lf/lr/Iz were still the OLD,
-        # oversteer-prone values (0.85/0.70/110) when this swap was made here
-        # 2026-08-07 -- a one-sided fix that violated this project's plant/
-        # model parity rule (see CLAUDE.md) and left THIS file's own Cf/Cr
-        # below stale (computed against the pre-swap geometry). Both are now
-        # fixed together: vehicle_physics.py's lf/lr/Iz match this file, and
-        # Cf/Cr below are recomputed from the corrected geometry.
+        # wheelbase). Refine all of these via system-ID on the running sim.
+        # Must match vehicle_physics.VehicleParams' lf/lr/Iz (CLAUDE.md's
+        # plant/model parity rule) — keep in sync manually.
         self.lf = 0.70
         self.lr = 0.85
         self.m  = 255.0
@@ -303,9 +279,6 @@ class MPCController:
         # (C_eff = mu_eff * Fz_nominal * B * C * D). If the tyre model in
         # vehicle_physics.py changes, recompute these from VehicleParams()
         # and paste the new values here; don't hand-edit them independently.
-        # Recomputed 2026-08-08 after fixing vehicle_physics.py's lf/lr (see
-        # above) -- the previous values here were stale, computed against
-        # vehicle_physics.py's pre-fix geometry (lf=0.85, lr=0.70).
         self.Cf = 29155.47766921484
         self.Cr = 19512.3421655211
         self.tau_delta = 0.08
@@ -314,6 +287,11 @@ class MPCController:
         self.nx = 8
         self.nu = 2
 
+        # Keep numerically identical to fsae_MPCTest/settings.py's
+        # Q_diag/R_diag/R_rate_diag and the same three lists in
+        # fsds_simulator's copy of this file (see CLAUDE.md's parity rule).
+        # Check tuning_history.txt for the latest tuned/validated set before
+        # assuming these are current — fetch fsae_MPCTest's origin/main first.
         Q_diag      = [8.835061533166446, 0.10074710969078902, 3.121860429243342, 0.10204777472070867, 9.944842732101566, 0.0, 0.0, 0.0]
         R_diag      = [0.96036050771207, 2.7854960715243156]
         R_rate_diag = [1.10425012508917786, 2.60031073385853]
@@ -334,55 +312,26 @@ class MPCController:
         #
         # Steering: expressed as a RATE (deg/s) x dt rather than a fixed
         # per-step angle, so the physical meaning survives a change of dt.
-        # The old value was a bare radians(4.0)/step = 80 deg/s at dt=0.05,
-        # which was far below what the plant can actually do and became the
-        # binding constraint: analysis of mpc_standalone_control_1785976976.csv
-        # showed 41% of steps pinned exactly on this limit, with the command
-        # reversing sign at ~8 Hz — a rate-limit-induced limit cycle, not a
-        # weight-tuning problem. Inverting the logged yaw rate through the
-        # kinematic bicycle (delta = atan(L*r/v)) puts the ACHIEVED roadwheel
-        # rate at p99 ~138 deg/s and max ~218 deg/s, so the true actuator is
-        # at least ~200 deg/s. 180 deg/s is set just under that measured
-        # floor: enough headroom that the constraint stops binding in normal
-        # driving, while still bounding the commanded jerk. Re-measure via
-        # system-ID on the running sim to tighten this estimate.
+        # 180 deg/s is set just under the plant's measured achievable
+        # roadwheel rate (~200 deg/s, via system-ID) — enough headroom that
+        # this stops binding in normal driving while still bounding jerk.
         MAX_STEER_RATE_RAD_S: float = math.radians(180.0)
         self.du_max = np.array([MAX_STEER_RATE_RAD_S * self.dt, 0.6])
 
         # TERMINAL_Q_SCALE (settings.py, fsae_MPCTest) — extra weight on the
         # final predicted state x[:,N], on top of the uniform per-step weight
         # it already gets. 1.0 = no-op, matching every weight set tuned
-        # against this controller so far. See settings.py's comment and
-        # sim_to_real_investigation.md S40 for the structural gap this closes
-        # (both stacks lacked a terminal cost/constraint identically -- this
-        # is not a sim/live parity fix, it's a shared, previously-unaddressed
-        # gap in both). Inlined here per the standing no-settings.py-on-the-
-        # car rule; must be kept numerically identical to fsae_MPCTest's copy.
+        # against this controller so far. Inlined here per the standing
+        # no-settings.py-on-the-car rule; must be kept numerically identical
+        # to fsae_MPCTest's copy.
         self.terminal_scale = 1.0
 
         # ADAPTIVE_Q_SCALING_ENABLED (settings.py, fsae_MPCTest) — see
-        # _adaptive_Q_scaling above and sim_to_real_investigation.md S42.
-        # Was ENABLED 2026-08-08 for a live A/B test (the small-error
-        # hunting this targets -- 35.6% reversal rate at |e_y|<0.05m -- was
-        # measured live and NOT reproduced offline, so a live test was the
-        # only way to tell if this helps).
-        # REVERTED to False 2026-08-08: a same-day log
-        # (mpc_standalone_control_1786163986.csv) showed steering pin at
-        # the 25 deg hard limit for a continuous 2.86s (t=5.78-8.64s) while
-        # e_psi grew past -112 deg and v_actual collapsed 8.4->2.6 m/s --
-        # this file's own late-turn-in symptom. In the 1s leading up to the
-        # pin (t=4.6-5.6s), e_y sat inside this scaling's soften-band
-        # (<0.3m, floor 0.5x), i.e. the lateral-error cost was actively
-        # discounted at exactly the moment the controller needed to commit
-        # to steering authority early. Not proven causal on its own (the
-        # fixed-time N=25 horizon and the planner's reference-heading lead
-        # -- see the module comments above and sim_to_real_investigation.md
-        # S26-S29/S47/S48 -- are independently-documented contributors to
-        # the same symptom), but this is the one live-tunable knob directly
-        # implicated by this measurement, so default back to matching
-        # settings.py/model_utils.py (both already default False; this was
-        # the one place still drifted True) pending a clean A/B re-test that
-        # isolates it from those other causes.
+        # _adaptive_Q_scaling above. Disabled: a live A/B test found it
+        # coincided with a bad late-turn-in episode (the lateral-error cost
+        # was discounted at exactly the moment the controller needed to
+        # commit to steering authority early). Not proven solely causal —
+        # see sim_to_real_investigation.md before re-enabling.
         self.adaptive_q_scaling_enabled = False
 
         # ── Continuity memory ─────────────────────────────────────────
@@ -567,14 +516,11 @@ class MPCController:
         path_yaw = math.atan2(seg[1], seg[0])
 
         # Perpendicular projection for lateral error (matches vehicle_physics.py's
-        # plant_to_tracking_error(): e_y = e_y_proj directly). A prior version of
-        # this line used true_dist * sign(e_y_proj) -- the full Euclidean distance
-        # to the nearest path point, not the perpendicular offset -- which only
-        # equals the correct value when the nearest point happens to be exactly
-        # abeam of the car, and otherwise overstates e_y substantially (e.g. a
-        # 5 m along-track / 0.2 m lateral offset read back as e_y ~= 5.0 instead
-        # of 0.2). Fixed to match both vehicle_physics.py and this file's own
-        # StanleyController.compute(), which never had this bug.
+        # plant_to_tracking_error(): e_y = e_y_proj directly) — NOT the full
+        # Euclidean distance to the nearest path point, which only equals the
+        # correct value when that point happens to be exactly abeam of the
+        # car (otherwise overstates e_y, e.g. a 5 m along-track / 0.2 m
+        # lateral offset would read back as e_y ~= 5.0 instead of 0.2).
         dx = fa[0] - path[base_idx][0]
         dy = fa[1] - path[base_idx][1]
         e_y_proj = dy * math.cos(path_yaw) - dx * math.sin(path_yaw)

@@ -167,7 +167,7 @@ def generate_launch_description():
                 "isolate controller/plant tracking error from planner-induced "
                 "path error. Only valid for a track that's already been fully "
                 "mapped. On by default, matching use_precomputed_speed and "
-                "fsae_MPCTest's settings.USE_PLANNER=False (2026-08-08): the "
+                "fsae_MPCTest's settings.USE_PLANNER=False: the "
                 "standing configuration is oracle path + oracle speed, "
                 "planner-in-loop is the opt-in diagnostic mode."
             )),

@@ -101,21 +101,14 @@ SPEED_TARGET_RISE_RATE = 2.0
 # Max rate (gate-units/s, gate in [floor, 1.0]) at which
 # tracking_error_speed_gate()'s output may change per tick, in EITHER
 # direction. Without this, a fast-growing e_y sweeping through the gate's
-# active band (ey_lo=0.5 to ey_hi=2.0) can compound with a simultaneously
-# falling curvature-based speed target into a sharp single-tick v_desired
-# drop that bypasses SPEED_TARGET_RISE_RATE (that limiter only bounds RISES)
-# and produces erratic a_cmd right after (measured: mpc_standalone_control_
-# 1786178292.csv, t=53.28-53.71s, v_desired 8.20->6.53->4.09 m/s over 3
-# ticks, a_cmd swinging -1.06/-0.46/+0.14 then slamming to -7.0). That
-# measurement is why the gate was disabled outright for precomputed-speed
-# runs (2026-08-08) rather than smoothed — this rate limit is the smoothed
-# alternative: it spreads the same total slowdown over ~0.35s (a full
-# 1.0->0.3 span at this rate) instead of one tick, keeping the safety
-# response (the car DOES still slow down when tracking badly) while
-# removing the single-tick cliff that caused the erratic a_cmd. Sized to
-# the same order of magnitude as SPEED_TARGET_RISE_RATE by design choice,
-# not measurement — re-tune against a live/offline A-B run if it turns out
-# to still cost real safety margin (too slow) or still chatter (too fast).
+# active band can compound with a simultaneously falling curvature-based
+# speed target into a sharp single-tick v_desired drop that bypasses
+# SPEED_TARGET_RISE_RATE (that limiter only bounds RISES), producing erratic
+# a_cmd right after. Rate-limiting the gate itself spreads the same total
+# slowdown over several ticks instead of one, keeping the safety response
+# (the car DOES still slow down when tracking badly) while removing the
+# single-tick cliff. Sized to the same order of magnitude as
+# SPEED_TARGET_RISE_RATE by design choice, not measurement.
 GATE_RATE_LIMIT = 2.0
 
 
@@ -386,26 +379,9 @@ class MPCControllerStandaloneNode(Node):
         # Scale the target down when we're failing to track. Uses the PREVIOUS
         # tick's errors (this tick's aren't known until the MPC solves), which
         # is one 50 ms step of lag — negligible next to the error timescales
-        # this responds to. See control_utils.tracking_error_speed_gate.
-        #
-        # Re-enabled for precomputed-speed runs (2026-08-09) via GATE_RATE_LIMIT
-        # instead of left disabled: disabling it entirely (2026-08-08) traded
-        # away its whole purpose -- with no gate, a precomputed-path run that
-        # drifts badly off-line keeps commanding full track speed regardless,
-        # observed driving fast while significantly off-track. The original
-        # problem was never the gate existing, it was that it applied
-        # UNSMOOTHED (unlike the rise-rate limiter below, which only limits
-        # increases): a fast-growing e_y sweeping through the gate's active
-        # band (ey_lo=0.5 to ey_hi=2.0) compounded with a simultaneously-
-        # falling v_curv into a sharp v_desired step that bypassed the rise
-        # limiter (decreases pass through instantly) and hit the MPC as a
-        # sudden target-speed cliff, producing erratic a_cmd right after
-        # (mpc_standalone_control_1786178292.csv, t=53.28-53.71s: e_y
-        # -0.69->-1.53m over 5 ticks, v_desired 8.20->6.53->4.09, a_cmd
-        # swinging -1.06/-0.46/+0.14 then slamming to -7.0 three ticks later).
-        # Rate-limiting the gate itself spreads the same total slowdown over
-        # several ticks instead of one, keeping the safety response while
-        # removing the cliff — see GATE_RATE_LIMIT's own comment.
+        # this responds to. See control_utils.tracking_error_speed_gate and
+        # GATE_RATE_LIMIT's own comment for why the gate's output is itself
+        # rate-limited before being applied.
         tel = self._mpc.last_telemetry
         raw_gate = tracking_error_speed_gate(tel.get('e_y', 0.0), tel.get('e_psi', 0.0))
         if self._gate_prev is not None:
@@ -462,9 +438,7 @@ class MPCControllerStandaloneNode(Node):
         # log_control's steer argument is RADIANS of roadwheel angle. cmd.steering
         # is the normalised FSDS [-1, 1] command, so it must be scaled back by
         # MAX_STEER_RAD (and un-negated — mpc_core flips sign for the FSDS
-        # convention) before logging. Passing cmd.steering directly made the
-        # logger's math.degrees() emit a meaningless number ~2.3x the real angle,
-        # which masked the fact that the controller was sitting on its slew limit.
+        # convention) before logging.
         if self._telemetry is not None:
             tel = self._mpc.last_telemetry
             t = self.get_clock().now().nanoseconds * 1e-9
