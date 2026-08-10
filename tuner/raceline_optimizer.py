@@ -64,9 +64,15 @@ against alat_ceiling_at(v), not OPTIMAL_LAP_A_LAT_MAX/mu.
 
 USAGE
 -----
-    python3 -m tuner.raceline_optimizer                       # cone_map.json -> raceline_export.csv
+    python3 -m tuner.raceline_optimizer                       # the default track
+    python3 -m tuner.raceline_optimizer comp_test_map_3       # a track by name
+    python3 -m tuner.raceline_optimizer --list                # what tracks exist
     python3 -m tuner.raceline_optimizer /path/to/cone_map.json out.csv
     python3 -m tuner.raceline_optimizer --iters 60 --margin 0.3
+
+With a track name (or no argument), the output goes to
+`tracks/<name>/raceline.csv`, which is where `launch_all.sh`'s `TRACK=`
+variable points the car. See `tracks/__init__.py` for the layout.
 
 Re-run whenever the recorded map changes, same as export_speed_profile.py.
 """
@@ -83,10 +89,9 @@ from model.vehicle_physics import VehicleParams  # noqa: E402
 from sim.track_io import load_cone_map, _reconstruct_centreline  # noqa: E402
 from sim.track_io import _resample_dense  # noqa: E402
 import sim.speed_profile as speed_profile  # noqa: E402
-
-DEFAULT_MAP = os.path.join(
-    os.path.dirname(os.path.dirname(_HERE)), "cone_map.json")
-DEFAULT_OUT = os.path.join(_HERE, "raceline_export.csv")
+from tracks import (  # noqa: E402
+    DEFAULT_TRACK, RACELINE_NAME, default_out_for, list_tracks, resolve_map_arg,
+)
 
 # Margin kept clear of each boundary cone (m) -- a physical car has nonzero
 # width and the recorded cone position itself carries some noise even under
@@ -520,15 +525,34 @@ def export(map_path: str, out_path: str, iters=DEFAULT_ITERS, margin=DEFAULT_MAR
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("map_path", nargs="?", default=DEFAULT_MAP)
-    ap.add_argument("out_path", nargs="?", default=DEFAULT_OUT)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument(
+        "map", nargs="?", default=None,
+        help=f"Track name under tracks/ (default: {DEFAULT_TRACK}), or an "
+             "explicit path to a cone_map.json.")
+    ap.add_argument(
+        "out_path", nargs="?", default=None,
+        help="Output CSV (default: raceline.csv beside the source map).")
+    ap.add_argument("--list", action="store_true",
+                    help="List available tracks and exit.")
     ap.add_argument("--iters", type=int, default=DEFAULT_ITERS,
                      help="curvature-reduction iterations (default: %(default)s)")
     ap.add_argument("--margin", type=float, default=DEFAULT_MARGIN,
                      help="clearance kept from each boundary cone, metres (default: %(default)s)")
     args = ap.parse_args()
-    export(args.map_path, args.out_path, iters=args.iters, margin=args.margin)
+
+    if args.list:
+        for name in list_tracks():
+            print(name)
+        return
+
+    try:
+        map_path = resolve_map_arg(args.map)
+    except ValueError as e:
+        ap.error(str(e))
+    out_path = args.out_path or default_out_for(map_path, RACELINE_NAME)
+    export(map_path, out_path, iters=args.iters, margin=args.margin)
 
 
 if __name__ == "__main__":

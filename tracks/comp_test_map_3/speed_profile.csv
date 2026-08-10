@@ -1,5 +1,5 @@
 # x,y,psi,v_target -- oracle path + speed profile exported by tuner.export_speed_profile from a cone_recorder map.
-# source_map=/home/Formula-Student-Driverless-Simulator/cone_map.json
+# source_map=/home/Formula-Student-Driverless-Simulator/fsae_MPCTest/tracks/comp_test_map_3/cone_map.json
 x,y,psi,v_target
 1.7622,-0.1838,0.00584,15.0000
 2.2275,-0.1804,0.00922,15.0000

@@ -118,12 +118,17 @@ u_bounds_max   = [ vehicle_params.max_steer, vehicle_params.max_accel]
 current_test_path_idx = -1
 
 # Recorded-track loading (see sim/track_io.py + fsae_planning's cone_recorder
-# node). Points at this repo's fsds_simulator/cone_maps/, where launch_all.sh
-# points the cone_recorder node's out_path.
-RECORDED_TRACK_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    'fsds_simulator', 'cone_maps',
-)
+# node). Primary source is tracks/<name>/cone_map.json, where ros2/launch_all.sh
+# now points the cone_recorder node's out_path (see tracks/__init__.py).
+#
+# fsds_simulator/cone_maps/ is kept as a secondary source: it holds captures
+# that predate the tracks/ layout, and the mirror repo's own launch_all.sh
+# still writes there. Both are globbed so no existing recording became
+# unreachable from this button when the layout changed.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+RECORDED_TRACK_DIR = os.path.join(_REPO_ROOT, 'tracks')
+LEGACY_RECORDED_TRACK_DIR = os.path.join(
+    _REPO_ROOT, 'fsds_simulator', 'cone_maps')
 current_recorded_track_idx = -1   # -1 = none loaded yet
 
 
@@ -380,6 +385,20 @@ def load_test_path(event):
     fig.canvas.draw_idle()
 
 
+def _recorded_track_label(track_path):
+    """
+    Display name for a recorded cone map.
+
+    Under tracks/ every map is called cone_map.json, so the basename alone
+    identifies nothing — use the containing track directory's name there, and
+    fall back to the filename for the flat legacy directory.
+    """
+    head, tail = os.path.split(track_path)
+    if tail == 'cone_map.json':
+        return os.path.basename(head)
+    return tail
+
+
 def load_recorded_track_cb(event):
     """
     Cycle through recorded cone-map JSON files in RECORDED_TRACK_DIR (newest
@@ -408,7 +427,8 @@ def load_recorded_track_cb(event):
         return
 
     files = sorted(
-        glob.glob(os.path.join(RECORDED_TRACK_DIR, '*.json')),
+        glob.glob(os.path.join(RECORDED_TRACK_DIR, '*', 'cone_map.json'))
+        + glob.glob(os.path.join(LEGACY_RECORDED_TRACK_DIR, '*.json')),
         key=os.path.getmtime, reverse=True,
     )
     if not files:
@@ -426,7 +446,7 @@ def load_recorded_track_cb(event):
         path_X, path_Y, path_Psi, path_v_profile, _blue_cones_all, _yellow_cones_all = \
             load_recorded_track(track_path)
     except (ValueError, OSError) as exc:
-        ax_map.set_title(f"Failed to load {os.path.basename(track_path)}: {exc}",
+        ax_map.set_title(f"Failed to load {_recorded_track_label(track_path)}: {exc}",
                           fontweight="bold", color="red")
         fig.canvas.draw_idle()
         return
@@ -444,7 +464,7 @@ def load_recorded_track_cb(event):
     ax_ey0.set_visible(True)
     ax_epsi0.set_visible(True)
 
-    track_name = os.path.basename(track_path)
+    track_name = _recorded_track_label(track_path)
     ax_map.set_title(f"Loaded recorded track: {track_name} | Click 'Start Sim'",
                       fontweight="bold", color="blue")
 

@@ -51,9 +51,10 @@ Either:
   advances to the next path; the camera auto-frames around it with a 15 m
   margin.
 - **Load a recorded track** — click **Load Recorded Track** to cycle
-  (newest-first) through `*.json` files in `fsds_simulator/cone_maps/`, the
-  cone maps written by `fsae_planning`'s `cone_recorder` ROS 2 node after a
-  live FSDS lap (see [Recording a track from FSDS](#recording-a-track-from-fsds)
+  (newest-first) through `tracks/*/cone_map.json` (and, for captures predating
+  that layout, `fsds_simulator/cone_maps/*.json`), the cone maps written by
+  `fsae_planning`'s `cone_recorder` ROS 2 node after a live FSDS lap (see
+  [Recording, exporting and driving a track](#recording-exporting-and-driving-a-track)
   below). Unlike the synthetic paths, the blue/yellow cones rendered are the
   *actual recorded cones*, not `place_cones()` output — a real perception
   recording, resimulated exactly as `SimPerception`/`SimPlanner` would drive
@@ -253,7 +254,7 @@ file mapping and what's a deliberate non-mirror.
 `fsae_bringup`'s `sim.launch.py` takes `controller` and `planner` as launch
 arguments — it doesn't need editing to switch between them. It also launches
 `cone_recorder` alongside the stack by default (see
-[Recording a track from FSDS](#recording-a-track-from-fsds) below), so
+[Recording, exporting and driving a track](#recording-exporting-and-driving-a-track) below), so
 `launch_all.sh` / a bare `ros2 launch fsae_bringup sim.launch.py` gives you
 MPC + cone recording in one command, no second terminal needed:
 
@@ -329,7 +330,35 @@ option already handles this — it skips `fsds_bridge` automatically.)
    vehicle.
 6. **Publish.**
 
-### Recording a track from FSDS
+### Recording, exporting and driving a track
+
+This is the full pipeline from "no map of this track exists" to "the car
+drives the precomputed line/speed on it" — recording, the two export tools,
+the on-disk layout they share, and the one switch that puts a track on the
+car. Each stage used to be documented (or not) in a different file; this
+section is now the single place that chains them. If you only need the
+concept, not the steps: **CLAUDE.md**'s planning/control-parity note and
+`tracks/__init__.py`'s module docstring cover *why* the layout looks like
+this; this section covers *how* to use it.
+
+#### Where a track lives: `tracks/<name>/`
+
+Everything for one track sits in one directory:
+
+```
+tracks/<name>/
+    cone_map.json      the cone_recorder capture (the source of truth)
+    speed_profile.csv  tuner.export_speed_profile output (centreline + oracle speed)
+    raceline.csv       tuner.raceline_optimizer output (minimum-time line)
+```
+
+`comp_test_map_3` is the track every baseline number in this repo's docs
+(`sim_to_real_investigation.md`, this guide, CLAUDE.md) is quoted against —
+don't overwrite it; give a new recording its own name. List what exists with
+`python3 -m tuner.export_speed_profile --list` (from `fsae_MPCTest/`), or
+just `ls tracks/`.
+
+#### 1. Record a lap
 
 `fsae_planning`'s `cone_recorder` ROS 2 node (in the `fsae_sim_perception`
 package) records one lap's worth of accumulated boundary cones from a live
@@ -340,11 +369,17 @@ FSDS run and writes them to a JSON file this repo can load — see
 `sim.launch.py` launches `cone_recorder` automatically (`record_cones:=true`
 is the default), so a normal `ros2 launch fsae_bringup sim.launch.py` is
 already recording; no second terminal or separate launch command needed.
-Pass an explicit output path or opt out with:
+**But** if `use_precomputed_speed`/`use_precomputed_path` are on (the
+default), the car is tracking the *existing* map's line, not driving off the
+live planner — recording a genuinely new track needs those off, and
+`ros2/launch_all.sh` is the easiest place to set that (see step 4 below,
+which covers exactly this run). Driving through `sim.launch.py` directly
+instead:
 
 ```bash
-ros2 launch fsae_bringup sim.launch.py cone_out_path:=/path/to/cone_map.json
-ros2 launch fsae_bringup sim.launch.py record_cones:=false
+ros2 launch fsae_bringup sim.launch.py controller:=stanley \
+    use_precomputed_speed:=false use_precomputed_path:=false \
+    cone_out_path:=/path/to/fsae_MPCTest/tracks/<name>/cone_map.json
 ```
 
 (`cone_recorder.launch.py` still exists standalone if you want to attach a
@@ -364,17 +399,126 @@ the car returns near its start pose after having driven at least
 never closes (e.g. a DNF) it writes anyway after `max_record_time` (default
 300 s) and marks the file `"lap_closed": false`, so a partial/failed
 recording is still usable but distinguishable from a clean lap.
-`sim.launch.py`'s default output location is `~/fsae_logs/cone_map_<timestamp>.json`,
-but **Load Recorded Track** (`gui/simulation.py`'s `RECORDED_TRACK_DIR`) now
-cycles through this repo's `fsds_simulator/cone_maps/` instead — pass an
-explicit `cone_out_path` into that directory (or move/copy the file there)
-to pick a recording up in the GUI. `launch_all.sh` (in this repo's
-`fsds_simulator/`) does this automatically on its native/non-Docker path,
-writing straight to `fsds_simulator/cone_maps/cone_map_<timestamp>.json`. Its
-Docker path can't reach that directory directly (no volume mount ties the
-container to this repo), so it still falls back to
-`<FSDS repo root>/cone_map.json` — copy that file into
-`fsds_simulator/cone_maps/` manually to load it.
+
+Writing straight into `tracks/<name>/` (as above) means the export tools in
+step 2 need no path argument — just the track name. If you instead record via
+a bare `ros2 launch fsae_bringup sim.launch.py` (default output
+`~/fsae_logs/cone_map_<timestamp>.json`), move or copy that file into
+`tracks/<name>/cone_map.json` before exporting, or pass its full path to the
+export tools directly (both accept an explicit path as well as a track name —
+see `tracks/__init__.py`'s `resolve_map_arg`).
+
+`ros2/launch_all.sh` writes directly to `tracks/$TRACK/cone_map.json` using
+whatever `TRACK=` it's currently set to, so setting `TRACK=<name>` there
+*before* recording is usually the least fiddly path (see step 4).
+
+`fsae_MPCTest/fsds_simulator/launch_all.sh` (the separate mirror-repo copy)
+still writes timestamped files to its own `fsds_simulator/cone_maps/`
+instead — a deliberate, pre-existing difference from this repo's script, not
+drift to fix. **Load Recorded Track** in the GUI reads both `tracks/*/` and
+`fsds_simulator/cone_maps/`, so either script's output is still pickable up
+there.
+
+#### 2. Export the speed profile and raceline
+
+Two independent offline tools turn a recorded `cone_map.json` into the CSVs
+the live controller can read. Run from `fsae_MPCTest/`:
+
+```bash
+python3 -m tuner.export_speed_profile <name>   # -> tracks/<name>/speed_profile.csv
+python3 -m tuner.raceline_optimizer   <name>    # -> tracks/<name>/raceline.csv
+```
+
+Omitting `<name>` targets the default track (`comp_test_map_3`). Both also
+accept an explicit `cone_map.json` path in place of a name (for a capture
+that isn't under `tracks/` yet), and `--list` prints what's available.
+
+- `export_speed_profile.py` reconstructs the centreline the same way
+  `sim/track_io.load_recorded_track()` does (scipy `CubicSpline` +
+  `planning/boundary.build_path_walls()` marched around the lap) and writes
+  its `x,y,psi,v_target` as a plain CSV — this is the "oracle path", tracking
+  it directly at `e_y=0` matches the pre-`raceline_optimizer` behaviour.
+- `raceline_optimizer.py` takes the same reconstruction and iteratively
+  reshapes it within the track width for minimum lap time (widen-entry,
+  clip-apex), respecting the physical model's `alat_ceiling` (see CLAUDE.md)
+  rather than a flat friction limit. Same CSV format/columns, different
+  geometry and generally higher `v_target`.
+
+Both write a `# source_map=<path>` comment line into the CSV, so a stray
+export can always be traced back to the map it came from. **Re-run either
+tool whenever the recorded map changes** — nothing regenerates these
+automatically.
+
+The CSV format is deliberately trivial (4 columns, ~15-line reader, no scipy)
+so the live ROS package (`control_utils.load_speed_profile_csv()` /
+`load_path_profile_csv()`, in the separate `fsae_planning` repo) doesn't need
+to port the reconstruction logic — see `export_speed_profile.py`'s module
+docstring for the full reasoning.
+
+#### 3. What the live controller reads
+
+Two independent ROS launch args, both consumed by `mpc`/`mpc_standalone`
+(not `stanley`):
+
+| Launch arg | Default | Effect |
+|------|---------|--------|
+| `map_path` + `use_precomputed_speed` | `tracks/comp_test_map_3/speed_profile.csv` | Look up target speed from the CSV's oracle profile instead of live `curvature_speed()` per tick |
+| `path_map_path` + `use_precomputed_path` | `tracks/comp_test_map_3/raceline.csv` | Track the CSV's geometry instead of subscribing to `centerline_planner.py`'s `/fsae/planning/selected_trajectory` — removes the live planner from the control loop entirely |
+
+Both default `true`, so a bare `ros2 launch fsae_bringup sim.launch.py`
+already drives the default track's precomputed line and speed with the
+planner out of the loop. `map_path` and `path_map_path` can point at
+different files (e.g. speed from the centreline, geometry from the raceline)
+since the toggles are independent — but the common case is both pointing at
+the same track, which is what step 4 gives you in one setting.
+
+If a CSV path doesn't exist (e.g. before the first export), the node logs an
+error at startup and falls back to live `curvature_speed()`/the live
+planner — it does not crash, but it also silently isn't doing what you asked,
+so check the log if a run looks unexpectedly like a live-planner run.
+
+#### 4. Switching which track the car drives
+
+**One variable.** In `ros2/launch_all.sh`:
+
+```bash
+TRACK=comp_test_map_3    # change this line to any name under fsae_MPCTest/tracks/
+```
+
+This expands to both `map_path` and `path_map_path` (and, for a *new*
+recording, `cone_out_path`) automatically — no other line in that script
+needs editing, and you never touch the hardcoded absolute defaults in
+`sim.launch.py`/`control.launch.py` (those exist only as the fallback for a
+bare `ros2 launch`, not as the thing to edit day-to-day). The script checks
+the track's CSVs exist before launching and fails with a clear message
+(naming the tracks that *do* exist) rather than silently falling back to
+live planning.
+
+To drive a track without going through `launch_all.sh`, pass the same three
+args directly:
+
+```bash
+ros2 launch fsae_bringup sim.launch.py \
+    map_path:=fsae_MPCTest/tracks/<name>/speed_profile.csv \
+    path_map_path:=fsae_MPCTest/tracks/<name>/raceline.csv
+```
+
+Putting it all together, end to end:
+
+```bash
+# 1. Record (planner-in-loop, so the recording is a real live-driven lap)
+#    -- set TRACK=<new-name>, USE_PRECOMPUTED_SPEED=false,
+#    USE_PRECOMPUTED_PATH=false, CONTROLLER=mpc_standalone (or stanley) in
+#    ros2/launch_all.sh, then:
+./ros2/launch_all.sh
+
+# 2. Export (from fsae_MPCTest/)
+python3 -m tuner.export_speed_profile <new-name>
+python3 -m tuner.raceline_optimizer   <new-name>
+
+# 3. Drive it -- set TRACK=<new-name>, both toggles back to true
+./ros2/launch_all.sh
+```
 
 ### CSV telemetry logging
 

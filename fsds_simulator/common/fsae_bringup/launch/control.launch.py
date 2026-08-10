@@ -103,12 +103,15 @@ def generate_launch_description():
             'log_dir', default_value='',
             description="Controller CSV telemetry output dir ('' -> ~/fsae_logs)"),
         DeclareLaunchArgument(
-            # Default matches launch_all.sh's fixed cone_out_path (repo-root
-            # cone_map.json) + tuner/export_speed_profile.py's own default
-            # output path -- so `python3 -m tuner.export_speed_profile` (run
-            # from fsae_MPCTest after a mapping lap) and this default agree
-            # on where the CSV lives, with no path to pass on the command line
-            # for the common case.
+            # Default points into fsae_MPCTest's tracks/<name>/ layout, where
+            # `python3 -m tuner.export_speed_profile <name>` writes -- so the
+            # exporter and this default agree on where the CSV lives, with no
+            # path to pass on the command line for the common case.
+            #
+            # To drive a DIFFERENT track, don't edit this line: set TRACK= in
+            # ros2/launch_all.sh, which expands to map_path/path_map_path for
+            # both args at once. This default is only the fallback for a bare
+            # `ros2 launch fsae_bringup control.launch.py`.
             #
             # Hardcoded absolute path, not derived from __file__ or
             # get_package_share_directory(): both resolve to the INSTALLED
@@ -120,7 +123,7 @@ def generate_launch_description():
             # runs `ros2 launch` FROM (inside WSL/the Docker container, not
             # Windows) -- update this line if the repo root ever moves.
             'map_path',
-            default_value='/home/Formula-Student-Driverless-Simulator/fsae_MPCTest/tuner/speed_profile_export.csv',
+            default_value='/home/Formula-Student-Driverless-Simulator/fsae_MPCTest/tracks/comp_test_map_3/speed_profile.csv',
             description=(
                 "Path to a fsae_MPCTest tuner/export_speed_profile.py CSV, "
                 "exported from a recorded cone map. Has no effect unless "
@@ -143,12 +146,17 @@ def generate_launch_description():
                 "map_path."
             )),
         DeclareLaunchArgument(
-            # Same file format/default location as map_path (in fact the same
-            # CSV works for both -- export_speed_profile.py writes x,y,psi,
-            # v_target together). Kept as a separate launch arg from map_path
-            # so the path and speed bypasses can be toggled independently.
+            # Same x,y,psi,v_target file FORMAT as map_path, but a different
+            # default FILE: the track's raceline.csv (tuner/raceline_optimizer.py's
+            # minimum-time line) rather than its speed_profile.csv (the
+            # centreline). The MPC's optimum is always e_y=0 on whatever path
+            # it is given, so it can never invent a racing line from a
+            # centreline reference no matter how Q/R are tuned -- the tracked
+            # geometry has to contain the widen-entry/clip-apex shape itself.
+            # Kept as a separate launch arg from map_path so the path and speed
+            # bypasses can be toggled independently.
             'path_map_path',
-            default_value='/home/Formula-Student-Driverless-Simulator/fsae_MPCTest/tuner/speed_profile_export.csv',
+            default_value='/home/Formula-Student-Driverless-Simulator/fsae_MPCTest/tracks/comp_test_map_3/raceline.csv',
             description=(
                 "Path to a fsae_MPCTest tuner/export_speed_profile.py CSV, used "
                 "as the tracked PATH (not just speed) -- see "

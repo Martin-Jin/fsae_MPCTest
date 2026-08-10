@@ -89,9 +89,12 @@ def generate_launch_description():
                         "<repo>/fsae_logs instead."),
         DeclareLaunchArgument(
             'map_path',
-            default_value='/home/Formula-Student-Driverless-Simulator/fsae_MPCTest/tuner/speed_profile_export.csv',
+            default_value='/home/Formula-Student-Driverless-Simulator/fsae_MPCTest/tracks/comp_test_map_3/speed_profile.csv',
             description="Passed through to control.launch.py — see that file's "
-                        "map_path description for the full explanation."),
+                        "map_path description for the full explanation. To "
+                        "switch tracks, set TRACK= in ros2/launch_all.sh "
+                        "rather than editing this default: it fills in both "
+                        "map_path and path_map_path from one track name."),
         DeclareLaunchArgument(
             'use_precomputed_speed',
             default_value='true',
@@ -102,23 +105,24 @@ def generate_launch_description():
                         "back to live curvature_speed()."),
         DeclareLaunchArgument(
             'path_map_path',
-            default_value='/home/Formula-Student-Driverless-Simulator/fsae_MPCTest/tuner/raceline_export.csv',
+            default_value='/home/Formula-Student-Driverless-Simulator/fsae_MPCTest/tracks/comp_test_map_3/raceline.csv',
             description="Passed through to control.launch.py — see that file's "
                         "path_map_path description. Switched 2026-08-10 from "
-                        "speed_profile_export.csv (the centreline) to "
-                        "raceline_export.csv (tuner/raceline_optimizer.py's "
+                        "the centreline (speed_profile.csv) to the raceline "
+                        "(raceline.csv, tuner/raceline_optimizer.py's "
                         "minimum-time line) so the tracked geometry actually "
                         "contains the widen-entry/clip-apex shape a corner "
                         "needs -- the MPC's optimum is always e_y=0 on "
                         "whatever path it is given, so it can never invent a "
                         "racing line from a centreline reference no matter how "
                         "Q/R are tuned. Same x,y,psi,v_target format, so this "
-                        "is a drop-in swap. NOTE: only the GEOMETRY is used "
-                        "while use_precomputed_speed:=false (launch_all.sh's "
-                        "default) -- the raceline's own v_target (min 5.89 m/s "
-                        "vs the centreline's 2.13) is NOT applied, which keeps "
-                        "this a clean line-only experiment rather than also "
-                        "raising corner entry speed."),
+                        "is a drop-in swap. NOTE: which speed applies is set "
+                        "by use_precomputed_speed, independently of this file "
+                        "— with it true (the default) the speed comes from "
+                        "map_path's profile, so the raceline's own v_target "
+                        "(min 5.89 m/s vs the centreline's 2.13) is used only "
+                        "if map_path is also pointed at raceline.csv. To "
+                        "switch tracks, set TRACK= in ros2/launch_all.sh."),
         DeclareLaunchArgument(
             'use_precomputed_path',
             default_value='true',

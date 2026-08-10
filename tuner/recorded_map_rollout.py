@@ -51,8 +51,14 @@ from sim.rollout_core import compute_step_budget, run_core_rollout  # noqa: E402
 from sim.track_io import load_recorded_track  # noqa: E402
 from tuner.offline_tuner import get_cached_model  # noqa: E402
 
-DEFAULT_MAP = os.path.join(
-    os.path.dirname(os.path.dirname(_HERE)), "cone_map.json")
+from tracks import cone_map_path, resolve_map_arg  # noqa: E402
+
+# The map every baseline in docs/ is quoted on. Moved 2026-08-10 from the
+# repo-root cone_map.json into tracks/comp_test_map_3/ (byte-identical copy),
+# so the numbers below remain directly comparable. Eight other tuner scripts
+# import this constant rather than re-deriving the path -- repointing it here
+# moves all of them together, which is the reason it stays a module constant.
+DEFAULT_MAP = cone_map_path()
 
 LIVE = {
     "steer_sat_pct": 21.1, "e_psi_mean": 15.9, "e_psi_p90": 42.0,
@@ -124,7 +130,9 @@ def summarise(rollout, params, dt=0.05):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--map", default=DEFAULT_MAP)
+    ap.add_argument("--map", default=None,
+                    help="Track name under tracks/, or an explicit cone_map.json "
+                         "path (default: the comp_test_map_3 baseline map).")
     ap.add_argument("--mode", choices=("p", "pi"))
     ap.add_argument("--gain", type=float)
     ap.add_argument("--tau", type=float)
@@ -150,13 +158,16 @@ def main():
         if val is not None:
             setattr(p, attr, val)
 
-    print(f"map      : {os.path.basename(args.map)}")
+    map_path = resolve_map_arg(args.map)
+    # Name the containing directory, not the file: under tracks/ every map is
+    # called cone_map.json, so the basename alone identifies nothing.
+    print(f"map      : {os.path.basename(os.path.dirname(map_path))}")
     print(f"ceiling  : enabled={p.alat_ceiling_enabled} "
           f"mode={p.alat_ceiling_mode} level={p.alat_ceiling} "
           f"gain={p.alat_ceiling_gain} tau={p.alat_ceiling_tau}")
     print(f"planner  : {'planner-in-loop' if args.planner else 'oracle path'}\n")
 
-    s = summarise(run(args.map, p, use_planner=args.planner,
+    s = summarise(run(map_path, p, use_planner=args.planner,
                       continue_after_dnf=args.continue_after_dnf), p)
 
     print(f"{'metric':<22}{'sim':>10}{'live':>10}{'sim/live':>10}")

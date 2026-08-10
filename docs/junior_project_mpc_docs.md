@@ -75,6 +75,7 @@ The trade-off is complexity and computation cost: solving an optimisation proble
 6. [Running the Simulator (GUI)](#6-running-the-simulator-gui)
 7. [Manual Drive Mode](#7-manual-drive-mode)
 8. [Running Against the Real FSDS Simulator](#8-running-against-the-real-fsds-simulator)
+   - [8.1 Driving a Precomputed Track Instead of the Live Planner](#81-driving-a-precomputed-track-instead-of-the-live-planner)
 9. [Module Reference](#9-module-reference)
 
 ---
@@ -841,6 +842,22 @@ every tick from the current path via `control_utils.curvature_speed()`.
 6. **Publish.**
 
 For the full from-scratch Windows/WSL/Docker setup (cloning FSDS, building the ROS 2 bridge, installing the solver stack inside the container, rebuilding after edits, etc.), see `docs/developer_guide.md#simulator-integration` in the repo — it's a long, mechanical set of steps kept there rather than duplicated here.
+
+### 8.1 Driving a Precomputed Track Instead of the Live Planner
+
+`mpc`/`mpc_standalone` can also skip the live planner entirely and track a
+precomputed path/speed CSV recorded from an earlier lap — useful for
+isolating controller/plant tracking error from planner-induced path error,
+or for driving a known track at its (offline-computed) minimum-time line
+instead of the planner's live centreline. Each such track lives in its own
+`fsae_MPCTest/tracks/<name>/` directory (cone map + two exported CSVs), and
+switching which one the car drives is one variable — `TRACK=` near the top
+of `ros2/launch_all.sh`.
+
+Full record → export → drive steps, the CSV format, and every launch arg
+involved: `docs/developer_guide.md`'s
+[Recording, exporting and driving a track](developer_guide.md#recording-exporting-and-driving-a-track)
+— kept there as the canonical version rather than duplicated here.
 
 ---
 

@@ -38,8 +38,12 @@ the shared planning code in the `planning/` folder (taken from the
 the true reference path directly — faster, and useful for isolating driving
 behaviour from planner behaviour. **Load Recorded Track** in `gui/simulation.py`
 loads a real cone map recorded from a live FSDS lap (via `fsae_planning`'s
-`cone_recorder` node) instead of a synthetic one — see
-[Recording a track from FSDS](docs/developer_guide.md#recording-a-track-from-fsds).
+`cone_recorder` node) instead of a synthetic one. Recorded tracks, and their
+exported speed/raceline CSVs, live one-per-directory under `tracks/<name>/`
+— see
+[Recording, exporting and driving a track](docs/developer_guide.md#recording-exporting-and-driving-a-track)
+for the full record → export → drive workflow and how to switch which track
+the live car uses.
 
 fsds simulator repo: https://github.com/FS-Driverless/Formula-Student-Driverless-Simulator (current implementation uses commit 59f03fa, and the V2.20 release)
 fsae planning repo: https://github.com/UOA-FSAE/fsae_planning (current implementation uses commit 28dcd4d)

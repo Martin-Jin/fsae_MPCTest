@@ -27,8 +27,15 @@ speed_profile.py change that would alter the oracle profile).
 
 Usage
 -----
+    python3 -m tuner.export_speed_profile                    # the default track
+    python3 -m tuner.export_speed_profile comp_test_map_3    # a track by name
+    python3 -m tuner.export_speed_profile --list             # what tracks exist
     python3 -m tuner.export_speed_profile /path/to/cone_map.json out.csv
-    python3 -m tuner.export_speed_profile  # defaults: repo-root cone_map.json -> speed_profile_export.csv
+
+With a track name (or no argument), the output goes to
+`tracks/<name>/speed_profile.csv`, which is where `launch_all.sh`'s `TRACK=`
+variable points the car — so the common case needs no output path. See
+`tracks/__init__.py` for the directory layout.
 """
 import argparse
 import os
@@ -40,10 +47,10 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(_HERE))
 
 from sim.track_io import load_recorded_track  # noqa: E402
-
-DEFAULT_MAP = os.path.join(
-    os.path.dirname(os.path.dirname(_HERE)), "cone_map.json")
-DEFAULT_OUT = os.path.join(_HERE, "speed_profile_export.csv")
+from tracks import (  # noqa: E402
+    DEFAULT_TRACK, SPEED_PROFILE_NAME, default_out_for, list_tracks,
+    resolve_map_arg,
+)
 
 
 def export(map_path: str, out_path: str) -> None:
@@ -60,11 +67,32 @@ def export(map_path: str, out_path: str) -> None:
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("map_path", nargs="?", default=DEFAULT_MAP)
-    ap.add_argument("out_path", nargs="?", default=DEFAULT_OUT)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument(
+        "map", nargs="?", default=None,
+        help=f"Track name under tracks/ (default: {DEFAULT_TRACK}), or an "
+             "explicit path to a cone_map.json.")
+    ap.add_argument(
+        "out_path", nargs="?", default=None,
+        help="Output CSV (default: speed_profile.csv beside the source map).")
+    ap.add_argument("--list", action="store_true",
+                    help="List available tracks and exit.")
     args = ap.parse_args()
-    export(args.map_path, args.out_path)
+
+    if args.list:
+        for name in list_tracks():
+            print(name)
+        return
+
+    try:
+        map_path = resolve_map_arg(args.map)
+    except ValueError as e:
+        # A mistyped track name is operator error, not a bug -- a one-line
+        # message naming the available tracks is more useful than a traceback.
+        ap.error(str(e))
+    out_path = args.out_path or default_out_for(map_path, SPEED_PROFILE_NAME)
+    export(map_path, out_path)
 
 
 if __name__ == "__main__":
