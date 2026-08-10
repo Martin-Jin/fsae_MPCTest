@@ -74,6 +74,7 @@ from tuner.offline_tuner import SYNTHETIC_PATHS, PATH_NAMES, get_cached_model
 from sim.sim_track import place_cones
 from sim.rollout_core import run_core_rollout, compute_step_budget
 from sim.track_io import load_recorded_track
+from tracks import TRACKS_DIR
 
 from settings import (
     USE_PLANNER,
@@ -119,14 +120,16 @@ current_test_path_idx = -1
 
 # Recorded-track loading (see sim/track_io.py + fsae_planning's cone_recorder
 # node). Primary source is tracks/<name>/cone_map.json, where ros2/launch_all.sh
-# now points the cone_recorder node's out_path (see tracks/__init__.py).
+# now points the cone_recorder node's out_path. TRACKS_DIR (from the tracks/
+# package, not a local path here) resolves into the separate fsae_planning
+# repo's own tracks/ -- see tracks/__init__.py's module docstring for why.
 #
 # fsds_simulator/cone_maps/ is kept as a secondary source: it holds captures
 # that predate the tracks/ layout, and the mirror repo's own launch_all.sh
 # still writes there. Both are globbed so no existing recording became
 # unreachable from this button when the layout changed.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RECORDED_TRACK_DIR = os.path.join(_REPO_ROOT, 'tracks')
+RECORDED_TRACK_DIR = TRACKS_DIR
 LEGACY_RECORDED_TRACK_DIR = os.path.join(
     _REPO_ROOT, 'fsds_simulator', 'cone_maps')
 current_recorded_track_idx = -1   # -1 = none loaded yet

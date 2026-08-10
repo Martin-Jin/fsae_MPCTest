@@ -89,7 +89,7 @@ def generate_launch_description():
                         "<repo>/fsae_logs instead."),
         DeclareLaunchArgument(
             'map_path',
-            default_value='/home/Formula-Student-Driverless-Simulator/fsae_MPCTest/tracks/comp_test_map_3/speed_profile.csv',
+            default_value='/home/Formula-Student-Driverless-Simulator/ros2/src/fsae_planning/tracks/comp_test_map_3/speed_profile.csv',
             description="Passed through to control.launch.py — see that file's "
                         "map_path description for the full explanation. To "
                         "switch tracks, set TRACK= in ros2/launch_all.sh "
@@ -105,7 +105,7 @@ def generate_launch_description():
                         "back to live curvature_speed()."),
         DeclareLaunchArgument(
             'path_map_path',
-            default_value='/home/Formula-Student-Driverless-Simulator/fsae_MPCTest/tracks/comp_test_map_3/raceline.csv',
+            default_value='/home/Formula-Student-Driverless-Simulator/ros2/src/fsae_planning/tracks/comp_test_map_3/raceline.csv',
             description="Passed through to control.launch.py — see that file's "
                         "path_map_path description. Switched 2026-08-10 from "
                         "the centreline (speed_profile.csv) to the raceline "

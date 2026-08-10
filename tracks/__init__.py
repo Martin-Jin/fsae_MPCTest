@@ -23,13 +23,36 @@ Grouping by track makes the set self-describing: one directory is everything
 needed to drive one track, and `launch_all.sh`'s `TRACK=` variable selects it
 by name.
 
+WHERE THE DATA ACTUALLY LIVES
+------------------------------
+`TRACKS_DIR` resolves to `ros2/src/fsae_planning/tracks/` — committed data
+INSIDE the `fsae_planning` repo, not inside this repo. This is deliberate:
+`fsae_planning` + FSDS must be drivable with no `fsae_MPCTest` checkout at
+all, which means the track data itself (not just the code that reads it) has
+to ship with `fsae_planning`. `control.launch.py`/`sim.launch.py`'s
+`map_path`/`path_map_path` defaults and `ros2/launch_all.sh`'s `TRACK=`
+variable all point at this same directory.
+
+This repo (`fsae_MPCTest`) is where NEW tracks get produced — record a lap,
+then run `export_speed_profile`/`raceline_optimizer` — but the tools here
+write into `fsae_planning`'s `tracks/` directly (see `TRACKS_DIR` below), so
+there is no separate copy step for a checkout that has both repos side by
+side. `fsae_planning` is a separate git repo with its own remote (see this
+project's CLAUDE.md) — changes under `TRACKS_DIR` are local edits to that
+checkout; committing/pushing them is a decision for that repo, not this one.
+
 Every path helper here is filesystem-only (no scipy, no ROS, no numpy) so the
 live ROS package could adopt it later without pulling in this repo's
 dependency stack.
 """
 import os
 
-TRACKS_DIR = os.path.dirname(os.path.abspath(__file__))
+TRACKS_DIR = os.path.abspath(
+    os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "..", "ros2", "src", "fsae_planning", "tracks",
+    )
+)
 
 CONE_MAP_NAME = "cone_map.json"
 SPEED_PROFILE_NAME = "speed_profile.csv"

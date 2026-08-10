@@ -62,6 +62,23 @@ the car to do something it structurally cannot -- exactly the gap CLAUDE.md
 tracks as still open. This module therefore speed-profiles (and re-shapes)
 against alat_ceiling_at(v), not OPTIMAL_LAP_A_LAT_MAX/mu.
 
+Respecting the ceiling is necessary but NOT sufficient: planning at exactly
+100% of it leaves the controller no lateral budget to correct with, since
+closing any tracking error needs curvature beyond the reference's own. The
+2026-08-10 live logs showed every corner at corner_demand > 1 with steering
+saturated on 9.4% of corner ticks. ALAT_MARGIN / BRAKE_MARGIN reserve that
+headroom -- see their comments.
+
+THIS FILE'S v_target IS THE ONE THE CAR DRIVES
+----------------------------------------------
+launch_all.sh points BOTH map_path (speed) and path_map_path (geometry) at
+raceline.csv. Speed and geometry must describe the same line: pairing this
+path with tuner/export_speed_profile.py's centreline profile hands the car a
+speed computed for a curvature it is not driving, and the two differ most
+exactly at the apexes (raceline p99 |kappa| 0.174 vs centreline 0.162 -- a
+racing line trades a straighter entry for a TIGHTER apex). The v_target
+written here is therefore load-bearing, not a diagnostic byproduct.
+
 USAGE
 -----
     python3 -m tuner.raceline_optimizer                       # the default track
@@ -93,12 +110,25 @@ from tracks import (  # noqa: E402
     DEFAULT_TRACK, RACELINE_NAME, default_out_for, list_tracks, resolve_map_arg,
 )
 
-# Margin kept clear of each boundary cone (m) -- a physical car has nonzero
-# width and the recorded cone position itself carries some noise even under
-# FSDS's ground-truth perception stand-in (see CLAUDE.md: the cone_recorder's
-# own merge distance is 0.8 m). Kept well under half a typical FS lane width
-# (~3 m) so this rarely binds except at the very tightest apexes.
-DEFAULT_MARGIN = 0.35
+# Margin kept clear of each boundary cone (m), measured from the cone centre
+# to the PATH -- and the path is the car's centreline, so this must cover the
+# car's own half-width or a "contained" line still puts a wheel through a cone.
+#
+# Budget: half of VehicleParams.tf (front track 1.25 m) = 0.625, plus tyre
+# width and the recorded cone's own position noise (the cone_recorder merges
+# detections within 0.8 m, so a recorded centre can sit some way off the true
+# one). 0.90 m covers the axle half-width with ~0.28 m left over.
+#
+# Raised from 0.35 on 2026-08-10. 0.35 was under half the front track, so it
+# never modelled the car at all despite its comment claiming to; it survived
+# only because the old speed profile was slow enough that the optimiser never
+# pushed the line hard into a boundary. Adding ALAT_MARGIN made the optimiser
+# prefer a tighter line and the defect surfaced immediately: the regenerated
+# raceline came within 0.388 m of a cone centre at 6 stations (16 within
+# 0.8 m), i.e. inside the car's own width, and the car drove off track.
+# _assert_clearance() below now fails the export rather than shipping such a
+# line silently.
+DEFAULT_MARGIN = 0.90
 
 # Smoothing weight in the per-iteration curvature-reduction step: how strongly
 # each station is pulled toward the average of its neighbours' offsets
@@ -118,6 +148,37 @@ FINAL_SMOOTH_GAIN = 0.3
 # Fractional lap-time regression tolerated in exchange for the smoothing
 # pass's curvature-noise reduction (see the accept check below).
 FINAL_SMOOTH_TIME_TOLERANCE = 0.002
+
+# Fraction of alat_ceiling_at(v) the exported speed profile is allowed to use.
+#
+# The ceiling is what FSDS delivers to a car already tracking its line
+# perfectly. A profile planned AT 100% of it therefore leaves the MPC nothing
+# to correct with: any lateral error needs curvature beyond the reference's
+# own, which is exactly the acceleration the sim refuses to supply, so the
+# controller saturates its steering and the error grows instead of closing.
+# The 2026-08-10 live logs show this directly -- every corner reported
+# corner_demand > 1 (peak 3.17) and steering saturated on 9.4% of corner
+# ticks, while the exported profile's own implied a_lat still exceeded the
+# ceiling at 8 stations.
+#
+# 0.85 keeps ~15% of the lateral budget as correction headroom. Chosen to
+# leave margin comparable to the tracking errors actually observed rather
+# than fitted -- if the car stops saturating and corner_demand drops near 1,
+# this can be raised again for lap time.
+ALAT_MARGIN = 0.85
+
+# Ceiling on the exported profile's braking, as a fraction of
+# |params.max_accel_brake|.
+#
+# max_accel_brake (-7.0) is documented in model/vehicle_physics.py as a
+# BACKSTOP matching mpc_core's MAX_BRAKE, explicitly "not an FSDS-measured
+# value". Planning the reference right at it asks the car to brake at its
+# own absolute limit for the whole braking zone, leaving no authority for the
+# MPC to brake harder when it arrives hot. The live logs bear this out: the
+# car sustains about -6.3 m/s^2 (0.25 s window, 1st percentile) but the MPC
+# never COMMANDS below -2.2 m/s^2, so the reference -- not the brakes -- is
+# what sets corner entry speed.
+BRAKE_MARGIN = 0.85
 
 
 def _station_frame(path_xy):
@@ -464,7 +525,17 @@ def _lap_time_and_speed(path_xy, kappa, params):
     the ceiling AT that station's own speed.
     """
     n = len(path_xy)
-    segs = np.hypot(np.diff(path_xy[:, 0]), np.diff(path_xy[:, 1]))
+    # Segment i is the gap from station i to i+1, with the LAST entry closing
+    # the loop from n-1 back to 0. The geometry everywhere else in this module
+    # already treats the path as closed (np.roll in _smooth_step /
+    # _fill_gap_stations); before this, the accel/brake passes below were the
+    # one place that did not, so the profile was solved as an open segment.
+    # That let station 0 start at whatever speed the corner limit allowed with
+    # no braking distance leading into it, and left the final stations with no
+    # obligation to slow for turn 1 -- a discontinuity the car meets once per
+    # lap, exactly at the start/finish seam.
+    segs = np.hypot(np.diff(path_xy[:, 0], append=path_xy[0, 0]),
+                    np.diff(path_xy[:, 1], append=path_xy[0, 1]))
     kappa_safe = np.maximum(np.abs(kappa), 1e-9)
 
     # Fixed point: start from the flat low-speed ceiling, tighten once speed
@@ -473,24 +544,79 @@ def _lap_time_and_speed(path_xy, kappa, params):
     # rise, so this converges quickly (in practice 2-3 rounds).
     v = np.full(n, params.alat_ceiling)
     for _ in range(4):
-        ceiling = np.array([params.alat_ceiling_at(vi) for vi in v])
+        # ALAT_MARGIN reserves lateral headroom for the MPC to correct with;
+        # see its comment. Without it the reference consumes the entire
+        # ceiling and any tracking error becomes unrecoverable by construction.
+        ceiling = np.array([params.alat_ceiling_at(vi) for vi in v]) * ALAT_MARGIN
         v_corner = np.sqrt(ceiling / kappa_safe)
         v_corner = np.minimum(v_corner, params.max_v)
 
         v_new = v_corner.copy()
-        for i in range(1, n):
-            v_allowed = np.sqrt(max(v_new[i - 1], 0.0) ** 2 + 2.0 * params.max_accel * segs[i - 1])
-            v_new[i] = min(v_new[i], v_allowed)
-        a_brake_mag = abs(params.max_accel_brake)
-        for i in range(n - 2, -1, -1):
-            v_allowed = np.sqrt(max(v_new[i + 1], 0.0) ** 2 + 2.0 * a_brake_mag * segs[i])
-            v_new[i] = min(v_new[i], v_allowed)
+        # Two wrapped laps per direction: one lap propagates a constraint from
+        # any station to every later one, and the second carries whatever
+        # crossed the seam on the first back around. A third changes nothing --
+        # each pass is a monotone min-update over the same fixed corner limits,
+        # so this reaches its fixed point after the constraint has travelled
+        # the full loop once from its binding station.
+        a_brake_mag = abs(params.max_accel_brake) * BRAKE_MARGIN
+        for _lap in range(2):
+            for i in range(n):                       # forward: traction limit
+                j = (i - 1) % n
+                v_allowed = np.sqrt(max(v_new[j], 0.0) ** 2
+                                    + 2.0 * params.max_accel * segs[j])
+                v_new[i] = min(v_new[i], v_allowed)
+            for i in range(n - 1, -1, -1):           # backward: braking limit
+                j = (i + 1) % n
+                v_allowed = np.sqrt(max(v_new[j], 0.0) ** 2
+                                    + 2.0 * a_brake_mag * segs[i])
+                v_new[i] = min(v_new[i], v_allowed)
         v = v_new
 
-    v_avg = 0.5 * (v[:-1] + v[1:])
+    # segs now has n entries (the last closes the loop), so pair each station
+    # with its successor mod n rather than truncating -- otherwise the closing
+    # segment's time is dropped from the lap total.
+    v_avg = 0.5 * (v + np.roll(v, -1))
     v_avg = np.maximum(v_avg, 1e-3)
     lap_time = float(np.sum(segs / v_avg))
     return lap_time, v
+
+
+# Hard floor on cone clearance for an exported line (m). Below half the front
+# track (VehicleParams.tf/2 = 0.625) the car's wheel is through the cone, so a
+# line that gets this close is not merely tight, it is undrivable. Checked
+# against the FINAL exported points -- the optimiser's own width bounds are
+# computed per-station from a nearest-cone search that can miss a cone the
+# smoothing pass later steers toward, so verifying the bounds is not the same
+# as verifying the result.
+MIN_CONE_CLEARANCE = 0.625
+
+
+def _assert_clearance(path_xy, blue, yellow, margin):
+    """
+    Fail the export if the finished line passes closer to any cone than
+    MIN_CONE_CLEARANCE. Raises RuntimeError; the caller does not catch it.
+
+    Silent containment failure is the specific thing this prevents: on
+    2026-08-10 a regenerated raceline came within 0.388 m of a cone centre and
+    was driven, producing a 4.8 m peak tracking error and off-track excursions
+    that were initially misattributed to controller tuning.
+    """
+    cones = np.vstack([np.asarray(blue)[:, :2], np.asarray(yellow)[:, :2]])
+    # Pairwise nearest distance; the point counts here (~1e3 x ~1e2) make the
+    # dense computation cheaper than building a spatial index.
+    d = np.hypot(path_xy[:, 0][:, None] - cones[None, :, 0],
+                 path_xy[:, 1][:, None] - cones[None, :, 1]).min(axis=1)
+    worst = float(d.min())
+    n_bad = int((d < MIN_CONE_CLEARANCE).sum())
+    if n_bad:
+        raise RuntimeError(
+            f"raceline passes within {worst:.3f} m of a cone at {n_bad} of "
+            f"{len(path_xy)} stations (floor {MIN_CONE_CLEARANCE:.3f} m = half "
+            f"the front track). The line is not drivable as exported.\n"
+            f"  margin used: {margin:.2f} m -- raise --margin and re-run.\n"
+            f"  NOTHING was written; the previous export is untouched."
+        )
+    return worst
 
 
 def export(map_path: str, out_path: str, iters=DEFAULT_ITERS, margin=DEFAULT_MARGIN):
@@ -505,6 +631,12 @@ def export(map_path: str, out_path: str, iters=DEFAULT_ITERS, margin=DEFAULT_MAR
 
     path_X, path_Y, path_Psi, path_v, _blue, _yellow, race_time = optimize_raceline(
         blue, yellow, iters=iters, margin=margin, params=params
+    )
+
+    # Verify BEFORE opening the output file: a failed check must leave the
+    # previous, known-good export in place rather than truncating it.
+    worst_clearance = _assert_clearance(
+        np.column_stack([path_X, path_Y]), blue, yellow, margin
     )
 
     with open(out_path, "w") as f:
@@ -522,6 +654,8 @@ def export(map_path: str, out_path: str, iters=DEFAULT_ITERS, margin=DEFAULT_MAR
     print(f"raceline   lap time (alat_ceiling-limited): {race_time:.3f} s "
           f"({100.0 * (centre_time - race_time) / centre_time:.2f}% faster)")
     print(f"v_target range: {path_v.min():.2f} - {path_v.max():.2f} m/s")
+    print(f"min cone clearance: {worst_clearance:.3f} m "
+          f"(floor {MIN_CONE_CLEARANCE:.3f}, margin {margin:.2f})")
 
 
 def main():

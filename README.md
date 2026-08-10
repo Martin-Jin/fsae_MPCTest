@@ -40,7 +40,9 @@ behaviour from planner behaviour. **Load Recorded Track** in `gui/simulation.py`
 loads a real cone map recorded from a live FSDS lap (via `fsae_planning`'s
 `cone_recorder` node) instead of a synthetic one. Recorded tracks, and their
 exported speed/raceline CSVs, live one-per-directory under `tracks/<name>/`
-— see
+— physically inside the separate `fsae_planning` repo (`tracks/__init__.py`
+here just points at it), so FSDS + `fsae_planning` alone can drive any
+already-recorded track with no `fsae_MPCTest` checkout. See
 [Recording, exporting and driving a track](docs/developer_guide.md#recording-exporting-and-driving-a-track)
 for the full record → export → drive workflow and how to switch which track
 the live car uses.

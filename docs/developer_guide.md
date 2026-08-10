@@ -352,11 +352,24 @@ tracks/<name>/
     raceline.csv       tuner.raceline_optimizer output (minimum-time line)
 ```
 
+**The physical directory is `ros2/src/fsae_planning/tracks/<name>/` — inside
+the separate `fsae_planning` repo, not this one.** This is deliberate:
+`fsae_planning` + FSDS must be drivable with no `fsae_MPCTest` checkout at
+all, so the track data itself (not just the code that reads it) ships with
+`fsae_planning`. This repo's own `tracks/__init__.py` just points its
+`TRACKS_DIR` constant at that sibling-repo path, so every tool below
+(`export_speed_profile.py`, `raceline_optimizer.py`, `recorded_map_rollout.py`,
+etc.) reads and writes there transparently when both repos are checked out
+side by side — you still type `tracks/<name>/`-shaped commands from
+`fsae_MPCTest/`, they just land across the repo boundary. `fsae_planning` is
+a separate git repo with its own remote (see this project's CLAUDE.md);
+changes under that path are local edits to that checkout only.
+
 `comp_test_map_3` is the track every baseline number in this repo's docs
 (`sim_to_real_investigation.md`, this guide, CLAUDE.md) is quoted against —
 don't overwrite it; give a new recording its own name. List what exists with
 `python3 -m tuner.export_speed_profile --list` (from `fsae_MPCTest/`), or
-just `ls tracks/`.
+`ls ../ros2/src/fsae_planning/tracks/` (from `fsae_MPCTest/`).
 
 #### 1. Record a lap
 
@@ -379,7 +392,7 @@ instead:
 ```bash
 ros2 launch fsae_bringup sim.launch.py controller:=stanley \
     use_precomputed_speed:=false use_precomputed_path:=false \
-    cone_out_path:=/path/to/fsae_MPCTest/tracks/<name>/cone_map.json
+    cone_out_path:=/path/to/fsae_planning/tracks/<name>/cone_map.json
 ```
 
 (`cone_recorder.launch.py` still exists standalone if you want to attach a
@@ -408,9 +421,10 @@ a bare `ros2 launch fsae_bringup sim.launch.py` (default output
 export tools directly (both accept an explicit path as well as a track name —
 see `tracks/__init__.py`'s `resolve_map_arg`).
 
-`ros2/launch_all.sh` writes directly to `tracks/$TRACK/cone_map.json` using
-whatever `TRACK=` it's currently set to, so setting `TRACK=<name>` there
-*before* recording is usually the least fiddly path (see step 4).
+`ros2/launch_all.sh` writes directly to
+`ros2/src/fsae_planning/tracks/$TRACK/cone_map.json` using whatever `TRACK=`
+it's currently set to, so setting `TRACK=<name>` there *before* recording is
+usually the least fiddly path (see step 4).
 
 `fsae_MPCTest/fsds_simulator/launch_all.sh` (the separate mirror-repo copy)
 still writes timestamped files to its own `fsds_simulator/cone_maps/`
@@ -425,9 +439,12 @@ Two independent offline tools turn a recorded `cone_map.json` into the CSVs
 the live controller can read. Run from `fsae_MPCTest/`:
 
 ```bash
-python3 -m tuner.export_speed_profile <name>   # -> tracks/<name>/speed_profile.csv
-python3 -m tuner.raceline_optimizer   <name>    # -> tracks/<name>/raceline.csv
+python3 -m tuner.export_speed_profile <name>   # -> ../ros2/src/fsae_planning/tracks/<name>/speed_profile.csv
+python3 -m tuner.raceline_optimizer   <name>    # -> ../ros2/src/fsae_planning/tracks/<name>/raceline.csv
 ```
+
+(the output lands in `fsae_planning`'s `tracks/`, not this repo's — see
+"Where a track lives" above)
 
 Omitting `<name>` targets the default track (`comp_test_map_3`). Both also
 accept an explicit `cone_map.json` path in place of a name (for a capture
@@ -462,8 +479,8 @@ Two independent ROS launch args, both consumed by `mpc`/`mpc_standalone`
 
 | Launch arg | Default | Effect |
 |------|---------|--------|
-| `map_path` + `use_precomputed_speed` | `tracks/comp_test_map_3/speed_profile.csv` | Look up target speed from the CSV's oracle profile instead of live `curvature_speed()` per tick |
-| `path_map_path` + `use_precomputed_path` | `tracks/comp_test_map_3/raceline.csv` | Track the CSV's geometry instead of subscribing to `centerline_planner.py`'s `/fsae/planning/selected_trajectory` — removes the live planner from the control loop entirely |
+| `map_path` + `use_precomputed_speed` | `fsae_planning`'s `tracks/comp_test_map_3/speed_profile.csv` | Look up target speed from the CSV's oracle profile instead of live `curvature_speed()` per tick |
+| `path_map_path` + `use_precomputed_path` | `fsae_planning`'s `tracks/comp_test_map_3/raceline.csv` | Track the CSV's geometry instead of subscribing to `centerline_planner.py`'s `/fsae/planning/selected_trajectory` — removes the live planner from the control loop entirely |
 
 Both default `true`, so a bare `ros2 launch fsae_bringup sim.launch.py`
 already drives the default track's precomputed line and speed with the
@@ -482,7 +499,7 @@ so check the log if a run looks unexpectedly like a live-planner run.
 **One variable.** In `ros2/launch_all.sh`:
 
 ```bash
-TRACK=comp_test_map_3    # change this line to any name under fsae_MPCTest/tracks/
+TRACK=comp_test_map_3    # change this line to any name under fsae_planning's tracks/
 ```
 
 This expands to both `map_path` and `path_map_path` (and, for a *new*
@@ -499,8 +516,8 @@ args directly:
 
 ```bash
 ros2 launch fsae_bringup sim.launch.py \
-    map_path:=fsae_MPCTest/tracks/<name>/speed_profile.csv \
-    path_map_path:=fsae_MPCTest/tracks/<name>/raceline.csv
+    map_path:=ros2/src/fsae_planning/tracks/<name>/speed_profile.csv \
+    path_map_path:=ros2/src/fsae_planning/tracks/<name>/raceline.csv
 ```
 
 Putting it all together, end to end:
@@ -512,7 +529,9 @@ Putting it all together, end to end:
 #    ros2/launch_all.sh, then:
 ./ros2/launch_all.sh
 
-# 2. Export (from fsae_MPCTest/)
+# 2. Export (from fsae_MPCTest/ -- writes into fsae_planning's tracks/,
+#    which requires fsae_MPCTest to be checked out; driving in steps 1 and 3
+#    does not)
 python3 -m tuner.export_speed_profile <new-name>
 python3 -m tuner.raceline_optimizer   <new-name>
 

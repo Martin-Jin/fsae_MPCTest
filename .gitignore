@@ -12,3 +12,11 @@ todo.md
 # leave a fresh clone pointing at a missing file. Regenerate with
 #   python3 -m tuner.raceline_optimizer      (raceline)
 #   python3 -m tuner.export_speed_profile    (centreline + speeds)
+
+# Track data (cone_map.json, speed_profile.csv, raceline.csv) moved
+# 2026-08-10 to ros2/src/fsae_planning/tracks/ -- committed INSIDE the
+# fsae_planning repo, so that repo + FSDS alone can drive a track with no
+# fsae_MPCTest checkout. tracks/__init__.py's TRACKS_DIR points there; only
+# that module's code still lives here, not the data. Regenerate/export a
+# track with the commands above -- they now write across the repo boundary.
+/tracks/*/

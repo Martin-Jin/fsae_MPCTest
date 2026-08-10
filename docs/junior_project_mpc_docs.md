@@ -850,9 +850,11 @@ precomputed path/speed CSV recorded from an earlier lap — useful for
 isolating controller/plant tracking error from planner-induced path error,
 or for driving a known track at its (offline-computed) minimum-time line
 instead of the planner's live centreline. Each such track lives in its own
-`fsae_MPCTest/tracks/<name>/` directory (cone map + two exported CSVs), and
-switching which one the car drives is one variable — `TRACK=` near the top
-of `ros2/launch_all.sh`.
+`tracks/<name>/` directory (cone map + two exported CSVs) inside the
+separate `fsae_planning` repo — so FSDS + `fsae_planning` alone can drive
+any already-recorded track with no `fsae_MPCTest` checkout needed. Switching
+which one the car drives is one variable — `TRACK=` near the top of
+`ros2/launch_all.sh`.
 
 Full record → export → drive steps, the CSV format, and every launch arg
 involved: `docs/developer_guide.md`'s
