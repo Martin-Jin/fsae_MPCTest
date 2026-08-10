@@ -108,7 +108,7 @@ import math
 # sees it and the target speed climbs monotonically through the whole corner
 # instead of dipping. Starting the scan at the car's own position (0.0)
 # removes that dead zone.
-CURVATURE_SPEED_V_MAX = 15.0
+CURVATURE_SPEED_V_MAX = 18.0
 CURVATURE_SPEED_V_MIN = 1.5
 CURVATURE_SPEED_A_LAT_MAX = 4.0
 CURVATURE_SPEED_SCAN_START = 0.0
@@ -224,7 +224,7 @@ def compute_speed_profile(
     v_max=CURVATURE_SPEED_V_MAX,
     mu=0.6,
     g=9.81,
-    a_accel_max=4.0,
+    a_accel_max=7.0,
     a_brake_max=-5.0,
     v_min=CURVATURE_SPEED_V_MIN,
     safety=1.0,

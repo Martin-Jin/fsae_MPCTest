@@ -54,7 +54,7 @@ CONTROL_HZ    = 20.0   # must match MPCController(dt=0.05); dt = 1 / CONTROL_HZ
 # sim/rollout_core.SPEED_TARGET_RISE_RATE — keep all three in sync. Decreases
 # are never rate-limited; delaying a genuine brake request is the failure this
 # is meant to prevent.
-SPEED_TARGET_RISE_RATE = 2.0
+SPEED_TARGET_RISE_RATE = 7.0
 # Max rate (gate-units/s) at which tracking_error_speed_gate()'s output may
 # change per tick, in either direction. Mirrors
 # mpc_controller_standalone.GATE_RATE_LIMIT — keep both in sync, see that
@@ -70,7 +70,7 @@ class MPCControllerNode(Node):
         self.declare_parameters(
             namespace='',
             parameters=[
-                ('v_max', 15.0),      # m/s — top speed on straights
+                ('v_max', 18.0),      # m/s — top speed on straights
                 ('v_min', 1.5),       # m/s — minimum speed through tight corners
                 ('steer_lp', 0.3),    # output steering low-pass (EMA); 1.0 disables
                 ('log_csv', False),   # write CSV telemetry to log_dir

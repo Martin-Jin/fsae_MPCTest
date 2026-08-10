@@ -96,7 +96,7 @@ PATH_TIMEOUT         = 0.5    # s — reset the MPC if no fresh trajectory withi
 # request is exactly the failure this is meant to prevent. Sized just under the
 # car's real acceleration capability so it never becomes the binding limit on a
 # true straight; it only suppresses planner-induced target jitter.
-SPEED_TARGET_RISE_RATE = 2.0
+SPEED_TARGET_RISE_RATE = 7.0
 
 # Max rate (gate-units/s, gate in [floor, 1.0]) at which
 # tracking_error_speed_gate()'s output may change per tick, in EITHER

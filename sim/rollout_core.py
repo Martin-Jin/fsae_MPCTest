@@ -76,7 +76,7 @@ PLANNER_V_MIN = 1.5
 # mpc_controller_standalone.SPEED_TARGET_RISE_RATE — keep the two in sync.
 # Decreases are never rate-limited; only the rise is damped, to suppress the
 # planner's frame-to-frame curvature jitter without capping real acceleration.
-SPEED_TARGET_RISE_RATE = 2.0
+SPEED_TARGET_RISE_RATE = 7.0
 
 # Max rate (gate-units/s) at which tracking_error_speed_gate()'s output may
 # change per tick, in either direction. Mirrors
