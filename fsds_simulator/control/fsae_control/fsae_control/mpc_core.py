@@ -917,11 +917,11 @@ class MPCController:
         #   [5] e_a        unused (always 0.0, kept for structural consistency only)
         #   [6] delta_act  actuator-lagged steering angle (rad) -- always 0.0
         #   [7] a_act      actuator-lagged acceleration (m/s^2) -- always 0.0
-        Q_diag      = [5.20, 0.2, 1.52, 0.50, 3.5, 0.0, 0.0, 0.0]
+        Q_diag      = [5.20, 0.2, 1.52, 0.50, 5.0, 0.0, 0.0, 0.0]
         # R_diag index -> input penalised (inputs u are [delta_cmd, a_cmd]):
         #   [0] delta_cmd  steering command effort (rad)
         #   [1] a_cmd      acceleration command effort (m/s^2)
-        R_diag      = [1.16, 1.15]
+        R_diag      = [1.16, 1.05]
         # R_rate_diag index -> input RATE-OF-CHANGE penalised (tick-to-tick
         # jerk, not the input itself):
         #   [0] delta_cmd  steering rate of change
@@ -1594,17 +1594,42 @@ class MPCController:
         # the Q-boost application below is still gated on that flag.
         kappa_max_abs = dbg.get("kappa_max_abs", 0.0)
 
+        # ── Adaptive-feature trace ────────────────────────────────────────
+        # Every adaptive multiplier below is recorded into `adapt` as it is
+        # applied, then merged into last_telemetry so a live log shows WHICH
+        # feature fired and BY HOW MUCH on every tick -- not just the
+        # resulting error. Without this, attributing a tracking failure to a
+        # specific boost meant re-deriving each function's value by hand from
+        # kappa/speed after the fact, which is how the demand-scaling
+        # saturation bug (all real corners sitting in the flat 17-62% region
+        # of the old 1-1/(1+8k) curve) went unnoticed for as long as it did.
+        # These are pure observations of values already computed -- adding or
+        # removing a trace entry must never change a control output.
+        adapt: dict[str, float] = {}
+
         R_scaled = _adaptive_R_scaling(car_speed, self.R)
+        adapt["m_R_speed"] = float(R_scaled[0, 0] / self.R[0, 0]) if self.R[0, 0] else 1.0
         if self.steer_effort_straight_boost_enabled:
             R_scaled = R_scaled.copy()
-            R_scaled[0, 0] *= _steer_effort_straight_boost(kappa_max_abs)
+            m = _steer_effort_straight_boost(kappa_max_abs)
+            R_scaled[0, 0] *= m
+            adapt["m_R_straight"] = m
+        else:
+            adapt["m_R_straight"] = 1.0
         R_rate_scaled = _adaptive_R_rate(
             kappa, self.R_rate,
             enable_in_corners=self.adaptive_r_rate_enable_in_corners,
             kappa_max_abs=kappa_max_abs,
         )
+        adapt["m_Rrate_corner"] = (
+            float(R_rate_scaled[0, 0] / self.R_rate[0, 0]) if self.R_rate[0, 0] else 1.0
+        )
+        _rr_before_hunt = float(R_rate_scaled[0, 0])
         R_rate_scaled = _steer_rate_anti_hunt(
             kappa, x0[0], R_rate_scaled, self.steer_rate_anti_hunt_enabled, e_psi=x0[2]
+        )
+        adapt["m_Rrate_antihunt"] = (
+            float(R_rate_scaled[0, 0] / _rr_before_hunt) if _rr_before_hunt else 1.0
         )
         # ── Lookahead corner-anticipation Q-boost (ADAPTIVE_Q_LOOKAHEAD) ───
         # Applied to self.Q FIRST, then _adaptive_Q_scaling's centred-
@@ -1616,19 +1641,33 @@ class MPCController:
         if self.adaptive_q_lookahead_enabled:
             self._update_lookahead_peak(kappa_max_abs, car_speed)
             Q_base = self.Q.copy()
-            Q_base[0, 0] *= _lookahead_approach_boost(kappa_max_abs, car_speed)
-            Q_base[0, 0] *= _lookahead_straight_lateral_reduce(kappa_max_abs)
-            Q_base[2, 2] *= _lookahead_epsi_approach_boost(kappa_max_abs, car_speed)
-            Q_base[2, 2] *= _lookahead_exit_boost(
+            m = _lookahead_approach_boost(kappa_max_abs, car_speed)
+            Q_base[0, 0] *= m
+            adapt["m_Q_ey_approach"] = m
+            m = _lookahead_straight_lateral_reduce(kappa_max_abs)
+            Q_base[0, 0] *= m
+            adapt["m_Q_ey_straight"] = m
+            m = _lookahead_epsi_approach_boost(kappa_max_abs, car_speed)
+            Q_base[2, 2] *= m
+            adapt["m_Q_epsi_approach"] = m
+            m = _lookahead_exit_boost(
                 self._last_peak_kappa_abs, self._dist_since_peak
             )
-            Q_base[2, 2] *= _lookahead_straight_boost(
+            Q_base[2, 2] *= m
+            adapt["m_Q_epsi_exit"] = m
+            m = _lookahead_straight_boost(
                 kappa_max_abs, ADAPTIVE_Q_STRAIGHT_EPSI_BOOST_MAX, ADAPTIVE_Q_STRAIGHT_K
             )
-            Q_base[3, 3] *= _lookahead_yaw_rate_relax(kappa_max_abs, car_speed)
-            Q_base[3, 3] *= _lookahead_straight_boost(
+            Q_base[2, 2] *= m
+            adapt["m_Q_epsi_straight"] = m
+            m = _lookahead_yaw_rate_relax(kappa_max_abs, car_speed)
+            Q_base[3, 3] *= m
+            adapt["m_Q_r_relax"] = m
+            m = _lookahead_straight_boost(
                 kappa_max_abs, ADAPTIVE_Q_STRAIGHT_R_BOOST_MAX, ADAPTIVE_Q_STRAIGHT_K
             )
+            Q_base[3, 3] *= m
+            adapt["m_Q_r_straight"] = m
 
             # ── U-turn extra commitment (see ADAPTIVE_Q_UTURN_* above) ──
             # Scored from accumulated heading change, NOT peak curvature, so
@@ -1638,14 +1677,57 @@ class MPCController:
             # completely unaffected. Only meaningful while steering is still
             # unsaturated on approach -- see the scope note on the constants.
             uturn = _uturn_severity(dbg.get("lookahead_heading_change", 0.0))
+            adapt["uturn_severity"] = uturn
             if uturn > 0.0:
-                Q_base[0, 0] *= _uturn_boost(uturn, ADAPTIVE_Q_UTURN_EY_BOOST_MAX)
-                Q_base[2, 2] *= _uturn_boost(uturn, ADAPTIVE_Q_UTURN_EPSI_BOOST_MAX)
-                Q_base[3, 3] *= _uturn_boost(uturn, ADAPTIVE_Q_UTURN_R_RELAX_FLOOR)
+                m = _uturn_boost(uturn, ADAPTIVE_Q_UTURN_EY_BOOST_MAX)
+                Q_base[0, 0] *= m
+                adapt["m_Q_ey_uturn"] = m
+                m = _uturn_boost(uturn, ADAPTIVE_Q_UTURN_EPSI_BOOST_MAX)
+                Q_base[2, 2] *= m
+                adapt["m_Q_epsi_uturn"] = m
+                m = _uturn_boost(uturn, ADAPTIVE_Q_UTURN_R_RELAX_FLOOR)
+                Q_base[3, 3] *= m
+                adapt["m_Q_r_uturn"] = m
 
         # x0[0] is e_y (delay-compensated, if n_delay>0 above rolled it
         # forward) -- compute() has no bare e_y in scope, only x0.
         Q_scaled      = _adaptive_Q_scaling(x0[0], Q_base, self.adaptive_q_scaling_enabled)
+        adapt["m_Q_ey_soften"] = (
+            float(Q_scaled[0, 0] / Q_base[0, 0]) if Q_base[0, 0] else 1.0
+        )
+
+        # Defaults for the U-turn entries, which are only written when the
+        # detector actually fires -- a missing key would otherwise become an
+        # empty CSV cell and silently break any downstream numeric parse.
+        adapt.setdefault("m_Q_ey_uturn", 1.0)
+        adapt.setdefault("m_Q_epsi_uturn", 1.0)
+        adapt.setdefault("m_Q_r_uturn", 1.0)
+        adapt.setdefault("uturn_severity", 0.0)
+
+        # Corner demand (see _corner_demand): kappa_max_abs expressed as a
+        # fraction of what the FSDS lateral-acceleration ceiling actually
+        # permits at this speed. This is the single most diagnostic scalar in
+        # the log -- demand > 1 means the corner ahead is not achievable at
+        # the current speed no matter how the weights are set, so a wide line
+        # there is a speed-profile problem, not a gain problem.
+        _demand = _corner_demand(kappa_max_abs, car_speed)
+        adapt["corner_demand"] = _demand
+        adapt["demand_frac"]   = _demand_frac(_demand)
+        adapt["alat_ceiling"]  = _alat_ceiling_at(car_speed)
+        adapt["dist_since_peak"] = float(
+            min(self._dist_since_peak, 999.0)   # starts at +inf; keep CSV finite
+        )
+        adapt["last_peak_kappa"] = float(self._last_peak_kappa_abs)
+
+        # Absolute post-scaling weights actually handed to the QP. The
+        # multipliers above say how hard each feature pushed; these say where
+        # the weights ended up, which is what makes two runs comparable even
+        # if a base weight in self.Q changed between them.
+        adapt["Q_ey_eff"]   = float(Q_scaled[0, 0])
+        adapt["Q_epsi_eff"] = float(Q_scaled[2, 2])
+        adapt["Q_r_eff"]    = float(Q_scaled[3, 3])
+        adapt["R_steer_eff"]      = float(R_scaled[0, 0])
+        adapt["Rrate_steer_eff"]  = float(R_rate_scaled[0, 0])
 
         # Wall-clock the QP so the log can distinguish "the solver is slow"
         # from "the pipeline upstream of us is slow" — see solve_ms in
@@ -1679,6 +1761,9 @@ class MPCController:
 
         self.last_telemetry = {
             **dbg,
+            # Per-feature adaptive multipliers + demand diagnostics; see the
+            # "Adaptive-feature trace" comment above compute()'s R_scaled.
+            **adapt,
             # Delay diagnostics — the controller's own view of how stale its
             # inputs were and how far it rolled the state forward to compensate.
             # Logged so a live run can be checked against the offline sim's

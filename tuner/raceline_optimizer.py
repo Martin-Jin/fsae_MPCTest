@@ -180,6 +180,27 @@ ALAT_MARGIN = 0.85
 # what sets corner entry speed.
 BRAKE_MARGIN = 0.85
 
+# Curvature the exported line should not exceed (1/m). Above this a candidate
+# is penalised in the selection score below, so a kinked path cannot win on
+# lap time alone.
+#
+# 0.22 is just above the max curvature of every line this optimiser produced
+# before the kink appeared (old raceline 0.208, margin-0.35 raceline 0.220,
+# centreline 0.212) -- i.e. it is the empirical "a clean line on this track
+# never needs more than this", not a vehicle limit. For reference the car's
+# own kinematic floor is 1/3.32 m = 0.30, so anything above that is not
+# merely tight but impossible at full lock.
+CURVATURE_SOFT_MAX = 0.22
+
+# Seconds of lap time one unit of excess curvature is worth in the selection
+# score. Excess is measured as max(0, max|kappa| - CURVATURE_SOFT_MAX), so at
+# this weight the 0.379 spike scores as +7.9 s -- decisively worse than any
+# real lap-time gain, while a line at 0.23 pays only 0.16 s and can still win
+# if it is genuinely quicker. The penalty is deliberately steep: a kink is a
+# correctness problem (the live car saturates and leaves the track), not a
+# comfort preference to be traded off gently.
+CURVATURE_PENALTY_S_PER_INVM = 50.0
+
 
 def _station_frame(path_xy):
     """
@@ -322,6 +343,26 @@ def _apply_offset(centre_xy, left_normal, alpha):
     return centre_xy + left_normal * alpha[:, None]
 
 
+def _candidate_score(lap_time, kappa):
+    """
+    Selection score (lower is better): lap time plus a curvature penalty.
+
+    Lap time alone is the wrong objective for a reference the MPC must TRACK.
+    A path with a curvature kink can be marginally quicker in the point-mass
+    speed model used here -- that model only sees kappa through the corner
+    speed sqrt(a_lat/kappa) and is perfectly happy to take a 2.6 m radius --
+    while being undrivable for a car whose steering stops at a 3.32 m radius.
+    That is exactly what shipped on 2026-08-10: a 0.379 spike won on lap time
+    and saturated the live car's steering on 26.8% of ticks in that band.
+
+    Penalising only the EXCESS above CURVATURE_SOFT_MAX (rather than, say,
+    mean curvature) keeps this inert for every well-formed line -- a clean
+    path scores exactly its lap time and the optimiser behaves as before.
+    """
+    excess = max(0.0, float(np.abs(kappa).max()) - CURVATURE_SOFT_MAX)
+    return lap_time + CURVATURE_PENALTY_S_PER_INVM * excess
+
+
 def _curvature(path_xy):
     """
     Signed curvature via arc-length-parameterised finite differences.
@@ -398,7 +439,34 @@ def _smooth_step(alpha, kappa, w_left, w_right, gain=SMOOTH_GAIN):
     # needed, but each one stays local enough for the smoothing pass to
     # actually damp the high-frequency curvature the push introduces.
     PUSH_STEP_M = 0.08
-    pushed = alpha + gain * weight * np.sign(kappa) * PUSH_STEP_M
+
+    # Headroom taper: shrink the step as a station approaches the bound it is
+    # being pushed TOWARD, so it converges onto its limit instead of slamming
+    # into the clip below.
+    #
+    # NOT the same thing as the rejected "scale by w_left/w_right" above. That
+    # scaled the step UP where the corridor was wide (one iteration crossing
+    # most of the track). This only ever scales DOWN, and by REMAINING headroom
+    # rather than total width -- a station with room takes the full 0.08 m, a
+    # station near its bound takes proportionally less, and none takes more.
+    #
+    # Why it matters: raising DEFAULT_MARGIN to 0.90 halved the corridor
+    # (median 2.80 -> 1.70 m, min 0.90) and the fixed step became large
+    # relative to it. Clip activations went 398 -> 1431 over the run, with 15
+    # stations pinned against a bound for more than half the iterations. A
+    # pinned station cannot move while its neighbours still can, so the
+    # neighbour-average in (2) bends the line AROUND the frozen points and
+    # kinks it -- measured as a curvature spike to 0.379 (R = 2.6 m, inside
+    # the car's own 3.32 m kinematic minimum) that the final smoothing pass
+    # could not fully undo, and which saturated the live car's steering on
+    # 26.8% of ticks in that band.
+    direction = np.sign(kappa)
+    headroom = np.where(direction >= 0.0, w_left - alpha, alpha + w_right)
+    headroom = np.maximum(headroom, 0.0)
+    # Full step once at least TAPER_SPAN_M of room remains; linear below that.
+    TAPER_SPAN_M = 4.0 * PUSH_STEP_M
+    taper = np.minimum(1.0, headroom / TAPER_SPAN_M)
+    pushed = alpha + gain * weight * direction * PUSH_STEP_M * taper
 
     left_nb = np.roll(pushed, 1)
     right_nb = np.roll(pushed, -1)
@@ -461,6 +529,10 @@ def optimize_raceline(
 
     alpha = np.zeros(len(centre_xy))
     best_alpha = alpha.copy()
+    # Candidates are ranked by _candidate_score (lap time + curvature penalty),
+    # NOT lap time alone -- see that function. best_time tracks the true lap
+    # time of the chosen candidate for reporting; best_score ranks them.
+    best_score = np.inf
     best_time = np.inf
     best_v = None
 
@@ -469,7 +541,9 @@ def optimize_raceline(
         kappa = _curvature(path_xy)
 
         lap_time, v_profile = _lap_time_and_speed(path_xy, kappa, params)
-        if lap_time < best_time:
+        score = _candidate_score(lap_time, kappa)
+        if score < best_score:
+            best_score = score
             best_time = lap_time
             best_alpha = alpha.copy()
             best_v = v_profile
@@ -504,8 +578,14 @@ def optimize_raceline(
     # of +0.005% lap time (36.9646 -> 36.9663 s). A path that is a few
     # milliseconds "faster" but noticeably jagged at one corner is not
     # actually the better reference for the MPC to track.
-    if smoothed_time <= best_time * (1.0 + FINAL_SMOOTH_TIME_TOLERANCE):
+    # Compared on _candidate_score, not raw lap time, so the smoothed line is
+    # credited for the curvature it removes. Under lap time alone a smoothing
+    # pass that cut a kink but cost more than the tolerance was REJECTED --
+    # the pass would do its job and then be thrown away.
+    smoothed_score = _candidate_score(smoothed_time, smoothed_kappa)
+    if smoothed_score <= best_score * (1.0 + FINAL_SMOOTH_TIME_TOLERANCE):
         best_alpha, best_time, best_v = smoothed_alpha, smoothed_time, smoothed_v
+        best_score = smoothed_score
 
     path_xy = _apply_offset(centre_xy, left_normal, best_alpha)
     dx = np.gradient(path_xy[:, 0])

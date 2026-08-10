@@ -327,7 +327,8 @@ class MPCControllerNode(Node):
                 path_age_s=path_age_s,
                 n_delay=tel.get('n_delay'),
                 solve_ms=tel.get('solve_ms'),
-                cmd_latency_ms=(time.perf_counter() - _t_loop0) * 1e3)
+                cmd_latency_ms=(time.perf_counter() - _t_loop0) * 1e3,
+                adaptive=tel)
             self._telemetry.log_path(t, self._path)
 
         self.get_logger().info(

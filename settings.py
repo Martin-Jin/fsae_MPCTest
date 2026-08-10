@@ -464,11 +464,32 @@ STEER_EFFORT_STRAIGHT_BOOST_ENABLED = True
 #   [6] delta_act  actuator-lagged steering angle (rad) -- always 0.0, no
 #                  tuned weight sets this state
 #   [7] a_act      actuator-lagged acceleration (m/s^2) -- always 0.0, ditto
-Q_diag      = [5.20, 0.2, 1.52, 0.50, 3.5, 0.0, 0.0, 0.0]
+# Q_diag[4] 3.5 -> 5.0 on 2026-08-10, tuned on the car (not offline). Raising
+# the speed-error weight cut mean |e_y| on the corner-APPROACH phase (ticks
+# with corner_demand > 1.5) from 0.240 to 0.141-0.166 m across two runs, with
+# the best run also the day's best on RMSE (0.262), peak |e_y| (1.50 m) and
+# steering saturation (3.4%). 6.5 was tried and was worse on a matched-length
+# window (RMSE 0.435, peak 2.18 m), so 5.0 is a measured optimum, not a
+# direction to keep pushing.
+#
+# Whole-run averages hide this: they are dominated by the ~50% of ticks on
+# straights, where a speed-error weight does little. Compare on the approach
+# phase when re-tuning this.
+Q_diag      = [5.20, 0.2, 1.52, 0.50, 5.0, 0.0, 0.0, 0.0]
 # R_diag index -> input penalised:
 #   [0] delta_cmd  steering command effort (rad)
 #   [1] a_cmd      acceleration command effort (m/s^2)
-R_diag      = [1.16, 1.15]
+# R_diag[1] 1.15 -> 1.05 on 2026-08-10 (car-tuned), a first step toward
+# cheaper braking. Motivation: a_cmd floors around -2.2 m/s^2 against a -7.0
+# limit on every logged run, while the car demonstrably sustains -6.3, so the
+# MPC uses under a third of its braking authority and arrives ~2 m/s hot at
+# corner entry. The cause is structural: a_cmd is a RATE, so one 50 ms step of
+# braking at -6 removes only 0.30 m/s of speed error, while the effort cost
+# R[1,1]*a^2 is paid immediately -- at these weights a=-6 is only worth it if
+# it removes >2.9 m/s per step. Lowering R[1,1] is the cheap lever (a ~7x cut
+# reaches parity); raising Q_diag[4] instead would need ~460.
+# 1.05 is a deliberately small first move -- the remaining gap is still open.
+R_diag      = [1.16, 1.05]
 # R_rate_diag index -> input RATE-OF-CHANGE penalised (tick-to-tick jerk, not
 # the input itself):
 #   [0] delta_cmd  steering rate of change

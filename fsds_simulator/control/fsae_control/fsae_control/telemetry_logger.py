@@ -29,6 +29,10 @@ solve_ms/cmd_latency_ms. delta_cmd/a_cmd are logged in the MPC's own units
 rather than normalised FSDS command units so the score can be recomputed from
 the file without re-deriving the scaling.
 
+Trailing the above is the adaptive-feature trace — curvature/demand context
+plus one column per adaptive multiplier and the resulting absolute weights.
+See ADAPTIVE_COLUMNS below for the full list and what each one means.
+
 Path CSV columns: t, idx, x, y — waypoint snapshots at ~1 Hz.
 
 Units contract: log_control()'s steer_rad/e_psi_rad are radians and converted
@@ -51,6 +55,39 @@ import os
 import time
 
 from fsae_control.scoring import RolloutMetrics
+
+
+# ── Adaptive-feature trace columns ───────────────────────────────────────
+# Written from mpc_core's last_telemetry (see its "Adaptive-feature trace"
+# comment). Each m_* column is the multiplier that ONE feature applied to ONE
+# weight on that tick, so 1.0 means "this feature did nothing here" and the
+# product of a weight's m_* columns times its base value is its *_eff column.
+# That decomposition is the point: it tells you which feature moved a weight,
+# not merely that the weight moved.
+#
+# Order here defines CSV column order; log_control writes one cell per
+# entry, in this order, by looking each key up in the `adaptive` mapping.
+# Controllers with no adaptive features (Stanley) pass nothing and every cell
+# is written empty, so the column set stays identical across controllers.
+ADAPTIVE_COLUMNS = (
+    # Curvature / demand context -- what the controller was reacting to.
+    'kappa',            # curvature at the car's current path position (1/m)
+    'kappa_max_abs',    # peak |curvature| within the lookahead window (1/m)
+    'corner_demand',    # kappa_max_abs / (a_lat ceiling / v^2); >1 = infeasible
+    'demand_frac',      # corner_demand mapped to 0..1, the boosts' drive signal
+    'alat_ceiling',     # modelled FSDS lateral-accel ceiling at this speed
+    'uturn_severity',   # 0..1 from accumulated heading change over lookahead
+    'last_peak_kappa',  # |curvature| of the most recent corner peak
+    'dist_since_peak',  # metres travelled since that peak (exit-decay driver)
+    # Per-feature multipliers, grouped by the weight each one acts on.
+    'm_Q_ey_approach',   'm_Q_ey_straight',  'm_Q_ey_uturn',  'm_Q_ey_soften',
+    'm_Q_epsi_approach', 'm_Q_epsi_exit',    'm_Q_epsi_straight', 'm_Q_epsi_uturn',
+    'm_Q_r_relax',       'm_Q_r_straight',   'm_Q_r_uturn',
+    'm_R_speed',         'm_R_straight',
+    'm_Rrate_corner',    'm_Rrate_antihunt',
+    # Absolute weights handed to the QP after all of the above.
+    'Q_ey_eff', 'Q_epsi_eff', 'Q_r_eff', 'R_steer_eff', 'Rrate_steer_eff',
+)
 
 
 class ControlLogger:
@@ -81,7 +118,7 @@ class ControlLogger:
              'n_delay',         # rollforward depth the controller chose
              'solve_ms',        # QP solve wall time
              'cmd_latency_ms',  # loop start -> command published
-             ])
+             ] + list(ADAPTIVE_COLUMNS))
         self._path_w.writerow(['t', 'idx', 'x', 'y'])
 
         self._path_period = path_period
@@ -115,7 +152,7 @@ class ControlLogger:
                     delta_cmd=None, a_cmd=None,
                     solver_failed=False, inaccurate=False,
                     pose_age_s=None, path_age_s=None, n_delay=None,
-                    solve_ms=None, cmd_latency_ms=None) -> None:
+                    solve_ms=None, cmd_latency_ms=None, adaptive=None) -> None:
         """
         Record one control step.  See the module docstring for the units and
         frame of every argument.
@@ -132,6 +169,11 @@ class ControlLogger:
           n_delay         integer rollforward depth the controller chose
           solve_ms        QP solve wall time (ms)
           cmd_latency_ms  loop entry -> command publish (ms)
+
+        `adaptive` is the controller's last_telemetry dict (or any mapping);
+        the ADAPTIVE_COLUMNS keys are pulled out of it and everything else is
+        ignored, so mpc_core can add telemetry keys without touching this
+        file. Omit it (Stanley) and those cells are written empty.
         """
         def _f(x, fmt='.4f'):
             return '' if x is None else format(float(x), fmt)
@@ -150,6 +192,10 @@ class ControlLogger:
             _f(pose_age_s), _f(path_age_s),
             '' if n_delay is None else int(n_delay),
             _f(solve_ms, '.3f'), _f(cmd_latency_ms, '.3f'),
+            # A key absent from `adaptive` writes an empty cell rather than a
+            # default, so "this feature was disabled/not reported" stays
+            # distinguishable from "this feature reported exactly 1.0".
+            *[_f((adaptive or {}).get(k), '.5f') for k in ADAPTIVE_COLUMNS],
         ])
 
         # Same accumulation the offline tuner runs, step for step.
