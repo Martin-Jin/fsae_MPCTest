@@ -97,6 +97,45 @@ USE_PLANNER = False
 # precomputed speed instead of live curvature_speed().
 USE_PRECOMPUTED_SPEED_PROFILE = True
 
+# ENABLE_DYNAMIC_SPEED_CAP — "On top of the oracle speed profile above, also
+# cap the target speed in real time from the car's OWN current position and
+# the live path curvature ahead of it."
+#
+# precomputed_speed_at() (the oracle lookup used when
+# USE_PRECOMPUTED_SPEED_PROFILE=True) is a static, position-indexed lookup:
+# it has no notion of the car currently running faster than the profile's
+# own plan and the corner being too close to brake down to the profile's
+# target in time. That mismatch is what shows up as late, hard braking and
+# steering saturation right at corner entry — see
+# fsae_MPCTest/docs/planning_control_sync.md's speed-governor section for
+# the log evidence.
+#
+# True  = also compute speed_profile.curvature_speed() (renamed at the call
+#         site dynamic_speed_cap() on the live side) on the live path each
+#         tick, using DYNAMIC_CAP_A_LAT_MAX/DYNAMIC_CAP_SAFETY below (NOT
+#         curvature_speed()'s own defaults — this cap is meant to be a
+#         tighter safety net under an already-trusted oracle target, not a
+#         second opinion on the racing line), and take
+#         min(oracle_v_target, dynamic_cap) every tick.
+# False = unchanged: the oracle profile alone, exactly as before this flag
+#         existed.
+#
+# No effect when USE_PRECOMPUTED_SPEED_PROFILE=False — that branch already
+# calls curvature_speed() directly every tick with no oracle target to cap.
+# Mirrors the live ROS side's enable_dynamic_speed_cap parameter
+# (mpc_controller.py / mpc_controller_standalone.py) — keep both in sync.
+ENABLE_DYNAMIC_SPEED_CAP = True
+
+# DYNAMIC_CAP_A_LAT_MAX / DYNAMIC_CAP_SAFETY — curvature_speed()'s own
+# a_lat_max/safety parameters, but used ONLY by the dynamic cap above, kept
+# deliberately tighter than curvature_speed()'s defaults (4.0 / 1.0) used
+# elsewhere (e.g. the live-planner branch below) so the cap engages a little
+# before the oracle profile would actually be violated, rather than exactly
+# at the edge. Mirror the live ROS side's dynamic_cap_a_lat_max /
+# dynamic_cap_safety parameters — keep all four in sync.
+DYNAMIC_CAP_A_LAT_MAX = 3.2   # m/s^2
+DYNAMIC_CAP_SAFETY = 0.9
+
 # Offline parity note for the live ROS side's path_map_path param
 # (fsae_planning's mpc_controller.py / mpc_controller_standalone.py, which
 # tracks a precomputed path instead of subscribing to the live planner's
@@ -489,12 +528,92 @@ Q_diag      = [5.20, 0.2, 1.52, 0.50, 5.0, 0.0, 0.0, 0.0]
 # it removes >2.9 m/s per step. Lowering R[1,1] is the cheap lever (a ~7x cut
 # reaches parity); raising Q_diag[4] instead would need ~460.
 # 1.05 is a deliberately small first move -- the remaining gap is still open.
-R_diag      = [1.16, 1.05]
+R_diag      = [1.16, 0.85]
 # R_rate_diag index -> input RATE-OF-CHANGE penalised (tick-to-tick jerk, not
 # the input itself):
 #   [0] delta_cmd  steering rate of change
 #   [1] a_cmd      acceleration rate of change
 R_rate_diag = [2.1, 2.6]
+
+
+# ------------------------------------------------------------------------------
+# Adaptive-gain SHAPE constants
+# ------------------------------------------------------------------------------
+# The *_ENABLED flags further up decide WHETHER each adaptive-gain mechanism
+# runs; these decide the SHAPE of the curve it applies — the floors, ceilings
+# and ramp sharpnesses. They used to be hardcoded inside
+# controller/model_utils.py, unreachable from here; every one is now a keyword
+# argument of the function that uses it, defaulting to the value below, so
+# this file is the single place any of them gets tuned. Read the referenced
+# function's docstring for the mechanism before changing one — these are all
+# tuned values, not arbitrary defaults.
+#
+# Mirrors the live side's MPCParams (mpc_params.py) field-for-field; keep the
+# numbers identical across both per CLAUDE.md's planning/control parity rule.
+
+# adaptive_R_rate's two softening floors on the steering rate-of-change cost
+# R_rate[0,0] — "how much of the rate penalty survives in a corner?" The
+# during-floor is driven by the car's CURRENT curvature, the entering-floor by
+# the forward lookahead (so it acts before the car reaches the corner) and is
+# deliberately shallower. Raising either means less softening (more damping,
+# but a controller more penalised for the steering rate a corner needs);
+# lowering the during-floor too far is what let steering sign-reversal chatter
+# grow mid-corner. See controller/model_utils.py::adaptive_R_rate.
+ADAPTIVE_R_RATE_DURING_FLOOR = 0.625
+ADAPTIVE_R_RATE_ENTERING_FLOOR = 0.85
+# Ramp sharpness of the entering floor vs lookahead curvature — higher makes
+# it engage on milder upcoming curvature (was 8.0, lowered after R_rate was
+# reported as "swinging a bit too much prematurely before corners").
+ADAPTIVE_R_RATE_K_ENTERING = 4.0
+
+# FSDS's fitted sustained lateral-acceleration ceiling law,
+# a_lat_max(v) = max(FLAT, SLOPE * |v| + INTERCEPT) in m/s^2. This is a
+# MEASURED property of the simulator (see CLAUDE.md's "dynamically-enforced
+# lateral-acceleration ceiling"), not a free tuning knob — it feeds
+# _corner_demand, which is how every lookahead boost knows whether the corner
+# ahead is actually holdable at the current speed. Must stay in sync with
+# model/vehicle_physics.py's alat_ceiling_at().
+ALAT_CEILING_FLAT = 7.5
+ALAT_CEILING_SLOPE = 0.47
+ALAT_CEILING_INTERCEPT = 2.46
+
+# Corner DEMAND at which a demand-normalised lookahead boost reaches half of
+# its configured maximum. Lower = boosts saturate on easier corners.
+# See controller/model_utils.py::_demand_frac.
+ADAPTIVE_Q_DEMAND_HALF = 0.5
+
+# adaptive_Q_lookahead's clear-straight adjustments, each a
+# lookahead_straight_boost(max_or_floor, k) pair: full effect when no
+# curvature is anywhere in the lookahead window, fading to 1.0 (baseline) as a
+# corner is detected ahead, with k setting how sharply it fades.
+# Q[0,0] lateral error — a FLOOR below 1.0, i.e. lateral cost is REDUCED on a
+# clear straight (nothing to track hard against), with a sharp fade so full
+# authority is back the moment a corner appears.
+ADAPTIVE_Q_STRAIGHT_EY_FLOOR = 0.7
+ADAPTIVE_Q_STRAIGHT_EY_K = 20.0
+# Q[2,2] heading error — boosted on a straight to keep the car pointed
+# straight. Kept deliberately small: a strong straight-line heading weight
+# amplifies the QP's reaction to ordinary heading noise.
+ADAPTIVE_Q_STRAIGHT_EPSI_BOOST_MAX = 1.1
+# Q[3,3] yaw rate — boosted on a straight to damp yaw wander.
+ADAPTIVE_Q_STRAIGHT_R_BOOST_MAX = 1.5
+# Shared fade-out sharpness for the Q[2,2] and Q[3,3] straight boosts above.
+ADAPTIVE_Q_STRAIGHT_K = 8.0
+
+# adaptive_Q_lookahead's U-turn detector: extra commitment for long, gradual
+# U-turns that a peak-curvature signal alone under-boosts (a wide U-turn's
+# peak curvature looks like a mild bend even though it demands a huge total
+# rotation). Severity ramps 0 -> 1 between the two accumulated-heading-change
+# bounds below; ordinary corners fall under THRESH and score nothing, so this
+# never disturbs already-working sudden-corner behaviour.
+# See controller/model_utils.py::uturn_severity / uturn_boost.
+ADAPTIVE_Q_UTURN_HEADING_THRESH_RAD = np.radians(60.0)
+ADAPTIVE_Q_UTURN_HEADING_SAT_RAD = np.radians(120.0)
+# Multipliers applied at FULL U-turn severity: >1 boosts (extra lateral and
+# heading commitment), <1 relaxes (lets the car rotate faster).
+ADAPTIVE_Q_UTURN_EY_BOOST_MAX = 1.6
+ADAPTIVE_Q_UTURN_EPSI_BOOST_MAX = 1.6
+ADAPTIVE_Q_UTURN_R_RELAX_FLOOR = 0.6
 
 
 # ==============================================================================

@@ -245,6 +245,7 @@ writing — re-confirm before relying on them, since a resync can move them.
 | Metric normalisation scales | `settings.py` (`METRIC_SCALES`) | `fsds_simulator/control/fsae_control/fsae_control/scoring.py` (inlined as module constant) | 13 entries (added `accel_reversal_rms` 2026-08-08 — see that commit's message for the METRIC_SCALES[12]=0.08 measurement), `[0.40, 0.45, 0.30, 0.18, 1.50, 0.40, 0.02, 0.30, 1.00, 0.015, 0.70, 2.30, 0.08]` |
 | Constrained-scoring constants | `settings.py` (`CONSTRAINT_FLOOR`, `COMPLETION_THRESHOLD`, `TIME_OBJECTIVE_WEIGHT`, `QUALITY_WEIGHT`) | `fsds_simulator/.../scoring.py` (inlined as module constants) | `10.0` / `0.98` / `1.0` / `0.35` |
 | `A_BRAKE_PLAN` (braking-distance propagation in `curvature_speed`) | `sim/speed_profile.py` | `fsds_simulator/.../control_utils.py` | `5.0` m/s², positive magnitude |
+| Dynamic speed cap enable/gains | `settings.py` (`ENABLE_DYNAMIC_SPEED_CAP`, `DYNAMIC_CAP_A_LAT_MAX`, `DYNAMIC_CAP_SAFETY`) | `mpc_controller.py`/`mpc_controller_standalone.py` (`enable_dynamic_speed_cap`/`dynamic_cap_a_lat_max`/`dynamic_cap_safety` ROS params) | `True` / `3.2` m/s² / `0.9` — see "Dynamic speed cap" section below |
 | Latency telemetry columns | — (offline has no equivalent) | `fsds_simulator/.../telemetry_logger.py` | `pose_age_s`, `path_age_s`, `n_delay`, `solve_ms`, `cmd_latency_ms` |
 | Pose-feed hold model | `settings.py` (`POSE_HOLD_*`) + `sim/rollout_core.PoseFeedHold` | — (offline-only; models a live fault) | `PROB 0.05`, `MEAN_TICKS 2.1`, `MAX_TICKS 5` |
 
@@ -273,6 +274,75 @@ Notes on how these are actually used:
 
 If a resync changes any of these values or call sites, update both sides in
 the same change and re-grep this table's line numbers.
+
+## MPC weight/gain parity: `MPCParams` ↔ `settings.py`
+
+Every MPC cost weight, adaptive-gain shape constant, and feature flag is
+centralized one place per side (see the outer repo's `CLAUDE.md`, "Single
+source of truth for MPC tuning, per side"):
+
+- **Live**: `ros2/src/fsae_planning/control/fsae_control/fsae_control/mpc_params.py`'s
+  `MPCParams` dataclass (also exposed as ROS2 launch parameters — see that
+  repo's README).
+- **Offline**: `settings.py`, imported by `sim/rollout_core.py` and threaded
+  into `controller/model_utils.py`'s adaptive-gain functions as explicit
+  keyword arguments.
+
+This table is the field-by-field mapping. Previously (before this row
+existed) `Q_diag`/`R_diag`/`R_rate_diag` and every adaptive-gain constant had
+a parity OBLIGATION stated only in prose comments, with no row here — that
+gap is what this section closes.
+
+| `MPCParams` field | `settings.py` constant | Current value |
+|---|---|---|
+| `q_e_y` | `Q_diag[0]` | `5.20` |
+| `q_e_yd` | `Q_diag[1]` | `0.2` |
+| `q_e_psi` | `Q_diag[2]` | `1.52` |
+| `q_r` | `Q_diag[3]` | `0.50` |
+| `q_e_v` | `Q_diag[4]` | `5.0` |
+| `r_delta` | `R_diag[0]` | `1.16` |
+| `r_a` | `R_diag[1]` | `0.85` |
+| `r_rate_delta` | `R_rate_diag[0]` | `2.1` |
+| `r_rate_a` | `R_rate_diag[1]` | `2.6` |
+| `terminal_q_scale` | `TERMINAL_Q_SCALE` | `1.0` |
+| `adaptive_q_scaling_enabled` | `ADAPTIVE_Q_SCALING_ENABLED` | `True` |
+| `adaptive_q_lookahead_enabled` | `ADAPTIVE_Q_LOOKAHEAD_ENABLED` | `True` |
+| `adaptive_q_demand_normalised` | `ADAPTIVE_Q_DEMAND_NORMALISED` | `True` |
+| `steer_effort_straight_boost_enabled` | `STEER_EFFORT_STRAIGHT_BOOST_ENABLED` | `True` |
+| `steer_rate_anti_hunt_enabled` | `STEER_RATE_ANTI_HUNT_ENABLED` | `True` |
+| `adaptive_r_rate_enable_in_corners` | `ADAPTIVE_R_RATE_ENABLE_IN_CORNERS` | `True` |
+| `ref_heading_rate_limit_enabled` | `REF_HEADING_RATE_LIMIT_ENABLED` | `False` |
+| `ref_heading_rise_rate_deg_s` | `REF_HEADING_RISE_RATE` | `90.0` |
+| `adaptive_r_rate_during_floor` | `ADAPTIVE_R_RATE_DURING_FLOOR` | `0.625` |
+| `adaptive_r_rate_entering_floor` | `ADAPTIVE_R_RATE_ENTERING_FLOOR` | `0.85` |
+| `adaptive_r_rate_k_entering` | `ADAPTIVE_R_RATE_K_ENTERING` | `4.0` |
+| `alat_ceiling_flat` | `ALAT_CEILING_FLAT` | `7.5` |
+| `alat_ceiling_slope` | `ALAT_CEILING_SLOPE` | `0.47` |
+| `alat_ceiling_intercept` | `ALAT_CEILING_INTERCEPT` | `2.46` |
+| `adaptive_q_demand_half` | `ADAPTIVE_Q_DEMAND_HALF` | `0.5` |
+| `adaptive_q_straight_ey_floor` | `ADAPTIVE_Q_STRAIGHT_EY_FLOOR` | `0.7` |
+| `adaptive_q_straight_ey_k` | `ADAPTIVE_Q_STRAIGHT_EY_K` | `20.0` |
+| `adaptive_q_straight_epsi_boost_max` | `ADAPTIVE_Q_STRAIGHT_EPSI_BOOST_MAX` | `1.1` |
+| `adaptive_q_straight_r_boost_max` | `ADAPTIVE_Q_STRAIGHT_R_BOOST_MAX` | `1.5` |
+| `adaptive_q_straight_k` | `ADAPTIVE_Q_STRAIGHT_K` | `8.0` |
+| `adaptive_q_uturn_heading_thresh_rad` | `ADAPTIVE_Q_UTURN_HEADING_THRESH_RAD` | `radians(60.0)` |
+| `adaptive_q_uturn_heading_sat_rad` | `ADAPTIVE_Q_UTURN_HEADING_SAT_RAD` | `radians(120.0)` |
+| `adaptive_q_uturn_ey_boost_max` | `ADAPTIVE_Q_UTURN_EY_BOOST_MAX` | `1.6` |
+| `adaptive_q_uturn_epsi_boost_max` | `ADAPTIVE_Q_UTURN_EPSI_BOOST_MAX` | `1.6` |
+| `adaptive_q_uturn_r_relax_floor` | `ADAPTIVE_Q_UTURN_R_RELAX_FLOOR` | `0.6` |
+
+The remaining `MPCParams` fields (`max_delay_compensation_steps`,
+`predict_epsi_clip`, `pose_age_lp_alpha`, `n_delay_hysteresis`,
+`adaptive_q_lookahead_time_s`/`_dist_min`/`_dist_max`/`_q_boost_max`/`_k_approach`,
+`adaptive_q_lookahead_epsi_boost_max`/`_epsi_approach_boost_max`/`_k_epsi_approach`,
+`adaptive_q_lookahead_exit_decay_dist`/`_k_exit_norm`/`_peak_hysteresis`,
+`adaptive_q_lookahead_r_floor`/`_k_r_relax`, `steer_effort_straight_boost_max`/`_k`,
+`anti_hunt_boost_max`, `delay_compensation_enabled`) are live-only tuning
+knobs with no offline `settings.py` counterpart yet — `model_utils.py`'s
+matching functions (`predict_ahead`, `lookahead_approach_boost`, etc.) still
+carry these as hardcoded function-default arguments on the offline side. Add
+a `settings.py` constant and a `rollout_core.py` call-site keyword the same
+way as the rows above before relying on tuning one of these offline.
 
 ## Slew-rate limit (`du_max`): was live-only, now on both sides
 
@@ -1417,6 +1487,102 @@ prediction horizon — this is a pre-existing architectural characteristic,
 not something introduced by this sync, and not a bug. See `README.md`'s
 state-vector section (search "e_v's target speed is frozen for the whole
 horizon") for the full explanation; not repeated here to avoid duplication.
+
+## Dynamic speed cap: closing the gap between the oracle profile and live tracking
+
+**Added 2026-08-11.** `precomputed_speed_at()` (the oracle-profile lookup used
+when a track is already mapped — `USE_PRECOMPUTED_SPEED_PROFILE=True` /
+`map_path` set) is a static, position-indexed nearest-point lookup: it has no
+notion of the car's *actual current speed* relative to how much runway is
+left to brake for the upcoming corner. Combined with the frozen-`e_v`-horizon
+characteristic in the section above (the MPC has no internal mechanism to
+anticipate a corner and ease off early — it only ever tracks whatever
+`desired_speed` scalar it's handed *this* tick), a car that enters a fast
+straight even slightly ahead of the oracle profile's own pace has no
+predictive braking margin: the target speed only starts dropping once the
+car reaches the position the profile associates with braking, by which point
+there may not be enough distance left. This showed up directly in live
+telemetry (`fsae_logs/mpc_standalone_control_*.csv`): at a corner entry,
+`v_actual` was measured at ~9 m/s against a `v_desired` already at ~4.6 m/s,
+with steering saturated at the 25° stop for over a second while speed caught
+up to the target — i.e. the corner was recognised too late to brake for
+smoothly.
+
+`control_utils.dynamic_speed_cap()` (a thin wrapper over the already-existing
+`curvature_speed()` — see that function's own docstring for the full
+mechanism: it scans ~24 m of live path ahead, converts curvature to a
+lateral-accel-limited corner speed, then propagates a braking-distance
+constraint back from each corner) is now layered *underneath* the oracle
+lookup rather than replacing it: every tick, when a track is mapped, the
+controller takes `min(precomputed_speed_at(...), dynamic_speed_cap(...))`.
+The oracle profile remains the trusted primary target (it encodes the whole
+lap's raceline optimisation); the dynamic cap only ever pulls the target
+*down* from that, catching the case where live tracking has drifted from the
+plan (e.g. exiting the previous corner faster than expected).
+
+Deliberately **not** a call to `curvature_speed()` with its own default
+`a_lat_max=4.0`/`safety=1.0` (the values already tied to numeric parity with
+the offline `use_planner=True` branch — see the parity table above): the
+dynamic cap uses separate, tighter defaults
+(`DYNAMIC_CAP_A_LAT_MAX=3.2`, `DYNAMIC_CAP_SAFETY=0.9`) so it engages a
+little before the oracle profile would actually be violated, rather than
+exactly at the edge — since it is a safety net under an already-tuned
+profile, not a second opinion on the racing line.
+
+Tunable on/off (`enable_dynamic_speed_cap` ROS param /
+`ENABLE_DYNAMIC_SPEED_CAP` in `settings.py`, both default `True`) so it can
+be A/B'd against the oracle-profile-only baseline without code changes —
+`ros2/launch_all.sh`'s MPC tuning shortlist has a commented-out
+`ENABLE_DYNAMIC_SPEED_CAP=false` line for a one-off disable. With the flag
+off, behaviour is byte-identical to before this change. Has no effect when
+no track is mapped (the live-`curvature_speed()`-only branch already runs
+predictive lookahead speed control with no separate oracle target to cap).
+
+Downstream of this cap, `tracking_error_speed_gate()` and
+`SPEED_TARGET_RISE_RATE` apply exactly as before — the dynamic cap only
+changes what `v_curv` feeds into that existing pipeline, reusing it rather
+than adding a second gate/rate-limiter.
+
+**Measured offline, mixed result — not yet validated on the live car.**
+`python3 -m tuner.recorded_map_rollout --planner` (the `USE_PLANNER=True`
+branch this cap actually runs in; the default oracle-only
+`recorded_map_rollout` invocation never reaches this code path at all, since
+it has no live centreline to scan) on `comp_test_map_3`, cap default
+(`a_lat_max=3.2`, `safety=0.9`) vs. `ENABLE_DYNAMIC_SPEED_CAP=False`:
+
+| metric | cap off | cap on |
+|---|---|---|
+| steering sat % | 4.37 | **5.54** |
+| `\|e_psi\|` mean / p90 (deg) | 7.04 / 15.94 | **8.01 / 16.82** |
+| a_lat max | 10.06 | **10.61** |
+| a_lat > ceiling % | 2.92 | **0.62** |
+| score (lower better) | 0.503 | **0.520** |
+
+The cap does what it's narrowly designed to do — `a_lat > ceiling %` drops
+4.7×, confirming it's genuinely holding the car below the lateral-accel
+ceiling more often. But steering saturation and heading error both got
+**worse**, and the composite score regressed. This is the opposite of the
+predicted effect on saturation and is not yet understood — a likely
+candidate is interaction with `SPEED_TARGET_RISE_RATE`/the tracking-error
+gate (braking earlier/harder for one corner may leave the car in a worse
+heading position entering the next one), but this has not been diagnosed.
+Kept enabled by default in code (`enable_dynamic_speed_cap`/
+`ENABLE_DYNAMIC_SPEED_CAP` default `True`) because the underlying mechanism
+(a real-time lookahead cap under a static oracle profile with no notion of
+the car's actual current speed) is the one CLAUDE.md's investigation
+identifies as structurally missing — but treat `DYNAMIC_CAP_A_LAT_MAX`/
+`DYNAMIC_CAP_SAFETY` as unresolved tuning, not validated defaults.
+
+**2026-08-11, tested live: disabled again.** Subjectively performed worse on
+the live car, consistent with the offline score regression above (0.503 →
+0.520). `ros2/launch_all.sh` now uncomments `ENABLE_DYNAMIC_SPEED_CAP=false`
+so a plain `launch_all.sh` run has the cap off, overriding the code-level
+`True` default — the mechanism and its launch-arg/YAML/settings.py plumbing
+are left in place (not reverted) for whoever picks up the tuning next, but
+do not assume it is on by default in this repo's actual driving
+configuration; check `launch_all.sh`'s shortlist first. Do not re-enable for
+a live run without first understanding why it made steering saturation and
+heading error worse, not just the a_lat ceiling metric it was targeted at.
 
 ## Resync procedure
 

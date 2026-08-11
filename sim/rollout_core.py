@@ -56,9 +56,20 @@ from settings import (
     REF_HEADING_RATE_LIMIT_ENABLED, REF_HEADING_RISE_RATE,
     TERMINAL_Q_SCALE, ADAPTIVE_Q_SCALING_ENABLED,
     USE_PRECOMPUTED_SPEED_PROFILE, STEER_RATE_ANTI_HUNT_ENABLED,
+    ENABLE_DYNAMIC_SPEED_CAP, DYNAMIC_CAP_A_LAT_MAX, DYNAMIC_CAP_SAFETY,
     ADAPTIVE_R_RATE_ENABLE_IN_CORNERS,
     ADAPTIVE_Q_LOOKAHEAD_ENABLED, ADAPTIVE_Q_DEMAND_NORMALISED,
     STEER_EFFORT_STRAIGHT_BOOST_ENABLED,
+    ADAPTIVE_R_RATE_DURING_FLOOR, ADAPTIVE_R_RATE_ENTERING_FLOOR,
+    ADAPTIVE_R_RATE_K_ENTERING,
+    ALAT_CEILING_FLAT, ALAT_CEILING_SLOPE, ALAT_CEILING_INTERCEPT,
+    ADAPTIVE_Q_DEMAND_HALF,
+    ADAPTIVE_Q_STRAIGHT_EY_FLOOR, ADAPTIVE_Q_STRAIGHT_EY_K,
+    ADAPTIVE_Q_STRAIGHT_EPSI_BOOST_MAX, ADAPTIVE_Q_STRAIGHT_R_BOOST_MAX,
+    ADAPTIVE_Q_STRAIGHT_K,
+    ADAPTIVE_Q_UTURN_HEADING_THRESH_RAD, ADAPTIVE_Q_UTURN_HEADING_SAT_RAD,
+    ADAPTIVE_Q_UTURN_EY_BOOST_MAX, ADAPTIVE_Q_UTURN_EPSI_BOOST_MAX,
+    ADAPTIVE_Q_UTURN_R_RELAX_FLOOR,
 )
 
 STALL_CHECK_INTERVAL = 60   # Steps between rolling stall checks (3 s at 20 Hz)
@@ -726,6 +737,23 @@ def run_core_rollout(
                     # (updated later this loop, same as the path_v_profile[idx]
                     # fallback below) -- accepted, not new.
                     v_target = float(path_v_profile[idx])
+
+                    # The oracle lookup above has no notion of the car's
+                    # actual current speed relative to how much runway is
+                    # left to brake for the upcoming corner — see
+                    # settings.ENABLE_DYNAMIC_SPEED_CAP's docstring. Layer a
+                    # live curvature-lookahead cap under it (min, never above
+                    # the oracle target) so a corner reached faster than
+                    # planned still gets braked for in time. Mirrors
+                    # mpc_controller(_standalone).py's identical logic.
+                    if ENABLE_DYNAMIC_SPEED_CAP:
+                        dists = np.linalg.norm(cl - car_pos_np, axis=1)
+                        cl_idx = int(np.argmin(dists))
+                        v_cap = sp.curvature_speed(
+                            cl[cl_idx:], v_max=PLANNER_V_MAX, v_min=PLANNER_V_MIN,
+                            a_lat_max=DYNAMIC_CAP_A_LAT_MAX, safety=DYNAMIC_CAP_SAFETY,
+                        )
+                        v_target = min(v_target, v_cap)
                 else:
                     # No pre-computed profile exists for a live-built centreline
                     # (see SimPlanner) -- derive the target speed on-demand each
@@ -861,6 +889,9 @@ def run_core_rollout(
         R_rate_scaled = adaptive_R_rate(
             kappa, R_rate, enable_in_corners=ADAPTIVE_R_RATE_ENABLE_IN_CORNERS,
             kappa_max_abs=kappa_max_abs,
+            during_floor=ADAPTIVE_R_RATE_DURING_FLOOR,
+            entering_floor=ADAPTIVE_R_RATE_ENTERING_FLOOR,
+            k_entering=ADAPTIVE_R_RATE_K_ENTERING,
         )
         R_rate_scaled = steer_rate_anti_hunt(
             kappa, e_y, R_rate_scaled, enabled=STEER_RATE_ANTI_HUNT_ENABLED, e_psi=e_psi
@@ -887,6 +918,21 @@ def run_core_rollout(
             lookahead_heading_change,
             enabled=ADAPTIVE_Q_LOOKAHEAD_ENABLED,
             demand_normalised=ADAPTIVE_Q_DEMAND_NORMALISED,
+            ey_straight_floor=ADAPTIVE_Q_STRAIGHT_EY_FLOOR,
+            ey_straight_k=ADAPTIVE_Q_STRAIGHT_EY_K,
+            epsi_straight_boost_max=ADAPTIVE_Q_STRAIGHT_EPSI_BOOST_MAX,
+            epsi_straight_k=ADAPTIVE_Q_STRAIGHT_K,
+            r_straight_boost_max=ADAPTIVE_Q_STRAIGHT_R_BOOST_MAX,
+            r_straight_k=ADAPTIVE_Q_STRAIGHT_K,
+            uturn_ey_boost_max=ADAPTIVE_Q_UTURN_EY_BOOST_MAX,
+            uturn_epsi_boost_max=ADAPTIVE_Q_UTURN_EPSI_BOOST_MAX,
+            uturn_r_relax_floor=ADAPTIVE_Q_UTURN_R_RELAX_FLOOR,
+            uturn_thresh_rad=ADAPTIVE_Q_UTURN_HEADING_THRESH_RAD,
+            uturn_sat_rad=ADAPTIVE_Q_UTURN_HEADING_SAT_RAD,
+            demand_half=ADAPTIVE_Q_DEMAND_HALF,
+            alat_flat=ALAT_CEILING_FLAT,
+            alat_slope=ALAT_CEILING_SLOPE,
+            alat_intercept=ALAT_CEILING_INTERCEPT,
         )
         Q_scaled = adaptive_Q_scaling(e_y, Q_base, enabled=ADAPTIVE_Q_SCALING_ENABLED)
         Ad, Bd = model_lookup(vx, DT)

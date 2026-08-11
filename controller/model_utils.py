@@ -123,7 +123,8 @@ def curvature_estimate(state):
     return abs(r / vx)         # |κ| = |r| / vx  (always positive)
 
 
-def adaptive_R_rate(kappa, R_rate_base, enable_in_corners=True, kappa_max_abs=0.0):
+def adaptive_R_rate(kappa, R_rate_base, enable_in_corners=True, kappa_max_abs=0.0,
+                     during_floor=0.625, entering_floor=0.85, k_entering=4.0):
     """
     Scale the steering rate-of-change cost R_rate[0,0] based on path curvature.
 
@@ -196,6 +197,15 @@ def adaptive_R_rate(kappa, R_rate_base, enable_in_corners=True, kappa_max_abs=0.
     kappa_max_abs : float, optional
         Lookahead curvature (same signal adaptive_Q_lookahead uses); 0.0
         (default) makes the entering floor a no-op.
+    during_floor, entering_floor, k_entering : float, optional
+        The two floors and the entering ramp sharpness described above.
+        Defaults match settings.py's ADAPTIVE_R_RATE_DURING_FLOOR /
+        _ENTERING_FLOOR / _K_ENTERING (and the live side's
+        MPCParams.adaptive_r_rate_during_floor / _entering_floor /
+        _k_entering), so a caller that passes nothing gets the tuned
+        behaviour unchanged. The during-floor's own ramp sharpness (3.0) and
+        the kappa_straight=0.03 cutoff are deliberately NOT parameters --
+        they are not tuning knobs on either side.
 
     Returns
     -------
@@ -211,8 +221,8 @@ def adaptive_R_rate(kappa, R_rate_base, enable_in_corners=True, kappa_max_abs=0.
     if not enable_in_corners and abs(kappa) > kappa_straight:
         scale = 1.0                                     # Cornering -> no softening, full baseline cost
     else:
-        during_scale   = max(0.625, 1.0 / (1.0 + 3.0 * abs(kappa)))
-        entering_scale = max(0.85, 1.0 / (1.0 + 4.0 * kappa_max_abs))
+        during_scale   = max(during_floor, 1.0 / (1.0 + 3.0 * abs(kappa)))
+        entering_scale = max(entering_floor, 1.0 / (1.0 + k_entering * kappa_max_abs))
         scale = min(during_scale, entering_scale)       # more aggressive reduction wins
     R[0, 0] *= scale                                    # Apply only to steering rate cost
     return R
@@ -373,17 +383,19 @@ def adaptive_Q_scaling(e_y, Q_base, enabled=False):
     return Q
 
 
-def _alat_ceiling_at(v):
+def _alat_ceiling_at(v, flat=7.5, slope=0.47, intercept=2.46):
     """
     FSDS's sustained lateral-acceleration ceiling at speed v (m/s^2).
     Mirrors model/vehicle_physics.py's alat_ceiling_at() — keep in sync
-    (CLAUDE.md's plant/model parity rule).
+    (CLAUDE.md's plant/model parity rule). flat/slope/intercept default to
+    settings.py's ALAT_CEILING_FLAT / _SLOPE / _INTERCEPT (and the live
+    side's MPCParams.alat_ceiling_flat / _slope / _intercept).
     """
-    flat, slope, intercept = 7.5, 0.47, 2.46
     return max(flat, slope * abs(v) + intercept)
 
 
-def _corner_demand(kappa_max_abs, car_speed):
+def _corner_demand(kappa_max_abs, car_speed,
+                    alat_flat=7.5, alat_slope=0.47, alat_intercept=2.46):
     """
     "How much of the car's available cornering does the path ahead demand at
     the current speed?" -- kappa_max_abs / kappa_limit(v), where
@@ -397,11 +409,17 @@ def _corner_demand(kappa_max_abs, car_speed):
     see adaptive_Q_lookahead's docstring for why raw kappa was the wrong
     parameterisation. Returns 0.0 below a small speed so a stationary or
     crawling car does not report infinite demand.
+
+    alat_flat/alat_slope/alat_intercept parameterise the a_lat ceiling law
+    passed through to _alat_ceiling_at; defaults match settings.py's
+    ALAT_CEILING_FLAT / _SLOPE / _INTERCEPT.
     """
     v = abs(car_speed)
     if v < 1.0 or kappa_max_abs <= 0.0:
         return 0.0
-    kappa_limit = _alat_ceiling_at(v) / (v * v)
+    kappa_limit = _alat_ceiling_at(
+        v, flat=alat_flat, slope=alat_slope, intercept=alat_intercept
+    ) / (v * v)
     if kappa_limit <= 1e-9:
         return 0.0
     return float(kappa_max_abs / kappa_limit)
@@ -510,7 +528,8 @@ def update_lookahead_peak(state, kappa_max_abs, car_speed, dt, peak_hysteresis=0
 
 
 def lookahead_approach_boost(kappa_max_abs, car_speed=0.0, boost_max=2.0, k=8.0,
-                              demand_normalised=True, demand_half=0.5):
+                              demand_normalised=True, demand_half=0.5,
+                              alat_flat=7.5, alat_slope=0.47, alat_intercept=2.46):
     """
     Continuous (no threshold/discontinuity) multiplier on Q[0,0] (lateral
     error) that rises smoothly as the corner ahead gets more demanding, so
@@ -524,16 +543,24 @@ def lookahead_approach_boost(kappa_max_abs, car_speed=0.0, boost_max=2.0, k=8.0,
     of constants work for gradual/sharp/U-turn corners and makes boost_max
     actually reachable. False restores the legacy raw-kappa curve
     (1 - 1/(1 + k*kappa_max_abs)) for A/B comparison.
+
+    alat_flat/alat_slope/alat_intercept are forwarded to _corner_demand's
+    ceiling law; defaults match settings.py's ALAT_CEILING_* constants.
     """
     if demand_normalised:
-        frac = _demand_frac(_corner_demand(kappa_max_abs, car_speed), demand_half)
+        frac = _demand_frac(
+            _corner_demand(kappa_max_abs, car_speed, alat_flat=alat_flat,
+                           alat_slope=alat_slope, alat_intercept=alat_intercept),
+            demand_half,
+        )
     else:
         frac = 1.0 - 1.0 / (1.0 + k * kappa_max_abs)
     return 1.0 + (boost_max - 1.0) * frac
 
 
 def lookahead_epsi_approach_boost(kappa_max_abs, car_speed=0.0, boost_max=1.5, k=8.0,
-                                   demand_normalised=True, demand_half=0.5):
+                                   demand_normalised=True, demand_half=0.5,
+                                   alat_flat=7.5, alat_slope=0.47, alat_intercept=2.46):
     """
     Continuous (no threshold/discontinuity) multiplier on Q[2,2] (heading
     error) that rises smoothly as the corner ahead gets more demanding --
@@ -548,9 +575,16 @@ def lookahead_epsi_approach_boost(kappa_max_abs, car_speed=0.0, boost_max=1.5, k
     (approach rises while still approaching a peak; exit only starts
     contributing once a peak has been latched and decays afterward) but
     multiplying rather than taking a max keeps this continuous either way.
+
+    alat_flat/alat_slope/alat_intercept are forwarded to _corner_demand's
+    ceiling law; defaults match settings.py's ALAT_CEILING_* constants.
     """
     if demand_normalised:
-        frac = _demand_frac(_corner_demand(kappa_max_abs, car_speed), demand_half)
+        frac = _demand_frac(
+            _corner_demand(kappa_max_abs, car_speed, alat_flat=alat_flat,
+                           alat_slope=alat_slope, alat_intercept=alat_intercept),
+            demand_half,
+        )
     else:
         frac = 1.0 - 1.0 / (1.0 + k * kappa_max_abs)
     return 1.0 + (boost_max - 1.0) * frac
@@ -574,7 +608,8 @@ def lookahead_exit_boost(last_peak_kappa_abs, dist_since_peak, decay_dist=5.0,
 
 
 def lookahead_yaw_rate_relax(kappa_max_abs, car_speed=0.0, floor=0.5, k=8.0,
-                              demand_normalised=True, demand_half=0.5):
+                              demand_normalised=True, demand_half=0.5,
+                              alat_flat=7.5, alat_slope=0.47, alat_intercept=2.46):
     """
     Continuous (no threshold/discontinuity) multiplier on Q[3,3] (yaw rate r)
     that FALLS smoothly as the corner ahead gets more demanding -- the
@@ -586,9 +621,16 @@ def lookahead_yaw_rate_relax(kappa_max_abs, car_speed=0.0, floor=0.5, k=8.0,
     the car's current-position kappa -- the relaxation is already in effect
     before the car reaches the corner, addressing "turns late/slowly" rather
     than only reacting once already mid-turn.
+
+    alat_flat/alat_slope/alat_intercept are forwarded to _corner_demand's
+    ceiling law; defaults match settings.py's ALAT_CEILING_* constants.
     """
     if demand_normalised:
-        frac = _demand_frac(_corner_demand(kappa_max_abs, car_speed), demand_half)
+        frac = _demand_frac(
+            _corner_demand(kappa_max_abs, car_speed, alat_flat=alat_flat,
+                           alat_slope=alat_slope, alat_intercept=alat_intercept),
+            demand_half,
+        )
     else:
         frac = 1.0 - 1.0 / (1.0 + k * kappa_max_abs)
     return 1.0 - (1.0 - floor) * frac
@@ -666,7 +708,16 @@ def uturn_boost(severity, boost_max):
 
 def adaptive_Q_lookahead(Q_base, kappa_max_abs, car_speed, last_peak_kappa_abs,
                           dist_since_peak, heading_change_abs, enabled=False,
-                          demand_normalised=True):
+                          demand_normalised=True,
+                          ey_straight_floor=0.7, ey_straight_k=20.0,
+                          epsi_straight_boost_max=1.1, epsi_straight_k=8.0,
+                          r_straight_boost_max=1.5, r_straight_k=8.0,
+                          uturn_ey_boost_max=1.6, uturn_epsi_boost_max=1.6,
+                          uturn_r_relax_floor=0.6,
+                          uturn_thresh_rad=np.radians(60.0),
+                          uturn_sat_rad=np.radians(120.0),
+                          demand_half=0.5,
+                          alat_flat=7.5, alat_slope=0.47, alat_intercept=2.46):
     """
     Full lookahead corner-anticipation Q-boost: combines
     lookahead_approach_boost, lookahead_epsi_approach_boost,
@@ -706,6 +757,30 @@ def adaptive_Q_lookahead(Q_base, kappa_max_abs, car_speed, last_peak_kappa_abs,
     demand_normalised : bool
         See lookahead_approach_boost. Default True; set False to A/B against
         the legacy raw-curvature curve.
+    ey_straight_floor, ey_straight_k : float, optional
+        lookahead_straight_boost shape for Q[0,0]'s clear-straight lateral
+        REDUCTION (floor < 1.0, so this lowers Q[0,0] on a straight).
+    epsi_straight_boost_max, epsi_straight_k : float, optional
+        lookahead_straight_boost shape for Q[2,2]'s clear-straight boost.
+    r_straight_boost_max, r_straight_k : float, optional
+        lookahead_straight_boost shape for Q[3,3]'s clear-straight boost.
+    uturn_ey_boost_max, uturn_epsi_boost_max, uturn_r_relax_floor : float, optional
+        uturn_boost maxima for Q[0,0]/Q[2,2] (>1, extra commitment) and
+        Q[3,3] (<1, yaw-rate relaxation) at full U-turn severity.
+    uturn_thresh_rad, uturn_sat_rad : float, optional
+        uturn_severity's engage/saturate accumulated-heading-change bounds.
+    demand_half : float, optional
+        Corner demand at which a demand-normalised boost reaches half its
+        max; forwarded to the three lookahead_*_boost/relax calls below.
+    alat_flat, alat_slope, alat_intercept : float, optional
+        The a_lat ceiling law, forwarded through those same three calls into
+        _corner_demand/_alat_ceiling_at.
+
+    All of the above default to the previously-hardcoded values, so a caller
+    that passes none of them gets behaviour identical to before they became
+    parameters. settings.py's ADAPTIVE_Q_STRAIGHT_* / ADAPTIVE_Q_UTURN_* /
+    ADAPTIVE_Q_DEMAND_HALF / ALAT_CEILING_* mirror them 1:1 (as does the
+    live side's MPCParams).
 
     Returns
     -------
@@ -717,20 +792,29 @@ def adaptive_Q_lookahead(Q_base, kappa_max_abs, car_speed, last_peak_kappa_abs,
     if not enabled:
         return Q_base
 
-    Q = np.array(Q_base, copy=True)
-    Q[0, 0] *= lookahead_approach_boost(kappa_max_abs, car_speed, demand_normalised=demand_normalised)
-    Q[0, 0] *= lookahead_straight_boost(kappa_max_abs, 0.7, 20.0)
-    Q[2, 2] *= lookahead_epsi_approach_boost(kappa_max_abs, car_speed, demand_normalised=demand_normalised)
-    Q[2, 2] *= lookahead_exit_boost(last_peak_kappa_abs, dist_since_peak)
-    Q[2, 2] *= lookahead_straight_boost(kappa_max_abs, 1.1, 8.0)
-    Q[3, 3] *= lookahead_yaw_rate_relax(kappa_max_abs, car_speed, demand_normalised=demand_normalised)
-    Q[3, 3] *= lookahead_straight_boost(kappa_max_abs, 1.5, 8.0)
+    # The a_lat ceiling law + demand half-point, forwarded identically into
+    # each of the three demand-normalised boost/relax curves below.
+    _demand_kw = dict(demand_half=demand_half, alat_flat=alat_flat,
+                      alat_slope=alat_slope, alat_intercept=alat_intercept)
 
-    uturn = uturn_severity(heading_change_abs)
+    Q = np.array(Q_base, copy=True)
+    Q[0, 0] *= lookahead_approach_boost(kappa_max_abs, car_speed,
+                                        demand_normalised=demand_normalised, **_demand_kw)
+    Q[0, 0] *= lookahead_straight_boost(kappa_max_abs, ey_straight_floor, ey_straight_k)
+    Q[2, 2] *= lookahead_epsi_approach_boost(kappa_max_abs, car_speed,
+                                             demand_normalised=demand_normalised, **_demand_kw)
+    Q[2, 2] *= lookahead_exit_boost(last_peak_kappa_abs, dist_since_peak)
+    Q[2, 2] *= lookahead_straight_boost(kappa_max_abs, epsi_straight_boost_max, epsi_straight_k)
+    Q[3, 3] *= lookahead_yaw_rate_relax(kappa_max_abs, car_speed,
+                                        demand_normalised=demand_normalised, **_demand_kw)
+    Q[3, 3] *= lookahead_straight_boost(kappa_max_abs, r_straight_boost_max, r_straight_k)
+
+    uturn = uturn_severity(heading_change_abs, thresh_rad=uturn_thresh_rad,
+                           sat_rad=uturn_sat_rad)
     if uturn > 0.0:
-        Q[0, 0] *= uturn_boost(uturn, 1.6)
-        Q[2, 2] *= uturn_boost(uturn, 1.6)
-        Q[3, 3] *= uturn_boost(uturn, 0.6)
+        Q[0, 0] *= uturn_boost(uturn, uturn_ey_boost_max)
+        Q[2, 2] *= uturn_boost(uturn, uturn_epsi_boost_max)
+        Q[3, 3] *= uturn_boost(uturn, uturn_r_relax_floor)
 
     return Q
 
@@ -764,12 +848,9 @@ def adaptive_R_scaling(vx, R_base):
          (the transition from kinematic to dynamic lateral behaviour, which
          the linear model captures around 1-2.5 m/s).
 
-    Acceleration scale (linear, gentler):
-        accel_scale = 1 + 0.05 * vx
-
-    At vx=15 m/s: accel_scale = 1.75 (75% increase). Longitudinal control
-    is inherently less speed-sensitive in the tracking error framework, so
-    a lighter scale suffices.
+    Acceleration scale: disabled (fixed at 1.0) as of 2026-08-10 — see the
+    accel_scale assignment below for why. R[1,1] is governed by R_diag[1]
+    alone, independent of vx.
 
     Parameters
     ----------
@@ -797,9 +878,12 @@ def adaptive_R_scaling(vx, R_base):
     # Hill-function saturating ramp: rises quickly below vx_half, flattens above it
     steer_scale = 1.0 + (A * vx) / (vx_half + vx)
 
-    # Linear scale for acceleration: gentler than steering since longitudinal
-    # dynamics are less sensitive to speed in the Frenet-frame error model
-    accel_scale = 1.0 + 0.05 * vx
+    # accel_scale disabled (fixed at 1.0) 2026-08-10, mirroring the live
+    # _adaptive_R_scaling fix: scaling R[1,1] with vx made braking effort
+    # more expensive exactly at corner-entry speed and cheaper again as the
+    # car decelerated mid-approach, fighting the R_diag[1] braking tuning.
+    # R[1,1] is now governed by R_diag[1] alone, independent of vx.
+    accel_scale = 1.0
 
     R_scaled = np.array(R_base, copy=True)   # Never mutate the caller's matrix
     R_scaled[0, 0] *= steer_scale            # Scale steering input cost

@@ -9,6 +9,12 @@ from launch.substitutions import (
 )
 from launch_ros.actions import Node
 
+# fsae_control is an installed package by the time `ros2 launch` generates
+# this file (same as any node import) -- see mpc_params.py's own module
+# docstring for the full MPCParams single-source-of-truth mechanism this
+# feeds.
+from fsae_control.mpc_params import MPC_PARAM_FIELDS
+
 
 # Control subsystem: a path-tracking controller + the FSDS command bridge.
 # The controller is selectable with `controller:=stanley|mpc|mpc_standalone`.
@@ -40,6 +46,16 @@ def generate_launch_description():
     v_max = LaunchConfiguration('v_max')
     v_min = LaunchConfiguration('v_min')
     stanley_gain = LaunchConfiguration('stanley_gain')
+    # Every MPCController tuning field (Q/R/R_rate weights, adaptive-gain
+    # shape constants, feature flags) -- see mpc_params.py's MPCParams for
+    # the authoritative field list/defaults/units. Generated from
+    # MPC_PARAM_FIELDS rather than hand-written so this launch file, the
+    # dataclass, and fsae_params.yaml's defaults can't silently drift against
+    # each other (56 near-identical hand-written args is itself a drift
+    # risk).
+    mpc_param_configs = {
+        name: LaunchConfiguration(name) for name, _default, _meta in MPC_PARAM_FIELDS
+    }
     # Effective map_path handed to the node: '' whenever the feature is
     # switched off, regardless of what map_path itself is set to -- so
     # use_precomputed_speed:=false is a reliable one-flag disable without
@@ -73,11 +89,16 @@ def generate_launch_description():
     run_bridge = IfCondition(
         PythonExpression(["'", controller, "' != 'mpc_standalone'"])
     )
-    # map_path is an MPC-only param (mpc_controller.py / mpc_controller_standalone.py
-    # both declare_parameters it; stanley_controller.py does not) -- passing it
-    # unconditionally would raise ParameterNotDeclaredException on the default
-    # controller:=stanley. Only include it in the params list for mpc/mpc_standalone,
-    # via a separate Node() entry rather than branching one entry's params.
+    # path_map_path is an MPC-only param (mpc_controller.py / mpc_controller_standalone.py
+    # both declare_parameters it; stanley_controller.py does not track a static
+    # path override) -- passing it unconditionally would raise
+    # ParameterNotDeclaredException on the default controller:=stanley. map_path
+    # (the speed profile) IS declared by stanley_controller.py too -- see its
+    # own map_path param -- so both Node() entries below receive it, letting a
+    # Stanley run and an MPC run on the same track share the identical speed
+    # target for a directly comparable telemetry CSV. Kept as two Node()
+    # entries (rather than branching one entry's params) because path_map_path
+    # still can't go to Stanley.
     run_controller_mpc = IfCondition(
         PythonExpression([
             "'", planner, "' != 'skidpad_planner' and '", controller,
@@ -90,6 +111,27 @@ def generate_launch_description():
             "' not in ('mpc', 'mpc_standalone')"
         ])
     )
+
+    # One DeclareLaunchArgument per MPCParams field, default matching
+    # fsae_params.yaml's controller block (and MPCParams' own default)
+    # exactly -- leaving all of these unset on the command line changes
+    # nothing, same guarantee v_max/v_min/stanley_gain already give.
+    def _mpc_launch_arg(name, default, meta):
+        unit = meta.get('unit', '')
+        desc = meta.get('desc', '')
+        suffix = f' ({unit})' if unit and unit != 'unitless' else ''
+        if isinstance(default, bool):
+            default_str = 'true' if default else 'false'
+        else:
+            default_str = str(default)
+        return DeclareLaunchArgument(
+            name, default_value=default_str,
+            description=f'{desc}{suffix} (overrides fsae_params.yaml controller.{name})',
+        )
+
+    mpc_launch_args = [
+        _mpc_launch_arg(name, default, meta) for name, default, meta in MPC_PARAM_FIELDS
+    ]
 
     return LaunchDescription([
         DeclareLaunchArgument('planner', default_value='centerline_planner'),
@@ -136,8 +178,10 @@ def generate_launch_description():
                 "fsae_MPCTest checkout required to READ it (only to produce "
                 "a NEW one; see tracks/README or fsae_MPCTest's "
                 "tuner/export_speed_profile.py). Has no effect unless "
-                "use_precomputed_speed:=true. Applies to both `mpc` and "
-                "`mpc_standalone`; ignored by `stanley`. If the file doesn't "
+                "use_precomputed_speed:=true. Applies to `mpc`, "
+                "`mpc_standalone`, AND `stanley` (all three declare this "
+                "param) -- letting Stanley and MPC runs on the same track "
+                "share the identical speed target. If the file doesn't "
                 "exist, the node logs an error at startup and falls back to "
                 "live curvature_speed() -- it does not crash."
             )),
@@ -201,6 +245,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'stanley_gain', default_value='1.0',
             description='cross-track gain k_cte (overrides fsae_params.yaml controller.stanley_gain)'),
+        *mpc_launch_args,
         Node(
             package='fsae_control',
             executable=controller_exec,
@@ -214,6 +259,10 @@ def generate_launch_description():
                 # stanley_gain deliberately omitted here: neither
                 # mpc_controller.py nor mpc_controller_standalone.py declares
                 # it, so passing it would raise ParameterNotDeclaredException.
+                # Every MPCParams field IS declared by both MPC nodes (see
+                # mpc_params.py's declare_mpc_params()), so unlike
+                # stanley_gain these are safe to pass unconditionally here.
+                **mpc_param_configs,
             }],
             condition=run_controller_mpc,
         ),
@@ -224,6 +273,7 @@ def generate_launch_description():
             output='screen',
             parameters=[config, {
                 'log_csv': log_csv, 'log_dir': log_dir,
+                'map_path': effective_map_path,
                 'v_max': v_max, 'v_min': v_min, 'stanley_gain': stanley_gain,
             }],
             condition=run_controller_non_mpc,

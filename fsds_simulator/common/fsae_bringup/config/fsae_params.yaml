@@ -68,5 +68,104 @@ controller:
     v_max: 15.0         # m/s — top speed on straights
     v_min: 1.5          # m/s — minimum speed through tight corners
     stanley_gain: 1.0   # cross-track gain (k_cte)
+
+    # MPC tuning (mpc/mpc_standalone only; ignored by stanley). Single source
+    # of truth is fsae_control/mpc_params.py's MPCParams dataclass — every
+    # field there has a matching key here with the SAME default, so leaving
+    # these untouched changes nothing. Must be kept numerically identical to
+    # fsae_MPCTest/settings.py's matching constants (CLAUDE.md's plant/model
+    # parity rule) — see mpc_params.py / settings.py for the full tuning
+    # history behind each value; this file only carries the current numbers.
+
+    # Core cost weights — Q penalises tracking error, R penalises control
+    # effort, R_rate penalises tick-to-tick jerk. States x are
+    # [e_y, e_yd, e_psi, r, e_v, e_a, delta_act, a_act]; inputs u are
+    # [delta_cmd, a_cmd].
+    q_e_y: 5.2                # lateral deviation from path centreline (1/m^2)
+    q_e_yd: 0.2                # rate of change of lateral deviation (1/(m/s)^2)
+    q_e_psi: 1.52              # heading error relative to path tangent (1/rad^2)
+    q_r: 0.5                   # yaw rate (1/(rad/s)^2)
+    q_e_v: 5.0                 # speed error: car_speed - desired_speed (1/(m/s)^2)
+    r_delta: 1.16              # steering command effort (1/rad^2)
+    r_a: 0.85                  # acceleration command effort (1/(m/s^2)^2)
+    r_rate_delta: 2.1          # steering rate of change (1/(rad/s)^2)
+    r_rate_a: 2.6              # acceleration rate of change (1/(m/s^3)^2)
+    terminal_q_scale: 1.0      # extra weight on terminal predicted state; 1.0 = no-op
+
+    # Feature enable/disable flags
+    adaptive_q_scaling_enabled: true              # soften Q[0,0] near centreline to reduce small-error hunting
+    adaptive_q_lookahead_enabled: true            # curvature-lookahead Q boosts/relaxations approaching/exiting corners
+    adaptive_q_demand_normalised: true            # score corners by grip DEMAND (speed-aware) instead of raw curvature
+    steer_effort_straight_boost_enabled: true     # make R[0,0] (steering effort) expensive on a clear straight
+    steer_rate_anti_hunt_enabled: true            # extra R_rate[0,0] penalty when centred/aligned/uncurving
+    adaptive_r_rate_enable_in_corners: true       # keep R_rate softening active in corners (continuous, no cutoff)
+    delay_compensation_enabled: true              # roll x0 forward through pending commands via predict_ahead()
+    ref_heading_rate_limit_enabled: false         # cap how fast the tracked reference heading may change per tick
+
+    # Reference-heading rate limit (only used if ref_heading_rate_limit_enabled)
+    ref_heading_rise_rate_deg_s: 90.0   # deg/s — max rate the reference heading may change
+
+    # Delay compensation
+    max_delay_compensation_steps: 3    # steps — cap on predict_ahead() rollforward depth
+    predict_epsi_clip: 0.5             # rad — small-angle bound used inside predict_ahead()
+
+    # n_delay stabilisation
+    pose_age_lp_alpha: 0.15      # per-tick low-pass coefficient on pose_age_s
+    n_delay_hysteresis: 0.25     # steps — deadband either side of an n_delay bin boundary
+
+    # Lookahead corner-anticipation Q-boost
+    adaptive_q_lookahead_time_s: 1.13         # s — speed -> lookahead distance
+    adaptive_q_lookahead_dist_min: 3.0        # m — lookahead distance clamp floor
+    adaptive_q_lookahead_dist_max: 17.0       # m — lookahead distance clamp ceiling
+    adaptive_q_lookahead_q_boost_max: 2.0     # max Q[0,0] multiplier approaching a corner
+    adaptive_q_lookahead_k_approach: 8.0      # legacy (non-demand-normalised) approach ramp sharpness
+
+    # Demand-normalised corner scoring (FSDS lateral-accel ceiling law:
+    # max(alat_ceiling_flat, alat_ceiling_slope*v + alat_ceiling_intercept))
+    alat_ceiling_flat: 7.5                    # m/s^2 — low-speed floor
+    alat_ceiling_slope: 0.47                  # (m/s^2)/(m/s)
+    alat_ceiling_intercept: 2.46              # m/s^2
+    adaptive_q_demand_half: 0.5               # corner demand at which a boost reaches half its max
+    adaptive_q_lookahead_epsi_boost_max: 1.5           # max Q[2,2] multiplier exiting a corner
+    adaptive_q_lookahead_epsi_approach_boost_max: 1.5  # max Q[2,2] multiplier approaching a corner
+    adaptive_q_lookahead_k_epsi_approach: 8.0          # legacy (non-demand-normalised) epsi-approach ramp sharpness
+
+    # U-turn detector (accumulated heading change over the lookahead window).
+    # Thresholds are math.radians(60)/math.radians(120) — 60/120 deg — kept at
+    # full float precision here so the launch-arg default matches mpc_params.py
+    # exactly; edit in degrees and re-run math.radians() if retuning.
+    adaptive_q_uturn_heading_thresh_rad: 1.0471975511965976   # rad (60 deg) — engage past this accumulated heading change
+    adaptive_q_uturn_heading_sat_rad: 2.0943951023931953      # rad (120 deg) — fully saturated by this much
+    adaptive_q_uturn_ey_boost_max: 1.6         # extra Q[0,0] multiplier at full U-turn detection
+    adaptive_q_uturn_epsi_boost_max: 1.6       # extra Q[2,2] multiplier at full U-turn detection
+    adaptive_q_uturn_r_relax_floor: 0.6        # Q[3,3] multiplier at full U-turn detection
+    adaptive_q_lookahead_exit_decay_dist: 5.0  # m — exit boost taper distance
+    adaptive_q_lookahead_k_exit_norm: 0.05     # 1/m — normalises exit boost by corner sharpness
+    adaptive_q_lookahead_peak_hysteresis: 0.01 # 1/m — "cleared" threshold that re-arms peak detection
+
+    # Yaw-rate relaxation approaching a corner
+    adaptive_q_lookahead_r_floor: 0.5      # min Q[3,3] multiplier at high lookahead curvature
+    adaptive_q_lookahead_k_r_relax: 8.0    # legacy (non-demand-normalised) yaw-rate relax ramp sharpness
+
+    # Straight-line Q[2,2]/Q[3,3] boosts
+    adaptive_q_straight_epsi_boost_max: 1.1    # max Q[2,2] multiplier on a clear straight
+    adaptive_q_straight_r_boost_max: 1.5       # max Q[3,3] multiplier on a clear straight
+    adaptive_q_straight_k: 8.0                 # shared fade-out sharpness vs lookahead curvature
+
+    # Straight-line Q[0,0] floor
+    adaptive_q_straight_ey_floor: 0.7    # min Q[0,0] multiplier on a clear straight
+    adaptive_q_straight_ey_k: 20.0       # ramp sharpness vs lookahead curvature
+
+    # Straight-line R[0,0] (steering effort) boost
+    steer_effort_straight_boost_max: 1.5   # max R[0,0] multiplier on a clear straight
+    steer_effort_straight_k: 20.0          # sharp fade-out vs lookahead curvature
+
+    # Straight-line R_rate[0,0] (steering rate) anti-hunt boost
+    anti_hunt_boost_max: 6.0   # ceiling on the steer_rate_anti_hunt multiplier
+
+    # Adaptive R_rate corner softening floors
+    adaptive_r_rate_during_floor: 0.625     # R_rate[0,0] floor driven by CURRENT-position curvature
+    adaptive_r_rate_entering_floor: 0.85    # R_rate[0,0] floor driven by LOOKAHEAD curvature
+    adaptive_r_rate_k_entering: 4.0         # ramp sharpness of the entering floor vs lookahead curvature
 fsds_bridge:
   ros__parameters: {}   # no tunables yet

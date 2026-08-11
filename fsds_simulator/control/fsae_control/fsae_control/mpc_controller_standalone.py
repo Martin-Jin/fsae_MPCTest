@@ -76,10 +76,11 @@ from nav_msgs.msg import Odometry
 from rclpy.time import Time
 
 from fsae_control.control_utils import (
-    curvature_speed, load_path_profile_csv, load_speed_profile_csv,
-    precomputed_speed_at, tracking_error_speed_gate,
+    curvature_speed, dynamic_speed_cap, load_path_profile_csv,
+    load_speed_profile_csv, precomputed_speed_at, tracking_error_speed_gate,
 )
 from fsae_control.mpc_core import MAX_STEER_RAD, MPCController
+from fsae_control.mpc_params import declare_mpc_params, mpc_params_from_node
 from fsae_control.telemetry_logger import ControlLogger, LapProgressTracker
 
 CONTROL_HZ = 20.0   # must match MPCController(dt=0.05); dt = 1 / CONTROL_HZ
@@ -121,6 +122,15 @@ class MPCControllerStandaloneNode(Node):
             parameters=[
                 ('v_max', 20.0),      # m/s — top speed on straights
                 ('v_min', 1.5),       # m/s — minimum speed through tight corners
+                # Real-time curvature-lookahead speed cap layered under the
+                # precomputed speed profile (map_path) — see
+                # control_utils.dynamic_speed_cap()'s docstring. No effect
+                # when map_path is unset. Mirrors fsae_MPCTest/settings.py's
+                # ENABLE_DYNAMIC_SPEED_CAP / DYNAMIC_CAP_A_LAT_MAX /
+                # DYNAMIC_CAP_SAFETY.
+                ('enable_dynamic_speed_cap', True),
+                ('dynamic_cap_a_lat_max', 3.2),   # m/s^2
+                ('dynamic_cap_safety', 0.9),
                 ('log_csv', False),   # write CSV telemetry to log_dir
                 ('log_dir', ''),      # '' -> ~/fsae_logs
                 ('map_path', ''),     # '' -> live curvature_speed() (default);
@@ -137,8 +147,21 @@ class MPCControllerStandaloneNode(Node):
                                        # from planner-induced path error.
             ],
         )
+        # All MPCController tuning (Q/R/R_rate weights, adaptive-gain shape
+        # constants, feature flags) — see mpc_params.py's MPCParams for the
+        # full field list and fsae_params.yaml's controller block for the
+        # launch-time defaults/overrides.
+        declare_mpc_params(self)
+        mpc_params = mpc_params_from_node(self)
+
         self._v_max = self.get_parameter('v_max').get_parameter_value().double_value
         self._v_min = self.get_parameter('v_min').get_parameter_value().double_value
+        self._enable_dynamic_speed_cap = self.get_parameter(
+            'enable_dynamic_speed_cap').get_parameter_value().bool_value
+        self._dynamic_cap_a_lat_max = self.get_parameter(
+            'dynamic_cap_a_lat_max').get_parameter_value().double_value
+        self._dynamic_cap_safety = self.get_parameter(
+            'dynamic_cap_safety').get_parameter_value().double_value
 
         self._speed_profile = None  # (path_X, path_Y, path_V) or None
         map_path = self.get_parameter('map_path').get_parameter_value().string_value
@@ -249,7 +272,7 @@ class MPCControllerStandaloneNode(Node):
         self._cone_reset_done = False
 
         dt = 1.0 / CONTROL_HZ
-        self._mpc = MPCController(dt=dt, N=35)
+        self._mpc = MPCController(dt=dt, N=35, params=mpc_params)
 
         self.create_timer(dt, self._control_loop)
         self.get_logger().info(
@@ -375,6 +398,25 @@ class MPCControllerStandaloneNode(Node):
             # live-built centreline. See load_speed_profile_csv()'s docstring.
             path_X, path_Y, path_V = self._speed_profile
             v_curv = precomputed_speed_at(self._car_pos, path_X, path_Y, path_V)
+
+            # The oracle lookup above has no notion of the car's actual
+            # current speed relative to how much runway is left to brake for
+            # the upcoming corner — see control_utils.dynamic_speed_cap()'s
+            # docstring. Layer a live curvature-lookahead cap under it
+            # (min, never above the oracle target) so a corner reached
+            # faster than planned still gets braked for in time.
+            if self._enable_dynamic_speed_cap:
+                path_ahead = self._path_pts
+                if len(path_ahead) > 2:
+                    i_near = int(np.argmin(np.linalg.norm(path_ahead - self._car_pos, axis=1)))
+                    if i_near < len(path_ahead) - 2:
+                        path_ahead = path_ahead[i_near:]
+                v_cap = dynamic_speed_cap(
+                    path_ahead, v_max=self._v_max, v_min=self._v_min,
+                    a_lat_max=self._dynamic_cap_a_lat_max,
+                    safety=self._dynamic_cap_safety,
+                )
+                v_curv = min(v_curv, v_cap)
         else:
             path_ahead = self._path_pts
             if len(path_ahead) > 2:
