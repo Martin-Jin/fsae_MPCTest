@@ -45,7 +45,7 @@ from fsae_control.control_utils import (
     precomputed_speed_at, tracking_error_speed_gate,
 )
 from fsae_control.mpc_core import MPCController
-from fsae_control.telemetry_logger import ControlLogger
+from fsae_control.telemetry_logger import ControlLogger, LapProgressTracker
 
 CONTROL_HZ    = 20.0   # must match MPCController(dt=0.05); dt = 1 / CONTROL_HZ
 
@@ -130,6 +130,12 @@ class MPCControllerNode(Node):
             log_dir = self.get_parameter('log_dir').get_parameter_value().string_value
             self._telemetry = ControlLogger('mpc', log_dir=log_dir)
             self.get_logger().info(f'CSV telemetry -> {self._telemetry.paths[0]}')
+
+        # See mpc_controller_standalone.py's identical field for the full
+        # rationale — drives close()'s progress/reached_end/time_bonus.
+        self._lap_tracker: LapProgressTracker | None = None
+        if self._telemetry is not None and self._speed_profile is not None:
+            self._lap_tracker = LapProgressTracker(*self._speed_profile)
 
         sensor_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -330,6 +336,8 @@ class MPCControllerNode(Node):
                 cmd_latency_ms=(time.perf_counter() - _t_loop0) * 1e3,
                 adaptive=tel)
             self._telemetry.log_path(t, self._path)
+            if self._lap_tracker is not None:
+                self._lap_tracker.update(self._car_pos, t)
 
         self.get_logger().info(
             f'cmd_vel: speed={desired_speed:.2f} m/s  steer={steering:.3f} rad  '
@@ -348,7 +356,15 @@ def main(args=None):
         pass
     finally:
         if node._telemetry is not None:
-            node._telemetry.close()
+            if node._lap_tracker is not None:
+                lap = node._lap_tracker.result(node.get_clock().now().nanoseconds * 1e-9)
+                node._telemetry.close(
+                    progress=lap['progress'], time_bonus=lap['time_bonus'],
+                    reached_end=lap['reached_end'], lap_time_s=lap['lap_time_s'],
+                    optimal_time_s=lap['optimal_time_s'],
+                )
+            else:
+                node._telemetry.close()
         node.destroy_node()
         rclpy.shutdown()
 

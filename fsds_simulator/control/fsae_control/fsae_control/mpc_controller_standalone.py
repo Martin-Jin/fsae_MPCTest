@@ -80,7 +80,7 @@ from fsae_control.control_utils import (
     precomputed_speed_at, tracking_error_speed_gate,
 )
 from fsae_control.mpc_core import MAX_STEER_RAD, MPCController
-from fsae_control.telemetry_logger import ControlLogger
+from fsae_control.telemetry_logger import ControlLogger, LapProgressTracker
 
 CONTROL_HZ = 20.0   # must match MPCController(dt=0.05); dt = 1 / CONTROL_HZ
 
@@ -180,6 +180,16 @@ class MPCControllerStandaloneNode(Node):
             log_dir = self.get_parameter('log_dir').get_parameter_value().string_value
             self._telemetry = ControlLogger('mpc_standalone', log_dir=log_dir)
             self.get_logger().info(f'CSV telemetry -> {self._telemetry.paths[0]}')
+
+        # Drives close()'s progress/reached_end/time_bonus so composite_score
+        # reflects how far/fast the car actually got instead of being pinned
+        # at the DNF floor (see LapProgressTracker's docstring). Needs the
+        # precomputed speed profile for its ds/v_target optimal-time
+        # integral, so it's only available in that mode — a live-planner run
+        # still logs and scores everything except the time-based terms.
+        self._lap_tracker: LapProgressTracker | None = None
+        if self._telemetry is not None and self._speed_profile is not None:
+            self._lap_tracker = LapProgressTracker(*self._speed_profile)
 
         sensor_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -475,6 +485,8 @@ class MPCControllerStandaloneNode(Node):
                 cmd_latency_ms=(time.perf_counter() - _t_loop0) * 1e3,
                 adaptive=tel)
             self._telemetry.log_path(t, self._path_pts)
+            if self._lap_tracker is not None:
+                self._lap_tracker.update(self._car_pos, t)
 
         # ── Phase 5: publish ─────────────────────────────────────────────
         self._publish(cmd)
@@ -487,7 +499,15 @@ class MPCControllerStandaloneNode(Node):
 
     def destroy_node(self) -> None:
         if self._telemetry is not None:
-            self._telemetry.close()
+            if self._lap_tracker is not None:
+                lap = self._lap_tracker.result(self.get_clock().now().nanoseconds * 1e-9)
+                self._telemetry.close(
+                    progress=lap['progress'], time_bonus=lap['time_bonus'],
+                    reached_end=lap['reached_end'], lap_time_s=lap['lap_time_s'],
+                    optimal_time_s=lap['optimal_time_s'],
+                )
+            else:
+                self._telemetry.close()
         super().destroy_node()
 
 

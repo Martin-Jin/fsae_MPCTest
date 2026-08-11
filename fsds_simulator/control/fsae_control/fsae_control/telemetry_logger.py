@@ -54,6 +54,8 @@ import math
 import os
 import time
 
+import numpy as np
+
 from fsae_control.scoring import RolloutMetrics
 
 
@@ -88,6 +90,100 @@ ADAPTIVE_COLUMNS = (
     # Absolute weights handed to the QP after all of the above.
     'Q_ey_eff', 'Q_epsi_eff', 'Q_r_eff', 'R_steer_eff', 'Rrate_steer_eff',
 )
+
+
+class LapProgressTracker:
+    """
+    Turns a precomputed (path_X, path_Y, path_V) speed profile plus a stream
+    of car positions into the progress/reached_end/time_bonus terms
+    compute_composite_score() needs, so a live run stops being permanently
+    scored as "never finished" (see close()'s previous progress=0.0 default,
+    which pinned every live composite_score at CONSTRAINT_FLOOR + DNF_PENALTY
+    regardless of how the car actually drove).
+
+    Mirrors fsae_MPCTest/sim/rollout_core.py's own progress/reached_end/
+    time_bonus derivation as closely as the live node's available data
+    allows: same nearest-index-forward-bounded-search shape for progress,
+    same "near the last point" reached_end check. The one deliberate
+    difference is optimal_time: rollout_core.py calls speed_profile.py's
+    quasi-steady-state optimal_lap_time() solver, which lives in
+    fsae_MPCTest and is not on the live node's PYTHONPATH (see
+    CLAUDE.md's scoring-parity note — the car has no fsae_MPCTest checkout).
+    Since the live node already loads the SAME profile's v_target curve
+    (load_speed_profile_csv, precomputed offline by that same solver) to
+    drive the car, integrating ds / v_target over it directly is a
+    zero-new-dependency stand-in for calling the solver again.
+    """
+
+    def __init__(self, path_X, path_Y, path_V):
+        self._path_X = np.asarray(path_X, dtype=float)
+        self._path_Y = np.asarray(path_Y, dtype=float)
+        seg_dx = np.diff(self._path_X)
+        seg_dy = np.diff(self._path_Y)
+        self._seg_len = np.hypot(seg_dx, seg_dy)
+        self._cum_len = np.concatenate(([0.0], np.cumsum(self._seg_len)))
+        self._path_length = float(self._cum_len[-1]) if len(self._cum_len) else 0.0
+
+        # Optimal time = integral of ds / v_target over the precomputed
+        # profile, using each segment's leading-point speed (matches how
+        # path_V is sampled — one v_target per waypoint).
+        v_seg = np.asarray(path_V, dtype=float)[:-1]
+        v_seg = np.maximum(v_seg, 1e-3)   # guard a stray zero in the profile
+        self._optimal_time = float(np.sum(self._seg_len / v_seg))
+
+        self._idx = 0            # forward-bounded nearest-index, like rollout_core.py
+        self._start_wall: float | None = None
+        self._end_wall: float | None = None
+        self._reached_end = False
+
+    def update(self, car_pos, now: float) -> None:
+        """Advance the forward-bounded nearest-index search by one sample."""
+        if self._reached_end or len(self._path_X) < 2:
+            return
+        if self._start_wall is None:
+            self._start_wall = now
+
+        # Forward-bounded: only search from the current index onward, same
+        # rationale as rollout_core.py's find_closest_reference_bounded — it
+        # can't jump backward onto a spatially-close-but-lapped-already point.
+        window = self._path_X[self._idx:]
+        d2 = (window - car_pos[0]) ** 2 + (self._path_Y[self._idx:] - car_pos[1]) ** 2
+        self._idx += int(np.argmin(d2))
+
+        near_end = self._idx >= len(self._path_X) - max(1, int(0.1 * len(self._path_X))) - 1
+        dist_to_finish = math.hypot(
+            car_pos[0] - self._path_X[-1], car_pos[1] - self._path_Y[-1]
+        )
+        if self._idx >= len(self._path_X) - 1 or (near_end and dist_to_finish <= 3.0):
+            self._reached_end = True
+            self._end_wall = now
+
+    def result(self, now: float) -> dict:
+        """
+        progress/reached_end/time_bonus for ControlLogger.close(). Safe to
+        call at any time (e.g. mid-run on an early shutdown) — reached_end
+        stays False and time_bonus stays 0.0 until update() has actually
+        seen the car cross the finish check.
+        """
+        progress = float(np.clip(
+            self._cum_len[min(self._idx, len(self._cum_len) - 1)] / self._path_length, 0.0, 1.0
+        )) if self._path_length > 0 else 0.0
+
+        time_bonus = 0.0
+        lap_time_s = None
+        if self._reached_end and self._start_wall is not None:
+            lap_time_s = float((self._end_wall if self._end_wall is not None else now) - self._start_wall)
+            if self._optimal_time > 0.0 and lap_time_s > 0.0:
+                ref_time = self._optimal_time * max(progress, 1e-6)
+                time_bonus = float(np.clip(ref_time / lap_time_s, 0.0, 1.0))
+
+        return {
+            'progress': progress,
+            'reached_end': self._reached_end,
+            'time_bonus': time_bonus,
+            'lap_time_s': lap_time_s,
+            'optimal_time_s': self._optimal_time,
+        }
 
 
 class ControlLogger:
@@ -221,17 +317,26 @@ class ControlLogger:
         self._path_f.flush()
 
     def score(self, progress: float = 0.0, time_bonus: float = 0.0,
-              dnf: bool = False, offtrack: bool = False) -> dict:
+              dnf: bool = False, offtrack: bool = False,
+              reached_end: bool | None = None) -> dict:
         """
         Finalise the accumulated metrics into the same dict the offline
         tuner's RolloutMetrics.finalize() returns.  Safe to call more than
         once; does not consume the accumulator.
+
+        reached_end should come from a LapProgressTracker.result() when one
+        is in use — see compute_composite_score's docstring for why
+        progress alone (a bounded nearest-index search that stops short of
+        the final path point) can't reliably stand in for it.
         """
         return self._metrics.finalize(
             progress=progress, time_bonus=time_bonus, dnf=dnf, offtrack=offtrack,
+            reached_end=reached_end,
         )
 
-    def _write_score_header(self, result: dict, partial: bool) -> None:
+    def _write_score_header(self, result: dict, partial: bool,
+                             lap_time_s: float | None = None,
+                             optimal_time_s: float | None = None) -> None:
         """
         Rewrite the control CSV with a `#`-commented score block on top.
 
@@ -260,6 +365,12 @@ class ControlLogger:
             '  (1 = time_bonus/offtrack unavailable live; weighted-metric '
             'component is still directly comparable to an offline score)',
         ]
+        if lap_time_s is not None:
+            lines.append(f'# lap_time_s={lap_time_s:.4f}')
+        if optimal_time_s is not None:
+            lines.append(f'# optimal_time_s={optimal_time_s:.4f}'
+                         '  (ds/v_target integral over the precomputed speed'
+                         ' profile, scaled by progress -- see LapProgressTracker)')
         for key in (
             'composite_score', 'n_steps', 'rmse', 'peak_lateral_error_m',
             'speed_rmse_mps', 'yaw_rms_radps', 'max_yaw_rate_radps',
@@ -288,11 +399,21 @@ class ControlLogger:
                 pass
 
     def close(self, progress: float = 0.0, time_bonus: float = 0.0,
-              dnf: bool = False, offtrack: bool = False) -> dict | None:
+              dnf: bool = False, offtrack: bool = False,
+              reached_end: bool | None = None,
+              lap_time_s: float | None = None,
+              optimal_time_s: float | None = None) -> dict | None:
         """
         Flush and close both CSVs, then prepend the score header to the
         control CSV.  Returns the finalised metrics dict (None if nothing was
         logged).  Idempotent.
+
+        Callers should pass progress/reached_end/time_bonus from a
+        LapProgressTracker rather than leaving them at their defaults: the
+        defaults (progress=0.0, reached_end=None) make compute_composite_score
+        treat every run as never having left the start line, permanently
+        pinning composite_score at CONSTRAINT_FLOOR + DNF_PENALTY regardless
+        of how the car drove.
         """
         if self._closed:
             return None
@@ -308,7 +429,8 @@ class ControlLogger:
             return None
 
         result = self.score(progress=progress, time_bonus=time_bonus,
-                            dnf=dnf, offtrack=offtrack)
+                            dnf=dnf, offtrack=offtrack, reached_end=reached_end)
         partial = (time_bonus == 0.0 and not offtrack)
-        self._write_score_header(result, partial)
+        self._write_score_header(result, partial, lap_time_s=lap_time_s,
+                                  optimal_time_s=optimal_time_s)
         return result
