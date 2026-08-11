@@ -1550,46 +1550,60 @@ class MPCController:
 
         return self._n_delay
 
-    def _update_lookahead_peak(self, kappa_max_abs: float, car_speed: float) -> float:
+    def _update_lookahead_peak(self, kappa: float, car_speed: float) -> float:
         """
-        Track distance travelled since the last LOCAL peak in lookahead
+        Track distance travelled since the last LOCAL peak in CURRENT-POSITION
         curvature, for _lookahead_exit_boost's decay.
 
+        Keyed on `kappa` (the ~1m preview curvature at the car's own
+        position, same signal _adaptive_R_rate/_steer_rate_anti_hunt use),
+        NOT kappa_max_abs (the full speed-scaled lookahead window,
+        default 10-17m ahead at speed) -- changed 2026-08-11 after live
+        telemetry showed the decay clock was firing 10-17m before the car
+        physically reached the corner (kappa_max_abs detects a corner the
+        moment it enters the far lookahead window, not when the car is
+        actually in it), so _lookahead_exit_boost's whole 5m decay window
+        (default MPCParams.adaptive_q_lookahead_exit_decay_dist) had already
+        elapsed by the time the car was anywhere near the physical apex --
+        the exit-heading boost was structurally inert on essentially every
+        real corner taken at speed, not merely mistimed. kappa peaks at the
+        car's own physical apex by construction, so decay now starts from
+        the moment that matters.
+
         This is a rising-edge-after-a-clear detector, not "any new global
-        maximum": _armed_for_next_peak only goes True again once
-        kappa_max_abs has dropped back to <=
-        MPCParams.adaptive_q_lookahead_peak_hysteresis
-        (i.e. the lookahead window has genuinely cleared, no corner in
-        sight), and a peak only latches while armed. Comparing against the
-        running maximum instead (kappa_max_abs > self._last_peak_kappa_abs)
-        would silently fail to re-trigger on a second corner of equal or
-        LESSER curvature than an earlier one -- an ordinary case (most
-        tracks reuse corner radii), not just a rare S-curve edge case. This
-        way each distinct corner gets its own fresh decay cycle regardless
-        of how its curvature compares to any previous corner's.
+        maximum": _armed_for_next_peak only goes True again once kappa has
+        dropped back to <= MPCParams.adaptive_q_lookahead_peak_hysteresis
+        (i.e. the car itself is genuinely on a straight, not just that the
+        far lookahead window is clear), and a peak only latches while armed.
+        Comparing against the running maximum instead
+        (kappa > self._last_peak_kappa_abs) would silently fail to
+        re-trigger on a second corner of equal or LESSER curvature than an
+        earlier one -- an ordinary case (most tracks reuse corner radii),
+        not just a rare S-curve edge case. This way each distinct corner
+        gets its own fresh decay cycle regardless of how its curvature
+        compares to any previous corner's.
 
         Returns the updated _dist_since_peak for this tick.
         """
-        if kappa_max_abs <= self.params.adaptive_q_lookahead_peak_hysteresis:
+        kappa_abs = abs(kappa)
+        if kappa_abs <= self.params.adaptive_q_lookahead_peak_hysteresis:
             self._armed_for_next_peak = True
         elif self._armed_for_next_peak:
-            # Genuine new corner: the window was clear last tick (or this is
-            # the very first corner ever seen) and now sees curvature --
+            # Genuine new corner: the car was on a straight last tick (or
+            # this is the very first corner ever seen) and is now curving --
             # this is the only case that resets the decay clock to 0.
-            self._last_peak_kappa_abs = kappa_max_abs
+            self._last_peak_kappa_abs = kappa_abs
             self._dist_since_peak = 0.0
             self._armed_for_next_peak = False
-        elif kappa_max_abs > self._last_peak_kappa_abs:
+        elif kappa_abs > self._last_peak_kappa_abs:
             # Still inside the same corner but curvature is still rising
-            # (e.g. the lookahead window is sliding toward a sharper point
-            # within one corner) -- update the tracked peak MAGNITUDE (so
+            # (approaching the apex) -- update the tracked peak MAGNITUDE (so
             # _lookahead_exit_boost's sharpness term stays accurate) without
             # touching the distance clock: the car has been continuously
-            # approaching this whole time, not restarting, so resetting
-            # distance here would make boost_exit wobble non-monotonically
-            # through corner entry instead of decaying cleanly after the
-            # true peak is reached.
-            self._last_peak_kappa_abs = kappa_max_abs
+            # turning this whole time, not restarting, so resetting distance
+            # here would make boost_exit wobble non-monotonically through
+            # corner entry instead of decaying cleanly after the true apex.
+            self._last_peak_kappa_abs = kappa_abs
         self._dist_since_peak += abs(car_speed) * self.dt
         return self._dist_since_peak
 
@@ -1822,7 +1836,7 @@ class MPCController:
         # centred-softening floor while keeping both continuous.
         Q_base = self.Q
         if self.adaptive_q_lookahead_enabled:
-            self._update_lookahead_peak(kappa_max_abs, car_speed)
+            self._update_lookahead_peak(kappa, car_speed)
             Q_base = self.Q.copy()
             m = _lookahead_approach_boost(
                 kappa_max_abs, car_speed,

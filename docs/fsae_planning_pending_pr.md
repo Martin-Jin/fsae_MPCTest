@@ -47,7 +47,10 @@ see `fsae_planning/CHANGES.md` itself for full detail.
   dropped sideslip contribution.
 - `e_y` now signed perpendicular projection, not nearest-point distance — old
   version only correct when the nearest point happened to be abeam.
-- Steering-rate limit now expressed as deg/s×dt — survives a change of `dt`.
+- Steering-rate limit 80°/s → 180°/s (measured achievable rate ~200°/s), now
+  expressed as deg/s×dt so it survives a change of `dt`.
+- Fixed logged steering angle being computed from the wrong input scale
+  (~2.3x inflated) — had been masking the rate-limit issue in prior test logs.
 - `N` 25→35, `MAX_BRAKE` 9→7, retuned `Cf`/`Cr`/weights — kept numerically
   identical to `fsae_MPCTest`/mirror per the parity rule.
 - Disabled-by-default adaptive-Q-scaling + ref-heading rate limiting,
@@ -79,6 +82,9 @@ see `fsae_planning/CHANGES.md` itself for full detail.
   permanently pinned at the DNF floor (`13.0`) by deriving real
   `progress`/`reached_end`/`time_bonus` from the car's position against a
   precomputed track path. Adds `lap_time_s`/`optimal_time_s` to the header.
+  Only applies when driving against a precomputed `map_path`; runs against
+  the live/on-the-fly planner topic still have no known track end, so those
+  still score `score_is_partial=1`.
 
 ## Discarded, not part of this PR
 

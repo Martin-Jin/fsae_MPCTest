@@ -909,7 +909,7 @@ def run_core_rollout(
         # keeping both continuous.
         if ADAPTIVE_Q_LOOKAHEAD_ENABLED:
             lookahead_peak_state = update_lookahead_peak(
-                lookahead_peak_state, kappa_max_abs, vx_true, DT
+                lookahead_peak_state, kappa, vx_true, DT
             )
         Q_base = adaptive_Q_lookahead(
             Q, kappa_max_abs, vx_true,

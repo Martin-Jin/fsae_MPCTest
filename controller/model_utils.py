@@ -489,10 +489,24 @@ def lookahead_curvature_profile(path, base_idx, lookahead_dist):
     return kappa_max_abs, idx_at_peak, dist_at_peak, heading_change_abs
 
 
-def update_lookahead_peak(state, kappa_max_abs, car_speed, dt, peak_hysteresis=0.01):
+def update_lookahead_peak(state, kappa, car_speed, dt, peak_hysteresis=0.01):
     """
-    Track distance travelled since the last LOCAL peak in lookahead
+    Track distance travelled since the last LOCAL peak in CURRENT-POSITION
     curvature, for lookahead_exit_boost's decay.
+
+    Keyed on `kappa` (the near-instantaneous curvature at the car's own
+    position, the same signal adaptive_R_rate/steer_rate_anti_hunt use),
+    NOT kappa_max_abs (the full speed-scaled lookahead window, default
+    10-17m ahead at speed) -- changed 2026-08-11, numeric-parity mirror of
+    the live mpc_core._update_lookahead_peak() fix. See that function's
+    docstring for the full rationale: kappa_max_abs detects a corner the
+    moment it enters the far lookahead window, not when the car is actually
+    in it, so the decay clock (lookahead_exit_boost's 5m default window)
+    had already elapsed by the time the car reached the physical apex on
+    essentially every real corner taken at speed -- the exit-heading boost
+    was structurally inert, not merely mistimed. kappa peaks at the car's
+    own physical apex by construction, so decay now starts from the moment
+    that matters.
 
     state is a dict with keys 'last_peak_kappa_abs', 'dist_since_peak',
     'armed_for_next_peak', mutated in place and also returned -- callers
@@ -503,26 +517,27 @@ def update_lookahead_peak(state, kappa_max_abs, car_speed, dt, peak_hysteresis=0
     the first corner peak is ever seen.
 
     This is a rising-edge-after-a-clear detector, not "any new global
-    maximum": armed_for_next_peak only goes True again once kappa_max_abs
-    has dropped back to <= peak_hysteresis (i.e. the lookahead window has
-    genuinely cleared, no corner in sight), and a peak only latches while
-    armed. Comparing against the running maximum instead would silently
-    fail to re-trigger on a second corner of equal or LESSER curvature than
-    an earlier one -- an ordinary case (most tracks reuse corner radii), not
-    just a rare S-curve edge case. This way each distinct corner gets its
-    own fresh decay cycle regardless of how its curvature compares to any
-    previous corner's.
+    maximum": armed_for_next_peak only goes True again once |kappa| has
+    dropped back to <= peak_hysteresis (i.e. the car itself is genuinely on
+    a straight, not just that the far lookahead window is clear), and a
+    peak only latches while armed. Comparing against the running maximum
+    instead would silently fail to re-trigger on a second corner of equal
+    or LESSER curvature than an earlier one -- an ordinary case (most
+    tracks reuse corner radii), not just a rare S-curve edge case. This way
+    each distinct corner gets its own fresh decay cycle regardless of how
+    its curvature compares to any previous corner's.
 
     Returns the updated state dict.
     """
-    if kappa_max_abs <= peak_hysteresis:
+    kappa_abs = abs(kappa)
+    if kappa_abs <= peak_hysteresis:
         state['armed_for_next_peak'] = True
     elif state['armed_for_next_peak']:
-        state['last_peak_kappa_abs'] = kappa_max_abs
+        state['last_peak_kappa_abs'] = kappa_abs
         state['dist_since_peak'] = 0.0
         state['armed_for_next_peak'] = False
-    elif kappa_max_abs > state['last_peak_kappa_abs']:
-        state['last_peak_kappa_abs'] = kappa_max_abs
+    elif kappa_abs > state['last_peak_kappa_abs']:
+        state['last_peak_kappa_abs'] = kappa_abs
     state['dist_since_peak'] += abs(car_speed) * dt
     return state
 

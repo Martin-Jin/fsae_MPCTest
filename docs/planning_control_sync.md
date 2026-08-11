@@ -246,6 +246,7 @@ writing — re-confirm before relying on them, since a resync can move them.
 | Constrained-scoring constants | `settings.py` (`CONSTRAINT_FLOOR`, `COMPLETION_THRESHOLD`, `TIME_OBJECTIVE_WEIGHT`, `QUALITY_WEIGHT`) | `fsds_simulator/.../scoring.py` (inlined as module constants) | `10.0` / `0.98` / `1.0` / `0.35` |
 | `A_BRAKE_PLAN` (braking-distance propagation in `curvature_speed`) | `sim/speed_profile.py` | `fsds_simulator/.../control_utils.py` | `5.0` m/s², positive magnitude |
 | Dynamic speed cap enable/gains | `settings.py` (`ENABLE_DYNAMIC_SPEED_CAP`, `DYNAMIC_CAP_A_LAT_MAX`, `DYNAMIC_CAP_SAFETY`) | `mpc_controller.py`/`mpc_controller_standalone.py` (`enable_dynamic_speed_cap`/`dynamic_cap_a_lat_max`/`dynamic_cap_safety` ROS params) | `True` / `3.2` m/s² / `0.9` — see "Dynamic speed cap" section below |
+| Exit-boost peak-tracker's input signal | `controller/model_utils.py` (`update_lookahead_peak`'s `kappa` param) | `fsds_simulator/.../mpc_core.py` (`_update_lookahead_peak`'s `kappa` param) | current-position `kappa`, NOT `kappa_max_abs` — see "Exit-heading boost was firing at the wrong time" section above |
 | Latency telemetry columns | — (offline has no equivalent) | `fsds_simulator/.../telemetry_logger.py` | `pose_age_s`, `path_age_s`, `n_delay`, `solve_ms`, `cmd_latency_ms` |
 | Pose-feed hold model | `settings.py` (`POSE_HOLD_*`) + `sim/rollout_core.PoseFeedHold` | — (offline-only; models a live fault) | `PROB 0.05`, `MEAN_TICKS 2.1`, `MAX_TICKS 5` |
 
@@ -1487,6 +1488,104 @@ prediction horizon — this is a pre-existing architectural characteristic,
 not something introduced by this sync, and not a bug. See `README.md`'s
 state-vector section (search "e_v's target speed is frozen for the whole
 horizon") for the full explanation; not repeated here to avoid duplication.
+
+## Exit-heading boost was firing at the wrong time (fixed 2026-08-11, confirmed live)
+
+**Fixed, small measured offline improvement, confirmed performing well on
+the live car same day** (dynamic speed cap left OFF for this run — see
+below — so this result is attributable to the exit-boost fix alone).
+Reported symptom: after exiting a corner, the car is sometimes left pointed
+slightly off the path tangent, and accelerating out of the corner in that
+state produces drift/slip.
+
+Root cause: `_lookahead_exit_boost()`'s 5 m decay window (default
+`MPCParams.adaptive_q_lookahead_exit_decay_dist`) is meant to boost `Q[2,2]`
+(heading-error cost) right after the car passes a corner's peak curvature, so
+the MPC works harder to straighten out on exit. Its decay clock
+(`_dist_since_peak`) was reset by `_update_lookahead_peak()` off
+`kappa_max_abs` — the **lookahead-window** peak curvature, detected the
+moment a corner enters the speed-scaled scan window (10–17 m ahead of the car
+at speed, per `MPCParams.adaptive_q_lookahead_time_s`/`_dist_max`). That
+means the decay clock started counting down 10–17 m before the car
+physically reached the corner. Verified on live telemetry
+(`fsae_logs/mpc_standalone_control_1786436674.csv`): at the corner starting
+around t=3.28s, `dist_since_peak` reset to 2.56 at the moment the lookahead
+first saw rising curvature, then counted up continuously through the car's
+actual apex (t≈5.2s, where current-position `kappa` itself peaked at 0.175
+and heading error was worst) — by then `dist_since_peak` was already past
+28 m, decades beyond the 5 m decay window. The exit-heading boost had
+already decayed to a no-op (`1.0`, i.e. contributing nothing) before the car
+was anywhere near its physical exit. This is not merely "a bit early" — on
+a continuous chain of corners (curvature never drops back to the
+`adaptive_q_lookahead_peak_hysteresis` re-arm threshold between them), the
+detector effectively never gets a chance to fire again mid-sequence either,
+per the `dist_since_peak` trace above.
+
+Fix: `_update_lookahead_peak()` (`mpc_core.py`, mirrored
+`model_utils.update_lookahead_peak()`) is now keyed on **current-position**
+`kappa` (the same near-instantaneous, ~1 m preview curvature
+`_adaptive_R_rate`/`_steer_rate_anti_hunt` already use) instead of
+`kappa_max_abs`. `kappa` peaks at the car's own physical apex by
+construction, so the decay clock — and therefore the exit-heading boost —
+now actually covers the physical exit instead of having already elapsed
+before it. The re-arm/hysteresis check was moved onto the same signal for
+internal consistency (armed once the car itself is on a straight, not just
+once the far lookahead window is clear). `_lookahead_exit_boost()` itself,
+and its `k_exit_norm`/`boost_max` parameters, are unchanged — only the
+timing of when its decay countdown starts.
+
+Measured (`tuner.recorded_map_rollout --planner`, the `USE_PLANNER=True`
+branch where this mechanism is actually exercised — see the dynamic-speed-cap
+section below for why the default oracle-only invocation never reaches this
+code path at all):
+
+| metric | before | after |
+|---|---|---|
+| steering sat % | 5.54 | **5.46** |
+| `\|e_psi\|` mean / p90 (deg) | 8.01 / 16.82 | **7.60 / 15.74** |
+| a_lat max | 10.61 | **10.55** |
+| score (lower better) | 0.520 | **0.517** |
+
+Small but consistently in the right direction on every metric offline
+(unlike the dynamic speed cap and the abandoned heading-misalignment accel
+gate below, both of which improved one metric while regressing others).
+This is a timing bug fix to an existing, previously-inert mechanism, not a
+new tunable — no new `MPCParams`/`settings.py` fields were added.
+
+**Live test, 2026-08-11 (same day): confirmed performing well**, with
+`ENABLE_DYNAMIC_SPEED_CAP=false` (see the dynamic-speed-cap section below —
+that mechanism stayed disabled for this run), so the improvement is
+attributable to this exit-boost timing fix specifically, not a combination.
+No quantitative before/after live log pair was captured for this change
+specifically (unlike the dynamic-speed-cap A/B, which had matched control
+logs) — "performing well" is qualitative/subjective from this run. The
+residual gap is still expected to be non-zero: this fixes one specific
+mistiming, not the broader reference-heading-lead issue CLAUDE.md already
+flags as open (§"Still open" in the sim-to-real section) — re-read that
+section before assuming this closes the corner-exit-misalignment complaint
+entirely.
+
+**Investigated and explicitly rejected as a further fix for the same
+symptom (2026-08-11):** raising `R[1,1]` (acceleration effort) and/or
+relaxing `Q[4,4]` (`e_v`, speed-tracking urgency) when CURRENT `|e_psi|` is
+large, so the MPC is reluctant to accelerate hard while still visibly
+misaligned. Implemented in both `mpc_core.py`/`model_utils.py` as
+`_epsi_misalignment_accel_gate`/`_epsi_misalignment_speed_relax` (`R[1,1]`
+boost) and their `Q[4,4]` counterpart, gated by a new
+`epsi_accel_gate_enabled` flag defaulted off. At the first-tried gains
+(`boost_max=3.0`, `speed_floor=0.4`, `k_epsi=15.0`, half-effect ~3.8° of
+`e_psi`), offline testing showed a clear regression, not an improvement:
+steering sat 5.54%→7.70%, `|e_psi|` mean 8.01°→9.50°, score 0.520→0.660.
+Reverted entirely (no trace of `epsi_accel_gate_*` remains in any file) —
+this was not committed as a disabled feature the way the dynamic speed cap
+below was, because unlike that mechanism it showed no redeeming metric at
+all, only a uniform regression. If revisiting a steering/accel exit penalty
+in the future, do not re-derive this same current-|e_psi|-gated `R[1,1]`
+approach without accounting for why it made things worse — a likely
+candidate (never diagnosed) is that relaxing `Q[4,4]` let the car dawdle at
+the wrong speed while the already-existing heading-correction machinery
+(the exit-boost fix above, and the anti-hunt `boost_epsi` term) was doing
+its own uncoordinated thing on the same `e_psi` signal.
 
 ## Dynamic speed cap: closing the gap between the oracle profile and live tracking
 
