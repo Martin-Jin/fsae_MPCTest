@@ -11,9 +11,16 @@ technical explanation of *why* the system is built this way, see
 1. [Running the Simulator](#running-the-simulator)
 2. [Running the Offline Tuner](#running-the-offline-tuner)
 3. [Simulator integration](#simulator-integration)
+   - [Recording, exporting and driving a track](#recording-exporting-and-driving-a-track)
+   - [CSV telemetry logging](#csv-telemetry-logging)
+   - [Plotting exported CSV telemetry](#plotting-exported-csv-telemetry)
+   - [Launching nodes with FSDS on Windows (WSL + Docker)](#launching-nodes-with-fsds-on-windows-wsl--docker)
 4. [Manual Drive Mode](#manual-drive-mode)
 5. [Dependencies](#dependencies)
 6. [Extending and Debugging](#extending-and-debugging)
+   - [Modifying vehicle parameters](#modifying-vehicle-parameters)
+   - [Adding a new synthetic path](#adding-a-new-synthetic-path)
+   - [Debugging solver failures](#debugging-solver-failures)
 
 ---
 
