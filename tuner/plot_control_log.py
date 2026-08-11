@@ -15,6 +15,10 @@ Usage
 -----
     python3 -m tuner.plot_control_log <control_csv> [<control_csv> ...]
 
+    # no CSV given -> auto-load the newest log in RECORDED_RUNS_DIR
+    # (fsds_simulator/recorded_runs/ -- see that constant below)
+    python3 -m tuner.plot_control_log
+
     # explicit signal set (default: e_y, e_psi_deg, kappa, steer_deg, v)
     python3 -m tuner.plot_control_log run.csv --signals e_y,e_psi_deg,yaw_rate
 
@@ -27,6 +31,7 @@ or off. Missing/all-NaN columns (e.g. the m_Q_*/m_R_* adaptive columns on a
 Stanley log) are skipped with a warning rather than plotting an empty axis.
 """
 import argparse
+import glob
 import os
 import sys
 
@@ -39,6 +44,37 @@ from tuner import csv_log
 # One row per signal by default -- covers the "lateral error / heading error /
 # corner curvature / steering / speed" ask directly; --signals overrides this.
 DEFAULT_SIGNALS = ['e_y', 'e_psi_deg', 'kappa', 'steer_deg', 'v']
+
+# Auto-search target when no CSV path is given on the command line. Not
+# populated automatically by any live-node launch path (that's controlled by
+# ros2/launch_all.sh's log_dir, outside this repo) -- copy/move CSVs out of
+# ~/fsae_logs (or wherever log_dir pointed) into here yourself after a run.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+RECORDED_RUNS_DIR = os.path.join(
+    os.path.dirname(_HERE), 'fsds_simulator', 'recorded_runs',
+)
+
+
+def find_latest_log(log_dir=RECORDED_RUNS_DIR):
+    """Return the most recently recorded `*_control_<epoch>.csv` in `log_dir`.
+
+    Sorts on the numeric epoch-seconds suffix ControlLogger stamps each
+    filename with (see telemetry_logger.py's `stamp = int(time.time())`),
+    not lexicographic filename order, so it's correct even if `tag` differs
+    in length between runs (e.g. 'mpc_standalone' vs 'stanley').
+    """
+    candidates = glob.glob(os.path.join(log_dir, '*_control_*.csv'))
+    if not candidates:
+        return None
+
+    def _stamp(path):
+        name = os.path.splitext(os.path.basename(path))[0]
+        try:
+            return int(name.rsplit('_control_', 1)[1])
+        except (IndexError, ValueError):
+            return -1
+
+    return max(candidates, key=_stamp)
 
 # Signals not literally a CSV column, built from two columns that are.
 # {name: (col_a, col_b, label)} -> plotted as two lines sharing one row.
@@ -175,19 +211,34 @@ def _list_signals(paths):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('logs', nargs='+', help='control telemetry CSV(s)')
+    ap.add_argument('logs', nargs='*',
+                     help='control telemetry CSV(s). Omit to auto-load the newest '
+                          f'log in {RECORDED_RUNS_DIR}')
     ap.add_argument('--signals', default=None,
                      help=f'comma-separated column names to plot (default: {",".join(DEFAULT_SIGNALS)})')
     ap.add_argument('--list-signals', action='store_true',
                      help='print every numeric column present in the given log(s) and exit')
+    ap.add_argument('--recorded-runs', default=RECORDED_RUNS_DIR,
+                     help='directory to auto-search when no CSV is given '
+                          f'(default: {RECORDED_RUNS_DIR})')
     args = ap.parse_args()
 
+    logs = args.logs
+    if not logs:
+        latest = find_latest_log(args.recorded_runs)
+        if latest is None:
+            sys.exit(f'No *_control_*.csv found in {args.recorded_runs} and no CSV '
+                      'path was given. Copy a log there, or pass one explicitly:\n'
+                      '  python3 -m tuner.plot_control_log <control_csv>')
+        print(f'No CSV given -- auto-loaded newest log: {latest}')
+        logs = [latest]
+
     if args.list_signals:
-        _list_signals(args.logs)
+        _list_signals(logs)
         return
 
     signals = args.signals.split(',') if args.signals else DEFAULT_SIGNALS
-    plot_logs(args.logs, signals)
+    plot_logs(logs, signals)
 
 
 if __name__ == '__main__':

@@ -98,7 +98,7 @@ for how to run the CMA-ES weight tuner instead.
 | `gui/simulation.py` | Interactive matplotlib GUI — draw/load a path, run one closed-loop rollout, scrub through history, view metrics. Also renders the live planner centreline (magenta) alongside the true target path when `USE_PLANNER=True`. |
 | `sim/track_io.py` | Loads a recorded cone map (JSON, from `fsae_planning`'s `cone_recorder` node) into the same path/cones tuple shape as a synthetic path, for **Load Recorded Track**. |
 | `tuner/offline_tuner.py` | Headless CMA-ES weight search across a library of synthetic corner shapes. |
-| `tuner/plot_control_log.py` | Interactive matplotlib plot of one or more exported control-telemetry CSVs — toggleable per-signal, per-file lines (e_y, e_psi, kappa, steer, speed, ...). See [docs/developer_guide.md#plotting-exported-csv-telemetry](docs/developer_guide.md#plotting-exported-csv-telemetry). |
+| `tuner/plot_control_log.py` | Interactive matplotlib plot of one or more exported control-telemetry CSVs — toggleable per-signal, per-file lines (e_y, e_psi, kappa, steer, speed, ...). Run with no args to auto-load the newest CSV dropped into `fsds_simulator/recorded_runs/`. See [docs/developer_guide.md#plotting-exported-csv-telemetry](docs/developer_guide.md#plotting-exported-csv-telemetry). |
 | `sim/rollout_core.py` | The single shared closed-loop rollout loop used by both `gui/simulation.py` and `tuner/offline_tuner.py`. |
 | `model/vehicle_physics.py` | `VehicleParams` — the single source of truth for vehicle physics (mass, geometry, tyres, suspension, aero, actuator limits). |
 | `model/bicycle_model.py` / `controller/optimiser.py` / `controller/model_utils.py` | The MPC's linear prediction model, QP formulation/solve, and adaptive gain scheduling. |

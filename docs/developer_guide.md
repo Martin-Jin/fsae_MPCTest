@@ -610,6 +610,9 @@ controllers head-to-head (e.g. an MPC log against a Stanley log recorded on
 the same `map_path`) without writing a one-off script each time.
 
 ```bash
+# no CSV given -> auto-loads the newest log in fsds_simulator/recorded_runs/
+python3 -m tuner.plot_control_log
+
 # default signal set: e_y, e_psi_deg, kappa, steer_deg, v (actual + desired)
 python3 -m tuner.plot_control_log ~/fsae_logs/mpc_standalone_control_<ts>.csv
 
@@ -633,6 +636,28 @@ columns to overlay the ones they share. The figure title and each line's
 legend label include the run's tag and, when present in the header,
 `composite_score`/`lap_time_s`, so a comparison plot is self-labelled without
 cross-referencing the raw CSV.
+
+**Auto-search folder: `fsds_simulator/recorded_runs/`.** Running the script
+with no CSV argument searches this folder for `*_control_*.csv` files and
+loads the newest one (by the epoch-seconds timestamp `ControlLogger` stamps
+into the filename, not file mtime). The folder starts empty (tracked via a
+`.gitkeep`; its CSVs are gitignored, same rationale as the outer FSDS repo's
+`fsae_logs/`) — nothing writes into it automatically yet. A live run's
+actual output location is `log_dir` (default `~/fsae_logs`, or whatever
+`ros2/launch_all.sh`'s `log_dir:=` argument points at, in the outer
+`fsae_planning`-adjacent launch script — outside this repo, not modified by
+this feature), so after a run, copy or move the CSV pair yourself:
+
+```bash
+cp ~/fsae_logs/mpc_standalone_control_<ts>.csv \
+   ~/fsae_logs/mpc_standalone_path_<ts>.csv \
+   fsds_simulator/recorded_runs/
+python3 -m tuner.plot_control_log       # picks up the one you just copied in
+```
+
+Point the search elsewhere with `--recorded-runs <dir>` (e.g. to auto-load
+straight out of `~/fsae_logs` without copying, or to compare two specific
+takes you keep in their own directories).
 
 ### Launching nodes with FSDS on Windows (WSL + Docker)
 
