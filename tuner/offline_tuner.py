@@ -855,15 +855,15 @@ def _aggregate_task_scores(task_scores):
 
     WHY A QUANTILE RATHER THAN max()
     ---------------------------------
-    This used to be a hard `max(scores)`. Combined with the flat DNF_PENALTY
-    (+3.0, +6.0 if off-track), that let ONE unlucky task out of ten dominate
-    the objective: a plausible, hand-reasonable gain set could rank near the
-    bottom of a comparison, below deliberately pathological sets, purely
-    because a single one of its ten tasks DNF'd. With `max`, the 0.3
-    coefficient applied to a +3.0 penalty moves the objective substantially
-    regardless of how good the other nine tasks were.
+    A hard `max(scores)` is the wrong aggregate here: combined with the flat
+    DNF_PENALTY (+3.0, +6.0 if off-track), it lets ONE unlucky task out of ten
+    dominate the objective — a plausible, hand-reasonable gain set could rank
+    near the bottom of a comparison, below deliberately pathological sets,
+    purely because a single one of its ten tasks DNF'd. Under `max`, the 0.3
+    coefficient applied to a +3.0 penalty would move the objective
+    substantially regardless of how good the other nine tasks were.
 
-    That is a discontinuous, high-variance signal for CMA-ES: a gain set
+    That would be a discontinuous, high-variance signal for CMA-ES: a gain set
     sitting near the boundary of finishing one hard task gets scored almost
     entirely by which side of that boundary it landed on, which is a large
     part of why historical tuning runs produced ~10x spreads in gains.

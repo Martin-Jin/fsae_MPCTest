@@ -260,9 +260,9 @@ class SimPlanner:
         # Attempt primary path builder (cone-boundary matching + centreline extraction).
         # Keyword args mirror centerline_planner.py's _compute_path() exactly, sourced
         # from the same settings.PLANNER_* constants that mirror fsae_params.yaml's
-        # live-tuned ROS params — see settings.py's comment for why this matters
-        # (previously these were omitted here, silently using build_path_walls'/
-        # blend_paths' own hardcoded defaults instead of the live-tuned values).
+        # live-tuned ROS params — see settings.py's comment for why this matters.
+        # Omitting these here would silently fall back to build_path_walls'/
+        # blend_paths' own hardcoded defaults instead of the live-tuned values.
         try:
             cl, _, _, _ = build_path_walls(
                 self._cone_map.blue, self._cone_map.yellow, car_pos, car_yaw,

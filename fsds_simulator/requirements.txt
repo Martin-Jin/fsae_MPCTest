@@ -1,0 +1,34 @@
+# Dependencies for the FSDS-simulator planning stack.
+#
+# Install the pip packages below with:
+#     pip install -r requirements.txt
+#
+# The non-pip dependencies (ROS packages, system libs, source-built message
+# packages) are listed in the comment blocks and must be installed separately.
+
+# --- pip (Python) ---
+numpy>=1.24          # all packages
+scipy>=1.11          # planning: spline smoothing / loop fitting (scipy.interpolate)
+matplotlib>=3.8      # planning: live ego-view visualiser (viz_utils, plot:=true)
+
+# --- apt (system / ROS 2) ---------------------------------------------------
+# ROS 2 Jazzy (base) — provides rclpy, geometry_msgs, nav_msgs, std_msgs, launch:
+#     (install ros-jazzy-desktop per the ROS 2 Jazzy instructions)
+#
+# ackermann_msgs — the /fsae/control/cmd_vel interface (control + skidpad):
+#     sudo apt install ros-jazzy-ackermann-msgs
+#
+# rosbridge-suite — websocket server that feeds the external visualiser
+# (launched by launch_terminals.sh, Terminal 4):
+#     sudo apt install ros-jazzy-rosbridge-suite
+#
+# python3-tk — OPTIONAL: the skidpad manual speed-entry GUI (speed_input.py).
+# Falls back to terminal input if absent, so only needed for the GUI box:
+#     sudo apt install python3-tk
+
+# --- source-built (in the colcon workspace, NOT pip/apt) --------------------
+# fs_msgs            — FSDS simulator messages (Track/Cone/ControlCommand/GoSignal).
+# fsds_ros2_bridge   — the FSDS ROS 2 bridge.
+#     Both come from the Formula-Student-Driverless-Simulator checkout under
+#     ~/ros2_fsd/src and are built by `colcon build`.
+# fsae_interfaces    — vendored in this repo (common/fsae_interfaces); built by colcon.

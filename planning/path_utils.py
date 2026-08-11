@@ -48,12 +48,12 @@ def _remove_reversals(pts: np.ndarray, min_cos: float = -0.9,
     Remove midpoints that cause near-180° direction spikes (dot < min_cos).
 
     min_cos = -0.9 (~154°) targets genuine back-and-forth spikes from a mispaired
-    midpoint, NOT legitimate corners.  It used to be -0.5 (~120°), which deleted
-    the apex midpoint at tight corners and left the spline to cut a wide, rounded
-    line across the gap (knocking outer cones).  With approximating spline
-    smoothing (see smooth_centreline) now absorbing moderate jitter, only the true
-    reversal spikes still need explicit removal.  Capped at max_removals to prevent
-    cascading elimination of a legitimate corner.
+    midpoint, NOT legitimate corners.  A looser threshold risks deleting the
+    apex midpoint at tight corners and leaving the spline to cut a wide,
+    rounded line across the gap (knocking outer cones).  With approximating
+    spline smoothing (see smooth_centreline) absorbing moderate jitter, only
+    the true reversal spikes still need explicit removal.  Capped at
+    max_removals to prevent cascading elimination of a legitimate corner.
     """
     for _ in range(max_removals):
         if len(pts) < 3:

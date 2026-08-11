@@ -137,6 +137,9 @@ Before running, confirm:
 - `USE_PLANNER` reflects whether you want the tuner testing the full
   perception/planning pipeline (`True`) or driving on the perfect
   reference line (`False`, default as of 2026-08-08, also faster).
+- The `Q_diag`/`R_diag`/`R_rate_diag` cost weights and `SCORE_WEIGHTS`/
+  `METRIC_SCALES` the tuner optimises against — see
+  [tuning.md](tuning.md) for what each one does and how to tune it.
 - `USE_OPTUNA_PRESEARCH` (default `True`) — set `False` to skip the short
   Optuna TPE search that runs before CMA-ES starts and seeds its starting
   point, falling back instead to the fixed geometric midpoint (see
@@ -373,9 +376,9 @@ a separate git repo with its own remote (see this project's CLAUDE.md);
 changes under that path are local edits to that checkout only.
 
 `comp_test_map_3` is the track every baseline number in this repo's docs
-(`sim_to_real_investigation.md`, this guide, CLAUDE.md) is quoted against —
+(`docs/logs/sim_to_real_investigation.md`, this guide, CLAUDE.md) is quoted against —
 don't overwrite it; give a new recording its own name. List what exists with
-`python3 -m tuner.export_speed_profile --list` (from `fsae_MPCTest/`), or
+`python -m tuner.export_speed_profile --list` (from `fsae_MPCTest/`), or
 `ls ../ros2/src/fsae_planning/tracks/` (from `fsae_MPCTest/`).
 
 #### 1. Record a lap
@@ -446,8 +449,8 @@ Two independent offline tools turn a recorded `cone_map.json` into the CSVs
 the live controller can read. Run from `fsae_MPCTest/`:
 
 ```bash
-python3 -m tuner.export_speed_profile <name>   # -> ../ros2/src/fsae_planning/tracks/<name>/speed_profile.csv
-python3 -m tuner.raceline_optimizer   <name>    # -> ../ros2/src/fsae_planning/tracks/<name>/raceline.csv
+python -m tuner.export_speed_profile <name>   # -> ../ros2/src/fsae_planning/tracks/<name>/speed_profile.csv
+python -m tuner.raceline_optimizer   <name>    # -> ../ros2/src/fsae_planning/tracks/<name>/raceline.csv
 ```
 
 (the output lands in `fsae_planning`'s `tracks/`, not this repo's — see
@@ -545,8 +548,8 @@ Putting it all together, end to end:
 # 2. Export (from fsae_MPCTest/ -- writes into fsae_planning's tracks/,
 #    which requires fsae_MPCTest to be checked out; driving in steps 1 and 3
 #    does not)
-python3 -m tuner.export_speed_profile <new-name>
-python3 -m tuner.raceline_optimizer   <new-name>
+python -m tuner.export_speed_profile <new-name>
+python -m tuner.raceline_optimizer   <new-name>
 
 # 3. Drive it -- set TRACK=<new-name>, both toggles back to true
 ./ros2/launch_all.sh
@@ -590,7 +593,7 @@ against the precomputed track path, fixing a bug (2026-08-11) where every live
 run's composite score was permanently pinned at the DNF floor regardless of how
 the car drove — see `planning_control_sync.md`'s "Live/offline score parity"
 section. `stanley_controller.py` gained `map_path` support (2026-08-11, see
-`sim_to_real_investigation.md` §57) alongside the two MPC nodes, so a Stanley
+`docs/logs/sim_to_real_investigation.md` §57) alongside the two MPC nodes, so a Stanley
 run with a precomputed profile scores fully too. Any run against the live
 planner topic instead (no precomputed path — either controller) still has no
 known path end, so its score stays partial (`score_is_partial=1`).
@@ -611,21 +614,21 @@ the same `map_path`) without writing a one-off script each time.
 
 ```bash
 # no CSV given -> auto-loads the newest log in fsds_simulator/recorded_runs/
-python3 -m tuner.plot_control_log
+python -m tuner.plot_control_log
 
 # default signal set: e_y, e_psi_deg, kappa, steer_deg, v (actual + desired)
-python3 -m tuner.plot_control_log ~/fsae_logs/mpc_standalone_control_<ts>.csv
+python -m tuner.plot_control_log ~/fsae_logs/mpc_standalone_control_<ts>.csv
 
 # overlay two runs on the same axes -- each file gets its own colour
-python3 -m tuner.plot_control_log \
+python -m tuner.plot_control_log \
     ~/fsae_logs/mpc_standalone_control_<ts>.csv \
     ~/fsae_logs/stanley_control_<ts>.csv
 
 # choose your own signals (any numeric column the log has -- see below)
-python3 -m tuner.plot_control_log run.csv --signals e_y,yaw_rate,solve_ms
+python -m tuner.plot_control_log run.csv --signals e_y,yaw_rate,solve_ms
 
 # list every numeric column actually present in a log, then exit
-python3 -m tuner.plot_control_log run.csv --list-signals
+python -m tuner.plot_control_log run.csv --list-signals
 ```
 
 Run from `fsae_MPCTest/` (so `tuner` resolves as a package). A signal
@@ -652,7 +655,7 @@ this feature), so after a run, copy or move the CSV pair yourself:
 cp ~/fsae_logs/mpc_standalone_control_<ts>.csv \
    ~/fsae_logs/mpc_standalone_path_<ts>.csv \
    fsds_simulator/recorded_runs/
-python3 -m tuner.plot_control_log       # picks up the one you just copied in
+python -m tuner.plot_control_log       # picks up the one you just copied in
 ```
 
 Point the search elsewhere with `--recorded-runs <dir>` (e.g. to auto-load

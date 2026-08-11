@@ -10,9 +10,10 @@ from launch.substitutions import (
 from launch_ros.actions import Node
 
 # fsae_control is an installed package by the time `ros2 launch` generates
-# this file (same as any node import) -- see mpc_params.py's own module
-# docstring for the full MPCParams single-source-of-truth mechanism this
-# feeds.
+# this file (same as any node import), so this resolves the same way
+# mpc_core.py's own `from fsae_control.mpc_params import ...` does -- no
+# relative path back to src/ needed, unlike map_path's hardcoded absolute
+# default below (which points at data, not code on the Python path).
 from fsae_control.mpc_params import MPC_PARAM_FIELDS
 
 
@@ -46,13 +47,16 @@ def generate_launch_description():
     v_max = LaunchConfiguration('v_max')
     v_min = LaunchConfiguration('v_min')
     stanley_gain = LaunchConfiguration('stanley_gain')
+    enable_dynamic_speed_cap = LaunchConfiguration('enable_dynamic_speed_cap')
+    dynamic_cap_a_lat_max = LaunchConfiguration('dynamic_cap_a_lat_max')
+    dynamic_cap_safety = LaunchConfiguration('dynamic_cap_safety')
     # Every MPCController tuning field (Q/R/R_rate weights, adaptive-gain
     # shape constants, feature flags) -- see mpc_params.py's MPCParams for
     # the authoritative field list/defaults/units. Generated from
     # MPC_PARAM_FIELDS rather than hand-written so this launch file, the
     # dataclass, and fsae_params.yaml's defaults can't silently drift against
     # each other (56 near-identical hand-written args is itself a drift
-    # risk).
+    # risk -- see the plan this was built from).
     mpc_param_configs = {
         name: LaunchConfiguration(name) for name, _default, _meta in MPC_PARAM_FIELDS
     }
@@ -245,6 +249,25 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'stanley_gain', default_value='1.0',
             description='cross-track gain k_cte (overrides fsae_params.yaml controller.stanley_gain)'),
+        # MPC-only, like path_map_path -- neither stanley_controller.py nor
+        # fsds_bridge.py declares these. See control_utils.dynamic_speed_cap()'s
+        # docstring for the mechanism: a real-time curvature-lookahead speed
+        # cap layered under map_path's precomputed profile (min of the two),
+        # so a corner reached faster than the oracle profile planned still
+        # gets braked for in time. No effect when map_path is unset.
+        DeclareLaunchArgument(
+            'enable_dynamic_speed_cap', default_value='true',
+            description='Layer a live curvature-lookahead speed cap under map_path\'s '
+                        'precomputed profile (overrides fsae_params.yaml '
+                        'controller.enable_dynamic_speed_cap)'),
+        DeclareLaunchArgument(
+            'dynamic_cap_a_lat_max', default_value='3.2',
+            description='m/s^2 -- lateral-accel budget for the dynamic speed cap only '
+                        '(overrides fsae_params.yaml controller.dynamic_cap_a_lat_max)'),
+        DeclareLaunchArgument(
+            'dynamic_cap_safety', default_value='0.9',
+            description='safety margin for the dynamic speed cap only '
+                        '(overrides fsae_params.yaml controller.dynamic_cap_safety)'),
         *mpc_launch_args,
         Node(
             package='fsae_control',
@@ -256,6 +279,9 @@ def generate_launch_description():
                 'map_path': effective_map_path,
                 'path_map_path': effective_path_map_path,
                 'v_max': v_max, 'v_min': v_min,
+                'enable_dynamic_speed_cap': enable_dynamic_speed_cap,
+                'dynamic_cap_a_lat_max': dynamic_cap_a_lat_max,
+                'dynamic_cap_safety': dynamic_cap_safety,
                 # stanley_gain deliberately omitted here: neither
                 # mpc_controller.py nor mpc_controller_standalone.py declares
                 # it, so passing it would raise ParameterNotDeclaredException.

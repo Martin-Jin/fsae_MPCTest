@@ -155,16 +155,15 @@ def adaptive_R_rate(kappa, R_rate_base, enable_in_corners=True, kappa_max_abs=0.
     softening available in genuinely tight corners (where the vehicle does
     need to change steering direction quickly) while still ensuring the
     rate cost never fully vanishes, which would allow arbitrarily rapid
-    steering oscillations. Raised from 0.55 after a live run with the
-    entering floor at 0.85 showed steering oscillating through zero several
-    times per second mid-corner while e_y/e_psi stayed small -- classic
-    under-damped steering-rate hunt, not a tracking-error problem, so the
-    fix was less softening of the rate cost while actually turning, not
-    more lateral/heading authority. The entering floor's gain (4.0, lower
-    than the during-floor's implicit 3.0-equivalent sharpness) was likewise
-    lowered from 8.0 after even mild upcoming curvature triggered
-    meaningful reduction, reported as R_rate "swinging a bit too much
-    prematurely before corners".
+    steering oscillations. A floor set too low here shows up as steering
+    oscillating through zero several times per second mid-corner while
+    e_y/e_psi stay small -- an under-damped steering-rate hunt, not a
+    tracking-error problem, which needs less softening of the rate cost
+    while actually turning rather than more lateral/heading authority. The
+    entering floor's gain (4.0, lower than the during-floor's implicit
+    3.0-equivalent sharpness) is kept low enough that even mild upcoming
+    curvature does not trigger a reduction large enough to feel like R_rate
+    swinging prematurely before corners.
 
     Only R_rate[0,0] (steering rate penalty) is modified. R_rate[1,1]
     (acceleration rate penalty) is unchanged: longitudinal jerk is less
@@ -179,21 +178,19 @@ def adaptive_R_rate(kappa, R_rate_base, enable_in_corners=True, kappa_max_abs=0.
         Base rate-of-change cost matrix, typically the tuned R_rate from
         tuner/offline_tuner.py or gui/simulation.py. Not modified in-place.
     enable_in_corners : bool, optional
-        TEMPORARY/EXPERIMENTAL, NOT VALIDATED. (Renamed from
-        disable_in_corners, whose True/False polarity was inverted from
-        what the name suggested.) True (default) preserves the original
-        continuous softening above, keeping R_rate reduction ACTIVE in
-        corners with no threshold/discontinuity -- this is what you want if
-        the goal is "reduce R_rate when turning". False uses a
+        TEMPORARY/EXPERIMENTAL, NOT VALIDATED. True (default) preserves the
+        original continuous softening above, keeping R_rate reduction ACTIVE
+        in corners with no threshold/discontinuity -- this is what you want
+        if the goal is "reduce R_rate when turning". False uses a
         kappa_straight=0.03 cutoff to mean "not cornering": below it,
         softening still applies as normal (it barely does anything that
         close to straight anyway); at or above it ("cornering"), softening
         is switched off entirely and R_rate[0,0] gets the full, unscaled
         baseline cost -- deliberately undoing the softening this function
-        exists to provide. Tried disabled on 2026-08-09 but caused severe
-        lag specifically in corners (likely the discontinuous cost jump
-        spiking QP solver iterations); only disable this to re-test that
-        effect, not as a validated tuning choice.
+        exists to provide. The discontinuous cost jump this introduces at
+        the cutoff can spike QP solver iterations and cause severe lag
+        specifically in corners; only disable this to investigate that
+        failure mode, not as a validated tuning choice.
     kappa_max_abs : float, optional
         Lookahead curvature (same signal adaptive_Q_lookahead uses); 0.0
         (default) makes the entering floor a no-op.
@@ -254,11 +251,10 @@ def steer_rate_anti_hunt(kappa, e_y, R_rate_base, enabled=False, e_psi=0.0):
     e_psi=0.0 (default) makes this term a no-op for callers that don't pass
     it. k_epsi=23.0 sets half-fade at ~2.5 deg of e_psi.
 
-    NOT VALIDATED. Added as a quick experiment, gated behind
-    STEER_RATE_ANTI_HUNT_ENABLED (default False in settings.py) so it can be
-    tried and ripped out without affecting any existing tuned behaviour.
-    Mirrors adaptive_Q_scaling's opt-in pattern: disabled callers get
-    R_rate_base back completely unmodified.
+    NOT VALIDATED. Gated behind STEER_RATE_ANTI_HUNT_ENABLED (default False
+    in settings.py) so it can be evaluated without affecting any existing
+    tuned behaviour. Mirrors adaptive_Q_scaling's opt-in pattern: disabled
+    callers get R_rate_base back completely unmodified.
 
     Parameters
     ----------
@@ -497,16 +493,15 @@ def update_lookahead_peak(state, kappa, car_speed, dt, peak_hysteresis=0.01):
     Keyed on `kappa` (the near-instantaneous curvature at the car's own
     position, the same signal adaptive_R_rate/steer_rate_anti_hunt use),
     NOT kappa_max_abs (the full speed-scaled lookahead window, default
-    10-17m ahead at speed) -- changed 2026-08-11, numeric-parity mirror of
-    the live mpc_core._update_lookahead_peak() fix. See that function's
-    docstring for the full rationale: kappa_max_abs detects a corner the
+    10-17m ahead at speed): numeric-parity mirror of the live
+    mpc_core._update_lookahead_peak(). kappa_max_abs detects a corner the
     moment it enters the far lookahead window, not when the car is actually
-    in it, so the decay clock (lookahead_exit_boost's 5m default window)
-    had already elapsed by the time the car reached the physical apex on
-    essentially every real corner taken at speed -- the exit-heading boost
-    was structurally inert, not merely mistimed. kappa peaks at the car's
-    own physical apex by construction, so decay now starts from the moment
-    that matters.
+    in it, so keying the decay clock (lookahead_exit_boost's 5m default
+    window) on it would let the clock elapse before the car reaches the
+    physical apex on essentially every real corner taken at speed, leaving
+    the exit-heading boost structurally inert rather than merely mistimed.
+    kappa peaks at the car's own physical apex by construction, so decay
+    starts from the moment that matters.
 
     state is a dict with keys 'last_peak_kappa_abs', 'dist_since_peak',
     'armed_for_next_peak', mutated in place and also returned -- callers
@@ -793,19 +788,20 @@ def adaptive_Q_lookahead(Q_base, kappa_max_abs, car_speed, last_peak_kappa_abs,
         The a_lat ceiling law, forwarded through those same three calls into
         _corner_demand/_alat_ceiling_at.
     exit_decay_dist_floor, exit_decay_time_s, exit_decay_dist_max : float, optional
-        lookahead_exit_boost's decay_dist is now car_speed * exit_decay_time_s,
+        lookahead_exit_boost's decay_dist is car_speed * exit_decay_time_s,
         clamped to [exit_decay_dist_floor, exit_decay_dist_max] -- same shape
-        as lookahead_dist above. Added 2026-08-11 (numeric-parity mirror of
-        the live mpc_core.py fix): a FIXED decay_dist undershoots at speed --
-        |e_y|/|e_psi| don't peak right at the apex, they peak several seconds
-        of travel after it (the car is still sliding wide/yawing back through
-        the exit), so a short fixed window had already fully decayed by the
-        time tracking error was at its worst. Mirrors MPCParams.
+        as lookahead_dist above (numeric-parity mirror of mpc_core.py). A
+        FIXED decay_dist undershoots at speed -- |e_y|/|e_psi| don't peak
+        right at the apex, they peak several seconds of travel after it (the
+        car is still sliding wide/yawing back through the exit), so a short
+        fixed window can fully decay before tracking error is at its worst.
+        Scaling the window by speed keeps the decay covering the period when
+        error is actually largest. Mirrors MPCParams.
         adaptive_q_lookahead_exit_decay_dist/_time_s/_dist_max.
 
-    All of the above default to the previously-hardcoded values, so a caller
-    that passes none of them gets behaviour identical to before they became
-    parameters. settings.py's ADAPTIVE_Q_STRAIGHT_* / ADAPTIVE_Q_UTURN_* /
+    All of the above default to their tuned values, so a caller that passes
+    none of them gets the standard tuned behaviour. settings.py's
+    ADAPTIVE_Q_STRAIGHT_* / ADAPTIVE_Q_UTURN_* /
     ADAPTIVE_Q_DEMAND_HALF / ALAT_CEILING_* mirror them 1:1 (as does the
     live side's MPCParams).
 
@@ -879,9 +875,9 @@ def adaptive_R_scaling(vx, R_base):
          (the transition from kinematic to dynamic lateral behaviour, which
          the linear model captures around 1-2.5 m/s).
 
-    Acceleration scale: disabled (fixed at 1.0) as of 2026-08-10 — see the
-    accel_scale assignment below for why. R[1,1] is governed by R_diag[1]
-    alone, independent of vx.
+    Acceleration scale: disabled (fixed at 1.0) — see the accel_scale
+    assignment below for why. R[1,1] is governed by R_diag[1] alone,
+    independent of vx.
 
     Parameters
     ----------
@@ -909,11 +905,11 @@ def adaptive_R_scaling(vx, R_base):
     # Hill-function saturating ramp: rises quickly below vx_half, flattens above it
     steer_scale = 1.0 + (A * vx) / (vx_half + vx)
 
-    # accel_scale disabled (fixed at 1.0) 2026-08-10, mirroring the live
-    # _adaptive_R_scaling fix: scaling R[1,1] with vx made braking effort
+    # accel_scale disabled (fixed at 1.0), mirroring the live
+    # _adaptive_R_scaling: scaling R[1,1] with vx would make braking effort
     # more expensive exactly at corner-entry speed and cheaper again as the
-    # car decelerated mid-approach, fighting the R_diag[1] braking tuning.
-    # R[1,1] is now governed by R_diag[1] alone, independent of vx.
+    # car decelerates mid-approach, fighting the R_diag[1] braking tuning.
+    # R[1,1] is governed by R_diag[1] alone, independent of vx.
     accel_scale = 1.0
 
     R_scaled = np.array(R_base, copy=True)   # Never mutate the caller's matrix

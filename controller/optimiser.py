@@ -142,6 +142,11 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max, du_max=None, terminal_scale=
     sqrtR_rate_param = cp.Parameter((nu, 1), nonneg=True)   # Rate weight sqrt
     weighted_u_prev_param = cp.Parameter(nu)   # sqrtR_rate * u_prev for step-0 rate cost
     u_prev_param = cp.Parameter(nu)            # raw u_prev, for the step-0 hard slew constraint
+    # u[1,:] (a_cmd) effort cost is split by sign instead of going through
+    # sqrtR_param[1] -- see the cost-function comment below for why.
+    # sqrtR_param[1] is left unused (only row 0, delta_cmd, is read from it).
+    r_a_accel_param = cp.Parameter(nonneg=True)
+    r_a_brake_param = cp.Parameter(nonneg=True)
 
     # ── CVXPY Variables ────────────────────────────────────────────────────────
     x     = cp.Variable((nx, N + 1))   # Predicted states: x[:,0] = x0, x[:,N] = terminal
@@ -166,8 +171,19 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max, du_max=None, terminal_scale=
             cp.multiply(sqrtQ_param[:, 0], x[:, N])
         )
 
-    # Input magnitude cost: penalises large control commands.
-    cost += cp.sum(cp.sum_squares(cp.multiply(sqrtR_param, u)))
+    # Input magnitude cost. delta_cmd (row 0) uses the shared sqrtR_param
+    # path. a_cmd (row 1) is split by sign: cp.pos(u)^2 and cp.neg(u)^2 are
+    # each individually convex (composition of the convex increasing
+    # `square` with convex pos/neg), so summing them with independent
+    # weights is still DCP, and pos(x)^2+neg(x)^2 == x^2 identically
+    # (exactly one of pos/neg is nonzero for any real x) -- so
+    # r_a_accel==r_a_brake reproduces the old single-R[1,1] cost
+    # bit-for-bit. This lets braking be tuned independently from
+    # acceleration without new QP variables or constraints: see
+    # planning_control_sync.md's "Accel/brake effort weight split".
+    cost += cp.sum_squares(cp.multiply(sqrtR_param[0, 0], u[0, :]))
+    cost += r_a_accel_param * cp.sum_squares(cp.pos(u[1, :]))
+    cost += r_a_brake_param * cp.sum_squares(cp.neg(u[1, :]))
 
     # Slack penalty: quadratic to keep the corridor soft but strongly penalised.
     cost += W_slack * cp.sum_squares(slack)
@@ -208,21 +224,21 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max, du_max=None, terminal_scale=
 
     # Hard per-step slew-rate limit on [delta_cmd, a_cmd].
     #
-    # PARITY FIX: this constraint previously existed ONLY in the live
-    # mpc_core.py, so the offline tuner was optimising against a plant that
-    # could change steering arbitrarily fast while the real car was clamped —
-    # weights tuned here did not transfer faithfully. Mirrors mpc_core.py's
+    # PARITY: this constraint must exist here too, matching live mpc_core.py,
+    # or the offline tuner would be optimising against a plant that can
+    # change steering arbitrarily fast while the real car is clamped —
+    # weights tuned here would not transfer faithfully. Mirrors mpc_core.py's
     # du_max (see that file for how the 180 deg/s figure was measured).
     #
     # Step-0 constraint against u_prev closes a second parity gap:
     # mpc_core.py hard-constrains `u[:,0] - uprev_p` (its own
     # separate raw-u_prev Parameter, not the sqrtR_rate-weighted one used in
-    # the cost), so live could never jump more than du_max from the last
-    # applied command on the very first predicted step. Offline previously
-    # only SOFT-penalised that jump via weighted_u_prev in the rate cost —
-    # a large tracking-error gradient could still push u[:,0] arbitrarily far
-    # from u_prev if the cost tradeoff favoured it. u_prev_param carries the
-    # unweighted value for exactly this purpose.
+    # the cost), so live can never jump more than du_max from the last
+    # applied command on the very first predicted step. A SOFT-only penalty
+    # via weighted_u_prev in the rate cost is not equivalent: a large
+    # tracking-error gradient could still push u[:,0] arbitrarily far from
+    # u_prev if the cost tradeoff favoured it. u_prev_param carries the
+    # unweighted value for exactly this purpose, matching the hard constraint.
     if du_max is not None:
         du0 = u[:, 0] - u_prev_param
         constraints += [
@@ -242,6 +258,7 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max, du_max=None, terminal_scale=
         'prob': prob, 'A': A_param, 'B': B_param, 'x0': x0_param,
         'sqrtQ': sqrtQ_param, 'sqrtR': sqrtR_param,
         'sqrtR_rate': sqrtR_rate_param,
+        'r_a_accel': r_a_accel_param, 'r_a_brake': r_a_brake_param,
         'weighted_u_prev': weighted_u_prev_param,
         'u_prev': u_prev_param,
         'u': u,
@@ -262,7 +279,8 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max, du_max=None, terminal_scale=
 def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max, R_rate=None, u_prev=None,
               silent=False, return_status=False,
               eps_abs=1e-5, eps_rel=1e-5, max_iter=8000, warm_start=True,
-              du_max=None, terminal_scale=1.0):
+              du_max=None, terminal_scale=1.0,
+              r_a_accel=None, r_a_brake=None):
     """
     Execute the parameterized MPC solve for the current timestep.
 
@@ -331,6 +349,14 @@ def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max, R_rate=None, u_prev=None,
     R_rate : np.ndarray, shape (2,2) or (2,), optional
         Rate-of-change cost matrix. Penalises Δu between timesteps.
         If None, rate cost is zero (no smoothness penalty).
+    r_a_accel, r_a_brake : float, optional
+        Independent effort weights for u[1,:] (a_cmd) by sign, applied via
+        cp.pos/cp.neg in the cost instead of R's own [1,1] entry (R[1,1]
+        is NOT used for a_cmd -- only R[0,0], delta_cmd, is read from it).
+        Defaults to R[1,1] for both when omitted, exactly reproducing the
+        pre-split single-R[1,1] behaviour. See settings.py's
+        R_A_ACCEL/R_A_BRAKE and planning_control_sync.md's "Accel/brake
+        effort weight split".
     u_prev : array-like, shape (2,), optional
         Previously applied control input. Used as anchor for the step-0
         rate cost, and (if du_max is set) the step-0 hard slew constraint.
@@ -430,6 +456,12 @@ def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max, R_rate=None, u_prev=None,
     _mpc_cache['sqrtQ'].value          = sqrtQ[:, None]          # (nx, 1) for broadcasting
     _mpc_cache['sqrtR'].value          = sqrtR[:, None]          # (nu, 1)
     _mpc_cache['sqrtR_rate'].value     = sqrtR_rate[:, None]     # (nu, 1)
+    # a_cmd effort split by sign -- defaults to R_diag[1] for both when the
+    # caller doesn't pass r_a_accel/r_a_brake, reproducing pre-split behaviour.
+    _mpc_cache['r_a_accel'].value = float(np.clip(
+        R_diag[1] if r_a_accel is None else r_a_accel, 1e-6, 1e6))
+    _mpc_cache['r_a_brake'].value = float(np.clip(
+        R_diag[1] if r_a_brake is None else r_a_brake, 1e-6, 1e6))
     # Pre-multiply u_prev by sqrtR_rate so the rate cost at step 0 is:
     # ||sqrtR_rate * u[:,0] - sqrtR_rate * u_prev||² = ||sqrtR_rate ⊙ Δu_0||²
     _mpc_cache['weighted_u_prev'].value = sqrtR_rate * np.asarray(u_prev)

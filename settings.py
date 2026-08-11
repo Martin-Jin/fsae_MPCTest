@@ -219,20 +219,14 @@ DELAY_JITTER_SEED = 12345
 # SLAM error: the car is punished for where it actually ends up, not for where
 # it thought it was.
 #
-# CHANGED TO ON 2026-08-08 (sim_to_real_investigation.md S43), then back OFF
-# 2026-08-08 (same day, later session): measured against that day's live log
-# it moved reversals/s 0.99->3.06, "right in live's 3.48" AT THE TIME. Live
-# has since been re-measured at 1.62 -- the calibration target moved and this
-# magnitude no longer matches it. Re-measured directly on the recorded map
-# (tuner.recorded_map_rollout --planner): with this ON, reversals/s=3.98-4.56
-# depending on N_HORIZON, vs live's current 1.62 (2.5-2.8x too high); with it
-# OFF, reversals/s=1.58 -- near-exact live parity. SLAM jitter (not cone
-# noise, tested separately) is the dominant contributor to the excess.
-# The mean|e_y| gap this was never meant to close (stayed ~0.06-0.08 across
-# every multiplier tried vs live's 0.346) is still separate and still open.
+# Left OFF: with SLAM noise enabled, reversals/s measured 3.98-4.56 depending
+# on N_HORIZON against live's 1.62 (2.5-2.8x too high); with it off,
+# reversals/s=1.58 -- near-exact live parity. SLAM jitter (not cone noise,
+# tested separately) is the dominant contributor to the excess. The mean|e_y|
+# gap (stayed ~0.06-0.08 across every multiplier tried vs live's 0.346) is a
+# separate, still-open issue this flag was never meant to close.
 # Turn back ON only after re-calibrating SLAM_POS_JITTER_STD/
-# SLAM_YAW_JITTER_STD against a current live log's reversals/s, not the
-# stale 3.48 target above.
+# SLAM_YAW_JITTER_STD against a current live log's reversals/s.
 SLAM_NOISE_ENABLED = False
 
 # Two components, because they behave differently and the controller reacts to
@@ -274,7 +268,7 @@ SLAM_NOISE_SEED = 24680
 # Note: rollout_core.py now predicts the state forward through the commands
 # already queued (predict_ahead()) before solving, so the MPC no longer
 # reacts to a stale x0 at DELAY_STEPS > 0 — the large-oscillation/DNF
-# behavior this note used to warn about is fixed. Validated across
+# behavior this note previously warned about no longer occurs. Validated across
 # DELAY_STEPS 1-8 and several initial-offset perturbations on every
 # SYNTHETIC_PATHS track without DNF or added oscillation. Still left at 0
 # by default since it's a deliberate "how much lag do I want to simulate"
@@ -299,10 +293,8 @@ SLAM_NOISE_SEED = 24680
 # because there is no detection noise. This flag exists to make that (and any
 # other perception-noise-dependent behaviour) testable offline at all.
 #
-# CHANGED TO ON 2026-08-08, then back OFF 2026-08-08 (same day, later
-# session) alongside SLAM_NOISE_ENABLED above -- see that flag's comment for
-# the re-measurement against a current live log. Isolated from SLAM noise
-# this time (tuner.recorded_map_rollout --planner, SLAM off/cone on only):
+# Left OFF, same as SLAM_NOISE_ENABLED above. Isolated from SLAM noise
+# (tuner.recorded_map_rollout --planner, SLAM off/cone on only):
 # reversals/s=2.28, moderately above live's current 1.62 but nowhere near
 # SLAM jitter's 4.56 alone -- cone noise is a smaller contributor to the
 # excess, not the dominant one.
@@ -359,16 +351,14 @@ DT = 0.05
 # ------------------------------------------------------------------------------
 # Planner tunables — MUST mirror fsae_bringup/config/fsae_params.yaml's
 # centerline_planner block (live ROS params: smooth, look_radius, plan_horizon,
-# path_blend). Found 2026-08-08: sim/sim_track.py::SimPlanner called
-# build_path_walls()/blend_paths() with NO keyword args at all, silently
-# falling back to those functions' own hardcoded defaults instead of the
-# live-tuned values below — a real, previously undetected parity break, live
-# the whole time this investigation's offline rollouts have been run. Two of
-# four values (look_radius, path_blend's alpha) happened to already match by
-# coincidence; PLANNER_SMOOTH_PER_PT (0.015 live vs 0.05 hardcoded default)
-# and blend_paths' internal horizon (25.0 live vs 15.0 hardcoded default) did
-# not. See sim_to_real_investigation.md S31 for the fix and its measured
-# effect on every prior finding in this document.
+# path_blend). sim/sim_track.py::SimPlanner must pass these four values as
+# explicit keyword args to build_path_walls()/blend_paths() — those functions
+# have their own hardcoded defaults that silently diverge from the live-tuned
+# values below (e.g. PLANNER_SMOOTH_PER_PT's live 0.015 vs. build_path_walls'
+# default 0.05, and blend_paths' internal horizon default of 15.0 vs. the
+# live-tuned 25.0), which is a real parity break if the keyword args are ever
+# dropped. See sim_to_real_investigation.md S31 for the mechanism and its
+# measured effect.
 # ------------------------------------------------------------------------------
 PLANNER_SMOOTH_PER_PT = 0.015   # m^2 smoothing budget per input point (splprep s = this * n_pts)
 PLANNER_LOOK_RADIUS = 25.0      # m; omni-directional cone-map crop radius
@@ -402,8 +392,8 @@ REF_HEADING_RISE_RATE = 90.0   # deg/s — only used when the flag above is True
 # hunting?" See controller/model_utils.py::adaptive_Q_scaling for the full
 # mechanism. Not reproduced on the offline recorded-map rollout as currently
 # tuned (there, steering-reversal rate rises WITH |e_y|, the opposite trend
-# seen live) — may be a live-only symptom. Enabled 2026-08-09 to match the
-# live controller; re-run VALIDATION_SUITE/recorded-map for new DNFs if
+# seen live) — may be a live-only symptom. Kept enabled to match the live
+# controller; re-run VALIDATION_SUITE/recorded-map for new DNFs if
 # re-tuning around this.
 ADAPTIVE_Q_SCALING_ENABLED = True
 
@@ -416,7 +406,7 @@ ADAPTIVE_Q_SCALING_ENABLED = True
 # it reuses the same causal, current-curvature signal as adaptive_R_rate, so
 # it cannot anticipate a corner before the car is already turning into it.
 # NOT VALIDATED against VALIDATION_SUITE/recorded-map or any live log.
-# Enabled 2026-08-09 to match the live controller.
+# Kept enabled to match the live controller.
 STEER_RATE_ANTI_HUNT_ENABLED = True
 
 # ADAPTIVE_R_RATE_ENABLE_IN_CORNERS — TEMPORARY/EXPERIMENTAL, fsds sim only.
@@ -432,10 +422,10 @@ STEER_RATE_ANTI_HUNT_ENABLED = True
 # softening off once kappa exceeds adaptive_R_rate's own kappa_straight
 # cutoff (0.03): in a corner, R_rate[0,0] gets the full, unscaled baseline
 # cost instead of being relaxed -- the opposite of reduction. NOT VALIDATED.
-# Tried disabled 2026-08-09 but caused severe lag specifically in corners --
+# Must stay True — disabling causes severe lag specifically in corners, because
 # the discontinuous R_rate[0,0] jump at the kappa_straight crossing likely
 # spikes QP solver iterations / invalidates warm-starts every tick near the
-# threshold. Reverted the same day.
+# threshold.
 ADAPTIVE_R_RATE_ENABLE_IN_CORNERS = True
 
 # ADAPTIVE_Q_LOOKAHEAD_ENABLED — TEMPORARY/EXPERIMENTAL, fsds sim only.
@@ -471,15 +461,16 @@ ADAPTIVE_Q_DEMAND_NORMALISED = True
 # ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_DIST/_TIME_S/_DIST_MAX — how far past a
 # corner's peak curvature adaptive_Q_lookahead's exit-heading Q[2,2] boost
 # stays active before decaying back to 1.0 (no-op). Speed-scaled (car_speed
-# * _TIME_S, clamped to [_DIST, _DIST_MAX]) as of 2026-08-11 — a FIXED
-# distance (the old default, 5.0 m unconditionally) undershoots at speed:
-# live telemetry showed |e_y|/|e_psi| peaking 11.7-20.6 m (mean ~15.7 m)
-# past the true apex, not right at it — the car is still sliding wide/
-# yawing back through the exit for 1.5-2.7s of travel, so a fixed 5 m window
-# had already fully decayed by the time tracking error was actually at its
-# worst, leaving the exit boost inert almost every time it mattered. Mirrors
-# MPCParams.adaptive_q_lookahead_exit_decay_dist/_time_s/_dist_max — keep in
-# sync. Not yet tested live (offline-only as of 2026-08-11).
+# * _TIME_S, clamped to [_DIST, _DIST_MAX]) rather than a fixed distance,
+# because a fixed distance (the old default, 5.0 m unconditionally)
+# undershoots at speed: live telemetry showed |e_y|/|e_psi| peaking
+# 11.7-20.6 m (mean ~15.7 m) past the true apex, not right at it — the car
+# is still sliding wide/yawing back through the exit for 1.5-2.7s of travel,
+# so a fixed 5 m window decays fully before tracking error is actually at
+# its worst, leaving the exit boost inert almost every time it matters.
+# Mirrors MPCParams.adaptive_q_lookahead_exit_decay_dist/_time_s/_dist_max —
+# keep in sync. Offline-validated only; has not been confirmed on the live
+# car yet.
 ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_DIST = 5.0       # m — floor (low-speed corners)
 ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_TIME_S = 2.5     # s — speed -> decay distance
 ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_DIST_MAX = 25.0  # m — clamp ceiling
@@ -519,13 +510,13 @@ STEER_EFFORT_STRAIGHT_BOOST_ENABLED = True
 #   [6] delta_act  actuator-lagged steering angle (rad) -- always 0.0, no
 #                  tuned weight sets this state
 #   [7] a_act      actuator-lagged acceleration (m/s^2) -- always 0.0, ditto
-# Q_diag[4] 3.5 -> 5.0 on 2026-08-10, tuned on the car (not offline). Raising
-# the speed-error weight cut mean |e_y| on the corner-APPROACH phase (ticks
-# with corner_demand > 1.5) from 0.240 to 0.141-0.166 m across two runs, with
-# the best run also the day's best on RMSE (0.262), peak |e_y| (1.50 m) and
-# steering saturation (3.4%). 6.5 was tried and was worse on a matched-length
-# window (RMSE 0.435, peak 2.18 m), so 5.0 is a measured optimum, not a
-# direction to keep pushing.
+# Q_diag[4]=5.0 is car-tuned (not offline). Raising the speed-error weight
+# cuts mean |e_y| on the corner-APPROACH phase (ticks with corner_demand >
+# 1.5) from 0.240 to 0.141-0.166 m across two runs, with the best run also
+# the day's best on RMSE (0.262), peak |e_y| (1.50 m) and steering saturation
+# (3.4%). 6.5 scores worse on a matched-length window (RMSE 0.435, peak
+# 2.18 m), so 5.0 is a measured optimum — do not keep pushing this value
+# higher expecting further gains.
 #
 # Whole-run averages hide this: they are dominated by the ~50% of ticks on
 # straights, where a speed-error weight does little. Compare on the approach
@@ -534,9 +525,9 @@ Q_diag      = [5.20, 0.2, 1.52, 0.50, 5.0, 0.0, 0.0, 0.0]
 # R_diag index -> input penalised:
 #   [0] delta_cmd  steering command effort (rad)
 #   [1] a_cmd      acceleration command effort (m/s^2)
-# R_diag[1] 1.15 -> 1.05 -> 0.85 (car-tuned), successive steps toward cheaper
-# braking. Motivation: a_cmd floors around -2.2 m/s^2 against a -7.0 limit on
-# every logged run, while the car demonstrably sustains -6.3, so the MPC uses
+# R_diag[1]=0.77 is car-tuned toward cheap braking AND acceleration effort.
+# Motivation: a_cmd floors around -2.2 m/s^2 against a -7.0 limit on every
+# logged run, while the car demonstrably sustains -6.3, so the MPC uses
 # under a third of its braking authority and arrives ~2 m/s hot at corner
 # entry. The cause is structural: a_cmd is a RATE, so one 50 ms step of
 # braking (or accelerating) at magnitude 6 changes speed by only 0.30 m/s,
@@ -545,24 +536,26 @@ Q_diag      = [5.20, 0.2, 1.52, 0.50, 5.0, 0.0, 0.0, 0.0]
 # R[1,1] is the cheap lever (a ~7x cut from the original 1.15 reaches
 # parity); raising Q_diag[4] instead would need ~460.
 #
-# 0.85 -> 0.77 on 2026-08-11 (offline-tuned, `tuner.recorded_map_rollout
-# --planner` on comp_test_map_3): this same effort/benefit mismatch applies
-# symmetrically to ACCELERATION, not just braking -- live telemetry
-# (mpc_standalone_control_1786440962.csv) showed a_cmd topping out at ~3
-# m/s^2 during a clean, well-tracked corner-exit straight with a large
-# (3-9 m/s) speed deficit and zero competing lateral demand, well under the
-# 12 m/s^2 ceiling the same lap demonstrably used elsewhere. Swept
-# {0.85, 0.77, 0.71, 0.65} holding R_rate_diag/Q_diag fixed: 0.77 is a local
-# optimum on this run (score 0.517->0.499, steering sat 5.46%->4.35%,
-# |e_psi| mean 7.60->6.74 deg, lap time 55.85s->55.15s); 0.71 and 0.65 both
+# The same effort/benefit mismatch applies symmetrically to ACCELERATION,
+# not just braking -- live telemetry showed a_cmd topping out at ~3 m/s^2
+# during a clean, well-tracked corner-exit straight with a large (3-9 m/s)
+# speed deficit and zero competing lateral demand, well under the 12 m/s^2
+# ceiling the same lap demonstrably used elsewhere. A sweep of
+# {0.85, 0.77, 0.71, 0.65} holding R_rate_diag/Q_diag fixed found 0.77 a
+# local optimum (score 0.499, steering sat 4.35%, |e_psi| mean 6.74 deg,
+# lap time 55.15s vs 0.85's 0.517/5.46%/7.60deg/55.85s); 0.71 and 0.65 both
 # score worse than 0.77 (0.516 and 0.551 respectively) -- this is NOT "lower
 # is always better", re-sweep around 0.77 rather than assuming a further cut
 # helps. No regression on the oracle-path (USE_PLANNER=False) baseline
-# (0.408->0.409, within noise). Not yet re-validated against a second track
-# -- if this drifts on a different map, re-sweep rather than assume 0.77
-# transfers. R_rate_diag[1] was also tried at 2.2 alongside this (no
-# additional benefit over R_diag[1] alone, score 0.501 vs 0.499) -- left
-# unchanged.
+# (score 0.409, within noise of 0.408). Not yet validated against a second
+# track -- if this drifts on a different map, re-sweep rather than assume
+# 0.77 transfers. R_rate_diag[1]=2.2 gave no additional benefit over
+# R_diag[1] alone (score 0.501 vs 0.499), so it is left unchanged.
+#
+# R_diag[1] itself is now a NOMINAL value only (kept for shape/API parity
+# with every R_diag consumer -- solve_mpc's needs_rebuild check, tuner
+# scripts that don't know about the split, etc). The QP's actual a_cmd
+# effort cost no longer reads it: see R_A_ACCEL/R_A_BRAKE below.
 R_diag      = [1.16, 0.77]
 # R_rate_diag index -> input RATE-OF-CHANGE penalised (tick-to-tick jerk, not
 # the input itself):
@@ -570,16 +563,29 @@ R_diag      = [1.16, 0.77]
 #   [1] a_cmd      acceleration rate of change
 R_rate_diag = [2.1, 2.6]
 
+# R_A_ACCEL / R_A_BRAKE — separate effort weights for acceleration and
+# braking. solve_mpc()'s a_cmd effort cost is r_a_accel*pos(a_cmd)^2 +
+# r_a_brake*neg(a_cmd)^2 (see controller/optimiser.py), not R_diag[1]*a_cmd^2
+# -- R_diag[1] is read only as the fallback default when a caller omits
+# these. A single shared r_a weight cannot be tuned independently for
+# acceleration vs. braking: lowering it to free up acceleration authority
+# also weakens braking by the same amount, and live telemetry has shown the
+# resulting asymmetry -- corners entered hot, steering saturating, unstable
+# post-exit recovery -- because the same weight that frees up acceleration
+# also caps how hard the QP is willing to brake. See planning_control_sync.md's
+# "Accel/brake effort weight split" for the diagnosis and retuning history.
+R_A_ACCEL = 0.77
+R_A_BRAKE = 0.77
+
 
 # ------------------------------------------------------------------------------
 # Adaptive-gain SHAPE constants
 # ------------------------------------------------------------------------------
 # The *_ENABLED flags further up decide WHETHER each adaptive-gain mechanism
 # runs; these decide the SHAPE of the curve it applies — the floors, ceilings
-# and ramp sharpnesses. They used to be hardcoded inside
-# controller/model_utils.py, unreachable from here; every one is now a keyword
-# argument of the function that uses it, defaulting to the value below, so
-# this file is the single place any of them gets tuned. Read the referenced
+# and ramp sharpnesses. Each is a keyword argument of the function that uses
+# it in controller/model_utils.py, defaulting to the value below, so this
+# file is the single place any of them gets tuned. Read the referenced
 # function's docstring for the mechanism before changing one — these are all
 # tuned values, not arbitrary defaults.
 #
@@ -800,8 +806,8 @@ OPTUNA_PRE_PASS_EVALS = max(10, int(0.1 * MAX_EVALS))
 # roughly unitless "multiples of a typical value" number, so a weight of
 # 0.05 next to a weight of 0.015 really does mean "this matters ~3x more".
 #
-# WHY THIS EXISTS (measured, 2026-08-06)
-# --------------------------------------
+# WHY THIS EXISTS (measured)
+# ---------------------------
 # Without it, a metric's real influence is weight x typical magnitude, not
 # weight — and the 12 metrics have wildly different natural magnitudes
 # (steering_reversal_rms ~0.007, accel_rms ~1.3, speed_rmse ~2.5). A probe
@@ -856,7 +862,8 @@ METRIC_SCALES = np.array(
         0.30,    # 7  jerk_rms               (0.24-0.31 in clean runs)
         1.00,    # 8  max_yaw_rate           (0.84-1.44 rad/s)
         0.015,   # 9  steering_reversal_rms  (0.0002-0.027; the worst-scaled
-                 #    metric of the 12 — previously ~0.0003 effective)
+                 #    metric of the 12 — near-zero effective contribution at
+                 #    a naively larger scale, hence the small value here)
         0.70,    # 10 peak_lateral_error     (0.57-0.82 m)
         2.30,    # 11 speed_rmse             (1.86-2.83 m/s)
         0.08,    # 12 accel_reversal_rms     (0.037-0.123 measured directly on
@@ -876,10 +883,10 @@ assert np.all(METRIC_SCALES > 0.0), "METRIC_SCALES must be strictly positive (us
 # automated tuner is actually trying to minimise — it is the definition of
 # "good driving" for this whole project.
 #
-# As of 2026-08-06 these weights are applied to each metric AFTER it has been
-# divided by its METRIC_SCALES entry above. That normalisation is what makes
-# a weight mean what it says: previously the weights hit each metric's *raw*
-# value, and since the 12 metrics have wildly different natural magnitudes
+# These weights are applied to each metric AFTER it has been divided by its
+# METRIC_SCALES entry above. That normalisation is what makes a weight mean
+# what it says: without it, weights would hit each metric's *raw* value, and
+# since the 12 metrics have wildly different natural magnitudes
 # (mixed m²/rad² RMS terms, radians, m/s², unitless ratios), a metric's real
 # influence was weight x typical magnitude rather than weight. See the
 # METRIC_SCALES block above for the measurement that showed this had made the
@@ -953,55 +960,51 @@ assert np.all(METRIC_SCALES > 0.0), "METRIC_SCALES must be strictly positive (us
 SCORE_WEIGHTS = np.array(
     [
         0.505,  # 0  rmse                    (lateral + heading tracking; primary)
-        0.09,   # 1  yaw_rms                 (was 0.06 — live standalone-ROS test data
-                #    2026-08-05 showed yaw_rate swinging +0.9/-1.1 rad/s within a few
-                #    hundred ms in corners; CMA-ES had too little pressure to avoid
-                #    this via the composite score, raised so oscillatory yaw actually
-                #    costs the tuner something. Offset below.)
-        0.040,  # 2  smooth_rms               (was 0.085, then 0.065 — trimmed again,
-                #    0.025 taken to help fund accel_reversal_rms below, on the same
-                #    logic as the original trim: this metric only blunt-instrument
-                #    reacts to accel/brake flip-flopping via (u_opt-u_prev)^2 without
-                #    isolating reversal count/magnitude the way the new metric does)
+        0.09,   # 1  yaw_rms                 (live standalone-ROS test data showed
+                #    yaw_rate swinging +0.9/-1.1 rad/s within a few hundred ms in
+                #    corners; this weight gives CMA-ES real pressure to avoid that
+                #    via the composite score, so oscillatory yaw actually costs the
+                #    tuner something. Offset by the trims below.)
+        0.040,  # 2  smooth_rms               (kept modest because this metric is a
+                #    blunt instrument for accel/brake flip-flopping — it reacts via
+                #    (u_opt-u_prev)^2 without isolating reversal count/magnitude the
+                #    way accel_reversal_rms below does; weight funds that metric
+                #    instead)
         0.02,   # 3  steer_rms
-        0.015,  # 4  accel_rms               (was 0.005 — too small to give CMA-ES
-                #    any real gradient on throttle/brake effort; nudged up)
+        0.015,  # 4  accel_rms               (kept above the floor needed to give
+                #    CMA-ES a real gradient on throttle/brake effort)
         0.03,   # 5  max_steering
-        0.045,  # 6  steering_sat_ratio       (was 0.075 — trimmed to offset the
-                #    yaw_rms/steering_reversal_rate raise; less directly related to
-                #    the oscillation/chatter symptom than the two raised terms)
-        0.020,  # 7  jerk_rms                 (was 0.045 — trimmed 0.025, same
-                #    reasoning as smooth_rms above: jerk_cost reacts to a sign flip's
-                #    large du but conflates it with any other jerky-but-monotonic
-                #    accel change, unlike the new dedicated reversal metric)
+        0.045,  # 6  steering_sat_ratio       (kept modest relative to yaw_rms/
+                #    steering_reversal_rms — less directly related to the
+                #    oscillation/chatter symptom those two terms target)
+        0.020,  # 7  jerk_rms                 (kept modest: jerk_cost reacts to a
+                #    sign flip's large du but conflates it with any other jerky-
+                #    but-monotonic accel change, unlike the dedicated reversal
+                #    metrics)
         0.02,   # 8  max_yaw_rate
-        0.05,   # 9  steering_reversal_rms  (was 0.03 on the old flat-count-based
-                #    "steering_reversal_rate", originally 0.005 on a raw count of
-                #    ~0-30; live standalone-ROS test data 2026-08-05 showed steering
-                #    sign reversals almost every ~0.05s tick, worst in corners — this
-                #    metric directly measures that "hunting" behaviour and had almost
-                #    no weight to discourage it, so raised further. Offset below.
-                #    2026-08-06: the metric itself was replaced with a magnitude-
-                #    weighted RMS (see sim/scoring.py) so a tiny trim wiggle and a
-                #    path-demanded direction change no longer score the same as an
-                #    aggressive hunting swing; this weight value carries over as-is
-                #    since the two metrics are both O(reversal-related, per-step-
-                #    normalised) in scale, but re-tuning may want to revisit it.)
+        0.05,   # 9  steering_reversal_rms  (live standalone-ROS test data showed
+                #    steering sign reversals almost every ~0.05s tick, worst in
+                #    corners — this metric directly measures that "hunting"
+                #    behaviour, so it carries a meaningful weight to discourage it.
+                #    Constructed as a magnitude-weighted RMS (see sim/scoring.py)
+                #    so a tiny trim wiggle and a path-demanded direction change
+                #    don't score the same as an aggressive hunting swing.)
         0.10,   # 10 peak_lateral_error
-        0.015,  # 11 speed_rmse              (was 0.005 — same issue as accel_rms)
-        0.05,   # 12 accel_reversal_rms      (NEW 2026-08-08 — the identical
+        0.015,  # 11 speed_rmse              (same rationale as accel_rms above —
+                #    kept above the floor needed for a usable CMA-ES gradient)
+        0.05,   # 12 accel_reversal_rms      (the identical
                 #    magnitude-weighted-swing construction as steering_reversal_rms
-                #    above, applied to a_cmd instead of delta_cmd. Added after live
-                #    logs showed persistent throttle/brake sign-flip chatter with NO
-                #    corresponding cost term anywhere in the score: smooth_rms/
-                #    jerk_cost react to a_cmd's tick-to-tick delta but can't
-                #    distinguish a reversal from any other jerky-but-same-sign
+                #    above, applied to a_cmd instead of delta_cmd. Exists because
+                #    live logs showed persistent throttle/brake sign-flip chatter
+                #    with NO corresponding cost term anywhere in the score:
+                #    smooth_rms/jerk_cost react to a_cmd's tick-to-tick delta but
+                #    can't distinguish a reversal from any other jerky-but-same-sign
                 #    change, and nothing else even looks at u_opt[1]'s sign. Given
                 #    the same weight as steering_reversal_rms since the two are the
                 #    same behaviour on the two different actuators; funded by
-                #    trimming smooth_rms/jerk_rms by 0.025 each (see their comments)
-                #    rather than the tracking terms. METRIC_SCALES entry is a
-                #    PLACEHOLDER (1.0) until measured on VALIDATION_SUITE — see that
+                #    trimming smooth_rms/jerk_rms (see their comments) rather than
+                #    the tracking terms. METRIC_SCALES entry is a PLACEHOLDER (1.0)
+                #    until measured on VALIDATION_SUITE — see that
                 #    entry's comment.)
     ],
     dtype=float,
@@ -1042,7 +1045,7 @@ VALIDATION_SUITE = [
 # ------------------------------------------------------------------------------
 
 # COMPLETION_BONUS_WEIGHT / TIME_BONUS_WEIGHT — NO LONGER USED BY THE SCORE.
-# As of the 2026-08-06 constrained restructure (see CONSTRAINT_FLOOR below),
+# Under the constrained scoring structure (see CONSTRAINT_FLOOR below),
 # completion is a hard requirement rather than a reward, and time is the
 # primary objective rather than a bonus. Both constants are retained only so
 # the live scoring copy's CSV header and tuning-history logging keep their
@@ -1073,13 +1076,12 @@ COMPLETION_BONUS_WEIGHT = 0.5
 # The second term is there so the tuner can't pick weights that drive well on
 # average but crash on one particular track.
 #
-# This used to be a hard worst-case (equivalent to TAIL_QUANTILE = 1.0). The
-# problem, measured 2026-08-06: a DNF adds a flat +3.0 (+6.0 off-track), so
-# ONE unlucky task out of ten shifted the objective by ~0.9 and swamped all
-# twelve continuous quality metrics. A plausible hand-picked gain set scored
-# 3rd-WORST of six — below two deliberately pathological sets — purely
-# because one of its ten tasks DNF'd.
-#   - 1.0  = old behaviour, the single worst task decides the tail term.
+# A hard worst-case (TAIL_QUANTILE = 1.0) is too brittle: a DNF adds a flat
+# +3.0 (+6.0 off-track), so ONE unlucky task out of ten shifts the objective
+# by ~0.9 and swamps all twelve continuous quality metrics. Measured effect:
+# a plausible hand-picked gain set scored 3rd-WORST of six — below two
+# deliberately pathological sets — purely because one of its ten tasks DNF'd.
+#   - 1.0  = the single worst task decides the tail term entirely.
 #   - 0.8  = around the 2nd-worst of 10 tasks. One bad task still hurts a
 #            lot; two bad tasks hurt much more.
 #   - 0.5  = the median; effectively stops punishing rare failures at all
@@ -1096,14 +1098,14 @@ TAIL_QUANTILE = 0.8
 # POSE_HOLD_ENABLED — "Does the simulated controller sometimes get handed the
 # SAME pose it got last tick, instead of a fresh one?"
 # On the real car, /fsae/slam/car_position intermittently stops publishing and
-# the controller re-uses its last known pose while the car keeps moving. The
-# offline rollout used to hand it a brand-new exact pose every single tick, so
-# heading error could never accumulate — which is exactly why the simulator
-# showed smooth driving while the car wobbled on the same track with the same
-# weights.
+# the controller re-uses its last known pose while the car keeps moving.
+# Without this flag, the offline rollout hands the controller a brand-new
+# exact pose every single tick, so heading error can never accumulate this
+# way — which is exactly why the simulator can show smooth driving while the
+# car wobbles on the same track with the same weights.
 #
-# Measured on live telemetry (2026-08-06, two runs, same track, same tuned
-# weights, differing only in how badly the feed stalled):
+# Measured on live telemetry (two runs, same track, same tuned weights,
+# differing only in how badly the feed stalled):
 #
 #                          normal run       failed run
 #     fresh-pose rate      18.9 Hz          6.4 Hz
@@ -1151,10 +1153,10 @@ POSE_HOLD_SEED = 24680
 
 
 # ==============================================================================
-# CONSTRAINED SCORING STRUCTURE (added 2026-08-06)
+# CONSTRAINED SCORING STRUCTURE
 # ==============================================================================
-# The score used to be one weighted sum of 12 metrics plus additive bonuses and
-# penalties. That is "linear scalarisation", and it has a structural limit: a
+# A single weighted sum of 12 metrics plus additive bonuses and penalties is
+# "linear scalarisation", and it has a structural limit: a
 # weighted sum can only ever reach solutions on the CONVEX HULL of the
 # trade-off surface. If that surface is non-convex — normal for vehicle
 # dynamics — entire regions of good behaviour are unreachable by ANY weight

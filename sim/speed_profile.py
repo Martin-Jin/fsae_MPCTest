@@ -53,13 +53,12 @@ reference profile and the live per-tick target cannot drift apart. Shared
 defaults live in the CURVATURE_SPEED_* constants below and must be kept
 equal to the live function's defaults.
 
-This delegation fixed a real gap. The oracle profile previously used its own
-copy of the heuristic with scan_end=14 m, a_lat_max=mu*g=5.886 and v_max=20,
-against the car's scan_end=24 m, a_lat_max=4.0 and v_max=15, and skipped the
-live function's dense-resample denoising. On a 60 m straight into a 5 m
-hairpin it commanded 2.45 m/s faster on average and 5 m/s faster on
-straights — so weights tuned offline were tuned for a car faster than the
-one that exists.
+This delegation avoids a real gap: a separate copy of the heuristic with
+different scan_end/a_lat_max/v_max defaults (or without the live function's
+dense-resample denoising) would command a systematically faster profile than
+the car can actually achieve — e.g. a 60 m straight into a 5 m hairpin could
+be commanded several m/s faster on average and on the straights — so weights
+tuned offline would be tuned for a car faster than the one that exists.
 
 Passes 1-2 (forward/backward propagation) have no live counterpart; the car
 relies on the 24 m look-ahead to see corners early enough. They only ever
@@ -422,20 +421,19 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
     that node has no cross-package import) — so these defaults must match
     that function's bit-for-bit for tuned weights to transfer.
 
-    This is now the single curvature heuristic in this module:
+    This is the single curvature heuristic in this module:
     compute_speed_profile() calls it per path point for its pass 0 rather
-    than keeping a second copy. Previously the two diverged (this one at
-    a_lat_max=4.0 / scan_end=24, the profile at mu*g=5.886 / scan_end=14),
-    which made the oracle reference systematically faster than anything the
-    car would drive. Defaults here are mirrored in the module-level
-    CURVATURE_SPEED_* constants, which compute_speed_profile() uses; change
-    both together, and only alongside the matching live-node change.
+    than keeping a second copy, so the oracle reference cannot drift toward
+    being systematically faster than anything the car would drive. Defaults
+    here are mirrored in the module-level CURVATURE_SPEED_* constants, which
+    compute_speed_profile() uses; change both together, and only alongside
+    the matching live-node change.
 
-    scan_end=24 m (was 14 m) matches the live boundary._WALL_PLAN_HORIZON: a
-    tight hairpin (~2 m radius, v_target ~2.7 m/s) approached at v_max needs
-    ~24 m to brake for at a realistic achieved deceleration, not the raw
+    scan_end=24 m matches the live boundary._WALL_PLAN_HORIZON: a tight
+    hairpin (~2 m radius, v_target ~2.7 m/s) approached at v_max needs ~24 m
+    to brake for at a realistic achieved deceleration, not the raw
     a_max_brake limit — a shorter scan sees the corner too late, saturating
-    steering and spinning out at corner entry (observed on the live stack).
+    steering and spinning out at corner entry.
 
     v_target = safety*sqrt(a_lat_max / kappa_peak), propagated for braking
     distance. A short-path cap (scales v_max down when the visible path is
@@ -568,7 +566,7 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
     # implied ~273 m/s^2 (~28 g) of braking at corner entry.  The car can't do
     # that, so the speed error is charged to the controller for failing at
     # something impossible, and it arrives at the corner too fast regardless.
-    # scan_end=24 m was sized so a hairpin is *seen* in time; this makes the
+    # scan_end=24 m is sized so a hairpin is *seen* in time; this makes the
     # target actually *achievable* from here.
     #
     # For each sampled corner at distance d ahead with its own corner-speed

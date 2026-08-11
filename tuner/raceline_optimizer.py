@@ -64,9 +64,9 @@ against alat_ceiling_at(v), not OPTIMAL_LAP_A_LAT_MAX/mu.
 
 Respecting the ceiling is necessary but NOT sufficient: planning at exactly
 100% of it leaves the controller no lateral budget to correct with, since
-closing any tracking error needs curvature beyond the reference's own. The
-2026-08-10 live logs showed every corner at corner_demand > 1 with steering
-saturated on 9.4% of corner ticks. ALAT_MARGIN / BRAKE_MARGIN reserve that
+closing any tracking error needs curvature beyond the reference's own. Left
+unmargined, every corner runs at corner_demand > 1 and steering saturates on
+a large fraction of corner ticks. ALAT_MARGIN / BRAKE_MARGIN reserve that
 headroom -- see their comments.
 
 THIS FILE'S v_target IS THE ONE THE CAR DRIVES
@@ -119,15 +119,12 @@ from tracks import (  # noqa: E402
 # detections within 0.8 m, so a recorded centre can sit some way off the true
 # one). 0.90 m covers the axle half-width with ~0.28 m left over.
 #
-# Raised from 0.35 on 2026-08-10. 0.35 was under half the front track, so it
-# never modelled the car at all despite its comment claiming to; it survived
-# only because the old speed profile was slow enough that the optimiser never
-# pushed the line hard into a boundary. Adding ALAT_MARGIN made the optimiser
-# prefer a tighter line and the defect surfaced immediately: the regenerated
-# raceline came within 0.388 m of a cone centre at 6 stations (16 within
-# 0.8 m), i.e. inside the car's own width, and the car drove off track.
-# _assert_clearance() below now fails the export rather than shipping such a
-# line silently.
+# Must cover at least half the front track, or this margin does not actually
+# model the car regardless of what its comment claims -- a tighter speed
+# profile plus a tight optimiser can then push the line to within a few
+# centimetres of a cone centre, i.e. inside the car's own width, without any
+# clearance check catching it. _assert_clearance() below fails the export
+# rather than shipping such a line silently.
 DEFAULT_MARGIN = 0.90
 
 # Smoothing weight in the per-iteration curvature-reduction step: how strongly
@@ -156,10 +153,9 @@ FINAL_SMOOTH_TIME_TOLERANCE = 0.002
 # to correct with: any lateral error needs curvature beyond the reference's
 # own, which is exactly the acceleration the sim refuses to supply, so the
 # controller saturates its steering and the error grows instead of closing.
-# The 2026-08-10 live logs show this directly -- every corner reported
-# corner_demand > 1 (peak 3.17) and steering saturated on 9.4% of corner
-# ticks, while the exported profile's own implied a_lat still exceeded the
-# ceiling at 8 stations.
+# Without this margin, corners run with corner_demand > 1 and steering
+# saturates on a large fraction of corner ticks, since the exported profile's
+# own implied a_lat can still exceed the ceiling at some stations.
 #
 # 0.85 keeps ~15% of the lateral budget as correction headroom. Chosen to
 # leave margin comparable to the tracking errors actually observed rather
@@ -351,9 +347,10 @@ def _candidate_score(lap_time, kappa):
     A path with a curvature kink can be marginally quicker in the point-mass
     speed model used here -- that model only sees kappa through the corner
     speed sqrt(a_lat/kappa) and is perfectly happy to take a 2.6 m radius --
-    while being undrivable for a car whose steering stops at a 3.32 m radius.
-    That is exactly what shipped on 2026-08-10: a 0.379 spike won on lap time
-    and saturated the live car's steering on 26.8% of ticks in that band.
+    while being undrivable for a car whose steering stops at a 3.32 m radius:
+    a curvature spike above the car's steering limit can win on lap time in
+    this model while saturating the live car's steering for a large fraction
+    of ticks in that band.
 
     Penalising only the EXCESS above CURVATURE_SOFT_MAX (rather than, say,
     mean curvature) keeps this inert for every well-formed line -- a clean
@@ -373,10 +370,11 @@ def _curvature(path_xy):
     resampled centreline it was written for) has non-uniform spacing after a
     lateral offset is applied -- offset stations trace a longer or shorter
     path locally depending on which way they were pushed -- and differentiating
-    by index against that distorts the curvature estimate badly (measured:
-    a single "curvature-reducing" step on this module's first attempt nearly
-    quadrupled peak curvature, 0.208 -> 0.74, purely from this artifact).
-    Differentiating with respect to actual arc length removes the distortion.
+    by index against that distorts the curvature estimate badly: a
+    "curvature-reducing" step evaluated this way can spuriously balloon peak
+    curvature purely from this artifact, worse than the curvature it started
+    with. Differentiating with respect to actual arc length removes the
+    distortion.
     """
     x = path_xy[:, 0]
     y = path_xy[:, 1]
@@ -676,10 +674,10 @@ def _assert_clearance(path_xy, blue, yellow, margin):
     Fail the export if the finished line passes closer to any cone than
     MIN_CONE_CLEARANCE. Raises RuntimeError; the caller does not catch it.
 
-    Silent containment failure is the specific thing this prevents: on
-    2026-08-10 a regenerated raceline came within 0.388 m of a cone centre and
-    was driven, producing a 4.8 m peak tracking error and off-track excursions
-    that were initially misattributed to controller tuning.
+    Silent containment failure is the specific thing this prevents: an
+    unchecked raceline that passes too close to a cone can be driven as
+    exported, producing large peak tracking error and off-track excursions
+    that get misattributed to controller tuning instead of the line itself.
     """
     cones = np.vstack([np.asarray(blue)[:, :2], np.asarray(yellow)[:, :2]])
     # Pairwise nearest distance; the point counts here (~1e3 x ~1e2) make the

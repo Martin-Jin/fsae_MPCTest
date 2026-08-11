@@ -53,11 +53,11 @@ from tuner.offline_tuner import get_cached_model  # noqa: E402
 
 from tracks import cone_map_path, resolve_map_arg  # noqa: E402
 
-# The map every baseline in docs/ is quoted on. Moved 2026-08-10 from the
-# repo-root cone_map.json into tracks/comp_test_map_3/ (byte-identical copy),
-# so the numbers below remain directly comparable. Eight other tuner scripts
-# import this constant rather than re-deriving the path -- repointing it here
-# moves all of them together, which is the reason it stays a module constant.
+# The map every baseline in docs/ is quoted on, kept at tracks/comp_test_map_3/
+# so the numbers stay directly comparable across runs. Eight other tuner
+# scripts import this constant rather than re-deriving the path -- repointing
+# it here moves all of them together, which is the reason it stays a module
+# constant.
 DEFAULT_MAP = cone_map_path()
 
 LIVE = {

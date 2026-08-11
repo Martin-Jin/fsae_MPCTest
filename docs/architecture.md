@@ -158,34 +158,16 @@ DNF/validation configuration shared by `gui/simulation.py`,
 `tuner/offline_tuner.py`, `sim/scoring.py`, `sim/rollout_core.py`, and
 `tuner/performance_stats.py`. It has no vehicle physics in it — that lives
 in `model/vehicle_physics.py` (see next section). Every setting has a
-detailed, plain-language explanation directly
-above it in the file itself, including what it does, why you'd change it,
-and roughly how much to change it by — this section is a quick-reference
-summary; **read the comments in `settings.py` before changing anything.**
+detailed, plain-language explanation directly above it in the file itself.
 
-### General system configuration
-| Setting | What it controls |
-|---|---|
-| `N_HORIZON` | How many 0.05 s steps ahead the MPC plans each solve (35 = 1.75 s look-ahead). Must match `N_horizon` in `gui/simulation.py` and `N` in `mpc_core.py`. |
-| `USE_PLANNER` | Whether the tuner drives using the full simulated perception/planning pipeline (`True`) or the perfect reference path (`False`). |
-| `DELAY_STEPS` | Simulated lag (in 0.05 s steps) between a command being decided and applied — for testing robustness to real actuator/network delay. `sim/rollout_core.py`'s `predict_ahead()` forward-simulates the MPC's state through the commands already queued before each solve, so nonzero values no longer cause the oscillation/DNF behavior seen before that fix — validated across `DELAY_STEPS` 1-8. |
-| `DELAY_JITTER_STEPS` | Std-dev (in steps) of the error between the *true* delay applied to the plant and the delay the controller *believes* it has. `DELAY_STEPS` alone is compensated exactly by `predict_ahead()`, which the real car can never do — it estimates lag from a jittering pose timestamp. Default `0.2` matches measured live loop jitter (σ ≈ 0.0092 s). `0.0` restores the old optimistic behaviour. |
-| `DELAY_JITTER_SEED` | Fixed seed for the above, so rollouts stay reproducible and CMA-ES compares candidates fairly. Change only to check a tuned result isn't overfitted to one jitter sequence. |
-| `SLAM_NOISE_ENABLED` | Default off. Adds jitter + slow drift to the pose the controller/planner *see*, leaving the plant and the score on ground truth. Models the REAL car's ZED-odometry/`cone_mapper` error, which FSDS does not have (its `sim_perception` republishes ground-truth odom). See [`planning_control_sync.md`](planning_control_sync.md)'s "Simulator fidelity limits". |
-| `SLAM_POS_JITTER_STD` / `SLAM_YAW_JITTER_STD` | Per-step white noise on the estimated pose (2 cm / 0.3°). This is the component that provokes chatter. |
-| `SLAM_POS_DRIFT_STD` / `SLAM_YAW_DRIFT_STD` / `SLAM_DRIFT_TAU` | Slow Ornstein–Uhlenbeck drift (5 cm / 0.5°, 5 s time constant) — wanders and self-corrects like SLAM between loop closures, rather than random-walking away. |
-| `SLAM_NOISE_SEED` | Fixed seed, same fairness rationale as `DELAY_JITTER_SEED`. |
-| `MAX_FAILS` | Consecutive MPC solver failures before a rollout is abandoned as a DNF. |
-| `OFFTRACK_LIMIT` | Lateral error (m) beyond which the car is considered off-track. Derived from `TRACK_HALF_WIDTH` in `sim/sim_track.py` — change that instead if you want to adjust it. |
-| `DT` | Control/simulation timestep (s), 0.05 = 20 Hz. Must match the real controller's timer rate. |
-
-### Cost weights
-
-`Q_diag`, `R_diag`, `R_rate_diag` — the MPC's tracking/effort/smoothness cost
-weights. These are the direct output of the most recent `tuner/offline_tuner.py`
-run (see [Running the Offline Tuner](developer_guide.md#running-the-offline-tuner)) and are not
-meant to be hand-edited entry-by-entry. See
-[How the MPC Works](#how-the-mpc-works) for exactly what each entry means.
+For what every weight/gain/flag in `settings.py` does, how to tune it, and
+known constraints (including `N_HORIZON`, `DELAY_STEPS`/`DELAY_JITTER_STEPS`,
+`SLAM_NOISE_ENABLED` and the rest of the simulator-fidelity settings, the
+`Q_diag`/`R_diag`/`R_rate_diag` cost weights, and `SCORE_WEIGHTS`/
+`METRIC_SCALES`), see [tuning.md](tuning.md) — this section instead covers
+the parts of `settings.py` that are about tuner *mechanics* (DNF detection,
+solver settings, the pose-feed-hold sim-to-real model) rather than tuning
+values themselves.
 
 ### DNF penalty configuration
 
@@ -208,16 +190,11 @@ that seeds CMA-ES's starting point; see
 
 ### Scoring weights
 
-`SCORE_WEIGHTS` — the 13-entry array defining what "good driving" means:
-how much each of the 12 measured aspects of a rollout (tracking error,
-smoothness, steering effort, saturation, jerk, etc.) contributes to the
-final composite score the tuner minimises. `tuner/offline_tuner.py` asserts
-these sum to ~1.0, but since the 13 metrics are on very different natural
-scales (mixed m²/rad² RMS terms, radians, m/s², unitless ratios, a per-step
-rate), relative priority is actually set by weight × typical magnitude, not
-the weight alone — see [The Composite Score](#the-composite-score) for
-exactly what each of the 13 metrics measures, its rough typical magnitude,
-and how they combine.
+`SCORE_WEIGHTS`/`METRIC_SCALES` define what "good driving" means to the
+tuner. See [tuning.md](tuning.md#6-scoring-metric_scales-and-score_weights)
+for how to tune these; see [The Composite Score](#the-composite-score) below
+for exactly what each of the 13 metrics measures and how they combine into
+one score.
 
 `VALIDATION_SUITE` — which of the synthetic corner-shape paths (defined in
 `tuner/offline_tuner.build_synthetic_paths()`) the tuner actually evaluates
@@ -1240,11 +1217,14 @@ local copies, rather than importing the shared modules. This is deliberate:
 must have zero simulator dependencies. **Any change to the cost/constraint
 structure in one location must be mirrored in the other**, or weights tuned
 by `tuner/offline_tuner.py` will not transfer faithfully to the live controller.
+
 Both QPs enforce a hard per-step slew-rate limit (`du_max`) on top of the soft
 `R_rate` cost. This used to be a live-only constraint, which meant the tuner
 was optimising against a plant that could change steering arbitrarily fast
 while the real car was clamped — a silent parity break independent of any
-weight choice. `controller/optimiser.py` now takes a `du_max` too (baked into
+weight choice.
+
+`controller/optimiser.py` now takes a `du_max` too (baked into
 the cached QP alongside `u_min`/`u_max`, and participating in the same
 cache-staleness check), and `sim/rollout_core.py` derives it from
 `VehicleParams.max_steer_rate * DT` so both sides agree. See
@@ -1524,15 +1504,9 @@ comparable to earlier logged scores.
 
 **Lower is always better.** A good finishing run typically scores in
 `[-0.5, -0.3]` — negative because the completion/time bonuses usually
-outweigh the (small, well-tuned) metric costs. `SCORE_WEIGHTS` is defined
-once in `settings.py`; `tuner/offline_tuner.py` still asserts the 12
-weights sum to ~1.0 for a stable overall score scale, but what actually
-determines each metric's influence is weight × the metric's typical
-magnitude ("effective contribution"), not the weight alone — the 12
-metrics have very different natural units (mixed m²/rad² RMS terms,
-radians, m/s², unitless ratios, a per-step rate). See
-[Configuring the Project](#configuring-the-project-settingspy) for
-guidance on adjusting individual weights with that in mind.
+outweigh the (small, well-tuned) metric costs. See
+[tuning.md](tuning.md#6-scoring-metric_scales-and-score_weights) for how to
+tune `SCORE_WEIGHTS`/`METRIC_SCALES`.
 
 The inaccurate-solver penalty (up to +50% at 5 or more
 `OPTIMAL_INACCURATE` occurrences in one rollout) uses

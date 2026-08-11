@@ -72,6 +72,7 @@ from settings import (
     ADAPTIVE_Q_UTURN_R_RELAX_FLOOR,
     ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_DIST, ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_TIME_S,
     ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_DIST_MAX,
+    R_A_ACCEL, R_A_BRAKE,
 )
 
 STALL_CHECK_INTERVAL = 60   # Steps between rolling stall checks (3 s at 20 Hz)
@@ -397,9 +398,9 @@ def predict_ahead(x0, Ad, Bd, pending_cmds):
 
 def compute_step_budget(path_X, path_Y, path_v_profile):
     """
-    Single source of truth for the dynamic step budget. Both callers used to
-    duplicate this formula exactly — arc-length/fallback-speed estimate vs.
-    a speed-profile-aware estimate, taking the larger of the two.
+    Single source of truth for the dynamic step budget, so both callers stay
+    consistent — arc-length/fallback-speed estimate vs. a speed-profile-aware
+    estimate, taking the larger of the two.
 
     Returns
     -------
@@ -545,9 +546,9 @@ def run_core_rollout(
     # The plant always applies the true DELAY_STEPS lag. What varies is how
     # many pending commands the CONTROLLER believes it must roll forward
     # through. Live, that count comes from a noisy pose timestamp divided by
-    # a jittering loop period, so it is regularly wrong by a step; offline it
-    # used to be exactly right on every tick, which made predict_ahead()
-    # strictly more effective in the tuner than it can ever be on the car.
+    # a jittering loop period, so it is regularly wrong by a step; this jitter
+    # is modelled offline too, so predict_ahead() cannot look more effective
+    # in the tuner than it can ever be on the car.
     # Seeded so each rollout is reproducible and CMA-ES still gets a stable
     # score per candidate (see settings.DELAY_JITTER_SEED).
     delay_rng = np.random.default_rng(DELAY_JITTER_SEED)
@@ -772,9 +773,9 @@ def run_core_rollout(
                     history["planner_Y"].append(cl_y)
             else:
                 # Planner not yet ready — fall back to the global reference path.
-                # (This fallback was previously missing in gui/simulation.py, which
-                # meant e_y/e_psi/v_target silently reused stale values from
-                # the previous step whenever the planner wasn't ready.)
+                # Without this fallback, e_y/e_psi/v_target would silently
+                # reuse stale values from the previous step whenever the
+                # planner isn't ready.
                 e_y, _, e_psi, _, _, _, _ = plant_to_tracking_error(
                     state_est, path_x=path_X, path_y=path_Y, path_psi=path_Psi
                 )
@@ -833,11 +834,12 @@ def run_core_rollout(
         #                        FOV-limited, EMA-blended centreline rather
         #                        than path_X/path_Y, so e_y is a distance to
         #                        an estimated line even with a perfect pose.
-        # Case 2 was previously missed: with SLAM noise off (the default),
-        # e_y_true aliased the planner-relative error, so ~60% of the score
-        # (rmse + peak_lateral_error) measured controller-vs-planner
-        # agreement with no ground-truth anchor, and a drifting planner read
-        # as good tracking while also suppressing the off-track trigger.
+        # Case 2 must trigger this even with SLAM noise off (the default):
+        # otherwise e_y_true would alias the planner-relative error, so most
+        # of the score (rmse + peak_lateral_error) would measure
+        # controller-vs-planner agreement with no ground-truth anchor, and a
+        # drifting planner would read as good tracking while also
+        # suppressing the off-track trigger.
         if slam_noise is not None or use_planner:
             e_y_true, _, e_psi_true, _, _, _, _ = plant_to_tracking_error(
                 state, path_x=path_X, path_y=path_Y, path_psi=path_Psi
@@ -980,6 +982,7 @@ def run_core_rollout(
             return_status=True, eps_abs=eps, eps_rel=eps,
             max_iter=max_iter, warm_start=(step != 0),
             du_max=du_max, terminal_scale=TERMINAL_Q_SCALE,
+            r_a_accel=R_A_ACCEL, r_a_brake=R_A_BRAKE,
         )
 
         solver_failed = mpc_result is None
@@ -1093,17 +1096,17 @@ def run_core_rollout(
     if reached_end:
         # Anchor the time bonus to the path's PHYSICAL optimum where available.
         #
-        # This used to divide by `dynamic_max_steps * DT`, i.e.
-        # arc_length / 2.5 m/s * 1.5 — a placeholder step budget with no
-        # physical meaning, measured to be 2.7x-6.7x the actual optimum and
-        # varying by path. That made TIME_BONUS_WEIGHT (0.25, the
-        # second-largest score term) a reward against an arbitrary constant,
-        # and made the bonus non-comparable BETWEEN paths: the same driving
-        # earned wildly different bonuses depending on which track it was on.
+        # Dividing by a placeholder step budget (e.g. some multiple of
+        # arc_length / assumed_speed) has no physical meaning, can be several
+        # times the actual optimum, and varies by path — which would make
+        # TIME_BONUS_WEIGHT (0.25, the second-largest score term) a reward
+        # against an arbitrary constant and make the bonus non-comparable
+        # BETWEEN paths: the same driving would earn wildly different bonuses
+        # depending on which track it was on.
         #
         # optimal_lap_time() is a quasi-steady-state bound (corner limit ->
         # forward accel pass -> backward brake pass -> integrate ds/v), so
-        # time_bonus is now "how close to physically-fastest", in [0, 1] and
+        # time_bonus is "how close to physically-fastest", in [0, 1] and
         # directly comparable across paths. Because the bound ignores transient
         # dynamics it is not quite attainable, so a real run scores below 1.0.
         # Ratio form, NOT (1 - sim/optimal): sim_time is always >= optimal_time
@@ -1115,11 +1118,11 @@ def run_core_rollout(
         # optimal_time covers the WHOLE path, but the rollout stops as soon as
         # the car is within 3 m of the finish and past ~90% of the points (see
         # the reached_end check above), so it is only timed over `progress` of
-        # the distance. Comparing a 95%-of-the-path run against a 100%-of-the-
-        # path reference makes the car look faster than physically possible —
-        # measured, 7 of 10 paths saturated at exactly 1.000 before this scaling
-        # was applied, destroying all discrimination in the primary objective.
-        # Scale the reference to the distance actually covered.
+        # the distance. Comparing a partial-path run against a full-path
+        # reference makes the car look faster than physically possible and
+        # can saturate the bonus at exactly 1.000 for many runs, destroying
+        # all discrimination in the primary objective. Scale the reference to
+        # the distance actually covered.
         if optimal_time is not None and optimal_time > 0.0 and sim_time > 0.0:
             ref_time = optimal_time * max(progress, 1e-6)
             time_bonus = float(np.clip(ref_time / sim_time, 0.0, 1.0))

@@ -51,7 +51,14 @@ class MPCParams:
     q_e_v:   float = field(default=5.0,  metadata={"unit": "1/(m/s)^2", "desc": "speed error: car_speed - desired_speed"})
     # R_diag index -> input penalised (inputs u are [delta_cmd, a_cmd]):
     r_delta: float = field(default=1.16, metadata={"unit": "1/rad^2",     "desc": "steering command effort"})
-    r_a:     float = field(default=0.77, metadata={"unit": "1/(m/s^2)^2", "desc": "acceleration command effort"})
+    # a_cmd>=0 (accel) and a_cmd<0 (brake) get independent effort weights
+    # instead of one weight applied symmetrically to |a_cmd| -- a single
+    # shared weight cannot be tuned for acceleration and braking
+    # independently. See mpc_core.py's _build_qp/_solve_qp for the
+    # cp.pos/cp.neg split and planning_control_sync.md's "Accel/brake
+    # effort weight split" section for the diagnosis.
+    r_a_accel: float = field(default=0.77, metadata={"unit": "1/(m/s^2)^2", "desc": "acceleration command effort, a_cmd >= 0"})
+    r_a_brake: float = field(default=0.77, metadata={"unit": "1/(m/s^2)^2", "desc": "acceleration command effort, a_cmd < 0 (braking)"})
     # R_rate_diag index -> input RATE-OF-CHANGE penalised (tick-to-tick jerk):
     r_rate_delta: float = field(default=2.1, metadata={"unit": "1/(rad/s)^2",     "desc": "steering rate of change"})
     r_rate_a:     float = field(default=2.6, metadata={"unit": "1/(m/s^3)^2",     "desc": "acceleration rate of change"})

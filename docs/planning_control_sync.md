@@ -131,7 +131,7 @@ offline tuner cares about:
 > (`common/fsae_bringup`, `control/fsae_control`, `perception/
 > fsae_sim_perception`, `planning/fsae_planning`) set `zip_safe=False` — the
 > root cause fix for a stale-`colcon-build` bug (§49 in
-> `sim_to_real_investigation.md`). This was flagged here as a resync TODO
+> `docs/logs/sim_to_real_investigation.md`). This was flagged here as a resync TODO
 > because the live working tree hadn't picked it up yet; checked again
 > 2026-08-09 during the `steering_sysid`/`steering_step` resync and all four
 > live copies now also set `zip_safe=False` — verified byte-identical on
@@ -290,10 +290,11 @@ source of truth for MPC tuning, per side"):
   into `controller/model_utils.py`'s adaptive-gain functions as explicit
   keyword arguments.
 
-This table is the field-by-field mapping. Previously (before this row
-existed) `Q_diag`/`R_diag`/`R_rate_diag` and every adaptive-gain constant had
-a parity OBLIGATION stated only in prose comments, with no row here — that
-gap is what this section closes.
+This table is the field-by-field mapping.
+
+Previously (before this row existed) `Q_diag`/`R_diag`/`R_rate_diag` and
+every adaptive-gain constant had a parity OBLIGATION stated only in prose
+comments, with no row here — that gap is what this section closes.
 
 | `MPCParams` field | `settings.py` constant | Current value |
 |---|---|---|
@@ -303,7 +304,7 @@ gap is what this section closes.
 | `q_r` | `Q_diag[3]` | `0.50` |
 | `q_e_v` | `Q_diag[4]` | `5.0` |
 | `r_delta` | `R_diag[0]` | `1.16` |
-| `r_a` | `R_diag[1]` | `0.77` (2026-08-11, was `0.85` — see "MPC underaccelerating on clean straights" section below) |
+| `r_a` | `R_diag[1]` | `0.77` — see [tuning.md](tuning.md#1-core-cost-weights-q_diag--r_diag--r_rate_diag) for why this is lower than a naively-tuned value |
 | `r_rate_delta` | `R_rate_diag[0]` | `2.1` |
 | `r_rate_a` | `R_rate_diag[1]` | `2.6` |
 | `terminal_q_scale` | `TERMINAL_Q_SCALE` | `1.0` |
@@ -332,12 +333,15 @@ gap is what this section closes.
 | `adaptive_q_uturn_ey_boost_max` | `ADAPTIVE_Q_UTURN_EY_BOOST_MAX` | `1.6` |
 | `adaptive_q_uturn_epsi_boost_max` | `ADAPTIVE_Q_UTURN_EPSI_BOOST_MAX` | `1.6` |
 | `adaptive_q_uturn_r_relax_floor` | `ADAPTIVE_Q_UTURN_R_RELAX_FLOOR` | `0.6` |
+| `adaptive_q_lookahead_exit_decay_dist` | `ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_DIST` | `5.0` |
+| `adaptive_q_lookahead_exit_decay_time_s` | `ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_TIME_S` | `2.5` |
+| `adaptive_q_lookahead_exit_decay_dist_max` | `ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_DIST_MAX` | `25.0` |
 
 The remaining `MPCParams` fields (`max_delay_compensation_steps`,
 `predict_epsi_clip`, `pose_age_lp_alpha`, `n_delay_hysteresis`,
 `adaptive_q_lookahead_time_s`/`_dist_min`/`_dist_max`/`_q_boost_max`/`_k_approach`,
 `adaptive_q_lookahead_epsi_boost_max`/`_epsi_approach_boost_max`/`_k_epsi_approach`,
-`adaptive_q_lookahead_exit_decay_dist`/`_k_exit_norm`/`_peak_hysteresis`,
+`adaptive_q_lookahead_k_exit_norm`/`_peak_hysteresis`,
 `adaptive_q_lookahead_r_floor`/`_k_r_relax`, `steer_effort_straight_boost_max`/`_k`,
 `anti_hunt_boost_max`, `delay_compensation_enabled`) are live-only tuning
 knobs with no offline `settings.py` counterpart yet — `model_utils.py`'s
@@ -345,6 +349,10 @@ matching functions (`predict_ahead`, `lookahead_approach_boost`, etc.) still
 carry these as hardcoded function-default arguments on the offline side. Add
 a `settings.py` constant and a `rollout_core.py` call-site keyword the same
 way as the rows above before relying on tuning one of these offline.
+
+(`adaptive_q_lookahead_exit_decay_dist`/`_time_s`/`_dist_max` already have
+`settings.py` counterparts — see the parity table above — and are excluded
+from this remaining-fields list.)
 
 ## Slew-rate limit (`du_max`): was live-only, now on both sides
 
@@ -459,7 +467,7 @@ removed without re-measuring against a repaired planner:
    (max 15.0) to 2.8 m/s (max 4.65) when `|e_y| > 1.5 m`. The gate's own output
    is additionally rate-limited (`GATE_RATE_LIMIT`, both node files and
    `sim/rollout_core.py`) so its tick-to-tick change is bounded in either
-   direction — see `sim_to_real_investigation.md` §55/§56 for why: applying
+   direction — see `docs/logs/sim_to_real_investigation.md` §55/§56 for why: applying
    it unsmoothed let a fast-changing tracking error compound with an
    already-falling curvature-based target into a single-tick `v_desired`
    cliff.
@@ -483,81 +491,95 @@ pairings that imply a sub-3.7 m radius. Investigate why lap 2 is worse than lap
 1 first — that points at cone-map accumulation rather than the fitter itself.
 
 > **Update — root cause found for one mechanism, and it is NOT cone-map
-> accumulation (`sim_to_real_investigation.md` §19).** Replaying
-> `build_path_walls()` directly against today's real cone map and live log
-> found the same physical corner producing a smooth, tightening radius on two
-> laps and a discontinuous 5×+ radius jump on the other two — reproduced from
-> a single static, already-fully-built cone map, with no lap-to-lap
-> accumulation involved. The actual mechanism: `filter_cones_window`'s
-> `min_ahead=0.5` cutoff drops the nearest surviving midpoint as soon as the
-> car's own pose crosses it, forcing the car-anchored spline (`pin_start` in
-> `smooth_centreline`) to reach for the next midpoint instead — sometimes
-> several metres further away — producing a sharp, transient near-field
-> curvature spike. Confirmed by comparing the two builds directly:
-> `_gen_midpoints()` returns byte-identical midpoints across the jump, which
-> rules out cone-map duplication, `_absorb()`, and exclusive-nearest-neighbour
-> reassignment as the cause of *this* mechanism (all three were reasonable
-> suspects going in). "Why lap 2 is worse than lap 1" narrows to *how often a
-> lap's specific pose trace happens to straddle a midpoint boundary*, not the
-> map getting dirtier.
+> accumulation (`docs/logs/sim_to_real_investigation.md` §19).**
+>
+> Replaying `build_path_walls()` directly against today's real cone map and
+> live log found the same physical corner producing a smooth, tightening
+> radius on two laps and a discontinuous 5×+ radius jump on the other two —
+> reproduced from a single static, already-fully-built cone map, with no
+> lap-to-lap accumulation involved.
+>
+> The actual mechanism: `filter_cones_window`'s `min_ahead=0.5` cutoff drops
+> the nearest surviving midpoint as soon as the car's own pose crosses it,
+> forcing the car-anchored spline (`pin_start` in `smooth_centreline`) to
+> reach for the next midpoint instead — sometimes several metres further
+> away — producing a sharp, transient near-field curvature spike.
+>
+> Confirmed by comparing the two builds directly: `_gen_midpoints()` returns
+> byte-identical midpoints across the jump, which rules out cone-map
+> duplication, `_absorb()`, and exclusive-nearest-neighbour reassignment as
+> the cause of *this* mechanism (all three were reasonable suspects going
+> in). "Why lap 2 is worse than lap 1" narrows to *how often a lap's specific
+> pose trace happens to straddle a midpoint boundary*, not the map getting
+> dirtier.
 >
 > **Correction, same day.** The original "22.4% of ticks show a near-field
 > jump" figure was itself a measurement artifact (dominated by ordinary
 > arc-length resampling on a curving path, not the defect) and has been
 > retracted — two targeted fix attempts against it moved nothing, which is
-> what exposed the flawed metric. A corrected metric (near-field path
-> *tangent direction*, cross-checked against `e_psi`/`steer_deg` to rule out
-> genuine corners) found the real effect is real but modest: **3 large
-> single-tick tangent jumps out of 4160 ticks (0.07%)** in the checked log,
-> and the original t=74.83/74.98 instance re-measured at a ~17° tangent
-> reversal, not the "5×+ radius jump" framing implied on its own. The
-> mechanism itself (byte-identical midpoints, a genuine chain-anchor
-> discontinuity) is still confirmed real — only its measured *frequency* was
-> wrong. No fix has been shipped at this size; see
-> `sim_to_real_investigation.md` §19's correction note and §23 for the full
-> detail, including two new lessons on trusting a metric only after checking
-> it against ground truth.
+> what exposed the flawed metric.
+>
+> A corrected metric (near-field path *tangent direction*, cross-checked
+> against `e_psi`/`steer_deg` to rule out genuine corners) found the real
+> effect is real but modest: **3 large single-tick tangent jumps out of 4160
+> ticks (0.07%)** in the checked log, and the original t=74.83/74.98 instance
+> re-measured at a ~17° tangent reversal, not the "5×+ radius jump" framing
+> implied on its own. The mechanism itself (byte-identical midpoints, a
+> genuine chain-anchor discontinuity) is still confirmed real — only its
+> measured *frequency* was wrong. No fix has been shipped at this size; see
+> `docs/logs/sim_to_real_investigation.md` §19's correction note and §23 for
+> the full detail, including two new lessons on trusting a metric only after
+> checking it against ground truth.
 >
 > **Update (2026-08-07, later the same day) — a real tail effect exists, but
 > it is a DIFFERENT mechanism from the one above, not this one at higher
-> stakes.** `sim_to_real_investigation.md` §26 compared the planner's online
+> stakes.**
+>
+> `docs/logs/sim_to_real_investigation.md` §26 compared the planner's online
 > reference heading against a fixed, geometry-only reference computed from
 > the same rollout and found the bulk of reference-heading swing is genuine
 > geometry (ratio ≈1.2 mean/p90 vs. geometric, r=0.80) — but a small tail
 > (5.8% of ticks, planner rate 1.87–3.51× the geometric rate) carries an 18×
-> higher immediate steering-saturation rate (42.2% vs 2.3%). §27 cross-checked
-> this tail directly against the `min_ahead` seed-jump mechanism above and
-> found only 9% (6/64) of the high-excess ticks coincide with one — this is
-> **not** the same defect at higher stakes. Tracing the tail ticks directly
-> instead shows a sustained turn-in lag at braking corner entries: the
-> planner's online reference correctly anticipates a sharp corner earlier and
-> more aggressively than the car has physically yawed yet, so the
-> reference-minus-car gap grows continuously for over a second before
-> closing — confirmed on all 3 flagged episodes, including one hairpin. This
-> is a distinct, previously undocumented mechanism, not a resizing of this
-> section's `min_ahead` finding — treat them as two separate open items, not
-> one.
+> higher immediate steering-saturation rate (42.2% vs 2.3%).
+>
+> §27 cross-checked this tail directly against the `min_ahead` seed-jump
+> mechanism above and found only 9% (6/64) of the high-excess ticks coincide
+> with one — this is **not** the same defect at higher stakes. Tracing the
+> tail ticks directly instead shows a sustained turn-in lag at braking corner
+> entries: the planner's online reference correctly anticipates a sharp
+> corner earlier and more aggressively than the car has physically yawed
+> yet, so the reference-minus-car gap grows continuously for over a second
+> before closing — confirmed on all 3 flagged episodes, including one
+> hairpin. This is a distinct, previously undocumented mechanism, not a
+> resizing of this section's `min_ahead` finding — treat them as two separate
+> open items, not one.
 >
 > **Update (2026-08-07, later still) — a candidate fix exists, off by
-> default, and it has its own suite-safety caveat.** `sim_to_real_investigation.md`
-> §28 adds a symmetric reference-heading rate limiter
+> default, and it has its own suite-safety caveat.**
+>
+> `docs/logs/sim_to_real_investigation.md` §28 adds a symmetric
+> reference-heading rate limiter
 > (`settings.REF_HEADING_RATE_LIMIT_ENABLED`/`REF_HEADING_RISE_RATE`, in
 > `sim/rollout_core.py::_rate_limit_ref_psi`) that caps how fast the tracked
 > reference heading may change per tick — same shape as the existing
 > `SPEED_TARGET_RISE_RATE`. At 90°/s it improves saturation on both the
 > recorded map and every path in `VALIDATION_SUITE` with no DNF anywhere.
+>
 > **Do not tighten this toward the recorded map's more dramatic numbers**
 > (65–70°/s reach 0% saturation there) — both DNF `PATH_MICRO_SLALOM`
 > off-track in the suite, a failure the recorded map cannot show because it
 > has no fast-reversal slalom geometry. Default OFF pending a live test.
 >
 > **Update (2026-08-07, live test run) — tried at 90°/s, made saturation
-> WORSE (21.1%/26.4% baselines → 28.0%).** `sim_to_real_investigation.md`
-> §29: confirmed active on the car (max reference-heading rate capped
-> 1508°/s → 220°/s) but produced a 3.77 s continuous saturation episode —
-> the same failure mode §28 found offline on `PATH_MICRO_SLALOM`, just short
-> of a full DNF. Holding the reference back during turn-in left a larger
-> heading deficit to claw back later, worse than not limiting at all.
+> WORSE (21.1%/26.4% baselines → 28.0%).**
+>
+> `docs/logs/sim_to_real_investigation.md` §29: confirmed active on the car
+> (max reference-heading rate capped 1508°/s → 220°/s) but produced a 3.77 s
+> continuous saturation episode — the same failure mode §28 found offline on
+> `PATH_MICRO_SLALOM`, just short of a full DNF. Holding the reference back
+> during turn-in left a larger heading deficit to claw back later, worse
+> than not limiting at all.
+>
 > Reverted to `False` in the live `mpc_core.py`. The underlying §26/§27
 > measurement (reference genuinely outpaces the car's yaw) is unaffected by
 > this — only this specific fix is now known not to work. Do not re-enable
@@ -569,7 +591,7 @@ pairings that imply a sub-3.7 m radius. Investigate why lap 2 is worse than lap
 
 ### Fixed: a real cone-map duplication bug in `_absorb()`
 
-Investigating "why lap 2 is worse" (`sim_to_real_investigation.md` §15) found
+Investigating "why lap 2 is worse" (`docs/logs/sim_to_real_investigation.md` §15) found
 and fixed a genuine bug in `planning/cone_map.py::ConeMap._absorb()`: two
 detections of one physical cone in the same frame, both farther than
 `MERGE_DIST` (0.8 m) from anything already in the map — i.e. that cone's
@@ -600,7 +622,7 @@ that skips the blend entirely when the rebuild has moved too far from the
 previous publish — plausibly correlated with this section's curvature-spike
 defect, since a spike event is exactly when the rebuild changes most.
 Measured on the offline sim (`tuner/blend_reset_diagnostics.py`,
-`sim_to_real_investigation.md` §14): real, can jump the reference up to 166°
+`docs/logs/sim_to_real_investigation.md` §14): real, can jump the reference up to 166°
 on other geometries, but **fires 0/1038 times on the recorded map** (max
 trigger-distance 1.98 m, just under the threshold) — so it cannot explain
 that map's saturation gap. Re-check if a planner fix here changes rebuild
@@ -667,7 +689,7 @@ measurement rate*. Those are different failure modes and the jitter knob will
 not reproduce it.
 
 **A sibling bug, same root cause class, found and fixed 2026-08-08** (see
-`sim_to_real_investigation.md` §55): the fix above makes `pose_rate` keep up
+`docs/logs/sim_to_real_investigation.md` §55): the fix above makes `pose_rate` keep up
 with the controller, but it did not guarantee that a given `car_position`
 sample and the `car_speed`/`car_yaw_rate` the controller read *at the same
 tick* came from the same underlying odom instant — `mpc_controller.py`/
@@ -691,17 +713,21 @@ subscriptions to begin with.
 The offline rollout applies a fixed `DELAY_STEPS` lag and `predict_ahead()`
 compensates for it **exactly** — the simulated controller knows its own lag
 perfectly. The live controller never does: it estimates the lag from a pose
-timestamp divided by a jittering loop period. Measured live, that loop period
-is median 0.0498 s but p99 0.0741 s and max 0.1205 s (jitter σ ≈ 0.0092 s ≈
-0.18 steps), so the live step count is regularly wrong by one — and each wrong
-value changes how far `x0` is rolled forward, feeding a step disturbance into
-the QP at the control rate.
+timestamp divided by a jittering loop period.
 
-`settings.DELAY_JITTER_STEPS` (default `0.2`, matching the measured σ) closes
-part of that gap: it perturbs **only the controller's belief** about how many
-commands are in flight, leaving the plant's true lag at `DELAY_STEPS`. The
-draw is seeded (`DELAY_JITTER_SEED`) so rollouts stay reproducible and CMA-ES
-still gets a stable score per candidate. The error is deliberately two-sided —
+Measured live, that loop period is:
+- median 0.0498 s
+- p99 0.0741 s
+- max 0.1205 s
+- jitter σ ≈ 0.0092 s ≈ 0.18 steps
+
+So the live step count is regularly wrong by one — and each wrong value
+changes how far `x0` is rolled forward, feeding a step disturbance into the
+QP at the control rate.
+
+`settings.DELAY_JITTER_STEPS` (default `0.2`, matching the measured σ above)
+is what closes part of that gap — see [tuning.md](tuning.md#2-delay-compensation)
+for what it does and how to tune it. The error is deliberately two-sided —
 over-estimating re-rolls the oldest pending command, mirroring what a
 too-large `pose_age_s` does live.
 
@@ -709,8 +735,9 @@ too-large `pose_age_s` does live.
 `USE_PLANNER=True` (the real configuration), raising the slew limit from
 80 → 180 deg/s drops the fraction of steps pinned on the limit from 1.6–4.3%
 to ~0.5% across `PATH_MICRO_SLALOM`/`PATH_S_BEND`/`PATH_SUDDEN_TURN`, so the
-constraint is now visibly active in the tuner rather than inert. Delay jitter
-on its own moves composite scores by <0.002.
+constraint is now visibly active in the tuner rather than inert.
+
+Delay jitter on its own moves composite scores by <0.002.
 
 **What it still does not reproduce.** The offline rollout produces ~6–12
 steering reversals per run; the live log has ~1441 (≈8 Hz). Delay jitter and
@@ -768,7 +795,7 @@ no arguments, so `progress` defaulted to `0.0` and `reached_end` to `None` —
 scored exactly `CONSTRAINT_FLOOR + DNF_PENALTY = 13.0`, regardless of how the
 car actually drove (the 13 underlying quality metrics were still computed
 correctly; only the composite number was dead). Root cause and fix are logged
-in [`sim_to_real_investigation.md`](sim_to_real_investigation.md)'s findings
+in [`docs/logs/sim_to_real_investigation.md`](logs/sim_to_real_investigation.md)'s findings
 table (the "Live scorer reports `13.0`" row, now marked fixed).
 
 The fix is `LapProgressTracker` in `telemetry_logger.py`: it tracks the car's
@@ -804,7 +831,7 @@ differ, and now only `offtrack` is unconditionally unavailable.
 
 > **Full investigation history** — every hypothesis tried, why each looked
 > right, and how it was eliminated — is in
-> [`sim_to_real_investigation.md`](sim_to_real_investigation.md). Read that
+> [`docs/logs/sim_to_real_investigation.md`](logs/sim_to_real_investigation.md). Read that
 > before re-testing any candidate that looks unexplored; most already were.
 
 Measured 2026-08-06 on the recorded `comp test map 3`, same tuned gains both
@@ -818,9 +845,11 @@ sides:
 
 The car sits at full steering lock six times more often than the simulator, and
 when it does it is pulling only 4.14 m/s² lateral at 5.74 m/s — it is not
-cornering hard, it is rotating back from a large heading error. Heading error
-arrives in sustained episodes (median 0.47 s, up to 2.44 s, 96% of energy below
-1 Hz), i.e. a stale/wrong reference rather than high-frequency chatter.
+cornering hard, it is rotating back from a large heading error.
+
+Heading error arrives in sustained episodes (median 0.47 s, up to 2.44 s, 96% of
+energy below 1 Hz), i.e. a stale/wrong reference rather than high-frequency
+chatter.
 
 **Candidates tested and eliminated:**
 
@@ -838,7 +867,7 @@ arrives in sustained episodes (median 0.47 s, up to 2.44 s, 96% of energy below
 | **actuator lag** | **No** — `s` does not degrade with command rate |
 | **yaw_rate / speed telemetry error** | **No** — channels validated against pose derivatives |
 | **tyre front/rear balance** | **No** — needs C_f at 10% of physical to reach live K_us |
-| **`SteeringCurve` (UE4/PhysX speed-dependent steering scaling)** | **No** — read directly from `TechnionCarPawn`'s `WheeledVehicleMovementComponent4W` in the UE4 Editor (2026-08-07): flat at 1.0 across all 3 keyframes, no speed-dependent scaling at all. See `sim_to_real_investigation.md` §18/§20/§24/§25 for the full mechanism search, the UE 4.27 build process needed to check it, and the read-out |
+| **`SteeringCurve` (UE4/PhysX speed-dependent steering scaling)** | **No** — read directly from `TechnionCarPawn`'s `WheeledVehicleMovementComponent4W` in the UE4 Editor (2026-08-07): flat at 1.0 across all 3 keyframes, no speed-dependent scaling at all. See `docs/logs/sim_to_real_investigation.md` §18/§20/§24/§25 for the full mechanism search, the UE 4.27 build process needed to check it, and the read-out |
 
 **ROOT CAUSE FOUND** (2026-08-06, open-loop system-ID + step test):
 **FSDS enforces a sustained LATERAL-ACCELERATION ceiling of ~7.5 m/s².**
@@ -855,7 +884,7 @@ speeds vs 1.56× for yaw rate). The two are indistinguishable at a single speed.
 **Now modelled** in `model/vehicle_physics.py` (`alat_ceiling*`). It moves every
 metric toward the car but closes only part of the gap — live still saturates 3×
 more often. See "MECHANISM: a dynamically-enforced lateral-acceleration
-ceiling" below, and `sim_to_real_investigation.md` for the full history.
+ceiling" below, and `docs/logs/sim_to_real_investigation.md` for the full history.
 
 The pose-feed hold is real (see `PoseFeedHold`) and is now modelled, but it
 accounts for almost none of the gap.
@@ -1194,7 +1223,7 @@ Step-input test, 12 trials —
 So the ceiling is enforced by a term that **takes time to build**, not by a
 hard clip.
 
-**What is held constant is lateral acceleration, not yaw rate** — the
+**What is held constant is lateral acceleration, not yaw rate.** This was the
 discriminating measurement, and it needed two capped speeds to answer:
 
 | v | settled yaw | settled a_lat |
@@ -1244,12 +1273,12 @@ removes the turn-in transient the MPC reacts to):
 > 1.60 → 0.87). Before the fix the sim sustained 8.3–8.9 m/s² where FSDS
 > sustains 6.1–8.1 — a 20–35% surplus centred on the live car's mean speed.
 >
-> Reproduce: `python3 -m tuner.plant_openloop_validation --ab`
+> Reproduce: `python -m tuner.plant_openloop_validation --ab`
 >
 > **What this did NOT fix:** steering saturation moved only 6.32 → 6.74% against
 > live's 21.1%. It corrects the plant's *lateral-acceleration distribution*
 > (time-above-ceiling ×1.45 → ×0.91 of live), not its steering behaviour. See
-> `sim_to_real_investigation.md` §12 for what was then eliminated and what the
+> `docs/logs/sim_to_real_investigation.md` §12 for what was then eliminated and what the
 > residual gap has been narrowed to.
 
 > **Newly identified, not yet modelled: the ceiling is speed-dependent.**
@@ -1323,7 +1352,7 @@ Same map, same tuned gains:
 | composite score | — | 0.675 | 0.700 | 0.627 | — |
 
 Reproduce any column with
-`python3 -m tuner.recorded_map_rollout [--mode p --gain 700 | --tau 0.25 | --no-ceiling]`.
+`python -m tuner.recorded_map_rollout [--mode p --gain 700 | --tau 0.25 | --no-ceiling]`.
 `tau=0.40` is the shipped, measured value (see below); saturation moving
 *further* from live under it is expected — it's a plant-fidelity fit to a
 direct FSDS measurement, not a saturation-tuning knob.
@@ -1336,7 +1365,7 @@ necessary fix; it is not the whole story.
 The PI columns reproduce the car's **lateral-acceleration distribution** well
 (time-above-ceiling within 11–9% of live, vs 45% too high before) while barely
 moving, or moving the wrong way on, **steering saturation**. Those are now
-known to be separate problems: `sim_to_real_investigation.md` §12 eliminates
+known to be separate problems: `docs/logs/sim_to_real_investigation.md` §12 eliminates
 cornering capability (§12.6), the `a_cmd` divergence (§12.7), AND
 `alat_ceiling_tau` (§12.12 — measured, refit, still no saturation improvement)
 as causes of the saturation gap, and narrows it to the *rate of entry* into the
@@ -1374,9 +1403,9 @@ robust to ±3.5% over the same range and is exactly timestep-independent.
 > (10.82 measured, 10.37 old model, 10.78 new model). No DNF on the recorded
 > map. Closed-loop saturation moved the *wrong* way (6.74% → 4.80%, away from
 > live's 21.1%) — expected, since §12.9/§12.12 in
-> `sim_to_real_investigation.md` had already localised the residual gap to the
+> `docs/logs/sim_to_real_investigation.md` had already localised the residual gap to the
 > planner/reference, not this parameter. Reproduce with
-> `python3 -m tuner.plant_openloop_validation`.
+> `python -m tuner.plant_openloop_validation`.
 >
 > Also checked: does a_lat keep decaying past 3 s into the hold? No — flat
 > within noise at the 3/5/8 s marks across all 12 trials. The step test's
@@ -1641,18 +1670,20 @@ QP step at even |a_cmd|=6 only changes speed by 0.30 m/s, while the effort
 cost `R[1,1]*a_cmd²` is paid immediately, so the QP structurally prefers
 small, cheap accel steps over large ones unless the single-step benefit is
 large) applies symmetrically to ACCELERATION, not just braking, and had
-never been retuned for that side. Confirmed on live telemetry
-(`fsae_logs/mpc_standalone_control_1786440962.csv`): during t≈67.6-69.2s,
-the car is cleanly on-line (`e_y` -0.03 to 0.02 m, `e_psi` 1-4°, steering
-~1°, no competing lateral/heading demand) with a 3-9 m/s speed deficit
-(`v_desired` climbing toward 16+ m/s while `v_actual` sits at 7-8), yet
-`a_cmd` peaks at only ~3.1 m/s² and then decays back down even as the
-deficit stays large — well under the 12 m/s² ceiling the same lap
-demonstrably used elsewhere (e.g. from a standing start at t<2s). Measured
-acceleration (`dv/dt` from `v_actual`) in the same window actually *exceeds*
-`a_cmd` (6-9 m/s² achieved vs ~2-3 commanded), ruling out actuator/throttle
-capping as the cause — the QP itself is choosing the conservative command,
-the car isn't failing to deliver on it.
+never been retuned for that side.
+
+Confirmed on live telemetry (`fsae_logs/mpc_standalone_control_1786440962.csv`):
+during t≈67.6-69.2s, the car is cleanly on-line (`e_y` -0.03 to 0.02 m,
+`e_psi` 1-4°, steering ~1°, no competing lateral/heading demand) with a
+3-9 m/s speed deficit (`v_desired` climbing toward 16+ m/s while `v_actual`
+sits at 7-8), yet `a_cmd` peaks at only ~3.1 m/s² and then decays back down
+even as the deficit stays large — well under the 12 m/s² ceiling the same
+lap demonstrably used elsewhere (e.g. from a standing start at t<2s).
+
+Measured acceleration (`dv/dt` from `v_actual`) in the same window actually
+*exceeds* `a_cmd` (6-9 m/s² achieved vs ~2-3 commanded), ruling out
+actuator/throttle capping as the cause — the QP itself is choosing the
+conservative command, the car isn't failing to deliver on it.
 
 Swept `R_diag[1]` (`r_a`) offline via `tuner.recorded_map_rollout --planner`
 on `comp_test_map_3`, holding `R_rate_diag`/`Q_diag` fixed:
@@ -1740,18 +1771,22 @@ investigation did, rather than assuming it.
 when a track is already mapped — `USE_PRECOMPUTED_SPEED_PROFILE=True` /
 `map_path` set) is a static, position-indexed nearest-point lookup: it has no
 notion of the car's *actual current speed* relative to how much runway is
-left to brake for the upcoming corner. Combined with the frozen-`e_v`-horizon
-characteristic in the section above (the MPC has no internal mechanism to
-anticipate a corner and ease off early — it only ever tracks whatever
-`desired_speed` scalar it's handed *this* tick), a car that enters a fast
-straight even slightly ahead of the oracle profile's own pace has no
-predictive braking margin: the target speed only starts dropping once the
-car reaches the position the profile associates with braking, by which point
-there may not be enough distance left. This showed up directly in live
-telemetry (`fsae_logs/mpc_standalone_control_*.csv`): at a corner entry,
-`v_actual` was measured at ~9 m/s against a `v_desired` already at ~4.6 m/s,
-with steering saturated at the 25° stop for over a second while speed caught
-up to the target — i.e. the corner was recognised too late to brake for
+left to brake for the upcoming corner.
+
+Combined with the frozen-`e_v`-horizon characteristic in the section above
+(the MPC has no internal mechanism to anticipate a corner and ease off
+early — it only ever tracks whatever `desired_speed` scalar it's handed
+*this* tick), a car that enters a fast straight even slightly ahead of the
+oracle profile's own pace has no predictive braking margin: the target speed
+only starts dropping once the car reaches the position the profile
+associates with braking, by which point there may not be enough distance
+left.
+
+This showed up directly in live telemetry
+(`fsae_logs/mpc_standalone_control_*.csv`): at a corner entry, `v_actual`
+was measured at ~9 m/s against a `v_desired` already at ~4.6 m/s, with
+steering saturated at the 25° stop for over a second while speed caught up
+to the target — i.e. the corner was recognised too late to brake for
 smoothly.
 
 `control_utils.dynamic_speed_cap()` (a thin wrapper over the already-existing
@@ -1790,7 +1825,7 @@ changes what `v_curv` feeds into that existing pipeline, reusing it rather
 than adding a second gate/rate-limiter.
 
 **Measured offline, mixed result — not yet validated on the live car.**
-`python3 -m tuner.recorded_map_rollout --planner` (the `USE_PLANNER=True`
+`python -m tuner.recorded_map_rollout --planner` (the `USE_PLANNER=True`
 branch this cap actually runs in; the default oracle-only
 `recorded_map_rollout` invocation never reaches this code path at all, since
 it has no live centreline to scan) on `comp_test_map_3`, cap default

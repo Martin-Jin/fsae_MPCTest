@@ -69,6 +69,15 @@ controller:
     v_min: 1.5          # m/s — minimum speed through tight corners
     stanley_gain: 1.0   # cross-track gain (k_cte)
 
+    # Real-time curvature-lookahead speed cap layered under the precomputed
+    # speed profile (map_path), mpc/mpc_standalone only — see
+    # control_utils.dynamic_speed_cap()'s docstring. No effect when map_path
+    # is unset. Mirrors fsae_MPCTest/settings.py's ENABLE_DYNAMIC_SPEED_CAP /
+    # DYNAMIC_CAP_A_LAT_MAX / DYNAMIC_CAP_SAFETY.
+    enable_dynamic_speed_cap: true
+    dynamic_cap_a_lat_max: 3.2   # m/s^2 — lateral-accel budget for the dynamic cap only
+    dynamic_cap_safety: 0.9      # safety margin for the dynamic cap only
+
     # MPC tuning (mpc/mpc_standalone only; ignored by stanley). Single source
     # of truth is fsae_control/mpc_params.py's MPCParams dataclass — every
     # field there has a matching key here with the SAME default, so leaving
@@ -87,7 +96,7 @@ controller:
     q_r: 0.5                   # yaw rate (1/(rad/s)^2)
     q_e_v: 5.0                 # speed error: car_speed - desired_speed (1/(m/s)^2)
     r_delta: 1.16              # steering command effort (1/rad^2)
-    r_a: 0.85                  # acceleration command effort (1/(m/s^2)^2)
+    r_a: 0.77                  # acceleration command effort (1/(m/s^2)^2)
     r_rate_delta: 2.1          # steering rate of change (1/(rad/s)^2)
     r_rate_a: 2.6              # acceleration rate of change (1/(m/s^3)^2)
     terminal_q_scale: 1.0      # extra weight on terminal predicted state; 1.0 = no-op

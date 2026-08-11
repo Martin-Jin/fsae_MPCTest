@@ -7,6 +7,10 @@ from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
 
+# See control.launch.py's own comment on this import -- fsae_control is an
+# installed package by launch-description-generation time, same as any node.
+from fsae_control.mpc_params import MPC_PARAM_FIELDS
+
 
 # Top-level simulator bring-up: composes perception + planning + control.
 # Pick the planner with `planner:=…`; the mode wires the rest automatically.
@@ -48,6 +52,15 @@ def generate_launch_description():
     v_max = LaunchConfiguration('v_max')
     v_min = LaunchConfiguration('v_min')
     stanley_gain = LaunchConfiguration('stanley_gain')
+    enable_dynamic_speed_cap = LaunchConfiguration('enable_dynamic_speed_cap')
+    dynamic_cap_a_lat_max = LaunchConfiguration('dynamic_cap_a_lat_max')
+    dynamic_cap_safety = LaunchConfiguration('dynamic_cap_safety')
+    # Every MPCController tuning field, forwarded to control.launch.py --
+    # see that file's own comment on MPC_PARAM_FIELDS for why these are
+    # generated instead of hand-written.
+    mpc_param_configs = {
+        name: LaunchConfiguration(name) for name, _default, _meta in MPC_PARAM_FIELDS
+    }
 
     # Skidpad needs the whole cone map up front to reconstruct the figure-8.
     full_track = PythonExpression(
@@ -107,16 +120,17 @@ def generate_launch_description():
             'path_map_path',
             default_value='/home/Formula-Student-Driverless-Simulator/ros2/src/fsae_planning/tracks/comp_test_map_3/raceline.csv',
             description="Passed through to control.launch.py — see that file's "
-                        "path_map_path description. Switched 2026-08-10 from "
-                        "the centreline (speed_profile.csv) to the raceline "
+                        "path_map_path description. Points at the raceline "
                         "(raceline.csv, tuner/raceline_optimizer.py's "
-                        "minimum-time line) so the tracked geometry actually "
+                        "minimum-time line) rather than the centreline "
+                        "(speed_profile.csv) so the tracked geometry actually "
                         "contains the widen-entry/clip-apex shape a corner "
                         "needs -- the MPC's optimum is always e_y=0 on "
                         "whatever path it is given, so it can never invent a "
                         "racing line from a centreline reference no matter how "
-                        "Q/R are tuned. Same x,y,psi,v_target format, so this "
-                        "is a drop-in swap. NOTE: which speed applies is set "
+                        "Q/R are tuned. Same x,y,psi,v_target format as the "
+                        "centreline, so either can be dropped in here. NOTE: "
+                        "which speed applies is set "
                         "by use_precomputed_speed, independently of this file "
                         "— with it true (the default) the speed comes from "
                         "map_path's profile, so the raceline's own v_target "
@@ -143,6 +157,27 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'stanley_gain', default_value='1.0',
             description='cross-track gain k_cte, stanley only (overrides fsae_params.yaml controller.stanley_gain)'),
+        DeclareLaunchArgument(
+            'enable_dynamic_speed_cap', default_value='true',
+            description="Passed through to control.launch.py — see that file's "
+                        "enable_dynamic_speed_cap description."),
+        DeclareLaunchArgument(
+            'dynamic_cap_a_lat_max', default_value='3.2',
+            description='m/s^2 -- lateral-accel budget for the dynamic speed cap only '
+                        '(overrides fsae_params.yaml controller.dynamic_cap_a_lat_max)'),
+        DeclareLaunchArgument(
+            'dynamic_cap_safety', default_value='0.9',
+            description='safety margin for the dynamic speed cap only '
+                        '(overrides fsae_params.yaml controller.dynamic_cap_safety)'),
+        *(DeclareLaunchArgument(
+            name,
+            default_value=('true' if default else 'false') if isinstance(default, bool) else str(default),
+            description=(
+                f"{meta.get('desc', '')}"
+                f"{' (' + meta['unit'] + ')' if meta.get('unit') and meta['unit'] != 'unitless' else ''}"
+                " -- passed through to control.launch.py, see that file's own description"
+            ),
+        ) for name, default, meta in MPC_PARAM_FIELDS),
         include('perception.launch.py', {'full_track': full_track}),
         include('planning.launch.py',   {'planner': planner}),
         include('control.launch.py',    {
@@ -151,6 +186,10 @@ def generate_launch_description():
             'map_path': map_path, 'use_precomputed_speed': use_precomputed_speed,
             'path_map_path': path_map_path, 'use_precomputed_path': use_precomputed_path,
             'v_max': v_max, 'v_min': v_min, 'stanley_gain': stanley_gain,
+            'enable_dynamic_speed_cap': enable_dynamic_speed_cap,
+            'dynamic_cap_a_lat_max': dynamic_cap_a_lat_max,
+            'dynamic_cap_safety': dynamic_cap_safety,
+            **mpc_param_configs,
         }),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(launch_dir, 'cone_recorder.launch.py')),

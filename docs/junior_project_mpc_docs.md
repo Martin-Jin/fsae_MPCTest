@@ -175,7 +175,9 @@ $$
 
 $\alpha$ ramps linearly from 0 to 1 between 1 m/s and 2.5 m/s. Below 1 m/s it's pure kinematic, above 2.5 m/s it's pure dynamic, in between it's a proportional mix. This avoids a sudden jump in predicted behaviour right at the switch-over speed.
 
-**From continuous to discrete (Zero-Order Hold):** the equation above, $\dot{x}=A_c x + B_c u$, describes an instant rate of change — a speedometer reading, not a per-tick step. But the controller only makes one decision every $dt = 0.05\text{s}$ and holds the command fixed until the next tick ("zero-order hold" on the input — it holds at a constant value, order zero, between updates, rather than ramping or curving). What the solver actually needs is the one-step version, $x[k{+}1] = A_d x[k] + B_d u[k]$: given the state and the (held-constant) command, what state does that produce exactly $dt$ seconds later?
+**From continuous to discrete (Zero-Order Hold):** the equation above, $\dot{x}=A_c x + B_c u$, describes an instant rate of change — a speedometer reading, not a per-tick step. But the controller only makes one decision every $dt = 0.05\text{s}$ and holds the command fixed until the next tick ("zero-order hold" on the input — it holds at a constant value, order zero, between updates, rather than ramping or curving).
+
+What the solver actually needs is the one-step version, $x[k{+}1] = A_d x[k] + B_d u[k]$: given the state and the (held-constant) command, what state does that produce exactly $dt$ seconds later?
 
 **Zero-Order Hold (ZOH)** answers that by solving the continuous equation exactly, assuming $u$ is frozen for the whole $dt$ window, which produces new matrices $A_d$/$B_d$ folding in that time step:
 
@@ -183,7 +185,9 @@ $$
 \exp\!\left(\begin{bmatrix}A_c & B_c\\0&0\end{bmatrix}dt\right)=\begin{bmatrix}A_d & B_d\\0&I\end{bmatrix}
 $$
 
-This matrix exponential is the standard closed-form trick for solving a linear ODE exactly over a fixed interval — the code doesn't approximate it step-by-step, it computes $A_d$/$B_d$ directly from $A_c$/$B_c$/$dt$ once per tick (`scipy.linalg.expm` under the hood). Because the input actually *is* held constant by the controller between ticks (it only issues one command per $dt$), ZOH isn't an approximation here — it's exact. That makes it more accurate than a simpler method like Euler integration, which assumes the rate of change stays constant over the step and builds up error every tick.
+This matrix exponential is the standard closed-form trick for solving a linear ODE exactly over a fixed interval — the code doesn't approximate it step-by-step, it computes $A_d$/$B_d$ directly from $A_c$/$B_c$/$dt$ once per tick (`scipy.linalg.expm` under the hood).
+
+Because the input actually *is* held constant by the controller between ticks (it only issues one command per $dt$), ZOH isn't an approximation here — it's exact. That makes it more accurate than a simpler method like Euler integration, which assumes the rate of change stays constant over the step and builds up error every tick.
 
 ### 1.4 The Cost Function
 
@@ -202,7 +206,9 @@ In plain English, three things are being penalised at once:
 | $R_{rate}$ (rate cost) | How jerky/abrupt the commands are, tick to tick |
 | Slack | A soft penalty for crossing a ±3.5 m lane boundary, allowed only as a last resort |
 
-**Why the lane boundary needs slack at all.** The bound is `e_y <= 3.5 + slack` (and symmetrically for `-3.5`) rather than a plain hard `e_y <= 3.5`. The reason is feasibility, not tuning: `x_0` is pinned to the *measured* state by the hard constraint above, so if the car is already outside the corridor right now (e.g. recovering from an off-track excursion), a plain hard bound would demand `x_0 <= 3.5` while `x_0 == e_{y,\text{measured}} = 4.0`, say — two constraints that directly contradict each other, with no feasible solution at all. The solver would return nothing, not even a "best effort" trajectory. `slack` absorbs that contradiction (it can grow to cover however far outside the corridor the car currently is), and the large `W_slack = 10000` weight then pressures the solver to shrink it back toward zero as fast as the dynamics allow. See [architecture.md](architecture.md#L911) for the full explanation.
+**Why the lane boundary needs slack at all.** The bound is `e_y <= 3.5 + slack` (and symmetrically for `-3.5`) rather than a plain hard `e_y <= 3.5`. The reason is feasibility, not tuning: `x_0` is pinned to the *measured* state by the hard constraint above, so if the car is already outside the corridor right now (e.g. recovering from an off-track excursion), a plain hard bound would demand `x_0 <= 3.5` while `x_0 == e_{y,\text{measured}} = 4.0`, say — two constraints that directly contradict each other, with no feasible solution at all.
+
+The solver would return nothing, not even a "best effort" trajectory. `slack` absorbs that contradiction (it can grow to cover however far outside the corridor the car currently is), and the large `W_slack = 10000` weight then pressures the solver to shrink it back toward zero as fast as the dynamics allow. See [architecture.md](architecture.md#L911) for the full explanation.
 
 Subject to hard constraints that can never be broken:
 
@@ -325,7 +331,7 @@ $$
 - **Exiting**: keeps a heading-error boost active for a few metres after the sharpest point, tapering off, scaled by how sharp the corner actually was.
 - **On a genuinely clear straight**: does the opposite — softens $Q_{e_y}$ slightly and nudges $Q_{e_\psi}$/$Q_r$ up a little, to keep the car pointed straighter and calm residual wander.
 
-**Why not just use $\kappa_{\max}$ directly?** Real corners span such a wide range of radii that a plain curve like the ones above turns out badly scaled — a gentle sweeper and a tight corner both land in the flat, barely-responding part of the curve, so turning up the boost ceiling barely changes anything:
+**Why not just use $\kappa_{\max}$ directly?** Real corners span such a wide range of radii that a plain curve like the ones above turns out badly scaled — a gentle sweeper and a tight corner both land in the flat, barely-responding part of the curve, so turning up the boost ceiling barely changes anything. For example:
 
 | Corner | Raw curvature | Boost reached |
 |---|---|---|
@@ -418,7 +424,11 @@ graph LR
 
 Every rollout, whether from the tuner, or from **Show Metrics**/**Benchmark All Paths** in the GUI, is scored through the exact same code (`sim/scoring.py`), so a GUI run and an offline tuning run always produce comparable numbers.
 
-This now extends to the **real car** too. The ROS 2 control package carries a verbatim copy of `sim/scoring.py` (`fsae_control/scoring.py`), and `telemetry_logger.py` accumulates the same 13 metrics every control step, writing the finished score as a `#`-commented header on top of the run's CSV. So a number off the car is directly comparable to a number out of the tuner. When a precomputed speed profile is loaded (the normal live-driving setup), `telemetry_logger.py`'s `LapProgressTracker` now also derives real `progress`/`reached_end`/`time_bonus` from the car's position against that path, so a finished run is scored properly instead of every run being pinned at the `13.0` DNF ceiling (fixed 2026-08-11 — see [`planning_control_sync.md`](planning_control_sync.md)'s "Live/offline score parity" section for the mechanism). One caveat remains: the car still can't measure `offtrack` (needs ground-truth track edges), and a run against the live planner topic instead of a precomputed profile has no known path end either — either case leaves `score_is_partial=1` in the header; and see [`planning_control_sync.md`](planning_control_sync.md) for the delay/perception differences that still make the simulator easier than reality.
+This now extends to the **real car** too. The ROS 2 control package carries a verbatim copy of `sim/scoring.py` (`fsae_control/scoring.py`), and `telemetry_logger.py` accumulates the same 13 metrics every control step, writing the finished score as a `#`-commented header on top of the run's CSV. So a number off the car is directly comparable to a number out of the tuner.
+
+When a precomputed speed profile is loaded (the normal live-driving setup), `telemetry_logger.py`'s `LapProgressTracker` now also derives real `progress`/`reached_end`/`time_bonus` from the car's position against that path, so a finished run is scored properly instead of every run being pinned at the `13.0` DNF ceiling (fixed 2026-08-11 — see [`planning_control_sync.md`](planning_control_sync.md)'s "Live/offline score parity" section for the mechanism).
+
+One caveat remains: the car still can't measure `offtrack` (needs ground-truth track edges), and a run against the live planner topic instead of a precomputed profile has no known path end either — either case leaves `score_is_partial=1` in the header; and see [`planning_control_sync.md`](planning_control_sync.md) for the delay/perception differences that still make the simulator easier than reality.
 
 **The 13 raw metrics**, accumulated every simulation step:
 

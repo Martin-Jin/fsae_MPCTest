@@ -52,9 +52,9 @@ from tuner.csv_log import medfilt as _medfilt  # noqa: E402
 from tuner.csv_log import read_data_lines  # noqa: E402
 
 # The harnesses (ros2/run_steering_*.sh) always write to $HOME/fsae_logs, never
-# to a repo-relative path. A one-off manual copy previously left stale
-# duplicates in <repo_root>/fsae_logs; point at the real source so this always
-# picks up the newest run.
+# to a repo-relative path. Point at the real source directly rather than a
+# repo-relative copy, so this always picks up the newest run instead of a
+# stale duplicate.
 LOG_DIR = os.path.join(os.path.expanduser("~"), "fsae_logs")
 MAX_STEER_RAD = np.radians(25.0)
 NOMINAL_STEERS = (0.5, 0.65, 0.8, 1.0)

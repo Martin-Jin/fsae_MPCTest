@@ -20,6 +20,7 @@ hold a ready-to-build copy of the ROS 2 side.
 ```
 fsds_simulator/
 ├── launch_all.sh                # one-command launcher (adapted paths, see below)
+├── requirements.txt              # Python deps for this stack (mpc_core.py's solver, etc.)
 ├── common/
 │   ├── fsae_interfaces/        # vendored msgs (Track, ConeDetection, …)
 │   └── fsae_bringup/           # fsae_params.yaml + launch composition (sim.launch.py)
@@ -55,7 +56,12 @@ fsds_simulator/
    [FSDS simulator repo](https://github.com/FS-Driverless/Formula-Student-Driverless-Simulator)'s
    `ros2/src/fsds_ros2_bridge`) in the same workspace — this mirror does not include it,
    since it's part of FSDS itself, not the planning/control stack.
-4. Build:
+4. Install this stack's own Python dependencies (`requirements.txt` in this
+   directory, copied from the live workspace):
+   ```bash
+   pip install -r requirements.txt
+   ```
+5. Build:
    ```bash
    cd ~/ros2_fsd && source /opt/ros/jazzy/setup.bash && colcon build
    ```
@@ -110,3 +116,8 @@ to edit it again for yours. Every other file in this mirror is a byte-for-byte c
   `__pycache__/` — build artifacts, not source.
 - `steering_sysid.py` / `steering_step.py` and their harness scripts — standalone
   open-loop diagnostics, not part of the MPC controller's runtime dependencies.
+- `launch_terminals.sh` — a simpler multi-terminal opener superseded by this
+  mirror's own `launch_all.sh`, which additionally waits for FSDS's RPC
+  server and odom before launching and tears everything down on exit.
+- `CHANGES.md` / `.gitignore` — repo-management files specific to the live
+  `fsae_planning` checkout, not needed to build or run this mirror.
