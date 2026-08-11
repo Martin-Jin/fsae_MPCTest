@@ -570,6 +570,17 @@ same maths as the offline tuner — see
 `fsae_control/telemetry_logger.py`'s module docstring for the full column
 reference and units.
 
+For the two MPC controller nodes, when a precomputed speed profile is loaded
+(`map_path` set), the score header also includes `lap_time_s`/`optimal_time_s`:
+`telemetry_logger.LapProgressTracker` derives real `progress`/`reached_end`/
+`time_bonus` from the car's position against the precomputed track path,
+fixing a bug (2026-08-11) where every live run's composite score was
+permanently pinned at the DNF floor regardless of how the car drove — see
+`planning_control_sync.md`'s "Live/offline score parity" section. The Stanley
+controller and any MPC run against the live planner topic (no precomputed
+path) still have no known path end, so their scores stay partial
+(`score_is_partial=1`).
+
 Logging and cone recording are independent toggles and can be combined freely
 (`log_csv:=true record_cones:=true`) — a common pattern for a validation lap
 you want to both replay through the CSV telemetry and reload into the GUI as

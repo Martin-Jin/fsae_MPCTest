@@ -1499,7 +1499,11 @@ on the dominant term.
   a bounded nearest-index search that stops short of the final path point, so a
   fully-completed run reports ~0.90. Thresholding on it marked every successful
   run infeasible. `COMPLETION_THRESHOLD` remains only as a fallback for callers
-  that cannot supply `reached_end` (e.g. the live car).
+  that cannot supply `reached_end` — as of 2026-08-11 that no longer includes
+  the live car when it's running against a precomputed speed profile (see
+  `LapProgressTracker` in `planning_control_sync.md`'s "Live/offline score
+  parity" section); a run against the live planner topic instead still has no
+  known path end and falls back to this threshold.
 - `COMPLETION_BONUS_WEIGHT` is now unused by the score — completion is a
   precondition, not a reward. The constant is retained for the live copy's
   header compatibility.

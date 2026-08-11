@@ -110,7 +110,7 @@ offline tuner cares about:
 | `control/fsae_control/fsae_control/mpc_controller.py` | `control/fsae_control/fsae_control/mpc_controller.py` | Direct mirror. Upstream's default `controller:=mpc` node — steering only through `cmd_vel`/`fsds_bridge`, discards the MPC's own throttle/brake. See "Two MPC-controller nodes" below. |
 | `control/fsae_control/fsae_control/mpc_controller_standalone.py` | *(no upstream counterpart — never existed in `fsae_planning`'s git history)* | **Not a direct mirror** despite this table's general framing — this file was authored in this repo (ported from the retired `fsds_simulator/control_node.py`) and is staged here for eventual upstreaming, the reverse direction from every other row. See "What replaced `control_node.py`" for the history. |
 | `control/fsae_control/fsae_control/fsds_bridge.py` | `control/fsae_control/fsae_control/fsds_bridge.py` | Direct mirror. Needed by both `stanley_controller.py` and `mpc_controller.py` (not `mpc_controller_standalone.py`, which bypasses it). |
-| `control/fsae_control/fsae_control/telemetry_logger.py` | `control/fsae_control/fsae_control/telemetry_logger.py` | Direct mirror. CSV telemetry shared by all three controller nodes. Also computes the run's composite score (via `scoring.py`) and prepends it to the control CSV as a `#`-commented header on `close()`. |
+| `control/fsae_control/fsae_control/telemetry_logger.py` | `control/fsae_control/fsae_control/telemetry_logger.py` | Direct mirror. CSV telemetry shared by all three controller nodes. Also computes the run's composite score (via `scoring.py`) and prepends it to the control CSV as a `#`-commented header on `close()`. Includes `LapProgressTracker` (added 2026-08-11) — computes real `progress`/`reached_end`/`time_bonus` from the precomputed track path, fixing the live composite score being permanently pinned at `13.0`; see "Live/offline score parity" below. |
 | `control/fsae_control/fsae_control/scoring.py` | *(no upstream counterpart — never existed in `fsae_planning`'s git history)* | **Not a direct mirror.** Staged here for upstreaming, same direction as `mpc_controller_standalone.py` above. It **is** a verbatim copy of this repo's own `sim/scoring.py` — see "Live/offline score parity" below. Changes must be made in `sim/scoring.py` first, then re-copied here (and eventually upstreamed). |
 | `control/fsae_control/fsae_control/steering_sysid.py` | *(not in `fsae_planning`'s committed git history — mirrored from its working tree, same status as `mpc_controller_standalone.py`/`scoring.py` above)* | Direct mirror of the live working-tree file (added 2026-08-09 — see "Last resynced" above; previously deliberately absent, see "Why none of it is mirrored" further down for the historical rationale). Open-loop steering system-ID diagnostic node. |
 | `control/fsae_control/fsae_control/steering_step.py` | *(same git-history status as `steering_sysid.py` above)* | Direct mirror of the live working-tree file (added 2026-08-09, same resync as `steering_sysid.py`). Step-input transient diagnostic node. |
@@ -689,16 +689,44 @@ Because it is inlined in **three** places (`settings.py`, the live
 `fsae_control/scoring.py`, and the `fsds_simulator/` mirror), a change to it is
 a three-file edit — the same rule as `SCORE_WEIGHTS`.
 
-Two inputs have no faithful live equivalent and default to `0.0`/`False`:
+**`progress`/`reached_end`/`time_bonus` are now computed live too (2026-08-11
+fix).** Previously both live controller nodes called `telemetry.close()` with
+no arguments, so `progress` defaulted to `0.0` and `reached_end` to `None` —
+`compute_composite_score()` reads that as "never finished" and every live run
+scored exactly `CONSTRAINT_FLOOR + DNF_PENALTY = 13.0`, regardless of how the
+car actually drove (the 13 underlying quality metrics were still computed
+correctly; only the composite number was dead). Root cause and fix are logged
+in [`sim_to_real_investigation.md`](sim_to_real_investigation.md)'s findings
+table (the "Live scorer reports `13.0`" row, now marked fixed).
 
-- `time_bonus` — needs a known expected lap time / step budget.
-- `offtrack` — the offline rollout knows ground-truth track edges.
+The fix is `LapProgressTracker` in `telemetry_logger.py`: it tracks the car's
+forward-bounded nearest-index position against the precomputed track path
+(the same CSV already loaded for the live speed lookup) to get real
+`progress`/`reached_end`, and integrates `ds / v_target` over the
+already-loaded speed profile for an `optimal_time` bound —
+**not** a call into `speed_profile.optimal_lap_time()`, since that solver
+lives in `fsae_MPCTest` and is not on the live node's `PYTHONPATH` (see the
+settings-import caveat above). `time_bonus = optimal_time * progress /
+actual_lap_time`, clipped to `[0, 1]`, same scaling convention as
+`sim/rollout_core.py`. Both controller nodes feed the tracker's output into
+`close()`, and the CSV header now also records `lap_time_s`/`optimal_time_s`.
+This only works when a precomputed speed profile is loaded (`map_path` set,
+the normal live-driving setup); a run against the live planner topic instead
+still has no path end to measure progress against, so `progress`/`reached_end`
+fall back to their old defaults in that mode only.
 
-The emitted CSV header records this as `score_is_partial=1` so a reader can't
-mistake a partial live score for a full offline one. The weighted-metric
-component (the 13 metrics × `SCORE_WEIGHTS` — added `accel_reversal_rms`
-2026-08-08, see the "Score weights / bonuses / penalties" row above) is
-directly comparable either way; only the bonus/penalty terms differ.
+One input still has no live equivalent and defaults to `False`:
+
+- `offtrack` — the offline rollout knows ground-truth track edges; the car
+  does not.
+
+The emitted CSV header records `score_is_partial=1` whenever `time_bonus` is
+`0.0` and `offtrack` is `False`, so a reader can't mistake a partial live
+score (no precomputed speed profile, or run never finished) for a full one.
+The weighted-metric component (the 13 metrics × `SCORE_WEIGHTS` — added
+`accel_reversal_rms` 2026-08-08, see the "Score weights / bonuses / penalties"
+row above) is directly comparable either way; only the bonus/penalty terms
+differ, and now only `offtrack` is unconditionally unavailable.
 
 ## The sim-to-real gap: CAUSE FOUND, fix not yet applied
 

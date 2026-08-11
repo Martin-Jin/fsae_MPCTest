@@ -75,6 +75,10 @@ see `fsae_planning/CHANGES.md` itself for full detail.
 
 - New diagnostic CSV columns (delay/latency/solver-failure) + prepended score
   header.
+- `LapProgressTracker`: fixes every live run's composite score being
+  permanently pinned at the DNF floor (`13.0`) by deriving real
+  `progress`/`reached_end`/`time_bonus` from the car's position against a
+  precomputed track path. Adds `lap_time_s`/`optimal_time_s` to the header.
 
 ## Discarded, not part of this PR
 

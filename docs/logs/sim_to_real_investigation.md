@@ -4401,7 +4401,7 @@ live).
 | Speed profile | **Closed, not a discrepancy** — see the correction below. Achieved speeds differ by 2% |
 | Objective rebalancing | Deferred (§1) — `QUALITY_WEIGHT` 0.35 → ~0.8, saturation as near-constraint |
 | Step 4: held-out tracks | 5 of 10 tracks unused |
-| Live scorer reports `13.0` | Every live run scores `CONSTRAINT_FLOOR + DNF_PENALTY` — the car has no known path end |
+| Live scorer reports `13.0` | **Fixed 2026-08-11.** Root cause: both live controller nodes called `telemetry.close()` with no arguments, defaulting `progress=0.0`/`reached_end=None` — read by `compute_composite_score()` as "never finished," pinning every run at `CONSTRAINT_FLOOR + DNF_PENALTY` regardless of actual driving quality. Fix: `LapProgressTracker` (`telemetry_logger.py`) derives real progress/reached_end from the car's position against the precomputed track path, and `time_bonus` from integrating `ds/v_target` over the already-loaded speed profile (not a call into `speed_profile.optimal_lap_time()` — that solver isn't on the live node's `PYTHONPATH`). Only works when a precomputed speed profile is loaded; a live-planner-topic run still has no known path end |
 | `fsds_bridge` discards `a_cmd` | §7 — real divergence, quantified in §12.7 (corr 0.56, over-speed p90 +2.49 vs +1.05). **Not the cause of the gap.** Still worth fixing on the car: the MPC plans a braking profile the bridge throws away, so live decelerates reactively and arrives hot |
 | Planner centreline defect | Pre-existing, documented; controller carries workarounds |
 
