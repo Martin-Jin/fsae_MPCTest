@@ -51,7 +51,7 @@ class MPCParams:
     q_e_v:   float = field(default=5.0,  metadata={"unit": "1/(m/s)^2", "desc": "speed error: car_speed - desired_speed"})
     # R_diag index -> input penalised (inputs u are [delta_cmd, a_cmd]):
     r_delta: float = field(default=1.16, metadata={"unit": "1/rad^2",     "desc": "steering command effort"})
-    r_a:     float = field(default=0.85, metadata={"unit": "1/(m/s^2)^2", "desc": "acceleration command effort"})
+    r_a:     float = field(default=0.77, metadata={"unit": "1/(m/s^2)^2", "desc": "acceleration command effort"})
     # R_rate_diag index -> input RATE-OF-CHANGE penalised (tick-to-tick jerk):
     r_rate_delta: float = field(default=2.1, metadata={"unit": "1/(rad/s)^2",     "desc": "steering rate of change"})
     r_rate_a:     float = field(default=2.6, metadata={"unit": "1/(m/s^3)^2",     "desc": "acceleration rate of change"})

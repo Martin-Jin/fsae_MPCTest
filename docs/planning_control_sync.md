@@ -302,7 +302,7 @@ gap is what this section closes.
 | `q_r` | `Q_diag[3]` | `0.50` |
 | `q_e_v` | `Q_diag[4]` | `5.0` |
 | `r_delta` | `R_diag[0]` | `1.16` |
-| `r_a` | `R_diag[1]` | `0.85` |
+| `r_a` | `R_diag[1]` | `0.77` (2026-08-11, was `0.85` — see "MPC underaccelerating on clean straights" section below) |
 | `r_rate_delta` | `R_rate_diag[0]` | `2.1` |
 | `r_rate_a` | `R_rate_diag[1]` | `2.6` |
 | `terminal_q_scale` | `TERMINAL_Q_SCALE` | `1.0` |
@@ -1586,6 +1586,57 @@ candidate (never diagnosed) is that relaxing `Q[4,4]` let the car dawdle at
 the wrong speed while the already-existing heading-correction machinery
 (the exit-boost fix above, and the anti-hunt `boost_epsi` term) was doing
 its own uncoordinated thing on the same `e_psi` signal.
+
+## MPC underaccelerating on clean straights (r_a 0.85 → 0.77, 2026-08-11)
+
+**Fixed offline, applied to live default, not yet tested live.** Reported
+symptom: the MPC leaves lap time on the table in some places, not going as
+fast as it could.
+
+Root cause: the same structural effort/benefit mismatch already documented
+above for `R_diag[1]`'s 2026-08-10 braking fix (`a_cmd` is a RATE — one 50ms
+QP step at even |a_cmd|=6 only changes speed by 0.30 m/s, while the effort
+cost `R[1,1]*a_cmd²` is paid immediately, so the QP structurally prefers
+small, cheap accel steps over large ones unless the single-step benefit is
+large) applies symmetrically to ACCELERATION, not just braking, and had
+never been retuned for that side. Confirmed on live telemetry
+(`fsae_logs/mpc_standalone_control_1786440962.csv`): during t≈67.6-69.2s,
+the car is cleanly on-line (`e_y` -0.03 to 0.02 m, `e_psi` 1-4°, steering
+~1°, no competing lateral/heading demand) with a 3-9 m/s speed deficit
+(`v_desired` climbing toward 16+ m/s while `v_actual` sits at 7-8), yet
+`a_cmd` peaks at only ~3.1 m/s² and then decays back down even as the
+deficit stays large — well under the 12 m/s² ceiling the same lap
+demonstrably used elsewhere (e.g. from a standing start at t<2s). Measured
+acceleration (`dv/dt` from `v_actual`) in the same window actually *exceeds*
+`a_cmd` (6-9 m/s² achieved vs ~2-3 commanded), ruling out actuator/throttle
+capping as the cause — the QP itself is choosing the conservative command,
+the car isn't failing to deliver on it.
+
+Swept `R_diag[1]` (`r_a`) offline via `tuner.recorded_map_rollout --planner`
+on `comp_test_map_3`, holding `R_rate_diag`/`Q_diag` fixed:
+
+| `r_a` | steering sat % | `\|e_psi\|` mean (deg) | score (lower better) | lap time (n_steps×0.05s) |
+|---|---|---|---|---|
+| 0.85 (old default) | 5.46 | 7.60 | 0.517 | 55.85 s |
+| **0.77 (new default)** | **4.35** | **6.74** | **0.499** | **55.15 s** |
+| 0.71 | 5.71 | 7.09 | 0.516 | 55.15 s |
+| 0.65 | 6.90 | 8.76 | 0.551 | 56.55 s |
+
+0.77 is a local optimum on this run, not a point on a monotonic
+"lower-is-better" curve — 0.71 and 0.65 both score worse. No regression on
+the oracle-path (`USE_PLANNER=False`) baseline (0.408→0.409, within noise).
+`R_rate_diag[1]` (`r_rate_a`) was also tried at 2.2 alongside `r_a=0.77` —
+no additional benefit over `r_a` alone (score 0.501 vs 0.499) — left
+unchanged at 2.6.
+
+Applied to `mpc_params.py`'s `r_a` default (live), `settings.py`'s
+`R_diag[1]` (offline), `fsae_params.yaml`'s `controller.r_a`, the
+`fsds_simulator` mirror, and `ros2/launch_all.sh`'s MPC tuning shortlist
+(`MPC_R_A`, commented out by default like the other shortlist entries).
+
+**Not yet tested live** — offline-only so far, unlike the exit-boost timing
+fix above. Only tested on one track (`comp_test_map_3`); if this drifts on
+a different map, re-sweep rather than assume 0.77 transfers everywhere.
 
 ## Dynamic speed cap: closing the gap between the oracle profile and live tracking
 

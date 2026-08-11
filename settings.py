@@ -518,17 +518,36 @@ Q_diag      = [5.20, 0.2, 1.52, 0.50, 5.0, 0.0, 0.0, 0.0]
 # R_diag index -> input penalised:
 #   [0] delta_cmd  steering command effort (rad)
 #   [1] a_cmd      acceleration command effort (m/s^2)
-# R_diag[1] 1.15 -> 1.05 on 2026-08-10 (car-tuned), a first step toward
-# cheaper braking. Motivation: a_cmd floors around -2.2 m/s^2 against a -7.0
-# limit on every logged run, while the car demonstrably sustains -6.3, so the
-# MPC uses under a third of its braking authority and arrives ~2 m/s hot at
-# corner entry. The cause is structural: a_cmd is a RATE, so one 50 ms step of
-# braking at -6 removes only 0.30 m/s of speed error, while the effort cost
-# R[1,1]*a^2 is paid immediately -- at these weights a=-6 is only worth it if
-# it removes >2.9 m/s per step. Lowering R[1,1] is the cheap lever (a ~7x cut
-# reaches parity); raising Q_diag[4] instead would need ~460.
-# 1.05 is a deliberately small first move -- the remaining gap is still open.
-R_diag      = [1.16, 0.85]
+# R_diag[1] 1.15 -> 1.05 -> 0.85 (car-tuned), successive steps toward cheaper
+# braking. Motivation: a_cmd floors around -2.2 m/s^2 against a -7.0 limit on
+# every logged run, while the car demonstrably sustains -6.3, so the MPC uses
+# under a third of its braking authority and arrives ~2 m/s hot at corner
+# entry. The cause is structural: a_cmd is a RATE, so one 50 ms step of
+# braking (or accelerating) at magnitude 6 changes speed by only 0.30 m/s,
+# while the effort cost R[1,1]*a^2 is paid immediately -- at these weights
+# |a|=6 is only worth it if it removes >2.9 m/s of error per step. Lowering
+# R[1,1] is the cheap lever (a ~7x cut from the original 1.15 reaches
+# parity); raising Q_diag[4] instead would need ~460.
+#
+# 0.85 -> 0.77 on 2026-08-11 (offline-tuned, `tuner.recorded_map_rollout
+# --planner` on comp_test_map_3): this same effort/benefit mismatch applies
+# symmetrically to ACCELERATION, not just braking -- live telemetry
+# (mpc_standalone_control_1786440962.csv) showed a_cmd topping out at ~3
+# m/s^2 during a clean, well-tracked corner-exit straight with a large
+# (3-9 m/s) speed deficit and zero competing lateral demand, well under the
+# 12 m/s^2 ceiling the same lap demonstrably used elsewhere. Swept
+# {0.85, 0.77, 0.71, 0.65} holding R_rate_diag/Q_diag fixed: 0.77 is a local
+# optimum on this run (score 0.517->0.499, steering sat 5.46%->4.35%,
+# |e_psi| mean 7.60->6.74 deg, lap time 55.85s->55.15s); 0.71 and 0.65 both
+# score worse than 0.77 (0.516 and 0.551 respectively) -- this is NOT "lower
+# is always better", re-sweep around 0.77 rather than assuming a further cut
+# helps. No regression on the oracle-path (USE_PLANNER=False) baseline
+# (0.408->0.409, within noise). Not yet re-validated against a second track
+# -- if this drifts on a different map, re-sweep rather than assume 0.77
+# transfers. R_rate_diag[1] was also tried at 2.2 alongside this (no
+# additional benefit over R_diag[1] alone, score 0.501 vs 0.499) -- left
+# unchanged.
+R_diag      = [1.16, 0.77]
 # R_rate_diag index -> input RATE-OF-CHANGE penalised (tick-to-tick jerk, not
 # the input itself):
 #   [0] delta_cmd  steering rate of change
