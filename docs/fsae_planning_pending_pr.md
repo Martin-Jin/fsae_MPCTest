@@ -1,9 +1,11 @@
 # Changes pending PR into `fsae_planning`
 
 Source: uncommitted working-tree changes in the live `fsae_planning` checkout
-(`ros2/src/fsae_planning/CHANGES.md`), as of 2026-08-10. This is a summary for
+(`ros2/src/fsae_planning/CHANGES.md`), as of 2026-08-11. This is a summary for
 tracking purposes — the live repo is out of scope for edits/commits from here;
-see `fsae_planning/CHANGES.md` itself for full detail.
+see `fsae_planning/CHANGES.md` itself for full detail. Local `main` is
+up to date with `origin/main` (no upstream drift) — everything below is
+working-tree-only.
 
 ## Perception
 
@@ -55,6 +57,23 @@ see `fsae_planning/CHANGES.md` itself for full detail.
   identical to `fsae_MPCTest`/mirror per the parity rule.
 - Disabled-by-default adaptive-Q-scaling + ref-heading rate limiting,
   `terminal_scale` — parity scaffolding for future re-evaluation.
+
+## Control — centralized MPC tuning
+
+- New `mpc_params.py`: pulls every `mpc_core.py` weight/gain/flag (Q/R/R_rate
+  weights, adaptive-gain shape constants, feature-enable flags — ~56 fields)
+  out of hardcoded constants into one `MPCParams` dataclass, matching
+  `fsae_MPCTest/settings.py` field-for-field. Pure relocation, no behaviour
+  change at defaults.
+- Both controller nodes now declare every `MPCParams` field as a ROS2
+  parameter and build the live `MPCParams` from those values, so weights are
+  retunable at launch time.
+- `control.launch.py`/`sim.launch.py` generate their `MPCParams` launch args
+  mechanically from the dataclass instead of by hand; `fsae_params.yaml`
+  gained matching YAML defaults.
+- See `planning_control_sync.md`'s "MPC weight/gain parity: `MPCParams` ↔
+  `settings.py`" table for the full ~35-field mapping against the offline
+  `settings.py` constants this must stay numerically identical to.
 
 ## Control — nodes
 

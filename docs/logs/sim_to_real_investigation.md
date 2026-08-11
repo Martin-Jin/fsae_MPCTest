@@ -2321,7 +2321,8 @@ bug, and — independently, via the FSDS `SteeringCurve` engine-level check —
 converged on the same "≥75% of the gap is unexplained by the ceiling" number
 this document reached in §16 (their numbering)/§13 (this doc's ledger). Their
 write-ups are `fsae_planning_changes.md` (repo root) and, mirrored into this
-repo, `docs/change_story.md` / `docs/changelog_2026-08-04_to_2026-08-07.md`.
+repo, `docs/logs/changes_2026-08-04_to_2026-08-07.md` /
+`docs/logs/changes_2026-08-07_to_2026-08-09.md`.
 
 Two things worth recording before they're lost across the two documents:
 
