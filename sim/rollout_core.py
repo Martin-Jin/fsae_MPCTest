@@ -70,6 +70,8 @@ from settings import (
     ADAPTIVE_Q_UTURN_HEADING_THRESH_RAD, ADAPTIVE_Q_UTURN_HEADING_SAT_RAD,
     ADAPTIVE_Q_UTURN_EY_BOOST_MAX, ADAPTIVE_Q_UTURN_EPSI_BOOST_MAX,
     ADAPTIVE_Q_UTURN_R_RELAX_FLOOR,
+    ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_DIST, ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_TIME_S,
+    ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_DIST_MAX,
 )
 
 STALL_CHECK_INTERVAL = 60   # Steps between rolling stall checks (3 s at 20 Hz)
@@ -933,6 +935,9 @@ def run_core_rollout(
             alat_flat=ALAT_CEILING_FLAT,
             alat_slope=ALAT_CEILING_SLOPE,
             alat_intercept=ALAT_CEILING_INTERCEPT,
+            exit_decay_dist_floor=ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_DIST,
+            exit_decay_time_s=ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_TIME_S,
+            exit_decay_dist_max=ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_DIST_MAX,
         )
         Q_scaled = adaptive_Q_scaling(e_y, Q_base, enabled=ADAPTIVE_Q_SCALING_ENABLED)
         Ad, Bd = model_lookup(vx, DT)

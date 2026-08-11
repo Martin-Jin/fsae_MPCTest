@@ -1869,9 +1869,22 @@ class MPCController:
             )
             Q_base[2, 2] *= m
             adapt["m_Q_epsi_approach"] = m
+            # Speed-scaled, same shape as the approach-side lookahead_dist
+            # above -- see MPCParams.adaptive_q_lookahead_exit_decay_time_s's
+            # metadata and _lookahead_exit_boost's docstring for why a FIXED
+            # decay_dist undershoots at speed: |e_y|/|e_psi| don't peak right
+            # at the apex, they peak several seconds of travel after it (the
+            # car is still sliding wide/yawing back through the exit), so a
+            # short fixed window had already fully decayed by the time
+            # tracking error was at its worst.
+            exit_decay_dist = float(np.clip(
+                car_speed * self.params.adaptive_q_lookahead_exit_decay_time_s,
+                self.params.adaptive_q_lookahead_exit_decay_dist,
+                self.params.adaptive_q_lookahead_exit_decay_dist_max,
+            ))
             m = _lookahead_exit_boost(
                 self._last_peak_kappa_abs, self._dist_since_peak,
-                decay_dist=self.params.adaptive_q_lookahead_exit_decay_dist,
+                decay_dist=exit_decay_dist,
                 k_exit_norm=self.params.adaptive_q_lookahead_k_exit_norm,
                 boost_max=self.params.adaptive_q_lookahead_epsi_boost_max,
             )

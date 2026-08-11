@@ -247,6 +247,7 @@ writing — re-confirm before relying on them, since a resync can move them.
 | `A_BRAKE_PLAN` (braking-distance propagation in `curvature_speed`) | `sim/speed_profile.py` | `fsds_simulator/.../control_utils.py` | `5.0` m/s², positive magnitude |
 | Dynamic speed cap enable/gains | `settings.py` (`ENABLE_DYNAMIC_SPEED_CAP`, `DYNAMIC_CAP_A_LAT_MAX`, `DYNAMIC_CAP_SAFETY`) | `mpc_controller.py`/`mpc_controller_standalone.py` (`enable_dynamic_speed_cap`/`dynamic_cap_a_lat_max`/`dynamic_cap_safety` ROS params) | `True` / `3.2` m/s² / `0.9` — see "Dynamic speed cap" section below |
 | Exit-boost peak-tracker's input signal | `controller/model_utils.py` (`update_lookahead_peak`'s `kappa` param) | `fsds_simulator/.../mpc_core.py` (`_update_lookahead_peak`'s `kappa` param) | current-position `kappa`, NOT `kappa_max_abs` — see "Exit-heading boost was firing at the wrong time" section above |
+| Exit-boost decay distance (speed-scaled) | `settings.py` (`ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_DIST`/`_TIME_S`/`_DIST_MAX`) | `mpc_params.py` (`adaptive_q_lookahead_exit_decay_dist`/`_time_s`/`_dist_max`) | `5.0` m / `2.5` s / `25.0` m — see the "v2 fix" note in that same section |
 | Latency telemetry columns | — (offline has no equivalent) | `fsds_simulator/.../telemetry_logger.py` | `pose_age_s`, `path_age_s`, `n_delay`, `solve_ms`, `cmd_latency_ms` |
 | Pose-feed hold model | `settings.py` (`POSE_HOLD_*`) + `sim/rollout_core.PoseFeedHold` | — (offline-only; models a live fault) | `PROB 0.05`, `MEAN_TICKS 2.1`, `MAX_TICKS 5` |
 
@@ -1565,6 +1566,47 @@ flags as open (§"Still open" in the sim-to-real section) — re-read that
 section before assuming this closes the corner-exit-misalignment complaint
 entirely.
 
+**v2 fix, same day: the 5m decay window was still too short even after the
+timing fix above.** After the `r_a` cut below made the car accelerate
+harder out of corners, a live log
+(`fsae_logs/mpc_standalone_control_1786443033.csv`) showed 10 stretches of
+`|e_y| > 0.5` m with `m_Q_epsi_exit == 1.00` (i.e. NO boost applied) at
+every single one — `dist_since_peak` at the moment `|e_y|` peaked was
+11.7-20.6 m (mean ~15.7 m, one cluster of outliers at ~45 m attributable to
+a different corner's peak already having re-armed), decades past the
+now-correctly-timed 5 m window. Root cause: even keyed on the true apex,
+`|e_y|`/`|e_psi|` don't peak instantaneously AT the apex — the car is still
+sliding wide/yawing back through the exit for 1.5-2.7 s of travel
+afterward, and at 5-8 m/s that is well over 5 m. The fixed decay window was
+simply too short for how long a real exit disturbance actually takes to
+play out, independent of the timing-origin bug already fixed.
+
+Fix: `adaptive_q_lookahead_exit_decay_dist` is now a FLOOR, not the whole
+story — the actual decay window used is
+`car_speed * adaptive_q_lookahead_exit_decay_time_s` (default `2.5` s, fit
+to the ~15.7 m mean from the cluster above), clamped to
+`[adaptive_q_lookahead_exit_decay_dist, adaptive_q_lookahead_exit_decay_dist_max]`
+(`5`–`25` m default) — same shape as the approach-side `lookahead_dist`
+(`adaptive_q_lookahead_time_s`/`_dist_min`/`_dist_max`). Applied in
+`mpc_core.py`'s `compute()` (computed at the `_lookahead_exit_boost` call
+site, `_lookahead_exit_boost()` itself unchanged) and offline as three new
+`adaptive_Q_lookahead()` kwargs (`exit_decay_dist_floor`/`_time_s`/`_max`)
+threaded from `settings.py`'s new `ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_DIST`/
+`_TIME_S`/`_DIST_MAX` constants — mirrored to `fsds_simulator`.
+
+While implementing this, found (but did NOT fix, out of scope) that offline
+`adaptive_Q_lookahead()`'s call to `lookahead_exit_boost()` had never
+threaded `k_exit_norm`/`boost_max` from `settings.py` either — it silently
+used that function's own hardcoded defaults the whole time, unlike every
+other lookahead call in the same function. Pre-existing drift, not
+introduced by this change; flagging for whoever next touches this function.
+
+Measured (`tuner.recorded_map_rollout --planner`, same track/config as the
+v1 table above, now on top of the `r_a=0.77` cut below): score 0.499→0.497,
+lap time 55.15s→54.95s, steering sat 4.35%→4.37% (flat). Small further
+improvement, no regression on the oracle-path baseline (0.408→0.409).
+**Not yet tested live.**
+
 **Investigated and explicitly rejected as a further fix for the same
 symptom (2026-08-11):** raising `R[1,1]` (acceleration effort) and/or
 relaxing `Q[4,4]` (`e_v`, speed-tracking urgency) when CURRENT `|e_psi|` is
@@ -1634,9 +1676,63 @@ Applied to `mpc_params.py`'s `r_a` default (live), `settings.py`'s
 `fsds_simulator` mirror, and `ros2/launch_all.sh`'s MPC tuning shortlist
 (`MPC_R_A`, commented out by default like the other shortlist entries).
 
-**Not yet tested live** — offline-only so far, unlike the exit-boost timing
-fix above. Only tested on one track (`comp_test_map_3`); if this drifts on
-a different map, re-sweep rather than assume 0.77 transfers everywhere.
+**Confirmed live, 2026-08-11 (same day):** `lap_time_s` 69.99 s → 59.52 s
+(15% faster) on a like-for-like comparison against the previous live log
+(which already had the exit-boost v1 timing fix but not this `r_a` cut —
+isolating this change's effect). Real trade-off, not a free win: tracking
+got noticeably worse in the same comparison — RMSE 0.199 → 0.336 m, peak
+`|e_y|` 0.84 → 1.26 m, `steering_sat_ratio` 1.4% → 3.0% — so `composite_score`
+is roughly flat (0.638 → 0.641) despite the large time gain, because the
+scoring formula weights both speed and tracking quality. The user confirmed
+the tracking regression was concentrated specifically at corner EXITS (car
+now accelerates harder while still not fully realigned) rather than diffuse
+across the lap — this is what motivated the exit-boost v2 fix above (same
+log). Only tested on one track (`comp_test_map_3`); if this drifts on a
+different map, re-sweep rather than assume 0.77 transfers everywhere.
+
+## Gradual-corner accel oscillation is genuine track geometry, not a bug (investigated 2026-08-11)
+
+**No fix applied — confirmed correct behaviour.** Reported symptom: through
+mild/gradual turns, the car accelerates, slows, accelerates, slows
+repeatedly rather than holding a smooth speed or steady acceleration.
+
+Traced on the same live log used for the exit-boost v2 fix
+(`mpc_standalone_control_1786443033.csv`), t=39.7–42.9s: `v_desired`
+genuinely oscillates (12.62 → 9.79 → 12.94 → 8.91 m/s over ~3s) and `a_cmd`
+faithfully tracks it (+3.0 to −3.4 m/s² swings) — but this is NOT the
+adaptive-gain machinery misbehaving. Cross-referenced against
+`speed_profile.csv` (the precomputed oracle) at the car's actual position
+(`tracks/comp_test_map_3/speed_profile.csv`, idx 656–680): `v_target` rises
+smoothly to a local peak of 13.18 m/s then dips back to 11.79 m/s, tracking
+a real change in the raw path geometry — Menger curvature computed directly
+from the CSV's own `(x, y)` points crosses through ~0 in SIGN (not just
+magnitude) at idx≈662-664, confirmed by checking the signed cross product
+of consecutive segments. This is a genuine S-curve/chicane: a left-hand
+bend straightens briefly, then curves right for the next bend. The
+`kappa_max_abs`-driven lookahead correctly speeds the car up through the
+brief straight and slows it back down anticipating the next corner — the
+oscillation is the plan working as intended on a real varying-radius
+feature, not spurious jitter to be filtered out.
+
+Checked `a_lat_max` (`4.0`, `sim/speed_profile.py`'s
+`compute_speed_profile()` default, well under the car's measured ~6.45-7.5
+m/s² ceiling per the sim-to-real investigation) as a possible source of
+excess conservatism at this specific corner, but did not raise it: this
+would be a track-wide, not corner-specific, change, and CLAUDE.md's own
+sim-to-real section explicitly warns the measured ceiling is
+speed-dependent and NOT to assume a tuning change closes that gap without
+per-corner validation — raising `a_lat_max` broadly was flagged as a
+follow-up to actually test, not applied here.
+
+**Do not attempt to smooth this away via `R_rate_diag[1]`
+(acceleration-rate-of-change cost) or similar** — that would make the MPC
+slower to respond to a real, upcoming tightening corner, trading a
+correctly-anticipated slowdown for a late, harder one. If the oscillation
+"feels wrong" on a specific track, the right lever is the speed profile's
+own generation parameters (`a_lat_max`, scan window) or the path geometry
+itself (smoothing a genuinely spurious kink), never the live adaptive gains
+— but confirm the geometry is actually spurious first, the way this
+investigation did, rather than assuming it.
 
 ## Dynamic speed cap: closing the gap between the oracle profile and live tracking
 

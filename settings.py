@@ -468,6 +468,22 @@ ADAPTIVE_R_RATE_ENABLE_IN_CORNERS = True
 ADAPTIVE_Q_LOOKAHEAD_ENABLED = True
 ADAPTIVE_Q_DEMAND_NORMALISED = True
 
+# ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_DIST/_TIME_S/_DIST_MAX — how far past a
+# corner's peak curvature adaptive_Q_lookahead's exit-heading Q[2,2] boost
+# stays active before decaying back to 1.0 (no-op). Speed-scaled (car_speed
+# * _TIME_S, clamped to [_DIST, _DIST_MAX]) as of 2026-08-11 — a FIXED
+# distance (the old default, 5.0 m unconditionally) undershoots at speed:
+# live telemetry showed |e_y|/|e_psi| peaking 11.7-20.6 m (mean ~15.7 m)
+# past the true apex, not right at it — the car is still sliding wide/
+# yawing back through the exit for 1.5-2.7s of travel, so a fixed 5 m window
+# had already fully decayed by the time tracking error was actually at its
+# worst, leaving the exit boost inert almost every time it mattered. Mirrors
+# MPCParams.adaptive_q_lookahead_exit_decay_dist/_time_s/_dist_max — keep in
+# sync. Not yet tested live (offline-only as of 2026-08-11).
+ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_DIST = 5.0       # m — floor (low-speed corners)
+ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_TIME_S = 2.5     # s — speed -> decay distance
+ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_DIST_MAX = 25.0  # m — clamp ceiling
+
 # STEER_EFFORT_STRAIGHT_BOOST_ENABLED — TEMPORARY/EXPERIMENTAL, fsds sim
 # only. Makes steering EFFORT (R[0,0], how far the wheel is turned — not its
 # rate of change, which STEER_RATE_ANTI_HUNT_ENABLED already covers)

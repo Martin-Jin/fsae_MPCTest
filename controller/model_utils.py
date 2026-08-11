@@ -732,7 +732,9 @@ def adaptive_Q_lookahead(Q_base, kappa_max_abs, car_speed, last_peak_kappa_abs,
                           uturn_thresh_rad=np.radians(60.0),
                           uturn_sat_rad=np.radians(120.0),
                           demand_half=0.5,
-                          alat_flat=7.5, alat_slope=0.47, alat_intercept=2.46):
+                          alat_flat=7.5, alat_slope=0.47, alat_intercept=2.46,
+                          exit_decay_dist_floor=5.0, exit_decay_time_s=2.5,
+                          exit_decay_dist_max=25.0):
     """
     Full lookahead corner-anticipation Q-boost: combines
     lookahead_approach_boost, lookahead_epsi_approach_boost,
@@ -790,6 +792,16 @@ def adaptive_Q_lookahead(Q_base, kappa_max_abs, car_speed, last_peak_kappa_abs,
     alat_flat, alat_slope, alat_intercept : float, optional
         The a_lat ceiling law, forwarded through those same three calls into
         _corner_demand/_alat_ceiling_at.
+    exit_decay_dist_floor, exit_decay_time_s, exit_decay_dist_max : float, optional
+        lookahead_exit_boost's decay_dist is now car_speed * exit_decay_time_s,
+        clamped to [exit_decay_dist_floor, exit_decay_dist_max] -- same shape
+        as lookahead_dist above. Added 2026-08-11 (numeric-parity mirror of
+        the live mpc_core.py fix): a FIXED decay_dist undershoots at speed --
+        |e_y|/|e_psi| don't peak right at the apex, they peak several seconds
+        of travel after it (the car is still sliding wide/yawing back through
+        the exit), so a short fixed window had already fully decayed by the
+        time tracking error was at its worst. Mirrors MPCParams.
+        adaptive_q_lookahead_exit_decay_dist/_time_s/_dist_max.
 
     All of the above default to the previously-hardcoded values, so a caller
     that passes none of them gets behaviour identical to before they became
@@ -818,7 +830,11 @@ def adaptive_Q_lookahead(Q_base, kappa_max_abs, car_speed, last_peak_kappa_abs,
     Q[0, 0] *= lookahead_straight_boost(kappa_max_abs, ey_straight_floor, ey_straight_k)
     Q[2, 2] *= lookahead_epsi_approach_boost(kappa_max_abs, car_speed,
                                              demand_normalised=demand_normalised, **_demand_kw)
-    Q[2, 2] *= lookahead_exit_boost(last_peak_kappa_abs, dist_since_peak)
+    exit_decay_dist = float(np.clip(
+        car_speed * exit_decay_time_s, exit_decay_dist_floor, exit_decay_dist_max
+    ))
+    Q[2, 2] *= lookahead_exit_boost(last_peak_kappa_abs, dist_since_peak,
+                                    decay_dist=exit_decay_dist)
     Q[2, 2] *= lookahead_straight_boost(kappa_max_abs, epsi_straight_boost_max, epsi_straight_k)
     Q[3, 3] *= lookahead_yaw_rate_relax(kappa_max_abs, car_speed,
                                         demand_normalised=demand_normalised, **_demand_kw)

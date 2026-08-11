@@ -102,7 +102,9 @@ class MPCParams:
     adaptive_q_uturn_ey_boost_max: float = field(default=1.6, metadata={"unit": "unitless", "desc": "extra Q[0,0] multiplier at full U-turn detection"})
     adaptive_q_uturn_epsi_boost_max: float = field(default=1.6, metadata={"unit": "unitless", "desc": "extra Q[2,2] multiplier at full U-turn detection"})
     adaptive_q_uturn_r_relax_floor: float = field(default=0.6, metadata={"unit": "unitless", "desc": "Q[3,3] multiplier at full U-turn detection"})
-    adaptive_q_lookahead_exit_decay_dist: float = field(default=5.0, metadata={"unit": "m", "desc": "exit boost taper distance"})
+    adaptive_q_lookahead_exit_decay_dist: float = field(default=5.0, metadata={"unit": "m", "desc": "exit boost taper distance floor (see _time_s/_dist_max for the speed-scaled ceiling)"})
+    adaptive_q_lookahead_exit_decay_time_s: float = field(default=2.5, metadata={"unit": "s", "desc": "speed -> exit boost taper distance, mirrors adaptive_q_lookahead_time_s"})
+    adaptive_q_lookahead_exit_decay_dist_max: float = field(default=25.0, metadata={"unit": "m", "desc": "exit boost taper distance clamp ceiling"})
     adaptive_q_lookahead_k_exit_norm: float = field(default=0.05, metadata={"unit": "1/m", "desc": "normalises exit boost by corner sharpness"})
     adaptive_q_lookahead_peak_hysteresis: float = field(default=0.01, metadata={"unit": "1/m", "desc": "\"cleared\" threshold that re-arms peak detection"})
 
