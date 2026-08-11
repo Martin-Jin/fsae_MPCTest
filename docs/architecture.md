@@ -1177,6 +1177,27 @@ is asked for rather than lingering into it. Composes multiplicatively with
 `adaptive_R_scaling`'s existing speed-dependent scaling on `R[0,0]`.
 Experimental, not validated.
 
+**Steering-effort relaxation approaching a corner
+(`lookahead_steer_effort_relax`, `LOOKAHEAD_STEER_EFFORT_RELAX_ENABLED`,
+2026-08-12)** — closes a gap the two mechanisms above left open: neither
+`adaptive_R_scaling`'s speed penalty nor `steer_effort_straight_boost` ever
+pushes `R[0,0]` *below* baseline for an approaching corner, so a car
+entering a corner hot pays the full speed-based steering-effort cost right
+when it most needs to commit to turn-in. Falls from 1.0 toward a floor as
+corner demand rises — same demand-normalised shape as the yaw-rate
+relaxation above, applied to steering effort instead. See `tuning.md` §4.4
+for tuning guidance.
+
+**Low-speed steering-rate boost (`low_speed_steer_rate_boost`,
+`LOW_SPEED_STEER_RATE_BOOST_ENABLED`, added and disabled 2026-08-12)** —
+speed-only (not curvature-gated) multiplier on `R_rate[0,0]`, INVERTED from
+a Stanley-style shape: makes fast steering-rate changes more expensive at
+low speed rather than cheaper. Added to damp a low-speed post-corner-exit
+wobble, but disabled the same day after live testing found it also
+suppressed turn-in — it has no way to distinguish the two cases without a
+curvature/lookahead gate. Kept in the codebase, disabled, for a future
+rework. See `tuning.md` §4.9.
+
 **Delay compensation (`mpc_core.py`'s `predict_ahead()` / `_update_n_delay()`,
 live controller only)** — the live car's perception→planning→control→actuation
 latency is unknown and time-varying, unlike the offline simulator's fixed

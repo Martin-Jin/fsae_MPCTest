@@ -668,8 +668,8 @@ ADAPTIVE_Q_DEMAND_HALF = 0.5
 # curvature is anywhere in the lookahead window, fading to 1.0 (baseline) as a
 # corner is detected ahead, with k setting how sharply it fades.
 # Q[0,0] lateral error — a FLOOR below 1.0, i.e. lateral cost is REDUCED on a
-# clear straight (nothing to track hard against), with a sharp fade so full
-# authority is back the moment a corner appears.
+# clear straight (nothing to track hard against), fading back to full
+# authority as a corner enters the lookahead window.
 #
 # EY_K lowered 20.0 -> 8.0 (matching ADAPTIVE_Q_STRAIGHT_K, the Q[2,2]/Q[3,3]
 # sibling boosts' shared fade sharpness) on 2026-08-12: the old k=20 snap
@@ -679,6 +679,18 @@ ADAPTIVE_Q_DEMAND_HALF = 0.5
 # the corner at the wrong place" per live driving feedback. k=8 recovers
 # Q[0,0] toward baseline earlier/more gradually relative to the lookahead
 # window, giving the car more distance to re-centre before turn-in.
+#
+# The ORIGINAL choice of a sharp k=20 was itself motivated by a separate,
+# opposite-looking concern -- a shallower k holds Q[0,0] down longer as
+# curvature rises, suppressing lateral authority through the early
+# corner-approach window and causing late turn-in (see mpc_core.py's inline
+# comment above this same constant for the full history). Turn-in lateness
+# is now separately addressed by LOOKAHEAD_STEER_EFFORT_RELAX_ENABLED
+# (below) rather than by this floor's timing, so evaluate the two together
+# live, not in isolation -- if late turn-in reappears after this change,
+# check whether the steer-effort relax is actually enabled/firing before
+# assuming EY_K needs to go back up.
+#
 # Untested live; re-check straight-line hunting hasn't returned if this is
 # later revisited.
 ADAPTIVE_Q_STRAIGHT_EY_FLOOR = 0.7

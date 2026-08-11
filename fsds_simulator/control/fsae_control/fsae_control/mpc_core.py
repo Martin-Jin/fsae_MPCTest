@@ -342,15 +342,24 @@ MAX_BRAKE: float = 7.0
 # addresses residual hunting that the boosts above alone don't fully damp;
 # distinct signal from _adaptive_Q_scaling's |e_y|-based softening
 # (see that function's own docstring for why the two aren't redundant).
-# K is kept sharp (20.0, not a shallower value): a shallower K holds Q[0,0]
-# down for longer as curvature rises (e.g. still suppressed to ~0.84x at
-# kappa_max_abs=0.02 and only reaching ~1.0x by ~0.05), which actively
-# suppresses lateral authority through exactly the early corner-approach
-# window where turn-in should be starting, causing the car to turn in late.
-# The sharper K keeps the full 0.7x floor on a genuinely clear straight
-# (anti-hunt benefit intact) but recovers toward 1.0x much sooner once any
-# curvature is detected ahead -- do not lower it without re-checking for
-# late turn-in.
+#
+# K was originally kept sharp (20.0) on the theory that a shallower K holds
+# Q[0,0] down for longer as curvature rises, suppressing lateral authority
+# through the early corner-approach window and causing late turn-in. LOWERED
+# to 8.0 on 2026-08-12 for the opposite-looking symptom: the car entering
+# corners already off-line, as if it was still mid-recovery from the
+# straight-line relaxation exactly when the corner arrived -- i.e. the SHARP
+# k=20 recovery wasn't early enough either, just in a different way (snap
+# -back complete in curvature-space doesn't mean complete in TIME/distance
+# if the car hasn't caught up laterally yet by then). Turn-in lateness
+# itself is now separately addressed by _lookahead_steer_effort_relax (below)
+# rather than by this floor's timing, so the two fixes should be evaluated
+# together, not in isolation -- if late turn-in reappears after this ey_k
+# change, check whether _lookahead_steer_effort_relax is actually enabled
+# and firing before assuming ey_k needs to go back up. See
+# planning_control_sync.md's "Straight-line lateral-error snap-back was too
+# sharp" for the live-driving report that motivated this change; UNTESTED
+# LIVE as of this writing.
 # Moved to MPCParams.adaptive_q_straight_ey_floor (min Q[0,0] multiplier on a
 # clear straight) and .adaptive_q_straight_ey_k (ramp sharpness vs
 # kappa_max_abs) — see mpc_params.py for the current values.
@@ -547,6 +556,17 @@ def _low_speed_steer_rate_boost(
     correction authority needed to recover from the tracking error that
     caused the wobble in the first place -- untested above this magnitude,
     re-validate before raising it.
+
+    DISABLED BY DEFAULT (MPCParams.low_speed_steer_rate_boost_enabled=False)
+    as of 2026-08-12, same day this was added: because this gates purely on
+    speed with no curvature/lookahead signal, it cannot distinguish
+    "post-exit overcorrection at low speed" (the case above) from "turn-in
+    at low speed" (also low speed, also needs a fast steering-rate change,
+    but wanted) -- live driving reported the car struggling to turn in
+    early after this was enabled. Do not re-enable without first adding a
+    lookahead-curvature gate (fire only when NOT approaching/inside a
+    corner) -- see planning_control_sync.md's "Low-speed steering-rate
+    boost" section for the full incident.
 
     enabled=False returns R_rate_base untouched.
     """

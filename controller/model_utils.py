@@ -37,9 +37,15 @@ adaptive_R_scaling (speed-based):
     discourage large steering commands that would be destabilising at high
     speed. The Hill-function form A*vx/(vx_half + vx) is a saturating
     ramp: it rises steeply at low speeds and asymptotes to A=1.5 (so the
-    maximum steer scale factor is 1 + 1.5 = 2.5). Acceleration cost is
-    scaled more gently (linear, 0.05*vx) since longitudinal dynamics are
-    less speed-sensitive in the tracking error framework.
+    maximum steer scale factor is 1 + 1.5 = 2.5). Acceleration effort
+    (R[1,1] before the 2026-08-12 accel/brake split, see
+    settings.R_A_ACCEL/R_A_BRAKE below) is NOT speed-scaled here at all
+    (accel_scale fixed at 1.0) -- a speed-dependent accel_scale would make
+    braking authority rise with speed exactly where corner-entry braking
+    needs to be strongest, then relax again as the car decelerates
+    mid-approach even though heading error/curvature are still climbing,
+    fighting whatever R_A_BRAKE tuning is trying to achieve. See
+    adaptive_R_scaling's own docstring below for the full reasoning.
 
 adaptive_Q_scaling (current lateral error):
     Softens Q[0,0] (lateral-error cost) when the car is already close to the
@@ -73,6 +79,28 @@ steer_effort_straight_boost (forward-looking, straight-line steering cost):
     adaptive_Q_lookahead's straight-line softening: boosts R[0,0] on a clear
     straight, fading sharply back to baseline as a corner enters the
     lookahead window.
+
+lookahead_steer_effort_relax (forward-looking, steering effort RELIEF):
+    Added 2026-08-12. The missing counterpart to steer_effort_straight_boost
+    and adaptive_R_rate's yaw-rate relief: neither adaptive_R_scaling (speed
+    penalty) nor steer_effort_straight_boost (straight-line boost, relaxes
+    only back to baseline as a corner is detected) ever pushes R[0,0] BELOW
+    baseline for an approaching corner. This falls from 1.0 toward a floor
+    as corner demand rises -- same demand-normalised shape as
+    lookahead_yaw_rate_relax, applied to steering effort instead of yaw
+    rate -- so turn-in commitment isn't fighting the speed-based effort
+    penalty right when it matters most. Enabled by default
+    (LOOKAHEAD_STEER_EFFORT_RELAX_ENABLED=True).
+
+low_speed_steer_rate_boost (speed-based, steering RATE, disabled by default):
+    Added 2026-08-12, disabled same day. INVERTED from Stanley's
+    cheap-at-low-speed correction-gain shape: makes fast steering-RATE
+    changes MORE expensive at low speed, fading to a no-op at race speed.
+    Built to damp a low-speed post-corner-exit wobble, but live testing
+    found it also suppresses turn-in (also a fast steering-rate change at
+    low speed) since it has no curvature/lookahead signal to distinguish the
+    two cases. Disabled (LOW_SPEED_STEER_RATE_BOOST_ENABLED=False); kept in
+    the codebase for a future curvature-gated rework.
 
 USED BY
 -------
@@ -324,6 +352,17 @@ def low_speed_steer_rate_boost(vx, R_rate_base, enabled=True, boost_max=2.5, k=0
     correction authority needed to recover from the tracking error that
     caused the wobble in the first place -- untested above this magnitude,
     re-validate before raising it.
+
+    DISABLED BY DEFAULT (settings.LOW_SPEED_STEER_RATE_BOOST_ENABLED=False)
+    as of 2026-08-12, same day this was added: because this gates purely on
+    speed with no curvature/lookahead signal, it cannot distinguish
+    "post-exit overcorrection at low speed" (the case above) from "turn-in
+    at low speed" (also low speed, also needs a fast steering-rate change,
+    but wanted) -- live driving reported the car struggling to turn in
+    early after this was enabled. Do not re-enable without first adding a
+    lookahead-curvature gate (fire only when NOT approaching/inside a
+    corner) -- see planning_control_sync.md's "Low-speed steering-rate
+    boost" section for the full incident.
 
     Parameters
     ----------
