@@ -290,7 +290,7 @@ def _reconstruct_centreline(blue: np.ndarray, yellow: np.ndarray) -> np.ndarray:
     return smooth_centreline(raw, n_out=max(20, len(raw) * 5), pin_start=False)
 
 
-def _resample_dense(waypoints_x, waypoints_y, n_points=PATH_N_POINTS):
+def _resample_dense(waypoints_x, waypoints_y, n_points=PATH_N_POINTS, closed_loop=True):
     """
     Fit a clamped cubic spline through sparse waypoints and resample to
     n_points, computing heading and speed profile.
@@ -328,15 +328,21 @@ def _resample_dense(waypoints_x, waypoints_y, n_points=PATH_N_POINTS):
     dy = cs_y.derivative()(t_fine)
     path_Psi = np.arctan2(dy, dx)
 
-    raw_v = speed_profile.compute_speed_profile(path_X, path_Y)
-    path_v = speed_profile.smooth_profile(raw_v, window=9)
+    raw_v = speed_profile.compute_speed_profile(path_X, path_Y, closed_loop=closed_loop)
+    path_v = speed_profile.smooth_profile(raw_v, window=9, closed_loop=closed_loop)
 
     return path_X, path_Y, path_Psi, path_v
 
 
-def load_recorded_track(json_path: str, n_points: int = PATH_N_POINTS):
+def load_recorded_track(json_path: str, n_points: int = PATH_N_POINTS, closed_loop: bool = True):
     """
     Load a cone_recorder JSON file into the SYNTHETIC_PATHS-shaped tuple.
+
+    closed_loop (default True) : a recorded track is a lap, so the speed
+    profile treats point n-1 as adjacent to point 0 — see
+    speed_profile.compute_speed_profile()'s closed_loop docstring for why
+    this matters at the start/finish line. Pass False only for a genuinely
+    open, point-to-point recording (e.g. a straight-line acceleration event).
 
     Returns
     -------
@@ -358,6 +364,6 @@ def load_recorded_track(json_path: str, n_points: int = PATH_N_POINTS):
     blue, yellow = load_cone_map(json_path)
     centreline = _reconstruct_centreline(blue, yellow)
     path_X, path_Y, path_Psi, path_v = _resample_dense(
-        centreline[:, 0], centreline[:, 1], n_points=n_points
+        centreline[:, 0], centreline[:, 1], n_points=n_points, closed_loop=closed_loop
     )
     return path_X, path_Y, path_Psi, path_v, blue, yellow

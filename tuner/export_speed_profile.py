@@ -31,6 +31,13 @@ Usage
     python3 -m tuner.export_speed_profile comp_test_map_3    # a track by name
     python3 -m tuner.export_speed_profile --list             # what tracks exist
     python3 -m tuner.export_speed_profile /path/to/cone_map.json out.csv
+    python3 -m tuner.export_speed_profile comp_test_map_3 --open-loop  # stop at finish
+
+By default the profile is computed closed-loop (a continuous lap: point 0
+gets a braking obligation from the fast point before it at the end of the
+array, and vice versa) — see speed_profile.compute_speed_profile()'s
+closed_loop docstring. Pass --open-loop only for a genuinely point-to-point
+recording that is not meant to be lapped.
 
 With a track name (or no argument), the output goes to
 `tracks/<name>/speed_profile.csv`, which is where `launch_all.sh`'s `TRACK=`
@@ -53,8 +60,10 @@ from tracks import (  # noqa: E402
 )
 
 
-def export(map_path: str, out_path: str) -> None:
-    path_X, path_Y, path_Psi, path_v, _blue, _yellow = load_recorded_track(map_path)
+def export(map_path: str, out_path: str, closed_loop: bool = True) -> None:
+    path_X, path_Y, path_Psi, path_v, _blue, _yellow = load_recorded_track(
+        map_path, closed_loop=closed_loop
+    )
     with open(out_path, "w") as f:
         f.write("# x,y,psi,v_target -- oracle path + speed profile exported by "
                 "tuner.export_speed_profile from a cone_recorder map.\n")
@@ -78,6 +87,12 @@ def main():
         help="Output CSV (default: speed_profile.csv beside the source map).")
     ap.add_argument("--list", action="store_true",
                     help="List available tracks and exit.")
+    ap.add_argument(
+        "--open-loop", dest="closed_loop", action="store_false", default=True,
+        help="Treat the path as point-to-point instead of a lap: the speed "
+             "profile brakes to a stop at the last point instead of staying "
+             "connected across the start/finish seam. Default is closed-loop "
+             "(continuous lap), which is correct for a recorded track.")
     args = ap.parse_args()
 
     if args.list:
@@ -92,7 +107,7 @@ def main():
         # message naming the available tracks is more useful than a traceback.
         ap.error(str(e))
     out_path = args.out_path or default_out_for(map_path, SPEED_PROFILE_NAME)
-    export(map_path, out_path)
+    export(map_path, out_path, closed_loop=args.closed_loop)
 
 
 if __name__ == "__main__":

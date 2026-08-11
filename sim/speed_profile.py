@@ -230,6 +230,7 @@ def compute_speed_profile(
     safety=1.0,
     scan_end=CURVATURE_SPEED_SCAN_END,
     a_lat_max=CURVATURE_SPEED_A_LAT_MAX,
+    closed_loop=True,
 ):
     """
     Compute a physically achievable per-point target speed profile.
@@ -256,6 +257,18 @@ def compute_speed_profile(
     but no longer set the lateral limit — a_lat_max does, matching the live
     node. Passing mu/g has no effect.
 
+    closed_loop : if True (default), the path is treated as a lap — point
+    n-1 is adjacent to point 0, so passes 1-2 wrap with a closing segment and
+    run twice each direction to let a constraint that crosses the seam
+    propagate all the way around (same structure as
+    tuner/raceline_optimizer._lap_time_and_speed). Without this, point 0 got
+    no braking obligation from the fast point that precedes it at the end of
+    the array, and point n-1 got no acceleration credit from the point that
+    follows it at the start — a discontinuity the car met once per lap at
+    the start/finish line, forcing an unnecessary slowdown there. Set False
+    for a genuinely open, point-to-point path (e.g. an acceleration event
+    that ends at a stop, not a lap).
+
     NOTE: passes 1-2 have no live counterpart; the car relies on
     curvature_speed()'s 24 m look-ahead to see corners early enough to brake.
     They exist here because a per-point profile is otherwise not guaranteed to
@@ -275,7 +288,13 @@ def compute_speed_profile(
 
     # Pre-compute segment lengths for the propagation passes below.
     pts = np.column_stack([path_X, path_Y])
-    segs = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+    if closed_loop:
+        # n entries: segs[-1] is the closing segment from point n-1 back to
+        # point 0 (mirrors raceline_optimizer._lap_time_and_speed's segs).
+        segs = np.hypot(np.diff(pts[:, 0], append=pts[0, 0]),
+                        np.diff(pts[:, 1], append=pts[0, 1]))
+    else:
+        segs = np.linalg.norm(np.diff(pts, axis=0), axis=1)
 
     # ── Pass 0: look-ahead curvature limit (delegated) ─────────────────────
     # Evaluate the LIVE heuristic at every path point, scanning forward from
@@ -283,34 +302,62 @@ def compute_speed_profile(
     # pts[i:] is "the path ahead of point i", which is the same argument shape
     # rollout_core passes when it calls curvature_speed() on the planner's
     # centreline — so oracle and planner branches now agree by construction.
+    # On a closed loop, wrap the scan window past the end back to the start
+    # so a point near the finish line still sees the corner just after the
+    # start line, instead of curvature_speed() truncating its look-ahead.
     for i in range(n):
+        ahead = pts[i:]
+        if closed_loop and len(ahead) < n:
+            wrap_needed = math.ceil(scan_end / max(np.min(segs), 1e-6)) + 1
+            ahead = np.concatenate([ahead, pts[:min(n, wrap_needed)]], axis=0)
         v_profile[i] = curvature_speed(
-            pts[i:],
+            ahead,
             v_max=v_max, v_min=v_min, a_lat_max=a_lat_max,
             scan_start=CURVATURE_SPEED_SCAN_START,
             scan_end=scan_end, step=CURVATURE_SPEED_STEP,
             safety=safety,
         )
 
-    # ── Pass 1: forward propagation (acceleration limit) ──────────────────
-    # v_next^2 = v_prev^2 + 2*a*ds  ->  cap how fast the target may rise.
-    # `segs[i-1]` is the arc length from point i-1 to point i.
-    for i in range(1, n):
-        v_allowed = math.sqrt(v_profile[i - 1] ** 2 + 2.0 * a_accel_max * segs[i - 1])
-        if v_allowed < v_profile[i]:
-            v_profile[i] = v_allowed
-
-    # ── Pass 2: backward propagation (braking limit) ──────────────────────
-    # Each point must already be slow enough to brake down to the next point's
-    # limit. a_brake_max is negative, so the radicand can go below zero when
-    # the demanded drop exceeds what ds allows — clamp at 0 and let v_min
-    # restore the floor afterwards.
     a_brake_mag = abs(a_brake_max)
-    for i in range(n - 2, -1, -1):
-        radicand = v_profile[i + 1] ** 2 + 2.0 * a_brake_mag * segs[i]
-        v_allowed = math.sqrt(max(radicand, 0.0))
-        if v_allowed < v_profile[i]:
-            v_profile[i] = v_allowed
+
+    if closed_loop:
+        # Two wrapped laps per direction: the first propagates a constraint
+        # from its binding station all the way around; the second carries
+        # whatever crossed the start/finish seam back around again. A third
+        # changes nothing (monotone min-update over fixed corner limits).
+        for _lap in range(2):
+            # ── Pass 1: forward propagation (acceleration limit) ──────────
+            for i in range(n):
+                j = (i - 1) % n
+                v_allowed = math.sqrt(v_profile[j] ** 2 + 2.0 * a_accel_max * segs[j])
+                if v_allowed < v_profile[i]:
+                    v_profile[i] = v_allowed
+            # ── Pass 2: backward propagation (braking limit) ──────────────
+            for i in range(n - 1, -1, -1):
+                j = (i + 1) % n
+                radicand = v_profile[j] ** 2 + 2.0 * a_brake_mag * segs[i]
+                v_allowed = math.sqrt(max(radicand, 0.0))
+                if v_allowed < v_profile[i]:
+                    v_profile[i] = v_allowed
+    else:
+        # ── Pass 1: forward propagation (acceleration limit) ──────────────
+        # v_next^2 = v_prev^2 + 2*a*ds  ->  cap how fast the target may rise.
+        # `segs[i-1]` is the arc length from point i-1 to point i.
+        for i in range(1, n):
+            v_allowed = math.sqrt(v_profile[i - 1] ** 2 + 2.0 * a_accel_max * segs[i - 1])
+            if v_allowed < v_profile[i]:
+                v_profile[i] = v_allowed
+
+        # ── Pass 2: backward propagation (braking limit) ───────────────────
+        # Each point must already be slow enough to brake down to the next
+        # point's limit. a_brake_max is negative, so the radicand can go
+        # below zero when the demanded drop exceeds what ds allows — clamp at
+        # 0 and let v_min restore the floor afterwards.
+        for i in range(n - 2, -1, -1):
+            radicand = v_profile[i + 1] ** 2 + 2.0 * a_brake_mag * segs[i]
+            v_allowed = math.sqrt(max(radicand, 0.0))
+            if v_allowed < v_profile[i]:
+                v_profile[i] = v_allowed
 
     # The propagation passes can push points below v_min (e.g. approaching a
     # hairpin whose corner speed is already at the floor); restore the floor
@@ -705,7 +752,7 @@ def optimal_lap_time(path_X, path_Y, v_max=None, a_lat_max=None,
     return float(np.sum(segs / v_avg))
 
 
-def smooth_profile(v_profile, window=9):
+def smooth_profile(v_profile, window=9, closed_loop=True):
     """
     Apply a light moving-average smoothing pass to the speed profile.
 
@@ -720,8 +767,13 @@ def smooth_profile(v_profile, window=9):
     acceleration/braking shape, because the window (9 points ≈ 0.45 m at
     0.05 m spacing) is much shorter than the deceleration/acceleration ramps.
 
-    Edge padding ('edge' mode) replicates the first and last values to prevent
-    the convolution from reducing speed near path endpoints.
+    closed_loop controls the padding used at the array boundary before
+    convolving: 'wrap' (default) pulls padding from the opposite end of the
+    array, matching compute_speed_profile(closed_loop=True)'s treatment of
+    point n-1 as adjacent to point 0 — 'edge' padding would instead replicate
+    the first/last values and flatten exactly the region compute_speed_profile
+    worked to connect across the start/finish seam. Set False to fall back to
+    'edge' padding for a genuinely open, point-to-point path.
 
     Parameters
     ----------
@@ -730,6 +782,9 @@ def smooth_profile(v_profile, window=9):
     window : int
         Moving average window width (number of path points). Default 9.
         Larger values = smoother but may flatten sharp braking zones.
+    closed_loop : bool
+        Pad with 'wrap' (True, default) or 'edge' (False). Should match the
+        closed_loop value passed to compute_speed_profile().
 
     Returns
     -------
@@ -742,7 +797,8 @@ def smooth_profile(v_profile, window=9):
     if window < 2 or len(v_profile) < window:
         return v_profile   # Too short to smooth; return unchanged
     kernel = np.ones(window) / window   # Uniform (box) average kernel
-    # Pad to preserve array length: pad by window//2 on each side with edge values
-    padded   = np.pad(v_profile, (window // 2, window // 2), mode="edge")
+    # Pad to preserve array length: pad by window//2 on each side.
+    pad_mode = "wrap" if closed_loop else "edge"
+    padded   = np.pad(v_profile, (window // 2, window // 2), mode=pad_mode)
     smoothed = np.convolve(padded, kernel, mode="valid")
     return smoothed[:len(v_profile)]   # Trim to original length (handles odd/even window)
