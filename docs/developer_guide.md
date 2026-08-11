@@ -662,6 +662,38 @@ Point the search elsewhere with `--recorded-runs <dir>` (e.g. to auto-load
 straight out of `~/fsae_logs` without copying, or to compare two specific
 takes you keep in their own directories).
 
+### Scrubbing a single run's map position over time
+
+`tuner/plot_playback.py` is a different tool for a different question:
+`plot_control_log.py` answers "what did this signal do over the whole run,"
+this one answers "where was the car, and what did the path look like, at
+this specific moment." It shows one run's scored signals (left), the full
+driven trajectory with the planner's live path overlay (top right), and a
+tightly zoomed view of the car's current section of track (bottom right,
+with `e_y`/`e_psi` in its title) — all driven by one time slider under the
+metrics panel.
+
+```bash
+# no CSV given -> auto-loads the newest log in fsds_simulator/recorded_runs/,
+# same search behaviour as plot_control_log.py
+python -m tuner.plot_playback
+
+python -m tuner.plot_playback ~/fsae_logs/mpc_standalone_control_<ts>.csv
+
+# choose your own left-panel signal set
+python -m tuner.plot_playback run.csv --signals e_y,e_psi_deg,yaw_rate
+```
+
+It reads the sibling `<tag>_path_<stamp>.csv` automatically (same directory,
+same timestamp, the file `ControlLogger` writes alongside every control
+CSV) to draw the planner's path as it looked at each moment — copy both
+files together into `recorded_runs/`, not just the `_control_` one, or the
+map/zoom views fall back to showing only the car's own driven trajectory
+with no live path overlay. The path CSV is a time series of path snapshots
+(see `telemetry_logger.py`'s `log_path()`); the slider always shows the
+most recent snapshot at or before the selected time, not an interpolation
+between two snapshots.
+
 ### Launching nodes with FSDS on Windows (WSL + Docker)
 
 This sets up the ROS 2 bridge and planning/control stack from scratch on a
