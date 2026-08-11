@@ -454,7 +454,13 @@ that isn't under `tracks/` yet), and `--list` prints what's available.
   `sim/track_io.load_recorded_track()` does (scipy `CubicSpline` +
   `planning/boundary.build_path_walls()` marched around the lap) and writes
   its `x,y,psi,v_target` as a plain CSV — this is the "oracle path", tracking
-  it directly at `e_y=0` matches the pre-`raceline_optimizer` behaviour.
+  it directly at `e_y=0` matches the pre-`raceline_optimizer` behaviour. The
+  speed profile defaults to `closed_loop=True`: the forward/backward
+  accel/braking passes wrap point n-1 to point 0 so the profile stays
+  continuous across the start/finish line, instead of braking to a stop at
+  the last point as if the lap were a one-shot straight-line path. Pass
+  `--open-loop` to get the old point-to-point behaviour for a recording that
+  genuinely isn't a lap.
 - `raceline_optimizer.py` takes the same reconstruction and iteratively
   reshapes it within the track width for minimum lap time (widen-entry,
   clip-apex), respecting the physical model's `alat_ceiling` (see CLAUDE.md)
