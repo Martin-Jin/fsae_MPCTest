@@ -250,6 +250,9 @@ writing — re-confirm before relying on them, since a resync can move them.
 | Exit-boost decay distance (speed-scaled) | `settings.py` (`ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_DIST`/`_TIME_S`/`_DIST_MAX`) | `mpc_params.py` (`adaptive_q_lookahead_exit_decay_dist`/`_time_s`/`_dist_max`) | `5.0` m / `2.5` s / `25.0` m — see the "v2 fix" note in that same section |
 | Latency telemetry columns | — (offline has no equivalent) | `fsds_simulator/.../telemetry_logger.py` | `pose_age_s`, `path_age_s`, `n_delay`, `solve_ms`, `cmd_latency_ms` |
 | Pose-feed hold model | `settings.py` (`POSE_HOLD_*`) + `sim/rollout_core.PoseFeedHold` | — (offline-only; models a live fault) | `PROB 0.05`, `MEAN_TICKS 2.1`, `MAX_TICKS 5` |
+| Accel/brake effort split (`R[1,1]`) | `settings.py` (`R_A_ACCEL`, `R_A_BRAKE`), read by `controller/optimiser.py`'s `solve_mpc(r_a_accel=, r_a_brake=)` | `mpc_params.py` (`r_a_accel`, `r_a_brake`), read by `mpc_core.py`'s `_solve_qp` | actively being live-tuned — re-check both sides' current values before trusting this row; see "Accel/brake effort weight split" below |
+| Low-speed steering-rate boost | `settings.py` (`LOW_SPEED_STEER_RATE_BOOST_ENABLED`/`_MAX`/`_K`) | `mpc_params.py` (`low_speed_steer_rate_boost_enabled`/`_max`/`_k`) | `False` / `2.5` / `0.35` — disabled, see "Low-speed steering-rate boost" below |
+| Steering-effort relaxation approaching a corner | `settings.py` (`LOOKAHEAD_STEER_EFFORT_RELAX_ENABLED`, `ADAPTIVE_Q_LOOKAHEAD_STEER_RELAX_FLOOR`) | `mpc_params.py` (`lookahead_steer_effort_relax_enabled`, `adaptive_q_lookahead_steer_relax_floor`) | `True` / `0.5` — see "Steering-effort relaxation approaching a corner" below |
 
 Notes on how these are actually used:
 
@@ -302,9 +305,10 @@ comments, with no row here — that gap is what this section closes.
 | `q_e_yd` | `Q_diag[1]` | `0.2` |
 | `q_e_psi` | `Q_diag[2]` | `1.52` |
 | `q_r` | `Q_diag[3]` | `0.50` |
-| `q_e_v` | `Q_diag[4]` | `5.0` |
+| `q_e_v` | `Q_diag[4]` | `4.0` |
 | `r_delta` | `R_diag[0]` | `1.16` |
-| `r_a` | `R_diag[1]` | `0.77` — see [tuning.md](tuning.md#1-core-cost-weights-q_diag--r_diag--r_rate_diag) for why this is lower than a naively-tuned value |
+| `r_a_accel` | `R_A_ACCEL` | `1.0` — split 2026-08-12 from a single shared `r_a` (see "Accel/brake effort weight split" below); actively being live-tuned, re-check this value against `mpc_params.py` before trusting it |
+| `r_a_brake` | `R_A_BRAKE` | `0.6` — see previous row; actively being live-tuned |
 | `r_rate_delta` | `R_rate_diag[0]` | `2.1` |
 | `r_rate_a` | `R_rate_diag[1]` | `2.6` |
 | `terminal_q_scale` | `TERMINAL_Q_SCALE` | `1.0` |
@@ -312,8 +316,13 @@ comments, with no row here — that gap is what this section closes.
 | `adaptive_q_lookahead_enabled` | `ADAPTIVE_Q_LOOKAHEAD_ENABLED` | `True` |
 | `adaptive_q_demand_normalised` | `ADAPTIVE_Q_DEMAND_NORMALISED` | `True` |
 | `steer_effort_straight_boost_enabled` | `STEER_EFFORT_STRAIGHT_BOOST_ENABLED` | `True` |
+| `lookahead_steer_effort_relax_enabled` | `LOOKAHEAD_STEER_EFFORT_RELAX_ENABLED` | `True` — see "Steering-effort relaxation approaching a corner" below |
+| `adaptive_q_lookahead_steer_relax_floor` | `ADAPTIVE_Q_LOOKAHEAD_STEER_RELAX_FLOOR` | `0.5` |
 | `steer_rate_anti_hunt_enabled` | `STEER_RATE_ANTI_HUNT_ENABLED` | `True` |
 | `adaptive_r_rate_enable_in_corners` | `ADAPTIVE_R_RATE_ENABLE_IN_CORNERS` | `True` |
+| `low_speed_steer_rate_boost_enabled` | `LOW_SPEED_STEER_RATE_BOOST_ENABLED` | `False` — disabled 2026-08-12, see "Low-speed steering-rate boost" below |
+| `low_speed_steer_rate_boost_max` | `LOW_SPEED_STEER_RATE_BOOST_MAX` | `2.5` |
+| `low_speed_steer_rate_boost_k` | `LOW_SPEED_STEER_RATE_BOOST_K` | `0.35` |
 | `ref_heading_rate_limit_enabled` | `REF_HEADING_RATE_LIMIT_ENABLED` | `False` |
 | `ref_heading_rise_rate_deg_s` | `REF_HEADING_RISE_RATE` | `90.0` |
 | `adaptive_r_rate_during_floor` | `ADAPTIVE_R_RATE_DURING_FLOOR` | `0.625` |
@@ -324,7 +333,7 @@ comments, with no row here — that gap is what this section closes.
 | `alat_ceiling_intercept` | `ALAT_CEILING_INTERCEPT` | `2.46` |
 | `adaptive_q_demand_half` | `ADAPTIVE_Q_DEMAND_HALF` | `0.5` |
 | `adaptive_q_straight_ey_floor` | `ADAPTIVE_Q_STRAIGHT_EY_FLOOR` | `0.7` |
-| `adaptive_q_straight_ey_k` | `ADAPTIVE_Q_STRAIGHT_EY_K` | `20.0` |
+| `adaptive_q_straight_ey_k` | `ADAPTIVE_Q_STRAIGHT_EY_K` | `8.0` — lowered from `20.0` on 2026-08-12, see "Straight-line lateral-error snap-back was too sharp" below |
 | `adaptive_q_straight_epsi_boost_max` | `ADAPTIVE_Q_STRAIGHT_EPSI_BOOST_MAX` | `1.1` |
 | `adaptive_q_straight_r_boost_max` | `ADAPTIVE_Q_STRAIGHT_R_BOOST_MAX` | `1.5` |
 | `adaptive_q_straight_k` | `ADAPTIVE_Q_STRAIGHT_K` | `8.0` |
@@ -1720,6 +1729,162 @@ now accelerates harder while still not fully realigned) rather than diffuse
 across the lap — this is what motivated the exit-boost v2 fix above (same
 log). Only tested on one track (`comp_test_map_3`); if this drifts on a
 different map, re-sweep rather than assume 0.77 transfers everywhere.
+
+## Accel/brake effort weight split (2026-08-12)
+
+**Implemented on both sides; the resulting weights are actively being
+live-tuned — treat any specific value quoted here as a snapshot, not
+current truth.** Reported symptom, after the `r_a=0.77` cut above was
+confirmed live: the same shared weight that freed up acceleration also
+weakened braking by the same amount, since `R_diag[1]` was applied
+symmetrically to `|a_cmd|` regardless of sign. Live telemetry after the
+`r_a` cut showed the resulting asymmetry directly — a corner-entry log
+(`mpc_standalone_control_1786444690.csv`) had the car arriving faster into
+corners (accel side now eager) while `a_cmd` still floored around -1.4 m/s²
+during a sustained 2-second, 3-5 m/s speed deficit (braking side unchanged
+and still weak) — too hot into corners, followed by steering saturation and
+an unstable post-saturation recovery.
+
+**Mechanism**: `R_diag[1]`'s single scalar weight was replaced with two
+independent weights, `r_a_accel` (`a_cmd >= 0`) and `r_a_brake` (`a_cmd <
+0`), applied via `cp.pos(u[1,:])`/`cp.neg(u[1,:])` in the QP cost —
+`R_a_accel * sum(pos(a_cmd)²) + R_a_brake * sum(neg(a_cmd)²)` — rather than
+new slack variables or constraints (the originally-considered
+slack-variable design was replaced with this simpler `cp.pos`/`cp.neg`
+rewrite once it was confirmed DCP-valid and numerically identical to the old
+single-weight cost when `r_a_accel == r_a_brake`, since `pos(x)²+neg(x)²
+== x²` for any real `x`). Implemented in:
+
+- **Live**: `mpc_core.py`'s `_build_qp`/`_solve_qp` (new `r_a_accel_param`/
+  `r_a_brake_param` `cp.Parameter`s), `mpc_params.py`'s `r_a_accel`/
+  `r_a_brake` fields (replacing the single `r_a` field), `fsae_params.yaml`'s
+  `controller.r_a_accel`/`r_a_brake` (replacing `controller.r_a`),
+  `launch_all.sh`'s `MPC_R_A_ACCEL`/`MPC_R_A_BRAKE` shortlist entries
+  (replacing `MPC_R_A`).
+- **Offline**: `controller/optimiser.py`'s `init_parameterized_mpc`/
+  `solve_mpc` (same `cp.pos`/`cp.neg` split, new `r_a_accel`/`r_a_brake`
+  kwargs defaulting to `R[1,1]` when omitted, for backward compatibility
+  with any caller that doesn't pass them), `settings.py`'s `R_A_ACCEL`/
+  `R_A_BRAKE` (read by `sim/rollout_core.py`'s `solve_mpc()` call; `R_diag[1]`
+  itself is now a nominal value only, read as the fallback default and by
+  callers that don't know about the split).
+
+`self.R[1,1]` / `R_diag[1]` are kept as nominal/reporting values only — no
+adaptive gain (`_adaptive_R_scaling`, `_adaptive_R_rate`, etc.) touches index
+1 of `R`/`R_rate` anywhere in this codebase, confirmed by direct grep before
+implementing, so the split composes cleanly with every existing adaptive
+mechanism without any interaction to account for.
+
+**Re-check `mpc_params.py`'s `r_a_accel`/`r_a_brake` and `settings.py`'s
+`R_A_ACCEL`/`R_A_BRAKE` for the current values before relying on this
+section** — these are being adjusted directly during live testing (observed
+moving 0.35/0.2 → 0.5/0.2 → 0.5/0.1 → 1.0/0.6 across one session), faster
+than this doc can track. Sync `settings.py` to match `mpc_params.py`'s
+current live values after each live-tuning session, per CLAUDE.md's parity
+rule.
+
+## Low-speed steering-rate boost (added and disabled same day, 2026-08-12)
+
+**Added, live-tested, found to have an unwanted side effect, disabled by
+default — code stays in place for a future rework.** Reported symptom: after
+exiting a corner at low speed (3-4 m/s), steering swung through a large,
+fast, under-damped correction while accelerating — confirmed on
+`mpc_standalone_control_1786483673.csv`, t=6.9-7.7s: `steer_deg` swings
++25° → -9° → 0° over ~1.5s while `a_cmd` climbs 0 → 2.15 m/s², with
+`Rrate_steer_eff` essentially flat (~1.8-2.2) throughout — neither
+`_adaptive_R_rate` nor `_steer_rate_anti_hunt` (both gated on curvature/
+tracking-error, not speed) meaningfully reacted, since the wobble's `kappa`
+was already small (car past the apex) by the time it happened.
+
+**Mechanism (as implemented)**: `_low_speed_steer_rate_boost(vx, ...)` —
+INVERTED from Stanley's `k/(v+eps)` correction-gain shape (cheap correction
+at low speed): this instead makes steering-RATE changes MORE expensive at
+low speed (`R_rate[0,0] *= 1 + (boost_max-1)/(1+k*vx)`, `boost_max=2.5,
+k=0.35` → ~1.73× at 3 m/s, ~1.0× by race speed), on the theory that a fast
+swing matters more when the car has little momentum to resist it. A literal
+Stanley-shaped (cheap-at-low-speed) mechanism was explicitly considered and
+rejected before implementing this one — see the mechanism note in
+`mpc_core.py`'s `_low_speed_steer_rate_boost` docstring for why.
+
+**Live-tested same day, found to regress turn-in**: because this gates
+purely on speed with no curvature/lookahead signal, it cannot distinguish
+"post-exit overcorrection at low speed" (the case it was built for) from
+"turn-in at low speed" (also low speed, also needs a fast steering-rate
+change, but wanted) — live driving reported the car "struggling to turn
+early in turns" after this was enabled, i.e. it suppressed the two cases
+identically. **Disabled** (`low_speed_steer_rate_boost_enabled=False` in
+both `mpc_params.py` and `settings.py`, plus the `fsds_simulator` mirror and
+`fsae_params.yaml`) same day. The function, its `MPCParams`/`settings.py`
+fields, and its telemetry column (`m_Rrate_lowspeed`) are all left in place
+at their designed values (`boost_max=2.5, k=0.35`) rather than removed, so a
+future lookahead-curvature-gated rework (fire only when NOT
+approaching/inside a corner) doesn't need to re-derive the shape from
+scratch.
+
+## Steering-effort relaxation approaching a corner (2026-08-12)
+
+**Implemented on both sides, not yet live-tested in isolation.** Reported
+symptom (a follow-on diagnosis from the same live session): the car is slow
+to commit to turn-in specifically at higher corner-entry speed.
+
+**Root cause**: `_adaptive_R_scaling`'s speed-dependent steering-effort
+penalty (`R[0,0] *= 1 + 1.5*vx/(6+vx)`, e.g. ~2.07× at 15 m/s) has no
+lookahead relief at all — it stays at full strength right through an
+approaching corner regardless of curvature. The only other mechanism
+touching `R[0,0]`, `_steer_effort_straight_boost`, only ever RAISES it (on a
+clear straight) or relaxes back to the unscaled baseline as a corner is
+detected — neither one ever pushes `R[0,0]` BELOW baseline for an
+approaching corner. A car entering a corner hot therefore paid the full
+speed-based steering-effort penalty at exactly the moment it most needed to
+commit to turn-in. (`_lookahead_yaw_rate_relax` already does the equivalent
+relief for `Q[3,3]`/yaw-rate — its own docstring explicitly names "turns
+late/slowly" as the failure mode it exists to prevent — but no `R[0,0]`
+counterpart existed until now.)
+
+**Mechanism**: `_lookahead_steer_effort_relax(kappa_max_abs, car_speed,
+floor=0.5, ...)` — mirrors `_lookahead_yaw_rate_relax`'s shape exactly (same
+demand-normalised corner-severity curve), falling from `1.0` (no corner
+ahead) toward `floor=0.5` as corner demand rises, composing multiplicatively
+with `_adaptive_R_scaling` and `_steer_effort_straight_boost`'s existing
+`R[0,0]` scalings. `floor=0.5` matches `_lookahead_yaw_rate_relax`'s own
+default floor (same magnitude as the sibling mechanism this is modelled on).
+Implemented in `mpc_core.py`/`mpc_params.py`
+(`lookahead_steer_effort_relax_enabled`,
+`adaptive_q_lookahead_steer_relax_floor`), mirrored in `model_utils.py`
+(`lookahead_steer_effort_relax`) / `sim/rollout_core.py` /
+`settings.py` (`LOOKAHEAD_STEER_EFFORT_RELAX_ENABLED`,
+`ADAPTIVE_Q_LOOKAHEAD_STEER_RELAX_FLOOR`), and the `fsds_simulator` mirror.
+
+## Straight-line lateral-error snap-back was too sharp (2026-08-12)
+
+**Implemented on both sides (`adaptive_q_straight_ey_k` 20.0 → 8.0), not yet
+live-tested in isolation.** Reported symptom, raised alongside the turn-in
+diagnosis above: the car sometimes enters a corner at the wrong lateral
+position relative to the planned path, as if it drifted off-line on the
+approach.
+
+**Root cause**: `_lookahead_straight_lateral_reduce` softens `Q[0,0]`
+(lateral-error cost) to `ey_floor=0.7` on a clear straight, and previously
+snapped back to full weight very sharply (`k=20`, deliberately much sharper
+than the `k=8` shared by the `Q[2,2]`/`Q[3,3]` straight-line boosts) as soon
+as any curvature entered the lookahead window. That snap-back could still
+be incomplete by the time the car needed to be precisely positioned for
+turn-in, so the car could still be mid-recovery from the straight-line
+relaxation exactly when the corner arrived — entering already offset from
+the intended line rather than from the intended centreline point.
+
+**Fix**: lowered `adaptive_q_straight_ey_k` from `20.0` to `8.0`, matching
+`adaptive_q_straight_k` (the `Q[2,2]`/`Q[3,3]` boosts' shared fade
+sharpness) — the straight-line relaxation benefit itself is unchanged
+(`ey_floor` still `0.7`), only the speed of the transition back to full
+lateral weight as a corner approaches. Two alternative fixes were
+considered and rejected in favour of this one: raising `ey_floor` (would
+reduce the straight-line-hunting benefit this mechanism exists for, and
+would change behaviour even far from any corner) and leaving `k` alone
+while addressing this some other way. Untested live in isolation — if
+straight-line hunting reappears after this change, that is the first thing
+to re-check, per this section and the `adaptive_q_straight_ey_k` field
+comment in `mpc_params.py`/`settings.py`.
 
 ## Gradual-corner accel oscillation is genuine track geometry, not a bug (investigated 2026-08-11)
 

@@ -48,17 +48,17 @@ class MPCParams:
     q_e_yd:  float = field(default=0.2,  metadata={"unit": "1/(m/s)^2", "desc": "rate of change of lateral deviation"})
     q_e_psi: float = field(default=1.52, metadata={"unit": "1/rad^2", "desc": "heading error relative to path tangent"})
     q_r:     float = field(default=0.50, metadata={"unit": "1/(rad/s)^2", "desc": "yaw rate"})
-    q_e_v:   float = field(default=5.0,  metadata={"unit": "1/(m/s)^2", "desc": "speed error: car_speed - desired_speed"})
+    q_e_v:   float = field(default=4.0,  metadata={"unit": "1/(m/s)^2", "desc": "speed error: car_speed - desired_speed"})
     # R_diag index -> input penalised (inputs u are [delta_cmd, a_cmd]):
-    r_delta: float = field(default=1.16, metadata={"unit": "1/rad^2",     "desc": "steering command effort"})
+    r_delta: float = field(default=1.6, metadata={"unit": "1/rad^2",     "desc": "steering command effort"})
     # a_cmd>=0 (accel) and a_cmd<0 (brake) get independent effort weights
     # instead of one weight applied symmetrically to |a_cmd| -- a single
     # shared weight cannot be tuned for acceleration and braking
     # independently. See mpc_core.py's _build_qp/_solve_qp for the
     # cp.pos/cp.neg split and planning_control_sync.md's "Accel/brake
     # effort weight split" section for the diagnosis.
-    r_a_accel: float = field(default=0.77, metadata={"unit": "1/(m/s^2)^2", "desc": "acceleration command effort, a_cmd >= 0"})
-    r_a_brake: float = field(default=0.77, metadata={"unit": "1/(m/s^2)^2", "desc": "acceleration command effort, a_cmd < 0 (braking)"})
+    r_a_accel: float = field(default=1.0, metadata={"unit": "1/(m/s^2)^2", "desc": "acceleration command effort, a_cmd >= 0"})
+    r_a_brake: float = field(default=0.6, metadata={"unit": "1/(m/s^2)^2", "desc": "acceleration command effort, a_cmd < 0 (braking)"})
     # R_rate_diag index -> input RATE-OF-CHANGE penalised (tick-to-tick jerk):
     r_rate_delta: float = field(default=2.1, metadata={"unit": "1/(rad/s)^2",     "desc": "steering rate of change"})
     r_rate_a:     float = field(default=2.6, metadata={"unit": "1/(m/s^3)^2",     "desc": "acceleration rate of change"})
@@ -71,10 +71,12 @@ class MPCParams:
     adaptive_q_lookahead_enabled: bool = field(default=True, metadata={"desc": "curvature-lookahead Q boosts/relaxations approaching/exiting corners"})
     adaptive_q_demand_normalised: bool = field(default=True, metadata={"desc": "score corners by grip DEMAND (speed-aware) instead of raw curvature"})
     steer_effort_straight_boost_enabled: bool = field(default=True, metadata={"desc": "make R[0,0] (steering effort) expensive on a clear straight"})
+    lookahead_steer_effort_relax_enabled: bool = field(default=True, metadata={"desc": "make R[0,0] (steering effort) CHEAPER approaching a corner, so turn-in isn't fighting the speed-based effort penalty"})
     steer_rate_anti_hunt_enabled: bool = field(default=True, metadata={"desc": "extra R_rate[0,0] penalty when centred/aligned/uncurving"})
     adaptive_r_rate_enable_in_corners: bool = field(default=True, metadata={"desc": "keep R_rate softening active in corners (continuous, no cutoff)"})
     delay_compensation_enabled: bool = field(default=True, metadata={"desc": "roll x0 forward through pending commands via predict_ahead()"})
     ref_heading_rate_limit_enabled: bool = field(default=False, metadata={"desc": "cap how fast the tracked reference heading may change per tick"})
+    low_speed_steer_rate_boost_enabled: bool = field(default=False, metadata={"desc": "extra R_rate[0,0] penalty at low speed, INVERTED from Stanley's cheap-at-low-speed shape -- disabled 2026-08-12, live testing found it also taxes turn-in (fast steering-rate change), not just post-exit overcorrection, since it only gates on speed with no curvature/lookahead awareness to tell the two apart"})
 
     # ── Reference-heading rate limit ────────────────────────────────────
     ref_heading_rise_rate_deg_s: float = field(default=90.0, metadata={"unit": "deg/s", "desc": "max rate the reference heading may change, if enabled"})
@@ -119,6 +121,13 @@ class MPCParams:
     adaptive_q_lookahead_r_floor: float = field(default=0.5, metadata={"unit": "unitless", "desc": "min Q[3,3] multiplier at high lookahead curvature"})
     adaptive_q_lookahead_k_r_relax: float = field(default=8.0, metadata={"unit": "unitless", "desc": "legacy (non-demand-normalised) yaw-rate relax ramp sharpness"})
 
+    # ── Steering-effort relaxation approaching a corner ─────────────────
+    # See _lookahead_steer_effort_relax's docstring in mpc_core.py for the
+    # mechanism and the gap it closes (neither _adaptive_R_scaling's speed
+    # penalty nor _steer_effort_straight_boost ever pushes R[0,0] below
+    # baseline for an approaching corner).
+    adaptive_q_lookahead_steer_relax_floor: float = field(default=0.5, metadata={"unit": "unitless", "desc": "min R[0,0] multiplier at high corner demand"})
+
     # ── Straight-line Q[2,2]/Q[3,3] boosts ──────────────────────────────
     adaptive_q_straight_epsi_boost_max: float = field(default=1.1, metadata={"unit": "unitless", "desc": "max Q[2,2] multiplier on a clear straight"})
     adaptive_q_straight_r_boost_max: float = field(default=1.5, metadata={"unit": "unitless", "desc": "max Q[3,3] multiplier on a clear straight"})
@@ -126,7 +135,17 @@ class MPCParams:
 
     # ── Straight-line Q[0,0] floor ───────────────────────────────────────
     adaptive_q_straight_ey_floor: float = field(default=0.7, metadata={"unit": "unitless", "desc": "min Q[0,0] multiplier on a clear straight"})
-    adaptive_q_straight_ey_k: float = field(default=20.0, metadata={"unit": "unitless", "desc": "ramp sharpness vs lookahead curvature"})
+    # Lowered 20.0 -> 8.0 (matching adaptive_q_straight_k, the Q[2,2]/Q[3,3]
+    # sibling boosts' shared fade sharpness) on 2026-08-12: the old k=20 snap
+    # -back to full lateral weight was so sharp relative to the corner that
+    # the car could still be drifting off-line on approach when it fired,
+    # arriving at the corner already offset from the planned entry point --
+    # "entering the corner at the wrong place" per live driving feedback.
+    # k=8 recovers Q[0,0] toward baseline earlier/more gradually relative to
+    # the lookahead window, giving the car more distance to re-centre before
+    # turn-in. Untested live; re-check straight-line hunting hasn't
+    # returned if this is later revisited.
+    adaptive_q_straight_ey_k: float = field(default=8.0, metadata={"unit": "unitless", "desc": "ramp sharpness vs lookahead curvature"})
 
     # ── Straight-line R[0,0] (steering effort) boost ────────────────────
     steer_effort_straight_boost_max: float = field(default=1.5, metadata={"unit": "unitless", "desc": "max R[0,0] multiplier on a clear straight"})
@@ -139,6 +158,13 @@ class MPCParams:
     adaptive_r_rate_during_floor: float = field(default=0.625, metadata={"unit": "unitless", "desc": "R_rate[0,0] floor driven by CURRENT-position curvature"})
     adaptive_r_rate_entering_floor: float = field(default=0.85, metadata={"unit": "unitless", "desc": "R_rate[0,0] floor driven by LOOKAHEAD curvature"})
     adaptive_r_rate_k_entering: float = field(default=4.0, metadata={"unit": "unitless", "desc": "ramp sharpness of the entering floor vs lookahead curvature"})
+
+    # ── Low-speed R_rate[0,0] (steering rate) boost ─────────────────────
+    # See _low_speed_steer_rate_boost's docstring in mpc_core.py for the
+    # mechanism and the 2026-08-12 log evidence (low-speed post-corner-exit
+    # steering wobble while accelerating) that motivated it.
+    low_speed_steer_rate_boost_max: float = field(default=2.5, metadata={"unit": "unitless", "desc": "R_rate[0,0] multiplier at vx=0, decaying toward 1.0 as speed rises"})
+    low_speed_steer_rate_boost_k: float = field(default=0.35, metadata={"unit": "s/m", "desc": "decay sharpness of the low-speed boost vs speed"})
 
 
 DEFAULT_MPC_PARAMS = MPCParams()

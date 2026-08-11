@@ -297,6 +297,62 @@ def steer_rate_anti_hunt(kappa, e_y, R_rate_base, enabled=False, e_psi=0.0):
     return R
 
 
+def low_speed_steer_rate_boost(vx, R_rate_base, enabled=True, boost_max=2.5, k=0.35):
+    """
+    Speed-dependent steering-RATE cost, INVERTED from Stanley's k/(v+eps)
+    correction-gain shape: this makes fast steering CHANGES expensive at low
+    speed and relaxes toward a no-op as speed rises, rather than the other
+    way round. A literal Stanley-style "cheap correction at low speed" would
+    fight the failure mode this exists to fix: live telemetry showed
+    steering swinging +25 -> -9 -> 0 deg over ~1.5s at 3-4 m/s right after
+    corner exit (2026-08-12 log, t=6.9-7.7s) while a_cmd climbed 0 -> 2.15
+    m/s^2 -- an under-damped correction with plenty of speed-dependent
+    adaptive_R_scaling steering-EFFORT cost already active (that curve goes
+    the OTHER way, cheaper at low speed) but nothing before this penalising
+    the RATE of a low-speed swing specifically. Mirrors mpc_core.py's
+    _low_speed_steer_rate_boost -- keep both constants in sync.
+
+    Distinct from adaptive_R_rate/steer_rate_anti_hunt above: both of those
+    gate on curvature/tracking-error, not speed, so a low-speed straight-line
+    wobble with small kappa (as in the log) barely moves either. This is a
+    separate, speed-only multiplier composing on top of them, not a
+    replacement.
+
+    boost_max=2.5, k=0.35: deliberately moderate (~1.73x at 3 m/s, ~1.2x by
+    15 m/s, ~1.0x by race speed) so steering still has enough lattitude to
+    correct: a much higher boost_max would risk numbing out the very
+    correction authority needed to recover from the tracking error that
+    caused the wobble in the first place -- untested above this magnitude,
+    re-validate before raising it.
+
+    Parameters
+    ----------
+    vx : float
+        Current forward speed (m/s).
+    R_rate_base : np.ndarray, shape (2, 2)
+        Rate-of-change cost matrix to boost -- pass the output of
+        adaptive_R_rate/steer_rate_anti_hunt so all three compose.
+    enabled : bool, optional
+        Master off-switch. True (default) matches mpc_params.py's
+        low_speed_steer_rate_boost_enabled default.
+
+    Returns
+    -------
+    R : np.ndarray
+        R_rate_base unchanged if enabled=False. Otherwise a copy with
+        R[0,0] boosted, most strongly at vx=0.
+
+    Called by: sim/rollout_core.py (run_core_rollout)
+    """
+    if not enabled:
+        return R_rate_base
+    vx = max(vx, 0.0)
+    scale = 1.0 + (boost_max - 1.0) / (1.0 + k * vx)
+    R = np.array(R_rate_base, copy=True)
+    R[0, 0] *= scale
+    return R
+
+
 def adaptive_Q_scaling(e_y, Q_base, enabled=False):
     """
     Soften the lateral-error cost Q[0,0] when the car is already close to the
@@ -684,6 +740,42 @@ def steer_effort_straight_boost(kappa_max_abs, boost_max=1.5, k=20.0):
     scaling on R[0,0] via multiplication.
     """
     return lookahead_straight_boost(kappa_max_abs, boost_max, k)
+
+
+def lookahead_steer_effort_relax(kappa_max_abs, car_speed=0.0, floor=0.5, k=8.0,
+                                  demand_normalised=True, demand_half=0.5,
+                                  alat_flat=7.5, alat_slope=0.47, alat_intercept=2.46):
+    """
+    Continuous (no threshold/discontinuity) multiplier on R[0,0] (steering
+    EFFORT) that FALLS smoothly as the corner ahead gets more demanding --
+    mirrors lookahead_yaw_rate_relax's shape exactly (same demand-normalised
+    corner-severity curve), applied to steering effort instead of yaw-rate
+    penalty. Mirrors mpc_core.py's _lookahead_steer_effort_relax -- keep
+    both in sync.
+
+    Added 2026-08-12: closes a gap adaptive_R_scaling and
+    steer_effort_straight_boost left open. adaptive_R_scaling makes R[0,0]
+    steadily MORE expensive as speed rises with no lookahead relief at all,
+    and steer_effort_straight_boost only ever RAISES R[0,0] (on a clear
+    straight) or relaxes back to the unscaled baseline as a corner is
+    detected -- neither ever pushes R[0,0] BELOW baseline for an approaching
+    corner. A car entering a corner hot therefore paid the full speed
+    penalty on steering effort exactly when it most needed to commit to
+    turn-in, which live driving reported as sluggish/late turn-in at speed.
+    Composes multiplicatively with both of those existing R[0,0] scalings.
+
+    alat_flat/alat_slope/alat_intercept are forwarded to _corner_demand's
+    ceiling law; defaults match settings.py's ALAT_CEILING_* constants.
+    """
+    if demand_normalised:
+        frac = _demand_frac(
+            _corner_demand(kappa_max_abs, car_speed, alat_flat=alat_flat,
+                           alat_slope=alat_slope, alat_intercept=alat_intercept),
+            demand_half,
+        )
+    else:
+        frac = 1.0 - 1.0 / (1.0 + k * kappa_max_abs)
+    return 1.0 - (1.0 - floor) * frac
 
 
 def uturn_severity(heading_change_abs, thresh_rad=np.radians(60.0), sat_rad=np.radians(120.0)):

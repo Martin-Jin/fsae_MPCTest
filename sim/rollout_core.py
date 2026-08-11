@@ -37,7 +37,8 @@ from controller.optimiser import solve_mpc
 from sim.sim_track import SimPerception, SimPlanner, calculate_dynamic_max_steps
 from controller.model_utils import (
     curvature_estimate, adaptive_R_rate, adaptive_R_scaling, adaptive_Q_scaling,
-    steer_rate_anti_hunt, lookahead_curvature_profile, update_lookahead_peak,
+    steer_rate_anti_hunt, low_speed_steer_rate_boost, lookahead_steer_effort_relax,
+    lookahead_curvature_profile, update_lookahead_peak,
     adaptive_Q_lookahead, steer_effort_straight_boost,
 )
 from sim.scoring import RolloutMetrics
@@ -73,6 +74,9 @@ from settings import (
     ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_DIST, ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_TIME_S,
     ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_DIST_MAX,
     R_A_ACCEL, R_A_BRAKE,
+    LOW_SPEED_STEER_RATE_BOOST_ENABLED, LOW_SPEED_STEER_RATE_BOOST_MAX,
+    LOW_SPEED_STEER_RATE_BOOST_K,
+    LOOKAHEAD_STEER_EFFORT_RELAX_ENABLED, ADAPTIVE_Q_LOOKAHEAD_STEER_RELAX_FLOOR,
 )
 
 STALL_CHECK_INTERVAL = 60   # Steps between rolling stall checks (3 s at 20 Hz)
@@ -900,10 +904,26 @@ def run_core_rollout(
         R_rate_scaled = steer_rate_anti_hunt(
             kappa, e_y, R_rate_scaled, enabled=STEER_RATE_ANTI_HUNT_ENABLED, e_psi=e_psi
         )
+        R_rate_scaled = low_speed_steer_rate_boost(
+            vx_true, R_rate_scaled, enabled=LOW_SPEED_STEER_RATE_BOOST_ENABLED,
+            boost_max=LOW_SPEED_STEER_RATE_BOOST_MAX,
+            k=LOW_SPEED_STEER_RATE_BOOST_K,
+        )
         R_scaled = adaptive_R_scaling(vx, R)
         if STEER_EFFORT_STRAIGHT_BOOST_ENABLED:
             R_scaled = R_scaled.copy()
             R_scaled[0, 0] *= steer_effort_straight_boost(kappa_max_abs)
+        if LOOKAHEAD_STEER_EFFORT_RELAX_ENABLED:
+            R_scaled = R_scaled.copy()
+            R_scaled[0, 0] *= lookahead_steer_effort_relax(
+                kappa_max_abs, vx,
+                floor=ADAPTIVE_Q_LOOKAHEAD_STEER_RELAX_FLOOR,
+                demand_normalised=ADAPTIVE_Q_DEMAND_NORMALISED,
+                demand_half=ADAPTIVE_Q_DEMAND_HALF,
+                alat_flat=ALAT_CEILING_FLAT,
+                alat_slope=ALAT_CEILING_SLOPE,
+                alat_intercept=ALAT_CEILING_INTERCEPT,
+            )
 
         # ── Lookahead corner-anticipation Q-boost (ADAPTIVE_Q_LOOKAHEAD) ────
         # Applied to Q FIRST, then adaptive_Q_scaling's centred-softening

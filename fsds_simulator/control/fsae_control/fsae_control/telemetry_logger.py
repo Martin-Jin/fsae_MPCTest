@@ -85,10 +85,11 @@ ADAPTIVE_COLUMNS = (
     'm_Q_ey_approach',   'm_Q_ey_straight',  'm_Q_ey_uturn',  'm_Q_ey_soften',
     'm_Q_epsi_approach', 'm_Q_epsi_exit',    'm_Q_epsi_straight', 'm_Q_epsi_uturn',
     'm_Q_r_relax',       'm_Q_r_straight',   'm_Q_r_uturn',
-    'm_R_speed',         'm_R_straight',
-    'm_Rrate_corner',    'm_Rrate_antihunt',
+    'm_R_speed',         'm_R_straight',    'm_R_steer_relax',
+    'm_Rrate_corner',    'm_Rrate_antihunt',  'm_Rrate_lowspeed',
     # Absolute weights handed to the QP after all of the above.
     'Q_ey_eff', 'Q_epsi_eff', 'Q_r_eff', 'R_steer_eff', 'Rrate_steer_eff',
+    'R_a_accel_eff', 'R_a_brake_eff',  # a_cmd effort weight, split by sign
 )
 
 

@@ -409,6 +409,31 @@ ADAPTIVE_Q_SCALING_ENABLED = True
 # Kept enabled to match the live controller.
 STEER_RATE_ANTI_HUNT_ENABLED = True
 
+# LOW_SPEED_STEER_RATE_BOOST_ENABLED / _MAX / _K — extra R_rate[0,0] penalty
+# at low speed, INVERTED from Stanley's k/(v+eps) shape (cheap correction at
+# low speed): this makes fast steering CHANGES expensive at low speed and
+# relaxes toward a no-op as speed rises. Motivated by a 2026-08-12 live log
+# showing steering swing +25 -> -9 -> 0 deg over ~1.5s at 3-4 m/s right after
+# corner exit while a_cmd climbed 0 -> 2.15 m/s^2 -- an under-damped
+# correction that neither adaptive_R_rate nor steer_rate_anti_hunt (both
+# curvature/tracking-error gated, not speed gated) meaningfully touched.
+# boost_max=2.5, k=0.35 is deliberately moderate (~1.73x at 3 m/s, ~1.2x by
+# 15 m/s, ~1.0x by race speed) -- untested above this magnitude, re-validate
+# before raising it (see model_utils.low_speed_steer_rate_boost's docstring).
+# Mirrors mpc_core.py's low_speed_steer_rate_boost_enabled/_max/_k -- keep
+# all three in sync.
+#
+# DISABLED 2026-08-12: live testing found this also taxes turn-in (a fast
+# steering-rate change is needed there too), not just the post-exit
+# overcorrection it was meant to dampen -- it only gates on speed with no
+# curvature/lookahead signal to tell the two cases apart. Needs a lookahead-
+# curvature gate (fire only when NOT approaching/inside a corner) before
+# re-enabling; MAX/K left at their designed values for whenever that rework
+# happens.
+LOW_SPEED_STEER_RATE_BOOST_ENABLED = False
+LOW_SPEED_STEER_RATE_BOOST_MAX = 2.5
+LOW_SPEED_STEER_RATE_BOOST_K = 0.35
+
 # ADAPTIVE_R_RATE_ENABLE_IN_CORNERS — TEMPORARY/EXPERIMENTAL, fsds sim only.
 # (Renamed from ADAPTIVE_R_RATE_DISABLE_IN_CORNERS, whose True/False
 # polarity was inverted from what the name suggested.) adaptive_R_rate
@@ -483,6 +508,21 @@ ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_DIST_MAX = 25.0  # m — clamp ceiling
 # controller/model_utils.py::steer_effort_straight_boost. NOT VALIDATED.
 STEER_EFFORT_STRAIGHT_BOOST_ENABLED = True
 
+# LOOKAHEAD_STEER_EFFORT_RELAX_ENABLED / ADAPTIVE_Q_LOOKAHEAD_STEER_RELAX_FLOOR
+# — added 2026-08-12 to close a gap STEER_EFFORT_STRAIGHT_BOOST_ENABLED and
+# adaptive_R_scaling's speed penalty left open: neither ever pushes R[0,0]
+# BELOW baseline for an approaching corner (the straight boost only relaxes
+# back to baseline as a corner is detected; the speed penalty has no
+# lookahead relief at all). A car entering a corner hot therefore paid the
+# full speed-based steering-effort penalty exactly when it most needed to
+# commit to turn-in, which live driving reported as sluggish/late turn-in
+# at speed. See controller/model_utils.py::lookahead_steer_effort_relax
+# (mirrors lookahead_yaw_rate_relax's shape exactly). Mirrors mpc_core.py's
+# lookahead_steer_effort_relax_enabled/adaptive_q_lookahead_steer_relax_floor
+# -- keep both in sync.
+LOOKAHEAD_STEER_EFFORT_RELAX_ENABLED = True
+ADAPTIVE_Q_LOOKAHEAD_STEER_RELAX_FLOOR = 0.5
+
 # ------------------------------------------------------------------------------
 # Cost function weights (for simulator only)
 # ------------------------------------------------------------------------------
@@ -521,7 +561,7 @@ STEER_EFFORT_STRAIGHT_BOOST_ENABLED = True
 # Whole-run averages hide this: they are dominated by the ~50% of ticks on
 # straights, where a speed-error weight does little. Compare on the approach
 # phase when re-tuning this.
-Q_diag      = [5.20, 0.2, 1.52, 0.50, 5.0, 0.0, 0.0, 0.0]
+Q_diag      = [5.20, 0.2, 1.52, 0.50, 4.0, 0.0, 0.0, 0.0]
 # R_diag index -> input penalised:
 #   [0] delta_cmd  steering command effort (rad)
 #   [1] a_cmd      acceleration command effort (m/s^2)
@@ -574,8 +614,8 @@ R_rate_diag = [2.1, 2.6]
 # post-exit recovery -- because the same weight that frees up acceleration
 # also caps how hard the QP is willing to brake. See planning_control_sync.md's
 # "Accel/brake effort weight split" for the diagnosis and retuning history.
-R_A_ACCEL = 0.77
-R_A_BRAKE = 0.77
+R_A_ACCEL = 1.0
+R_A_BRAKE = 0.6
 
 
 # ------------------------------------------------------------------------------
@@ -630,8 +670,19 @@ ADAPTIVE_Q_DEMAND_HALF = 0.5
 # Q[0,0] lateral error — a FLOOR below 1.0, i.e. lateral cost is REDUCED on a
 # clear straight (nothing to track hard against), with a sharp fade so full
 # authority is back the moment a corner appears.
+#
+# EY_K lowered 20.0 -> 8.0 (matching ADAPTIVE_Q_STRAIGHT_K, the Q[2,2]/Q[3,3]
+# sibling boosts' shared fade sharpness) on 2026-08-12: the old k=20 snap
+# -back to full lateral weight was so sharp relative to the corner that the
+# car could still be drifting off-line on approach when it fired, arriving
+# at the corner already offset from the planned entry point -- "entering
+# the corner at the wrong place" per live driving feedback. k=8 recovers
+# Q[0,0] toward baseline earlier/more gradually relative to the lookahead
+# window, giving the car more distance to re-centre before turn-in.
+# Untested live; re-check straight-line hunting hasn't returned if this is
+# later revisited.
 ADAPTIVE_Q_STRAIGHT_EY_FLOOR = 0.7
-ADAPTIVE_Q_STRAIGHT_EY_K = 20.0
+ADAPTIVE_Q_STRAIGHT_EY_K = 8.0
 # Q[2,2] heading error — boosted on a straight to keep the car pointed
 # straight. Kept deliberately small: a strong straight-line heading weight
 # amplifies the QP's reaction to ordinary heading noise.

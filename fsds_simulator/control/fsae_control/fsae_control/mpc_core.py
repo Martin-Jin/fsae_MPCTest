@@ -515,6 +515,50 @@ def _adaptive_R_rate(
     return R
 
 
+def _low_speed_steer_rate_boost(
+    vx: float,
+    R_rate_base: np.ndarray,
+    enabled: bool,
+    boost_max: float = 2.5,
+    k: float = 0.35,
+) -> np.ndarray:
+    """
+    Speed-dependent steering-RATE cost, INVERTED from Stanley's k/(v+eps)
+    correction-gain shape: this makes fast steering CHANGES expensive at low
+    speed and relaxes toward a no-op as speed rises, rather than the other
+    way round. A literal Stanley-style "cheap correction at low speed" would
+    fight the failure mode this exists to fix: live telemetry showed
+    steering swinging +25 -> -9 -> 0 deg over ~1.5s at 3-4 m/s right after
+    corner exit (2026-08-12 log, t=6.9-7.7s) while a_cmd climbed 0 -> 2.15
+    m/s^2 -- an under-damped correction with plenty of speed-dependent
+    _adaptive_R_scaling steering-EFFORT cost already active (that curve
+    goes the OTHER way, cheaper at low speed) but nothing before this
+    penalising the RATE of a low-speed swing specifically.
+
+    Distinct from _adaptive_R_rate/_steer_rate_anti_hunt above: both of
+    those gate on curvature/tracking-error, not speed, so a low-speed
+    straight-line wobble with small kappa (as in the log) barely moves
+    either. This is a separate, speed-only multiplier composing on top of
+    them, not a replacement.
+
+    boost_max=2.5, k=0.35: deliberately moderate (~1.73x at 3 m/s, ~1.2x by
+    15 m/s, ~1.0x by race speed) so steering still has enough lattitude to
+    correct: a much higher boost_max would risk numbing out the very
+    correction authority needed to recover from the tracking error that
+    caused the wobble in the first place -- untested above this magnitude,
+    re-validate before raising it.
+
+    enabled=False returns R_rate_base untouched.
+    """
+    if not enabled:
+        return R_rate_base
+    vx = max(vx, 0.0)
+    scale = 1.0 + (boost_max - 1.0) / (1.0 + k * vx)
+    R = R_rate_base.copy()
+    R[0, 0] *= scale
+    return R
+
+
 def _steer_rate_anti_hunt(
     kappa: float,
     e_y: float,
@@ -830,6 +874,53 @@ def _lookahead_yaw_rate_relax(
         )
     else:
         frac = 1.0 - 1.0 / (1.0 + k_r_relax * kappa_max_abs)
+    return 1.0 - (1.0 - floor) * frac
+
+
+def _lookahead_steer_effort_relax(
+    kappa_max_abs: float,
+    car_speed: float = 0.0,
+    floor: float = 0.5,
+    demand_normalised: bool = True,
+    k_steer_relax: float = 8.0,
+    demand_half: float = 0.5,
+    ceiling_flat: float = 7.5,
+    ceiling_slope: float = 0.47,
+    ceiling_intercept: float = 2.46,
+) -> float:
+    """
+    Continuous (no threshold/discontinuity) multiplier on R[0,0] (steering
+    EFFORT) that FALLS smoothly as the largest curvature within the
+    lookahead window grows -- mirrors _lookahead_yaw_rate_relax's shape
+    exactly (same demand-normalised corner-severity curve), applied to
+    steering effort instead of yaw-rate penalty. 1.0 at kappa_max_abs=0 (no
+    corner ahead); floors toward `floor` (default
+    MPCParams.adaptive_q_lookahead_steer_relax_floor) as curvature rises.
+
+    Added 2026-08-12: closes a gap _adaptive_R_scaling and
+    _steer_effort_straight_boost left open. _adaptive_R_scaling makes R[0,0]
+    steadily MORE expensive as speed rises with no lookahead relief at all,
+    and _steer_effort_straight_boost only ever RAISES R[0,0] (on a clear
+    straight) or relaxes back to the unscaled baseline as a corner is
+    detected -- neither ever pushes R[0,0] BELOW baseline for an approaching
+    corner. A car entering a corner hot therefore paid the full speed
+    penalty on steering effort exactly when it most needed to commit to
+    turn-in, which live driving reported as sluggish/late turn-in at speed.
+    Composes multiplicatively with both of those existing R[0,0] scalings.
+
+    k_steer_relax is the legacy raw-kappa gain, used only when
+    demand_normalised is False.
+    """
+    if demand_normalised:
+        frac = _demand_frac(
+            _corner_demand(
+                kappa_max_abs, car_speed,
+                ceiling_flat, ceiling_slope, ceiling_intercept,
+            ),
+            demand_half,
+        )
+    else:
+        frac = 1.0 - 1.0 / (1.0 + k_steer_relax * kappa_max_abs)
     return 1.0 - (1.0 - floor) * frac
 
 
@@ -1165,6 +1256,17 @@ class MPCController:
             self.params.steer_effort_straight_boost_enabled
         )
 
+        # LOOKAHEAD_STEER_EFFORT_RELAX_ENABLED (settings.py, fsae_MPCTest) —
+        # see _lookahead_steer_effort_relax above. Distinct from
+        # steer_effort_straight_boost_enabled just above: that one only ever
+        # raises R[0,0] (on a straight) or relaxes back to baseline as a
+        # corner is detected; this one pushes R[0,0] BELOW baseline as the
+        # corner ahead gets more demanding, so steering effort gets cheaper
+        # specifically where turn-in commitment matters.
+        self.lookahead_steer_effort_relax_enabled = (
+            self.params.lookahead_steer_effort_relax_enabled
+        )
+
         # STEER_RATE_ANTI_HUNT_ENABLED (settings.py, fsae_MPCTest) — see
         # _steer_rate_anti_hunt above. Temporary experiment requested to
         # suppress low-error steering hunt; NOT validated against a live
@@ -1172,6 +1274,13 @@ class MPCController:
         # no-settings.py-on-the-car rule; keep in sync with fsae_MPCTest's
         # copy while this is being tried.
         self.steer_rate_anti_hunt_enabled = self.params.steer_rate_anti_hunt_enabled
+
+        # LOW_SPEED_STEER_RATE_BOOST_ENABLED (settings.py, fsae_MPCTest) —
+        # see _low_speed_steer_rate_boost's docstring for the mechanism and
+        # the log evidence motivating it (2026-08-12 low-speed exit wobble).
+        self.low_speed_steer_rate_boost_enabled = (
+            self.params.low_speed_steer_rate_boost_enabled
+        )
 
         # ADAPTIVE_R_RATE_ENABLE_IN_CORNERS (settings.py, fsae_MPCTest) —
         # see _adaptive_R_rate's enable_in_corners param above (renamed from
@@ -1843,6 +1952,20 @@ class MPCController:
             adapt["m_R_straight"] = m
         else:
             adapt["m_R_straight"] = 1.0
+        if self.lookahead_steer_effort_relax_enabled:
+            m = _lookahead_steer_effort_relax(
+                kappa_max_abs, car_speed,
+                floor=self.params.adaptive_q_lookahead_steer_relax_floor,
+                demand_normalised=self.params.adaptive_q_demand_normalised,
+                demand_half=self.params.adaptive_q_demand_half,
+                ceiling_flat=self.params.alat_ceiling_flat,
+                ceiling_slope=self.params.alat_ceiling_slope,
+                ceiling_intercept=self.params.alat_ceiling_intercept,
+            )
+            R_scaled[0, 0] *= m
+            adapt["m_R_steer_relax"] = m
+        else:
+            adapt["m_R_steer_relax"] = 1.0
         R_rate_scaled = _adaptive_R_rate(
             kappa, self.R_rate,
             enable_in_corners=self.adaptive_r_rate_enable_in_corners,
@@ -1862,6 +1985,15 @@ class MPCController:
         )
         adapt["m_Rrate_antihunt"] = (
             float(R_rate_scaled[0, 0] / _rr_before_hunt) if _rr_before_hunt else 1.0
+        )
+        _rr_before_lowspeed = float(R_rate_scaled[0, 0])
+        R_rate_scaled = _low_speed_steer_rate_boost(
+            car_speed, R_rate_scaled, self.low_speed_steer_rate_boost_enabled,
+            boost_max=self.params.low_speed_steer_rate_boost_max,
+            k=self.params.low_speed_steer_rate_boost_k,
+        )
+        adapt["m_Rrate_lowspeed"] = (
+            float(R_rate_scaled[0, 0] / _rr_before_lowspeed) if _rr_before_lowspeed else 1.0
         )
         # ── Lookahead corner-anticipation Q-boost (adaptive_q_lookahead) ───
         # Applied to self.Q FIRST, then _adaptive_Q_scaling's centred-

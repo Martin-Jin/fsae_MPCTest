@@ -47,7 +47,8 @@ not a replacement for them.
 | `q_r` | yaw rate | damps spin/yaw oscillation |
 | `q_e_v` | speed error (car speed − target speed) | tracks the speed profile |
 | `r_delta` | steering command effort | discourages large steering angles |
-| `r_a` | acceleration command effort | discourages large throttle/brake commands |
+| `r_a_accel` | acceleration command effort, `a_cmd >= 0` | discourages large throttle commands |
+| `r_a_brake` | acceleration command effort, `a_cmd < 0` | discourages large braking commands |
 | `r_rate_delta` | steering rate of change | discourages jerky steering |
 | `r_rate_a` | acceleration rate of change | discourages jerky throttle/brake |
 | `terminal_q_scale` | final predicted state in the horizon | extra weight on where the plan ends up |
@@ -61,14 +62,24 @@ masked or amplified by another, so isolate.
   the current `Q_diag`/`R_diag`/`R_rate_diag` set. Changing it changes the
   effective tuning of everything else; re-validate fully rather than
   treating it as an independent knob.
-- `r_a` — because `a_cmd` is a *rate* term, its effort cost is paid
-  immediately per tick while its benefit (removed speed error) accrues
-  slowly; a naively "reasonable-looking" `r_a` can leave a large fraction of
-  the car's real braking/accel authority unused. If braking/acceleration
-  looks underused relative to what the car demonstrably sustains elsewhere
-  in the same lap, `r_a` is the first thing to lower — but sweep around the
-  current value rather than assuming further cuts keep helping; it has a
-  measured local optimum, not a monotonic "lower is better" relationship.
+- `r_a_accel` / `r_a_brake` — because `a_cmd` is a *rate* term, its effort
+  cost is paid immediately per tick while its benefit (removed speed error)
+  accrues slowly; a naively "reasonable-looking" weight can leave a large
+  fraction of the car's real braking/accel authority unused. If
+  braking/acceleration looks underused relative to what the car demonstrably
+  sustains elsewhere in the same lap, the corresponding one of these is the
+  first thing to lower — but sweep around the current value rather than
+  assuming further cuts keep helping; a single shared `r_a` had a measured
+  local optimum (0.77, see the still-`r_a`-named CHANGELOG history in
+  `settings.py`), not a monotonic "lower is better" relationship, before it
+  was split into these two independent weights on 2026-08-12 (see
+  `planning_control_sync.md`'s "Accel/brake effort weight split"). Lowering
+  ONLY `r_a_brake` (leaving `r_a_accel` fixed) is the more targeted lever if
+  the specific symptom is weak braking without also making the car
+  over-eager to accelerate — that used to be impossible with the single
+  shared weight. As of this writing these two are being actively live-tuned;
+  check `mpc_params.py` for the current values rather than trusting a number
+  quoted here.
 - `q_e_v` — has more effect on the corner-approach phase specifically than
   on whole-run averages, since a large fraction of any lap is spent on
   straights where speed error is naturally small. When re-tuning this,
@@ -218,11 +229,24 @@ to restore the old raw-curvature curve for A/B comparison.
 | `adaptive_q_lookahead_k_epsi_approach` | legacy ramp sharpness (epsi approach) |
 | `adaptive_q_lookahead_r_floor` | min `Q[3,3]` multiplier at high lookahead curvature |
 | `adaptive_q_lookahead_k_r_relax` | legacy ramp sharpness (yaw-rate relax) |
+| `adaptive_q_lookahead_steer_relax_floor` (flag: `lookahead_steer_effort_relax_enabled`) | min `R[0,0]` (steering effort) multiplier at high corner demand — added 2026-08-12, mirrors `adaptive_q_lookahead_r_floor`'s shape; see below |
 | `adaptive_q_demand_half` | corner demand at which a demand-normalised boost reaches half its max — lower means boosts saturate on easier corners |
 
 **Known constraints**: not validated against `VALIDATION_SUITE`/recorded-map
 or any live log as a whole mechanism; treat changes here as experimental
 until re-validated.
+
+**`adaptive_q_lookahead_steer_relax_floor` specifically (added 2026-08-12)**:
+closes a gap the speed-based steering-effort penalty (`adaptive_R_scaling`,
+§1) and the straight-line steering-effort boost (`steer_effort_straight_boost_max`,
+§4.7) left open — neither ever pushes `R[0,0]` BELOW its baseline for an
+approaching corner, so a car entering a corner hot paid the full speed
+penalty on steering effort exactly when it most needed to commit to turn-in.
+This mirrors `adaptive_q_lookahead_r_floor`'s existing yaw-rate relief
+exactly, applied to steering effort instead. See
+`planning_control_sync.md`'s "Steering-effort relaxation approaching a
+corner" for the full diagnosis. Not yet live-tested in isolation as of this
+writing.
 
 ### 4.5 Exit-boost decay distance
 
@@ -271,7 +295,7 @@ sharply as a corner enters the window:
 
 | Field | Purpose |
 |---|---|
-| `adaptive_q_straight_ey_floor` / `_k` | reduces `Q[0,0]` (lateral cost) on a clear straight — nothing to track hard against — with a sharp fade so full authority returns the moment a corner appears |
+| `adaptive_q_straight_ey_floor` / `_k` | reduces `Q[0,0]` (lateral cost) on a clear straight — nothing to track hard against — fading back to full authority as a corner appears. `_k` lowered 20.0 → 8.0 on 2026-08-12 (now matching `adaptive_q_straight_k` below) — the old, much sharper fade could leave the car still mid-recovery from the relaxation exactly when turn-in needed full lateral authority, entering the corner already off-line; see `planning_control_sync.md`'s "Straight-line lateral-error snap-back was too sharp" |
 | `adaptive_q_straight_epsi_boost_max` | boosts `Q[2,2]` (heading error) on a straight to keep the car pointed straight |
 | `adaptive_q_straight_r_boost_max` | boosts `Q[3,3]` (yaw rate) on a straight to damp yaw wander |
 | `adaptive_q_straight_k` | shared fade-out sharpness for the epsi/yaw-rate boosts above |
@@ -304,6 +328,30 @@ being accurate. Must stay in sync with `model/vehicle_physics.py`'s
 `alat_ceiling_at()`. Don't hand-tune these three values for "feel" — if the
 ceiling law is wrong, re-measure it with `ros2/run_steering_sysid.sh` /
 `ros2/run_steering_step.sh`, don't guess.
+
+### 4.9 Low-speed steering-rate boost — DISABLED, do not re-enable without a rework
+
+| Field | Purpose |
+|---|---|
+| `low_speed_steer_rate_boost_enabled` | extra `R_rate[0,0]` penalty at low speed. **`False` — disabled 2026-08-12.** |
+| `low_speed_steer_rate_boost_max` | `R_rate[0,0]` multiplier at `vx=0`, decaying toward 1.0 as speed rises |
+| `low_speed_steer_rate_boost_k` | decay sharpness of the boost vs. speed |
+
+**Why this exists but is off**: added to fix a low-speed (3-4 m/s)
+post-corner-exit steering wobble (steering swinging through a large,
+under-damped correction while accelerating) that neither §4.2 nor §4.3
+touched, since both gate on curvature/tracking-error rather than speed.
+Deliberately INVERTED from a Stanley-style `k/(v+eps)` shape — this makes
+fast steering-rate changes MORE expensive at low speed, not cheaper.
+Live-tested the same day it was added and found to also suppress fast
+turn-in (which also needs a fast steering-rate change at low speed) —
+because it only gates on speed, it cannot distinguish "post-exit
+overcorrection" from "turn-in," and taxed both identically. **Do not
+re-enable without first adding a curvature/lookahead gate** so it fires
+only when the car is NOT approaching or inside a corner — see
+`planning_control_sync.md`'s "Low-speed steering-rate boost" section for
+the full incident and the values (`boost_max=2.5, k=0.35`) left in place for
+that future rework.
 
 ---
 
