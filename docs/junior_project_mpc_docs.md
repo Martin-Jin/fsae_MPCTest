@@ -202,6 +202,8 @@ In plain English, three things are being penalised at once:
 | $R_{rate}$ (rate cost) | How jerky/abrupt the commands are, tick to tick |
 | Slack | A soft penalty for crossing a ±3.5 m lane boundary, allowed only as a last resort |
 
+**Why the lane boundary needs slack at all.** The bound is `e_y <= 3.5 + slack` (and symmetrically for `-3.5`) rather than a plain hard `e_y <= 3.5`. The reason is feasibility, not tuning: `x_0` is pinned to the *measured* state by the hard constraint above, so if the car is already outside the corridor right now (e.g. recovering from an off-track excursion), a plain hard bound would demand `x_0 <= 3.5` while `x_0 == e_{y,\text{measured}} = 4.0`, say — two constraints that directly contradict each other, with no feasible solution at all. The solver would return nothing, not even a "best effort" trajectory. `slack` absorbs that contradiction (it can grow to cover however far outside the corridor the car currently is), and the large `W_slack = 10000` weight then pressures the solver to shrink it back toward zero as fast as the dynamics allow. See [architecture.md](architecture.md#L911) for the full explanation.
+
 Subject to hard constraints that can never be broken:
 
 $$
