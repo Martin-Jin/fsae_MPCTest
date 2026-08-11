@@ -6,8 +6,8 @@ LAYOUT
 ------
     tracks/<track_name>/
         cone_map.json      the cone_recorder capture (the source of truth)
-        speed_profile.csv  tuner.export_speed_profile output (centreline + oracle speed)
-        raceline.csv       tuner.raceline_optimizer output (minimum-time line)
+        speed_profile.csv  tuner.tools.export_speed_profile output (centreline + oracle speed)
+        raceline.csv       tuner.tools.raceline_optimizer output (minimum-time line)
 
 WHY THIS EXISTS
 ---------------

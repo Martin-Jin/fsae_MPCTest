@@ -10,10 +10,10 @@ todo.md
 # raceline_export.csv, so it is a runtime dependency of the default
 # launch config, not a throwaway output -- an ignored copy would
 # leave a fresh clone pointing at a missing file. Regenerate with
-#   python3 -m tuner.raceline_optimizer      (raceline)
-#   python3 -m tuner.export_speed_profile    (centreline + speeds)
+#   python3 -m tuner.tools.raceline_optimizer      (raceline)
+#   python3 -m tuner.tools.export_speed_profile    (centreline + speeds)
 
-# fsds_simulator/recorded_runs/ (2026-08-11): tuner/plot_control_log.py's
+# fsds_simulator/recorded_runs/ (2026-08-11): tuner/tools/plot_playback.py's
 # auto-search target for control-telemetry CSVs (see its --recorded-runs
 # default and docs/developer_guide.md's "Plotting exported CSV telemetry").
 # User-generated per-run data, same rationale as the outer FSDS repo's own

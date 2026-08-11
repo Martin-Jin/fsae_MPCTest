@@ -1,5 +1,5 @@
 """
-Does REF_HEADING_RATE_LIMIT's recorded-map improvement (tuner/ref_heading_limiter_ab.py)
+Does REF_HEADING_RATE_LIMIT's recorded-map improvement (tuner/checks/ref_heading_limiter_ab.py)
 hold across settings.VALIDATION_SUITE, or is it a one-map artifact?
 
 Per the standing rig-validation lesson -- a plausible-looking improvement on
@@ -9,7 +9,7 @@ before being trusted, not just the one recorded map.
 
 Usage
 -----
-    python3 -m tuner.ref_heading_limiter_suite_check
+    python3 -m tuner.checks.ref_heading_limiter_suite_check
 """
 import os
 os.environ.setdefault("MPLBACKEND", "Agg")

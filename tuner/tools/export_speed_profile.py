@@ -27,11 +27,11 @@ speed_profile.py change that would alter the oracle profile).
 
 Usage
 -----
-    python3 -m tuner.export_speed_profile                    # the default track
-    python3 -m tuner.export_speed_profile comp_test_map_3    # a track by name
-    python3 -m tuner.export_speed_profile --list             # what tracks exist
-    python3 -m tuner.export_speed_profile /path/to/cone_map.json out.csv
-    python3 -m tuner.export_speed_profile comp_test_map_3 --open-loop  # stop at finish
+    python3 -m tuner.tools.export_speed_profile                    # the default track
+    python3 -m tuner.tools.export_speed_profile comp_test_map_3    # a track by name
+    python3 -m tuner.tools.export_speed_profile --list             # what tracks exist
+    python3 -m tuner.tools.export_speed_profile /path/to/cone_map.json out.csv
+    python3 -m tuner.tools.export_speed_profile comp_test_map_3 --open-loop  # stop at finish
 
 By default the profile is computed closed-loop (a continuous lap: point 0
 gets a braking obligation from the fast point before it at the end of the
@@ -51,7 +51,7 @@ import sys
 import numpy as np
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(_HERE))
+sys.path.insert(0, os.path.dirname(os.path.dirname(_HERE)))
 
 from sim.track_io import load_recorded_track  # noqa: E402
 from tracks import (  # noqa: E402
@@ -66,7 +66,7 @@ def export(map_path: str, out_path: str, closed_loop: bool = True) -> None:
     )
     with open(out_path, "w") as f:
         f.write("# x,y,psi,v_target -- oracle path + speed profile exported by "
-                "tuner.export_speed_profile from a cone_recorder map.\n")
+                "tuner.tools.export_speed_profile from a cone_recorder map.\n")
         f.write(f"# source_map={os.path.abspath(map_path)}\n")
         f.write("x,y,psi,v_target\n")
         for x, y, psi, v in zip(path_X, path_Y, path_Psi, path_v):

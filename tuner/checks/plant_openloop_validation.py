@@ -23,9 +23,9 @@ held-out data: nothing in the ceiling model was ever fitted to it.
 
 Usage
 -----
-    python3 -m tuner.plant_openloop_validation              # both, current params
-    python3 -m tuner.plant_openloop_validation --ab         # A/B the ceiling laws
-    python3 -m tuner.plant_openloop_validation --robustness # rig confound checks
+    python3 -m tuner.checks.plant_openloop_validation              # both, current params
+    python3 -m tuner.checks.plant_openloop_validation --ab         # A/B the ceiling laws
+    python3 -m tuner.checks.plant_openloop_validation --robustness # rig confound checks
 
 Interpreting the output
 -----------------------
@@ -43,7 +43,7 @@ import sys
 import numpy as np
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(_HERE))
+sys.path.insert(0, os.path.dirname(os.path.dirname(_HERE)))
 
 from model.vehicle_physics import (  # noqa: E402
     IDX_R, IDX_VX, VehicleParams, init_plant_state, step_nonlinear_plant,

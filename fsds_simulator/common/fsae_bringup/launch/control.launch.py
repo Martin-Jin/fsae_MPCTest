@@ -181,7 +181,7 @@ def generate_launch_description():
                 "fsae_planning clone can use it immediately -- no "
                 "fsae_MPCTest checkout required to READ it (only to produce "
                 "a NEW one; see tracks/README or fsae_MPCTest's "
-                "tuner/export_speed_profile.py). Has no effect unless "
+                "tuner/tools/export_speed_profile.py). Has no effect unless "
                 "use_precomputed_speed:=true. Applies to `mpc`, "
                 "`mpc_standalone`, AND `stanley` (all three declare this "
                 "param) -- letting Stanley and MPC runs on the same track "
@@ -202,7 +202,7 @@ def generate_launch_description():
             )),
         DeclareLaunchArgument(
             # Same x,y,psi,v_target file FORMAT as map_path, but a different
-            # default FILE: the track's raceline.csv (tuner/raceline_optimizer.py's
+            # default FILE: the track's raceline.csv (tuner/tools/raceline_optimizer.py's
             # minimum-time line) rather than its speed_profile.csv (the
             # centreline). The MPC's optimum is always e_y=0 on whatever path
             # it is given, so it can never invent a racing line from a

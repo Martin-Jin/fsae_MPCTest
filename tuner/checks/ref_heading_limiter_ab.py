@@ -10,7 +10,7 @@ settings module after import has no effect on names imported via
 
 Usage
 -----
-    python3 -m tuner.ref_heading_limiter_ab
+    python3 -m tuner.checks.ref_heading_limiter_ab
 """
 import os
 os.environ.setdefault("MPLBACKEND", "Agg")

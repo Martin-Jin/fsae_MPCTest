@@ -25,7 +25,7 @@ Discriminators, in order of strength:
      at all once they arrive.
 
 Usage:
-    python -m tuner.steering_step_analysis <steering_step_log.csv>
+    python -m tuner.checks.steering_step_analysis <steering_step_log.csv>
 """
 import sys
 

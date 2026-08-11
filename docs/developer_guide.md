@@ -13,7 +13,8 @@ technical explanation of *why* the system is built this way, see
 3. [Simulator integration](#simulator-integration)
    - [Recording, exporting and driving a track](#recording-exporting-and-driving-a-track)
    - [CSV telemetry logging](#csv-telemetry-logging)
-   - [Plotting exported CSV telemetry](#plotting-exported-csv-telemetry)
+   - [The tuner/ layout at a glance](#the-tuner-layout-at-a-glance)
+   - [Plotting and scrubbing exported CSV telemetry](#plotting-and-scrubbing-exported-csv-telemetry)
    - [Launching nodes with FSDS on Windows (WSL + Docker)](#launching-nodes-with-fsds-on-windows-wsl--docker)
 4. [Manual Drive Mode](#manual-drive-mode)
 5. [Dependencies](#dependencies)
@@ -358,8 +359,8 @@ Everything for one track sits in one directory:
 ```
 tracks/<name>/
     cone_map.json      the cone_recorder capture (the source of truth)
-    speed_profile.csv  tuner.export_speed_profile output (centreline + oracle speed)
-    raceline.csv       tuner.raceline_optimizer output (minimum-time line)
+    speed_profile.csv  tuner.tools.export_speed_profile output (centreline + oracle speed)
+    raceline.csv       tuner.tools.raceline_optimizer output (minimum-time line)
 ```
 
 **The physical directory is `ros2/src/fsae_planning/tracks/<name>/` — inside
@@ -378,7 +379,7 @@ changes under that path are local edits to that checkout only.
 `comp_test_map_3` is the track every baseline number in this repo's docs
 (`docs/logs/sim_to_real_investigation.md`, this guide, CLAUDE.md) is quoted against —
 don't overwrite it; give a new recording its own name. List what exists with
-`python -m tuner.export_speed_profile --list` (from `fsae_MPCTest/`), or
+`python -m tuner.tools.export_speed_profile --list` (from `fsae_MPCTest/`), or
 `ls ../ros2/src/fsae_planning/tracks/` (from `fsae_MPCTest/`).
 
 #### 1. Record a lap
@@ -449,8 +450,8 @@ Two independent offline tools turn a recorded `cone_map.json` into the CSVs
 the live controller can read. Run from `fsae_MPCTest/`:
 
 ```bash
-python -m tuner.export_speed_profile <name>   # -> ../ros2/src/fsae_planning/tracks/<name>/speed_profile.csv
-python -m tuner.raceline_optimizer   <name>    # -> ../ros2/src/fsae_planning/tracks/<name>/raceline.csv
+python -m tuner.tools.export_speed_profile <name>   # -> ../ros2/src/fsae_planning/tracks/<name>/speed_profile.csv
+python -m tuner.tools.raceline_optimizer   <name>    # -> ../ros2/src/fsae_planning/tracks/<name>/raceline.csv
 ```
 
 (the output lands in `fsae_planning`'s `tracks/`, not this repo's — see
@@ -548,8 +549,8 @@ Putting it all together, end to end:
 # 2. Export (from fsae_MPCTest/ -- writes into fsae_planning's tracks/,
 #    which requires fsae_MPCTest to be checked out; driving in steps 1 and 3
 #    does not)
-python -m tuner.export_speed_profile <new-name>
-python -m tuner.raceline_optimizer   <new-name>
+python -m tuner.tools.export_speed_profile <new-name>
+python -m tuner.tools.raceline_optimizer   <new-name>
 
 # 3. Drive it -- set TRACK=<new-name>, both toggles back to true
 ./ros2/launch_all.sh
@@ -603,47 +604,131 @@ Logging and cone recording are independent toggles and can be combined freely
 you want to both replay through the CSV telemetry and reload into the GUI as
 a recorded track.
 
-### Plotting exported CSV telemetry
+### The tuner/ layout at a glance
 
-`tuner/plot_control_log.py` turns one or more of the control CSVs above into
-an interactive matplotlib figure — one stacked row per signal, shared time
-axis, and a checkbox panel that toggles individual lines (per signal, per
-file) on and off. Built for eyeballing a single run or comparing two
-controllers head-to-head (e.g. an MPC log against a Stanley log recorded on
-the same `map_path`) without writing a one-off script each time.
+`tuner/` has grown past the offline weight search it started as — it now
+holds the CMA-ES tuner, its benchmark/scoring companion, shared CSV-parsing
+helpers, reusable standalone tools, and a library of one-off/reusable
+sim-to-real investigation scripts. Three tiers:
+
+**`tuner/` root — core infra, imported by the other two tiers:**
+
+| File | Purpose |
+|---|---|
+| `offline_tuner.py` | CMA-ES weight search — see [Running the Offline Tuner](#running-the-offline-tuner). |
+| `performance_stats.py` | Scoring/benchmarking a fixed weight set across `VALIDATION_SUITE`. |
+| `csv_log.py` | Shared CSV parsing helpers (comment-header stripping, malformed-row filtering, column loading) used by every script below that reads a telemetry CSV. |
+| `recorded_map_rollout.py` | Headless rollout baseline against the default recorded map (`comp_test_map_3`) — the shared "run the sim against this map" entry point `tuner/checks/` scripts build on. |
+
+**`tuner/tools/` — reusable standalone diagnostic tools:**
+
+| File | Purpose |
+|---|---|
+| `plot_playback.py` | Time-scrubbing map/telemetry viewer — see [Plotting and scrubbing exported CSV telemetry](#plotting-and-scrubbing-exported-csv-telemetry) below. |
+| `export_speed_profile.py` | Exports a recorded cone map's oracle path + speed profile to CSV — see [Export the speed profile and raceline](#2-export-the-speed-profile-and-raceline) above. |
+| `raceline_optimizer.py` | Minimum-time racing line optimiser, same CSV output — see the same section above. |
+
+**`tuner/checks/` — one-off and reusable investigation scripts from
+sim-to-real debugging.** These came out of the saturation-gap investigation
+in [docs/planning_control_sync.md](planning_control_sync.md) and
+[docs/logs/sim_to_real_investigation.md](logs/sim_to_real_investigation.md) —
+see those docs for the investigation narrative behind any of them rather than
+duplicating it here:
+
+| File | Purpose |
+|---|---|
+| `analyze_adaptive_log.py` | Attributes tracking error to individual adaptive-gain features from a live control CSV, per corner — re-run on any new log carrying the adaptive-feature trace columns. |
+| `live_vs_sim_diagnostics.py` | Like-for-like live-vs-sim comparison on speed-tracking error and saturation-episode structure, not just aggregate saturation %. |
+| `plant_openloop_validation.py` | Replays measured open-loop FSDS experiments through `model/vehicle_physics.py` and reports residuals — the check for "does our plant model now reproduce what FSDS does?". |
+| `ref_heading_limiter_ab.py` / `ref_heading_limiter_suite_check.py` | A/B and suite-wide checks for `REF_HEADING_RATE_LIMIT` (see [tuning.md](tuning.md)'s §3) — re-run both before re-enabling that limiter. |
+| `steering_response.py` | Fits the live car's steering→yaw response from a control CSV (understeer coefficient, full-lock deficit). |
+| `steering_step_analysis.py` | Identifies which mechanism caps FSDS's yaw rate from step-input transients (hard limit / scaled authority / active damping). |
+| `steering_sysid_analysis.py` | Analyses an open-loop steering system-ID sweep log and names the steering-response gap mechanism. |
+
+### Plotting and scrubbing exported CSV telemetry
+
+`tuner/tools/plot_playback.py` turns one or more of the control CSVs above into an
+interactive matplotlib figure that answers both "what did this signal do
+over the whole run" and "where was the car, and what did the path look
+like, at this specific moment" at once. It shows, side by side:
+
+- **left:** the scored signals (`e_y`, `e_psi_deg`, `kappa`, `steer_deg`,
+  `v`) stacked on a shared time axis — one line per signal per run when
+  comparing multiple logs, with a vertical cursor marking "now"
+- **top right:** each run's full driven trajectory, plus the planner's
+  most-recent path snapshot at "now", with a triangle marking that run's
+  car position/heading
+- **bottom right:** the same scene zoomed tightly to the car's current
+  section of track (with `e_y`/`e_psi` in its title)
+
+A slider under the metrics panel scrubs a shared "now" time through the
+run; dragging it updates every run's cursor, triangle, and path overlay
+together. Each run gets its own colour, used consistently for its signal
+lines, driven trajectory, path overlay, and car marker, and — when more
+than one log is given — its own checkbox to show/hide it everywhere at
+once. Built for eyeballing a single run or comparing two controllers
+head-to-head (e.g. an MPC log against a Stanley log recorded on the same
+`map_path`) without writing a one-off script each time.
 
 ```bash
-# no CSV given -> auto-loads the newest log in fsds_simulator/recorded_runs/
-python -m tuner.plot_control_log
+# no CSV given -> auto-loads and overlays every run in
+# fsds_simulator/recorded_runs/ (one CSV -> single-run playback,
+# several -> automatic comparison with a checkbox per run)
+python -m tuner.tools.plot_playback
+
+# same, but only the newest run if recorded_runs/ has several and you
+# just want the latest one
+python -m tuner.tools.plot_playback --latest-only
 
 # default signal set: e_y, e_psi_deg, kappa, steer_deg, v (actual + desired)
-python -m tuner.plot_control_log ~/fsae_logs/mpc_standalone_control_<ts>.csv
+python -m tuner.tools.plot_playback ~/fsae_logs/mpc_standalone_control_<ts>.csv
 
-# overlay two runs on the same axes -- each file gets its own colour
-python -m tuner.plot_control_log \
+# overlay two explicit runs -- each gets its own colour, signal lines,
+# marker, trajectory, and path overlay, plus a checkbox to hide/show it
+python -m tuner.tools.plot_playback \
     ~/fsae_logs/mpc_standalone_control_<ts>.csv \
     ~/fsae_logs/stanley_control_<ts>.csv
 
-# choose your own signals (any numeric column the log has -- see below)
-python -m tuner.plot_control_log run.csv --signals e_y,yaw_rate,solve_ms
-
-# list every numeric column actually present in a log, then exit
-python -m tuner.plot_control_log run.csv --list-signals
+# choose your own signals (any numeric column the log has)
+python -m tuner.tools.plot_playback run.csv --signals e_y,yaw_rate,solve_ms
 ```
+
+On Windows PowerShell, drop the `\` line continuations (use backtick `` ` ``
+or put everything on one line) and don't rely on `~` — PowerShell doesn't
+expand either the way bash does, and a bad path there fails with a raw
+`FileNotFoundError` from `csv_log.py`'s `open()`, not a friendlier CLI error.
+The multi-run examples above are bash syntax; on PowerShell write e.g.
+`python -m tuner.tools.plot_playback $HOME\fsae_logs\mpc_standalone_control_<ts>.csv $HOME\fsae_logs\stanley_control_<ts>.csv`
+on one line, or use the backtick continuation character in place of `\`.
 
 Run from `fsae_MPCTest/` (so `tuner` resolves as a package). A signal
 missing from a given log (e.g. the `m_Q_*`/`m_R_*` adaptive-weight columns,
-`solve_ms`, on a Stanley run) is skipped for that file with a warning rather
-than plotting an empty line — the two controllers' logs don't need identical
-columns to overlay the ones they share. The figure title and each line's
-legend label include the run's tag and, when present in the header,
-`composite_score`/`lap_time_s`, so a comparison plot is self-labelled without
-cross-referencing the raw CSV.
+`solve_ms`, on a Stanley run) is skipped for that run with a warning rather
+than plotting an empty line — runs don't need identical columns to overlay
+the ones they share. The figure title and each line's legend label include
+the run's tag and, when present in the header, `composite_score`/
+`lap_time_s`, so a comparison plot is self-labelled without cross-referencing
+the raw CSV.
+
+Each run's sibling `<tag>_path_<stamp>.csv` (same directory, same timestamp,
+the file `ControlLogger` writes alongside every control CSV) is loaded
+automatically if present, to draw that run's path as it looked at each
+moment — copy both files together into `recorded_runs/`, not just the
+`_control_` one, or that run's map/zoom views fall back to showing only its
+own driven trajectory with no live path overlay. The path CSV is a time
+series of path snapshots (see `telemetry_logger.py`'s `log_path()`); the
+slider always shows the most recent snapshot at or before the selected
+time, not an interpolation between two snapshots. Runs may have different
+`t` sampling or length (e.g. an 80-sample Stanley log next to a 50-sample
+MPC log) — the slider drives one shared time value, and each run
+independently looks up its own nearest sample, so mismatched logs still
+overlay correctly.
 
 **Auto-search folder: `fsds_simulator/recorded_runs/`.** Running the script
 with no CSV argument searches this folder for `*_control_*.csv` files and
-loads the newest one (by the epoch-seconds timestamp `ControlLogger` stamps
-into the filename, not file mtime). The folder starts empty (tracked via a
+loads and overlays all of them, oldest to newest (by the epoch-seconds
+timestamp `ControlLogger` stamps into the filename, not file mtime) — pass
+`--latest-only` to load just the newest one instead. The folder starts empty (tracked via a
 `.gitkeep`; its CSVs are gitignored, same rationale as the outer FSDS repo's
 `fsae_logs/`) — nothing writes into it automatically yet. A live run's
 actual output location is `log_dir` (default `~/fsae_logs`, or whatever
@@ -655,44 +740,12 @@ this feature), so after a run, copy or move the CSV pair yourself:
 cp ~/fsae_logs/mpc_standalone_control_<ts>.csv \
    ~/fsae_logs/mpc_standalone_path_<ts>.csv \
    fsds_simulator/recorded_runs/
-python -m tuner.plot_control_log       # picks up the one you just copied in
+python -m tuner.tools.plot_playback       # picks up the one you just copied in
 ```
 
 Point the search elsewhere with `--recorded-runs <dir>` (e.g. to auto-load
 straight out of `~/fsae_logs` without copying, or to compare two specific
 takes you keep in their own directories).
-
-### Scrubbing a single run's map position over time
-
-`tuner/plot_playback.py` is a different tool for a different question:
-`plot_control_log.py` answers "what did this signal do over the whole run,"
-this one answers "where was the car, and what did the path look like, at
-this specific moment." It shows one run's scored signals (left), the full
-driven trajectory with the planner's live path overlay (top right), and a
-tightly zoomed view of the car's current section of track (bottom right,
-with `e_y`/`e_psi` in its title) — all driven by one time slider under the
-metrics panel.
-
-```bash
-# no CSV given -> auto-loads the newest log in fsds_simulator/recorded_runs/,
-# same search behaviour as plot_control_log.py
-python -m tuner.plot_playback
-
-python -m tuner.plot_playback ~/fsae_logs/mpc_standalone_control_<ts>.csv
-
-# choose your own left-panel signal set
-python -m tuner.plot_playback run.csv --signals e_y,e_psi_deg,yaw_rate
-```
-
-It reads the sibling `<tag>_path_<stamp>.csv` automatically (same directory,
-same timestamp, the file `ControlLogger` writes alongside every control
-CSV) to draw the planner's path as it looked at each moment — copy both
-files together into `recorded_runs/`, not just the `_control_` one, or the
-map/zoom views fall back to showing only the car's own driven trajectory
-with no live path overlay. The path CSV is a time series of path snapshots
-(see `telemetry_logger.py`'s `log_path()`); the slider always shows the
-most recent snapshot at or before the selected time, not an interpolation
-between two snapshots.
 
 ### Launching nodes with FSDS on Windows (WSL + Docker)
 

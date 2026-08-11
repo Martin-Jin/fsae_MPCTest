@@ -121,7 +121,7 @@ def generate_launch_description():
             default_value='/home/Formula-Student-Driverless-Simulator/ros2/src/fsae_planning/tracks/comp_test_map_3/raceline.csv',
             description="Passed through to control.launch.py — see that file's "
                         "path_map_path description. Points at the raceline "
-                        "(raceline.csv, tuner/raceline_optimizer.py's "
+                        "(raceline.csv, tuner/tools/raceline_optimizer.py's "
                         "minimum-time line) rather than the centreline "
                         "(speed_profile.csv) so the tracked geometry actually "
                         "contains the widen-entry/clip-apex shape a corner "

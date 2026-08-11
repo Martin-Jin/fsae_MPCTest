@@ -390,7 +390,7 @@ def dynamic_speed_cap(waypoints, v_max=15.0, v_min=1.5,
 
 def _load_profile_csv(csv_path: str):
     """
-    Shared reader for fsae_MPCTest's tuner/export_speed_profile.py CSVs
+    Shared reader for fsae_MPCTest's tuner/tools/export_speed_profile.py CSVs
     (header "x,y,psi,v_target"; comment lines starting with '#' skipped).
 
     Deliberately a plain reader with no scipy/centreline-reconstruction
@@ -423,7 +423,7 @@ def _load_profile_csv(csv_path: str):
 def load_speed_profile_csv(csv_path: str):
     """
     Load a pre-computed (x, y, v_target) speed profile exported by
-    fsae_MPCTest's tuner/export_speed_profile.py.
+    fsae_MPCTest's tuner/tools/export_speed_profile.py.
 
     For a track that's already been mapped, this replaces curvature_speed()'s
     per-tick re-derivation with a lookup against an oracle profile computed
@@ -452,7 +452,7 @@ def load_speed_profile_csv(csv_path: str):
 def load_path_profile_csv(csv_path: str):
     """
     Load a pre-computed (x, y) path exported by fsae_MPCTest's
-    tuner/export_speed_profile.py, for use as a drop-in replacement of the
+    tuner/tools/export_speed_profile.py, for use as a drop-in replacement of the
     live planner's /fsae/planning/selected_trajectory centreline.
 
     For a track that's already been mapped, this removes the live planner

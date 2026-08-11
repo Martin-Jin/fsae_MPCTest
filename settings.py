@@ -144,7 +144,7 @@ DYNAMIC_CAP_SAFETY = 0.9
 # tuner.recorded_map_rollout <map.json> --oracle`) — see that flag's own
 # comment for what it does. No separate flag needed here; USE_PLANNER=False
 # already removes the planner from the rollout and tracks path_X/path_Y/
-# path_Psi (the same oracle path tuner/export_speed_profile.py exports for
+# path_Psi (the same oracle path tuner/tools/export_speed_profile.py exports for
 # path_map_path) directly.
 
 # DELAY_STEPS — "How much lag is there between the car deciding to steer and
@@ -382,7 +382,7 @@ PLANNER_PATH_BLEND = 0.4        # 0<a<=1; temporal EMA weight toward each freshl
 #     left vs. right) is never touched, so this cannot reverse a correction.
 # Lowering below ~85 risks DNFing a fast, tight slalom off-track (the
 # reference is held back so hard the car cannot keep up) — re-run
-# tuner/ref_heading_limiter_suite_check.py before changing this.
+# tuner/checks/ref_heading_limiter_suite_check.py before changing this.
 # Default off until validated live.
 REF_HEADING_RATE_LIMIT_ENABLED = False
 REF_HEADING_RISE_RATE = 90.0   # deg/s — only used when the flag above is True

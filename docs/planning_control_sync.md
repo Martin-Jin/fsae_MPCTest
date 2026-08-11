@@ -72,8 +72,8 @@ this repo and FSDS, with no separate `fsae_planning` checkout at all.
   (Windows username, and `LOG_DIR` pointed at `$HOST_REPO_ROOT/fsae_logs` to
   match `launch_all.sh`'s `log_dir:=` arg instead of the live scripts'
   `~/fsae_logs` default) — genuinely adapted copies, not byte-identical,
-  same as `launch_all.sh`. `tuner/steering_sysid_analysis.py` /
-  `steering_step_analysis.py` remain `fsae_MPCTest`-only; nothing to mirror
+  same as `launch_all.sh`. `tuner/checks/steering_sysid_analysis.py` /
+  `tuner/checks/steering_step_analysis.py` remain `fsae_MPCTest`-only; nothing to mirror
   there. Also folded in a same-day `launch_all.sh` resync from a parallel
   session: both copies now set `USE_PRECOMPUTED_SPEED`/
   `USE_PRECOMPUTED_PATH` shell variables and pass them through, and the
@@ -621,7 +621,7 @@ pose tick from producing a heading jump. It has a `reset_dist=2.0` m bypass
 that skips the blend entirely when the rebuild has moved too far from the
 previous publish — plausibly correlated with this section's curvature-spike
 defect, since a spike event is exactly when the rebuild changes most.
-Measured on the offline sim (`tuner/blend_reset_diagnostics.py`,
+Measured on the offline sim (see
 `docs/logs/sim_to_real_investigation.md` §14): real, can jump the reference up to 166°
 on other geometries, but **fires 0/1038 times on the recorded map** (max
 trigger-distance 1.98 m, just under the threshold) — so it cannot explain
@@ -1036,7 +1036,7 @@ two were absent until this resync.
 |---|---|---|---|
 | `control/fsae_control/fsae_control/steering_sysid.py` | `fsae_planning` (live ROS 2 ws) | `fsae_MPCTest/fsds_simulator/control/fsae_control/fsae_control/steering_sysid.py` | the node — drives FSDS directly |
 | `ros2/run_steering_sysid.sh` | **FSDS repo root**, next to `launch_all.sh` | `fsae_MPCTest/fsds_simulator/run_steering_sysid.sh` (adapted paths, same convention as `launch_all.sh`) | one-command harness |
-| `tuner/steering_sysid_analysis.py` | `fsae_MPCTest` | *(none — already lives here)* | reads the log, names the mechanism |
+| `tuner/checks/steering_sysid_analysis.py` | `fsae_MPCTest` | *(none — already lives here)* | reads the log, names the mechanism |
 
 **Run it with one command** (starts FSDS, waits for RPC, starts the bridge,
 waits for odom, runs the sweep, analyses the log, tears everything down —
@@ -1273,7 +1273,7 @@ removes the turn-in transient the MPC reacts to):
 > 1.60 → 0.87). Before the fix the sim sustained 8.3–8.9 m/s² where FSDS
 > sustains 6.1–8.1 — a 20–35% surplus centred on the live car's mean speed.
 >
-> Reproduce: `python -m tuner.plant_openloop_validation --ab`
+> Reproduce: `python -m tuner.checks.plant_openloop_validation --ab`
 >
 > **What this did NOT fix:** steering saturation moved only 6.32 → 6.74% against
 > live's 21.1%. It corrects the plant's *lateral-acceleration distribution*
@@ -1377,10 +1377,10 @@ its absence is how a 13% sustained-cornering surplus survived a refit):
 
 | tool | answers |
 |---|---|
-| `tuner/steering_sysid_analysis.py`, `steering_step_analysis.py` | what does FSDS do? |
-| **`tuner/plant_openloop_validation.py`** | **does our plant reproduce it?** (`--ab`, `--robustness`) |
+| `tuner/checks/steering_sysid_analysis.py`, `tuner/checks/steering_step_analysis.py` | what does FSDS do? |
+| **`tuner/checks/plant_openloop_validation.py`** | **does our plant reproduce it?** (`--ab`, `--robustness`) |
 | **`tuner/recorded_map_rollout.py`** | the closed-loop table above, headless and reproducible |
-| **`tuner/live_vs_sim_diagnostics.py`** | conditional + reference-heading decomposition of live vs sim |
+| **`tuner/checks/live_vs_sim_diagnostics.py`** | conditional + reference-heading decomposition of live vs sim |
 
 Caveat carried by `plant_openloop_validation.py`: its **low-speed** comparison is
 a confound, not a finding. At 4 m/s full lock the plant cannot hold speed, so
@@ -1405,7 +1405,7 @@ robust to ±3.5% over the same range and is exactly timestep-independent.
 > live's 21.1%) — expected, since §12.9/§12.12 in
 > `docs/logs/sim_to_real_investigation.md` had already localised the residual gap to the
 > planner/reference, not this parameter. Reproduce with
-> `python -m tuner.plant_openloop_validation`.
+> `python -m tuner.checks.plant_openloop_validation`.
 >
 > Also checked: does a_lat keep decaying past 3 s into the hold? No — flat
 > within noise at the 3/5/8 s marks across all 12 trials. The step test's
@@ -1437,7 +1437,7 @@ Overshoot is the discriminator: neither A nor B can produce it.
   steering, then steps and holds, sampling at **50 Hz** (20 Hz would smear a
   rise completing in a few hundred ms). 12 trials, ~2–3 min.
 - **Harness:** `ros2/run_steering_step.sh` (same one-command pattern).
-- **Analysis:** `tuner/steering_step_analysis.py`.
+- **Analysis:** `tuner/checks/steering_step_analysis.py`.
 
 Validated against synthetic logs with each mechanism injected: all three
 identified correctly, A's limit recovered exactly (0.75 rad/s) and B's time

@@ -236,7 +236,7 @@ class VehicleParams:
         #
         #   'pi' — leaky INTEGRAL of the signed excess (current, validated).
         #   'p'  — legacy PROPORTIONAL-on-excess. Kept only so
-        #          tuner/plant_openloop_validation.py --ab can reproduce the
+        #          tuner/checks/plant_openloop_validation.py --ab can reproduce the
         #          measurement that rejected it. Do not use it for tuning.
         #
         # Why the integral law rather than a proportional one. A proportional
@@ -250,7 +250,7 @@ class VehicleParams:
         # ceiling by structure for any gain, leaving one free parameter for
         # the transient.
         #
-        # Verify with:  python3 -m tuner.plant_openloop_validation --ab
+        # Verify with:  python3 -m tuner.checks.plant_openloop_validation --ab
         self.alat_ceiling_mode = 'pi'
         # Restoring yaw moment per unit of accumulated excess (N·m per m/s²).
         #
@@ -285,7 +285,7 @@ class VehicleParams:
         # Re-measure via: ros2/run_steering_step.sh --no-sim
         #   -p 'speeds:=[5.0,8.0,12.0]' -p 'steer_cmds:=[0.6,1.0]'
         #   -p 'step_s:=8.0' -p 'repeats:=2' -p 'require_go:=false'
-        # then python3 -m tuner.plant_openloop_validation
+        # then python3 -m tuner.checks.plant_openloop_validation
         #
         # STILL WORTH RE-CHECKING: a term taking too long to build did nothing
         # during turn-in and DNF'd the car once before. The current value is
@@ -1092,7 +1092,7 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
                     h / max(p.alat_ceiling_tau, 1e-3)))
             else:
                 # REJECTED proportional law, kept only so
-                # tuner/plant_openloop_validation.py --ab can reproduce the
+                # tuner/checks/plant_openloop_validation.py --ab can reproduce the
                 # measurement that rejected it. Do not tune against this.
                 excess = max(0.0, abs(vx_safe * r) - ceiling_now)
                 alat_lim = alat_lim + (excess - alat_lim) * (

@@ -16,7 +16,7 @@ directly comparable; scoring against delta_achieved instead inflates R^2 for
 every model, because both sides scale with steering angle.
 
 Usage:
-    python -m tuner.steering_response <control_log.csv> [...]
+    python -m tuner.checks.steering_response <control_log.csv> [...]
 
 Run it on any new live log to check whether the gap has moved.  The key
 outputs are `K_us` (understeer, s^2) and the full-lock deficit; the offline

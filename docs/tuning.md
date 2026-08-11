@@ -127,7 +127,7 @@ re-test.** This was tried live and found to make saturation/heading-error
 in the codebase as a validated-off feature, not a half-finished one.
 Lowering `ref_heading_rise_rate_deg_s` much below ~85 deg/s risks holding
 the reference back so hard that a fast, tight slalom goes off-track — if
-re-testing this, re-run `tuner/ref_heading_limiter_suite_check.py` first.
+re-testing this, re-run `tuner/checks/ref_heading_limiter_suite_check.py` first.
 
 ---
 

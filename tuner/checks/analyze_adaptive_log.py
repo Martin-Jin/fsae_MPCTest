@@ -7,7 +7,7 @@ fsae_control/telemetry_logger.py's ADAPTIVE_COLUMNS) and reports, per corner,
 which features actually fired and how hard -- so a wide corner can be pinned
 on a specific multiplier instead of guessed at.
 
-    python3 -m tuner.analyze_adaptive_log <control_csv>
+    python3 -m tuner.checks.analyze_adaptive_log <control_csv>
 
 The key column is `corner_demand`: kappa_max_abs divided by the curvature the
 FSDS lateral-acceleration ceiling permits at the current speed. Above 1.0 the

@@ -1,5 +1,5 @@
 """
-tuner/raceline_optimizer.py — Minimum-time racing line, not just a centreline
+tuner/tools/raceline_optimizer.py — Minimum-time racing line, not just a centreline
 speed profile.
 
 WHAT THIS IS
@@ -14,7 +14,7 @@ It reshapes the path LATERALLY within the recorded track's boundaries (it
 does not have to hug the centreline — cutting the inside of a corner and
 running wide on entry/exit is exactly the point) to minimise lap time, then
 re-profiles speed on the optimised path. Both new path and new speed are
-exported through the existing tuner/export_speed_profile.py CSV mechanism,
+exported through the existing tuner/tools/export_speed_profile.py CSV mechanism,
 so the live car needs no changes: it already just tracks whatever
 (x, y, psi, v_target) rows that CSV contains.
 
@@ -73,7 +73,7 @@ THIS FILE'S v_target IS THE ONE THE CAR DRIVES
 ----------------------------------------------
 launch_all.sh points BOTH map_path (speed) and path_map_path (geometry) at
 raceline.csv. Speed and geometry must describe the same line: pairing this
-path with tuner/export_speed_profile.py's centreline profile hands the car a
+path with tuner/tools/export_speed_profile.py's centreline profile hands the car a
 speed computed for a curvature it is not driving, and the two differ most
 exactly at the apexes (raceline p99 |kappa| 0.174 vs centreline 0.162 -- a
 racing line trades a straighter entry for a TIGHTER apex). The v_target
@@ -81,11 +81,11 @@ written here is therefore load-bearing, not a diagnostic byproduct.
 
 USAGE
 -----
-    python3 -m tuner.raceline_optimizer                       # the default track
-    python3 -m tuner.raceline_optimizer comp_test_map_3       # a track by name
-    python3 -m tuner.raceline_optimizer --list                # what tracks exist
-    python3 -m tuner.raceline_optimizer /path/to/cone_map.json out.csv
-    python3 -m tuner.raceline_optimizer --iters 60 --margin 0.3
+    python3 -m tuner.tools.raceline_optimizer                       # the default track
+    python3 -m tuner.tools.raceline_optimizer comp_test_map_3       # a track by name
+    python3 -m tuner.tools.raceline_optimizer --list                # what tracks exist
+    python3 -m tuner.tools.raceline_optimizer /path/to/cone_map.json out.csv
+    python3 -m tuner.tools.raceline_optimizer --iters 60 --margin 0.3
 
 With a track name (or no argument), the output goes to
 `tracks/<name>/raceline.csv`, which is where `launch_all.sh`'s `TRACK=`
@@ -100,7 +100,7 @@ import sys
 import numpy as np
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(_HERE))
+sys.path.insert(0, os.path.dirname(os.path.dirname(_HERE)))
 
 from model.vehicle_physics import VehicleParams  # noqa: E402
 from sim.track_io import load_cone_map, _reconstruct_centreline  # noqa: E402
@@ -719,7 +719,7 @@ def export(map_path: str, out_path: str, iters=DEFAULT_ITERS, margin=DEFAULT_MAR
 
     with open(out_path, "w") as f:
         f.write("# x,y,psi,v_target -- minimum-time racing line exported by "
-                "tuner.raceline_optimizer from a cone_recorder map.\n")
+                "tuner.tools.raceline_optimizer from a cone_recorder map.\n")
         f.write(f"# source_map={os.path.abspath(map_path)}\n")
         f.write(f"# centreline_lap_time_s={centre_time:.3f} raceline_lap_time_s={race_time:.3f} "
                 f"improvement_pct={100.0 * (centre_time - race_time) / centre_time:.2f}\n")

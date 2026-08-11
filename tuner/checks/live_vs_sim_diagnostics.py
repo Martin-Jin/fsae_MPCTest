@@ -26,8 +26,8 @@ never made like-for-like:
 
 Usage
 -----
-    python3 -m tuner.live_vs_sim_diagnostics
-    python3 -m tuner.live_vs_sim_diagnostics --no-sim   # live logs only
+    python3 -m tuner.checks.live_vs_sim_diagnostics
+    python3 -m tuner.checks.live_vs_sim_diagnostics --no-sim   # live logs only
 """
 import argparse
 import csv
@@ -38,7 +38,7 @@ import sys
 import numpy as np
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(_HERE))
+sys.path.insert(0, os.path.dirname(os.path.dirname(_HERE)))
 
 LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(_HERE)), "fsae_logs")
 MAX_STEER_DEG = 25.0

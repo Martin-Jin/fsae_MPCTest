@@ -44,7 +44,7 @@ class StanleyControllerNode(Node):
                 ('log_csv', False),   # write CSV telemetry to log_dir
                 ('log_dir', ''),      # '' -> ~/fsae_logs
                 ('map_path', ''),     # '' -> live curvature_speed() (default);
-                                       # else a fsae_MPCTest tuner/export_speed_profile.py
+                                       # else a fsae_MPCTest tuner/tools/export_speed_profile.py
                                        # CSV to use instead — see mpc_controller.py's
                                        # identical param. Lets a Stanley run be pointed
                                        # at the same precomputed speed profile as an MPC

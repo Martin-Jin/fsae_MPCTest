@@ -23,7 +23,7 @@ delta_achieved, so a wrong L inflates or deflates every s equally -- fitting it
 shows whether a geometry mismatch alone could explain the deficit.
 
 Usage:
-    python -m tuner.steering_sysid_analysis <steering_sysid_log.csv>
+    python -m tuner.checks.steering_sysid_analysis <steering_sysid_log.csv>
 """
 import sys
 
