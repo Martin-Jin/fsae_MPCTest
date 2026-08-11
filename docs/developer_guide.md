@@ -576,21 +576,56 @@ same maths as the offline tuner — see
 `fsae_control/telemetry_logger.py`'s module docstring for the full column
 reference and units.
 
-For the two MPC controller nodes, when a precomputed speed profile is loaded
-(`map_path` set), the score header also includes `lap_time_s`/`optimal_time_s`:
-`telemetry_logger.LapProgressTracker` derives real `progress`/`reached_end`/
-`time_bonus` from the car's position against the precomputed track path,
-fixing a bug (2026-08-11) where every live run's composite score was
-permanently pinned at the DNF floor regardless of how the car drove — see
-`planning_control_sync.md`'s "Live/offline score parity" section. The Stanley
-controller and any MPC run against the live planner topic (no precomputed
-path) still have no known path end, so their scores stay partial
-(`score_is_partial=1`).
+When a precomputed speed profile is loaded (`map_path` set), the score header
+also includes `lap_time_s`/`optimal_time_s`: `telemetry_logger.LapProgressTracker`
+derives real `progress`/`reached_end`/`time_bonus` from the car's position
+against the precomputed track path, fixing a bug (2026-08-11) where every live
+run's composite score was permanently pinned at the DNF floor regardless of how
+the car drove — see `planning_control_sync.md`'s "Live/offline score parity"
+section. `stanley_controller.py` gained `map_path` support (2026-08-11, see
+`sim_to_real_investigation.md` §57) alongside the two MPC nodes, so a Stanley
+run with a precomputed profile scores fully too. Any run against the live
+planner topic instead (no precomputed path — either controller) still has no
+known path end, so its score stays partial (`score_is_partial=1`).
 
 Logging and cone recording are independent toggles and can be combined freely
 (`log_csv:=true record_cones:=true`) — a common pattern for a validation lap
 you want to both replay through the CSV telemetry and reload into the GUI as
 a recorded track.
+
+### Plotting exported CSV telemetry
+
+`tuner/plot_control_log.py` turns one or more of the control CSVs above into
+an interactive matplotlib figure — one stacked row per signal, shared time
+axis, and a checkbox panel that toggles individual lines (per signal, per
+file) on and off. Built for eyeballing a single run or comparing two
+controllers head-to-head (e.g. an MPC log against a Stanley log recorded on
+the same `map_path`) without writing a one-off script each time.
+
+```bash
+# default signal set: e_y, e_psi_deg, kappa, steer_deg, v (actual + desired)
+python3 -m tuner.plot_control_log ~/fsae_logs/mpc_standalone_control_<ts>.csv
+
+# overlay two runs on the same axes -- each file gets its own colour
+python3 -m tuner.plot_control_log \
+    ~/fsae_logs/mpc_standalone_control_<ts>.csv \
+    ~/fsae_logs/stanley_control_<ts>.csv
+
+# choose your own signals (any numeric column the log has -- see below)
+python3 -m tuner.plot_control_log run.csv --signals e_y,yaw_rate,solve_ms
+
+# list every numeric column actually present in a log, then exit
+python3 -m tuner.plot_control_log run.csv --list-signals
+```
+
+Run from `fsae_MPCTest/` (so `tuner` resolves as a package). A signal
+missing from a given log (e.g. the `m_Q_*`/`m_R_*` adaptive-weight columns,
+`solve_ms`, on a Stanley run) is skipped for that file with a warning rather
+than plotting an empty line — the two controllers' logs don't need identical
+columns to overlay the ones they share. The figure title and each line's
+legend label include the run's tag and, when present in the header,
+`composite_score`/`lap_time_s`, so a comparison plot is self-labelled without
+cross-referencing the raw CSV.
 
 ### Launching nodes with FSDS on Windows (WSL + Docker)
 

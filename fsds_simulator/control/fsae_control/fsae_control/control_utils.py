@@ -73,6 +73,13 @@ class StanleyController:
         self.k_soft    = k_soft
         self.k_d       = k_d
         self.wheelbase = wheelbase
+        # Last tick's tracking error, in the SAME sign convention as
+        # mpc_core.py's last_telemetry (+ve = left/CCW) so both controllers'
+        # e_y/e_psi are directly comparable in telemetry_logger.py's CSV —
+        # see compute()'s sign flip on `e` below. Exposed for ControlLogger;
+        # not used internally by compute() itself.
+        self.last_e_y: float = 0.0
+        self.last_e_psi: float = 0.0
 
     def compute(
         self,
@@ -91,6 +98,8 @@ class StanleyController:
         car_speed    — car speed in m/s
         car_yaw_rate — yaw rate in rad/s (positive = left / CCW); used by the
                        damper term to oppose rapid heading changes
+
+        Also updates self.last_e_y / self.last_e_psi (see their docstring).
         """
         if len(path) < 2:
             return 0.0
@@ -121,6 +130,13 @@ class StanleyController:
         # Cross-track error: right-normal of path, positive = axle right of path
         right_n = np.array([t[1], -t[0]])   # 90° CW rotation of tangent
         e = float(np.dot(fa - path[idx], right_n))
+
+        # Expose this tick's error in mpc_core.py's sign convention (+ve =
+        # left/CCW) — e above is +ve RIGHT, the opposite — so a Stanley log
+        # and an MPC log can be plotted on the same axis without a manual
+        # sign flip. theta_e already matches (+ve = path turns left of car).
+        self.last_e_y = -e
+        self.last_e_psi = theta_e
 
         # Stanley angle — positive = left turn (standard convention).  Damper
         # subtracts k_d·ω: when the car is already swinging left (ω > 0), this
@@ -333,6 +349,43 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
     # before a corner enters the scan window, kappa is measured near zero, so
     # v_target can be arbitrarily large otherwise.
     return float(np.clip(v_target, v_min, v_max))
+
+
+def dynamic_speed_cap(waypoints, v_max=15.0, v_min=1.5,
+                      a_lat_max=3.2, safety=0.9):
+    """
+    Real-time curvature-lookahead speed cap, meant to be layered UNDER a
+    precomputed/oracle speed profile rather than replacing it.
+
+    precomputed_speed_at() is a static, position-indexed lookup: it assumes
+    the car is already travelling at the oracle profile's own planned speed,
+    so it has no notion of "car is currently going faster than the profile
+    allows and the corner is close enough that it can no longer brake down
+    to the profile's target in time." That mismatch is exactly what shows up
+    as late, hard braking and steering saturation at corner entry — see
+    fsae_MPCTest/docs/planning_control_sync.md's speed-governor section.
+
+    This is a thin wrapper over curvature_speed() using its own (separate,
+    typically tighter) a_lat_max/safety defaults — the oracle profile was
+    optimised for the whole lap and is trusted as the primary target, so
+    this cap is only meant to catch the case where live tracking has drifted
+    from that plan, not to re-litigate the racing line. Callers take
+    min(oracle_v_target, dynamic_speed_cap(...)) — see
+    controller.enable_dynamic_speed_cap.
+
+    Parameters
+    ----------
+    waypoints : (n,2) array-like   Live path ahead, waypoints[0] = car position.
+    v_max, v_min : float   Same meaning as curvature_speed().
+    a_lat_max : float   Lateral-accel budget used only by THIS cap (m/s^2).
+    safety : float      Safety margin used only by THIS cap.
+
+    Returns
+    -------
+    float : speed cap (m/s), meant to be min()'d against another target.
+    """
+    return curvature_speed(waypoints, v_max=v_max, v_min=v_min,
+                           a_lat_max=a_lat_max, safety=safety)
 
 
 def _load_profile_csv(csv_path: str):

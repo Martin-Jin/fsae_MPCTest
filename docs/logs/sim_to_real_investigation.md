@@ -4473,3 +4473,71 @@ only means no newer LOCAL commit — check `git fetch` + compare against
 `origin` before concluding a value is stale** — the same underlying mistake
 as that earlier note's "check the two numbers you are comparing are the same
 quantity," applied to git history instead of a physical measurement.
+
+## 57. Stanley given live CSV telemetry, superseding §48's map_path/stanley split rationale (2026-08-11)
+
+**Motivation.** A presentation ask ("graphs comparing MPC vs Stanley for a
+non-technical audience") turned up a hard blocker: `stanley_controller.py`
+had never called `ControlLogger` at all — no `e_y`/`e_psi`, no CSV, nothing
+but throttled console prints. `fsae_logs/` only ever had MPC runs in it.
+Requested source of comparison data: **live sim only**, not the offline
+`fsae_MPCTest` rollout — so this had to be live-node telemetry, not a
+tuner/rollout_core.py run.
+
+**The change.**
+- `control_utils.py`: `StanleyController.compute()` now stashes its
+  per-tick cross-track/heading error as `self.last_e_y`/`self.last_e_psi`
+  (previously local-only, discarded after computing `delta`). Sign-flipped
+  to match `mpc_core.py`'s `last_telemetry` convention (+ve = left/CCW) —
+  Stanley's own `e` is +ve RIGHT — so a Stanley CSV and an MPC CSV plot on
+  the same axis with no manual correction.
+- `stanley_controller.py`: gained `log_csv`/`log_dir`/`map_path` ROS
+  params, mirroring `mpc_controller.py`'s. `log_csv:=true` now writes a
+  `stanley_control_<stamp>.csv`/`stanley_path_<stamp>.csv` pair via the
+  same `ControlLogger`/`LapProgressTracker` MPC already used — same
+  columns, same `scoring.py` composite score on `close()`. Columns with no
+  Stanley analogue (solver status, the `m_Q_*`/`m_R_*` adaptive-weight
+  columns, `solve_ms`) write empty, per `telemetry_logger.py`'s own
+  already-documented design for exactly this case — no new logger code was
+  needed, only wiring Stanley up to call it.
+- `control.launch.py`: the Stanley `Node()` entry now also receives
+  `map_path`, so a Stanley run and an MPC run on the same track can share
+  the identical precomputed speed target and differ only in steering
+  behaviour.
+- Propagated identically into `fsds_simulator/`'s mirror copies of all
+  three files (pre-existing there; no new files added to the mirror).
+
+**This supersedes §48's stated reason for the `Node()` split** ("`map_path`
+is undeclared on `stanley_controller.py`" — see the paragraph ending
+"`ParameterNotDeclaredException` on the default `controller:=stanley`").
+That was true when written; `map_path` is declared on Stanley now. The
+`Node()` split itself is unchanged and still correct — `path_map_path`
+remains MPC-only, since Stanley has no static-path-override mechanism to
+receive it — only the map_path-specific half of that rationale is retired.
+
+**Not yet validated live.** No Stanley run has been recorded with the new
+logging yet — `fsae_logs/` still holds only the one MPC run. The actual
+MPC-vs-Stanley comparison graphs are blocked on recording a live Stanley
+lap with `log_csv:=true` (and the same `map_path`/`TRACK` as the existing
+MPC log, for a same-track comparison).
+
+**Follow-up: `tuner/plot_control_log.py` added, same day.** The presentation
+ask that motivated this section also needed a way to actually look at the
+resulting CSVs — none of the existing `tuner/` log tools
+(`analyze_adaptive_log.py`, `live_vs_sim_diagnostics.py`, etc.) produce a
+plot; all are console-report-only (confirmed by grepping the whole repo for
+`matplotlib`/`plt.` against a loaded CSV — no hit). `plot_control_log.py`
+loads N control CSVs via the existing `tuner/csv_log.load_columns` helper,
+plots a chosen signal set (default `e_y, e_psi_deg, kappa, steer_deg, v`) on
+stacked time-aligned axes, one colour per file, with a `CheckButtons` panel
+to toggle any individual line — see `docs/developer_guide.md`'s "Plotting
+exported CSV telemetry" section for usage. Column-parsing logic was smoke-
+tested against the real `mpc_standalone_control_1786436674.csv` (all six
+default-signal columns present and finite, header metadata parses); the
+matplotlib rendering/checkbox interaction itself was **not** run in this
+session — the dev sandbox's `python3` has a numpy 2.5.1 (user site-packages)
+vs. system-matplotlib-3.6.3-needs-numpy<2 conflict that also breaks the
+pre-existing `gui/simulation.py` identically, so it predates and is
+unrelated to this change. Needs a smoke-test in an environment where the
+GUI already runs (e.g. the WSL/Docker container `launch_all.sh` uses)
+before trusting the interactive part.
