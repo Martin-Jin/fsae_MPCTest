@@ -94,6 +94,7 @@ variable points the car. See `tracks/__init__.py` for the layout.
 Re-run whenever the recorded map changes, same as export_speed_profile.py.
 """
 import argparse
+import math
 import os
 import sys
 
@@ -659,6 +660,137 @@ def _lap_time_and_speed(path_xy, kappa, params):
     return lap_time, v
 
 
+# Fraction of the car's max achievable yaw rate (at delta_max, per-station
+# v_target -- see max_yaw_rate()) to "pre-spend" as heading lead when
+# shaping psi_target below. 1.0 = as aggressive as physically achievable
+# given the ALREADY-CONVERGED speed profile; lower values are a gentler
+# nudge. See late_turn_in_investigation.md Part 8/9 for the synthetic
+# testing behind this: a FIXED lookahead distance (tried first, rejected)
+# saturates steering immediately on a realistic corner entry, whereas
+# scaling by achievable yaw rate at the station's own planned speed does
+# not, because the lead can never exceed what the speed profile already
+# allows the car to execute.
+#
+# Measured on comp_test_map_3 at this value (Part 10): mean lead 3.58 deg,
+# max 3.76 deg -- no full-lock cliff, but ALSO active across nearly the
+# WHOLE lap (998/1000 stations), not just approaching corners, because
+# this track has almost no genuinely straight sections (geometric psi
+# climbs 0.4->16 deg over the first 40m alone). Lower this first if a live
+# test looks like "cuts every bend early everywhere" rather than "commits
+# earlier specifically into sharp corners" -- that symptom is this
+# constant, not a broken mechanism. NOT YET LIVE-VALIDATED at any value.
+HEADING_LEAD_AUTHORITY_FRAC = 0.5
+
+# Placeholder rear-axle slip-angle bound (rad) used only to FLAG stations
+# where the shaped heading profile implies more yaw rate than the linear
+# bicycle model's tyres can deliver without leaving their linear region --
+# NOT a validated limit (typical small-FS-car linear-region edges are
+# reported anywhere from 3-8 deg depending on tyre/loading; 5 deg is a
+# round, unmeasured guess). Diagnostic-only for now (see check_slip's
+# docstring) -- do not treat slip_flags as authoritative or feed it into a
+# hard export failure until this is measured against this car's actual
+# Cf/Cr linear region.
+#
+# Measured on comp_test_map_3 at this value (Part 10): 110/1000 stations
+# (11%) exceed it, all at the track's sharpest/slowest corners (peak
+# |kappa| 0.12-0.21, v 5.5-7.9 m/s) -- clustered at real corners, not
+# scattered noise, so the FORMULA is behaving sensibly; whether 5 deg
+# itself is the right bound for this car is still unknown.
+SLIP_LIMIT_RAD = math.radians(5.0)
+
+
+def max_yaw_rate(v, params, delta_max_rad=math.radians(25.0)):
+    """
+    Max steady-state yaw rate the kinematic bicycle model can deliver at
+    speed v with full steering lock -- same relationship mpc_core.py's
+    _discrete_model uses for A_kin[2,6] (r = v/(lf+lr) * delta), evaluated
+    at the live controller's actual steering limit (see mpc_core.py's own
+    module-note on MAX_STEER_RAD 35->25 deg for why 25, not 35).
+    """
+    return v / (params.lf + params.lr) * delta_max_rad
+
+
+def build_shaped_heading_profile(s, geometric_psi, v_target, params,
+                                  authority_frac=HEADING_LEAD_AUTHORITY_FRAC):
+    """
+    Shape a heading-error REFERENCE profile that leads the path's own
+    geometric tangent by an amount bounded by how much yaw the car can
+    actually achieve between each station and the next, AT THAT STATION'S
+    OWN v_target (the already-converged speed profile from
+    _lap_time_and_speed, which itself already respects
+    params.max_accel/max_accel_brake -- see this module's docstring
+    section "THIS FILE'S v_target IS THE ONE THE CAR DRIVES"). A corner
+    taken slower gets proportionally more lead per metre of arc length,
+    since more time is available per metre at lower speed -- the
+    speed-awareness requested explicitly (see
+    late_turn_in_investigation.md Part 8).
+
+    Does NOT feed back into path_xy or v_target -- this is a DERIVED pass,
+    computed once after optimize_raceline() has already converged both (see
+    Part 9's coupling-depth decision: derived pass first, full coupling
+    only if this proves insufficient).
+
+    Walks the arc BACKWARD from the end so each station's lead is capped by
+    the achievable heading change to the NEXT station's already-computed
+    target, compounding correctly across a multi-station ramp into a corner
+    (verified in Part 8's synthetic testing: this naturally decays the lead
+    to ~0 once a corner's constant-curvature section begins, since nothing
+    is left to "pre-achieve" once the car is expected to already be
+    mid-turn).
+
+    Parameters
+    ----------
+    s : (n,) cumulative arc length (m), same convention as _lap_time_and_speed's segs.
+    geometric_psi : (n,) the path's own atan2(dy,dx) tangent heading (rad) --
+        i.e. what path_Psi already is today; NOT overwritten by this function.
+    v_target : (n,) the ALREADY-CONVERGED speed profile from _lap_time_and_speed.
+    params : VehicleParams
+    authority_frac : float in (0, 1] -- see HEADING_LEAD_AUTHORITY_FRAC.
+
+    Returns
+    -------
+    psi_target : (n,) shaped heading profile, same indexing as geometric_psi.
+    """
+    n = len(s)
+    psi_target = geometric_psi.copy()
+    for i in range(n - 2, -1, -1):
+        ds = s[i + 1] - s[i]
+        dt_seg = ds / max(v_target[i], 0.5)
+        max_dpsi = max_yaw_rate(v_target[i], params) * authority_frac * dt_seg
+        diff = psi_target[i + 1] - geometric_psi[i]
+        step = float(np.clip(diff, -max_dpsi, max_dpsi))
+        psi_target[i] = geometric_psi[i] + step
+    return psi_target
+
+
+def check_slip(kappa, v_target, params, slip_limit_rad=SLIP_LIMIT_RAD):
+    """
+    Flag stations where the path's own geometric turning rate (kappa*v,
+    the yaw rate a car with zero slip would need to hold this line at this
+    speed) implies more REAR-axle slip than slip_limit_rad, via the
+    standard steady-state linear-bicycle relationship beta_r = lr*r/v --
+    same Cf/Cr-model family alat_ceiling_at() already trusts for its own
+    tyre-force reasoning (see VehicleParams), not a new tyre model.
+
+    Diagnostic only (see SLIP_LIMIT_RAD's own comment) -- does not modify
+    path_xy, v_target, or psi_target. A high slip_flags count on a real
+    track is the evidence that would justify Part 9's "full coupling"
+    alternative (letting slip reshape the path/speed themselves) instead of
+    this derived-pass-only approach; a clean/near-empty result confirms the
+    derived pass is sufficient and coupling is not yet needed.
+
+    Returns
+    -------
+    slip_flags : (n,) bool
+    beta_r : (n,) float (rad) -- the implied slip angle itself, for
+        reporting magnitude, not just count.
+    """
+    r_implied = kappa * v_target
+    beta_r = params.lr * r_implied / np.maximum(v_target, 0.5)
+    slip_flags = np.abs(beta_r) > slip_limit_rad
+    return slip_flags, beta_r
+
+
 # Hard floor on cone clearance for an exported line (m). Below half the front
 # track (VehicleParams.tf/2 = 0.625) the car's wheel is through the cone, so a
 # line that gets this close is not merely tight, it is undrivable. Checked
@@ -717,15 +849,32 @@ def export(map_path: str, out_path: str, iters=DEFAULT_ITERS, margin=DEFAULT_MAR
         np.column_stack([path_X, path_Y]), blue, yellow, margin
     )
 
+    # Derived third pass (see Part 9's coupling-depth decision): computed
+    # AFTER path_X/path_Y/path_v have already converged above, does not
+    # feed back into them. path_Psi (geometric tangent) is kept in the CSV
+    # unchanged for anything that wants the true tangent (e.g. the live
+    # controller's CornerMap curvature segmentation); psi_target is an
+    # ADDITIONAL column, only consumed by the heading-error reference when
+    # use_precomputed_heading_profile is enabled.
+    segs = np.hypot(np.diff(path_X, append=path_X[0]), np.diff(path_Y, append=path_Y[0]))
+    s = np.concatenate([[0.0], np.cumsum(segs)])[:-1]
+    kappa_final = _curvature(np.column_stack([path_X, path_Y]))
+    psi_target = build_shaped_heading_profile(s, path_Psi, path_v, params)
+    slip_flags, beta_r = check_slip(kappa_final, path_v, params)
+
     with open(out_path, "w") as f:
-        f.write("# x,y,psi,v_target -- minimum-time racing line exported by "
+        f.write("# x,y,psi,psi_target,v_target -- minimum-time racing line exported by "
                 "tuner.tools.raceline_optimizer from a cone_recorder map.\n")
         f.write(f"# source_map={os.path.abspath(map_path)}\n")
         f.write(f"# centreline_lap_time_s={centre_time:.3f} raceline_lap_time_s={race_time:.3f} "
                 f"improvement_pct={100.0 * (centre_time - race_time) / centre_time:.2f}\n")
-        f.write("x,y,psi,v_target\n")
-        for x, y, psi, v in zip(path_X, path_Y, path_Psi, path_v):
-            f.write(f"{x:.4f},{y:.4f},{psi:.5f},{v:.4f}\n")
+        f.write("# psi_target: shaped heading-lead reference (see "
+                "late_turn_in_investigation.md Part 8/9), NOT the geometric "
+                "path tangent (psi). Backward-compatible: a loader reading "
+                "only 4 columns (x,y,psi,v_target) still parses this file.\n")
+        f.write("x,y,psi,psi_target,v_target\n")
+        for x, y, psi, psit, v in zip(path_X, path_Y, path_Psi, psi_target, path_v):
+            f.write(f"{x:.4f},{y:.4f},{psi:.5f},{psit:.5f},{v:.4f}\n")
 
     print(f"Wrote {len(path_X)} points -> {out_path}")
     print(f"centreline lap time (alat_ceiling-limited): {centre_time:.3f} s")
@@ -734,6 +883,17 @@ def export(map_path: str, out_path: str, iters=DEFAULT_ITERS, margin=DEFAULT_MAR
     print(f"v_target range: {path_v.min():.2f} - {path_v.max():.2f} m/s")
     print(f"min cone clearance: {worst_clearance:.3f} m "
           f"(floor {MIN_CONE_CLEARANCE:.3f}, margin {margin:.2f})")
+    lead_deg = np.degrees(np.abs(psi_target - path_Psi))
+    print(f"heading lead: max {lead_deg.max():.2f} deg, mean {lead_deg.mean():.2f} deg "
+          f"(authority_frac={HEADING_LEAD_AUTHORITY_FRAC})")
+    n_slip = int(slip_flags.sum())
+    if n_slip:
+        print(f"SLIP CHECK (diagnostic, unvalidated limit {math.degrees(SLIP_LIMIT_RAD):.1f} deg): "
+              f"{n_slip}/{len(slip_flags)} stations exceed it, "
+              f"max |beta_r| {np.degrees(np.abs(beta_r)).max():.2f} deg")
+    else:
+        print(f"SLIP CHECK: 0/{len(slip_flags)} stations exceed the "
+              f"{math.degrees(SLIP_LIMIT_RAD):.1f} deg diagnostic limit")
 
 
 def main():

@@ -44,24 +44,24 @@ class MPCParams:
     # ── Core cost weights ───────────────────────────────────────────────
     # Q_diag index -> state penalised (states x are [e_y, e_yd, e_psi, r,
     # e_v, e_a, delta_act, a_act]; see mpc_core.py module docstring):
-    q_e_y:   float = field(default=5.20, metadata={"unit": "1/m^2",   "desc": "lateral deviation from path centreline"})
-    q_e_yd:  float = field(default=0.2,  metadata={"unit": "1/(m/s)^2", "desc": "rate of change of lateral deviation"})
-    q_e_psi: float = field(default=1.52, metadata={"unit": "1/rad^2", "desc": "heading error relative to path tangent"})
-    q_r:     float = field(default=0.50, metadata={"unit": "1/(rad/s)^2", "desc": "yaw rate"})
-    q_e_v:   float = field(default=4.0,  metadata={"unit": "1/(m/s)^2", "desc": "speed error: car_speed - desired_speed"})
+    q_e_y:   float = field(default=6.0,  metadata={"unit": "1/m^2",   "desc": "lateral deviation from path centreline"})
+    q_e_yd:  float = field(default=0.8,  metadata={"unit": "1/(m/s)^2", "desc": "rate of change of lateral deviation"})
+    q_e_psi: float = field(default=1.6,  metadata={"unit": "1/rad^2", "desc": "heading error relative to path tangent"})
+    q_r:     float = field(default=0.70, metadata={"unit": "1/(rad/s)^2", "desc": "yaw rate"})
+    q_e_v:   float = field(default=5.55, metadata={"unit": "1/(m/s)^2", "desc": "speed error: car_speed - desired_speed"})
     # R_diag index -> input penalised (inputs u are [delta_cmd, a_cmd]):
-    r_delta: float = field(default=1.6, metadata={"unit": "1/rad^2",     "desc": "steering command effort"})
+    r_delta: float = field(default=1.8, metadata={"unit": "1/rad^2",     "desc": "steering command effort"})
     # a_cmd>=0 (accel) and a_cmd<0 (brake) get independent effort weights
     # instead of one weight applied symmetrically to |a_cmd| -- a single
     # shared weight cannot be tuned for acceleration and braking
     # independently. See mpc_core.py's _build_qp/_solve_qp for the
     # cp.pos/cp.neg split and planning_control_sync.md's "Accel/brake
     # effort weight split" section for the diagnosis.
-    r_a_accel: float = field(default=1.0, metadata={"unit": "1/(m/s^2)^2", "desc": "acceleration command effort, a_cmd >= 0"})
-    r_a_brake: float = field(default=0.6, metadata={"unit": "1/(m/s^2)^2", "desc": "acceleration command effort, a_cmd < 0 (braking)"})
+    r_a_accel: float = field(default=3.0, metadata={"unit": "1/(m/s^2)^2", "desc": "acceleration command effort, a_cmd >= 0"})
+    r_a_brake: float = field(default=0.5, metadata={"unit": "1/(m/s^2)^2", "desc": "acceleration command effort, a_cmd < 0 (braking)"})
     # R_rate_diag index -> input RATE-OF-CHANGE penalised (tick-to-tick jerk):
-    r_rate_delta: float = field(default=2.1, metadata={"unit": "1/(rad/s)^2",     "desc": "steering rate of change"})
-    r_rate_a:     float = field(default=2.6, metadata={"unit": "1/(m/s^3)^2",     "desc": "acceleration rate of change"})
+    r_rate_delta: float = field(default=2.5, metadata={"unit": "1/(rad/s)^2",     "desc": "steering rate of change"})
+    r_rate_a:     float = field(default=2.4, metadata={"unit": "1/(m/s^3)^2",     "desc": "acceleration rate of change"})
     # Extra weight on the final predicted state x[:,N]. 1.0 = no-op, the
     # only value ever validated against the Q_diag/R_diag/R_rate_diag above.
     terminal_q_scale: float = field(default=1.0, metadata={"unit": "unitless", "desc": "extra weight on terminal predicted state"})

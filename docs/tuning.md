@@ -321,6 +321,59 @@ speed keeps the boost active through that window at any speed.
 **Known constraints**: offline-validated only as of this writing — not yet
 confirmed on the live car. Don't assume it transfers without a live check.
 
+### 4.5b Precomputed corner segmentation (`use_precomputed_corner_map`) — LIVE-ONLY, added 2026-08-12
+
+| Field | Purpose |
+|---|---|
+| `use_precomputed_corner_map` | node-level launch parameter (NOT an `MPCParams` field) — segment `path_map_path`'s static path into per-corner metadata once at load, replacing the live `kappa_max_abs` lookahead scan / exit-decay tracker with exact index lookups. Default `false`. Only has an effect when `use_precomputed_path` is ALSO true. |
+| `adaptive_q_lookahead_epsi_hold_thresh_rad` | (IS an `MPCParams` field) hold §4.5's exit-boost decay — don't let it advance toward 1.0 — while `\|e_psi\|` remains above this many radians, blended continuously. Only active when the corner map is built. Default `0.0` = disabled (today's unmodified decay), a second explicit opt-in on top of `use_precomputed_corner_map=True`. |
+
+**Purpose**: §4.5's exit-boost decay is keyed on distance since the local
+curvature peak alone, with no way to know whether the heading-error
+correction it exists to help with has actually finished. A real log showed
+the boost fully decayed (`m_Q_epsi_exit=1.0`) at `t=5.92` while `e_psi` was
+still `-13.96°` and the worst of the correction was still ahead
+(steering saturating repeatedly through `t=6.5-7.3`). With a static,
+precomputed path, corner identity/extent is knowable exactly instead of
+approximated — `use_precomputed_corner_map=True` computes a `CornerMap`
+once at load (see `mpc_core.py`'s `_segment_corners`/`CornerMap`) and looks
+it up by index every tick.
+
+**This is LIVE-ONLY** — not mirrored into `settings.py`/`model_utils.py`/
+`rollout_core.py`, by explicit user choice (asked directly, given this is a
+structural mechanism rather than a weight retune), unlike this codebase's
+usual two-sided parity rule. See `planning_control_sync.md`'s "Precomputed
+corner segmentation" section for the full design, migration table, and
+offline validation evidence (segmentation checked against a real recorded
+track; the disabled-flag path confirmed bit-for-bit identical to today's
+behaviour via a regression replay).
+
+**Status: implemented, offline-validated, NOT YET LIVE-TESTED.** Land both
+`use_precomputed_corner_map` and `adaptive_q_lookahead_epsi_hold_thresh_rad`
+at their off/`0.0` defaults until a live A/B confirms the fix helps.
+
+### 4.5c Precomputed shaped heading-lead profile (`use_precomputed_heading_profile`) — LIVE-ONLY, added 2026-08-12
+
+| Field | Purpose |
+|---|---|
+| `use_precomputed_heading_profile` | node-level launch parameter (NOT an `MPCParams` field) — use `raceline.csv`'s shaped `psi_target` column as `e_psi`'s reference instead of the geometric path tangent. Default `false`. Only has an effect when `use_precomputed_path` is ALSO true, and requires a re-exported `raceline.csv` with the `psi_target` column (an older 4-column file degrades to the geometric tangent, a no-op). |
+| `HEADING_LEAD_AUTHORITY_FRAC` | (offline constant, `raceline_optimizer.py`, NOT an `MPCParams` field — set at export time, baked into the CSV) fraction of the car's achievable yaw rate to pre-spend as heading lead. Default `0.5`. Re-export the CSV to change it. |
+| `SLIP_LIMIT_RAD` | (offline constant, `raceline_optimizer.py`) diagnostic-only rear-slip-angle bound used to flag stations, unvalidated placeholder (5°). |
+
+**Purpose**: precompute a heading reference that already leads the
+geometric path tangent by however much yaw is achievable at the planned
+speed, so `e_psi` carries a real, current error approaching a corner
+instead of relying on Q/R reweighting of an error that doesn't exist yet.
+See `planning_control_sync.md`'s "Precomputed shaped heading-lead profile"
+section for the full design and why this avoids curvature-forcing's
+wrong-direction-transient failure.
+
+**Status: implemented, offline-validated (no-op-when-off confirmed,
+profile shape sanity-checked), NOT YET LIVE-TESTED.** `comp_test_map_3`
+has few true straights, so the lead is active almost everywhere on that
+track at the default `authority_frac` — see `planning_control_sync.md`'s
+caveat before drawing conclusions from the first live test.
+
 ### 4.6 U-turn detector
 
 | Field | Purpose |
@@ -456,6 +509,55 @@ harmless no-op with it disabled — leave it as-is unless curvature forcing
 is redesigned and re-enabled.
 
 ---
+
+### 4.5d Nonlinear MPC (`use_nmpc`) — LIVE-ONLY, added 2026-08-13, NOT MIRRORED
+
+`use_nmpc=true` swaps `mpc_core.MPCController` (linear time-varying QP) for
+`nmpc_core.NMPCController` (Frenet-frame nonlinear MPC, Gauss-Newton SQP).
+Default **false**. There is no `settings.py` counterpart for any of it — see
+`planning_control_sync.md`'s "Nonlinear MPC (`use_nmpc`)" section for the full
+description, the offline A/B numbers, and the scope warning.
+
+**Tuning implications, which is what this doc is for:**
+
+- **Everything in section 4 above is INACTIVE** when `use_nmpc=true`. Every
+  adaptive multiplier, gate, floor and boost documented in 4.1-4.5c exists to
+  synthesise corner anticipation a curvature-blind prediction cannot produce.
+  The NMPC's model carries `kappa(s)` directly, so those mechanisms are not
+  applied at all. Retuning them has no effect on an NMPC run.
+- **The tuning surface is therefore ~6 numbers, not ~56**: the base weights of
+  section 1 (`q_e_y`, `q_e_yd`, `q_e_psi`, `q_r`, `q_e_v`, `r_delta`,
+  `r_a_accel`/`r_a_brake`, `r_rate_delta`/`r_rate_a`, `terminal_q_scale`), which
+  the NMPC reads from the SAME `MPCParams` the QP uses — so the current tuned
+  set is the starting point, not a blank slate.
+- **`q_r` is the one weight whose MEANING changes.** In the QP it weights
+  absolute yaw rate `r`; in the NMPC it weights heading-error rate
+  `r - kappa*s_dot`, which is zero for a car correctly tracking a corner rather
+  than proportional to how hard the corner is. Penalising absolute `r` in a
+  curvature-aware model would fight cornering. Same number, different
+  regressor: **re-sweep this one first**.
+- **To retune the NMPC without touching `MPCParams`**, use the `nmpc_q_*` /
+  `nmpc_r_*` override fields (sentinel `-1.0` = inherit). This exists
+  specifically so NMPC tuning cannot drift `MPCParams` away from `settings.py`.
+  `ros2/launch_all.sh` carries a commented-out shortlist of the likely ones.
+- **Structural knobs and where their values came from** (all measured, see
+  `late_turn_in_investigation.md` Part 16 §16.7): `nmpc_horizon=20` (1.0 s —
+  measured BETTER than 35, because the prediction model is optimistic and the
+  mismatch compounds; N=35 gave the fastest lap but the worst tracking),
+  `nmpc_sqp_iters=1` (measured better AND ~2x cheaper than 2),
+  `nmpc_solve_budget_ms=25` (hard stop; ships the best feasible iterate rather
+  than overrunning the 50 ms tick), `nmpc_rk_substeps=2` (needed because
+  `tau_a=0.02 s` is stiff against `dt=0.05 s`), `nmpc_jac_substeps=1` (only
+  sets the SQP step direction, never the prediction).
+- **`nmpc_alat_ceiling_enabled=true` is not optional on FSDS.** With it false
+  the linear-tyre prediction believes it can hold any corner at any speed and
+  the car spins mid-lap offline. Set false only for real-vehicle work, mirroring
+  `VehicleParams.alat_ceiling_enabled`.
+- `nmpc_track_halfwidth=3.5` / `nmpc_slack_weight=10000` are copies of
+  `_build_qp`'s existing soft-track literals, and
+  `nmpc_curvature_dense_step=0.5` / `nmpc_curvature_smooth_w=3` are
+  `control_utils.curvature_speed()`'s existing denoise precedent — none of the
+  four is a new constant to tune.
 
 ## 5. Dynamic speed cap — disabled, do not re-enable without re-diagnosis
 

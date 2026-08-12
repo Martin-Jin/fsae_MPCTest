@@ -648,7 +648,14 @@ ANTI_HUNT_K_LOOKAHEAD = 15.0
 # Whole-run averages hide this: they are dominated by the ~50% of ticks on
 # straights, where a speed-error weight does little. Compare on the approach
 # phase when re-tuning this.
-Q_diag      = [5.20, 0.2, 1.52, 0.50, 4.0, 0.0, 0.0, 0.0]
+# SYNCED 2026-08-12 from mpc_params.py's live retune (Q_diag[0]=5.20->6.0,
+# [1]=0.2->0.8, [2]=1.52->1.6, [3]=0.50->0.70, [4]=4.0->5.55) -- LIVE-ONLY
+# tune, mirrored here for parity per CLAUDE.md's standing rule but NOT YET
+# validated against this offline sim/tuner. The measurement history in the
+# comments above (Q_diag[4]=5.0 sweep, etc.) describes the OLD values and
+# has not been re-verified at the new ones -- re-measure before trusting
+# those specific numeric claims at the new weights.
+Q_diag      = [6.0, 0.8, 1.6, 0.70, 5.55, 0.0, 0.0, 0.0]
 # R_diag index -> input penalised:
 #   [0] delta_cmd  steering command effort (rad)
 #   [1] a_cmd      acceleration command effort (m/s^2)
@@ -683,12 +690,18 @@ Q_diag      = [5.20, 0.2, 1.52, 0.50, 4.0, 0.0, 0.0, 0.0]
 # with every R_diag consumer -- solve_mpc's needs_rebuild check, tuner
 # scripts that don't know about the split, etc). The QP's actual a_cmd
 # effort cost no longer reads it: see R_A_ACCEL/R_A_BRAKE below.
-R_diag      = [1.16, 0.77]
+# SYNCED 2026-08-12 from mpc_params.py's live retune (R_diag[0]=1.16->1.8).
+# R_diag[1] is nominal-only (see comment below) and left at 0.77 -- the
+# live side's R_A_ACCEL/R_A_BRAKE split (below) is what actually changed
+# and matters for a_cmd's effort cost.
+R_diag      = [1.8, 0.77]
 # R_rate_diag index -> input RATE-OF-CHANGE penalised (tick-to-tick jerk, not
 # the input itself):
 #   [0] delta_cmd  steering rate of change
 #   [1] a_cmd      acceleration rate of change
-R_rate_diag = [2.1, 2.6]
+# SYNCED 2026-08-12 from mpc_params.py's live retune (2.1->2.5, 2.6->2.4) --
+# LIVE-ONLY tune, not yet re-validated offline.
+R_rate_diag = [2.5, 2.4]
 
 # R_A_ACCEL / R_A_BRAKE — separate effort weights for acceleration and
 # braking. solve_mpc()'s a_cmd effort cost is r_a_accel*pos(a_cmd)^2 +
@@ -701,8 +714,16 @@ R_rate_diag = [2.1, 2.6]
 # post-exit recovery -- because the same weight that frees up acceleration
 # also caps how hard the QP is willing to brake. See planning_control_sync.md's
 # "Accel/brake effort weight split" for the diagnosis and retuning history.
-R_A_ACCEL = 1.0
-R_A_BRAKE = 0.6
+# SYNCED 2026-08-12 from mpc_params.py's live retune (R_A_ACCEL 1.0->3.0,
+# R_A_BRAKE 0.6->0.5) -- LIVE-ONLY tune, not yet re-validated offline. The
+# tripling of R_A_ACCEL is a large change from the diagnosis above (which
+# argued for CHEAPER accel effort, not more expensive) -- this may be a
+# response to a separately-diagnosed speed-tracking-lag issue (car slow to
+# convert a falling v_desired into actual braking, see
+# late_turn_in_investigation.md Part 11), not a reversal of that reasoning.
+# Re-read Part 11 before assuming this number is settled.
+R_A_ACCEL = 3.0
+R_A_BRAKE = 0.5
 
 
 # ------------------------------------------------------------------------------

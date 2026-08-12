@@ -255,6 +255,7 @@ writing — re-confirm before relying on them, since a resync can move them.
 | Steering-effort relaxation approaching a corner | `settings.py` (`LOOKAHEAD_STEER_EFFORT_RELAX_ENABLED`, `ADAPTIVE_Q_LOOKAHEAD_STEER_RELAX_FLOOR`) | `mpc_params.py` (`lookahead_steer_effort_relax_enabled`, `adaptive_q_lookahead_steer_relax_floor`) | `True` / `0.5` — see "Steering-effort relaxation approaching a corner" below |
 | Curvature forcing term (QP dynamics) | `settings.py` (`CURVATURE_FORCING_ENABLED`, `CURVATURE_FORCING_GAIN`), read by `controller/optimiser.py`'s `solve_mpc(w=)` | `mpc_params.py` (`curvature_forcing_enabled`, `curvature_forcing_gain`), read by `mpc_core.py`'s `_solve_qp` | `False` / `1.0` — DISABLED, structurally unsound at any gain that matters, see "Curvature-forcing term" below |
 | Anti-hunt lookahead gate | `settings.py` (`ANTI_HUNT_K_LOOKAHEAD`), read by `controller/model_utils.py`'s `steer_rate_anti_hunt(k_lookahead=)` | `mpc_params.py` (`anti_hunt_k_lookahead`), read by `mpc_core.py`'s `_steer_rate_anti_hunt` | `15.0` (was `60.0`, too eager — see "Curvature-forcing term" below) |
+| Exit-boost `\|e_psi\|` hold threshold | **NOT MIRRORED — live-only, by design.** See "Precomputed corner segmentation" below for why. | `mpc_params.py` (`adaptive_q_lookahead_epsi_hold_thresh_rad`), read by `mpc_core.py`'s exit-boost call site in `compute()` | `0.0` (disabled/no-op) — needs `use_precomputed_corner_map=True` to have any effect at all, and is a second explicit opt-in on top of that; NOT YET LIVE-TESTED |
 
 Notes on how these are actually used:
 
@@ -303,16 +304,16 @@ comments, with no row here — that gap is what this section closes.
 
 | `MPCParams` field | `settings.py` constant | Current value |
 |---|---|---|
-| `q_e_y` | `Q_diag[0]` | `5.20` |
-| `q_e_yd` | `Q_diag[1]` | `0.2` |
-| `q_e_psi` | `Q_diag[2]` | `1.52` |
-| `q_r` | `Q_diag[3]` | `0.50` |
-| `q_e_v` | `Q_diag[4]` | `4.0` |
-| `r_delta` | `R_diag[0]` | `1.16` |
-| `r_a_accel` | `R_A_ACCEL` | `1.0` — split 2026-08-12 from a single shared `r_a` (see "Accel/brake effort weight split" below); actively being live-tuned, re-check this value against `mpc_params.py` before trusting it |
-| `r_a_brake` | `R_A_BRAKE` | `0.6` — see previous row; actively being live-tuned |
-| `r_rate_delta` | `R_rate_diag[0]` | `2.1` |
-| `r_rate_a` | `R_rate_diag[1]` | `2.6` |
+| `q_e_y` | `Q_diag[0]` | `6.0` — synced 2026-08-12 from a live-only retune (was `5.20`), NOT YET re-validated offline |
+| `q_e_yd` | `Q_diag[1]` | `0.8` — synced 2026-08-12 (was `0.2`), NOT YET re-validated offline |
+| `q_e_psi` | `Q_diag[2]` | `1.6` — synced 2026-08-12 (was `1.52`), NOT YET re-validated offline |
+| `q_r` | `Q_diag[3]` | `0.70` — synced 2026-08-12 (was `0.50`), NOT YET re-validated offline |
+| `q_e_v` | `Q_diag[4]` | `5.55` — synced 2026-08-12 (was `4.0`), NOT YET re-validated offline |
+| `r_delta` | `R_diag[0]` | `1.8` — synced 2026-08-12 (was `1.16`), NOT YET re-validated offline |
+| `r_a_accel` | `R_A_ACCEL` | `3.0` — split 2026-08-12 from a single shared `r_a` (see "Accel/brake effort weight split" below); synced 2026-08-12 from a live-only retune (was `1.0`) — the 3x increase may be a response to a separately-diagnosed speed-tracking-lag issue (see `late_turn_in_investigation.md` Part 11), not a reversal of the original cheap-acceleration-effort diagnosis; NOT YET re-validated offline |
+| `r_a_brake` | `R_A_BRAKE` | `0.5` — see previous row; synced 2026-08-12 (was `0.6`), NOT YET re-validated offline |
+| `r_rate_delta` | `R_rate_diag[0]` | `2.5` — synced 2026-08-12 (was `2.1`), NOT YET re-validated offline |
+| `r_rate_a` | `R_rate_diag[1]` | `2.4` — synced 2026-08-12 (was `2.6`), NOT YET re-validated offline |
 | `terminal_q_scale` | `TERMINAL_Q_SCALE` | `1.0` |
 | `adaptive_q_scaling_enabled` | `ADAPTIVE_Q_SCALING_ENABLED` | `True` |
 | `adaptive_q_lookahead_enabled` | `ADAPTIVE_Q_LOOKAHEAD_ENABLED` | `True` |
@@ -2392,3 +2393,376 @@ Width matches *exactly*, and spacing sits within FS limits.
 > differencing the array reports gaps up to 43.7 m and 23–31% of spacings over
 > 10 m — all artifacts. Project each cone onto its nearest centreline index and
 > sort by that first.
+
+## Precomputed corner segmentation — replaces live curvature heuristics with exact lookups (2026-08-12)
+
+**Motivation.** Live "what corner am I in / how far through it am I" was
+never known directly — it was re-approximated every tick from local
+geometric proxies (`kappa`, `kappa_max_abs`) plus a small amount of
+tick-to-tick state (`_dist_since_peak`, `_armed_for_next_peak`). This has a
+confirmed, real bug: `_lookahead_exit_boost`'s decay tracker can't
+distinguish "13 m past the apex, corner over" from "13 m past the apex,
+still fighting a bad exit," because it only ever sees local curvature, never
+the corner's actual identity or how that specific approach is going —
+confirmed on a real log (`mpc_standalone_control_1786516297.csv`, lap 1's
+hard corner): `m_Q_epsi_exit` was already back to `1.00` (fully decayed) by
+`t=5.92` while `e_psi=-13.96°` and the worst of the heading correction was
+still ahead (steering saturating repeatedly through `t=6.5-7.3`).
+
+Since a fixed/precomputed path (`_static_path`, when `path_map_path` is
+set) is a known array, corner identity/extent doesn't need to be inferred
+at all — it can be computed ONCE, when the path loads, and looked up by
+index every tick instead of re-derived.
+
+**Scope decision**: this is LIVE-ONLY, unlike this file's usual two-sided
+parity rule. Consistent with the rest of this session's investigation
+(which was live-only throughout by explicit user instruction), the user
+was asked directly whether this structural feature should also be
+prototyped in `fsae_MPCTest` and chose live-only. **`fsae_MPCTest`/
+`settings.py`/`model_utils.py`/`rollout_core.py` are NOT touched by this
+change** — `CornerMap`/`_segment_corners` exist only in
+`ros2/src/fsae_planning/control/fsae_control/fsae_control/mpc_core.py`.
+This is a deliberate, one-off exception to this file's normal parity rule,
+not an oversight — flag it if porting offline work later assumes symmetry
+that doesn't exist here.
+
+**Caveat — only applies to a static/precomputed path.** The live-planner
+path (SLAM-built, growing tick to tick, no `path_map_path` set) keeps
+today's live heuristics completely unchanged; precomputing corner metadata
+only makes sense for a path that's already fully known.
+
+### `CornerMap` (mpc_core.py)
+
+```python
+@dataclass
+class CornerMap:
+    corner_id:            np.ndarray  # (n,) int,   -1 = on a straight
+    dist_into_corner:     np.ndarray  # (n,) float, m from this corner's start
+    dist_to_apex:         np.ndarray  # (n,) float, m to this corner's peak |kappa|
+    dist_since_apex:      np.ndarray  # (n,) float, m since this corner's peak
+    corner_length:        np.ndarray  # (n,) float, total arc length of the corner
+    peak_kappa_abs:       np.ndarray  # (n,) float, this corner's peak |kappa|
+    total_heading_change: np.ndarray  # (n,) float, this corner's total |heading change|
+```
+
+One row per path waypoint, computed once by `_segment_corners(path)` — an
+O(n) pass that thresholds `|kappa|` against
+`MPCParams.adaptive_q_lookahead_peak_hysteresis` (0.01 1/m, reused rather
+than introducing a second straight/corner cutoff) to split the path into
+straight/corner runs, then finds each run's apex, arc length, and total
+rotation. No wraparound (matches every other function in `mpc_core.py` —
+none of them treat the path as a closed loop either); confirmed correct
+for `comp_test_map_3`'s recorded lap (start/end are 5.77 m apart, not
+closed).
+
+**Offline-validated (2026-08-12)** against `tracks/comp_test_map_3/raceline.csv`
+(1000 waypoints): found 9 corner runs (2 of them single-waypoint blips right
+at the path's start/end, marginally over the straight threshold — expected,
+not a bug). The 7 real corners' arc-length positions and mean `v_target`
+line up exactly as expected physically (tighter corners get lower planned
+speed: 8.2-10.9 m/s at the sharpest corners vs 15.8-16.7 m/s on the
+straighter sections) — cross-checked against the speed profile independent
+of the segmentation code itself.
+
+### Migration table (what replaced what)
+
+| Today (live heuristic) | Replacement | Why it's better |
+|---|---|---|
+| `_lookahead_curvature_profile`'s per-tick forward scan for `kappa_max_abs` | `_corner_map_lookahead()` — index lookup if already inside a corner run; a bounded forward walk over `corner_id` transitions (not per-step `_curvature()` calls) if approaching one from a straight | Removes the O(lookahead_dist / waypoint_spacing) `_curvature()` evaluation from every tick; exact instead of sampled. |
+| `_update_lookahead_peak` / `_dist_since_peak` (local-peak rising-edge detector, stateful) | `corner_map.dist_since_apex[base_idx]` / `corner_map.peak_kappa_abs[base_idx]` — direct lookup, no rising-edge state | Eliminates an entire stateful mechanism (`_armed_for_next_peak`) that was only ever approximating "which corner, how far past its apex" — the corner map answers this exactly. |
+| `_lookahead_exit_boost`'s fixed-distance decay (the confirmed bug above) | Same decay shape, but held (not allowed to advance toward 1.0) while `abs(e_psi)` remains above the new `MPCParams.adaptive_q_lookahead_epsi_hold_thresh_rad`, blended continuously via `clip(abs(e_psi)/thresh, 0, 1)` — only active when a corner map is present | Fixes the confirmed bug: the boost can no longer wear off before heading-error recovery is actually done. |
+| U-turn accumulated heading change (scanned live over a speed-scaled window, can under-see a slow U-turn if the window is smaller than the turn) | `corner_map.total_heading_change` exists in the dataclass, but is NOT YET wired into `_uturn_severity`'s call site | Deferred — only the `kappa_max_abs`/heading-change lookup needed for the row above was wired this session. Revisit if a U-turn under-detection issue is reported. |
+| `_corner_demand`/`_demand_frac` | UNCHANGED | Correctly live/speed-dependent — same corner, different speed, different demand. Not precomputable. |
+
+`_adaptive_R_scaling`, `_adaptive_Q_scaling`, `_steer_rate_anti_hunt`'s
+current-position terms, and `_error_state`'s single-point preview `kappa`
+are unchanged — these are about the car's current tracking error/speed, not
+corner geometry.
+
+### New parameter: `use_precomputed_corner_map` (node-level launch arg, NOT an `MPCParams` field)
+
+Unlike every other flag in the numeric-parity table above, this is a
+launch-argument/node-parameter concern, the same tier as `path_map_path`/
+`use_precomputed_path` — it does not belong in the `MPCParams` parity table.
+Declared in `sim.launch.py`/`control.launch.py` (grouped with
+`path_map_path`/`use_precomputed_path`) and forwarded straight through (no
+`IfElseSubstitution`, since it's a pure behaviour switch with no string to
+blank) into both `mpc_controller.py`/`mpc_controller_standalone.py`'s
+`declare_parameters` block. Has no effect unless `use_precomputed_path` is
+ALSO true. Default `false` on both the node parameter and every launch
+layer — land off, prove live before flipping. `ros2/launch_all.sh` exposes
+it as `USE_PRECOMPUTED_CORNER_MAP=false`, alongside
+`USE_PRECOMPUTED_SPEED`/`USE_PRECOMPUTED_PATH`.
+
+**Regression-checked (2026-08-12)**: with the flag off / `set_static_path()`
+never called, `MPCController.compute()`'s output is bit-for-bit identical
+run-to-run (verified via a 200-tick synthetic replay against
+`comp_test_map_3`'s raceline) — the new code path is a true no-op until
+opted into. With the corner map active, output measurably differs (max abs
+diff 0.072 over the same replay), confirming the new path is actually taken
+when enabled.
+
+**Status: implemented, offline-validated, NOT YET LIVE-TESTED.** The
+`adaptive_q_lookahead_epsi_hold_thresh_rad` fix defaults to `0.0`
+(disabled — today's unmodified fixed-distance decay) even with the corner
+map enabled, so it needs a second, explicit opt-in on top of
+`use_precomputed_corner_map=True` before it changes behaviour. Do not
+raise it above `0.0` without a live A/B, same discipline as every other
+untested mechanism in this file.
+
+## Precomputed shaped heading-lead profile (2026-08-12)
+
+**Motivation.** `raceline.csv`'s `psi` column has always been purely
+geometric (`atan2` of the path tangent) — `_error_state`'s `e_psi` is
+measured against wherever the car's nearest path point happens to be
+pointing right now, with no anticipation of an upcoming bend. User's idea:
+precompute a SHAPED heading reference, per waypoint, ahead of time — one
+that already leads the geometric tangent by however much yaw the car can
+physically achieve between here and there at the ALREADY-PLANNED speed —
+so the heading-error term itself provides early commitment, without
+relying on any Q/R reweighting of an error that doesn't exist yet.
+
+**Why this is structurally different from curvature-forcing (already
+tried and disabled) or a cost-target shift (tried and rejected the same
+day, see below):** both of those told the QP about a future deviation it
+was free to satisfy however was cheapest inside the horizon — a wrong-
+direction dip-then-correct could look cheaper than committing immediately,
+and testing confirmed both produce exactly that. A precomputed lead
+heading instead changes what's true AT `k=0`, before the QP ever runs:
+`e_psi` becomes a real, already-existing error the instant `_error_state`
+computes it. There is no "spend it later" freedom, because nothing is
+scheduled for later — synthetic testing (single-step and full corner-ramp
+scenarios, multiple speeds) confirmed direct, monotonic correction with no
+wrong-direction transient, unlike both prior mechanisms.
+
+**Also tested and rejected: a FIXED lookahead distance.** The first version
+of this idea (evaluate `path_yaw` at `base_idx + fixed_distance` instead of
+`base_idx`) hit a cliff: as little as 8m of lead saturates steering to full
+lock IMMEDIATELY on a realistic corner-entry ramp, at every speed tested.
+**Fix: scale the lead by achievable yaw rate at the station's own planned
+speed, not a fixed distance** — see `build_shaped_heading_profile` below.
+This naturally caps the lead at whatever the car can actually execute, and
+decays it to ~0 once a corner's constant-curvature section begins (nothing
+left to "pre-achieve" once the car is expected to already be mid-turn) —
+verified on an isolated synthetic corner. See
+`late_turn_in_investigation.md` Parts 7-9 for the full derivation and
+synthetic-test evidence.
+
+### Where it lives
+
+- **Offline (`fsae_MPCTest/tuner/tools/raceline_optimizer.py`)**:
+  `max_yaw_rate`, `build_shaped_heading_profile`, `check_slip` — a DERIVED
+  third pass, run in `export()` AFTER `optimize_raceline()`'s path+speed
+  have already converged. Does NOT feed back into the path or speed (see
+  that file's own coupling-depth discussion in its new functions'
+  docstrings) — a deliberate scope decision: the existing optimizer's
+  constants (`ALAT_MARGIN`, `_smooth_step`'s taper, etc.) are each tied to
+  a specific measured failure mode: folding a new objective into that loop
+  risked invalidating that tuning. Confirmed via direct comparison: x, y,
+  psi, v_target are BYTE-IDENTICAL before/after this change on
+  `comp_test_map_3` — only a new `psi_target` column is added.
+- **CSV format**: extended from `x,y,psi,v_target` (4 columns) to
+  `x,y,psi,psi_target,v_target` (5). Backward-compatible:
+  `control_utils._load_profile_csv` detects column count per row and sets
+  `psi_target = psi` for any 4-column file (old exports, or
+  `speed_profile.csv`, which never needs this column) — a genuine no-op.
+- **Live (`mpc_core.py`)**: `MPCController.set_heading_profile(psi_target)`
+  stores the array; `_error_state` substitutes it for `path_yaw` at
+  `base_idx`, ONLY for `e_psi`'s reference — `e_y`'s projection keeps using
+  the geometric tangent, unchanged (same "only e_psi changes" precedent as
+  `ref_heading_rate_limit_enabled`). New loader
+  `control_utils.load_path_heading_profile_csv` (kept separate from
+  `load_path_profile_csv`, whose `(n,2)` return shape is unchanged so
+  `CornerMap`/every other `_static_path` consumer is unaffected).
+- **Toggle**: `use_precomputed_heading_profile`, node-level launch
+  parameter (NOT an `MPCParams` field — same tier as `use_precomputed_
+  corner_map`/`path_map_path`), default `false` on both nodes and both
+  launch files. `ros2/launch_all.sh` exposes
+  `USE_PRECOMPUTED_HEADING_PROFILE=false`.
+
+### Slip check (diagnostic only, unvalidated limit)
+
+`check_slip` flags stations where the path's own geometric turning rate
+implies more rear-axle slip (`beta_r = lr*r/v`, the standard steady-state
+linear-bicycle relationship, same `Cf`/`Cr`-model family
+`alat_ceiling_at()` already trusts) than a placeholder `SLIP_LIMIT_RAD`
+(5°, **unmeasured, do not treat as authoritative**). On `comp_test_map_3`:
+110/1000 stations (11%) exceed it, all at the track's sharpest, slowest
+corners (peak kappa 0.12-0.21, v 5.5-7.9 m/s) — not scattered, so the
+formula is behaving sensibly; whether 5° is the right bound is still
+unknown. Diagnostic print only, does not fail the export or reshape
+anything (unlike `_assert_clearance`'s hard `RuntimeError`) — a real
+slip-limit measurement is needed before this becomes load-bearing.
+
+### Honest caveat found during offline validation
+
+`comp_test_map_3` has almost no genuinely straight sections — the
+geometric `psi` climbs 0.4°→16° over the first 40m of what looks like a
+"straight" in the corner-segmentation sense (part of the gentle S-curve,
+Part 3e). Consequence: at `HEADING_LEAD_AUTHORITY_FRAC=0.5`, the shaped
+lead sits near its max (~3.5-3.75°) across almost the WHOLE lap — only 2 of
+1000 exported points ever reach near-zero lead. This is the algorithm
+correctly responding to this track's actual geometry, not a bug (Part 8's
+isolated single-corner test showed proper decay-to-zero on an actual
+straight-then-corner shape) — but it means a live test on this track
+exercises something closer to a constant heading offset than a
+corner-triggered anticipation signal. `HEADING_LEAD_AUTHORITY_FRAC` (in
+`raceline_optimizer.py`) is the first thing to lower if live behaviour
+looks like "the car cuts every bend a bit early everywhere" rather than
+"the car commits earlier specifically approaching sharp corners."
+
+### Status
+
+Implemented (offline: `raceline_optimizer.py`'s three new functions +
+export wiring; live: `mpc_core.py`/both nodes/both launch files/
+`launch_all.sh`, all live-only per this session's standing pattern — see
+"Never push to fsae_planning repo" in project memory). Regression-checked:
+`use_precomputed_heading_profile` unset reproduces `compute()`'s output
+bit-for-bit; set, it measurably changes it (max abs diff 0.266 over a
+200-tick synthetic replay). `comp_test_map_3/raceline.csv` re-exported
+with the new column (x/y/psi/v_target confirmed byte-identical to the
+pre-existing file).
+
+**LIVE-TESTED 2026-08-12 at `HEADING_LEAD_AUTHORITY_FRAC=0.5` (the shipped
+default) — WORSE, not better.** Two completed laps vs. three same-day
+baseline laps: mean `|e_psi|` rose (9.5°/10.5° vs. baseline's 6.1-8.2°),
+peak `|e_psi|` on the corner this investigation has tracked throughout
+rose from 19.4° to 27.0-31.4°, steering saturation on that corner roughly
+doubled to tripled. Likely cause: `comp_test_map_3` has almost no true
+straights (Part 10's own caveat), so the lead is active nearly everywhere
+rather than gated to a corner's approach phase — through much of a real
+corner's interior the car carries extra lead ON TOP of the geometric
+heading, which is already changing correctly there, rather than helping
+it commit early to a bend it hasn't reached yet. **Reverted to OFF**
+(`USE_PRECOMPUTED_HEADING_PROFILE=false`). See `late_turn_in_
+investigation.md` Part 12 for the full data and candidate next steps
+(lower `authority_frac` substantially, or — more likely needed — gate the
+lead to the approach phase only rather than letting it propagate into a
+corner's own interior). Do not re-enable at the current default without
+addressing that gating.
+
+## Nonlinear MPC (`use_nmpc`) — a SECOND controller, LIVE-ONLY, NOT MIRRORED (2026-08-13)
+
+**Scope warning first: nothing in this section exists in `fsae_MPCTest`.** There
+is no offline counterpart to `nmpc_core.py`, `nmpc_params.py` or `NMPCParams`,
+and `NMPCParams`' 24 fields are deliberately **NOT** part of the
+"Numeric-parity constants" table below — they have nothing on this side to be
+identical to. Live-only, same as the two features above it, by the standing
+instruction that has governed the whole late-turn-in investigation. If it is
+ever mirrored, that changes and this warning must be deleted.
+
+### What it is
+
+`ros2/src/fsae_planning/control/fsae_control/fsae_control/nmpc_core.py`'s
+`NMPCController`: a Frenet-frame **nonlinear** MPC (Gauss-Newton SQP, condensed
+dense QP subproblem solved directly by OSQP, real-time-iteration style — one
+iteration per tick warm-started from the previous tick). It is selected by a
+single node parameter, `use_nmpc` (default **false**), and replaces
+`MPCController` wholesale when true. `mpc_core.py` is byte-unchanged.
+
+### Why it exists — the one thing every mechanism above works around
+
+`MPCController._discrete_model` is the bicycle model in error coordinates with
+the reference frame's own rotation dropped. The missing term is exactly:
+
+```
+e_psi_dot = r - kappa(s) * s_dot          <-- absent from Ad/Bd
+```
+
+so with `e_y = e_psi = 0` the QP's whole rollout predicts staying at zero
+forever and no weighting can produce turn-in before real error exists. Measured
+directly: `MPCController` commands **0.000 deg** at 8 separate dead-on-line
+states approaching a known bend. The "Curvature-forcing term" section above,
+and the shaped heading-lead section, are both attempts to inject that term as
+exogenous horizon-indexed data; both produce a wrong-direction transient,
+because a future obligation known at solve time lets the solver choose when to
+pay it (`late_turn_in_investigation.md` Parts 2/7/15).
+
+In the Frenet formulation `kappa` is not horizon-indexed — it is `kappa(s)`
+with `s` a **state** driven by the car's own predicted motion, so the
+obligation is not schedulable. Verified: the wrong-direction excursion is a
+single-step -0.33 deg against a +4.9 deg correct-direction peak (and CasADi +
+IPOPT reproduces -0.327 deg, so it is the true optimum, not a solver artifact),
+versus ~7 consecutive steps at comparable-to-peak magnitude for the mechanisms
+above.
+
+### Model, and what it reuses
+
+States `[s, e_y, e_psi, v_x, v_y, r, delta_act, a_act]`, inputs
+`[delta_cmd, a_cmd]`. **Every** vehicle constant comes from
+`MPCController.__init__` unchanged (`lf` 0.70, `lr` 0.85, `m` 255, `Iz` 150,
+`Cf`/`Cr`, `tau_delta` 0.08, `tau_a` 0.02, `MAX_STEER_RAD`, `MAX_ACCEL`,
+`MAX_BRAKE`, `du_max` = 180 deg/s x dt), including the same kinematic->dynamic
+blend band (1.0-2.5 m/s). Cost weights come from the same `MPCParams` instance
+the LTV-QP uses. **No new physical constant was introduced.**
+
+Three deliberate differences, all of which matter when reading a log:
+
+1. **`q_r` weights heading-error RATE** (`r - kappa*s_dot`), not absolute yaw
+   rate. Penalising absolute `r` in a curvature-aware model penalises the yaw
+   rate the car MUST hold to follow a corner. Same number, different regressor
+   — expect to re-sweep it live.
+2. **`e_y`/`e_psi` are measured against the SMOOTHED reference**, not the raw
+   segment tangent. The raw tangent steps by `ds/R` (5.7 deg per 0.5 m waypoint
+   at R=5 m); the NMPC reads each step as real state error, which produced a
+   period-2 +-25 deg steering limit cycle until the reference heading was
+   derived from the same smoothed samples as `kappa(s)`. Bounded by the 1.5 m
+   smoothing window (itself `control_utils.curvature_speed()`'s existing
+   `dense_step=0.5`/`w=3` precedent, not a new constant).
+3. **FSDS's measured `a_lat` ceiling is inside the prediction**, as a smooth
+   `tanh` saturation of the predicted tyre forces, reusing
+   `MPCParams.alat_ceiling_flat/_slope/_intercept` — the same law
+   `mpc_core._alat_ceiling_at` and `model/vehicle_physics.alat_ceiling_at`
+   already carry. Without it the linear-tyre model believes it can hold any
+   corner at any speed and the car **spins**; with it the same run completes
+   the lap. `nmpc_alat_ceiling_enabled=false` recovers the unconstrained plant
+   for real-vehicle work, mirroring `VehicleParams.alat_ceiling_enabled`.
+
+### What is inactive when `use_nmpc=true`
+
+- The **entire adaptive gain schedule** (every mechanism documented in the
+  sections above: lookahead approach/exit boosts, yaw-rate relax, anti-hunt,
+  straight boosts, centred softening, U-turn detector). They exist to
+  synthesise anticipation this model does structurally. No `m_*` telemetry
+  columns are written.
+- **`use_precomputed_heading_profile`** — no effect (one startup log line says
+  so). It approximates the curvature the NMPC models exactly.
+- `use_precomputed_corner_map` — no effect (the corner map feeds the adaptive
+  lookahead layer, which is inactive).
+- `curvature_forcing_enabled`, `ref_heading_rate_limit_enabled` — LTV-QP-only.
+
+`use_precomputed_path` / `use_precomputed_speed` / `enable_dynamic_speed_cap`
+/ delay compensation (`delay_compensation_enabled`, `pose_age_lp_alpha`,
+`n_delay_hysteresis`, `max_delay_compensation_steps`) all work exactly as
+today; the delay rollforward uses the nonlinear model instead of
+`predict_ahead()`'s linearisation.
+
+### Measured, offline (identical weights, identical plant, single-variable A/B)
+
+Closed loop, this repo's 25-state Pacejka plant (`step_nonlinear_plant`,
+`alat_ceiling` on) along `comp_test_map_3/raceline.csv`:
+
+| | \|e_y\| mean / p90 / max | \|e_psi\| mean / p90 | steer sat | lap | solve mean / p95 / max |
+|---|---|---|---|---|---|
+| LTV-QP (as shipped) | 0.400 / 1.451 / 2.323 m | 5.92 / 15.41 deg | 12.5% | 43.1 s | 7.4 / 9.9 / 40.5 ms |
+| NMPC (defaults) | 0.277 / 0.686 / 1.150 m | 5.84 / 14.50 deg | **0.8%** | 42.0 s | 8.9 / 11.6 / 14.7 ms |
+
+Turn-in (arc length where |steer| first reaches 25% of that corner's peak,
+relative to the corner start): **earlier on 7/7 corners, median 25.6 m**, and
+negative (before the corner starts) on 7/7 versus positive on 6/7 for the
+LTV-QP. Full tables, the horizon/iteration sweep behind the `N=20`/1-iteration
+defaults, the CasADi+IPOPT cross-check, and the four bugs this testing found
+are in `late_turn_in_investigation.md` Part 16.
+
+**NOT YET LIVE-TESTED.** Reproduce any of the above with
+`python3 ros2/src/fsae_planning/control/fsae_control/test/nmpc_offline_check.py`
+(no ROS, no FSDS; the closed-loop section self-skips without an `fsae_MPCTest`
+sibling checkout).
+
+### Dependencies
+
+`osqp` only — already a documented requirement of `mpc_core` via cvxpy
+(`fsae_control/package.xml`). **CasADi/acados are NOT used by the shipped code**
+(CasADi is not installable into the ROS interpreter on Ubuntu 24.04 without
+`--break-system-packages`); the SQP and its Jacobians are numpy, and CasADi was
+used once, from a private `--target` install, purely to cross-check the optimum.

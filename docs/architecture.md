@@ -1184,6 +1184,51 @@ this controller. What actually happens:
   for a from-scratch explanation of the underlying limitation this was
   meant to close — that limitation is still open.
 
+**Precomputed corner segmentation (`use_precomputed_corner_map`, live-only,
+added 2026-08-12)** — the lookahead mechanisms above all re-derive "which
+corner, how far into/past it" every tick from local curvature. When the
+tracked path is a fixed/precomputed one (`path_map_path` set), the whole
+path is a known array up front, so corner identity/extent can be computed
+ONCE at load instead: `mpc_core.py`'s `_segment_corners(path)` walks the
+path once, splits it into straight/corner runs by thresholding `|kappa|`,
+and records each waypoint's corner id, distance into/to-apex/since-apex,
+corner length, peak curvature, and total heading change in a `CornerMap`
+dataclass. `MPCController.set_static_path(path)` builds and stores this;
+`compute()` looks it up by index instead of scanning, when present.
+
+This directly fixes a confirmed bug in `lookahead_exit_boost`: its decay is
+keyed on *distance* since the local curvature peak, not on whether the
+heading-error correction it exists to help with has actually finished — a
+real log showed the boost fully decayed (`m_Q_epsi_exit=1.0`) while
+`|e_psi|` was still 14° and the worst of the correction was still ahead.
+With a corner map, the decay can additionally be held open while `|e_psi|`
+remains large (`adaptive_q_lookahead_epsi_hold_thresh_rad`, default `0.0` =
+disabled even with the corner map on — a second explicit opt-in, not yet
+live-tested).
+
+Live-only by explicit choice (asked directly, not assumed) — not ported to
+this offline sim. See `planning_control_sync.md`'s "Precomputed corner
+segmentation" section for the full migration table and validation
+evidence. Only applies to a fixed/precomputed path; the live-planner branch
+(no `path_map_path`) is unaffected.
+
+**Precomputed shaped heading-lead profile (`use_precomputed_heading_profile`,
+added 2026-08-12)** — a related but distinct idea: instead of reweighting
+Q/R given an existing tracking error, precompute a heading REFERENCE
+(`psi_target`, a new `raceline.csv` column) that already leads the
+geometric path tangent by however much yaw the car can achieve at its
+planned speed between here and the next station. `_error_state` measures
+`e_psi` against this instead of the geometric tangent (only `e_psi` — `e_y`
+is unaffected). Structurally different from curvature-forcing above: it
+changes what's true at `k=0` (a real, current error) rather than telling
+the QP about a future obligation it's free to satisfy however is cheapest
+— synthetic testing found this avoids curvature-forcing's wrong-direction
+transient entirely. See `planning_control_sync.md`'s "Precomputed shaped
+heading-lead profile" section for the full design, the fixed-lookahead
+version that was tried and rejected first (immediate full-lock steering),
+and an important caveat about this track's lack of true straights. NOT YET
+LIVE-TESTED.
+
 **Demand normalisation** (`ADAPTIVE_Q_DEMAND_NORMALISED`, on by default) —
 the boost curves above are driven by corner **demand**, not raw curvature:
 
@@ -1641,3 +1686,50 @@ not here.
 | `settings.py` | All project-level tuning/scoring/DNF configuration. See [Configuring the Project](#configuring-the-project-settingspy). |
 | `mpc_controller_standalone.py` / `mpc_core.py` / `control_utils.py` (staged under `fsds_simulator/control/fsae_control/fsae_control/`) | The live ROS 2 MPC controller for FSDS. See [Simulator Integration](developer_guide.md#simulator-integration). |
 | `fsds_simulator/` (whole tree) | Full staging mirror of upstream's ROS 2 workspace — every package, not just control — so a clone of this repo plus FSDS can build and run the complete stack (`stanley`, `mpc`, or `mpc_standalone`) with no separate `fsae_planning` checkout. See [docs/planning_control_sync.md](planning_control_sync.md) and [fsds_simulator/README.md](../fsds_simulator/README.md). |
+
+
+## Second controller: nonlinear MPC (`use_nmpc`) — live-only, 2026-08-13
+
+Everything under "How the MPC Works" above describes `mpc_core.MPCController`:
+a linear time-varying MPC solved as one convex QP per tick. As of 2026-08-13 the
+live workspace carries a **second, separately selectable** controller,
+`nmpc_core.NMPCController`, chosen by the node parameter `use_nmpc` (default
+false). It exists only on the live side — there is no `fsae_MPCTest` equivalent
+— so this section is a pointer, not a mirror of offline code.
+
+**The structural difference, in one line.** The LTV-QP's prediction is written in
+error coordinates with the reference frame's rotation dropped, so
+`e_psi_dot = r` instead of `e_psi_dot = r - kappa(s)*s_dot`. With the car on
+line and a corner ahead, its 35-step rollout predicts staying on line forever
+(measured: exactly 0.000 deg commanded at 8 dead-on-line states), which is why
+the "structural limit" callout elsewhere in this doc exists and why the adaptive
+lookahead layer had to be invented. The NMPC works in curvilinear (Frenet)
+coordinates where arc length `s` is a state and `kappa(s)` is looked up from the
+path, so the road bending ahead is part of the dynamics rather than something
+bolted onto the cost.
+
+**Structure**: states `[s, e_y, e_psi, v_x, v_y, r, delta_act, a_act]`, inputs
+`[delta_cmd, a_cmd]`, linear-tyre bicycle dynamics with the same constants and
+the same low-speed kinematic blend as the LTV-QP, plus a `tanh` saturation of
+the predicted lateral force at FSDS's measured `a_lat` ceiling. Solved by
+Gauss-Newton SQP: nonlinear rollout from the measured state (so the
+linearisation point is always dynamically feasible and the QP's dynamics defect
+is zero), finite-difference Jacobians vectorised across horizon stages,
+condensed into a dense QP in the input deviations only, solved by OSQP with a
+box trust region, one iteration per tick warm-started from the previous tick
+(real-time iteration). Horizon 20 steps (1.0 s); measured solve time mean
+8.9 ms, p95 11.6 ms.
+
+**Consequences for the rest of the architecture**: when `use_nmpc=true` the
+entire adaptive gain schedule, the precomputed corner map and the shaped
+heading-lead profile are all inactive (each was a workaround for the missing
+curvature term), and the telemetry CSV's `m_*` columns are empty while eight
+`nmpc_*` columns carry solver/prediction diagnostics instead. The composite
+score, the scoring pipeline, the path/speed-profile plumbing and the delay
+compensation are unchanged.
+
+Full detail: `planning_control_sync.md`'s "Nonlinear MPC (`use_nmpc`)" section
+(what it is, what it reuses, what is inactive, offline A/B numbers), `tuning.md`
+§4.5d (tuning surface), and `late_turn_in_investigation.md` Part 16 (research
+survey, formulation choice, validation, the four bugs found in testing).
+**NOT YET LIVE-TESTED as of 2026-08-13.**
