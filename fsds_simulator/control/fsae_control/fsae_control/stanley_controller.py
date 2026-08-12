@@ -29,7 +29,7 @@ from fsae_control.control_utils import (
     StanleyController, curvature_speed, load_path_profile_csv,
     load_speed_profile_csv, precomputed_speed_at,
 )
-from fsae_control.telemetry_logger import ControlLogger, LapProgressTracker
+from fsae_control.telemetry_logger import ControlLogger, LapProgressTracker, build_config_lines
 
 
 class StanleyControllerNode(Node):
@@ -45,7 +45,7 @@ class StanleyControllerNode(Node):
                 ('log_csv', False),   # write CSV telemetry to log_dir
                 ('log_dir', ''),      # '' -> ~/fsae_logs
                 ('map_path', ''),     # '' -> live curvature_speed() (default);
-                                       # else a fsae_MPCTest tuner/tools/export_speed_profile.py
+                                       # else a fsae_MPCTest tuner/export_speed_profile.py
                                        # CSV to use instead — see mpc_controller.py's
                                        # identical param. Lets a Stanley run be pointed
                                        # at the same precomputed speed profile as an MPC
@@ -100,6 +100,16 @@ class StanleyControllerNode(Node):
             log_dir = self.get_parameter('log_dir').get_parameter_value().string_value
             self._telemetry = ControlLogger('stanley', log_dir=log_dir)
             self.get_logger().info(f'CSV telemetry -> {self._telemetry.paths[0]}')
+            # Stanley has no MPCParams/NMPCParams (no adaptive gain schedule,
+            # no NMPC) -- just the controller name, gain, and path source, so
+            # a run can still be told apart from an MPC/NMPC one at a glance.
+            self._telemetry.set_config_lines(build_config_lines(
+                controller='stanley',
+                launch_flags={
+                    'stanley_gain': k_cte,
+                    'map_path': map_path, 'path_map_path': path_map_path,
+                },
+            ))
 
         # See mpc_controller.py's identical field — drives close()'s
         # progress/reached_end/time_bonus.

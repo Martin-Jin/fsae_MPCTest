@@ -49,8 +49,23 @@ unchanged; numpy's genfromtxt needs `skip_header=<count of '#' lines>` since it
 doesn't skip comments when locating the `names=True` row. The car can't
 measure `time_bonus` or `offtrack`, so when the caller supplies neither those
 terms are 0.0/False and the header records `score_is_partial`.
+
+Config header: right below the score header (see `_write_score_header`),
+`ControlLogger.set_config_lines()`/`build_config_lines()` write a
+`#`-commented dump of the ENTIRE launch-time configuration this run used —
+which controller (Stanley / LTV-QP MPC / NMPC), every `MPCParams`/
+`NMPCParams` field (a plain `dataclasses.asdict()` dump, so it never goes
+stale when a field is added/removed/retuned), the NMPC's own RESOLVED
+weights (post `-1.0`-inherits-from-MPCParams), and the launch-time flags that
+pick a path/speed source (`map_path`, `path_map_path`,
+`use_precomputed_heading_profile`, `enable_dynamic_speed_cap`, `v_max`,
+`v_min`). The goal is that a single CSV, on its own, is enough to reproduce
+the exact run it came from — see `build_config_lines()`'s own docstring for
+the one thing this does NOT capture (the adaptive-gain SCHEME itself, as
+opposed to its numeric weights, since that's code, not a parameter).
 """
 import csv
+import dataclasses
 import math
 import os
 import time
@@ -122,6 +137,81 @@ ADAPTIVE_COLUMNS = (
     'nmpc_pred_epsi_end',      # predicted e_psi at the end of the horizon (rad)
     'nmpc_pred_ey_max_abs',    # peak predicted |e_y| anywhere in the horizon (m)
 )
+
+
+def build_config_lines(
+    controller: str,
+    launch_flags: dict | None = None,
+    mpc_params=None,
+    nmpc_params=None,
+    nmpc_effective: dict | None = None,
+) -> list[str]:
+    """
+    Build the `#`-commented run-configuration dump ControlLogger.
+    set_config_lines() stores for `_write_score_header()` to write. Every
+    line is returned ALREADY prefixed with `# ` (ControlLogger.
+    set_config_lines() does not add its own prefix).
+
+    Parameters
+    ----------
+    controller : str
+        'stanley' | 'mpc' | 'mpc_standalone' -- whichever node built this.
+    launch_flags : dict, optional
+        Arbitrary key -> value pairs the CALLER already has from its own
+        get_parameter() calls (map_path, path_map_path,
+        use_precomputed_heading_profile, enable_dynamic_speed_cap,
+        dynamic_cap_a_lat_max, dynamic_cap_safety, v_max, v_min, ...) --
+        this function doesn't know or care what a node declares, it just
+        formats whatever dict it's handed. Empty/None values are logged as
+        such (not skipped), since "map_path was empty" (-> live planner
+        mode) is exactly the kind of thing worth being able to read back.
+    mpc_params : mpc_params.MPCParams, optional
+        Dumped via dataclasses.asdict() -- every field, whatever they
+        currently are. This is DELIBERATE: hand-listing field names here
+        would silently go stale every time a weight is added, renamed or
+        removed (as already happened once this session, see the
+        corner_factor rewrite) -- asdict() cannot go stale, it reflects
+        whatever MPCParams actually is at import time.
+    nmpc_params : nmpc_params.NMPCParams, optional
+        Same treatment, only meaningful when controller used_nmpc=True.
+    nmpc_effective : dict, optional
+        The NMPC's RESOLVED weights after its own `-1.0`-inherits-from-
+        MPCParams logic (e.g. {'w_out': ctrl.w_out.tolist(), 'r_delta':
+        ctrl.r_delta, ...} read straight off the constructed
+        NMPCController) -- logged separately from nmpc_params's raw
+        (possibly -1.0) override fields so a reader doesn't have to
+        mentally re-run the inheritance to know what was ACTUALLY used.
+
+    What this does NOT capture (read this before assuming the dump is
+    complete): the adaptive-gain SCHEME itself -- e.g. today's
+    `_corner_factor`/`_blend` continuous blend in mpc_core.py -- is CODE,
+    not a parameter, and isn't reproducible from a config dump the way a
+    numeric weight is. If the scheme changes (as it already has once this
+    session), a config header from an OLDER run describes weights for a
+    scheme that no longer exists. `mpc_core.py`'s own module/function
+    docstrings are the authoritative description of the CURRENT scheme;
+    this dump only ever tells you the NUMBERS that scheme was using.
+    """
+    lines: list[str] = [f'# controller={controller}']
+    lines.append(f'# use_nmpc={int(bool(nmpc_effective))}')
+
+    if launch_flags:
+        for key, val in launch_flags.items():
+            lines.append(f'# launch.{key}={val!r}')
+
+    if mpc_params is not None:
+        for key, val in dataclasses.asdict(mpc_params).items():
+            lines.append(f'# mpc_params.{key}={val!r}')
+
+    if nmpc_params is not None:
+        for key, val in dataclasses.asdict(nmpc_params).items():
+            lines.append(f'# nmpc_params.{key}={val!r}')
+
+    if nmpc_effective:
+        for key, val in nmpc_effective.items():
+            lines.append(f'# nmpc_effective.{key}={val!r}')
+
+    return lines
 
 
 class LapProgressTracker:
@@ -220,7 +310,8 @@ class LapProgressTracker:
 
 class ControlLogger:
     def __init__(self, tag: str, log_dir: str = '', path_period: float = 1.0,
-                 max_steer_rad: float = math.radians(25.0)):
+                 max_steer_rad: float = math.radians(25.0),
+                 config_lines: list[str] | None = None):
         log_dir = os.path.expanduser(log_dir) if log_dir else os.path.expanduser('~/fsae_logs')
         os.makedirs(log_dir, exist_ok=True)
         stamp = int(time.time())
@@ -263,9 +354,33 @@ class ControlLogger:
         self._max_steer_rad = float(max_steer_rad)
         self._closed = False
 
+        # Full-run-configuration dump (see module docstring's "Config
+        # header" section): plain strings, ALREADY `# `-prefixed by the
+        # caller (mpc_controller.py / mpc_controller_standalone.py /
+        # stanley_controller.py -- see each node's own `_build_config_lines`-
+        # style helper). Stored here rather than written immediately because
+        # it's folded into the SAME single-rewrite-at-close() mechanism the
+        # score header already uses (see _write_score_header) -- one header
+        # write, not two.
+        self._config_lines: list[str] = list(config_lines) if config_lines else []
+
     @property
     def paths(self) -> tuple[str, str]:
         return self._ctrl_path, self._path_path
+
+    def set_config_lines(self, lines: list[str]) -> None:
+        """
+        Set (replacing any previous value) the run-configuration lines
+        written into the score header at close(). Exists as a separate
+        method rather than a constructor-only argument because the
+        controller object (whose params/effective weights make up most of
+        this dump — see build_config_lines()) is often constructed AFTER
+        ControlLogger in a node's __init__ (e.g.
+        mpc_controller_standalone.py builds `self._telemetry` before
+        `self._mpc`); calling this any time before close() is fine, the
+        lines are only read at that point.
+        """
+        self._config_lines = list(lines)
 
     def _rel(self, t: float) -> float:
         """Absolute clock reading -> run-relative seconds (first sample = 0.0)."""
@@ -397,6 +512,9 @@ class ControlLogger:
             '  (1 = time_bonus/offtrack unavailable live; weighted-metric '
             'component is still directly comparable to an offline score)',
         ]
+        if self._config_lines:
+            lines.append('# ── run configuration (enough to reproduce this exact run) ──')
+            lines.extend(self._config_lines)
         if lap_time_s is not None:
             lines.append(f'# lap_time_s={lap_time_s:.4f}')
         if optimal_time_s is not None:

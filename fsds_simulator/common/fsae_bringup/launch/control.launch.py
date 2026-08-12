@@ -2,7 +2,7 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, LogInfo
 from launch.conditions import IfCondition
 from launch.substitutions import (
     EqualsSubstitution, IfElseSubstitution, LaunchConfiguration, PythonExpression,
@@ -50,6 +50,7 @@ def generate_launch_description():
     use_precomputed_path = LaunchConfiguration('use_precomputed_path')
     use_precomputed_corner_map = LaunchConfiguration('use_precomputed_corner_map')
     use_precomputed_heading_profile = LaunchConfiguration('use_precomputed_heading_profile')
+    use_nmpc = LaunchConfiguration('use_nmpc')
     v_max = LaunchConfiguration('v_max')
     v_min = LaunchConfiguration('v_min')
     stanley_gain = LaunchConfiguration('stanley_gain')
@@ -121,6 +122,45 @@ def generate_launch_description():
         PythonExpression([
             "'", planner, "' != 'skidpad_planner' and '", controller,
             "' not in ('mpc', 'mpc_standalone')"
+        ])
+    )
+
+    # ── Invalid/no-op flag combinations — warn, don't silently ignore ──────
+    # Each of these three flag pairs has NO configuration where both sides
+    # doing something makes sense: one side of the pair structurally cannot
+    # reach the code that would use it (confirmed by reading the Node()
+    # parameter dicts below, not assumed — the non-MPC Node() entry passes
+    # neither use_nmpc nor use_precomputed_heading_profile to Stanley's node
+    # at all, and nmpc_core.py always ignores a heading profile regardless
+    # of what set it). A launch typo here currently just runs, quietly not
+    # doing what the operator asked — these print a LogInfo warning to the
+    # terminal at launch time (before the node even starts) so it's visible
+    # immediately, not buried in a ROS log the operator has to go looking
+    # for after wondering why a flag "didn't work".
+    #
+    # Deliberately NOT checked here: path_map_path/map_path set while
+    # use_precomputed_path/_speed is false. That combination is not a
+    # mistake -- it's the documented, intentional state while recording a
+    # NEW track (ros2/launch_all.sh's own comment: "Set BOTH to false ...
+    # when recording a NEW track", where the path defaults stay populated
+    # but toggled off on purpose) -- warning on it would be a false
+    # positive on a normal workflow, not a real footgun.
+    warn_nmpc_heading_profile = IfCondition(
+        PythonExpression([
+            "'", use_nmpc, "' == 'true' and '",
+            use_precomputed_heading_profile, "' == 'true'"
+        ])
+    )
+    warn_nmpc_not_mpc = IfCondition(
+        PythonExpression([
+            "'", use_nmpc, "' == 'true' and '", controller,
+            "' not in ('mpc', 'mpc_standalone')"
+        ])
+    )
+    warn_heading_profile_not_mpc = IfCondition(
+        PythonExpression([
+            "'", use_precomputed_heading_profile, "' == 'true' and '",
+            controller, "' not in ('mpc', 'mpc_standalone')"
         ])
     )
 
@@ -365,5 +405,23 @@ def generate_launch_description():
             output='screen',
             parameters=[config],
             condition=run_bridge,
+        ),
+        LogInfo(
+            msg=("WARNING: use_precomputed_heading_profile=true has NO EFFECT "
+                 "with use_nmpc=true -- the NMPC always ignores it (its own "
+                 "model already carries the curvature the profile "
+                 "approximates). See nmpc_core.py."),
+            condition=warn_nmpc_heading_profile,
+        ),
+        LogInfo(
+            msg=["WARNING: use_nmpc=true has NO EFFECT with controller:='", controller,
+                 "' -- it is only read by the mpc/mpc_standalone nodes."],
+            condition=warn_nmpc_not_mpc,
+        ),
+        LogInfo(
+            msg=["WARNING: use_precomputed_heading_profile=true has NO EFFECT with "
+                 "controller:='", controller,
+                 "' -- only the mpc/mpc_standalone nodes declare this parameter."],
+            condition=warn_heading_profile_not_mpc,
         ),
     ])

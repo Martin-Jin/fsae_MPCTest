@@ -49,7 +49,7 @@ from fsae_control.mpc_core import MPCController
 from fsae_control.nmpc_core import NMPCController
 from fsae_control.mpc_params import declare_mpc_params, mpc_params_from_node
 from fsae_control.nmpc_params import declare_nmpc_params, nmpc_params_from_node
-from fsae_control.telemetry_logger import ControlLogger, LapProgressTracker
+from fsae_control.telemetry_logger import ControlLogger, LapProgressTracker, build_config_lines
 
 CONTROL_HZ    = 20.0   # must match MPCController(dt=0.05); dt = 1 / CONTROL_HZ
 
@@ -280,6 +280,39 @@ class MPCControllerNode(Node):
                     f'Corner map segmented from {path_map_path} '
                     '(use_precomputed_corner_map=True).'
                 )
+        # Full run-configuration dump into the CSV's score header -- see
+        # build_config_lines()'s docstring, and mpc_controller_standalone.py's
+        # identical block for why this happens here (after self._mpc exists)
+        # rather than at ControlLogger construction time.
+        if self._telemetry is not None:
+            nmpc_effective = None
+            if nmpc_params.use_nmpc:
+                nmpc_effective = {
+                    'w_out': self._mpc.w_out.tolist(),
+                    'r_delta': self._mpc.r_delta,
+                    'r_a_accel': self._mpc.r_a_accel,
+                    'r_a_brake': self._mpc.r_a_brake,
+                    'r_rate': self._mpc.r_rate.tolist(),
+                    'terminal_scale': self._mpc.terminal_scale,
+                }
+            self._telemetry.set_config_lines(build_config_lines(
+                controller='mpc',
+                launch_flags={
+                    'map_path': map_path,
+                    'path_map_path': path_map_path,
+                    'use_precomputed_heading_profile':
+                        self.get_parameter('use_precomputed_heading_profile')
+                            .get_parameter_value().bool_value,
+                    'enable_dynamic_speed_cap': self._enable_dynamic_speed_cap,
+                    'dynamic_cap_a_lat_max': self._dynamic_cap_a_lat_max,
+                    'dynamic_cap_safety': self._dynamic_cap_safety,
+                    'v_max': self._v_max, 'v_min': self._v_min,
+                },
+                mpc_params=mpc_params,
+                nmpc_params=(nmpc_params if nmpc_params.use_nmpc else None),
+                nmpc_effective=nmpc_effective,
+            ))
+
         if self._heading_profile is not None:
             self._mpc.set_heading_profile(self._heading_profile)
             self.get_logger().info(
