@@ -26,7 +26,8 @@ from geometry_msgs.msg import PoseArray, PoseStamped
 from nav_msgs.msg import Odometry
 
 from fsae_control.control_utils import (
-    StanleyController, curvature_speed, load_speed_profile_csv, precomputed_speed_at,
+    StanleyController, curvature_speed, load_path_profile_csv,
+    load_speed_profile_csv, precomputed_speed_at,
 )
 from fsae_control.telemetry_logger import ControlLogger, LapProgressTracker
 
@@ -50,6 +51,11 @@ class StanleyControllerNode(Node):
                                        # at the same precomputed speed profile as an MPC
                                        # run on the same track, for a directly comparable
                                        # telemetry CSV.
+                ('path_map_path', ''),  # '' -> live /fsae/planning/selected_trajectory
+                                       # (default); else the SAME kind of CSV as map_path
+                                       # (e.g. a raceline.csv), used for the tracked PATH
+                                       # instead of just speed — see mpc_controller.py's
+                                       # identical param.
             ],
         )
         self._v_max = self.get_parameter('v_max').get_parameter_value().double_value
@@ -69,6 +75,24 @@ class StanleyControllerNode(Node):
                 self.get_logger().error(
                     f'Failed to load map_path={map_path}: {exc}. '
                     'Falling back to live curvature_speed().'
+                )
+
+        # Static precomputed path — see mpc_controller.py's identical field
+        # for the full rationale/safety discussion.
+        self._static_path: np.ndarray | None = None
+        path_map_path = self.get_parameter('path_map_path').get_parameter_value().string_value
+        if path_map_path:
+            try:
+                self._static_path = load_path_profile_csv(path_map_path)
+                self.get_logger().info(
+                    f'Loaded precomputed path ({len(self._static_path)} pts) from '
+                    f'{path_map_path} — planner output on /fsae/planning/selected_trajectory '
+                    'will be ignored.'
+                )
+            except (OSError, ValueError) as exc:
+                self.get_logger().error(
+                    f'Failed to load path_map_path={path_map_path}: {exc}. '
+                    'Falling back to the live planner topic.'
                 )
 
         self._telemetry = None
@@ -95,7 +119,11 @@ class StanleyControllerNode(Node):
 
         self.pub_cmd = self.create_publisher(AckermannDriveStamped, '/fsae/control/cmd_vel', 10)
 
-        self._path: np.ndarray = np.empty((0, 2))
+        self._path: np.ndarray = (
+            self._static_path if self._static_path is not None else np.empty((0, 2))
+        )
+        # Static path never goes stale (no topic to lose) — see
+        # mpc_controller.py's identical field/comment.
         self._path_stamp = None
         self._car_pos = np.zeros(2)
         self._car_yaw = 0.0
@@ -111,6 +139,10 @@ class StanleyControllerNode(Node):
     # ------------------------------------------------------------------
 
     def _traj_cb(self, msg: PoseArray) -> None:
+        if self._static_path is not None:
+            # A precomputed path is active — ignore the live planner's output.
+            # See mpc_controller.py's identical guard in its own _traj_cb.
+            return
         self._path = np.array(
             [[p.position.x, p.position.y] for p in msg.poses], dtype=np.float64
         ) if msg.poses else np.empty((0, 2))

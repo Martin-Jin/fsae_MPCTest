@@ -93,16 +93,15 @@ def generate_launch_description():
     run_bridge = IfCondition(
         PythonExpression(["'", controller, "' != 'mpc_standalone'"])
     )
-    # path_map_path is an MPC-only param (mpc_controller.py / mpc_controller_standalone.py
-    # both declare_parameters it; stanley_controller.py does not track a static
-    # path override) -- passing it unconditionally would raise
-    # ParameterNotDeclaredException on the default controller:=stanley. map_path
-    # (the speed profile) IS declared by stanley_controller.py too -- see its
-    # own map_path param -- so both Node() entries below receive it, letting a
-    # Stanley run and an MPC run on the same track share the identical speed
-    # target for a directly comparable telemetry CSV. Kept as two Node()
-    # entries (rather than branching one entry's params) because path_map_path
-    # still can't go to Stanley.
+    # map_path and path_map_path are both declared by all three controllers
+    # (mpc_controller.py, mpc_controller_standalone.py, stanley_controller.py
+    # all declare_parameters both), so both Node() entries below receive
+    # both -- a Stanley run and an MPC run on the same track can share the
+    # identical speed target AND/OR the identical tracked path (e.g. a
+    # raceline.csv) for a directly comparable telemetry CSV. Kept as two
+    # Node() entries (rather than branching one entry's params) because the
+    # MPC entry also carries the full MPCParams field set, which Stanley
+    # does not declare.
     run_controller_mpc = IfCondition(
         PythonExpression([
             "'", planner, "' != 'skidpad_planner' and '", controller,
@@ -217,8 +216,8 @@ def generate_launch_description():
                 "this-repo tracks/<name>/ location as map_path), used as "
                 "the tracked PATH (not just speed) -- see "
                 "mpc_controller_standalone.py's path_map_path param. Has no "
-                "effect unless use_precomputed_path:=true. Applies to both "
-                "`mpc` and `mpc_standalone`; ignored by `stanley`."
+                "effect unless use_precomputed_path:=true. Applies to all "
+                "three controllers: `mpc`, `mpc_standalone`, and `stanley`."
             )),
         DeclareLaunchArgument(
             'use_precomputed_path', default_value='true',
@@ -300,6 +299,7 @@ def generate_launch_description():
             parameters=[config, {
                 'log_csv': log_csv, 'log_dir': log_dir,
                 'map_path': effective_map_path,
+                'path_map_path': effective_path_map_path,
                 'v_max': v_max, 'v_min': v_min, 'stanley_gain': stanley_gain,
             }],
             condition=run_controller_non_mpc,
