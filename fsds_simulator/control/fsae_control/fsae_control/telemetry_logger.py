@@ -88,32 +88,25 @@ from fsae_control.scoring import RolloutMetrics
 # Controllers with no adaptive features (Stanley) pass nothing and every cell
 # is written empty, so the column set stays identical across controllers.
 ADAPTIVE_COLUMNS = (
-    # Curvature / demand context -- what the controller was reacting to.
-    'kappa',            # curvature at the car's current path position (1/m)
-    'kappa_max_abs',    # peak |curvature| within the lookahead window (1/m)
-    'kappa_growth_rate',       # slope of |kappa| vs arc length across the lookahead window (1/m^2); see MPCParams.adaptive_q_growth_rate_weight
-    'kappa_max_abs_effective', # kappa_max_abs after blending in kappa_growth_rate; what corner_demand below is ACTUALLY computed from when the growth-rate weight is nonzero
-    'corner_demand',    # kappa_max_abs / (a_lat ceiling / v^2); >1 = infeasible
-    'demand_frac',      # corner_demand mapped to 0..1, the boosts' drive signal
-    'alat_ceiling',     # modelled FSDS lateral-accel ceiling at this speed
-    'uturn_severity',   # 0..1 from accumulated heading change over lookahead
-    'last_peak_kappa',  # |curvature| of the most recent corner peak
-    'dist_since_peak',  # metres travelled since that peak (exit-decay driver)
-    # Per-feature multipliers, grouped by the weight each one acts on.
-    'm_Q_ey_approach',   'm_Q_ey_straight',  'm_Q_ey_uturn',  'm_Q_ey_soften',
-    'm_Q_epsi_approach', 'm_Q_epsi_exit',    'm_Q_epsi_straight', 'm_Q_epsi_uturn',
-    'm_Q_r_relax',       'm_Q_r_straight',   'm_Q_r_uturn',
-    'm_R_speed',         'm_R_straight',    'm_R_steer_relax',
-    'm_Rrate_corner',    'm_Rrate_antihunt',  'm_Rrate_lowspeed',
+    # Corner-factor scheduler (mpc_core._corner_factor/_low_speed_corner_boost):
+    # a single CURRENT-curvature-driven fraction, and the low-speed boost
+    # that adds to it, both gated multiplicatively so the boost cannot fire
+    # on low speed alone.
+    'corner_factor',           # 0 (straight) -> 1 (full corner), from current-position kappa only
+    'low_speed_corner_boost',  # extra push toward "full corner", active only when corner_factor > 0 AND speed is low
+    'corner_frac',             # corner_factor + low_speed_corner_boost, clipped to [0,1] -- the shared blend driver below
+    # Q[0,0]/Q[2,2]/Q[3,3] after the straight/corner blend, before adaptive_Q_scaling's centred-softening.
+    'Q_ey_base', 'Q_epsi_base', 'Q_r_base',
+    # R[0,0]/R_rate[0,0] after their own straight/corner blend.
+    'R_steer_corner_blend', 'Rrate_steer_corner_blend',
+    # Per-feature multipliers still in use.
+    'm_Q_ey_soften',      # adaptive_Q_scaling's centred-softening multiplier
+    'm_R_speed',          # adaptive_R_scaling's speed-based multiplier
+    'm_Rrate_corner',     # adaptive_R_rate's current-curvature floor multiplier
+    'm_Rrate_antihunt',   # steer_rate_anti_hunt's straight/centred/aligned boost multiplier
     # Absolute weights handed to the QP after all of the above.
     'Q_ey_eff', 'Q_epsi_eff', 'Q_r_eff', 'R_steer_eff', 'Rrate_steer_eff',
-    'R_a_accel_eff', 'R_a_brake_eff',  # a_cmd effort weight, split by sign
-    # Curvature-forcing term (see mpc_core._curvature_horizon_profile):
-    # kappa at the far end of the prediction horizon, and the total e_psi
-    # forcing summed over the horizon -- a nonzero w_epsi_sum well before
-    # kappa (current-position curvature) rises is the signature of the QP
-    # actually anticipating the corner rather than reacting to it.
-    'kappa_horizon_end', 'w_epsi_sum',
+    'R_a_accel_eff', 'R_a_brake_eff',  # a_cmd effort weight, split by sign; R_a_*_eff already includes the heading-error-driven asymmetry (epsi_ra_*)
     # ── NMPC-only columns (nmpc_core.NMPCController; empty for every LTV-QP
     # run, exactly as the m_* columns are empty for Stanley). Appended at the
     # END so the existing column order — and every offline script that parses

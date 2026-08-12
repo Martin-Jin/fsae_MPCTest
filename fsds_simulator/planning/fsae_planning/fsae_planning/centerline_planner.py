@@ -55,7 +55,7 @@ class CenterlinePlanner(Node):
         # the near path in front of the car invariant to how far the lookahead
         # reaches (extra far midpoints no longer reshape it) and stops distant
         # apex points dragging the corner line inward.  See build_path_walls.
-        # 25.0 (was 15.0) matches boundary._WALL_PLAN_HORIZON and
+        # 25.0 matches boundary._WALL_PLAN_HORIZON and
         # control_utils.curvature_speed's scan_end — the car needs ~24 m to
         # brake from v_max down to a tight hairpin's speed at a realistic
         # achieved deceleration; a shorter horizon revealed such corners too
@@ -74,7 +74,7 @@ class CenterlinePlanner(Node):
         # accumulated cone map to this radius (omni) OR the forward box, so the
         # path spans corners instead of truncating when the track curves out of
         # a heading-aligned box.  See boundary.build_path_walls / filter_cones_window.
-        # 25.0 (was 18.0) — kept >= plan_horizon so the wall/midpoint mesh
+        # 25.0 — kept >= plan_horizon so the wall/midpoint mesh
         # actually extends as far as the path is allowed to; see plan_horizon.
         self.declare_parameter('look_radius', 25.0)
         self._look_radius = self.get_parameter('look_radius').get_parameter_value().double_value

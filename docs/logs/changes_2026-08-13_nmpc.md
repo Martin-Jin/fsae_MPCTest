@@ -187,3 +187,8 @@ multi-step transient that killed the three earlier attempts in Stage 2.
   and its parameters live only in the ROS 2 workspace's own `fsds_simulator`
   staging mirror. There is no `settings.py` equivalent and none of the
   weights above have a numeric-parity obligation the way the LTV-QP's do.
+  **Superseded later the same day:** an offline port,
+  `controller/nmpc_optimiser.py`, was added (`settings.USE_NMPC`), giving the
+  NMPC structural/solver constants a real `settings.py` parity obligation —
+  see `planning_control_sync.md`'s "Nonlinear MPC (`use_nmpc`)" section for
+  the current, authoritative description.

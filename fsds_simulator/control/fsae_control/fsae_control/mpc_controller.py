@@ -239,8 +239,7 @@ class MPCControllerNode(Node):
         # last_telemetry surface, so nothing downstream branches on which
         # one is running. NMPCController ALSO has a set_static_path(), but
         # it means something entirely different there (see below) --
-        # MPCController no longer has one at all (2026-08-13: its only use
-        # was building the now-deleted CornerMap lookahead fast path).
+        # MPCController no longer has one at all.
         if nmpc_params.use_nmpc:
             self._mpc = NMPCController(
                 dt=dt, params=mpc_params, nmpc=nmpc_params,

@@ -988,7 +988,7 @@ def run_core_rollout(
             x0_mpc = None   # no linear x0 here -- guards the cosmetic block below
         else:
             # ── Linear time-varying QP path ──────────────────────────────────
-            # ── Current-state corner factor (2026-08-13) ─────────────────────
+            # ── Current-state corner factor ───────────────────────────────────
             # Replaces the deleted lookahead gain-scheduling family (see
             # model_utils.py's module docstring): 0 (straight) -> 1 (full
             # corner), a single continuous saturating curve of the CURRENT
@@ -1082,7 +1082,7 @@ def run_core_rollout(
             if pending_cmds:
                 x0_mpc = predict_ahead(x0_mpc, Ad, Bd, pending_cmds)
 
-            # ── Heading-error-driven accel/brake asymmetry (2026-08-13) ──────
+            # ── Heading-error-driven accel/brake asymmetry ────────────────────
             # Always-on, independent of the corner_frac scheduler above: a
             # continuous 0->1 fraction of CURRENT |e_psi| scales r_a_accel
             # toward EPSI_RA_ACCEL_BOOST_MAX (more expensive, so the MPC

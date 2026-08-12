@@ -390,40 +390,62 @@ def dynamic_speed_cap(waypoints, v_max=15.0, v_min=1.5,
 
 def _load_profile_csv(csv_path: str):
     """
-    Shared reader for fsae_MPCTest's tuner/tools/export_speed_profile.py CSVs
-    (header "x,y,psi,v_target"; comment lines starting with '#' skipped).
+    Shared reader for fsae_MPCTest's tuner/export_speed_profile.py /
+    tuner/tools/raceline_optimizer.py CSVs. Accepts two header shapes:
+      "x,y,psi,v_target"              (4 columns, speed_profile.csv and
+                                        older raceline.csv exports)
+      "x,y,psi,psi_target,v_target"   (5 columns, raceline_optimizer.py
+                                        exports since the shaped
+                                        heading-lead reference was added —
+                                        see late_turn_in_investigation.md
+                                        Part 8/9)
+    Comment lines starting with '#' are skipped. Column count is detected
+    per-file from the first data row, not the header text, so a caller
+    doesn't need to know in advance which shape a given CSV has.
 
     Deliberately a plain reader with no scipy/centreline-reconstruction
     dependency — that runs once, offline, when the CSV is exported.
 
     Returns
     -------
-    (path_X, path_Y, path_Psi, path_V) : tuple of np.ndarray, shape (n,)
+    (path_X, path_Y, path_Psi, path_PsiTarget, path_V) : tuple of
+        np.ndarray, shape (n,). path_PsiTarget equals path_Psi
+        (the geometric tangent) for a 4-column file — i.e. an old/
+        speed-profile CSV with no shaped-heading column behaves exactly
+        as if psi_target had been exported equal to psi, a genuine no-op
+        for every caller that doesn't ask for it explicitly.
 
     Raises
     ------
     FileNotFoundError, ValueError : bad csv_path or malformed contents.
     """
-    xs, ys, psis, vs = [], [], [], []
+    xs, ys, psis, psi_targets, vs = [], [], [], [], []
     with open(csv_path) as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith('#') or line.startswith('x,y'):
                 continue
-            x_s, y_s, psi_s, v_s = line.split(',')
+            fields = line.split(',')
+            x_s, y_s, psi_s = fields[0], fields[1], fields[2]
+            if len(fields) >= 5:
+                psi_target_s, v_s = fields[3], fields[4]
+            else:
+                psi_target_s, v_s = psi_s, fields[3]
             xs.append(float(x_s))
             ys.append(float(y_s))
             psis.append(float(psi_s))
+            psi_targets.append(float(psi_target_s))
             vs.append(float(v_s))
     if len(xs) < 2:
         raise ValueError(f"{csv_path}: fewer than 2 valid rows")
-    return np.asarray(xs), np.asarray(ys), np.asarray(psis), np.asarray(vs)
+    return (np.asarray(xs), np.asarray(ys), np.asarray(psis),
+            np.asarray(psi_targets), np.asarray(vs))
 
 
 def load_speed_profile_csv(csv_path: str):
     """
     Load a pre-computed (x, y, v_target) speed profile exported by
-    fsae_MPCTest's tuner/tools/export_speed_profile.py.
+    fsae_MPCTest's tuner/export_speed_profile.py.
 
     For a track that's already been mapped, this replaces curvature_speed()'s
     per-tick re-derivation with a lookup against an oracle profile computed
@@ -445,14 +467,14 @@ def load_speed_profile_csv(csv_path: str):
     ------
     FileNotFoundError, ValueError : bad csv_path or malformed contents.
     """
-    path_X, path_Y, _path_Psi, path_V = _load_profile_csv(csv_path)
+    path_X, path_Y, _path_Psi, _path_PsiTarget, path_V = _load_profile_csv(csv_path)
     return path_X, path_Y, path_V
 
 
 def load_path_profile_csv(csv_path: str):
     """
     Load a pre-computed (x, y) path exported by fsae_MPCTest's
-    tuner/tools/export_speed_profile.py, for use as a drop-in replacement of the
+    tuner/export_speed_profile.py, for use as a drop-in replacement of the
     live planner's /fsae/planning/selected_trajectory centreline.
 
     For a track that's already been mapped, this removes the live planner
@@ -479,8 +501,48 @@ def load_path_profile_csv(csv_path: str):
     ------
     FileNotFoundError, ValueError : bad csv_path or malformed contents.
     """
-    path_X, path_Y, _path_Psi, _path_V = _load_profile_csv(csv_path)
+    path_X, path_Y, _path_Psi, _path_PsiTarget, _path_V = _load_profile_csv(csv_path)
     return np.column_stack([path_X, path_Y])
+
+
+def load_path_heading_profile_csv(csv_path: str):
+    """
+    Load the SHAPED heading-lead reference profile (psi_target) exported by
+    fsae_MPCTest's tuner/tools/raceline_optimizer.py — see
+    late_turn_in_investigation.md Part 8/9 for the mechanism and
+    MPCController.set_heading_profile() for how it's consumed.
+
+    Separate from load_path_profile_csv (which returns only (x,y), an
+    (n,2) array used directly as `path` everywhere in mpc_core.py,
+    including CornerMap's curvature segmentation) so that call site's
+    return shape never changes — this is an additive, opt-in lookup, not a
+    replacement for the geometric path array.
+
+    Row-aligned with load_path_profile_csv's own (x,y) output when given
+    the SAME csv_path (both read the same file, same row order) — the
+    caller is responsible for loading both from one file, not mixing
+    sources.
+
+    For a 4-column CSV (no psi_target column — an older raceline.csv
+    export, or speed_profile.csv), _load_profile_csv already returns
+    path_Psi as path_PsiTarget's value (see that function's own
+    docstring), so this degrades to the plain geometric heading — a
+    genuine no-op versus not having a heading-profile column at all.
+
+    Parameters
+    ----------
+    csv_path : str
+
+    Returns
+    -------
+    psi_target : np.ndarray, shape (n,)
+
+    Raises
+    ------
+    FileNotFoundError, ValueError : bad csv_path or malformed contents.
+    """
+    _path_X, _path_Y, _path_Psi, path_PsiTarget, _path_V = _load_profile_csv(csv_path)
+    return path_PsiTarget
 
 
 def precomputed_speed_at(car_pos, path_X, path_Y, path_V) -> float:

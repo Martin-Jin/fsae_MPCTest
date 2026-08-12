@@ -156,7 +156,7 @@ MAX_BRAKE: float = 7.0
 # ~0.3 s settle at 20 Hz) and MPCParams.n_delay_hysteresis (steps of deadband
 # either side of a bin boundary) — see mpc_params.py for the current values.
 
-# ── Lookahead gain-scheduling family: REMOVED (2026-08-13) ────────────────────────────────
+# ── Lookahead gain-scheduling family: removed ──────────────────────────────
 # This file used to carry ~15 interacting mechanisms that scanned forward
 # along the path (producing a scalar kappa_max_abs = peak curvature within a
 # lookahead window) and reweighted today's Q/R cost matrices based on what's
@@ -172,19 +172,17 @@ MAX_BRAKE: float = 7.0
 # state error against the reference at each future horizon step; reweighting
 # TODAY's (usually near-zero) cost based on a forward scan doesn't change
 # what the horizon predicts when the car actually gets there, so the
-# mechanism did roughly nothing useful and was raised/live-tested/reverted
-# piecemeal for months (see the field comments mpc_params.py used to carry
-# for the history). Replaced by three CURRENT-STATE-driven factors — see
-# _corner_factor/_low_speed_corner_boost below and their use in compute() —
-# plus a fourth, independent heading-error-driven accel/brake asymmetry.
-# Also removed as unused/didn't-work: the curvature-forcing QP-disturbance
-# term (curvature_forcing_enabled, _curvature_horizon_profile, the `w`
-# parameter in _build_qp/_solve_qp — root-caused 2026-08-12 as structurally
-# unsound, see mpc_params.py's old field comment) and
-# _low_speed_steer_rate_boost (disabled by default, gated on speed alone
-# with no way to distinguish wanted low-speed turn-in from unwanted
-# post-exit wobble). Mirror this removal in fsae_MPCTest/controller/
-# model_utils.py per CLAUDE.md's parity rule.
+# mechanism did roughly nothing useful. Replaced by three CURRENT-STATE-driven
+# factors — see _corner_factor/_low_speed_corner_boost below and their use in
+# compute() — plus a fourth, independent heading-error-driven accel/brake
+# asymmetry. Also removed as unused/didn't-work: the curvature-forcing
+# QP-disturbance term (curvature_forcing_enabled, _curvature_horizon_profile,
+# the `w` parameter in _build_qp/_solve_qp — structurally unsound, see
+# CHANGES.md) and _low_speed_steer_rate_boost (disabled by default, gated on
+# speed alone with no way to distinguish wanted low-speed turn-in from
+# unwanted post-exit wobble). Mirror this removal in fsae_MPCTest/controller/
+# model_utils.py per CLAUDE.md's parity rule. See CHANGES.md for the full
+# history of what was tried before this replacement.
 
 
 def predict_ahead(
@@ -273,10 +271,8 @@ def _adaptive_R_rate(
     while actually turning, not more lateral/heading authority -- do not
     deepen this floor without re-checking for that oscillation.
 
-    2026-08-13: the "entering a corner" floor (driven by a forward
-    curvature scan, kappa_max_abs) was removed here as part of deleting the
-    whole lookahead gain-scheduling family -- see the module comment near
-    the top of this file. Only the current-position during-floor remains.
+    Only the current-position during-floor is implemented; there is no
+    forward-scan entering-floor.
     """
     kappa_straight = 0.03
     if not enable_in_corners and abs(kappa) > kappa_straight:
@@ -326,11 +322,8 @@ def _steer_rate_anti_hunt(
     needs to yaw back into line" -- making exactly the correction it needs
     artificially expensive. k_epsi=23.0 sets half-fade at ~2.5 deg of e_psi.
 
-    2026-08-13: the boost_lookahead term (a forward curvature-scan gate,
-    kappa_max_abs/k_lookahead) was removed here as part of deleting the
-    whole lookahead gain-scheduling family -- see the module comment near
-    the top of this file. boost_kappa/boost_ey/boost_epsi are unchanged,
-    current-state signals and remain correct.
+    boost_kappa/boost_ey/boost_epsi are current-state signals only (no
+    forward-scan term).
     """
     if not enabled:
         return R_rate_base
@@ -354,11 +347,8 @@ def _adaptive_Q_scaling(
     docstring for the full mechanism and why this is disabled by default.
     enabled=False returns Q_base untouched.
 
-    2026-08-13: the kappa_max_abs/k_lookahead term (a forward curvature-scan
-    relaxation of this floor) was removed here as part of deleting the
-    whole lookahead gain-scheduling family -- see the module comment near
-    the top of this file. The base ey_lo/ey_hi/floor softening on CURRENT
-    |e_y| below is unchanged and remains correct current-state logic.
+    Only the current-state ey_lo/ey_hi/floor softening on CURRENT |e_y|
+    below is implemented; there is no forward-scan relaxation term.
     """
     if not enabled:
         return Q_base
@@ -576,21 +566,15 @@ class MPCController:
         # 180 deg/s was set just under the plant's measured achievable
         # roadwheel rate (~200 deg/s, via system-ID) — see
         # fsae_MPCTest/docs/planning_control_sync.md's "Slew-rate limit
-        # (du_max)" section for the full history (80->180 deg/s fixed a
-        # limit cycle that was pinning 41% of live control steps).
+        # (du_max)" section for the full history.
         #
-        # A higher value (e.g. 190 deg/s) was tried to relieve mid-corner
-        # clamping at exactly 9.00 deg/tick (180 deg/s * 0.05s dt), but
-        # produced WORSE jitter/late-turn-in/control_smooth_rms/jerk_rms
-        # (isolated from adaptive_q_lookahead, which was ruled out
-        # separately) -- keep this at 180 pending isolation of which change
-        # actually caused that regression before raising it again.
-        # UNMEASURED either way -- the sync doc explicitly says to refine
-        # this "via system-ID on the running sim", not by picking a number;
-        # re-measure properly before trusting either value long-term, and
-        # update both sides (this file + fsae_MPCTest's controller/
-        # optimiser.py / vehicle_physics.py du_max) together per that doc's
-        # parity rule.
+        # Do not raise without re-measuring; a higher value previously
+        # regressed smoothness metrics. UNMEASURED either way -- the sync
+        # doc explicitly says to refine this "via system-ID on the running
+        # sim", not by picking a number; re-measure properly before
+        # trusting either value long-term, and update both sides (this file
+        # + fsae_MPCTest's controller/optimiser.py / vehicle_physics.py
+        # du_max) together per that doc's parity rule.
         MAX_STEER_RATE_RAD_S: float = math.radians(180.0)
         self.du_max = np.array([MAX_STEER_RATE_RAD_S * self.dt, 0.6])
 
@@ -604,19 +588,14 @@ class MPCController:
         self.terminal_scale = self.params.terminal_q_scale
 
         # ADAPTIVE_Q_SCALING_ENABLED (settings.py, fsae_MPCTest) — see
-        # _adaptive_Q_scaling above. Disabled: a live A/B test found it
-        # coincided with a bad late-turn-in episode (the lateral-error cost
-        # was discounted at exactly the moment the controller needed to
-        # commit to steering authority early). Not proven solely causal;
-        # re-verify before re-enabling.
+        # _adaptive_Q_scaling above. Gated by MPCParams.adaptive_q_scaling_enabled.
         self.adaptive_q_scaling_enabled = self.params.adaptive_q_scaling_enabled
 
         # STEER_RATE_ANTI_HUNT_ENABLED (settings.py, fsae_MPCTest) — see
-        # _steer_rate_anti_hunt above. Temporary experiment requested to
-        # suppress low-error steering hunt; NOT validated against a live
-        # log or VALIDATION_SUITE. Default off, inlined per the standing
-        # no-settings.py-on-the-car rule; keep in sync with fsae_MPCTest's
-        # copy while this is being tried.
+        # _steer_rate_anti_hunt above. Experimental, not validated against
+        # a live log or VALIDATION_SUITE. Default off, inlined per the
+        # standing no-settings.py-on-the-car rule; keep in sync with
+        # fsae_MPCTest's copy.
         self.steer_rate_anti_hunt_enabled = self.params.steer_rate_anti_hunt_enabled
 
         # ADAPTIVE_R_RATE_ENABLE_IN_CORNERS (settings.py, fsae_MPCTest) —
@@ -625,15 +604,13 @@ class MPCController:
         # suggested). True (default) keeps R_rate reduction ACTIVE in
         # corners via the continuous curve (no threshold, no discontinuity).
         # False uses the kappa_straight cutoff to switch softening off past
-        # it, restoring full baseline R_rate[0,0] -- this was tried
-        # (with kappa_straight raised to 0.1) but caused severe lag
-        # specifically in corners: the discontinuous R_rate[0,0] jump at
-        # the kappa_straight crossing likely spikes QP solver iterations /
-        # invalidates warm-starts every tick near the threshold. Do not
-        # switch this to False without addressing that. Inlined per the
-        # standing no-settings.py-on-the-car
-        # rule; keep in sync with fsae_MPCTest's copy while this is being
-        # tried.
+        # it, restoring full baseline R_rate[0,0] -- raising kappa_straight
+        # causes severe lag specifically in corners: the discontinuous
+        # R_rate[0,0] jump at the kappa_straight crossing likely spikes QP
+        # solver iterations / invalidates warm-starts every tick near the
+        # threshold. Do not switch this to False without addressing that.
+        # Inlined per the standing no-settings.py-on-the-car rule; keep in
+        # sync with fsae_MPCTest's copy.
         self.adaptive_r_rate_enable_in_corners = (
             self.params.adaptive_r_rate_enable_in_corners
         )
@@ -1220,7 +1197,7 @@ class MPCController:
         # control output.
         adapt: dict[str, float] = {}
 
-        # ── CURRENT-STATE corner factor (2026-08-13) ───────────────────────
+        # ── CURRENT-STATE corner factor ─────────────────────────────────────
         # Replaces the deleted lookahead gain-scheduling family (see the
         # module comment near the top of this file): 0 (straight) -> 1 (full
         # corner), a single continuous saturating curve of the CURRENT
@@ -1319,7 +1296,7 @@ class MPCController:
         adapt["R_steer_eff"]      = float(R_scaled[0, 0])
         adapt["Rrate_steer_eff"]  = float(R_rate_scaled[0, 0])
 
-        # ── Heading-error-driven accel/brake asymmetry (2026-08-13) ────────
+        # ── Heading-error-driven accel/brake asymmetry ──────────────────────
         # Always-on, independent of the corner_frac scheduler above: a
         # continuous 0->1 fraction of CURRENT |e_psi| (x0[2]) scales
         # r_a_accel toward accel_boost_max (more expensive, so the MPC

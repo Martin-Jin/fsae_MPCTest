@@ -79,7 +79,7 @@ class SimPerception(Node):
                 ('look_ahead', 25.0),   # m ahead to include in the forward box
                 ('look_wide', 10.0),    # m lateral half-width of the forward box
                 ('min_ahead', 0.5),     # m: box ignores cones behind / at the car
-                # 25.0 (was 18.0) — kept >= centerline_planner's look_radius/
+                # 25.0 — kept >= centerline_planner's look_radius/
                 # plan_horizon so cones for a tight corner reach the planner
                 # far enough out to detect and brake for it in time.
                 ('look_radius', 25.0),  # m: omni-directional visibility radius

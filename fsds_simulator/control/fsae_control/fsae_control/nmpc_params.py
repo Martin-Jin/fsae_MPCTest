@@ -6,16 +6,10 @@ path-tracking controller (nmpc_core.NMPCController). See
 late_turn_in_investigation.md Part 16 for the research/decision record
 behind the formulation.
 
-WHAT LIVES HERE VS. IN mpc_params.py (2026-08-13 split)
+WHAT LIVES HERE VS. IN mpc_params.py
 --------------------------------------------------------
-This file originally held the NMPC's cost-weight OVERRIDES too
-(`nmpc_q_e_y`, `nmpc_r_delta`, ...). Those have since MOVED to
-mpc_params.MPCParams's own "NMPC weight overrides" section — see that
-file's module docstring for why (in short: fsae_MPCTest now has a genuine
-offline NMPC port, controller/nmpc_optimiser.py, with its own settings.py
-constants; the weight overrides now have a real parity partner on both
-sides, and grouping them with every OTHER cost weight in one file is more
-discoverable than splitting weights across two dataclasses). Do not re-add
+NMPC weight overrides live in mpc_params.py's MPCParams; this file holds
+only structural/solver fields with no LTV-QP analogue. Do not re-add
 weight fields here — see mpc_params.py instead.
 
 What remains here are fields that have NO LTV-QP analogue to inherit
@@ -72,15 +66,7 @@ class NMPCParams:
     })
 
     # ── Horizon / real-time budget ──────────────────────────────────────
-    # MEASURED, not assumed (Part 16 §16.7's horizon sweep, closed-loop on
-    # comp_test_map_3 against fsae_MPCTest's Pacejka plant, identical weights):
-    #
-    #   N   |e_y| mean / p90   |e_psi| mean   steer sat   lap    solve p95
-    #   35   0.437 / 1.200        6.45         0.2%      40.7 s   20.1 ms
-    #   25   0.314 / 0.775        5.99         1.3%      41.5 s   13.6 ms
-    #   20   0.277 / 0.686        5.84         0.8%      42.0 s   12.4 ms
-    #   15   0.254 / 0.597        5.73         0.9%      42.8 s   10.5 ms
-    #  (QP   0.400 / 1.451        5.92        12.5%      43.1 s   10.2 ms)
+    # MEASURED, not assumed — see Part 16 §16.7 for the horizon-choice sweep.
     #
     # 20 (= 1.0 s) is chosen over 35 deliberately, even though 35 matches
     # MPCController's horizon: a LONGER horizon measured WORSE on tracking
@@ -91,20 +77,19 @@ class NMPCParams:
     # measurement, not on the assumption that more horizon is better.
     nmpc_horizon: int = field(default=20, metadata={
         "unit": "steps",
-        "desc": "prediction horizon in steps (20 * dt=0.05 = 1.0 s). Measured "
-                "better than 35 (MPCController's value) on tracking error — see "
-                "the sweep table above and Part 16 §16.7",
+        "desc": "prediction horizon in steps (20 * dt=0.05 = 1.0 s). "
+                "See Part 16 §16.7 for the horizon choice.",
     })
-    # 1, not 2: measured slightly BETTER as well as ~40% cheaper (see §16.7).
-    # A single Gauss-Newton iteration per tick is the standard real-time-
-    # iteration scheme — the warm start carries convergence across ticks, and
-    # a converged-per-tick solution exploits the optimistic model harder.
+    # 1, not 2 — see §16.7. A single Gauss-Newton iteration per tick is the
+    # standard real-time-iteration scheme — the warm start carries
+    # convergence across ticks, and a converged-per-tick solution exploits
+    # the optimistic model harder.
     nmpc_sqp_iters: int = field(default=1, metadata={
         "unit": "iterations",
         "desc": "max Gauss-Newton SQP iterations per control tick (real-time-"
                 "iteration style: the previous tick's shifted solution is the "
                 "warm start, so one iteration per tick still converges across "
-                "ticks). 1 measured better AND cheaper than 2 — see Part 16 §16.7",
+                "ticks). See Part 16 §16.7 for the iteration-count choice.",
     })
     nmpc_solve_budget_ms: float = field(default=25.0, metadata={
         "unit": "ms",

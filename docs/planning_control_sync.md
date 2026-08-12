@@ -246,16 +246,10 @@ writing — re-confirm before relying on them, since a resync can move them.
 | Constrained-scoring constants | `settings.py` (`CONSTRAINT_FLOOR`, `COMPLETION_THRESHOLD`, `TIME_OBJECTIVE_WEIGHT`, `QUALITY_WEIGHT`) | `fsds_simulator/.../scoring.py` (inlined as module constants) | `10.0` / `0.98` / `1.0` / `0.35` |
 | `A_BRAKE_PLAN` (braking-distance propagation in `curvature_speed`) | `sim/speed_profile.py` | `fsds_simulator/.../control_utils.py` | `5.0` m/s², positive magnitude |
 | Dynamic speed cap enable/gains | `settings.py` (`ENABLE_DYNAMIC_SPEED_CAP`, `DYNAMIC_CAP_A_LAT_MAX`, `DYNAMIC_CAP_SAFETY`) | `mpc_controller.py`/`mpc_controller_standalone.py` (`enable_dynamic_speed_cap`/`dynamic_cap_a_lat_max`/`dynamic_cap_safety` ROS params) | `True` / `3.2` m/s² / `0.9` — see "Dynamic speed cap" section below |
-| Exit-boost peak-tracker's input signal | `controller/model_utils.py` (`update_lookahead_peak`'s `kappa` param) | `fsds_simulator/.../mpc_core.py` (`_update_lookahead_peak`'s `kappa` param) | current-position `kappa`, NOT `kappa_max_abs` — see "Exit-heading boost was firing at the wrong time" section above |
-| Exit-boost decay distance (speed-scaled) | `settings.py` (`ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_DIST`/`_TIME_S`/`_DIST_MAX`) | `mpc_params.py` (`adaptive_q_lookahead_exit_decay_dist`/`_time_s`/`_dist_max`) | `5.0` m / `2.5` s / `25.0` m — see the "v2 fix" note in that same section |
 | Latency telemetry columns | — (offline has no equivalent) | `fsds_simulator/.../telemetry_logger.py` | `pose_age_s`, `path_age_s`, `n_delay`, `solve_ms`, `cmd_latency_ms` |
 | Pose-feed hold model | `settings.py` (`POSE_HOLD_*`) + `sim/rollout_core.PoseFeedHold` | — (offline-only; models a live fault) | `PROB 0.05`, `MEAN_TICKS 2.1`, `MAX_TICKS 5` |
 | Accel/brake effort split (`R[1,1]`) | `settings.py` (`R_A_ACCEL`, `R_A_BRAKE`), read by `controller/optimiser.py`'s `solve_mpc(r_a_accel=, r_a_brake=)` | `mpc_params.py` (`r_a_accel`, `r_a_brake`), read by `mpc_core.py`'s `_solve_qp` | actively being live-tuned — re-check both sides' current values before trusting this row; see "Accel/brake effort weight split" below |
-| Low-speed steering-rate boost | `settings.py` (`LOW_SPEED_STEER_RATE_BOOST_ENABLED`/`_MAX`/`_K`) | `mpc_params.py` (`low_speed_steer_rate_boost_enabled`/`_max`/`_k`) | `False` / `2.5` / `0.35` — disabled, see "Low-speed steering-rate boost" below |
-| Steering-effort relaxation approaching a corner | `settings.py` (`LOOKAHEAD_STEER_EFFORT_RELAX_ENABLED`, `ADAPTIVE_Q_LOOKAHEAD_STEER_RELAX_FLOOR`) | `mpc_params.py` (`lookahead_steer_effort_relax_enabled`, `adaptive_q_lookahead_steer_relax_floor`) | `True` / `0.5` — see "Steering-effort relaxation approaching a corner" below |
-| Curvature forcing term (QP dynamics) | `settings.py` (`CURVATURE_FORCING_ENABLED`, `CURVATURE_FORCING_GAIN`), read by `controller/optimiser.py`'s `solve_mpc(w=)` | `mpc_params.py` (`curvature_forcing_enabled`, `curvature_forcing_gain`), read by `mpc_core.py`'s `_solve_qp` | `False` / `1.0` — DISABLED, structurally unsound at any gain that matters, see "Curvature-forcing term" below |
-| Anti-hunt lookahead gate | `settings.py` (`ANTI_HUNT_K_LOOKAHEAD`), read by `controller/model_utils.py`'s `steer_rate_anti_hunt(k_lookahead=)` | `mpc_params.py` (`anti_hunt_k_lookahead`), read by `mpc_core.py`'s `_steer_rate_anti_hunt` | `15.0` (was `60.0`, too eager — see "Curvature-forcing term" below) |
-| Exit-boost `\|e_psi\|` hold threshold | **NOT MIRRORED — live-only, by design.** See "Precomputed corner segmentation" below for why. | `mpc_params.py` (`adaptive_q_lookahead_epsi_hold_thresh_rad`), read by `mpc_core.py`'s exit-boost call site in `compute()` | `0.0` (disabled/no-op) — needs `use_precomputed_corner_map=True` to have any effect at all, and is a second explicit opt-in on top of that; NOT YET LIVE-TESTED |
+| Corner-factor scheduler + heading-error accel/brake asymmetry | `settings.py` (`CORNER_FACTOR_K`, `Q_EY_*`/`Q_EPSI_*`/`Q_R_*`/`RRATE_STEER_*`/`R_STEER_CORNER_MID`, `LOW_SPEED_CORNER_BOOST_*`, `EPSI_RA_*`) | `mpc_params.py` (same names, lowercase) | see the "MPC weight/gain parity" table above for the full current field list — **replaces every row this table used to carry for the deleted lookahead gain-scheduling family** (exit-boost decay distance/peak-tracker, low-speed steering-rate boost, steering-effort relaxation, curvature forcing, anti-hunt lookahead gate, exit-boost `\|e_psi\|` hold threshold — all removed 2026-08-13, see "Corner-factor scheduler rewrite" below) |
 
 Notes on how these are actually used:
 
@@ -302,69 +296,102 @@ Previously (before this row existed) `Q_diag`/`R_diag`/`R_rate_diag` and
 every adaptive-gain constant had a parity OBLIGATION stated only in prose
 comments, with no row here — that gap is what this section closes.
 
+**Table current as of the 2026-08-13 corner-factor rewrite** — every field
+below is confirmed present on both `MPCParams` and `settings.py` as of that
+date. See "Corner-factor scheduler rewrite" below for what replaced the
+~35-field lookahead/demand-normalisation/U-turn/straight-line family this
+table used to list; those fields no longer exist on either side.
+
 | `MPCParams` field | `settings.py` constant | Current value |
 |---|---|---|
-| `q_e_y` | `Q_diag[0]` | `6.0` — synced 2026-08-12 from a live-only retune (was `5.20`), NOT YET re-validated offline |
-| `q_e_yd` | `Q_diag[1]` | `0.8` — synced 2026-08-12 (was `0.2`), NOT YET re-validated offline |
-| `q_e_psi` | `Q_diag[2]` | `1.6` — synced 2026-08-12 (was `1.52`), NOT YET re-validated offline |
-| `q_r` | `Q_diag[3]` | `0.70` — synced 2026-08-12 (was `0.50`), NOT YET re-validated offline |
-| `q_e_v` | `Q_diag[4]` | `5.55` — synced 2026-08-12 (was `4.0`), NOT YET re-validated offline |
-| `r_delta` | `R_diag[0]` | `1.8` — synced 2026-08-12 (was `1.16`), NOT YET re-validated offline |
-| `r_a_accel` | `R_A_ACCEL` | `3.0` — split 2026-08-12 from a single shared `r_a` (see "Accel/brake effort weight split" below); synced 2026-08-12 from a live-only retune (was `1.0`) — the 3x increase may be a response to a separately-diagnosed speed-tracking-lag issue (see `late_turn_in_investigation.md` Part 11), not a reversal of the original cheap-acceleration-effort diagnosis; NOT YET re-validated offline |
-| `r_a_brake` | `R_A_BRAKE` | `0.5` — see previous row; synced 2026-08-12 (was `0.6`), NOT YET re-validated offline |
-| `r_rate_delta` | `R_rate_diag[0]` | `2.5` — synced 2026-08-12 (was `2.1`), NOT YET re-validated offline |
-| `r_rate_a` | `R_rate_diag[1]` | `2.4` — synced 2026-08-12 (was `2.6`), NOT YET re-validated offline |
-| `terminal_q_scale` | `TERMINAL_Q_SCALE` | `1.0` |
-| `adaptive_q_scaling_enabled` | `ADAPTIVE_Q_SCALING_ENABLED` | `True` |
-| `adaptive_q_lookahead_enabled` | `ADAPTIVE_Q_LOOKAHEAD_ENABLED` | `True` |
-| `adaptive_q_demand_normalised` | `ADAPTIVE_Q_DEMAND_NORMALISED` | `True` |
-| `steer_effort_straight_boost_enabled` | `STEER_EFFORT_STRAIGHT_BOOST_ENABLED` | `True` |
-| `lookahead_steer_effort_relax_enabled` | `LOOKAHEAD_STEER_EFFORT_RELAX_ENABLED` | `True` — see "Steering-effort relaxation approaching a corner" below |
-| `adaptive_q_lookahead_steer_relax_floor` | `ADAPTIVE_Q_LOOKAHEAD_STEER_RELAX_FLOOR` | `0.5` |
-| `steer_rate_anti_hunt_enabled` | `STEER_RATE_ANTI_HUNT_ENABLED` | `True` |
-| `adaptive_r_rate_enable_in_corners` | `ADAPTIVE_R_RATE_ENABLE_IN_CORNERS` | `True` |
-| `low_speed_steer_rate_boost_enabled` | `LOW_SPEED_STEER_RATE_BOOST_ENABLED` | `False` — disabled 2026-08-12, see "Low-speed steering-rate boost" below |
-| `low_speed_steer_rate_boost_max` | `LOW_SPEED_STEER_RATE_BOOST_MAX` | `2.5` |
-| `low_speed_steer_rate_boost_k` | `LOW_SPEED_STEER_RATE_BOOST_K` | `0.35` |
-| `ref_heading_rate_limit_enabled` | `REF_HEADING_RATE_LIMIT_ENABLED` | `False` |
-| `ref_heading_rise_rate_deg_s` | `REF_HEADING_RISE_RATE` | `90.0` |
-| `adaptive_r_rate_during_floor` | `ADAPTIVE_R_RATE_DURING_FLOOR` | `0.625` |
-| `adaptive_r_rate_entering_floor` | `ADAPTIVE_R_RATE_ENTERING_FLOOR` | `0.85` |
-| `adaptive_r_rate_k_entering` | `ADAPTIVE_R_RATE_K_ENTERING` | `4.0` |
-| `alat_ceiling_flat` | `ALAT_CEILING_FLAT` | `7.5` |
-| `alat_ceiling_slope` | `ALAT_CEILING_SLOPE` | `0.47` |
-| `alat_ceiling_intercept` | `ALAT_CEILING_INTERCEPT` | `2.46` |
-| `adaptive_q_demand_half` | `ADAPTIVE_Q_DEMAND_HALF` | `0.5` |
-| `adaptive_q_straight_ey_floor` | `ADAPTIVE_Q_STRAIGHT_EY_FLOOR` | `0.7` |
-| `adaptive_q_straight_ey_k` | `ADAPTIVE_Q_STRAIGHT_EY_K` | `8.0` — lowered from `20.0` on 2026-08-12, see "Straight-line lateral-error snap-back was too sharp" below |
-| `adaptive_q_straight_epsi_boost_max` | `ADAPTIVE_Q_STRAIGHT_EPSI_BOOST_MAX` | `1.1` |
-| `adaptive_q_straight_r_boost_max` | `ADAPTIVE_Q_STRAIGHT_R_BOOST_MAX` | `1.5` |
-| `adaptive_q_straight_k` | `ADAPTIVE_Q_STRAIGHT_K` | `8.0` |
-| `adaptive_q_uturn_heading_thresh_rad` | `ADAPTIVE_Q_UTURN_HEADING_THRESH_RAD` | `radians(60.0)` |
-| `adaptive_q_uturn_heading_sat_rad` | `ADAPTIVE_Q_UTURN_HEADING_SAT_RAD` | `radians(120.0)` |
-| `adaptive_q_uturn_ey_boost_max` | `ADAPTIVE_Q_UTURN_EY_BOOST_MAX` | `1.6` |
-| `adaptive_q_uturn_epsi_boost_max` | `ADAPTIVE_Q_UTURN_EPSI_BOOST_MAX` | `1.6` |
-| `adaptive_q_uturn_r_relax_floor` | `ADAPTIVE_Q_UTURN_R_RELAX_FLOOR` | `0.6` |
-| `adaptive_q_lookahead_exit_decay_dist` | `ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_DIST` | `5.0` |
-| `adaptive_q_lookahead_exit_decay_time_s` | `ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_TIME_S` | `2.5` |
-| `adaptive_q_lookahead_exit_decay_dist_max` | `ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_DIST_MAX` | `25.0` |
+| `q_e_y` | `Q_diag[0]` | `6.35` live / `6.0` offline — not yet re-synced |
+| `q_e_yd` | `Q_diag[1]` | `0.5` live / `0.8` offline — not yet re-synced |
+| `q_e_psi` | `Q_diag[2]` | `2.0` live / `1.6` offline — not yet re-synced |
+| `q_r` | `Q_diag[3]` | `1.0` live / `0.70` offline — not yet re-synced |
+| `q_e_v` | `Q_diag[4]` | `5.45` live / `5.55` offline — close, not yet re-synced |
+| `r_delta` | `R_diag[0]` | `1.8` (matched) |
+| `r_a_accel` | `R_diag`/`R_A_ACCEL` | `2.5` live / `1.8` offline (`R_diag[0]` doubles as the offline accel-effort slot) — not yet re-synced; see "Accel/brake effort weight split" below |
+| `r_a_brake` | `R_A_BRAKE`/`R_diag[1]` | `0.5` live / `0.77` offline — not yet re-synced |
+| `r_rate_delta` | `R_rate_diag[0]` | `2.0` live / `2.5` offline — not yet re-synced |
+| `r_rate_a` | `R_rate_diag[1]` | `2.35` live / `2.4` offline — close, not yet re-synced |
+| `terminal_q_scale` | `TERMINAL_Q_SCALE` | `1.0` (matched) |
+| `adaptive_q_scaling_enabled` | `ADAPTIVE_Q_SCALING_ENABLED` | `True` (matched) |
+| `steer_rate_anti_hunt_enabled` | `STEER_RATE_ANTI_HUNT_ENABLED` | `True` (matched) |
+| `adaptive_r_rate_enable_in_corners` | `ADAPTIVE_R_RATE_ENABLE_IN_CORNERS` | `True` (matched) |
+| `ref_heading_rate_limit_enabled` | `REF_HEADING_RATE_LIMIT_ENABLED` | `False` (matched) |
+| `ref_heading_rise_rate_deg_s` | `REF_HEADING_RISE_RATE` | `90.0` (matched) |
+| `adaptive_r_rate_during_floor` | `ADAPTIVE_R_RATE_DURING_FLOOR` | `0.625` (matched) |
+| `anti_hunt_boost_max` | `ANTI_HUNT_BOOST_MAX` | `6.0` — see "remaining fields" note; confirm this offline constant still exists at re-sync time |
+| `corner_factor_k` | `CORNER_FACTOR_K` | `8.0` (matched) |
+| `q_ey_straight` / `q_ey_corner` | `Q_EY_STRAIGHT` / `Q_EY_CORNER` | `4.5` / `9.0` (matched) |
+| `q_epsi_straight` / `q_epsi_corner` | `Q_EPSI_STRAIGHT` / `Q_EPSI_CORNER` | `1.5` / `3.0` (matched) |
+| `q_r_straight` / `q_r_corner` | `Q_R_STRAIGHT` / `Q_R_CORNER` | `1.0` / `0.5` (matched) |
+| `rrate_steer_straight` / `rrate_steer_corner` | `RRATE_STEER_STRAIGHT` / `RRATE_STEER_CORNER` | `2.0` / `1.25` (matched) |
+| `r_steer_corner_mid` | `R_STEER_CORNER_MID` | `1.35` (matched) |
+| `low_speed_corner_boost_v_half` | `LOW_SPEED_CORNER_BOOST_V_HALF` | `4.0` (matched) |
+| `low_speed_corner_boost_max_extra` | `LOW_SPEED_CORNER_BOOST_MAX_EXTRA` | `0.3` (matched) |
+| `epsi_ra_half_rad` | `EPSI_RA_HALF_RAD` | `radians(10.0)` (matched) |
+| `epsi_ra_accel_boost_max` | `EPSI_RA_ACCEL_BOOST_MAX` | `2.0` (matched) |
+| `epsi_ra_brake_floor` | `EPSI_RA_BRAKE_FLOOR` | `0.5` (matched) |
+| `nmpc_q_e_y` … `nmpc_terminal_scale` (11 override fields) | `NMPC_Q_E_Y` … `NMPC_TERMINAL_SCALE` | all `-1.0` (inherit sentinel, matched) — see "Nonlinear MPC" section below |
 
 The remaining `MPCParams` fields (`max_delay_compensation_steps`,
 `predict_epsi_clip`, `pose_age_lp_alpha`, `n_delay_hysteresis`,
-`adaptive_q_lookahead_time_s`/`_dist_min`/`_dist_max`/`_q_boost_max`/`_k_approach`,
-`adaptive_q_lookahead_epsi_boost_max`/`_epsi_approach_boost_max`/`_k_epsi_approach`,
-`adaptive_q_lookahead_k_exit_norm`/`_peak_hysteresis`,
-`adaptive_q_lookahead_r_floor`/`_k_r_relax`, `steer_effort_straight_boost_max`/`_k`,
-`anti_hunt_boost_max`, `delay_compensation_enabled`) are live-only tuning
-knobs with no offline `settings.py` counterpart yet — `model_utils.py`'s
-matching functions (`predict_ahead`, `lookahead_approach_boost`, etc.) still
-carry these as hardcoded function-default arguments on the offline side. Add
-a `settings.py` constant and a `rollout_core.py` call-site keyword the same
-way as the rows above before relying on tuning one of these offline.
+`delay_compensation_enabled`) are live-only tuning knobs with no offline
+`settings.py` counterpart — the offline sim has no equivalent of live pose
+latency to compensate for. Add a `settings.py` constant and a
+`rollout_core.py` call-site keyword the same way as the rows above before
+relying on tuning one of these offline, if that ever becomes relevant.
 
-(`adaptive_q_lookahead_exit_decay_dist`/`_time_s`/`_dist_max` already have
-`settings.py` counterparts — see the parity table above — and are excluded
-from this remaining-fields list.)
+## Corner-factor scheduler rewrite — replaces the lookahead gain-scheduling family (2026-08-13)
+
+**What was deleted.** ~15 interacting functions that scanned FORWARD along
+the path every tick (`lookahead_curvature_profile` → a scalar
+`kappa_max_abs`, the peak curvature within a speed-scaled lookahead
+window) and reweighted `Q`/`R`/`R_rate` in anticipation of a corner not yet
+reached: the approach/exit `Q[0,0]`/`Q[2,2]` boosts, the `Q[3,3]`/`R[0,0]`
+relaxations, demand normalisation (`_corner_demand`/`_alat_ceiling_at`), the
+U-turn detector, the straight-line `Q`/`R[0,0]` adjustments, and the
+`CornerMap`/`_segment_corners` precomputed-path fast path for the same
+scan (itself only added the day before, see "Precomputed corner
+segmentation" above — both were removed in the same rewrite). See
+`mpc_core.py`'s own "Lookahead gain-scheduling family: removed" comment for
+the exhaustive function-name list. `tuning.md` §4.4/§4.6-§4.8/§4.10 keep
+the original descriptions collapsed for the tuning history; `architecture.md`'s
+"Historical" subsection keeps the mechanism-level detail.
+
+**Why.** This MPC formulation already predicts state error against the
+reference at each future horizon step. Reweighting TODAY's (usually
+near-zero) cost based on what a forward scan finds ahead doesn't change
+what the horizon predicts once the car actually gets there — the mechanism
+was reweighting a cost that mostly wasn't there yet, not manufacturing
+anticipation. (This is the same structural argument, one level up, that
+motivates the nonlinear MPC below: reweighting an existing error's cost is
+not the same as making the *prediction itself* see the road bend.) The
+family had also been raised/live-tested/reverted piecemeal for a long
+time without a clear net win — see CHANGES.md and this doc's own dated
+sections above for that history.
+
+**What replaced it**: `_corner_factor(kappa, corner_factor_k)` — a single
+continuous 0 (straight) → 1 (full corner) saturating curve of the CURRENT
+curvature only (`1 - 1/(1 + k·|kappa|)`), no forward scan, no
+decay-distance timer, no hysteresis state. `_low_speed_corner_boost` adds
+extra weight at low speed, gated multiplicatively on `corner_factor` so it
+cannot fire on low speed alone. The combined `corner_frac` drives a shared
+linear blend (`_blend(straight_val, corner_val, corner_frac)`) across four
+weights (`Q[0,0]`, `Q[2,2]`, `Q[3,3]`, `R_rate[0,0]`), each with its own
+straight/corner endpoint pair in `MPCParams`, plus `R[0,0]` blending toward
+a middle value instead of an extreme. A fourth, independent mechanism —
+heading-error-driven accel/brake asymmetry (`epsi_ra_*`) — is always-on and
+not part of the corner_frac blend at all. See `architecture.md`'s
+"Corner-factor scheduler" section for the full formulas and
+`tuning.md` §4.3b for the tuning-surface reference.
+
+**Mirrored the same day**: `fsae_MPCTest/controller/model_utils.py`
+(`_corner_factor`/`_low_speed_corner_boost`/`_blend`, and `settings.py`'s
+matching constants) and `fsds_simulator/`'s copies of `mpc_core.py`/
+`mpc_params.py`/`fsae_params.yaml` — confirmed byte-identical to the live
+files as of this rewrite (see the parity table above).
 
 ## Slew-rate limit (`du_max`): was live-only, now on both sides
 
@@ -2624,22 +2651,34 @@ with the new column (x/y/psi/v_target confirmed byte-identical to the
 pre-existing file).
 
 **LIVE-TESTED 2026-08-12 at `HEADING_LEAD_AUTHORITY_FRAC=0.5` (the shipped
-default) — WORSE, not better.** Two completed laps vs. three same-day
-baseline laps: mean `|e_psi|` rose (9.5°/10.5° vs. baseline's 6.1-8.2°),
-peak `|e_psi|` on the corner this investigation has tracked throughout
-rose from 19.4° to 27.0-31.4°, steering saturation on that corner roughly
-doubled to tripled. Likely cause: `comp_test_map_3` has almost no true
-straights (Part 10's own caveat), so the lead is active nearly everywhere
-rather than gated to a corner's approach phase — through much of a real
-corner's interior the car carries extra lead ON TOP of the geometric
-heading, which is already changing correctly there, rather than helping
-it commit early to a bend it hasn't reached yet. **Reverted to OFF**
-(`USE_PRECOMPUTED_HEADING_PROFILE=false`). See `late_turn_in_
-investigation.md` Part 12 for the full data and candidate next steps
-(lower `authority_frac` substantially, or — more likely needed — gate the
-lead to the approach phase only rather than letting it propagate into a
-corner's own interior). Do not re-enable at the current default without
-addressing that gating.
+default) — first read: WORSE, not better.** Two completed laps vs. three
+same-day baseline laps: mean `|e_psi|` rose (9.5°/10.5° vs. baseline's
+6.1-8.2°), peak `|e_psi|` on the corner this investigation has tracked
+throughout rose from 19.4° to 27.0-31.4°, steering saturation on that
+corner roughly doubled to tripled. Likely cause floated at the time:
+`comp_test_map_3` has almost no true straights (Part 10's own caveat), so
+the lead is active nearly everywhere rather than gated to a corner's
+approach phase — through much of a real corner's interior the car carries
+extra lead ON TOP of the geometric heading, which is already changing
+correctly there, rather than helping it commit early to a bend it hasn't
+reached yet.
+
+**Corrected after two more runs: high run-to-run variance, not a clean
+regression.** The two additional profile-on runs scored 0.79/0.93
+(composite score), both better than every baseline run recorded so far,
+and one hit the single best result of the session on the tracked corner
+(peak `|e_psi|` 11.1°, zero saturation) — spanning the same range from
+best-of-session to worst-of-session as the original two runs. The
+same-day baseline itself varied 19.4-22.7° run to run, nearly as wide a
+spread. Four profile-on runs and three baseline runs is too small a sample
+to call this a regression OR a win. **Currently left ON**
+(`USE_PRECOMPUTED_HEADING_PROFILE=true` in `ros2/launch_all.sh`) pending
+more data, superseding the "reverted to OFF" action taken after the first
+two runs. See `late_turn_in_investigation.md` Parts 12-13 for the full
+run-by-run data and candidate next steps (lower `authority_frac`
+substantially, or gate the lead to the approach phase only rather than
+letting it propagate into a corner's own interior — still not ruled out
+as the explanation for the variance, just not yet confirmed either).
 
 ## Nonlinear MPC (`use_nmpc`) — a SECOND controller (added 2026-08-13; offline port added 2026-08-13)
 
@@ -2717,13 +2756,16 @@ Three deliberate differences, all of which matter when reading a log:
    smoothing window (itself `control_utils.curvature_speed()`'s existing
    `dense_step=0.5`/`w=3` precedent, not a new constant).
 3. **FSDS's measured `a_lat` ceiling is inside the prediction**, as a smooth
-   `tanh` saturation of the predicted tyre forces, reusing
-   `MPCParams.alat_ceiling_flat/_slope/_intercept` — the same law
-   `mpc_core._alat_ceiling_at` and `model/vehicle_physics.alat_ceiling_at`
-   already carry. Without it the linear-tyre model believes it can hold any
-   corner at any speed and the car **spins**; with it the same run completes
-   the lap. `nmpc_alat_ceiling_enabled=false` recovers the unconstrained plant
-   for real-vehicle work, mirroring `VehicleParams.alat_ceiling_enabled`.
+   `tanh` saturation of the predicted tyre forces, reusing the same numeric law
+   (flat/slope/intercept = 7.5/0.47/2.46) that `mpc_core._alat_ceiling_at` and
+   `model/vehicle_physics.alat_ceiling_at` also use — hardcoded independently
+   as class-level defaults on `nmpc_core.py`'s own `_Plant`, not read from
+   `MPCParams` (which no longer carries these fields after the 2026-08-13
+   corner_factor rewrite removed them). Without it the linear-tyre model
+   believes it can hold any corner at any speed and the car **spins**; with it
+   the same run completes the lap. `nmpc_alat_ceiling_enabled=false` recovers
+   the unconstrained plant for real-vehicle work, mirroring
+   `VehicleParams.alat_ceiling_enabled`.
 
 ### What is inactive when `use_nmpc=true`
 
@@ -2734,9 +2776,12 @@ Three deliberate differences, all of which matter when reading a log:
   columns are written.
 - **`use_precomputed_heading_profile`** — no effect (one startup log line says
   so). It approximates the curvature the NMPC models exactly.
-- `use_precomputed_corner_map` — no effect (the corner map feeds the adaptive
-  lookahead layer, which is inactive).
 - `curvature_forcing_enabled`, `ref_heading_rate_limit_enabled` — LTV-QP-only.
+
+(`use_precomputed_corner_map` no longer exists at all — the corner_factor
+rewrite deleted the corner-map/adaptive-lookahead mechanism it fed, on both
+`use_nmpc` settings — see `architecture.md`'s "Precomputed corner
+segmentation" note.)
 
 `use_precomputed_path` / `use_precomputed_speed` / `enable_dynamic_speed_cap`
 / delay compensation (`delay_compensation_enabled`, `pose_age_lp_alpha`,
@@ -2761,7 +2806,27 @@ LTV-QP. Full tables, the horizon/iteration sweep behind the `N=20`/1-iteration
 defaults, the CasADi+IPOPT cross-check, and the four bugs this testing found
 are in `late_turn_in_investigation.md` Part 16.
 
-**NOT YET LIVE-TESTED.** Reproduce any of the above with
+**Live-tested and performing well, consistent with the offline A/B above.**
+Matched same-day live pair on `comp_test_map_3` (`mpc_standalone`, same
+weights: `q_e_y=6.35, q_e_yd=0.5, q_e_psi=1.65, q_r=1.0, q_e_v=5.40,
+r_delta=1.8, r_a_accel=2.25, r_a_brake=0.5, r_rate=[2.5, 2.25]`), logged in
+`fsae_logs/Linear mpc/mpc_standalone_control_1786568958.csv` (`use_nmpc=0`)
+and `fsae_logs/NMPC/mpc_standalone_control_1786571019.csv` (`use_nmpc=1`):
+
+| | LTV-QP (live) | NMPC (live) |
+|---|---|---|
+| lap time | 54.72 s | 52.35 s |
+| composite score | 0.695 | 0.532 |
+| RMSE (lateral) | 0.455 m | 0.378 m |
+| peak lateral error | 1.636 m | 1.179 m |
+| \|e_psi\| mean / p90 / max | 7.85° / 15.53° / 28.16° | 5.06° / 11.71° / 21.22° |
+| steering saturation | 6.45% | 0.58% |
+| steering reversals | 299 | 226 |
+
+Same direction and similar magnitude as the offline A/B (steering
+saturation drops sharply, tracking error improves across the board), on a
+single matched pair — not yet the same n=multiple-runs rigor as the
+offline sweep. Reproduce the offline numbers above with
 `python3 ros2/src/fsae_planning/control/fsae_control/test/nmpc_offline_check.py`
 (no ROS, no FSDS; the closed-loop section self-skips without an `fsae_MPCTest`
 sibling checkout).

@@ -749,8 +749,7 @@ class NMPCController:
 
         # ── Weights: MPCParams, with per-NMPC overrides ─────────────────
         # The override fields (nmpc_q_e_y, ...) live in MPCParams itself
-        # (moved there 2026-08-13 from NMPCParams — see mpc_params.py's
-        # "NMPC weight overrides" section for why), alongside the base
+        # (see mpc_params.py's "NMPC weight overrides" section), alongside the base
         # fields they inherit from when left at -1.0. NMPCParams (self.nmpc)
         # no longer carries any weight field at all — only structural/
         # solver settings.

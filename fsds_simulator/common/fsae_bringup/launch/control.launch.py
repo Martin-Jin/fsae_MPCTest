@@ -48,7 +48,6 @@ def generate_launch_description():
     use_precomputed_speed = LaunchConfiguration('use_precomputed_speed')
     path_map_path = LaunchConfiguration('path_map_path')
     use_precomputed_path = LaunchConfiguration('use_precomputed_path')
-    use_precomputed_corner_map = LaunchConfiguration('use_precomputed_corner_map')
     use_precomputed_heading_profile = LaunchConfiguration('use_precomputed_heading_profile')
     use_nmpc = LaunchConfiguration('use_nmpc')
     v_max = LaunchConfiguration('v_max')
@@ -287,24 +286,6 @@ def generate_launch_description():
                 "diagnostic/experiment mode instead."
             )),
         DeclareLaunchArgument(
-            'use_precomputed_corner_map', default_value='false',
-            description=(
-                "true -> segment path_map_path's STATIC path into per-corner "
-                "metadata once at load (see mpc_core.py's CornerMap / "
-                "_segment_corners), replacing the live kappa_max_abs "
-                "lookahead scan / exit-decay tracker with exact lookups. "
-                "Has no effect unless use_precomputed_path is ALSO true "
-                "(nothing static to segment otherwise) -- same dependency "
-                "shape as use_precomputed_path itself depending on "
-                "path_map_path being set. Unlike use_precomputed_speed/"
-                "use_precomputed_path, this is forwarded straight through "
-                "(no IfElseSubstitution): it's a pure behaviour switch with "
-                "no string to conditionally blank. Off by default: land "
-                "off, prove live before flipping. MPC-only (like "
-                "path_map_path) -- stanley_controller.py doesn't declare "
-                "this."
-            )),
-        DeclareLaunchArgument(
             'use_precomputed_heading_profile', default_value='false',
             description=(
                 "true -> use path_map_path's shaped psi_target column (see "
@@ -365,7 +346,6 @@ def generate_launch_description():
                 'log_csv': log_csv, 'log_dir': log_dir,
                 'map_path': effective_map_path,
                 'path_map_path': effective_path_map_path,
-                'use_precomputed_corner_map': use_precomputed_corner_map,
                 'use_precomputed_heading_profile': use_precomputed_heading_profile,
                 'v_max': v_max, 'v_min': v_min,
                 'enable_dynamic_speed_cap': enable_dynamic_speed_cap,

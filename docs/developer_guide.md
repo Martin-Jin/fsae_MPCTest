@@ -1063,3 +1063,20 @@ frequently shows `OPTIMAL_INACCURATE`:
   well outside that (very low speed under load, or very high lateral
   acceleration near the tyre limit) is where the biggest prediction error
   will show up, and where `adaptive_R_scaling`/`adaptive_R_rate` matter most.
+
+### Working with the NMPC (`USE_NMPC`)
+
+To try the nonlinear controller during development, flip `settings.USE_NMPC =
+True` and re-run any tuner/rollout script — `run_core_rollout()` takes
+`use_nmpc` explicitly, so nothing else needs to change. Before trusting a
+result, run `python -m tuner.nmpc_offline_check`: it re-verifies model
+parity, Jacobians, SQP convergence, and a closed-loop LTV-QP-vs-NMPC A/B on
+every call, so a broken change fails loudly instead of silently degrading a
+tuning run. If the SQP misbehaves (non-improving steps, oscillation), the
+usual suspects are the same as the LTV-QP's solver failures above, plus two
+NMPC-specific ones: `nmpc_solve_budget_ms`/`nmpc_sqp_iters` too tight for the
+horizon, or a weight override (`NMPC_Q_E_Y` etc. in `settings.py`, `-1`
+inherits from the base weight) pushing the cost badly out of scale. See
+`planning_control_sync.md`'s "Nonlinear MPC (`use_nmpc`)" section for the
+model and weight-mapping details, and `tuning.md` §4.5d for the tuning
+surface.

@@ -1,7 +1,7 @@
 # Changes pending PR into `fsae_planning`
 
 Source: uncommitted working-tree changes in the live `fsae_planning` checkout
-(`ros2/src/fsae_planning/CHANGES.md`), as of 2026-08-11. This is a summary for
+(`ros2/src/fsae_planning/CHANGES.md`), as of 2026-08-13. This is a summary for
 tracking purposes — the live repo is out of scope for edits/commits from here;
 see `fsae_planning/CHANGES.md` itself for full detail. Local `main` is
 up to date with `origin/main` (no upstream drift) — everything below is
@@ -57,14 +57,37 @@ working-tree-only.
   identical to `fsae_MPCTest`/mirror per the parity rule.
 - Disabled-by-default adaptive-Q-scaling + ref-heading rate limiting,
   `terminal_scale` — parity scaffolding for future re-evaluation.
+- **Removed the entire forward-scanning lookahead gain-scheduling family**
+  (~15 mechanisms: approach/exit boosts, demand normalisation, U-turn
+  detector, straight-line adjustments, curvature forcing, and the
+  precomputed `CornerMap` fast path) — reweighting today's cost based on a
+  forward scan doesn't change what the QP's horizon predicts once the car
+  gets there. Replaced by `_corner_factor`/`_low_speed_corner_boost`: one
+  continuous CURRENT-curvature fraction blending four weights between a
+  straight/corner endpoint, plus an always-on heading-error-driven
+  accel/brake asymmetry. Mirrored same-day into `fsae_MPCTest`.
+- **New second controller, `nmpc_core.py`/`nmpc_params.py`**: a Frenet-frame
+  nonlinear MPC (`use_nmpc`, default off; `mpc_core.py` byte-unchanged when
+  off). Closes the LTV-QP's structural gap — its linear prediction has no
+  path-curvature term, so a car dead on-line approaching a corner is
+  predicted to stay on-line forever (measured: exactly 0.000° commanded
+  across 8 synthetic states). The NMPC tracks arc length as a state and
+  looks up curvature directly. Offline A/B: steering saturation 12.5% →
+  0.8%, turns in earlier on 7/7 corners tested (median 25.6 m earlier).
+  **Live-tested, matched same-day pair**: steering saturation 6.45% →
+  0.58%, lap 54.72s → 52.35s, composite score 0.695 → 0.532, |e_psi| mean
+  7.85° → 5.06°. Mirrored into `fsae_MPCTest/fsds_simulator/` with its own
+  offline port, `controller/nmpc_optimiser.py` (`settings.USE_NMPC`).
 
 ## Control — centralized MPC tuning
 
 - New `mpc_params.py`: pulls every `mpc_core.py` weight/gain/flag (Q/R/R_rate
-  weights, adaptive-gain shape constants, feature-enable flags — ~56 fields)
-  out of hardcoded constants into one `MPCParams` dataclass, matching
+  weights, adaptive-gain shape constants, feature-enable flags) out of
+  hardcoded constants into one `MPCParams` dataclass, matching
   `fsae_MPCTest/settings.py` field-for-field. Pure relocation, no behaviour
-  change at defaults.
+  change at defaults. Field count has moved since (44 as of the
+  corner-factor rewrite, down from an original ~56 — that rewrite deleted
+  more fields than the NMPC overrides added).
 - Both controller nodes now declare every `MPCParams` field as a ROS2
   parameter and build the live `MPCParams` from those values, so weights are
   retunable at launch time.
@@ -72,8 +95,8 @@ working-tree-only.
   mechanically from the dataclass instead of by hand; `fsae_params.yaml`
   gained matching YAML defaults.
 - See `planning_control_sync.md`'s "MPC weight/gain parity: `MPCParams` ↔
-  `settings.py`" table for the full ~35-field mapping against the offline
-  `settings.py` constants this must stay numerically identical to.
+  `settings.py`" table for the current field-by-field mapping against the
+  offline `settings.py` constants this must stay numerically identical to.
 
 ## Control — nodes
 
@@ -92,6 +115,11 @@ working-tree-only.
   graded identically to tuner rollouts.
 - `cone_recorder.py`/`.launch.py` — records a completed lap's cone map for
   offline reuse.
+- `tracks/comp_test_map_3/` (cone map + both exported CSVs) — committed
+  track data, so a checkout of FSDS + `fsae_planning` alone can drive this
+  track with no `fsae_MPCTest` checkout needed. `fsae_MPCTest` remains where
+  *new* tracks get produced; its exporters write here when both repos are
+  checked out side by side.
 
 ## Telemetry
 
@@ -104,6 +132,11 @@ working-tree-only.
   Only applies when driving against a precomputed `map_path`; runs against
   the live/on-the-fly planner topic still have no known track end, so those
   still score `score_is_partial=1`.
+- **Fixed: `ADAPTIVE_COLUMNS` still declared the deleted lookahead family's
+  columns** (silently empty on every run since the corner-factor rewrite)
+  **and never declared the corner-factor rewrite's own telemetry** (silently
+  dropped from every CSV instead of logged). Now lists exactly what
+  `compute()` currently writes.
 
 ## Discarded, not part of this PR
 

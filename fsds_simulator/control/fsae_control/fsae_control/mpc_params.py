@@ -46,9 +46,9 @@ class MPCParams:
     # e_v, e_a, delta_act, a_act]; see mpc_core.py module docstring):
     q_e_y:   float = field(default=6.35, metadata={"unit": "1/m^2",   "desc": "lateral deviation from path centreline"})
     q_e_yd:  float = field(default=0.5,  metadata={"unit": "1/(m/s)^2", "desc": "rate of change of lateral deviation"})
-    q_e_psi: float = field(default=2.0, metadata={"unit": "1/rad^2", "desc": "heading error relative to path tangent"})
+    q_e_psi: float = field(default=1.65, metadata={"unit": "1/rad^2", "desc": "heading error relative to path tangent"})
     q_r:     float = field(default=1.0, metadata={"unit": "1/(rad/s)^2", "desc": "yaw rate"})
-    q_e_v:   float = field(default=5.35,  metadata={"unit": "1/(m/s)^2", "desc": "speed error: car_speed - desired_speed"})
+    q_e_v:   float = field(default=5.40,  metadata={"unit": "1/(m/s)^2", "desc": "speed error: car_speed - desired_speed"})
     # R_diag index -> input penalised (inputs u are [delta_cmd, a_cmd]):
     r_delta: float = field(default=1.8, metadata={"unit": "1/rad^2",     "desc": "steering command effort"})
     # a_cmd>=0 (accel) and a_cmd<0 (brake) get independent effort weights
@@ -57,11 +57,11 @@ class MPCParams:
     # independently. See mpc_core.py's _build_qp/_solve_qp for the
     # cp.pos/cp.neg split and planning_control_sync.md's "Accel/brake
     # effort weight split" section for the diagnosis.
-    r_a_accel: float = field(default=2.5, metadata={"unit": "1/(m/s^2)^2", "desc": "acceleration command effort, a_cmd >= 0"})
+    r_a_accel: float = field(default=2.25, metadata={"unit": "1/(m/s^2)^2", "desc": "acceleration command effort, a_cmd >= 0"})
     r_a_brake: float = field(default=0.5, metadata={"unit": "1/(m/s^2)^2", "desc": "acceleration command effort, a_cmd < 0 (braking)"})
     # R_rate_diag index -> input RATE-OF-CHANGE penalised (tick-to-tick jerk):
-    r_rate_delta: float = field(default=2.0, metadata={"unit": "1/(rad/s)^2",     "desc": "steering rate of change"})
-    r_rate_a:     float = field(default=2.35, metadata={"unit": "1/(m/s^3)^2",     "desc": "acceleration rate of change"})
+    r_rate_delta: float = field(default=2.5, metadata={"unit": "1/(rad/s)^2",     "desc": "steering rate of change"})
+    r_rate_a:     float = field(default=2.25, metadata={"unit": "1/(m/s^3)^2",     "desc": "acceleration rate of change"})
     # Extra weight on the final predicted state x[:,N]. 1.0 = no-op, the
     # only value ever validated against the Q_diag/R_diag/R_rate_diag above.
     terminal_q_scale: float = field(default=1.0, metadata={"unit": "unitless", "desc": "extra weight on terminal predicted state"})
@@ -90,36 +90,31 @@ class MPCParams:
     # ── Straight-line R_rate[0,0] (steering rate) anti-hunt boost ───────
     anti_hunt_boost_max: float = field(default=6.0, metadata={"unit": "unitless", "desc": "ceiling on the steer_rate_anti_hunt multiplier"})
 
-    # ── Current-state corner-factor scheduler (2026-08-13) ──────────────
+    # ── Current-state corner-factor scheduler ────────────────────────────
     # Replaces the whole deleted lookahead gain-scheduling family (see
     # mpc_core.py's module comment): _corner_factor(kappa, corner_factor_k)
     # is a single continuous 0 (straight) -> 1 (full corner) curve of
     # CURRENT |kappa| only -- no forward scan, symmetric on entry/exit.
-    # k=8.0 chosen to match the OLD legacy (non-demand-normalised)
-    # approach/relax ramp sharpness these mechanisms used (e.g. the old
-    # adaptive_q_lookahead_k_approach/_k_r_relax/_lookahead_steer_relax all
-    # defaulted to 8.0) -- same curve shape, now applied to the
-    # current-position signal instead of a forward-scanned one.
+    # k=8.0 matches the deleted lookahead mechanisms' own default sharpness
+    # (8.0) -- same curve shape, now applied to the current-position signal
+    # instead of a forward-scanned one.
     corner_factor_k: float = field(default=8.0, metadata={"unit": "unitless", "desc": "corner_factor curve sharpness vs CURRENT |kappa|"})
 
-    # Q[0,0] (e_y): straight/corner blend endpoints. corner value derived
-    # from the OLD adaptive_q_lookahead_q_boost_max=2.0 ratio applied to
-    # this file's own q_e_y baseline (6.35), i.e. corner ~= 2x the straight
-    # value -- same order of magnitude boost the deleted mechanism used to
-    # apply multiplicatively, now a straight-line blend between two fixed
-    # endpoints instead of a multiplier on a variable base.
+    # Q[0,0] (e_y): straight/corner blend endpoints. Corner value ~= 2x the
+    # straight value, the same order of magnitude boost the deleted
+    # lookahead mechanism used to apply multiplicatively, now a
+    # straight-line blend between two fixed endpoints instead of a
+    # multiplier on a variable base.
     q_ey_straight: float = field(default=4.5, metadata={"unit": "1/m^2", "desc": "Q[0,0] on a clear straight (corner_frac=0)"})
     q_ey_corner: float = field(default=9.0, metadata={"unit": "1/m^2", "desc": "Q[0,0] at full corner (corner_frac=1)"})
 
-    # Q[2,2] (e_psi): straight/corner blend endpoints. corner value derived
-    # from the OLD adaptive_q_lookahead_epsi_approach_boost_max=1.5 ratio
-    # applied to this file's q_e_psi baseline (2.0).
+    # Q[2,2] (e_psi): straight/corner blend endpoints. Corner value ~= 1.5x
+    # the straight value.
     q_epsi_straight: float = field(default=1.5, metadata={"unit": "1/rad^2", "desc": "Q[2,2] on a clear straight (corner_frac=0)"})
     q_epsi_corner: float = field(default=3.0, metadata={"unit": "1/rad^2", "desc": "Q[2,2] at full corner (corner_frac=1)"})
 
     # Q[3,3] (r, yaw rate): RELAXES in-corner (corner value LOWER than
-    # straight), mirroring the OLD adaptive_q_lookahead_r_floor=0.5 ratio
-    # against this file's q_r baseline (1.0) -- the MPC needs to be able to
+    # straight, at half the straight value) -- the MPC needs to be able to
     # rotate fast enough in-corner to hit the tighter Q[0,0]/Q[2,2] targets
     # above, so yaw-rate penalty must come DOWN as the other two go UP.
     q_r_straight: float = field(default=1.0, metadata={"unit": "1/(rad/s)^2", "desc": "Q[3,3] on a clear straight (corner_frac=0)"})
@@ -128,9 +123,7 @@ class MPCParams:
     # R_rate[0,0] (steering rate cost): RELAXES in-corner, same direction as
     # Q[3,3] above and for the same reason (the car must be able to steer
     # fast enough to hit the tighter lateral/heading targets); higher on
-    # straights to discourage hunting, mirroring the OLD
-    # adaptive_r_rate_during_floor=0.625 ratio against this file's
-    # r_rate_delta baseline (2.0).
+    # straights to discourage hunting.
     rrate_steer_straight: float = field(default=2.0, metadata={"unit": "1/(rad/s)^2", "desc": "R_rate[0,0] on a clear straight (corner_frac=0)"})
     rrate_steer_corner: float = field(default=1.25, metadata={"unit": "1/(rad/s)^2", "desc": "R_rate[0,0] at full corner (corner_frac=1)"})
 
@@ -141,18 +134,15 @@ class MPCParams:
     # MPC commands large swings that saturate the 25deg stop; too
     # expensive (the straight-line value, already speed-scaled up by
     # _adaptive_R_scaling) and turn-in is sluggish. r_steer_corner_mid sits
-    # roughly halfway between this file's r_delta baseline (1.8) and the
-    # OLD adaptive_q_lookahead_steer_relax_floor=0.5 ratio's floor
-    # (0.5*1.8=0.9) -- i.e. relaxed vs. the (speed-scaled) straight value,
-    # but clamped above where R_rate/Q[3,3] bottom out, not all the way
-    # down with them.
+    # roughly halfway between this file's r_delta baseline (1.8) and a
+    # relaxed floor around 0.9 -- i.e. relaxed vs. the (speed-scaled)
+    # straight value, but clamped above where R_rate/Q[3,3] bottom out, not
+    # all the way down with them.
     r_steer_corner_mid: float = field(default=1.35, metadata={"unit": "1/rad^2", "desc": "R[0,0] blend target at full corner (corner_frac=1) -- a MIDDLE value, not the same low extreme as R_rate/Q[3,3]"})
 
-    # ── Low-speed-in-corner extra boost (2026-08-13) ────────────────────
-    # A NEW, corner-GATED mechanism -- distinct from the deleted
-    # low_speed_steer_rate_boost_enabled (which fired on speed ALONE with
-    # no way to tell wanted low-speed turn-in from unwanted post-exit
-    # wobble). This only ever adds to corner_frac (see
+    # ── Low-speed-in-corner extra boost ──────────────────────────────────
+    # A corner-GATED mechanism -- unlike a speed-only gate, this is
+    # corner-gated. This only ever adds to corner_frac (see
     # _low_speed_corner_boost in mpc_core.py), so it is an exact no-op on
     # any straight regardless of speed -- "be able to turn even more at low
     # speed during turning" per the user's own framing, not "penalise
@@ -160,7 +150,7 @@ class MPCParams:
     low_speed_corner_boost_v_half: float = field(default=4.0, metadata={"unit": "m/s", "desc": "speed at which the low-speed corner boost has decayed to half its max_extra"})
     low_speed_corner_boost_max_extra: float = field(default=0.3, metadata={"unit": "unitless", "desc": "max extra corner_frac added at car_speed=0, fully inside a corner"})
 
-    # ── Heading-error-driven accel/brake asymmetry (2026-08-13) ─────────
+    # ── Heading-error-driven accel/brake asymmetry ───────────────────────
     # Always-on, independent of the corner-factor scheduler above: scales
     # r_a_accel/r_a_brake by a continuous 0->1 fraction of CURRENT |e_psi|
     # (x0[2]) -- see mpc_core.py's compute() for the exact blend. Not
@@ -171,14 +161,14 @@ class MPCParams:
     epsi_ra_brake_floor: float = field(default=0.5, metadata={"unit": "unitless", "desc": "min multiplier on r_a_brake (cheaper to brake) at large |e_psi|"})
 
     # ── NMPC weight overrides (nmpc_core.NMPCController only) ────────────
-    # Moved here 2026-08-13 from nmpc_params.py's NMPCParams (see that
-    # file's module docstring for the full "why here now" reasoning): these
-    # are the Frenet-frame nonlinear MPC's cost weights, kept alongside
-    # every OTHER weight in this file rather than split across two
-    # dataclasses, now that fsae_MPCTest's own offline NMPC port
-    # (controller/nmpc_optimiser.py) gives them a real settings.py parity
-    # partner (see that file's "NMPC weight overrides" section) the same
-    # way every other field in this file already has.
+    # NMPC weight overrides live here; see nmpc_params.py for the
+    # structural/solver fields that remain there. These are the
+    # Frenet-frame nonlinear MPC's cost weights, kept alongside every OTHER
+    # weight in this file rather than split across two dataclasses, now
+    # that fsae_MPCTest's own offline NMPC port (controller/nmpc_optimiser.py)
+    # gives them a real settings.py parity partner (see that file's "NMPC
+    # weight overrides" section) the same way every other field in this
+    # file already has.
     #
     # -1.0 = inherit the field of the SAME ROW below (q_e_y -> nmpc_q_e_y,
     # r_delta -> nmpc_r_delta, ...), so the NMPC starts from the LTV-QP's

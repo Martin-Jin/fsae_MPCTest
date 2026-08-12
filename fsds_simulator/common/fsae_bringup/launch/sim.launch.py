@@ -50,7 +50,6 @@ def generate_launch_description():
     use_precomputed_speed = LaunchConfiguration('use_precomputed_speed')
     path_map_path = LaunchConfiguration('path_map_path')
     use_precomputed_path = LaunchConfiguration('use_precomputed_path')
-    use_precomputed_corner_map = LaunchConfiguration('use_precomputed_corner_map')
     use_precomputed_heading_profile = LaunchConfiguration('use_precomputed_heading_profile')
     v_max = LaunchConfiguration('v_max')
     v_min = LaunchConfiguration('v_min')
@@ -157,12 +156,6 @@ def generate_launch_description():
                         "on the command line for the planner-vs-controller "
                         "isolation / live-planner-in-loop experiment mode."),
         DeclareLaunchArgument(
-            'use_precomputed_corner_map',
-            default_value='false',
-            description="Passed through to control.launch.py — see that file's "
-                        "use_precomputed_corner_map description. Off by "
-                        "default: land off, prove live before flipping."),
-        DeclareLaunchArgument(
             'use_precomputed_heading_profile',
             default_value='false',
             description="Passed through to control.launch.py — see that file's "
@@ -205,7 +198,6 @@ def generate_launch_description():
             'log_csv': log_csv, 'log_dir': log_dir,
             'map_path': map_path, 'use_precomputed_speed': use_precomputed_speed,
             'path_map_path': path_map_path, 'use_precomputed_path': use_precomputed_path,
-            'use_precomputed_corner_map': use_precomputed_corner_map,
             'use_precomputed_heading_profile': use_precomputed_heading_profile,
             'v_max': v_max, 'v_min': v_min, 'stanley_gain': stanley_gain,
             'enable_dynamic_speed_cap': enable_dynamic_speed_cap,

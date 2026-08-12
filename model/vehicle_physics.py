@@ -166,9 +166,7 @@ class VehicleParams:
         # Actuator limits: enforced as hard bounds in controller/optimiser.py's QP constraints.
         # 25deg matches the live stack's physical steering limit (see
         # ros2/src/fsae_planning/control/fsae_control/fsae_control/mpc_core.py's
-        # MAX_STEER_RAD and fsae_control.control_utils/fsds_bridge) — this used
-        # to be 35deg, which let the offline tuner plan steering the real/sim
-        # car can't actually deliver.
+        # MAX_STEER_RAD and fsae_control.control_utils/fsds_bridge).
         self.max_steer       = np.radians(25.0)  # Max rack-limited steering angle (rad)
         # Max steering SLEW rate (rad/s) — how fast the rack can move, as
         # opposed to how far.  Feeds the MPC's hard du_max constraint (see

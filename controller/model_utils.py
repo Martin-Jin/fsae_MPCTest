@@ -14,7 +14,7 @@ R_rate) are tuned offline by tuner/offline_tuner.py as if for a single operating
 point, then these helpers scale them at runtime to compensate for the known
 nonlinear dependence of required control authority on speed and curvature.
 
-── Lookahead gain-scheduling family: REMOVED (2026-08-13) ────────────────────
+── Lookahead gain-scheduling family: removed ──────────────────────────────────
 This file used to carry ~15 interacting mechanisms that scanned forward along
 the path (producing a scalar kappa_max_abs = peak curvature within a
 lookahead window) and reweighted today's Q/R cost matrices based on what's
@@ -28,18 +28,16 @@ adaptive_R_rate. Removed because this MPC formulation already predicts state
 error against the reference at each future horizon step; reweighting TODAY's
 (usually near-zero) cost based on a forward scan doesn't change what the
 horizon predicts when the car actually gets there, so the mechanism did
-roughly nothing useful and was raised/live-tested/reverted piecemeal for
-months (see settings.py's old constant comments for the history). Replaced
-by three CURRENT-STATE-driven factors — see mpc_core.py's _corner_factor/
-_low_speed_corner_boost and their use in compute(), mirrored here via
-rollout_core.py's call sites — plus a fourth, independent heading-error-driven
-accel/brake asymmetry. Also removed as unused/didn't-work: the
-curvature-forcing QP-disturbance term (CURVATURE_FORCING_ENABLED,
-curvature_horizon_profile, the `w` parameter in optimiser.py — root-caused
-2026-08-12 as structurally unsound) and low_speed_steer_rate_boost (disabled
-by default, gated on speed alone with no way to distinguish wanted low-speed
-turn-in from unwanted post-exit wobble). Mirrors mpc_core.py's identical
-removal per CLAUDE.md's parity rule.
+roughly nothing useful. Replaced by three CURRENT-STATE-driven factors — see
+mpc_core.py's _corner_factor/_low_speed_corner_boost and their use in
+compute(), mirrored here via rollout_core.py's call sites — plus a fourth,
+independent heading-error-driven accel/brake asymmetry. Also removed as
+unused/didn't-work: the curvature-forcing QP-disturbance term
+(CURVATURE_FORCING_ENABLED, curvature_horizon_profile, the `w` parameter in
+optimiser.py — structurally unsound, see docs/logs) and
+low_speed_steer_rate_boost (disabled by default, gated on speed alone with no
+way to distinguish wanted low-speed turn-in from unwanted post-exit wobble).
+Mirrors mpc_core.py's identical removal per CLAUDE.md's parity rule.
 
 HOW THE SCALING WORKS
 ---------------------
@@ -59,8 +57,7 @@ adaptive_R_scaling (speed-based):
     speed. The Hill-function form A*vx/(vx_half + vx) is a saturating
     ramp: it rises steeply at low speeds and asymptotes to A=1.5 (so the
     maximum steer scale factor is 1 + 1.5 = 2.5). Acceleration effort
-    (R[1,1] before the 2026-08-12 accel/brake split, see
-    settings.R_A_ACCEL/R_A_BRAKE below) is NOT speed-scaled here at all
+    (see settings.R_A_ACCEL/R_A_BRAKE below) is NOT speed-scaled here at all
     (accel_scale fixed at 1.0) -- a speed-dependent accel_scale would make
     braking authority rise with speed exactly where corner-entry braking
     needs to be strongest, then relax again as the car decelerates
@@ -166,10 +163,8 @@ def adaptive_R_rate(kappa, R_rate_base, enable_in_corners=True,
     problem, which needs less softening of the rate cost while actually
     turning rather than more lateral/heading authority.
 
-    2026-08-13: the "entering a corner" floor (driven by a forward
-    curvature scan, kappa_max_abs) was removed here as part of deleting the
-    whole lookahead gain-scheduling family -- see this module's docstring.
-    Only the current-position floor remains.
+    Only the current-position floor is implemented; there is no
+    forward-scan entering-floor.
 
     Only R_rate[0,0] (steering rate penalty) is modified. R_rate[1,1]
     (acceleration rate penalty) is unchanged: longitudinal jerk is less
@@ -239,11 +234,8 @@ def steer_rate_anti_hunt(kappa, e_y, R_rate_base, enabled=False, e_psi=0.0):
     applies when all three are near their "straight, centred, and aligned"
     ideal, and it fades smoothly -- never snaps -- as any one of them grows.
 
-    2026-08-13: the boost_lookahead term (a forward curvature-scan gate,
-    kappa_max_abs/k_lookahead) was removed here as part of deleting the
-    whole lookahead gain-scheduling family -- see this module's docstring.
-    boost_kappa/boost_ey/boost_epsi are unchanged, current-state signals and
-    remain correct.
+    boost_kappa/boost_ey/boost_epsi are current-state signals only (no
+    forward-scan term).
 
     e_psi (radians -- same units _error_state's e_psi already uses
     internally) guards against a car that enters a straight MISALIGNED

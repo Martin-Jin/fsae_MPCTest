@@ -671,14 +671,12 @@ def _lap_time_and_speed(path_xy, kappa, params):
 # not, because the lead can never exceed what the speed profile already
 # allows the car to execute.
 #
-# Measured on comp_test_map_3 at this value (Part 10): mean lead 3.58 deg,
-# max 3.76 deg -- no full-lock cliff, but ALSO active across nearly the
-# WHOLE lap (998/1000 stations), not just approaching corners, because
-# this track has almost no genuinely straight sections (geometric psi
-# climbs 0.4->16 deg over the first 40m alone). Lower this first if a live
-# test looks like "cuts every bend early everywhere" rather than "commits
-# earlier specifically into sharp corners" -- that symptom is this
-# constant, not a broken mechanism. NOT YET LIVE-VALIDATED at any value.
+# See docs/logs for the measured lead-angle distribution on comp_test_map_3
+# (active across nearly the whole lap, not just approaching corners,
+# because this track has almost no genuinely straight sections). Lower
+# this first if a live test looks like "cuts every bend early everywhere"
+# rather than "commits earlier specifically into sharp corners" -- that
+# symptom is this constant, not a broken mechanism.
 HEADING_LEAD_AUTHORITY_FRAC = 0.5
 
 # Placeholder rear-axle slip-angle bound (rad) used only to FLAG stations
@@ -691,11 +689,10 @@ HEADING_LEAD_AUTHORITY_FRAC = 0.5
 # hard export failure until this is measured against this car's actual
 # Cf/Cr linear region.
 #
-# Measured on comp_test_map_3 at this value (Part 10): 110/1000 stations
-# (11%) exceed it, all at the track's sharpest/slowest corners (peak
-# |kappa| 0.12-0.21, v 5.5-7.9 m/s) -- clustered at real corners, not
-# scattered noise, so the FORMULA is behaving sensibly; whether 5 deg
-# itself is the right bound for this car is still unknown.
+# See docs/logs for the measured exceedance distribution on comp_test_map_3
+# (clustered at the track's sharpest/slowest corners, not scattered noise,
+# so the FORMULA is behaving sensibly); whether 5 deg itself is the right
+# bound for this car is still unknown.
 SLIP_LIMIT_RAD = math.radians(5.0)
 
 

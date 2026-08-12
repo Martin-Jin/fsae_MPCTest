@@ -68,8 +68,7 @@ CMA-ES searches over multiplicative scaling factors (one per tunable weight):
 
 Each factor is bounded in [0.1, 10.0] (Q_BOUNDS, R_BOUNDS, R_RATE_BOUNDS),
 so the search explores ±1 decade around the template values. The floor of 0.1
-allows weights to be reduced below the template — a crucial capability that
-was missing when the floor was 1.0.
+allows weights to be reduced below the template.
 
 SYNTHETIC PATH LIBRARY
 ----------------------

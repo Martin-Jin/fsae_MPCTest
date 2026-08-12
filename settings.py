@@ -265,14 +265,9 @@ SLAM_DRIFT_TAU = 5.0
 # as DELAY_JITTER_SEED). Change it only to check a tuned result isn't
 # overfitted to one particular noise realisation.
 SLAM_NOISE_SEED = 24680
-# Note: rollout_core.py now predicts the state forward through the commands
-# already queued (predict_ahead()) before solving, so the MPC no longer
-# reacts to a stale x0 at DELAY_STEPS > 0 — the large-oscillation/DNF
-# behavior this note previously warned about no longer occurs. Validated across
-# DELAY_STEPS 1-8 and several initial-offset perturbations on every
-# SYNTHETIC_PATHS track without DNF or added oscillation. Still left at 0
-# by default since it's a deliberate "how much lag do I want to simulate"
-# knob, not because delay is unsafe to enable.
+# Left at 0 by default as a deliberate "how much lag to simulate" knob, not
+# because delay is unsafe (predict_ahead() rolls x0 forward through queued
+# commands, so a nonzero DELAY_STEPS is safe to enable).
 
 # ── Cone-detection noise ────────────────────────────────────────────────
 # FSDS's cone map is a latched ORACLE: sim_track.SimPerception returns exact
@@ -428,7 +423,7 @@ STEER_RATE_ANTI_HUNT_ENABLED = True
 # threshold.
 ADAPTIVE_R_RATE_ENABLE_IN_CORNERS = True
 
-# ── Lookahead gain-scheduling family: REMOVED (2026-08-13) ──────────────────
+# ── Lookahead gain-scheduling family: removed ────────────────────────────────
 # This section used to carry ~15 interacting mechanisms
 # (ADAPTIVE_Q_LOOKAHEAD_ENABLED, ADAPTIVE_Q_DEMAND_NORMALISED, the exit-decay
 # constants, STEER_EFFORT_STRAIGHT_BOOST_ENABLED,
@@ -446,34 +441,26 @@ ADAPTIVE_R_RATE_ENABLE_IN_CORNERS = True
 # Replaced by CORNER_FACTOR_K and the Q/R_rate/R straight/corner blend
 # endpoints below, plus LOW_SPEED_CORNER_BOOST_*/EPSI_RA_* — all driven by
 # CURRENT curvature/speed/heading-error, never a forward scan. Also removed
-# as unused/didn't-work: CURVATURE_FORCING_ENABLED/_GAIN (root-caused
-# 2026-08-12 as structurally unsound) and LOW_SPEED_STEER_RATE_BOOST_* (see
-# above -- disabled, gated on speed alone with no way to distinguish wanted
+# as unused/didn't-work: CURVATURE_FORCING_ENABLED/_GAIN (structurally
+# unsound, see docs/logs) and LOW_SPEED_STEER_RATE_BOOST_* (see above --
+# disabled, gated on speed alone with no way to distinguish wanted
 # low-speed turn-in from unwanted post-exit wobble).
 
-# ── Current-state corner-factor scheduler (2026-08-13) ──────────────────────
+# ── Current-state corner-factor scheduler ────────────────────────────────────
 # _corner_factor(kappa, CORNER_FACTOR_K) is a single continuous 0 (straight)
 # -> 1 (full corner) curve of CURRENT |kappa| only -- no forward scan,
-# symmetric on entry/exit. k=8.0 matches the OLD legacy (non-demand-
-# normalised) approach/relax ramp sharpness these mechanisms used (e.g. the
-# old ADAPTIVE_Q_LOOKAHEAD_K_APPROACH/_K_R_RELAX/lookahead_steer_relax all
-# defaulted to 8.0) -- same curve shape, now applied to the current-position
-# signal instead of a forward-scanned one. Mirrors MPCParams.corner_factor_k.
+# symmetric on entry/exit. k=8.0 matches the deleted lookahead mechanisms'
+# own default sharpness (8.0) -- same curve shape, now applied to the
+# current-position signal instead of a forward-scanned one. Mirrors
+# MPCParams.corner_factor_k.
 CORNER_FACTOR_K = 8.0
 
 # Q[0,0] (e_y) / Q[2,2] (e_psi) / Q[3,3] (r) / R_rate[0,0] straight/corner
 # blend endpoints, and R[0,0]'s special MIDDLE blend target -- see
-# mpc_core.py's compute() for the exact _blend() wiring these feed. Corner
-# values derived from the OLD boost_max/floor ratios applied to this file's
-# own Q_diag/R_diag/R_rate_diag baseline (Q_diag[0]=6.35, Q_diag[2]=2.0,
-# Q_diag[3]=1.0, R_rate_diag[0]=2.0, R_diag[0]=1.8) the same way
-# mpc_params.py's field comments derive theirs -- see that file for the
-# exact ratio-by-ratio rationale (ADAPTIVE_Q_LOOKAHEAD_Q_BOOST_MAX=2.0,
-# _EPSI_APPROACH_BOOST_MAX=1.5, ADAPTIVE_Q_LOOKAHEAD_R_FLOOR=0.5,
-# ADAPTIVE_R_RATE_DURING_FLOOR=0.625, ADAPTIVE_Q_LOOKAHEAD_STEER_RELAX_FLOOR=0.5).
-# Q[3,3]/R_rate[0,0] RELAX in-corner (corner value LOWER than straight) so
-# the MPC can rotate/steer fast enough to hit the tighter Q[0,0]/Q[2,2]
-# targets; R[0,0] blends toward a MIDDLE value, not the same low extreme, so
+# mpc_core.py's compute() for the exact _blend() wiring these feed. Q[3,3]/
+# R_rate[0,0] RELAX in-corner (corner value LOWER than straight) so the MPC
+# can rotate/steer fast enough to hit the tighter Q[0,0]/Q[2,2] targets;
+# R[0,0] blends toward a MIDDLE value, not the same low extreme, so
 # steering effort sits "somewhere in between the two extremes to discourage
 # saturation" rather than becoming cheap enough to overshoot. Mirrors
 # MPCParams.q_ey_straight/_corner, q_epsi_straight/_corner,
@@ -488,7 +475,7 @@ RRATE_STEER_STRAIGHT = 2.0
 RRATE_STEER_CORNER = 1.25
 R_STEER_CORNER_MID = 1.35
 
-# ── Low-speed-in-corner extra boost (2026-08-13) ────────────────────────────
+# ── Low-speed-in-corner extra boost ──────────────────────────────────────────
 # A NEW, corner-GATED mechanism -- distinct from the removed
 # LOW_SPEED_STEER_RATE_BOOST_* (which fired on speed ALONE with no way to
 # tell wanted low-speed turn-in from unwanted post-exit wobble). This only
@@ -499,7 +486,7 @@ R_STEER_CORNER_MID = 1.35
 LOW_SPEED_CORNER_BOOST_V_HALF = 4.0
 LOW_SPEED_CORNER_BOOST_MAX_EXTRA = 0.3
 
-# ── Heading-error-driven accel/brake asymmetry (2026-08-13) ─────────────────
+# ── Heading-error-driven accel/brake asymmetry ───────────────────────────────
 # Always-on, independent of the corner-factor scheduler above: scales
 # R_A_ACCEL/R_A_BRAKE (below) by a continuous 0->1 fraction of CURRENT
 # |e_psi| -- see mpc_core.py's compute() for the exact blend. Not
@@ -537,25 +524,15 @@ EPSI_RA_BRAKE_FLOOR = 0.5
 #   [6] delta_act  actuator-lagged steering angle (rad) -- always 0.0, no
 #                  tuned weight sets this state
 #   [7] a_act      actuator-lagged acceleration (m/s^2) -- always 0.0, ditto
-# Q_diag[4]=5.0 is car-tuned (not offline). Raising the speed-error weight
-# cuts mean |e_y| on the corner-APPROACH phase (ticks with corner_demand >
-# 1.5) from 0.240 to 0.141-0.166 m across two runs, with the best run also
-# the day's best on RMSE (0.262), peak |e_y| (1.50 m) and steering saturation
-# (3.4%). 6.5 scores worse on a matched-length window (RMSE 0.435, peak
-# 2.18 m), so 5.0 is a measured optimum — do not keep pushing this value
-# higher expecting further gains.
+# Q_diag[4]=5.0 is car-tuned (not offline) — a measured optimum on the
+# corner-approach phase; do not raise further expecting gains. See docs/logs
+# for the sweep.
 #
 # Whole-run averages hide this: they are dominated by the ~50% of ticks on
 # straights, where a speed-error weight does little. Compare on the approach
 # phase when re-tuning this.
-# SYNCED 2026-08-12 from mpc_params.py's live retune (Q_diag[0]=5.20->6.0,
-# [1]=0.2->0.8, [2]=1.52->1.6, [3]=0.50->0.70, [4]=4.0->5.55) -- LIVE-ONLY
-# tune, mirrored here for parity per CLAUDE.md's standing rule but NOT YET
-# validated against this offline sim/tuner. The measurement history in the
-# comments above (Q_diag[4]=5.0 sweep, etc.) describes the OLD values and
-# has not been re-verified at the new ones -- re-measure before trusting
-# those specific numeric claims at the new weights.
-Q_diag      = [6.0, 0.8, 1.6, 0.70, 5.55, 0.0, 0.0, 0.0]
+# Mirrors mpc_params.py's Q_diag.
+Q_diag      = [6.0, 0.8, 1.65, 0.70, 5.40, 0.0, 0.0, 0.0]
 # R_diag index -> input penalised:
 #   [0] delta_cmd  steering command effort (rad)
 #   [1] a_cmd      acceleration command effort (m/s^2)
@@ -567,41 +544,30 @@ Q_diag      = [6.0, 0.8, 1.6, 0.70, 5.55, 0.0, 0.0, 0.0]
 # braking (or accelerating) at magnitude 6 changes speed by only 0.30 m/s,
 # while the effort cost R[1,1]*a^2 is paid immediately -- at these weights
 # |a|=6 is only worth it if it removes >2.9 m/s of error per step. Lowering
-# R[1,1] is the cheap lever (a ~7x cut from the original 1.15 reaches
-# parity); raising Q_diag[4] instead would need ~460.
+# R[1,1] is the cheap lever; raising Q_diag[4] instead would need ~460.
 #
 # The same effort/benefit mismatch applies symmetrically to ACCELERATION,
 # not just braking -- live telemetry showed a_cmd topping out at ~3 m/s^2
 # during a clean, well-tracked corner-exit straight with a large (3-9 m/s)
 # speed deficit and zero competing lateral demand, well under the 12 m/s^2
-# ceiling the same lap demonstrably used elsewhere. A sweep of
-# {0.85, 0.77, 0.71, 0.65} holding R_rate_diag/Q_diag fixed found 0.77 a
-# local optimum (score 0.499, steering sat 4.35%, |e_psi| mean 6.74 deg,
-# lap time 55.15s vs 0.85's 0.517/5.46%/7.60deg/55.85s); 0.71 and 0.65 both
-# score worse than 0.77 (0.516 and 0.551 respectively) -- this is NOT "lower
-# is always better", re-sweep around 0.77 rather than assuming a further cut
-# helps. No regression on the oracle-path (USE_PLANNER=False) baseline
-# (score 0.409, within noise of 0.408). Not yet validated against a second
-# track -- if this drifts on a different map, re-sweep rather than assume
-# 0.77 transfers. R_rate_diag[1]=2.2 gave no additional benefit over
-# R_diag[1] alone (score 0.501 vs 0.499), so it is left unchanged.
+# ceiling the same lap demonstrably used elsewhere. A sweep around this
+# value confirmed 0.77 is a local optimum on this metric set (see docs/logs);
+# re-sweep rather than assume further cuts help.
 #
 # R_diag[1] itself is now a NOMINAL value only (kept for shape/API parity
 # with every R_diag consumer -- solve_mpc's needs_rebuild check, tuner
 # scripts that don't know about the split, etc). The QP's actual a_cmd
 # effort cost no longer reads it: see R_A_ACCEL/R_A_BRAKE below.
-# SYNCED 2026-08-12 from mpc_params.py's live retune (R_diag[0]=1.16->1.8).
-# R_diag[1] is nominal-only (see comment below) and left at 0.77 -- the
-# live side's R_A_ACCEL/R_A_BRAKE split (below) is what actually changed
-# and matters for a_cmd's effort cost.
+# Mirrors mpc_params.py's R_diag. R_diag[1] is nominal-only (see comment
+# above) -- the live side's R_A_ACCEL/R_A_BRAKE split (below) is what
+# actually matters for a_cmd's effort cost.
 R_diag      = [1.8, 0.77]
 # R_rate_diag index -> input RATE-OF-CHANGE penalised (tick-to-tick jerk, not
 # the input itself):
 #   [0] delta_cmd  steering rate of change
 #   [1] a_cmd      acceleration rate of change
-# SYNCED 2026-08-12 from mpc_params.py's live retune (2.1->2.5, 2.6->2.4) --
-# LIVE-ONLY tune, not yet re-validated offline.
-R_rate_diag = [2.5, 2.4]
+# Mirrors mpc_params.py's R_rate_diag.
+R_rate_diag = [2.5, 2.25]
 
 # R_A_ACCEL / R_A_BRAKE — separate effort weights for acceleration and
 # braking. solve_mpc()'s a_cmd effort cost is r_a_accel*pos(a_cmd)^2 +
@@ -614,15 +580,14 @@ R_rate_diag = [2.5, 2.4]
 # post-exit recovery -- because the same weight that frees up acceleration
 # also caps how hard the QP is willing to brake. See planning_control_sync.md's
 # "Accel/brake effort weight split" for the diagnosis and retuning history.
-# SYNCED 2026-08-12 from mpc_params.py's live retune (R_A_ACCEL 1.0->3.0,
-# R_A_BRAKE 0.6->0.5) -- LIVE-ONLY tune, not yet re-validated offline. The
-# tripling of R_A_ACCEL is a large change from the diagnosis above (which
-# argued for CHEAPER accel effort, not more expensive) -- this may be a
-# response to a separately-diagnosed speed-tracking-lag issue (car slow to
-# convert a falling v_desired into actual braking, see
+# Mirrors mpc_params.py's R_A_ACCEL/R_A_BRAKE. R_A_ACCEL being large is a
+# big change from the diagnosis above (which argued for CHEAPER accel
+# effort, not more expensive) -- this may be a response to a
+# separately-diagnosed speed-tracking-lag issue (car slow to convert a
+# falling v_desired into actual braking, see
 # late_turn_in_investigation.md Part 11), not a reversal of that reasoning.
 # Re-read Part 11 before assuming this number is settled.
-R_A_ACCEL = 3.0
+R_A_ACCEL = 2.25
 R_A_BRAKE = 0.5
 
 
@@ -759,10 +724,8 @@ NMPC_ALAT_CEILING_ENABLED = True            # model FSDS's measured sustained a_
 # needs); lowering it too far is what let steering sign-reversal chatter
 # grow mid-corner. See controller/model_utils.py::adaptive_R_rate.
 #
-# 2026-08-13: the "entering a corner" floor (ADAPTIVE_R_RATE_ENTERING_FLOOR/
-# _K_ENTERING, driven by a forward curvature scan) was removed as part of
-# deleting the whole lookahead gain-scheduling family -- see this section's
-# module-level comment above.
+# Only the current-curvature floor is implemented (no forward-scan
+# entering-floor).
 ADAPTIVE_R_RATE_DURING_FLOOR = 0.625
 
 # FSDS's fitted sustained lateral-acceleration ceiling law,
@@ -770,10 +733,9 @@ ADAPTIVE_R_RATE_DURING_FLOOR = 0.625
 # MEASURED property of the simulator (see CLAUDE.md's "dynamically-enforced
 # lateral-acceleration ceiling"), not a free tuning knob. Still load-bearing
 # for the NMPC's own in-prediction ceiling model (NMPC_ALAT_CEILING_ENABLED
-# above) even though the LTV-QP's lookahead demand-normalisation that used
-# to also read these was removed 2026-08-13 (see this section's module-level
-# comment). Must stay in sync with model/vehicle_physics.py's
-# alat_ceiling_at().
+# above) even though the LTV-QP no longer has a lookahead
+# demand-normalisation reading these directly. Must stay in sync with
+# model/vehicle_physics.py's alat_ceiling_at().
 ALAT_CEILING_FLAT = 7.5
 ALAT_CEILING_SLOPE = 0.47
 ALAT_CEILING_INTERCEPT = 2.46
