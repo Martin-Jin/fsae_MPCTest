@@ -120,6 +120,22 @@ working-tree-only.
   track with no `fsae_MPCTest` checkout needed. `fsae_MPCTest` remains where
   *new* tracks get produced; its exporters write here when both repos are
   checked out side by side.
+- `control/fsae_control/test/nmpc_offline_check.py` — reproduces the NMPC
+  offline A/B (steering saturation, turn-in distance) with no ROS/FSDS
+  needed. The one intentional exception to this repo's standalone rule: it
+  optionally imports `fsae_MPCTest` for an extra closed-loop cross-check if
+  that repo happens to be checked out alongside, and degrades to
+  synthetic-state checks only if it isn't.
+
+## Build/package plumbing
+
+- `setup.py` (all four packages): new `console_scripts` entry points —
+  `mpc_controller_standalone` (control), `cone_recorder` (perception).
+  Without these, `ros2 run` can't launch either new node even though the
+  source files are present.
+- `setup.py` (all four packages): `zip_safe=True` → `False` — works around a
+  stale-install issue in `colcon build --symlink-install` where an edited
+  source file wasn't picked up until a full clean rebuild.
 
 ## Telemetry
 

@@ -1469,6 +1469,60 @@ minimising a single scalar score. This section covers the search algorithm;
 see [The Composite Score](#the-composite-score) for exactly what's being
 minimised.
 
+```
+settings.py: Q/R/R_rate templates, VALIDATION_SUITE, INITIAL_CONDITIONS
+        │
+        ▼
+┌───────────────────────────────────────────────────────────┐
+│  USE_OPTUNA_PRESEARCH (optional, default True)             │
+│  Optuna TPE search, OPTUNA_PRE_PASS_EVALS trials            │
+│  → cheap, coarse scan of the 9-dim scale-factor space       │
+└──────────────────────────┬───────────────────────────────┘
+                            │ seeds x0 (else x0 = geometric
+                            │ midpoint of [0.1, 10.0] per dim)
+                            ▼
+┌───────────────────────────────────────────────────────────┐
+│  CMA-ES (cma.fmin_lq_surr2), BIPOP restarts,                │
+│  local-quadratic surrogate assistance                       │
+│                                                             │
+│   for each generation:                                     │
+│     sample a population of candidate weight-scale vectors  │
+│         │                                                   │
+│         ▼                                                   │
+│   ┌─────────────────────────────────────────────────────┐  │
+│   │ per candidate: parallel_evaluate_candidate()          │  │
+│   │                                                       │  │
+│   │  EVAL_TASKS = VALIDATION_SUITE × INITIAL_CONDITIONS   │  │
+│   │  → one rollout_core.run_core_rollout() per task,      │  │
+│   │    fanned out across cpu_count-1 worker processes     │  │
+│   │         │                                             │  │
+│   │         ▼                                             │  │
+│   │  scoring.compute_composite_score() per task           │  │
+│   │         │                                             │  │
+│   │         ▼                                             │  │
+│   │  objective = 0.7·weighted_mean(scores)                │  │
+│   │            + 0.3·quantile(scores, TAIL_QUANTILE)      │  │
+│   └─────────────────────────────────────────────────────┘  │
+│         │                                                   │
+│         ▼                                                   │
+│   adapt distribution mean/covariance toward better regions │
+│   (surrogate model filters which candidates get a real     │
+│   rollout vs. a predicted score)                            │
+│         │                                                   │
+│         └──── repeat until MAX_EVALS budget exhausted, or   │
+│               Ctrl+C ─────────────────────────────────────►┘
+└──────────────────────────┬───────────────────────────────┘
+                            ▼
+┌───────────────────────────────────────────────────────────┐
+│  Post-optimisation: clean serial re-evaluation              │
+│  xbest (best single candidate) vs.                          │
+│  xfavorite (mean of final search distribution)               │
+│  → lower-scoring one is the result                          │
+└──────────────────────────┬───────────────────────────────┘
+                            ▼
+              printed result + appended to tuning_history.txt
+```
+
 ### Search space
 
 Rather than searching over raw weight values directly, CMA-ES searches over
