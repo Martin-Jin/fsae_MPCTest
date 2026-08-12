@@ -253,7 +253,7 @@ writing — re-confirm before relying on them, since a resync can move them.
 | Accel/brake effort split (`R[1,1]`) | `settings.py` (`R_A_ACCEL`, `R_A_BRAKE`), read by `controller/optimiser.py`'s `solve_mpc(r_a_accel=, r_a_brake=)` | `mpc_params.py` (`r_a_accel`, `r_a_brake`), read by `mpc_core.py`'s `_solve_qp` | actively being live-tuned — re-check both sides' current values before trusting this row; see "Accel/brake effort weight split" below |
 | Low-speed steering-rate boost | `settings.py` (`LOW_SPEED_STEER_RATE_BOOST_ENABLED`/`_MAX`/`_K`) | `mpc_params.py` (`low_speed_steer_rate_boost_enabled`/`_max`/`_k`) | `False` / `2.5` / `0.35` — disabled, see "Low-speed steering-rate boost" below |
 | Steering-effort relaxation approaching a corner | `settings.py` (`LOOKAHEAD_STEER_EFFORT_RELAX_ENABLED`, `ADAPTIVE_Q_LOOKAHEAD_STEER_RELAX_FLOOR`) | `mpc_params.py` (`lookahead_steer_effort_relax_enabled`, `adaptive_q_lookahead_steer_relax_floor`) | `True` / `0.5` — see "Steering-effort relaxation approaching a corner" below |
-| Curvature forcing term (QP dynamics) | `settings.py` (`CURVATURE_FORCING_ENABLED`, `CURVATURE_FORCING_GAIN`), read by `controller/optimiser.py`'s `solve_mpc(w=)` | `mpc_params.py` (`curvature_forcing_enabled`, `curvature_forcing_gain`), read by `mpc_core.py`'s `_solve_qp` | `True` / `1.0` — see "Curvature-forcing term" below |
+| Curvature forcing term (QP dynamics) | `settings.py` (`CURVATURE_FORCING_ENABLED`, `CURVATURE_FORCING_GAIN`), read by `controller/optimiser.py`'s `solve_mpc(w=)` | `mpc_params.py` (`curvature_forcing_enabled`, `curvature_forcing_gain`), read by `mpc_core.py`'s `_solve_qp` | `False` / `1.0` — DISABLED, structurally unsound at any gain that matters, see "Curvature-forcing term" below |
 | Anti-hunt lookahead gate | `settings.py` (`ANTI_HUNT_K_LOOKAHEAD`), read by `controller/model_utils.py`'s `steer_rate_anti_hunt(k_lookahead=)` | `mpc_params.py` (`anti_hunt_k_lookahead`), read by `mpc_core.py`'s `_steer_rate_anti_hunt` | `15.0` (was `60.0`, too eager — see "Curvature-forcing term" below) |
 
 Notes on how these are actually used:
@@ -1999,6 +1999,97 @@ same telemetry columns (`w_epsi_sum`, `kappa_horizon_end`,
 = relaxes anti-hunt sooner/more" — actually the opposite: higher `k` means
 more relaxation at a given `kappa_max_abs`, since `k` multiplies inside the
 denominator). Fixed alongside this change.
+
+### Re-tested live at `k=15` (2026-08-12) — curvature forcing itself found structurally unsound, disabled
+
+`anti_hunt_k_lookahead=15.0` worked as intended: the same approach-window
+statistics from the regression above returned close to their original
+(pre-`k=60`) values (`mean_antihunt` at low `kappa_max_abs`: `2.19×` →
+(regression) `1.50×` → (fixed) `2.01×`; `mean|Δsteer|`: `2.74` → `3.46` →
+`2.90`). But the user still reported no real improvement in turn-in
+timing, which meant the anti-hunt interaction was never the main story —
+it was a second-order effect on top of a first-order problem in the
+forcing term itself.
+
+**Isolated QP testing (not a live log this time — a controlled synthetic
+test, `x0=0`, no noise, no other adaptive mechanism, using the actual
+`init_parameterized_mpc`/`solve_mpc`/`curvature_horizon_profile` code)
+found the forcing term is unsound at any gain that matters:**
+
+At `curvature_forcing_gain=1.0` (the "physically exact" default) with a
+realistic corner (radius 13 m, 17 m/s, corner start ~15 m / ~0.9 s ahead —
+comparable to the live log's approach windows), the QP's own predicted
+`e_psi` trajectory only deviates a few tenths of a degree from zero across
+the whole horizon, even though `w_epsi_sum` (the accumulated forcing)
+reaches -1.2. The reason: `Ad`'s own `e_psi` decay (`Ad[2,2]≈0.946`/step)
+bleeds off a small per-step forcing almost as fast as it's added, so it
+never builds into a state deviation big enough to be worth paying real
+steering-rate cost to counter. The resulting `delta_cmd` response is
+sub-1° — noise-scale, exactly matching live telemetry's slightly-negative
+mean steer (`-1.05°`) buried in `±4.4°` of pre-existing oscillation during
+this same window. This is the mechanism behind "still doesn't turn early."
+
+**Raising `curvature_forcing_gain` to compensate does not fix this — it
+makes it worse in a new way.** Sweeping gain against the same synthetic
+corner:
+
+| gain | w_epsi_sum | steer_cmd |
+|---|---|---|
+| 1.0 | -1.19 | -0.27° |
+| 3.0 | -3.56 | -0.96° |
+| 6.0 | -7.13 | **-25.00°** (saturated AWAY from the corner) |
+| 9.0–15.0 | -10.7 to -17.8 | **-25.00°** (still saturated away) |
+| 20.0 | -23.8 | +25.00° (finally correct direction, but saturated, 20x the physical value) |
+
+Inspecting the QP's full predicted trajectory at `gain=6.0` shows why:
+`u[0,:]` commits immediately to `-25°` (steering AWAY from the corner) for
+the first several steps, driving predicted `e_psi` to `-24°` and `e_y` to
+`-2.3 m`, before reversing to `+25°` around step 6 onward. This is the
+"drifts right before some left corners" symptom, reproduced exactly in a
+clean, noise-free, single-mechanism test — not a live-noise artifact and
+not an anti-hunt interaction.
+
+**Root cause**: the forcing term is implemented as a disturbance on the
+dynamics constraint itself (`x[:,1:] = A@x[:,:-1] + B@u + w`), which is
+the same recursion the QP is minimizing total quadratic cost over. That
+gives the solver freedom to choose *how* to spend/absorb the disturbance
+across the whole horizon — it is not "tracking a path that bends," it is
+finding the cheapest predicted trajectory subject to an artificial forcing
+term, and nothing in that formulation prevents the cheapest trajectory
+from being a transient swing away before correcting. This is a structural
+property of forcing-via-dynamics-disturbance, not a magnitude/tuning
+question — no gain between the two extremes tested is both large enough
+to matter and free of the wrong-direction transient.
+
+**Fix**: disabled `curvature_forcing_enabled` on both sides (`mpc_params.py`,
+`settings.py`, `fsae_params.yaml`, `launch_all.sh`'s shortlist, `fsds_simulator`
+mirror). This reverts to the pre-2026-08-12 baseline: no early anticipation,
+but also no wrong-direction transient — the better-understood failure mode.
+`anti_hunt_k_lookahead` was left at `15.0` (harmless no-op with forcing off,
+and a real improvement over `60.0` if forcing is ever revisited).
+
+**Code kept in place, not deleted**: `curvature_horizon_profile` (both
+sides), the `w` parameter threaded through `_build_qp`/`_solve_qp`
+(live) and `init_parameterized_mpc`/`solve_mpc` (offline), and the
+`kappa_max_abs`-gated anti-hunt factor. A future redesign should likely
+make curvature shift the *reference*/error definition (e.g. curving the
+reference heading `e_psi` is measured against, so the QP's cost directly
+penalises deviation from a bending reference) rather than perturbing the
+same recursion the QP optimizes trajectories over. Do not re-enable
+`curvature_forcing_enabled` by flipping the flag alone without re-deriving
+the mechanism — the gain sweep above shows the current formulation has no
+safe operating point.
+
+**Late turn-in on sudden corners is therefore still an open problem** —
+this session's attempted fix is reverted, not replaced. The
+reference-heading-lead mechanism (§12.8 in `sim_to_real_investigation.md`,
+also flagged in CLAUDE.md's "Still open" list) remains the next avenue to
+pursue: in both stacks the planner's reference heading swings faster than
+either car can ever yaw, and drives most heading-error growth — that is
+testable offline, no live session required, and doesn't share
+curvature-forcing's dynamics-disturbance failure mode since it changes the
+reference the error is measured against rather than perturbing the QP's
+own recursion.
 
 ## Straight-line lateral-error snap-back was too sharp (2026-08-12)
 

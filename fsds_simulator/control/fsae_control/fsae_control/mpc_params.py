@@ -81,7 +81,33 @@ class MPCParams:
     # the reference path's real curvature into the dynamics constraint as a
     # per-step forcing term, so the predicted trajectory bends the way the
     # road actually does. See mpc_core.py's _curvature_horizon_profile.
-    curvature_forcing_enabled: bool = field(default=True, metadata={"desc": "feed reference-path curvature into the QP's dynamics so its prediction can 'see' an upcoming corner"})
+    # DISABLED 2026-08-12 -- found structurally unsound, not just weak.
+    # Isolated QP tests (clean synthetic corner, no other mechanisms, no
+    # noise) showed: at gain=1.0 (physically-exact) the forcing is too weak
+    # to matter (predicted |e_psi| deviation stays sub-1deg against a real
+    # ~8deg/s corner, so its effect on delta_cmd is noise-scale, sub-1deg,
+    # and its SIGN at that scale is essentially arbitrary -- explains "still
+    # doesn't turn early"). Raising curvature_forcing_gain to compensate
+    # does NOT help: at gain~6 the QP finds it optimal to swing steering
+    # hard AWAY from the corner first (predicted e_psi driven to -24deg,
+    # e_y to -2.3m) before reversing hard toward it -- explains the
+    # "drifts right before some left corners" symptom. Only gain~20 (20x
+    # physically-exact) flips the net sign correct, well past saturation
+    # and net worse than gain=1. Root cause: injecting curvature as a
+    # dynamics DISTURBANCE (x_{k+1}=Ax_k+Bu_k+w_k) gives the QP freedom to
+    # choose HOW to spend that disturbance across the whole predicted
+    # trajectory -- it is minimizing total quadratic cost, not "tracking
+    # the bend," so an transient overshoot-then-correct trajectory can look
+    # cheaper than a direct one. A forcing term on the dynamics is the
+    # wrong mechanism for this; the fix needs the reference/error definition
+    # itself to reflect curvature (e.g. curving the reference heading used
+    # to compute e_psi), not an artificial disturbance term feeding the
+    # same recursion the QP is optimizing over. See
+    # planning_control_sync.md's "Curvature-forcing term" section for the
+    # full numeric trace. Code kept in place (curvature_horizon_profile,
+    # the w parameter in _build_qp/_solve_qp) for a future redesign -- do
+    # not re-enable by flipping this flag without re-deriving the mechanism.
+    curvature_forcing_enabled: bool = field(default=False, metadata={"desc": "feed reference-path curvature into the QP's dynamics so its prediction can 'see' an upcoming corner -- DISABLED 2026-08-12, structurally unsound (see field comment)"})
     steer_rate_anti_hunt_enabled: bool = field(default=True, metadata={"desc": "extra R_rate[0,0] penalty when centred/aligned/uncurving"})
     adaptive_r_rate_enable_in_corners: bool = field(default=True, metadata={"desc": "keep R_rate softening active in corners (continuous, no cutoff)"})
     delay_compensation_enabled: bool = field(default=True, metadata={"desc": "roll x0 forward through pending commands via predict_ahead()"})

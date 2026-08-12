@@ -170,8 +170,7 @@ one it was built to fix.
 top of the corner-softening in §4.3, but only when the car is already
 centred, not currently curving, *and* no real corner is detected ahead in
 the lookahead window — i.e. specifically targets residual steering chatter
-on a genuine straight, not steering rate needed for cornering OR for the
-early, deliberately-small corrections §4.10's curvature forcing produces.
+on a genuine straight, not steering rate needed for cornering.
 
 | Field | Purpose |
 |---|---|
@@ -181,15 +180,16 @@ early, deliberately-small corrections §4.10's curvature forcing produces.
 **Known constraints**: the boost still detects "currently curving" only via
 current curvature (reactive) for its `kappa`/`e_y`/`e_psi` factors — those
 three alone cannot anticipate a corner before the car is already turning
-into it. `anti_hunt_k_lookahead` (added 2026-08-12) closes that gap
-specifically for THIS mechanism by adding a fourth factor gated on
-`kappa_max_abs` (the same lookahead signal §4.4 uses): without it, this
-boost was found live to actively cancel §4.10's curvature-forcing term —
-both react to "`e_y`/`e_psi`/current `kappa` all near zero," but that state
-now has two different correct interpretations (genuine straight vs.
-approaching-a-corner-with-forcing-active) that only `kappa_max_abs` can
-tell apart. Not validated against `VALIDATION_SUITE`/recorded-map or any
-live log as a whole mechanism; treat as experimental.
+into it. `anti_hunt_k_lookahead` (added 2026-08-12) was originally meant to
+close that gap for §4.10's curvature-forcing term, which read the same
+near-zero `e_y`/`e_psi`/`kappa` state this boost targets as "nothing going
+on" and was found live to actively cancel forcing's early corrections.
+§4.10 has since been disabled as structurally unsound (see that section),
+so `anti_hunt_k_lookahead` is currently a no-op in practice — kept at its
+corrected value (`15.0`, was `60.0`) in case curvature forcing is
+redesigned and re-enabled later. Not validated against
+`VALIDATION_SUITE`/recorded-map or any live log as a whole mechanism;
+treat as experimental.
 
 **`anti_hunt_k_lookahead` was first set to `60.0` (matching the
 current-curvature term's own `k`), then found live the same day to be far
@@ -386,49 +386,55 @@ only when the car is NOT approaching or inside a corner — see
 the full incident and the values (`boost_max=2.5, k=0.35`) left in place for
 that future rework.
 
-### 4.10 Curvature forcing term (`curvature_forcing_enabled`)
+### 4.10 Curvature forcing term (`curvature_forcing_enabled`) — DISABLED, structurally unsound
 
 | Field | Purpose |
 |---|---|
-| `curvature_forcing_enabled` | feed the reference path's actual curvature into the QP's dynamics constraint, so its own prediction can "see" a bend ahead |
-| `curvature_forcing_gain` | scale on the forcing term; `1.0` = the physically-exact Frenet value |
+| `curvature_forcing_enabled` | feed the reference path's actual curvature into the QP's dynamics constraint, so its own prediction can "see" a bend ahead — **`False`, do not re-enable without redesigning the mechanism** |
+| `curvature_forcing_gain` | scale on the forcing term; irrelevant while disabled |
 
-**Purpose**: every OTHER mechanism in this section (§4.1–§4.9) only
-reweights the COST of an existing tracking error — none of them can make
-the QP's own predicted trajectory bend, because the underlying dynamics
-model (`Ad`/`Bd`) has no path-curvature term at all. With `e_y ≈ e_psi ≈ 0`
-(car dead on-line approaching a corner — exactly the state before any real
-turn), the QP's own rollout predicts staying at `≈0` for the whole horizon
-regardless of how sharply the real path bends ahead, so it has no reason
-to start turning early no matter how cheap steering is made. This term
-closes that gap directly: at each of the QP's `N` prediction steps, it
-looks up the reference path's curvature at the arc-length position the car
-is predicted to reach (`v_x·k·dt` ahead), and adds
-`-v_x·κ(s_k)·dt·curvature_forcing_gain` to the predicted `e_psi` at that
-step — a real, physically-motivated forcing term (from the standard Frenet
-relation `path_yaw_rate = v_x·κ`), not another cost reweighting.
+**Purpose (the goal, still unmet)**: every OTHER mechanism in this section
+(§4.1–§4.9) only reweights the COST of an existing tracking error — none
+of them can make the QP's own predicted trajectory bend, because the
+underlying dynamics model (`Ad`/`Bd`) has no path-curvature term at all.
+With `e_y ≈ e_psi ≈ 0` (car dead on-line approaching a corner), the QP's
+own rollout predicts staying at `≈0` for the whole horizon regardless of
+how sharply the real path bends ahead, so it has no reason to start
+turning early no matter how cheap steering is made. This term tried to
+close that gap by looking up the reference path's curvature at each
+predicted step's arc-length position and adding
+`-v_x·κ(s_k)·dt·curvature_forcing_gain` to the predicted `e_psi` there — a
+physically-motivated forcing term (from `path_yaw_rate = v_x·κ`), not
+another cost reweighting.
 
-**How to tune**: `curvature_forcing_gain=1.0` is not a free parameter in
-the usual sense — it is the physically correct value for a perfectly-known
-reference path and perfectly-held speed across the horizon. Lower it only
-if the live centreline is noisy enough that the forcing term is reacting
-to spurious curvature spikes (see CLAUDE.md's "known, unfixed defect in
-the planner's centreline") rather than genuine corners; raising it above
-1.0 makes the car anticipate MORE aggressively than the geometry actually
-warrants, which risks turning in too early rather than too late.
+**Why it's disabled**: an isolated QP test (clean synthetic corner, no
+noise, no other mechanism) found the approach doesn't work at ANY gain.
+At `gain=1.0` (physically exact), the QP's own `e_psi` decay
+(`Ad[2,2]≈0.946`/step) bleeds off the forcing almost as fast as it
+accumulates, so the resulting steering response is under 1° — noise-scale,
+too weak to matter. Raising gain to compensate makes it worse in a new
+way: past `gain≈6`, the QP's cheapest predicted trajectory involves
+steering hard AWAY from the corner first, then reversing — because the
+forcing term is added to the same dynamics recursion the QP minimizes
+total cost over, giving the solver freedom to choose the cheapest way to
+absorb it across the whole horizon, which is not the same as "track the
+bend." Only `gain≈20` restores the correct net direction, by which point
+steering is saturated the entire time anyway. No gain in between is both
+large enough to produce meaningful anticipation and free of the
+wrong-direction transient — this is a structural property of forcing the
+dynamics constraint, not a tuning gap. Full numeric trace (the gain
+sweep, the predicted-trajectory inspection that shows the transient) is in
+`planning_control_sync.md`'s "Curvature-forcing term" section.
 
-**Known constraints**: **this term interacts with §4.2's anti-hunt
-boost** — see `anti_hunt_k_lookahead` there. Without that gate, anti-hunt
-actively cancels this term's early corrections, since both react to the
-same near-zero `e_y`/`e_psi` state. If sudden-turn lateness persists after
-enabling/tuning this, check telemetry's `w_epsi_sum`/`kappa_horizon_end`
-columns to confirm the forcing term is actually firing (growing before the
-corner) before assuming the gain needs raising — and check
-`m_Rrate_antihunt` isn't still elevated during that same window before
-assuming §4.2's gate isn't doing its job. Verified via synthetic
-constant-curvature paths and a closed-loop simulation (see
-`planning_control_sync.md`'s "Curvature-forcing term" section) but not yet
-confirmed to fix the live sudden-turn-lateness symptom as of this writing.
+**Do not re-enable by flipping `curvature_forcing_enabled=True` alone.**
+The code (`curvature_horizon_profile`, the `w` parameter in
+`_build_qp`/`_solve_qp`/`init_parameterized_mpc`/`solve_mpc`) is kept in
+place for a future redesign that shifts the *reference* the error is
+measured against (e.g. curving the reference heading `e_psi` is compared
+to) rather than perturbing the QP's own optimization recursion.
+`anti_hunt_k_lookahead` (§4.2) was tuned alongside this term and is a
+harmless no-op with it disabled — leave it as-is unless curvature forcing
+is redesigned and re-enabled.
 
 ---
 

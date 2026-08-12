@@ -1147,43 +1147,42 @@ this controller. What actually happens:
   turn-in didn't actually begin until the car had already entered the
   curved section and `kappa` (current-position curvature) started feeding
   the state error directly.
-- **Implemented 2026-08-12** as `curvature_forcing_enabled`
-  (`CURVATURE_FORCING_ENABLED` offline): the reference path's curvature is
-  injected into the dynamics as a per-step forcing term,
-  `e_psi[k+1] += -v_x·κ(s_k)·dt·curvature_forcing_gain`, using the
-  *precomputed path's* curvature at each predicted arc-length position
-  `s_k` (see `_curvature_horizon_profile`/`curvature_horizon_profile`,
-  walked forward from the car's current position by `v_x·k·dt` per step).
-  Added as a new `w` term to the dynamics constraint
-  (`x[:,1:] == Ad@x[:,:-1] + Bd@u + w`), zero everywhere except the `e_psi`
-  row, so it's an exact no-op when disabled or `w=None`. Verified with a
-  synthetic constant-curvature path: with the term off, commanded steering
-  is exactly 0.000° 24 m before a 20 m-radius bend with zero tracking
-  error; with it on, steering correctly leans toward the bend before any
-  `e_y`/`e_psi` error exists at all (both directions checked). `gain=1.0`
-  is the physically-exact Frenet value — see `mpc_params.py`'s
-  `curvature_forcing_gain` field comment for when a lower value might
-  track better in practice (a noisy live centreline).
-  **A second, related fix landed the same day**: `steer_rate_anti_hunt`
-  (see the anti-hunt boost above) was tuned before this term existed, so it
-  read "`e_y`/`e_psi`/current `kappa` all near zero" as "nothing going on,
-  dampen any steering-rate change" — exactly the state curvature-forcing
-  deliberately produces on approach, so anti-hunt was actively cancelling
-  the new mechanism's early corrections every tick. Live telemetry showed
-  the forcing term firing correctly (a real anticipation signal building
-  more than 2 s before a sharp corner) while steering oscillated with no
-  net commitment, `m_Rrate_antihunt` sitting at 1.2–3.3× throughout — cars
-  still turned in late on sudden corners despite the forcing term working
-  as designed. Fixed by adding a fourth, `kappa_max_abs`-gated factor to
-  `steer_rate_anti_hunt` (`anti_hunt_k_lookahead`, same `k=60` as the
-  existing current-curvature term) that relaxes the anti-hunt boost once a
-  real corner is detected ahead in the lookahead window, not just once the
-  car is already turning. Not yet live-tested in isolation as of this
-  writing — the offline smoke test confirms both together don't crash the
-  pipeline, but the actual live symptom (sudden-turn lateness) that
-  motivated this pair of changes has not yet been re-checked on the car.
+- **Attempted 2026-08-12 as `curvature_forcing_enabled`
+  (`CURVATURE_FORCING_ENABLED` offline), then disabled the same day —
+  structurally unsound, not a working fix.** The reference path's
+  curvature was injected into the dynamics as a per-step forcing term,
+  `e_psi[k+1] += -v_x·κ(s_k)·dt·curvature_forcing_gain`, added as a new `w`
+  term to the dynamics constraint (`x[:,1:] == Ad@x[:,:-1] + Bd@u + w`,
+  zero everywhere except the `e_psi` row — see
+  `_curvature_horizon_profile`/`curvature_horizon_profile`). A first,
+  single-snapshot synthetic test looked promising (steering leaned toward
+  a bend before any tracking error existed), but isolated QP testing
+  across a range of gains found the mechanism doesn't actually work: at the
+  physically-exact `gain=1.0`, the QP's own `e_psi` decay
+  (`Ad[2,2]≈0.946`/step) bleeds off a small constant forcing almost as fast
+  as it accumulates, so the resulting steering response stays sub-1° —
+  noise-scale, not a real early correction. Raising gain to compensate
+  makes it *worse*, not better: at `gain≈6` the QP finds it cheaper (lower
+  total quadratic cost) to swing steering hard AWAY from the corner first
+  (predicted `e_psi` driven to -24°, `e_y` to -2.3 m) before reversing
+  toward it, than to commit directly — a real, reproducible
+  transient-overshoot artifact, not tuning noise. Only `gain≈20` (20× the
+  physical value) restores the correct net sign, well past saturation.
+  Root cause: a forcing term on the dynamics constraint enters the *same*
+  recursion the QP optimizes total cost over, so the solver is free to
+  choose *how* to spend the disturbance across the whole horizon — nothing
+  in that formulation prevents the cheapest predicted trajectory from
+  including a wrong-direction transient. **Disabled**
+  (`curvature_forcing_enabled=False`/`CURVATURE_FORCING_ENABLED=False`) —
+  code kept in place for a future redesign that shifts the *reference* the
+  error is measured against, rather than perturbing the QP's own
+  recursion. See `planning_control_sync.md`'s "Curvature-forcing term"
+  section for the full numeric trace, including the gain sweep and the
+  anti-hunt interaction (`anti_hunt_k_lookahead`) that was fixed alongside
+  it and is now a no-op with forcing disabled.
   See `junior_project_mpc_docs.md`'s "How the MPC Controller Works" section
-  for a from-scratch explanation of the underlying limitation this closes.
+  for a from-scratch explanation of the underlying limitation this was
+  meant to close — that limitation is still open.
 
 **Demand normalisation** (`ADAPTIVE_Q_DEMAND_NORMALISED`, on by default) —
 the boost curves above are driven by corner **demand**, not raw curvature:

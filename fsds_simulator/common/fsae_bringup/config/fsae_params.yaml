@@ -113,7 +113,7 @@ controller:
     delay_compensation_enabled: true              # roll x0 forward through pending commands via predict_ahead()
     ref_heading_rate_limit_enabled: false         # cap how fast the tracked reference heading may change per tick
     low_speed_steer_rate_boost_enabled: false     # extra R_rate[0,0] penalty at low speed -- disabled 2026-08-12, also taxed turn-in with no curvature/lookahead awareness to tell it apart from post-exit overcorrection
-    curvature_forcing_enabled: true               # feed reference-path curvature into the QP's dynamics so its prediction can 'see' an upcoming corner -- see mpc_core.py's _curvature_horizon_profile
+    curvature_forcing_enabled: false              # DISABLED 2026-08-12: structurally unsound (gains that produce a meaningful early correction also produce a wrong-direction transient) -- see mpc_params.py's field comment and planning_control_sync.md
 
     # Reference-heading rate limit (only used if ref_heading_rate_limit_enabled)
     ref_heading_rise_rate_deg_s: 90.0   # deg/s — max rate the reference heading may change

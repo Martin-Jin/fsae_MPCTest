@@ -538,16 +538,47 @@ ADAPTIVE_Q_LOOKAHEAD_STEER_RELAX_FLOOR = 0.5
 # arc-length position into the dynamics as a forcing term on e_psi
 # (w[2,k] = -v_x * kappa(s_k) * dt), so the predicted trajectory bends the
 # way the real road does -- see model_utils.curvature_horizon_profile and
-# solve_mpc's `w` parameter. Verified with a synthetic constant-curvature
-# path test: with this OFF, commanded steering is exactly 0.000 deg 24m
-# before a 20m-radius bend with zero tracking error; with it ON, steering
-# correctly leans toward the bend (+1.5 deg for a left bend, -1.5 deg for a
-# right bend, at 17 m/s) before any e_y/e_psi error exists at all. Mirrors
-# mpc_core.py's curvature_forcing_enabled/curvature_forcing_gain -- keep
-# both in sync. GAIN=1.0 is the physically-exact Frenet value; see
-# mpc_params.py's curvature_forcing_gain field comment for when a value
-# below 1.0 might track better in practice (a noisy live centreline).
-CURVATURE_FORCING_ENABLED = True
+# solve_mpc's `w` parameter.
+#
+# DISABLED 2026-08-12, same day, after live testing found it structurally
+# unsound rather than merely weak. The single-snapshot synthetic-path
+# verification above (steering leans +1.5deg toward a left bend at gain=1.0)
+# was real but misleading -- it didn't test whether that response was
+# ROBUST across gain, or what the QP was actually doing to produce it.
+# Isolated QP tests (clean synthetic corner, x0=0, no noise, no other
+# mechanisms) with the REAL ramping curvature-horizon shape (not a flat
+# block) found: at gain=1.0 the predicted |e_psi| deviation over the whole
+# horizon stays under 1 deg against a real ~8 deg/s corner -- Ad's own
+# e_psi decay (~0.95/step) bleeds off a small constant forcing almost
+# immediately, so its effect on delta_cmd is noise-scale (sub-1 deg) and
+# its SIGN at that scale is essentially arbitrary. That explains "still
+# doesn't turn early." Raising GAIN to compensate does not fix this: at
+# gain~6 the QP finds it cheaper (lower total quadratic cost) to swing
+# steering hard AWAY from the corner first (predicted e_psi driven to
+# -24 deg, e_y to -2.3 m) before reversing hard toward it, than to commit
+# directly -- explains the live "drifts right before some left corners"
+# symptom. Only gain~20 (20x the physically-exact value) flips the NET
+# sign of the response correct, and by then the command is saturated the
+# whole time regardless.
+#
+# Root cause: injecting curvature as a dynamics DISTURBANCE
+# (x_{k+1} = A x_k + B u_k + w_k) adds it to the same recursion the QP
+# optimizes trajectories over, so the solver is free to choose HOW to
+# spend/absorb that disturbance across the whole horizon to minimize total
+# cost -- it is not "tracking a bending reference," it is finding the
+# cheapest predicted trajectory given an artificial forcing term, and nothing
+# stops that cheapest trajectory from including a transient
+# overshoot-away-then-correct. A forcing term on the dynamics is very
+# likely the wrong mechanism for this; a redesign should make curvature
+# shift the REFERENCE/error definition itself (e.g. curving the reference
+# heading e_psi is measured against) rather than perturbing the same
+# recursion the QP is minimizing over. See planning_control_sync.md's
+# "Curvature-forcing term" section for the full numeric trace across gains.
+# Code kept in place (curvature_horizon_profile, solve_mpc's `w` parameter)
+# for a future redesign -- do not re-enable by flipping this flag alone
+# without re-deriving the mechanism. Mirrors mpc_core.py's
+# curvature_forcing_enabled -- keep both in sync.
+CURVATURE_FORCING_ENABLED = False
 CURVATURE_FORCING_GAIN = 1.0
 
 # ANTI_HUNT_K_LOOKAHEAD — added 2026-08-12 alongside CURVATURE_FORCING_ENABLED
