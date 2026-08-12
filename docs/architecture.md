@@ -1111,6 +1111,51 @@ that window, and uses both to shape `Q` before the car ever goes off-line:
   reaction to ordinary heading noise, the exact small-error hunting
   `adaptive_Q_scaling` exists to fight elsewhere.
 
+**Structural limit — none of this makes the QP's own prediction "see" the
+corner (2026-08-12).** It is tempting to read the mechanisms above as "the
+MPC looks ahead at the path, notices it curves, and plans to turn early."
+That is not what happens, and the distinction matters for anyone tuning
+this controller. What actually happens:
+
+- `kappa_max_abs`/`corner_demand` are computed by scanning the *actual*
+  path geometry ahead of the car — real lookahead, in the everyday sense.
+- But that information only ever reaches the QP as a *reweighting* of
+  `Q[0,0]`/`Q[2,2]`/`R[0,0]` (via the mechanisms above) — it changes how
+  expensive an *existing* tracking error is, never the QP's own predicted
+  trajectory.
+- The QP's internal model of "what will happen over the next `N_HORIZON`
+  steps" (`Ad`/`Bd`, see **Building the prediction model** above) has *no
+  path-curvature term at all*. It correctly models how a control input
+  changes future `e_y`/`e_psi` (e.g. `e_y[k+1] ≈ e_y[k] + v_x·e_psi[k]·dt`
+  — steering *does* propagate into predicted lateral error), but nothing in
+  that model represents the *road itself* bending away from the car. Given
+  `x0 ≈ 0` (car currently dead on-line, which is exactly the case on the
+  straight approach to a corner) and no forcing input, the QP's own
+  35-step rollout predicts `e_y`/`e_psi` staying at ≈0 for the entire
+  horizon, corner or no corner — because the model has nothing that would
+  make it predict otherwise.
+- Consequence: the lookahead boosts above only help once *some* real
+  tracking error already exists to reweight (e.g. the car has already
+  started drifting, or `e_psi` is already slightly nonzero from an earlier
+  correction) — they cannot, by themselves, make the controller *start*
+  turning while `e_y ≈ e_psi ≈ 0`, however cheap steering is made. Live
+  telemetry from 2026-08-12 showed exactly this: `kappa_max_abs`-driven
+  boosts and `R[0,0]` all moved correctly and early (`m_R_steer_relax`
+  falling to ~0.55, `Q_ey_eff` climbing from 2.5 to 4.5+, over a full
+  second before the car reached the corner), while `steer_deg` stayed at
+  ≈0° the entire time, because `e_y`/`e_psi` were both ≈0 throughout —
+  turn-in didn't actually begin until the car had already entered the
+  curved section and `kappa` (current-position curvature) started feeding
+  the state error directly.
+- The standard fix for this class of gap is to inject the reference path's
+  curvature into the dynamics as a per-step forcing/disturbance term (e.g.
+  `e_psi[k+1] += -v_x·κ(s_k)·dt`, using the *precomputed path's* curvature
+  at each predicted arc-length position `s_k`), so the QP's own rollout
+  predicts heading/lateral error growing on its own as the modelled car
+  approaches a real bend — not yet implemented as of this writing. See
+  `junior_project_mpc_docs.md`'s "How the MPC Controller Works" section for
+  a from-scratch explanation of the same limitation.
+
 **Demand normalisation** (`ADAPTIVE_Q_DEMAND_NORMALISED`, on by default) —
 the boost curves above are driven by corner **demand**, not raw curvature:
 
