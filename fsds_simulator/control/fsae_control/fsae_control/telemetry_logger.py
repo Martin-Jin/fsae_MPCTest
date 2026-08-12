@@ -90,6 +90,12 @@ ADAPTIVE_COLUMNS = (
     # Absolute weights handed to the QP after all of the above.
     'Q_ey_eff', 'Q_epsi_eff', 'Q_r_eff', 'R_steer_eff', 'Rrate_steer_eff',
     'R_a_accel_eff', 'R_a_brake_eff',  # a_cmd effort weight, split by sign
+    # Curvature-forcing term (see mpc_core._curvature_horizon_profile):
+    # kappa at the far end of the prediction horizon, and the total e_psi
+    # forcing summed over the horizon -- a nonzero w_epsi_sum well before
+    # kappa (current-position curvature) rises is the signature of the QP
+    # actually anticipating the corner rather than reacting to it.
+    'kappa_horizon_end', 'w_epsi_sum',
 )
 
 

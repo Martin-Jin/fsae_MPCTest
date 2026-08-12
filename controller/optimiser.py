@@ -147,6 +147,11 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max, du_max=None, terminal_scale=
     # sqrtR_param[1] is left unused (only row 0, delta_cmd, is read from it).
     r_a_accel_param = cp.Parameter(nonneg=True)
     r_a_brake_param = cp.Parameter(nonneg=True)
+    # Curvature-forcing term for the dynamics -- see solve_mpc's `w` param
+    # and model_utils.curvature_horizon_profile. Zero when the feature is
+    # off, which makes its addition to the dynamics constraint an exact
+    # no-op.
+    w_param = cp.Parameter((nx, N))
 
     # ── CVXPY Variables ────────────────────────────────────────────────────────
     x     = cp.Variable((nx, N + 1))   # Predicted states: x[:,0] = x0, x[:,N] = terminal
@@ -209,7 +214,7 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max, du_max=None, terminal_scale=
 
         # Dynamics: x[k+1] = A*x[k] + B*u[k]  (vectorized over all N steps)
         # x[:,1:] is (nx,N); A_param @ x[:,:-1] is (nx,N); B_param @ u is (nx,N)
-        x[:, 1:] == A_param @ x[:, :-1] + B_param @ u,
+        x[:, 1:] == A_param @ x[:, :-1] + B_param @ u + w_param,
 
         # Hard input bounds: applied to all N control steps simultaneously
         u >= np.array(u_min)[:, None],   # Broadcasting: (nu,1) vs (nu,N)
@@ -259,6 +264,7 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max, du_max=None, terminal_scale=
         'sqrtQ': sqrtQ_param, 'sqrtR': sqrtR_param,
         'sqrtR_rate': sqrtR_rate_param,
         'r_a_accel': r_a_accel_param, 'r_a_brake': r_a_brake_param,
+        'w': w_param,
         'weighted_u_prev': weighted_u_prev_param,
         'u_prev': u_prev_param,
         'u': u,
@@ -280,7 +286,7 @@ def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max, R_rate=None, u_prev=None,
               silent=False, return_status=False,
               eps_abs=1e-5, eps_rel=1e-5, max_iter=8000, warm_start=True,
               du_max=None, terminal_scale=1.0,
-              r_a_accel=None, r_a_brake=None):
+              r_a_accel=None, r_a_brake=None, w=None):
     """
     Execute the parameterized MPC solve for the current timestep.
 
@@ -357,6 +363,13 @@ def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max, R_rate=None, u_prev=None,
         pre-split single-R[1,1] behaviour. See settings.py's
         R_A_ACCEL/R_A_BRAKE and planning_control_sync.md's "Accel/brake
         effort weight split".
+    w : np.ndarray, shape (8, N), optional
+        Curvature-forcing disturbance added to the dynamics constraint
+        (x[:,1:] == A@x[:,:-1] + B@u + w), nonzero only in row 2 (e_psi).
+        None (default) sends an all-zero array -- an exact no-op,
+        identical to the dynamics before this term existed. See
+        model_utils.curvature_horizon_profile and settings.py's
+        CURVATURE_FORCING_ENABLED/_GAIN.
     u_prev : array-like, shape (2,), optional
         Previously applied control input. Used as anchor for the step-0
         rate cost, and (if du_max is set) the step-0 hard slew constraint.
@@ -462,6 +475,9 @@ def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max, R_rate=None, u_prev=None,
         R_diag[1] if r_a_accel is None else r_a_accel, 1e-6, 1e6))
     _mpc_cache['r_a_brake'].value = float(np.clip(
         R_diag[1] if r_a_brake is None else r_a_brake, 1e-6, 1e6))
+    # Curvature-forcing term (see model_utils.curvature_horizon_profile).
+    # None (default) is an all-zero array -- exact no-op on the dynamics.
+    _mpc_cache['w'].value = np.zeros((nx, N)) if w is None else w
     # Pre-multiply u_prev by sqrtR_rate so the rate cost at step 0 is:
     # ||sqrtR_rate * u[:,0] - sqrtR_rate * u_prev||² = ||sqrtR_rate ⊙ Δu_0||²
     _mpc_cache['weighted_u_prev'].value = sqrtR_rate * np.asarray(u_prev)

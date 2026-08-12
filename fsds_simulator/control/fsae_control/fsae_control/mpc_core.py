@@ -586,30 +586,49 @@ def _steer_rate_anti_hunt(
     enabled: bool,
     e_psi: float = 0.0,
     boost_max: float = 6.0,
+    kappa_max_abs: float = 0.0,
+    k_lookahead: float = 60.0,
 ) -> np.ndarray:
     """
     TEMPORARY/EXPERIMENTAL, NOT VALIDATED: heavily penalise steering
     rate-of-change on top of _adaptive_R_rate's existing curvature softening,
     strongest when the car is centred (|e_y| small), well-aligned (|e_psi|
-    small), AND not currently curving (kappa small). "Corner ahead" is NOT
-    a path lookahead here -- it reuses the same causal, current-curvature
-    kappa as _adaptive_R_rate, so it cannot anticipate a corner before the
-    car is already turning into it. Mirrors model_utils.steer_rate_anti_hunt
-    in fsae_MPCTest -- keep both constants in sync. enabled=False returns
-    R_rate_base untouched.
+    small), AND not currently curving (kappa small). "Corner ahead" via
+    kappa/e_y/e_psi alone is NOT a path lookahead -- those reuse the same
+    causal, current-curvature kappa as _adaptive_R_rate, so on their own
+    they cannot anticipate a corner before the car is already turning into
+    it. kappa_max_abs (added 2026-08-12) closes that gap specifically for
+    this function: mirrors model_utils.steer_rate_anti_hunt in fsae_MPCTest
+    -- keep both constants in sync. enabled=False returns R_rate_base
+    untouched.
 
     Continuous, not a hard AND-gated threshold: a discontinuous step would
     risk the same QP-solver-iteration-spike problem the
     enable_in_corners/kappa_straight history above already found from
     threshold cutoffs on curvature, so straight-line hunting is instead
     penalised more strongly via a higher continuous ceiling.
-    boost_kappa, boost_ey, and boost_epsi each saturate independently toward
-    1.0 as their input shrinks toward 0 (same saturating-curve style as
-    _adaptive_R_rate's own floor); their product is the applied scale, so
-    the full boost_max (default MPCParams.anti_hunt_boost_max) only applies
-    when ALL THREE are near their
-    "straight, centred, and aligned" ideal, and it fades smoothly -- never
-    snaps -- as any one of them grows.
+    boost_kappa, boost_ey, boost_epsi, and boost_lookahead each saturate
+    independently toward 1.0 as their input shrinks toward 0 (same
+    saturating-curve style as _adaptive_R_rate's own floor); their product
+    is the applied scale, so the full boost_max (default
+    MPCParams.anti_hunt_boost_max) only applies when ALL FOUR are near
+    their "straight, centred, and aligned, with nothing ahead" ideal, and
+    it fades smoothly -- never snaps -- as any one of them grows.
+
+    boost_lookahead (kappa_max_abs term, k_lookahead=60.0 matching
+    boost_kappa's own k): added because curvature_forcing_enabled (see
+    MPCParams) deliberately makes the QP command small, early steering
+    corrections on approach to a corner, while e_y/e_psi/kappa are all
+    still near zero -- exactly the state this function used to read as
+    "nothing going on, dampen it." Without this term anti-hunt was
+    actively cancelling the curvature-forcing term's whole purpose: live
+    telemetry (2026-08-12) showed w_epsi_sum already -1.0 to -1.35 (a
+    real, early corner-anticipation signal) more than 2s before a sharp
+    corner, while steering oscillated +-10 deg with no net commitment and
+    m_Rrate_antihunt sat at 1.2-3.3x throughout -- the anti-hunt boost was
+    damping the very correction curvature-forcing exists to produce,
+    reproducing the "still turns in late on sudden corners" symptom the
+    forcing term was supposed to fix.
 
     e_psi (radians, NOT the degrees used in telemetry/logging -- same units
     _error_state's x0[2]/e_psi already use internally) is included because
@@ -626,7 +645,8 @@ def _steer_rate_anti_hunt(
     boost_kappa = 1.0 / (1.0 + k_kappa * abs(kappa))
     boost_ey    = 1.0 / (1.0 + k_ey * abs(e_y))
     boost_epsi  = 1.0 / (1.0 + k_epsi * abs(e_psi))
-    scale = 1.0 + (boost_max - 1.0) * boost_kappa * boost_ey * boost_epsi
+    boost_lookahead = 1.0 / (1.0 + k_lookahead * abs(kappa_max_abs))
+    scale = 1.0 + (boost_max - 1.0) * boost_kappa * boost_ey * boost_epsi * boost_lookahead
     R = R_rate_base.copy()
     R[0, 0] *= scale
     return R
@@ -1033,6 +1053,47 @@ def _curvature(path: np.ndarray, idx: int) -> float:
     return dpsi / ds if ds > 1e-6 else 0.0
 
 
+def _curvature_horizon_profile(
+    path: np.ndarray, base_idx: int, car_speed: float, N: int, dt: float,
+) -> np.ndarray:
+    """
+    Sample signed path curvature at the arc-length position the car is
+    PREDICTED to reach at each of the QP's N horizon steps (s_k = k*v_x*dt
+    ahead of base_idx), for use as the curvature-forcing term in the
+    dynamics constraint -- see _build_qp's W_p Parameter.
+
+    Distinct from _lookahead_curvature_profile: that function returns a
+    single scalar (the PEAK |curvature| anywhere in the window, used to
+    reweight Q/R). This returns curvature AT each predicted step,
+    including sign, because the forcing term needs to know which
+    direction the path bends at each point in the horizon, not just how
+    sharply the sharpest point bends anywhere in it.
+
+    Holds car_speed constant across the whole horizon for this arc-length
+    walk (matching _discrete_model's own choice to build Ad/Bd from a
+    single per-tick speed rather than a predicted speed profile) --
+    consistent with the rest of the QP's linearization, not a new
+    approximation.
+
+    Returns an (N,) array. Positions beyond the end of path repeat the
+    last waypoint's curvature (0.0, since _curvature returns 0 at the
+    array boundary) rather than erroring, so a corner near the end of a
+    short/partial path doesn't crash the solve.
+    """
+    kappas = np.zeros(N)
+    v = max(abs(car_speed), 0.0)
+    idx = base_idx
+    accumulated = 0.0
+    n_path = len(path)
+    for k in range(N):
+        target_dist = v * (k + 1) * dt
+        while idx < n_path - 1 and accumulated < target_dist:
+            accumulated += float(np.linalg.norm(path[idx + 1] - path[idx]))
+            idx += 1
+        kappas[k] = _curvature(path, idx)
+    return kappas
+
+
 def _lookahead_curvature_profile(
     path: np.ndarray, base_idx: int, lookahead_dist: float
 ) -> tuple[float, int, float, float]:
@@ -1415,6 +1476,12 @@ class MPCController:
         # row 0, delta_cmd, is actually read from it).
         r_a_accel_param = cp.Parameter(nonneg=True, name="r_a_accel")
         r_a_brake_param = cp.Parameter(nonneg=True, name="r_a_brake")
+        # Curvature-forcing term for the dynamics: see _curvature_horizon_profile
+        # and MPCParams.curvature_forcing_enabled's field comment for the
+        # mechanism. Zero everywhere except row 2 (e_psi) when the feature
+        # is enabled; left at the CVXPY default (0) when disabled, which is
+        # exactly a no-op addition to the dynamics constraint below.
+        w_p = cp.Parameter((nx, N), name="w")
 
         x     = cp.Variable((nx, N + 1))
         u     = cp.Variable((nu, N))
@@ -1425,7 +1492,7 @@ class MPCController:
         # Dynamics constraints
         constraints = [
             x[:, 0] == x0_p,
-            x[:, 1:] == Ad_p @ x[:, :-1] + Bd_p @ u,
+            x[:, 1:] == Ad_p @ x[:, :-1] + Bd_p @ u + w_p,
             u >= self.u_min[:, None],
             u <= self.u_max[:, None],
             x[0, :-1] <=  3.5 + slack,
@@ -1485,6 +1552,7 @@ class MPCController:
             "sqrtRr": sqrtRr_param,
             "r_a_accel": r_a_accel_param,
             "r_a_brake": r_a_brake_param,
+            "w":     w_p,
             "weighted_u_prev": weighted_u_prev_param,
             "u":     u,
         }
@@ -1767,6 +1835,7 @@ class MPCController:
         Q_scaled:      np.ndarray | None = None,
         r_a_accel:     float | None = None,
         r_a_brake:     float | None = None,
+        w:             np.ndarray | None = None,
     ) -> np.ndarray:
         """
         Solves the MPC optimization problem utilizing warm starts.
@@ -1778,6 +1847,11 @@ class MPCController:
         parity but must supply r_a_accel/r_a_brake to actually set the
         accel/brake weights. Defaults to self.params.r_a_accel/r_a_brake
         when omitted (no adaptive gain currently scales these).
+
+        w: (nx, N) curvature-forcing disturbance added to the dynamics
+        constraint (see _build_qp/_curvature_horizon_profile). None
+        (default) sends an all-zero array, making the constraint an exact
+        no-op -- identical to the dynamics before this term existed.
         """
         if self._qp is None:
             self._build_qp()
@@ -1787,6 +1861,7 @@ class MPCController:
         qp["Bd"].value = Bd
         qp["x0"].value = x0
         qp["u_prev"].value = self._u_prev
+        qp["w"].value = np.zeros((self.nx, self.N)) if w is None else w
 
         # Format arrays for cp.sum_squares element-wise multiplication
         Q_for_solve = self.Q if Q_scaled is None else Q_scaled
@@ -2002,6 +2077,8 @@ class MPCController:
             kappa, x0[0], R_rate_scaled, self.steer_rate_anti_hunt_enabled,
             e_psi=x0[2],
             boost_max=self.params.anti_hunt_boost_max,
+            kappa_max_abs=kappa_max_abs,
+            k_lookahead=self.params.anti_hunt_k_lookahead,
         )
         adapt["m_Rrate_antihunt"] = (
             float(R_rate_scaled[0, 0] / _rr_before_hunt) if _rr_before_hunt else 1.0
@@ -2182,6 +2259,35 @@ class MPCController:
         adapt["R_a_accel_eff"] = self.params.r_a_accel
         adapt["R_a_brake_eff"] = self.params.r_a_brake
 
+        # ── Curvature-forcing term for the QP's own dynamics ──────────────
+        # Without this the QP's prediction cannot "see" the path bending
+        # ahead at all: with e_y = e_psi = 0 (car dead on-line approaching a
+        # corner) its 35-step rollout predicts staying at 0 forever, because
+        # nothing in Ad/Bd represents the REFERENCE turning away from the
+        # car. Every lookahead mechanism above only reweights an EXISTING
+        # error, so none of them can make the controller start turning while
+        # there is no error yet. See _curvature_horizon_profile and
+        # MPCParams.curvature_forcing_enabled.
+        w_forcing = None
+        if self.params.curvature_forcing_enabled:
+            kappa_horizon = _curvature_horizon_profile(
+                path, dbg.get("base_idx", 0), car_speed, self.N, self.dt,
+            )
+            w_forcing = np.zeros((self.nx, self.N))
+            # e_psi = car_yaw - path_yaw, and the path's heading advances at
+            # v_x * kappa (rad/s) along the reference, so a path curving
+            # LEFT (kappa > 0) drives e_psi NEGATIVE over the horizon even
+            # with the car holding a constant heading -- hence the minus.
+            w_forcing[2, :] = (
+                -car_speed * kappa_horizon * self.dt
+                * self.params.curvature_forcing_gain
+            )
+            adapt["kappa_horizon_end"] = float(kappa_horizon[-1])
+            adapt["w_epsi_sum"] = float(w_forcing[2, :].sum())
+        else:
+            adapt["kappa_horizon_end"] = 0.0
+            adapt["w_epsi_sum"] = 0.0
+
         # Wall-clock the QP so the log can distinguish "the solver is slow"
         # from "the pipeline upstream of us is slow" — see solve_ms in
         # telemetry_logger's column reference.
@@ -2189,6 +2295,7 @@ class MPCController:
         u_opt = self._solve_qp(
             x0, Ad, Bd, R_scaled, R_rate_scaled, Q_scaled,
             r_a_accel=self.params.r_a_accel, r_a_brake=self.params.r_a_brake,
+            w=w_forcing,
         )
         solve_ms = (time.perf_counter() - _t_solve0) * 1e3
         self._u_history.append(u_opt.copy())

@@ -523,6 +523,46 @@ STEER_EFFORT_STRAIGHT_BOOST_ENABLED = True
 LOOKAHEAD_STEER_EFFORT_RELAX_ENABLED = True
 ADAPTIVE_Q_LOOKAHEAD_STEER_RELAX_FLOOR = 0.5
 
+# CURVATURE_FORCING_ENABLED / _GAIN — added 2026-08-12 after diagnosing why
+# late turn-in persisted even with steering made cheap approaching a corner
+# (LOOKAHEAD_STEER_EFFORT_RELAX_ENABLED above): the QP's own dynamics model
+# (Ad/Bd, see model/bicycle_model.py) has NO path-curvature term at all, so
+# with e_y = e_psi = 0 (car dead on-line on the still-straight approach) its
+# own N-step rollout predicts staying at 0 for the whole horizon regardless
+# of how sharply the real path bends ahead -- the optimal plan is "go
+# straight" no matter how cheap steering is made, because there is no error
+# yet for a cheaper R[0,0] to act on. Every existing lookahead mechanism
+# (adaptive_Q_lookahead, lookahead_steer_effort_relax, etc.) only reweights
+# an EXISTING tracking error, so none of them can manufacture one ahead of
+# time. This feeds the reference path's actual curvature at each predicted
+# arc-length position into the dynamics as a forcing term on e_psi
+# (w[2,k] = -v_x * kappa(s_k) * dt), so the predicted trajectory bends the
+# way the real road does -- see model_utils.curvature_horizon_profile and
+# solve_mpc's `w` parameter. Verified with a synthetic constant-curvature
+# path test: with this OFF, commanded steering is exactly 0.000 deg 24m
+# before a 20m-radius bend with zero tracking error; with it ON, steering
+# correctly leans toward the bend (+1.5 deg for a left bend, -1.5 deg for a
+# right bend, at 17 m/s) before any e_y/e_psi error exists at all. Mirrors
+# mpc_core.py's curvature_forcing_enabled/curvature_forcing_gain -- keep
+# both in sync. GAIN=1.0 is the physically-exact Frenet value; see
+# mpc_params.py's curvature_forcing_gain field comment for when a value
+# below 1.0 might track better in practice (a noisy live centreline).
+CURVATURE_FORCING_ENABLED = True
+CURVATURE_FORCING_GAIN = 1.0
+
+# ANTI_HUNT_K_LOOKAHEAD — added 2026-08-12 alongside CURVATURE_FORCING_ENABLED
+# above: steer_rate_anti_hunt (see STEER_RATE_ANTI_HUNT_ENABLED) was tuned
+# before the curvature-forcing term existed, so it read "e_y/e_psi/kappa all
+# near zero" as "nothing going on, dampen any steering-rate change" -- which
+# is now also exactly the state curvature_forcing_enabled deliberately
+# produces on approach to a corner, and anti-hunt was cancelling that
+# correction every tick, reproducing the same "still turns in late" symptom
+# curvature forcing exists to fix. This adds a fourth factor
+# (kappa_max_abs-gated, same k=60 as the existing current-kappa term) that
+# relaxes anti-hunt's boost once a real corner is detected ahead. Mirrors
+# mpc_core.py's anti_hunt_k_lookahead -- keep both in sync.
+ANTI_HUNT_K_LOOKAHEAD = 60.0
+
 # ------------------------------------------------------------------------------
 # Cost function weights (for simulator only)
 # ------------------------------------------------------------------------------

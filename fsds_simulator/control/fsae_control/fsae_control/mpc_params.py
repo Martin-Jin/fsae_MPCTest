@@ -72,6 +72,16 @@ class MPCParams:
     adaptive_q_demand_normalised: bool = field(default=True, metadata={"desc": "score corners by grip DEMAND (speed-aware) instead of raw curvature"})
     steer_effort_straight_boost_enabled: bool = field(default=True, metadata={"desc": "make R[0,0] (steering effort) expensive on a clear straight"})
     lookahead_steer_effort_relax_enabled: bool = field(default=True, metadata={"desc": "make R[0,0] (steering effort) CHEAPER approaching a corner, so turn-in isn't fighting the speed-based effort penalty"})
+    # Without this, the QP's own prediction is BLIND to the path bending
+    # ahead: Ad/Bd contain no path-curvature term, so with e_y = e_psi = 0
+    # (car dead on-line approaching a corner) the 35-step rollout predicts
+    # staying at 0 forever and the optimal plan is "go straight" no matter
+    # how cheap steering is made. Every other lookahead mechanism only
+    # REWEIGHTS an existing error, so none of them can fix that. This feeds
+    # the reference path's real curvature into the dynamics constraint as a
+    # per-step forcing term, so the predicted trajectory bends the way the
+    # road actually does. See mpc_core.py's _curvature_horizon_profile.
+    curvature_forcing_enabled: bool = field(default=True, metadata={"desc": "feed reference-path curvature into the QP's dynamics so its prediction can 'see' an upcoming corner"})
     steer_rate_anti_hunt_enabled: bool = field(default=True, metadata={"desc": "extra R_rate[0,0] penalty when centred/aligned/uncurving"})
     adaptive_r_rate_enable_in_corners: bool = field(default=True, metadata={"desc": "keep R_rate softening active in corners (continuous, no cutoff)"})
     delay_compensation_enabled: bool = field(default=True, metadata={"desc": "roll x0 forward through pending commands via predict_ahead()"})
@@ -128,6 +138,20 @@ class MPCParams:
     # baseline for an approaching corner).
     adaptive_q_lookahead_steer_relax_floor: float = field(default=0.5, metadata={"unit": "unitless", "desc": "min R[0,0] multiplier at high corner demand"})
 
+    # ── Curvature forcing term in the QP dynamics ───────────────────────
+    # Scales the -v_x*kappa*dt forcing term applied to the predicted e_psi
+    # (see curvature_forcing_enabled above and mpc_core.py's
+    # _curvature_horizon_profile). 1.0 = the physically-correct Frenet
+    # value, which is the right starting point; lower values under-apply
+    # the effect (car anticipates less), higher values over-apply it (car
+    # anticipates a corner more aggressively than the geometry warrants,
+    # which will turn in EARLY rather than late). Provided as a tuning knob
+    # because 1.0 assumes the reference path and the speed held across the
+    # horizon are both accurate; if the planner's centreline is noisy (see
+    # the known centreline-curvature-spike defect) a value below 1.0 may
+    # track better in practice than the theoretically-exact one.
+    curvature_forcing_gain: float = field(default=1.0, metadata={"unit": "unitless", "desc": "scale on the curvature forcing term; 1.0 = physically exact"})
+
     # ── Straight-line Q[2,2]/Q[3,3] boosts ──────────────────────────────
     adaptive_q_straight_epsi_boost_max: float = field(default=1.1, metadata={"unit": "unitless", "desc": "max Q[2,2] multiplier on a clear straight"})
     adaptive_q_straight_r_boost_max: float = field(default=1.5, metadata={"unit": "unitless", "desc": "max Q[3,3] multiplier on a clear straight"})
@@ -153,6 +177,13 @@ class MPCParams:
 
     # ── Straight-line R_rate[0,0] (steering rate) anti-hunt boost ───────
     anti_hunt_boost_max: float = field(default=6.0, metadata={"unit": "unitless", "desc": "ceiling on the steer_rate_anti_hunt multiplier"})
+    # Added 2026-08-12 so steer_rate_anti_hunt relaxes when a real corner is
+    # detected ahead (kappa_max_abs), not just when current kappa/e_y/e_psi
+    # are all small -- otherwise anti-hunt actively cancels the early,
+    # deliberately-small steering corrections curvature_forcing_enabled
+    # produces on approach. Same k=60 as the existing current-kappa term
+    # (boost_kappa) so both fade at a comparable curvature scale.
+    anti_hunt_k_lookahead: float = field(default=60.0, metadata={"unit": "unitless", "desc": "anti-hunt fade sharpness vs LOOKAHEAD curvature (kappa_max_abs)"})
 
     # ── Adaptive R_rate corner softening floors ─────────────────────────
     adaptive_r_rate_during_floor: float = field(default=0.625, metadata={"unit": "unitless", "desc": "R_rate[0,0] floor driven by CURRENT-position curvature"})

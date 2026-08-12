@@ -253,6 +253,8 @@ writing — re-confirm before relying on them, since a resync can move them.
 | Accel/brake effort split (`R[1,1]`) | `settings.py` (`R_A_ACCEL`, `R_A_BRAKE`), read by `controller/optimiser.py`'s `solve_mpc(r_a_accel=, r_a_brake=)` | `mpc_params.py` (`r_a_accel`, `r_a_brake`), read by `mpc_core.py`'s `_solve_qp` | actively being live-tuned — re-check both sides' current values before trusting this row; see "Accel/brake effort weight split" below |
 | Low-speed steering-rate boost | `settings.py` (`LOW_SPEED_STEER_RATE_BOOST_ENABLED`/`_MAX`/`_K`) | `mpc_params.py` (`low_speed_steer_rate_boost_enabled`/`_max`/`_k`) | `False` / `2.5` / `0.35` — disabled, see "Low-speed steering-rate boost" below |
 | Steering-effort relaxation approaching a corner | `settings.py` (`LOOKAHEAD_STEER_EFFORT_RELAX_ENABLED`, `ADAPTIVE_Q_LOOKAHEAD_STEER_RELAX_FLOOR`) | `mpc_params.py` (`lookahead_steer_effort_relax_enabled`, `adaptive_q_lookahead_steer_relax_floor`) | `True` / `0.5` — see "Steering-effort relaxation approaching a corner" below |
+| Curvature forcing term (QP dynamics) | `settings.py` (`CURVATURE_FORCING_ENABLED`, `CURVATURE_FORCING_GAIN`), read by `controller/optimiser.py`'s `solve_mpc(w=)` | `mpc_params.py` (`curvature_forcing_enabled`, `curvature_forcing_gain`), read by `mpc_core.py`'s `_solve_qp` | `True` / `1.0` — see "Curvature-forcing term" below |
+| Anti-hunt lookahead gate | `settings.py` (`ANTI_HUNT_K_LOOKAHEAD`), read by `controller/model_utils.py`'s `steer_rate_anti_hunt(k_lookahead=)` | `mpc_params.py` (`anti_hunt_k_lookahead`), read by `mpc_core.py`'s `_steer_rate_anti_hunt` | `60.0` — see "Curvature-forcing term" below |
 
 Notes on how these are actually used:
 
@@ -1854,6 +1856,104 @@ Implemented in `mpc_core.py`/`mpc_params.py`
 (`lookahead_steer_effort_relax`) / `sim/rollout_core.py` /
 `settings.py` (`LOOKAHEAD_STEER_EFFORT_RELAX_ENABLED`,
 `ADAPTIVE_Q_LOOKAHEAD_STEER_RELAX_FLOOR`), and the `fsds_simulator` mirror.
+
+## Curvature-forcing term: the QP's own prediction was blind to the path bending ahead (2026-08-12)
+
+**Implemented on both sides, offline smoke-tested (no crash), live symptom
+not yet re-confirmed fixed.** Reported symptom, after the steering-effort
+relax above and the `ey_k` fix below were both live-tested: the car still
+turned in late on sudden/sharp corners.
+
+**Root cause (deeper than either fix above)**: every existing lookahead
+mechanism (`adaptive_Q_lookahead`, `lookahead_steer_effort_relax`, etc.)
+only reweights an *existing* tracking error — it changes how expensive
+being off-line already is, never the QP's own predicted trajectory. The
+QP's internal dynamics model (`Ad`/`Bd`) has *no path-curvature term at
+all*: with `e_y ≈ e_psi ≈ 0` (car dead on-line on the still-straight
+approach, exactly the state before any real corner), the QP's own 35-step
+rollout predicts staying at `≈0` for the whole horizon regardless of how
+sharply the real path bends ahead. No amount of cheaper steering effort
+can fix this, because there is no predicted error yet for a cheaper weight
+to act on — this is why the steering-effort relax fix above, while
+correctly implemented and firing, could not fully close the gap on its
+own. Confirmed directly: `m_R_steer_relax` and `Q_ey_eff` moved correctly
+and over a full second early in live telemetry, while `steer_deg` stayed
+at ≈0° the whole time, because there was no `e_y`/`e_psi` for those
+reweighted costs to react to.
+
+**Mechanism**: `_curvature_horizon_profile`/`curvature_horizon_profile`
+walks the reference path forward from the car's current position by the
+PREDICTED arc-length at each of the QP's `N` steps (`v_x·k·dt`), returning
+signed curvature at each step (distinct from `_lookahead_curvature_profile`,
+which only returns the single peak value used for the Q/R reweighting
+above). That per-step curvature feeds a new forcing term added directly to
+the dynamics constraint — `x[:,1:] == Ad@x[:,:-1] + Bd@u + w`, where `w` is
+zero everywhere except the `e_psi` row: `w[2,k] = -v_x·κ(s_k)·dt·gain`. The
+sign follows directly from `e_psi = car_yaw - path_yaw` and
+`path_yaw_rate = v_x·κ`: a path curving left (`κ>0`) drives `e_psi`
+negative over the horizon even if the car holds a constant heading. `w=None`
+(the default for any caller that doesn't pass it) sends an all-zero array,
+making this an exact no-op — existing callers are unaffected.
+
+**Verified with a synthetic constant-curvature path** before trusting the
+sign: with `curvature_forcing_enabled=False`, commanded steering is
+exactly `0.000°` 24 m before a 20 m-radius left bend with zero tracking
+error (reproducing the diagnosed bug); with it `True`, steering correctly
+leans toward the bend (`+1.5°` at 17 m/s, before any `e_y`/`e_psi` error
+exists) — and mirrored for a right bend (`-1.5°`). A closed-loop
+simulation (the car actually driving toward the bend using its own
+commands, not a single frozen snapshot) confirms the controller commits to
+real, sustained left steering (ramping through `+2°` → `+8.6°`) well
+before reaching the curved section.
+
+**A genuinely confusing artifact was found and ruled out during
+verification**: at the exact instant `x0=0` with no history, the very
+first commanded step can be a tiny (hundredths-of-a-degree), momentarily
+WRONG-SIGN "flinch" before the plan settles into the correct direction —
+e.g. `-0.01°` at the first tick, then correctly positive from the second
+tick onward. This is a real, known linear-MPC phenomenon (the coupled
+`e_y`/`e_psi`/`r` state dynamics briefly trade off a different combination
+of costs at `x0` exactly zero) and is negligible in magnitude compared to
+the real turn-in signal — confirmed via the closed-loop simulation above,
+where it never shows up as a problem once the car is actually driving
+(nonzero `x0` history from the previous tick's plan).
+
+**A second problem was found DURING live testing of this fix**: even with
+the forcing term firing correctly and early (`w_epsi_sum` already
+`-1.0` to `-1.35` more than 2 s before a sharp corner, confirmed in
+telemetry), the car still turned in late. Root cause: `_steer_rate_anti_hunt`
+(see the anti-hunt section above) was tuned before this forcing term
+existed — it reads "`e_y`/`e_psi`/current `kappa` all near zero" as
+"nothing happening, dampen any steering-rate change," which is now exactly
+the state the forcing term deliberately produces on approach. Live
+telemetry showed steering oscillating ±10° with no net commitment while
+`m_Rrate_antihunt` sat at `1.2×`–`3.3×` throughout the approach — anti-hunt
+was actively cancelling the forcing term's whole effect, every tick, right
+up until real curvature arrived and steering had to snap to the 25° stop
+anyway. Fixed by adding a fourth, `kappa_max_abs`-gated factor to
+`_steer_rate_anti_hunt`/`steer_rate_anti_hunt` (`anti_hunt_k_lookahead`,
+default `60.0`, same `k` as the existing current-curvature term) that
+relaxes the anti-hunt boost once a real corner is detected in the
+lookahead window — not just once the car is already turning through it.
+
+**Implemented in**: live `mpc_core.py`/`mpc_params.py`
+(`curvature_forcing_enabled`, `curvature_forcing_gain`,
+`anti_hunt_k_lookahead`), offline `controller/optimiser.py`'s
+`init_parameterized_mpc`/`solve_mpc` (new `w` parameter) and
+`controller/model_utils.py` (`curvature_horizon_profile`,
+`steer_rate_anti_hunt`'s new `kappa_max_abs`/`k_lookahead` params),
+`sim/rollout_core.py`, `settings.py` (`CURVATURE_FORCING_ENABLED`,
+`CURVATURE_FORCING_GAIN`, `ANTI_HUNT_K_LOOKAHEAD`), `fsae_params.yaml`,
+`launch_all.sh`'s shortlist, and the `fsds_simulator` mirror.
+
+**Not yet re-tested live as the combined fix** (curvature forcing + the
+anti-hunt gate together) — the sign/mechanism verification above used
+synthetic paths and a closed-loop simulation, not a live session. If
+sudden-turn lateness persists after this, check `w_epsi_sum`/
+`kappa_horizon_end` in telemetry to confirm the forcing term is actually
+firing (nonzero, growing before the corner) before assuming this fix
+didn't work — and check `m_Rrate_antihunt` isn't still elevated during
+that same window before assuming the gate isn't helping.
 
 ## Straight-line lateral-error snap-back was too sharp (2026-08-12)
 

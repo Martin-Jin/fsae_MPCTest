@@ -253,22 +253,38 @@ def adaptive_R_rate(kappa, R_rate_base, enable_in_corners=True, kappa_max_abs=0.
     return R
 
 
-def steer_rate_anti_hunt(kappa, e_y, R_rate_base, enabled=False, e_psi=0.0):
+def steer_rate_anti_hunt(kappa, e_y, R_rate_base, enabled=False, e_psi=0.0,
+                          kappa_max_abs=0.0, k_lookahead=60.0):
     """
     TEMPORARY/EXPERIMENTAL (fsds sim only, off by default): heavily penalise
     steering-rate-of-change on top of adaptive_R_rate's existing curvature
     softening, strongest when the car is centred (|e_y| small), well-aligned
     (|e_psi| small), AND not currently curving (kappa small). "Corner ahead"
-    is NOT a path lookahead here -- it reuses the same causal, current-
-    curvature kappa as adaptive_R_rate, so it cannot anticipate a corner
-    before the car is already turning into it.
+    via kappa/e_y/e_psi alone is NOT a path lookahead -- those reuse the
+    same causal, current-curvature kappa as adaptive_R_rate, so on their own
+    they cannot anticipate a corner before the car is already turning into
+    it. kappa_max_abs (added 2026-08-12) closes that gap specifically for
+    this function -- mirrors mpc_core.py's _steer_rate_anti_hunt, keep both
+    in sync.
 
-    Continuous, not a hard AND-gated threshold: boost_kappa, boost_ey, and
-    boost_epsi each saturate independently toward 1.0 as their input shrinks
-    toward 0 (same saturating-curve style as adaptive_R_rate's own floor);
-    their product is the applied scale, so the full boost_max only applies
-    when ALL THREE are near their "straight, centred, and aligned" ideal,
-    and it fades smoothly -- never snaps -- as any one of them grows.
+    Continuous, not a hard AND-gated threshold: boost_kappa, boost_ey,
+    boost_epsi, and boost_lookahead each saturate independently toward 1.0
+    as their input shrinks toward 0 (same saturating-curve style as
+    adaptive_R_rate's own floor); their product is the applied scale, so
+    the full boost_max only applies when ALL FOUR are near their "straight,
+    centred, and aligned, with nothing ahead" ideal, and it fades smoothly
+    -- never snaps -- as any one of them grows.
+
+    boost_lookahead (kappa_max_abs term): added because
+    CURVATURE_FORCING_ENABLED (see settings.py) deliberately makes the QP
+    command small, early steering corrections on approach to a corner,
+    while e_y/e_psi/kappa are all still near zero -- exactly the state
+    this function used to read as "nothing going on, dampen it." Without
+    this term anti-hunt was actively cancelling the curvature-forcing
+    term's whole purpose: live telemetry (2026-08-12) showed a real,
+    early corner-anticipation forcing signal more than 2s before a sharp
+    corner, while steering oscillated with no net commitment because
+    anti-hunt kept damping it back toward zero.
 
     e_psi (radians -- same units _error_state's e_psi already uses
     internally) guards against a car that enters a straight MISALIGNED
@@ -318,7 +334,8 @@ def steer_rate_anti_hunt(kappa, e_y, R_rate_base, enabled=False, e_psi=0.0):
     boost_kappa = 1.0 / (1.0 + k_kappa * abs(kappa))
     boost_ey    = 1.0 / (1.0 + k_ey * abs(e_y))
     boost_epsi  = 1.0 / (1.0 + k_epsi * abs(e_psi))
-    scale = 1.0 + (boost_max - 1.0) * boost_kappa * boost_ey * boost_epsi
+    boost_lookahead = 1.0 / (1.0 + k_lookahead * abs(kappa_max_abs))
+    scale = 1.0 + (boost_max - 1.0) * boost_kappa * boost_ey * boost_epsi * boost_lookahead
 
     R = np.array(R_rate_base, copy=True)
     R[0, 0] *= scale
@@ -543,6 +560,42 @@ def curvature(path, idx):
     dpsi   = np.arctan2(np.sin(yaw_n - yaw_p), np.cos(yaw_n - yaw_p))
     ds     = (np.linalg.norm(s_prev) + np.linalg.norm(s_next)) * 0.5
     return dpsi / ds if ds > 1e-6 else 0.0
+
+
+def curvature_horizon_profile(path, base_idx, car_speed, N, dt):
+    """
+    Sample signed path curvature at the arc-length position the car is
+    PREDICTED to reach at each of the QP's N horizon steps (s_k = k*v_x*dt
+    ahead of base_idx), for the curvature-forcing term in the dynamics
+    constraint. Numeric-parity mirror of the live
+    mpc_core._curvature_horizon_profile() -- keep both in sync.
+
+    Distinct from lookahead_curvature_profile above: that returns a single
+    scalar (PEAK |curvature| anywhere in the window, used to reweight Q/R).
+    This returns curvature AT each predicted step, including sign, because
+    the forcing term needs to know which direction the path bends at each
+    point in the horizon, not just how sharply the sharpest point bends
+    anywhere in it.
+
+    Holds car_speed constant across the horizon for this arc-length walk,
+    matching the QP's own choice to build Ad/Bd from a single per-tick
+    speed rather than a predicted speed profile.
+
+    Returns an (N,) array. Positions past the end of `path` repeat the last
+    waypoint's curvature (0.0 at the array boundary) rather than erroring.
+    """
+    kappas = np.zeros(N)
+    v = max(abs(car_speed), 0.0)
+    idx = base_idx
+    accumulated = 0.0
+    n_path = len(path)
+    for k in range(N):
+        target_dist = v * (k + 1) * dt
+        while idx < n_path - 1 and accumulated < target_dist:
+            accumulated += float(np.linalg.norm(path[idx + 1] - path[idx]))
+            idx += 1
+        kappas[k] = curvature(path, idx)
+    return kappas
 
 
 def lookahead_curvature_profile(path, base_idx, lookahead_dist):

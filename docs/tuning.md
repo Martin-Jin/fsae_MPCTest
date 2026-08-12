@@ -168,13 +168,28 @@ one it was built to fix.
 
 **Purpose**: extra penalty on steering-rate-of-change (`R_rate[0,0]`), on
 top of the corner-softening in §4.3, but only when the car is already
-centred *and* not currently curving — i.e. specifically targets residual
-steering chatter on a straight, not steering rate needed for cornering.
+centred, not currently curving, *and* no real corner is detected ahead in
+the lookahead window — i.e. specifically targets residual steering chatter
+on a genuine straight, not steering rate needed for cornering OR for the
+early, deliberately-small corrections §4.10's curvature forcing produces.
 
-**Known constraints**: detects "corner ahead" only via current curvature
-(reactive), the same signal §4.3 uses — it cannot anticipate a corner before
-the car is already turning into it. Not validated against
-`VALIDATION_SUITE`/recorded-map or any live log; treat as experimental.
+| Field | Purpose |
+|---|---|
+| `anti_hunt_boost_max` | ceiling multiplier when the car is straight/centred/aligned AND no corner is ahead |
+| `anti_hunt_k_lookahead` | fade sharpness of the boost vs. LOOKAHEAD curvature (`kappa_max_abs`) -- added 2026-08-12, see below |
+
+**Known constraints**: the boost still detects "currently curving" only via
+current curvature (reactive) for its `kappa`/`e_y`/`e_psi` factors — those
+three alone cannot anticipate a corner before the car is already turning
+into it. `anti_hunt_k_lookahead` (added 2026-08-12) closes that gap
+specifically for THIS mechanism by adding a fourth factor gated on
+`kappa_max_abs` (the same lookahead signal §4.4 uses): without it, this
+boost was found live to actively cancel §4.10's curvature-forcing term —
+both react to "`e_y`/`e_psi`/current `kappa` all near zero," but that state
+now has two different correct interpretations (genuine straight vs.
+approaching-a-corner-with-forcing-active) that only `kappa_max_abs` can
+tell apart. Not validated against `VALIDATION_SUITE`/recorded-map or any
+live log as a whole mechanism; treat as experimental.
 
 ### 4.3 Adaptive R-rate corner softening (`adaptive_r_rate_enable_in_corners`)
 
@@ -352,6 +367,50 @@ only when the car is NOT approaching or inside a corner — see
 `planning_control_sync.md`'s "Low-speed steering-rate boost" section for
 the full incident and the values (`boost_max=2.5, k=0.35`) left in place for
 that future rework.
+
+### 4.10 Curvature forcing term (`curvature_forcing_enabled`)
+
+| Field | Purpose |
+|---|---|
+| `curvature_forcing_enabled` | feed the reference path's actual curvature into the QP's dynamics constraint, so its own prediction can "see" a bend ahead |
+| `curvature_forcing_gain` | scale on the forcing term; `1.0` = the physically-exact Frenet value |
+
+**Purpose**: every OTHER mechanism in this section (§4.1–§4.9) only
+reweights the COST of an existing tracking error — none of them can make
+the QP's own predicted trajectory bend, because the underlying dynamics
+model (`Ad`/`Bd`) has no path-curvature term at all. With `e_y ≈ e_psi ≈ 0`
+(car dead on-line approaching a corner — exactly the state before any real
+turn), the QP's own rollout predicts staying at `≈0` for the whole horizon
+regardless of how sharply the real path bends ahead, so it has no reason
+to start turning early no matter how cheap steering is made. This term
+closes that gap directly: at each of the QP's `N` prediction steps, it
+looks up the reference path's curvature at the arc-length position the car
+is predicted to reach (`v_x·k·dt` ahead), and adds
+`-v_x·κ(s_k)·dt·curvature_forcing_gain` to the predicted `e_psi` at that
+step — a real, physically-motivated forcing term (from the standard Frenet
+relation `path_yaw_rate = v_x·κ`), not another cost reweighting.
+
+**How to tune**: `curvature_forcing_gain=1.0` is not a free parameter in
+the usual sense — it is the physically correct value for a perfectly-known
+reference path and perfectly-held speed across the horizon. Lower it only
+if the live centreline is noisy enough that the forcing term is reacting
+to spurious curvature spikes (see CLAUDE.md's "known, unfixed defect in
+the planner's centreline") rather than genuine corners; raising it above
+1.0 makes the car anticipate MORE aggressively than the geometry actually
+warrants, which risks turning in too early rather than too late.
+
+**Known constraints**: **this term interacts with §4.2's anti-hunt
+boost** — see `anti_hunt_k_lookahead` there. Without that gate, anti-hunt
+actively cancels this term's early corrections, since both react to the
+same near-zero `e_y`/`e_psi` state. If sudden-turn lateness persists after
+enabling/tuning this, check telemetry's `w_epsi_sum`/`kappa_horizon_end`
+columns to confirm the forcing term is actually firing (growing before the
+corner) before assuming the gain needs raising — and check
+`m_Rrate_antihunt` isn't still elevated during that same window before
+assuming §4.2's gate isn't doing its job. Verified via synthetic
+constant-curvature paths and a closed-loop simulation (see
+`planning_control_sync.md`'s "Curvature-forcing term" section) but not yet
+confirmed to fix the live sudden-turn-lateness symptom as of this writing.
 
 ---
 

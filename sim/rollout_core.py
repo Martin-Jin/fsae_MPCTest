@@ -38,7 +38,7 @@ from sim.sim_track import SimPerception, SimPlanner, calculate_dynamic_max_steps
 from controller.model_utils import (
     curvature_estimate, adaptive_R_rate, adaptive_R_scaling, adaptive_Q_scaling,
     steer_rate_anti_hunt, low_speed_steer_rate_boost, lookahead_steer_effort_relax,
-    lookahead_curvature_profile, update_lookahead_peak,
+    lookahead_curvature_profile, curvature_horizon_profile, update_lookahead_peak,
     adaptive_Q_lookahead, steer_effort_straight_boost,
 )
 from sim.scoring import RolloutMetrics
@@ -77,6 +77,8 @@ from settings import (
     LOW_SPEED_STEER_RATE_BOOST_ENABLED, LOW_SPEED_STEER_RATE_BOOST_MAX,
     LOW_SPEED_STEER_RATE_BOOST_K,
     LOOKAHEAD_STEER_EFFORT_RELAX_ENABLED, ADAPTIVE_Q_LOOKAHEAD_STEER_RELAX_FLOOR,
+    CURVATURE_FORCING_ENABLED, CURVATURE_FORCING_GAIN,
+    ANTI_HUNT_K_LOOKAHEAD,
 )
 
 STALL_CHECK_INTERVAL = 60   # Steps between rolling stall checks (3 s at 20 Hz)
@@ -902,7 +904,8 @@ def run_core_rollout(
             k_entering=ADAPTIVE_R_RATE_K_ENTERING,
         )
         R_rate_scaled = steer_rate_anti_hunt(
-            kappa, e_y, R_rate_scaled, enabled=STEER_RATE_ANTI_HUNT_ENABLED, e_psi=e_psi
+            kappa, e_y, R_rate_scaled, enabled=STEER_RATE_ANTI_HUNT_ENABLED, e_psi=e_psi,
+            kappa_max_abs=kappa_max_abs, k_lookahead=ANTI_HUNT_K_LOOKAHEAD,
         )
         R_rate_scaled = low_speed_steer_rate_boost(
             vx_true, R_rate_scaled, enabled=LOW_SPEED_STEER_RATE_BOOST_ENABLED,
@@ -995,6 +998,23 @@ def run_core_rollout(
         if pending_cmds:
             x0_mpc = predict_ahead(x0_mpc, Ad, Bd, pending_cmds)
 
+        # ── Curvature-forcing term for the QP's own dynamics ────────────────
+        # Without this the QP's prediction cannot "see" the path bending
+        # ahead at all: with e_y = e_psi = 0 (car dead on-line approaching a
+        # corner) its N-step rollout predicts staying at 0 forever, because
+        # nothing in Ad/Bd represents the REFERENCE turning away from the
+        # car -- every lookahead mechanism above only reweights an EXISTING
+        # error. See model_utils.curvature_horizon_profile.
+        w_forcing = None
+        if CURVATURE_FORCING_ENABLED:
+            kappa_horizon = curvature_horizon_profile(path_xy, idx, vx_true, n_horizon, DT)
+            w_forcing = np.zeros((8, n_horizon))
+            # e_psi = car_yaw - path_yaw; the path's heading advances at
+            # v_x * kappa (rad/s) along the reference, so a path curving
+            # LEFT (kappa > 0) drives e_psi NEGATIVE over the horizon even
+            # with the car holding a constant heading -- hence the minus.
+            w_forcing[2, :] = -vx_true * kappa_horizon * DT * CURVATURE_FORCING_GAIN
+
         # ── MPC solve ─────────────────────────────────────────────────────────
         mpc_result = solve_mpc(
             x0_mpc, Ad, Bd, n_horizon, Q_scaled, R_scaled, u_min, u_max,
@@ -1003,6 +1023,7 @@ def run_core_rollout(
             max_iter=max_iter, warm_start=(step != 0),
             du_max=du_max, terminal_scale=TERMINAL_Q_SCALE,
             r_a_accel=R_A_ACCEL, r_a_brake=R_A_BRAKE,
+            w=w_forcing,
         )
 
         solver_failed = mpc_result is None
