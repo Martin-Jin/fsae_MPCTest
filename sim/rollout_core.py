@@ -38,9 +38,7 @@ from controller.nmpc_optimiser import NMPCController
 from sim.sim_track import SimPerception, SimPlanner, calculate_dynamic_max_steps
 from controller.model_utils import (
     curvature_estimate, adaptive_R_rate, adaptive_R_scaling, adaptive_Q_scaling,
-    steer_rate_anti_hunt, low_speed_steer_rate_boost, lookahead_steer_effort_relax,
-    lookahead_curvature_profile, curvature_horizon_profile, update_lookahead_peak,
-    adaptive_Q_lookahead, steer_effort_straight_boost,
+    steer_rate_anti_hunt, _corner_factor, _blend, _low_speed_corner_boost,
 )
 from sim.scoring import RolloutMetrics
 import sim.speed_profile as sp
@@ -60,26 +58,15 @@ from settings import (
     USE_PRECOMPUTED_SPEED_PROFILE, STEER_RATE_ANTI_HUNT_ENABLED,
     ENABLE_DYNAMIC_SPEED_CAP, DYNAMIC_CAP_A_LAT_MAX, DYNAMIC_CAP_SAFETY,
     ADAPTIVE_R_RATE_ENABLE_IN_CORNERS,
-    ADAPTIVE_Q_LOOKAHEAD_ENABLED, ADAPTIVE_Q_DEMAND_NORMALISED,
-    STEER_EFFORT_STRAIGHT_BOOST_ENABLED,
-    ADAPTIVE_R_RATE_DURING_FLOOR, ADAPTIVE_R_RATE_ENTERING_FLOOR,
-    ADAPTIVE_R_RATE_K_ENTERING,
+    ADAPTIVE_R_RATE_DURING_FLOOR,
     ALAT_CEILING_FLAT, ALAT_CEILING_SLOPE, ALAT_CEILING_INTERCEPT,
-    ADAPTIVE_Q_DEMAND_HALF,
-    ADAPTIVE_Q_STRAIGHT_EY_FLOOR, ADAPTIVE_Q_STRAIGHT_EY_K,
-    ADAPTIVE_Q_STRAIGHT_EPSI_BOOST_MAX, ADAPTIVE_Q_STRAIGHT_R_BOOST_MAX,
-    ADAPTIVE_Q_STRAIGHT_K,
-    ADAPTIVE_Q_UTURN_HEADING_THRESH_RAD, ADAPTIVE_Q_UTURN_HEADING_SAT_RAD,
-    ADAPTIVE_Q_UTURN_EY_BOOST_MAX, ADAPTIVE_Q_UTURN_EPSI_BOOST_MAX,
-    ADAPTIVE_Q_UTURN_R_RELAX_FLOOR,
-    ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_DIST, ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_TIME_S,
-    ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_DIST_MAX,
     R_A_ACCEL, R_A_BRAKE,
-    LOW_SPEED_STEER_RATE_BOOST_ENABLED, LOW_SPEED_STEER_RATE_BOOST_MAX,
-    LOW_SPEED_STEER_RATE_BOOST_K,
-    LOOKAHEAD_STEER_EFFORT_RELAX_ENABLED, ADAPTIVE_Q_LOOKAHEAD_STEER_RELAX_FLOOR,
-    CURVATURE_FORCING_ENABLED, CURVATURE_FORCING_GAIN,
-    ANTI_HUNT_K_LOOKAHEAD,
+    CORNER_FACTOR_K,
+    Q_EY_STRAIGHT, Q_EY_CORNER, Q_EPSI_STRAIGHT, Q_EPSI_CORNER,
+    Q_R_STRAIGHT, Q_R_CORNER, RRATE_STEER_STRAIGHT, RRATE_STEER_CORNER,
+    R_STEER_CORNER_MID,
+    LOW_SPEED_CORNER_BOOST_V_HALF, LOW_SPEED_CORNER_BOOST_MAX_EXTRA,
+    EPSI_RA_HALF_RAD, EPSI_RA_ACCEL_BOOST_MAX, EPSI_RA_BRAKE_FLOOR,
     USE_NMPC, NMPC_HORIZON, NMPC_SQP_ITERS, NMPC_SOLVE_BUDGET_MS,
     NMPC_RK_SUBSTEPS, NMPC_JAC_SUBSTEPS, NMPC_TRUST_DELTA_RAD, NMPC_TRUST_A,
     NMPC_BACKTRACK_MAX, NMPC_TRACK_HALFWIDTH, NMPC_SLACK_WEIGHT,
@@ -589,18 +576,9 @@ def run_core_rollout(
     # Previous step's speed target, for the rise-rate limiter above.
     v_des_prev = None
 
-    # Stacked (N,2) path array for lookahead_curvature_profile's forward scan
-    # (ADAPTIVE_Q_LOOKAHEAD) -- built once, not per-step.
+    # Stacked (N,2) path array, built once (not per-step) -- shared by the
+    # NMPC path below.
     path_xy = np.column_stack([path_X, path_Y])
-
-    # ADAPTIVE_Q_LOOKAHEAD peak-tracker state -- see model_utils.py's
-    # update_lookahead_peak. dist_since_peak starts at +inf so
-    # lookahead_exit_boost is a no-op until the first corner peak is seen.
-    lookahead_peak_state = {
-        "last_peak_kappa_abs": 0.0,
-        "dist_since_peak": float("inf"),
-        "armed_for_next_peak": True,
-    }
 
     # Previous step's tracking-error speed gate, for GATE_RATE_LIMIT above.
     gate_prev = None
@@ -641,8 +619,8 @@ def run_core_rollout(
         )
 
     # ── Nonlinear MPC (settings.USE_NMPC) ──────────────────────────────────
-    # Constructed ONCE per rollout, same as command_queue/lookahead_peak_state
-    # above, so its warm-started SQP solution persists tick to tick exactly
+    # Constructed ONCE per rollout, same as command_queue above, so its
+    # warm-started SQP solution persists tick to tick exactly
     # like the LTV path's u_prev/command_queue do. See controller/
     # nmpc_optimiser.py's module docstring for the full design, and
     # settings.py's "NMPC weight overrides" comment for why Q/R/R_rate (the
@@ -957,11 +935,11 @@ def run_core_rollout(
         if use_nmpc:
             # ── Nonlinear MPC path ───────────────────────────────────────────
             # Deliberately skips the WHOLE adaptive-gain-schedule block the
-            # `else` branch below runs (lookahead curvature scan,
-            # adaptive_R_rate/_scaling, steer_rate_anti_hunt,
-            # adaptive_Q_lookahead/_scaling, curvature-forcing): all of it
-            # exists to synthesise anticipation the LINEAR model cannot
-            # produce on its own. The nonlinear model anticipates a bend
+            # `else` branch below runs (current-state corner-factor
+            # scheduler, adaptive_R_rate/_scaling, steer_rate_anti_hunt,
+            # adaptive_Q_scaling, heading-error accel/brake asymmetry): all
+            # of it exists to synthesise anticipation the LINEAR model
+            # cannot produce on its own. The nonlinear model anticipates a bend
             # structurally (kappa(s) is looked up from a STATE, arc length,
             # not reweighted after the fact), so applying the same
             # mechanisms on top would double-count an effect that's now
@@ -1009,90 +987,67 @@ def run_core_rollout(
             inaccurate = False
             x0_mpc = None   # no linear x0 here -- guards the cosmetic block below
         else:
-            # ── Linear time-varying QP path (unchanged) ─────────────────────
-            # ── Lookahead curvature scan (ADAPTIVE_Q_LOOKAHEAD) ─────────────
-            # Distinct from the single-point curvature_estimate() below (which
-            # drives adaptive_R_rate/steer_rate_anti_hunt): scans the whole
-            # speed-scaled window ahead for the largest |curvature| and the
-            # total accumulated heading change, so the Q boost can anticipate a
-            # corner before the car reaches it, and a long gradual U-turn is
-            # recognised even with unremarkable peak curvature.
-            lookahead_dist = float(np.clip(vx_true * 1.13, 3.0, 25.0))
-            (kappa_max_abs, _lookahead_idx, _lookahead_peak_dist,
-             lookahead_heading_change) = lookahead_curvature_profile(
-                path_xy, idx, lookahead_dist
+            # ── Linear time-varying QP path ──────────────────────────────────
+            # ── Current-state corner factor (2026-08-13) ─────────────────────
+            # Replaces the deleted lookahead gain-scheduling family (see
+            # model_utils.py's module docstring): 0 (straight) -> 1 (full
+            # corner), a single continuous saturating curve of the CURRENT
+            # ~instantaneous curvature `kappa` -- the same signal
+            # adaptive_R_rate/steer_rate_anti_hunt already use. No forward
+            # scan, no separate decay-distance timer/hysteresis state: entry
+            # and exit are symmetric, driven purely by how `kappa` itself
+            # rises and falls.
+            kappa = curvature_estimate(state)
+            corner_factor = _corner_factor(kappa, CORNER_FACTOR_K)
+
+            # Extra push in the SAME direction as corner_factor's "full
+            # corner" endpoint, active only when BOTH corner_factor > 0 AND
+            # speed is low -- gated on corner_factor (multiplicatively) so
+            # this cannot fire on low speed alone with no corner, unlike the
+            # deleted low_speed_steer_rate_boost (which fired on speed alone
+            # and ended up taxing wanted low-speed turn-in indistinguishably
+            # from unwanted post-exit wobble).
+            low_speed_boost = _low_speed_corner_boost(
+                vx_true, corner_factor,
+                v_half=LOW_SPEED_CORNER_BOOST_V_HALF,
+                max_extra=LOW_SPEED_CORNER_BOOST_MAX_EXTRA,
             )
+            # Combined corner fraction driving every blend below:
+            # corner_factor itself, boosted further (never past 1.0) at low
+            # speed in-corner.
+            corner_frac = float(np.clip(corner_factor + low_speed_boost, 0.0, 1.0))
 
             # ── Adaptive gain scaling ────────────────────────────────────────
-            kappa = curvature_estimate(state)
             R_rate_scaled = adaptive_R_rate(
                 kappa, R_rate, enable_in_corners=ADAPTIVE_R_RATE_ENABLE_IN_CORNERS,
-                kappa_max_abs=kappa_max_abs,
                 during_floor=ADAPTIVE_R_RATE_DURING_FLOOR,
-                entering_floor=ADAPTIVE_R_RATE_ENTERING_FLOOR,
-                k_entering=ADAPTIVE_R_RATE_K_ENTERING,
             )
             R_rate_scaled = steer_rate_anti_hunt(
                 kappa, e_y, R_rate_scaled, enabled=STEER_RATE_ANTI_HUNT_ENABLED, e_psi=e_psi,
-                kappa_max_abs=kappa_max_abs, k_lookahead=ANTI_HUNT_K_LOOKAHEAD,
-            )
-            R_rate_scaled = low_speed_steer_rate_boost(
-                vx_true, R_rate_scaled, enabled=LOW_SPEED_STEER_RATE_BOOST_ENABLED,
-                boost_max=LOW_SPEED_STEER_RATE_BOOST_MAX,
-                k=LOW_SPEED_STEER_RATE_BOOST_K,
             )
             R_scaled = adaptive_R_scaling(vx, R)
-            if STEER_EFFORT_STRAIGHT_BOOST_ENABLED:
-                R_scaled = R_scaled.copy()
-                R_scaled[0, 0] *= steer_effort_straight_boost(kappa_max_abs)
-            if LOOKAHEAD_STEER_EFFORT_RELAX_ENABLED:
-                R_scaled = R_scaled.copy()
-                R_scaled[0, 0] *= lookahead_steer_effort_relax(
-                    kappa_max_abs, vx,
-                    floor=ADAPTIVE_Q_LOOKAHEAD_STEER_RELAX_FLOOR,
-                    demand_normalised=ADAPTIVE_Q_DEMAND_NORMALISED,
-                    demand_half=ADAPTIVE_Q_DEMAND_HALF,
-                    alat_flat=ALAT_CEILING_FLAT,
-                    alat_slope=ALAT_CEILING_SLOPE,
-                    alat_intercept=ALAT_CEILING_INTERCEPT,
-                )
 
-            # ── Lookahead corner-anticipation Q-boost (ADAPTIVE_Q_LOOKAHEAD) ─
-            # Applied to Q FIRST, then adaptive_Q_scaling's centred-softening
-            # multiplies on top of the result below -- see model_utils.py's
-            # module docstring for why this ordering avoids the corner boost
-            # being silently cancelled by the centred-softening floor while
-            # keeping both continuous.
-            if ADAPTIVE_Q_LOOKAHEAD_ENABLED:
-                lookahead_peak_state = update_lookahead_peak(
-                    lookahead_peak_state, kappa, vx_true, DT
-                )
-            Q_base = adaptive_Q_lookahead(
-                Q, kappa_max_abs, vx_true,
-                lookahead_peak_state["last_peak_kappa_abs"],
-                lookahead_peak_state["dist_since_peak"],
-                lookahead_heading_change,
-                enabled=ADAPTIVE_Q_LOOKAHEAD_ENABLED,
-                demand_normalised=ADAPTIVE_Q_DEMAND_NORMALISED,
-                ey_straight_floor=ADAPTIVE_Q_STRAIGHT_EY_FLOOR,
-                ey_straight_k=ADAPTIVE_Q_STRAIGHT_EY_K,
-                epsi_straight_boost_max=ADAPTIVE_Q_STRAIGHT_EPSI_BOOST_MAX,
-                epsi_straight_k=ADAPTIVE_Q_STRAIGHT_K,
-                r_straight_boost_max=ADAPTIVE_Q_STRAIGHT_R_BOOST_MAX,
-                r_straight_k=ADAPTIVE_Q_STRAIGHT_K,
-                uturn_ey_boost_max=ADAPTIVE_Q_UTURN_EY_BOOST_MAX,
-                uturn_epsi_boost_max=ADAPTIVE_Q_UTURN_EPSI_BOOST_MAX,
-                uturn_r_relax_floor=ADAPTIVE_Q_UTURN_R_RELAX_FLOOR,
-                uturn_thresh_rad=ADAPTIVE_Q_UTURN_HEADING_THRESH_RAD,
-                uturn_sat_rad=ADAPTIVE_Q_UTURN_HEADING_SAT_RAD,
-                demand_half=ADAPTIVE_Q_DEMAND_HALF,
-                alat_flat=ALAT_CEILING_FLAT,
-                alat_slope=ALAT_CEILING_SLOPE,
-                alat_intercept=ALAT_CEILING_INTERCEPT,
-                exit_decay_dist_floor=ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_DIST,
-                exit_decay_time_s=ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_TIME_S,
-                exit_decay_dist_max=ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_DIST_MAX,
-            )
+            # ── Current-state Q[0,0]/Q[2,2]/Q[3,3] and R_rate[0,0] blend ─────
+            # Straight-line-blend, PER WEIGHT, between a "straight" endpoint
+            # and a "full corner" endpoint, driven by corner_frac above.
+            # Replaces the deleted per-mechanism multiplicative lookahead
+            # gates with one shared current-state schedule. R[0,0] (steering
+            # effort) is a special case: blended toward a MIDDLE value, not
+            # the same corner-floor extreme as R_rate/Q[3,3], per the user's
+            # own framing ("should be somewhere in between the two extremes
+            # to discourage saturation").
+            Q_base = np.array(Q, copy=True)
+            Q_base[0, 0] = _blend(Q_EY_STRAIGHT, Q_EY_CORNER, corner_frac)
+            Q_base[2, 2] = _blend(Q_EPSI_STRAIGHT, Q_EPSI_CORNER, corner_frac)
+            Q_base[3, 3] = _blend(Q_R_STRAIGHT, Q_R_CORNER, corner_frac)
+
+            R_rate_scaled = R_rate_scaled.copy()
+            R_rate_scaled[0, 0] = _blend(
+                RRATE_STEER_STRAIGHT, RRATE_STEER_CORNER, corner_frac)
+
+            R_scaled = R_scaled.copy()
+            R_scaled[0, 0] = _blend(R_scaled[0, 0], R_STEER_CORNER_MID, corner_frac)
+
             Q_scaled = adaptive_Q_scaling(e_y, Q_base, enabled=ADAPTIVE_Q_SCALING_ENABLED)
             Ad, Bd = model_lookup(vx, DT)
 
@@ -1127,22 +1082,22 @@ def run_core_rollout(
             if pending_cmds:
                 x0_mpc = predict_ahead(x0_mpc, Ad, Bd, pending_cmds)
 
-            # ── Curvature-forcing term for the QP's own dynamics ─────────────
-            # Without this the QP's prediction cannot "see" the path bending
-            # ahead at all: with e_y = e_psi = 0 (car dead on-line approaching a
-            # corner) its N-step rollout predicts staying at 0 forever, because
-            # nothing in Ad/Bd represents the REFERENCE turning away from the
-            # car -- every lookahead mechanism above only reweights an EXISTING
-            # error. See model_utils.curvature_horizon_profile.
-            w_forcing = None
-            if CURVATURE_FORCING_ENABLED:
-                kappa_horizon = curvature_horizon_profile(path_xy, idx, vx_true, n_horizon, DT)
-                w_forcing = np.zeros((8, n_horizon))
-                # e_psi = car_yaw - path_yaw; the path's heading advances at
-                # v_x * kappa (rad/s) along the reference, so a path curving
-                # LEFT (kappa > 0) drives e_psi NEGATIVE over the horizon even
-                # with the car holding a constant heading -- hence the minus.
-                w_forcing[2, :] = -vx_true * kappa_horizon * DT * CURVATURE_FORCING_GAIN
+            # ── Heading-error-driven accel/brake asymmetry (2026-08-13) ──────
+            # Always-on, independent of the corner_frac scheduler above: a
+            # continuous 0->1 fraction of CURRENT |e_psi| scales r_a_accel
+            # toward EPSI_RA_ACCEL_BOOST_MAX (more expensive, so the MPC
+            # doesn't keep accelerating through a heading error it should be
+            # correcting) and r_a_brake toward EPSI_RA_BRAKE_FLOOR (cheaper,
+            # so braking authority is freed up specifically when heading
+            # error is large). Not a replacement for adaptive_R_scaling
+            # (current-speed-driven R[0,0] scaling), which is left untouched.
+            epsi_abs = abs(e_psi)
+            epsi_half = max(EPSI_RA_HALF_RAD, 1e-6)
+            frac_epsi = epsi_abs / (epsi_abs + epsi_half)
+            r_a_accel_eff = R_A_ACCEL * (
+                1.0 + (EPSI_RA_ACCEL_BOOST_MAX - 1.0) * frac_epsi)
+            r_a_brake_eff = R_A_BRAKE * (
+                1.0 - (1.0 - EPSI_RA_BRAKE_FLOOR) * frac_epsi)
 
             # ── MPC solve ─────────────────────────────────────────────────────
             mpc_result = solve_mpc(
@@ -1151,8 +1106,7 @@ def run_core_rollout(
                 return_status=True, eps_abs=eps, eps_rel=eps,
                 max_iter=max_iter, warm_start=(step != 0),
                 du_max=du_max, terminal_scale=TERMINAL_Q_SCALE,
-                r_a_accel=R_A_ACCEL, r_a_brake=R_A_BRAKE,
-                w=w_forcing,
+                r_a_accel=r_a_accel_eff, r_a_brake=r_a_brake_eff,
             )
 
             solver_failed = mpc_result is None

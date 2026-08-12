@@ -148,15 +148,6 @@ class MPCControllerStandaloneNode(Node):
                                        # Removes centerline_planner.py from the control loop
                                        # entirely, to isolate controller/plant tracking error
                                        # from planner-induced path error.
-                ('use_precomputed_corner_map', False),  # only has an effect when
-                                       # path_map_path is ALSO set (nothing static to
-                                       # segment otherwise) — see mpc_core.py's CornerMap /
-                                       # _segment_corners and
-                                       # late_turn_in_investigation.md Part 4/5. Replaces
-                                       # the live kappa_max_abs lookahead scan / exit-decay
-                                       # tracker with exact per-corner lookups computed once
-                                       # at load. Default False: land off, prove live before
-                                       # flipping.
                 ('use_precomputed_heading_profile', False),  # only has an effect
                                        # when path_map_path is ALSO set -- see
                                        # mpc_core.py's set_heading_profile() and
@@ -226,14 +217,6 @@ class MPCControllerStandaloneNode(Node):
                     f'Failed to load path_map_path={path_map_path}: {exc}. '
                     'Falling back to the live planner topic.'
                 )
-
-        use_precomputed_corner_map = self.get_parameter(
-            'use_precomputed_corner_map').get_parameter_value().bool_value
-        if use_precomputed_corner_map and self._static_path is None:
-            self.get_logger().info(
-                'use_precomputed_corner_map=True but path_map_path is unset — '
-                'nothing static to segment, ignoring.'
-            )
 
         self._heading_profile: np.ndarray | None = None
         use_precomputed_heading_profile = self.get_parameter(
@@ -329,9 +312,12 @@ class MPCControllerStandaloneNode(Node):
         dt = 1.0 / CONTROL_HZ
         # Controller selection. use_nmpc=False (default) constructs exactly
         # what this node has always constructed; the NMPC is a separate class
-        # with the same compute()/reset()/set_static_path()/
-        # set_heading_profile()/last_telemetry surface, so nothing downstream
-        # branches on which one is running.
+        # with the same compute()/reset()/set_heading_profile()/
+        # last_telemetry surface, so nothing downstream branches on which
+        # one is running. NMPCController ALSO has a set_static_path(), but
+        # it means something entirely different there (see below) --
+        # MPCController no longer has one at all (2026-08-13: its only use
+        # was building the now-deleted CornerMap lookahead fast path).
         if nmpc_params.use_nmpc:
             self._mpc = NMPCController(
                 dt=dt, params=mpc_params, nmpc=nmpc_params,
@@ -345,23 +331,15 @@ class MPCControllerStandaloneNode(Node):
                 'use_precomputed_heading_profile do NOT apply -- see '
                 'nmpc_core.py.'
             )
+            # NMPCController.set_static_path() precomputes the arc-length /
+            # curvature / reference-heading profile its prediction needs,
+            # which is not optional and has nothing to do with the deleted
+            # CornerMap -- without this call it would rebuild that on the
+            # first tick instead (correct, just not free).
+            if self._static_path is not None:
+                self._mpc.set_static_path(self._static_path)
         else:
             self._mpc = MPCController(dt=dt, N=35, params=mpc_params)
-        # set_static_path() means different things to the two controllers, and
-        # both want it: for MPCController it builds the CornerMap (gated on
-        # use_precomputed_corner_map); for NMPCController it precomputes the
-        # arc-length / curvature / reference-heading profile its prediction
-        # needs, which is not optional and has nothing to do with the corner
-        # map -- without this call it would rebuild that on the first tick
-        # instead (correct, just not free).
-        if self._static_path is not None and (
-                use_precomputed_corner_map or nmpc_params.use_nmpc):
-            self._mpc.set_static_path(self._static_path)
-            if use_precomputed_corner_map and not nmpc_params.use_nmpc:
-                self.get_logger().info(
-                    f'Corner map segmented from {path_map_path} '
-                    '(use_precomputed_corner_map=True).'
-                )
         if self._heading_profile is not None:
             self._mpc.set_heading_profile(self._heading_profile)
             self.get_logger().info(

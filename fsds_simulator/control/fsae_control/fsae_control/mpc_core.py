@@ -156,253 +156,35 @@ MAX_BRAKE: float = 7.0
 # ~0.3 s settle at 20 Hz) and MPCParams.n_delay_hysteresis (steps of deadband
 # either side of a bin boundary) — see mpc_params.py for the current values.
 
-# ── Lookahead corner-anticipation Q-boost ───────────────────────────────────
-# TEMPORARY/EXPERIMENTAL, NOT VALIDATED -- do not treat this as a settled
-# design; re-verify against a live log before relying on it. Addresses a
-# documented failure mode
-# of _adaptive_Q_scaling (see ADAPTIVE_Q_SCALING_ENABLED's comment below):
-# that function only looks at the CURRENT |e_y|, so a well-tracked straight
-# right before a corner looks identical to a straight that stays straight --
-# it can discount Q[0,0] right as the car needs full lateral authority to
-# turn in ("late turn-in"). This adds a curvature-lookahead term that boosts
-# Q[0,0] (lateral error) as an upcoming corner approaches, then boosts
-# Q[2,2] (heading error) as the car exits it, decaying back to baseline once
-# clear -- without a discontinuous cutoff (see the adaptive_R_rate
-# enable_in_corners/kappa_straight history above for why a threshold-based
-# cutoff on curvature risks spiking QP solver iterations at the crossing).
-# A third term, _lookahead_yaw_rate_relax, RELAXES Q[3,3] (yaw rate r) on
-# the same approach signal: Q[3,3] penalises how fast the car rotates
-# regardless of whether that rotation is a genuine, wanted turn-in, so a
-# high baseline weight there can itself be part of why turn-in looks late
-# or slow even once Q[0,0]/Q[2,2] are pulling the right way.
-#
-# Mirrors model_utils.py's _lookahead_curvature_profile /
-# adaptive_Q_lookahead in fsae_MPCTest — keep all constants in sync.
-#
-# Composition with ADAPTIVE_Q_SCALING_ENABLED: the lookahead boost is
-# applied to Q FIRST (Q[0,0] *= boost_approach, Q[2,2] *= boost_exit), then
-# _adaptive_Q_scaling's centred-softening multiplies on top of that result.
-# This means a corner boost is never silently cancelled by the
-# centred-softening floor, but the two also never fight via a discontinuous
-# override -- both stay continuous.
-#
-# S-curve handling: the approach boost uses max(|kappa|) (not signed max)
-# over the lookahead window, so a right-hander immediately after a
-# left-hander contributes exactly as much boost as either alone -- sign
-# never cancels magnitude. The exit-decay peak-tracker (_update_lookahead_peak
-# below) detects LOCAL peaks via a rising-edge-after-a-clear rule, not "any
-# new global maximum" -- comparing against the running maximum would
-# silently fail to re-trigger the exit boost on a second corner of equal or
-# LESSER curvature than an earlier one, an entirely ordinary case (most
-# tracks reuse corner radii), not just a rare S-curve edge case. So a second
-# corner arriving after the lookahead window has cleared always starts a
-# fresh decay cycle regardless of its magnitude relative to the first
-# corner's; the two boosts (Q[0,0] approach, Q[2,2] exit) apply to different
-# cost terms and never need to be merged against each other either way.
-# Moved to MPCParams.adaptive_q_lookahead_time_s (speed -> lookahead
-# distance), .adaptive_q_lookahead_dist_min (m, clamp floor for a
-# near-stationary car) and .adaptive_q_lookahead_dist_max (m, clamp ceiling)
-# — see mpc_params.py for the current values.
-# The lookahead window needs enough advance runway that the approach boost
-# has time to act before the QP is forced to react to CURRENT curvature
-# instead -- too short a window (e.g. giving steer only ~0.6s of ramp before
-# saturating at 25 deg, MAX_STEER_RAD) leaves the car turning in too
-# gradually/too late. A longer window (~17m at a 15 m/s cruise) fixes that,
-# but at the cost of a known limitation: a wider window can span a tight
-# chicane's whole corner sequence and see it as one continuous curvature
-# feature, merging what should be two separate approach/exit cycles into
-# one -- see _update_lookahead_peak's docstring. Watch for this on
-# closely-spaced corners; it gets worse the longer the window is made.
-# Moved to MPCParams.adaptive_q_lookahead_q_boost_max (max Q[0,0] multiplier
-# approaching a corner) and .adaptive_q_lookahead_k_approach (ramp sharpness
-# of the approach boost vs kappa_max_abs) — see mpc_params.py for the current
-# values.
-# k_approach is LEGACY, only used when adaptive_q_demand_normalised is False.
-# Kept for A/B comparison; see the demand-normalisation note directly below
-# for why a raw gain on kappa was the wrong parameterisation.
-
-# ── Demand-normalised corner scoring ────────────────────────────────────────
-# TEMPORARY/EXPERIMENTAL, NOT VALIDATED -- do not treat this as settled
-# without re-verification. Exists because every boost here would otherwise
-# be mis-scaled against real corner radii under a raw-curvature curve. The
-# legacy curve, 1 - 1/(1 + K*kappa) with K=8, responds like this:
-#     kappa=0.025 (R=40m, gradual sweeper) -> 17% of full boost
-#     kappa=0.083 (R=12m, the logged U-turn) -> 40%
-#     kappa=0.200 (R= 5m, sudden/tight)    -> 62%
-#     kappa=0.500 (R= 2m, BELOW the 3.3m steering limit -- unreachable) -> 80%
-# i.e. the whole usable range of real corners sits in the flat low-response
-# part of the curve, and the nominal Q_BOOST_MAX is never approached. That
-# is why raising Q_BOOST_MAX 1.5 -> 2.0 produced almost no visible change:
-# most of the increase lives at curvatures the car can never drive.
-#
-# The fix is to stop scoring corners by RAW curvature and instead score them
-# by DEMAND: kappa_max_abs / kappa_limit(v), where kappa_limit is the
-# tightest curvature the car can actually hold at its current speed before
-# FSDS's lateral-acceleration ceiling binds (kappa_limit = a_lat_max / v^2).
-# demand ~1.0 means "this corner needs everything I have at this speed".
-# This is scale-free and speed-aware in one step, so a gradual sweeper taken
-# fast and a tight U-turn taken slow are judged by the same criterion --
-# which is what makes one set of constants work across sharp / gradual /
-# U-turn cases instead of needing a hand-tuned threshold per corner type.
-#
-# a_lat law mirrors model/vehicle_physics.py's alat_ceiling_at():
-# max(alat_ceiling, slope*v + intercept), fitted from the measured sweep.
-# Keep in sync with that file (CLAUDE.md's plant/model parity rule).
-# Moved to MPCParams.adaptive_q_demand_normalised (False restores the legacy
-# raw-kappa curve) and MPCParams.alat_ceiling_flat / .alat_ceiling_slope /
-# .alat_ceiling_intercept (the fitted a_lat ceiling law) — see mpc_params.py
-# for the current values.
-#
-# adaptive_q_demand_half is the demand at which a boost reaches half of its
-# configured maximum. 0.5 = "half the car's available cornering" -- so a
-# corner needing most of the grip available at this speed gets most of the
-# boost, and an easy corner gets little, with the full range actually
-# reachable (unlike the legacy curve). Also in mpc_params.py.
-#
-# adaptive_q_lookahead_epsi_boost_max is the max Q[2,2] multiplier exiting a
-# corner. The Q[2,2] APPROACH boost
-# (adaptive_q_lookahead_epsi_approach_boost_max, distinct from the EXIT boost)
-# exists because short/sudden corners otherwise show insufficient lateral
-# AND heading commitment; without it, heading error only gets anticipatory
-# help on exit, none before/during turn-in.
-# adaptive_q_lookahead_k_epsi_approach is its ramp sharpness vs kappa_max_abs.
-# All three live in mpc_params.py.
-
-# ── U-turn detector (accumulated heading change) ────────────────────────────
-# TEMPORARY/EXPERIMENTAL, NOT VALIDATED -- re-verify before relying on it.
-# Exists because a long GRADUAL U-turn (large total heading change over a
-# large radius) would otherwise get under-boosted: every other mechanism
-# here keys off kappa_max_abs, i.e.
-# peak curvature MAGNITUDE, and a large-radius U-turn's peak curvature looks
-# like a mild bend even though it demands a huge total rotation.
-# _lookahead_curvature_profile now also returns accumulated |heading change|
-# over the window; this scales an EXTRA turn-in boost from it.
-#
-# IMPORTANT SCOPE NOTE: on the log that motivated this, the controller was
-# already at the full 25 deg steering stop for ~1.3 s through the corner
-# with e_psi ~20 deg behind, and achieved curvature at full lock varied 6x
-# with speed alone (0.058 1/m at 8.8 m/s vs 0.32 at 4.0 m/s) -- i.e. the
-# binding constraint mid-corner was FSDS's lateral-acceleration ceiling
-# (~5 m/s^2 sustained there), NOT steering angle. No Q boost can add
-# steering that is already saturated. This detector therefore only helps
-# BEFORE the corner, while steering is still unsaturated (turning in
-# earlier, entering with better heading) -- it cannot stop the car running
-# wide once at full lock. The actual fix for that is a slower entry
-# (speed-profile side, deliberately out of scope per the session's
-# instruction not to touch it).
-# Threshold is 60 deg, not the 90 deg a "U-turn" suggests, because it is
-# measured WITHIN the lookahead window, not over the whole corner: 17 m of
-# arc at the ~12 m radius of the logged U-turn only subtends ~81 deg, so a
-# 90 deg threshold could never fire on approach (verified numerically on a
-# synthetic long-straight -> gradual 150 deg U-turn). 60 deg of accumulated
-# heading change inside 17 m still clearly separates a sustained U-turn
-# from an ordinary corner, and fires early enough to matter while steering
-# is still unsaturated. Saturation kept at 120 deg for the same reason.
-# Moved to MPCParams.adaptive_q_uturn_heading_thresh_rad (engage past this
-# accumulated heading change), .adaptive_q_uturn_heading_sat_rad (fully
-# saturated by this much), .adaptive_q_uturn_ey_boost_max (extra Q[0,0]
-# multiplier at full U-turn detection), .adaptive_q_uturn_epsi_boost_max
-# (same for Q[2,2]) and .adaptive_q_uturn_r_relax_floor (Q[3,3] yaw-rate
-# multiplier at full detection).
-# Also .adaptive_q_lookahead_exit_decay_dist (m, exit boost tapers to 0 over
-# this distance), .adaptive_q_lookahead_k_exit_norm (1/m, normalises the exit
-# boost by corner sharpness) and .adaptive_q_lookahead_peak_hysteresis (1/m,
-# the "cleared" threshold that re-arms peak detection).
-# See mpc_params.py for the current values.
-
-# Yaw-rate (Q[3,3], state r) relaxation approaching a corner: addresses
-# late/slow turn-in -- Q[3,3] penalises
-# HOW FAST the car is rotating regardless of whether that rotation is
-# correcting a real heading error, so a high baseline weight here can make
-# the MPC reluctant to commit to the fast yaw-rate turn-in genuinely
-# needs. Uses the SAME kappa_max_abs lookahead signal as the Q[0,0]/Q[2,2]
-# boosts above (not the current-position-only kappa _adaptive_R_rate uses)
-# so the relaxation is in effect BEFORE the car reaches the corner, not
-# just once it's already turning -- this is what actually addresses "turns
-# late", since a purely reactive relaxation cannot anticipate anything.
-# Floor, not a cutoff: continuous saturating curve, same shape as
-# _adaptive_R_rate's own floor -- no discontinuity at any threshold.
-# Moved to MPCParams.adaptive_q_lookahead_r_floor (min Q[3,3] multiplier at
-# high lookahead curvature) and .adaptive_q_lookahead_k_r_relax (ramp
-# sharpness of the yaw-rate relax vs kappa_max_abs) — see mpc_params.py for
-# the current values.
-
-# Straight-line Q[2,2]/Q[3,3] boosts (see _lookahead_straight_boost) --
-# keep the car pointed straighter and damp yaw wander
-# when no corner is near, fading to 1.0 (no-op) as kappa_max_abs rises.
-# Q[2,2]'s ceiling is kept small on purpose -- see _lookahead_straight_boost's
-# docstring for why a heading-error boost risks amplifying small-mismatch
-# hunting in a way a yaw-RATE boost does not.
-# Moved to MPCParams.adaptive_q_straight_epsi_boost_max (max Q[2,2] multiplier
-# on a clear straight), .adaptive_q_straight_r_boost_max (same for Q[3,3]) and
-# .adaptive_q_straight_k (shared fade-out sharpness vs kappa_max_abs) — see
-# mpc_params.py for the current values.
-
-# _lookahead_straight_lateral_reduce's Q[0,0] floor on a clear straight --
-# addresses residual hunting that the boosts above alone don't fully damp;
-# distinct signal from _adaptive_Q_scaling's |e_y|-based softening
-# (see that function's own docstring for why the two aren't redundant).
-#
-# K was originally kept sharp (20.0) on the theory that a shallower K holds
-# Q[0,0] down for longer as curvature rises, suppressing lateral authority
-# through the early corner-approach window and causing late turn-in. LOWERED
-# to 8.0 on 2026-08-12 for the opposite-looking symptom: the car entering
-# corners already off-line, as if it was still mid-recovery from the
-# straight-line relaxation exactly when the corner arrived -- i.e. the SHARP
-# k=20 recovery wasn't early enough either, just in a different way (snap
-# -back complete in curvature-space doesn't mean complete in TIME/distance
-# if the car hasn't caught up laterally yet by then). Turn-in lateness
-# itself is now separately addressed by _lookahead_steer_effort_relax (below)
-# rather than by this floor's timing, so the two fixes should be evaluated
-# together, not in isolation -- if late turn-in reappears after this ey_k
-# change, check whether _lookahead_steer_effort_relax is actually enabled
-# and firing before assuming ey_k needs to go back up. See
-# planning_control_sync.md's "Straight-line lateral-error snap-back was too
-# sharp" for the live-driving report that motivated this change; UNTESTED
-# LIVE as of this writing.
-# Moved to MPCParams.adaptive_q_straight_ey_floor (min Q[0,0] multiplier on a
-# clear straight) and .adaptive_q_straight_ey_k (ramp sharpness vs
-# kappa_max_abs) — see mpc_params.py for the current values.
-
-# _steer_effort_straight_boost's R[0,0] (steering EFFORT -- how far the
-# wheel is turned -- as distinct from R_rate[0,0]'s RATE of change, which
-# _steer_rate_anti_hunt already boosts) straight-line boost -- makes both
-# steering rate AND steering itself expensive on a clear straight. K is
-# deliberately much sharper than the Q-side straight boosts above (8.0): a
-# SHARP ramp-down as curvature is detected ahead means this boost is
-# essentially gone as soon as a real turn is being asked for, rather than
-# lingering and fighting turn-in the way a slower fade would.
-# Moved to MPCParams.steer_effort_straight_boost_max (max R[0,0] multiplier on
-# a clear straight) and .steer_effort_straight_k (sharp fade-out vs
-# kappa_max_abs) — see mpc_params.py for the current values.
-
-# _steer_rate_anti_hunt's straight-line R_rate[0,0] boost ceiling (see that
-# function's docstring for why this uses a continuous curve rather than a
-# hard cutoff). Set high (6.0) to apply a strong straight-line penalty.
-# Moved to MPCParams.anti_hunt_boost_max (mpc_params.py) — see that file's
-# field for the current value.
-
-# _adaptive_R_rate's "during a corner" floor, driven by current-position
-# kappa (see that function's docstring). Kept shallower than a more
-# permissive floor would be: a deeper floor lets mid-corner steering-rate
-# hunt through when combined with entering_floor=0.85 -- do not lower this
-# without re-checking for that.
-# Moved to MPCParams.adaptive_r_rate_during_floor (mpc_params.py) — see that
-# file's field for the current value.
-
-# _adaptive_R_rate's "entering a corner" floor (see that function's
-# kappa_max_abs docstring) -- shallower than the during-a-corner floor above,
-# which stays driven by current-position kappa.
-# The gain is kept low (4.0, not higher): a higher gain triggers meaningful
-# reduction even for mild upcoming curvature (kappa_max_abs ~0.02, a gentle
-# bend), which causes R_rate to swing prematurely before corners. The lower
-# gain delays onset, requiring sharper detected curvature before the
-# entering floor starts pulling scale down -- raising it re-introduces that
-# premature swinging.
-# Moved to MPCParams.adaptive_r_rate_entering_floor and
-# .adaptive_r_rate_k_entering (the ramp sharpness of the entering floor vs
-# kappa_max_abs), both in mpc_params.py — see those fields for the current
-# values.
+# ── Lookahead gain-scheduling family: REMOVED (2026-08-13) ────────────────────────────────
+# This file used to carry ~15 interacting mechanisms that scanned forward
+# along the path (producing a scalar kappa_max_abs = peak curvature within a
+# lookahead window) and reweighted today's Q/R cost matrices based on what's
+# coming up: _lookahead_curvature_profile, CornerMap/_segment_corners/
+# _corner_map_lookahead (a precomputed-path fast path for the same scan),
+# _lookahead_approach_boost, _lookahead_epsi_approach_boost,
+# _lookahead_exit_boost, _lookahead_yaw_rate_relax,
+# _lookahead_steer_effort_relax, _lookahead_straight_lateral_reduce,
+# _lookahead_straight_boost, _steer_effort_straight_boost, _uturn_severity/
+# _uturn_boost, _corner_demand/_demand_frac/_alat_ceiling_at, and the
+# kappa_max_abs-driven terms inside _steer_rate_anti_hunt/_adaptive_Q_scaling/
+# _adaptive_R_rate. Removed because this MPC formulation already predicts
+# state error against the reference at each future horizon step; reweighting
+# TODAY's (usually near-zero) cost based on a forward scan doesn't change
+# what the horizon predicts when the car actually gets there, so the
+# mechanism did roughly nothing useful and was raised/live-tested/reverted
+# piecemeal for months (see the field comments mpc_params.py used to carry
+# for the history). Replaced by three CURRENT-STATE-driven factors — see
+# _corner_factor/_low_speed_corner_boost below and their use in compute() —
+# plus a fourth, independent heading-error-driven accel/brake asymmetry.
+# Also removed as unused/didn't-work: the curvature-forcing QP-disturbance
+# term (curvature_forcing_enabled, _curvature_horizon_profile, the `w`
+# parameter in _build_qp/_solve_qp — root-caused 2026-08-12 as structurally
+# unsound, see mpc_params.py's old field comment) and
+# _low_speed_steer_rate_boost (disabled by default, gated on speed alone
+# with no way to distinguish wanted low-speed turn-in from unwanted
+# post-exit wobble). Mirror this removal in fsae_MPCTest/controller/
+# model_utils.py per CLAUDE.md's parity rule.
 
 
 def predict_ahead(
@@ -463,17 +245,14 @@ def _adaptive_R_rate(
     kappa: float,
     R_rate_base: np.ndarray,
     enable_in_corners: bool = True,
-    kappa_max_abs: float = 0.0,
     during_floor: float = 0.625,
-    entering_floor: float = 0.85,
-    k_entering: float = 4.0,
 ) -> np.ndarray:
     """
     Curvature-dependent steering-jerk softening: relaxes the steering
     rate-of-change cost in sharp corners (floor during_floor, default
-    MPCParams.adaptive_r_rate_during_floor)
-    so the controller isn't over-penalised for the extra steering rate a
-    tight corner demands. Mirrors model_utils.adaptive_R_rate in
+    MPCParams.adaptive_r_rate_during_floor), driven by CURRENT-position
+    kappa, so the controller isn't over-penalised for the extra steering
+    rate a tight corner demands. Mirrors model_utils.adaptive_R_rate in
     fsae_MPCTest — keep both floors in sync manually.
 
     enable_in_corners: TEMPORARY/EXPERIMENTAL, NOT VALIDATED -- re-verify
@@ -486,94 +265,24 @@ def _adaptive_R_rate(
     disable_in_corners, whose True/False polarity was inverted from what
     the name suggested.)
 
-    kappa_max_abs: TEMPORARY/EXPERIMENTAL, NOT VALIDATED -- re-verify before
-    relying on this. Optional lookahead
-    curvature (same signal ADAPTIVE_Q_LOOKAHEAD uses, kappa_max_abs=0.0 =
-    off/no-op), letting R_rate[0,0] scale down differently "during" a turn
-    vs "entering" it: the CURRENT-position
-    kappa this function already uses only reflects "during" (the car is
-    already turning); kappa_max_abs adds a distinct, SMALLER reduction for
-    "entering" (a corner is ahead but the car hasn't reached it yet, so
-    current kappa is still ~0). The two floors combine via min() (the more
-    aggressive reduction wins) rather than multiplying, so a car already
-    mid-corner (current kappa driving scale toward during_floor) isn't
-    additionally discounted by the shallower entering_floor -- min() also
-    keeps this continuous everywhere
-    since both floors are themselves continuous functions of their inputs.
-    during_floor is kept relatively shallow (not deeper): with
-    entering_floor=0.85, a deeper during_floor lets steering oscillate
-    through zero several times per second mid-corner (e.g. +25 -> -20 -> +14
-    -> -9 deg across ~0.3s) while e_y/e_psi stay small -- classic
-    under-damped steering-rate hunt, not a tracking-error problem. The fix
-    is less softening of the rate cost while actually turning, not more
-    lateral/heading authority -- do not deepen this floor without
-    re-checking for that oscillation.
+    during_floor is kept relatively shallow (not deeper): a deeper floor
+    lets steering oscillate through zero several times per second
+    mid-corner (e.g. +25 -> -20 -> +14 -> -9 deg across ~0.3s) while
+    e_y/e_psi stay small -- classic under-damped steering-rate hunt, not a
+    tracking-error problem. The fix is less softening of the rate cost
+    while actually turning, not more lateral/heading authority -- do not
+    deepen this floor without re-checking for that oscillation.
+
+    2026-08-13: the "entering a corner" floor (driven by a forward
+    curvature scan, kappa_max_abs) was removed here as part of deleting the
+    whole lookahead gain-scheduling family -- see the module comment near
+    the top of this file. Only the current-position during-floor remains.
     """
     kappa_straight = 0.03
     if not enable_in_corners and abs(kappa) > kappa_straight:
         scale = 1.0
     else:
-        during_scale  = max(during_floor, 1.0 / (1.0 + 3.0 * abs(kappa)))
-        entering_scale = max(
-            entering_floor,
-            1.0 / (1.0 + k_entering * kappa_max_abs),
-        )
-        scale = min(during_scale, entering_scale)
-    R = R_rate_base.copy()
-    R[0, 0] *= scale
-    return R
-
-
-def _low_speed_steer_rate_boost(
-    vx: float,
-    R_rate_base: np.ndarray,
-    enabled: bool,
-    boost_max: float = 2.5,
-    k: float = 0.35,
-) -> np.ndarray:
-    """
-    Speed-dependent steering-RATE cost, INVERTED from Stanley's k/(v+eps)
-    correction-gain shape: this makes fast steering CHANGES expensive at low
-    speed and relaxes toward a no-op as speed rises, rather than the other
-    way round. A literal Stanley-style "cheap correction at low speed" would
-    fight the failure mode this exists to fix: live telemetry showed
-    steering swinging +25 -> -9 -> 0 deg over ~1.5s at 3-4 m/s right after
-    corner exit (2026-08-12 log, t=6.9-7.7s) while a_cmd climbed 0 -> 2.15
-    m/s^2 -- an under-damped correction with plenty of speed-dependent
-    _adaptive_R_scaling steering-EFFORT cost already active (that curve
-    goes the OTHER way, cheaper at low speed) but nothing before this
-    penalising the RATE of a low-speed swing specifically.
-
-    Distinct from _adaptive_R_rate/_steer_rate_anti_hunt above: both of
-    those gate on curvature/tracking-error, not speed, so a low-speed
-    straight-line wobble with small kappa (as in the log) barely moves
-    either. This is a separate, speed-only multiplier composing on top of
-    them, not a replacement.
-
-    boost_max=2.5, k=0.35: deliberately moderate (~1.73x at 3 m/s, ~1.2x by
-    15 m/s, ~1.0x by race speed) so steering still has enough lattitude to
-    correct: a much higher boost_max would risk numbing out the very
-    correction authority needed to recover from the tracking error that
-    caused the wobble in the first place -- untested above this magnitude,
-    re-validate before raising it.
-
-    DISABLED BY DEFAULT (MPCParams.low_speed_steer_rate_boost_enabled=False)
-    as of 2026-08-12, same day this was added: because this gates purely on
-    speed with no curvature/lookahead signal, it cannot distinguish
-    "post-exit overcorrection at low speed" (the case above) from "turn-in
-    at low speed" (also low speed, also needs a fast steering-rate change,
-    but wanted) -- live driving reported the car struggling to turn in
-    early after this was enabled. Do not re-enable without first adding a
-    lookahead-curvature gate (fire only when NOT approaching/inside a
-    corner) -- see planning_control_sync.md's "Low-speed steering-rate
-    boost" section for the full incident.
-
-    enabled=False returns R_rate_base untouched.
-    """
-    if not enabled:
-        return R_rate_base
-    vx = max(vx, 0.0)
-    scale = 1.0 + (boost_max - 1.0) / (1.0 + k * vx)
+        scale = max(during_floor, 1.0 / (1.0 + 3.0 * abs(kappa)))
     R = R_rate_base.copy()
     R[0, 0] *= scale
     return R
@@ -586,49 +295,27 @@ def _steer_rate_anti_hunt(
     enabled: bool,
     e_psi: float = 0.0,
     boost_max: float = 6.0,
-    kappa_max_abs: float = 0.0,
-    k_lookahead: float = 60.0,
 ) -> np.ndarray:
     """
     TEMPORARY/EXPERIMENTAL, NOT VALIDATED: heavily penalise steering
     rate-of-change on top of _adaptive_R_rate's existing curvature softening,
     strongest when the car is centred (|e_y| small), well-aligned (|e_psi|
-    small), AND not currently curving (kappa small). "Corner ahead" via
-    kappa/e_y/e_psi alone is NOT a path lookahead -- those reuse the same
-    causal, current-curvature kappa as _adaptive_R_rate, so on their own
-    they cannot anticipate a corner before the car is already turning into
-    it. kappa_max_abs (added 2026-08-12) closes that gap specifically for
-    this function: mirrors model_utils.steer_rate_anti_hunt in fsae_MPCTest
-    -- keep both constants in sync. enabled=False returns R_rate_base
-    untouched.
+    small), AND not currently curving (kappa small). Mirrors
+    model_utils.steer_rate_anti_hunt in fsae_MPCTest -- keep both constants
+    in sync. enabled=False returns R_rate_base untouched.
 
     Continuous, not a hard AND-gated threshold: a discontinuous step would
     risk the same QP-solver-iteration-spike problem the
     enable_in_corners/kappa_straight history above already found from
     threshold cutoffs on curvature, so straight-line hunting is instead
     penalised more strongly via a higher continuous ceiling.
-    boost_kappa, boost_ey, boost_epsi, and boost_lookahead each saturate
-    independently toward 1.0 as their input shrinks toward 0 (same
-    saturating-curve style as _adaptive_R_rate's own floor); their product
-    is the applied scale, so the full boost_max (default
-    MPCParams.anti_hunt_boost_max) only applies when ALL FOUR are near
-    their "straight, centred, and aligned, with nothing ahead" ideal, and
-    it fades smoothly -- never snaps -- as any one of them grows.
-
-    boost_lookahead (kappa_max_abs term, k_lookahead=60.0 matching
-    boost_kappa's own k): added because curvature_forcing_enabled (see
-    MPCParams) deliberately makes the QP command small, early steering
-    corrections on approach to a corner, while e_y/e_psi/kappa are all
-    still near zero -- exactly the state this function used to read as
-    "nothing going on, dampen it." Without this term anti-hunt was
-    actively cancelling the curvature-forcing term's whole purpose: live
-    telemetry (2026-08-12) showed w_epsi_sum already -1.0 to -1.35 (a
-    real, early corner-anticipation signal) more than 2s before a sharp
-    corner, while steering oscillated +-10 deg with no net commitment and
-    m_Rrate_antihunt sat at 1.2-3.3x throughout -- the anti-hunt boost was
-    damping the very correction curvature-forcing exists to produce,
-    reproducing the "still turns in late on sudden corners" symptom the
-    forcing term was supposed to fix.
+    boost_kappa, boost_ey, and boost_epsi each saturate independently
+    toward 1.0 as their input shrinks toward 0 (same saturating-curve style
+    as _adaptive_R_rate's own floor); their product is the applied scale,
+    so the full boost_max (default MPCParams.anti_hunt_boost_max) only
+    applies when all three are near their "straight, centred, and aligned"
+    ideal, and it fades smoothly -- never snaps -- as any one of them
+    grows.
 
     e_psi (radians, NOT the degrees used in telemetry/logging -- same units
     _error_state's x0[2]/e_psi already use internally) is included because
@@ -638,6 +325,12 @@ def _steer_rate_anti_hunt(
     can't distinguish "straight and correctly aligned" from "straight but
     needs to yaw back into line" -- making exactly the correction it needs
     artificially expensive. k_epsi=23.0 sets half-fade at ~2.5 deg of e_psi.
+
+    2026-08-13: the boost_lookahead term (a forward curvature-scan gate,
+    kappa_max_abs/k_lookahead) was removed here as part of deleting the
+    whole lookahead gain-scheduling family -- see the module comment near
+    the top of this file. boost_kappa/boost_ey/boost_epsi are unchanged,
+    current-state signals and remain correct.
     """
     if not enabled:
         return R_rate_base
@@ -645,20 +338,27 @@ def _steer_rate_anti_hunt(
     boost_kappa = 1.0 / (1.0 + k_kappa * abs(kappa))
     boost_ey    = 1.0 / (1.0 + k_ey * abs(e_y))
     boost_epsi  = 1.0 / (1.0 + k_epsi * abs(e_psi))
-    boost_lookahead = 1.0 / (1.0 + k_lookahead * abs(kappa_max_abs))
-    scale = 1.0 + (boost_max - 1.0) * boost_kappa * boost_ey * boost_epsi * boost_lookahead
+    scale = 1.0 + (boost_max - 1.0) * boost_kappa * boost_ey * boost_epsi
     R = R_rate_base.copy()
     R[0, 0] *= scale
     return R
 
 
-def _adaptive_Q_scaling(e_y: float, Q_base: np.ndarray, enabled: bool) -> np.ndarray:
+def _adaptive_Q_scaling(
+    e_y: float, Q_base: np.ndarray, enabled: bool,
+) -> np.ndarray:
     """
     Soften the lateral-error cost Q[0,0] when already close to the
     centreline, to reduce small-error hunting/chatter. Mirrors
     model_utils.adaptive_Q_scaling in fsae_MPCTest — see that function's
     docstring for the full mechanism and why this is disabled by default.
     enabled=False returns Q_base untouched.
+
+    2026-08-13: the kappa_max_abs/k_lookahead term (a forward curvature-scan
+    relaxation of this floor) was removed here as part of deleting the
+    whole lookahead gain-scheduling family -- see the module comment near
+    the top of this file. The base ey_lo/ey_hi/floor softening on CURRENT
+    |e_y| below is unchanged and remains correct current-state logic.
     """
     if not enabled:
         return Q_base
@@ -673,369 +373,6 @@ def _adaptive_Q_scaling(e_y: float, Q_base: np.ndarray, enabled: bool) -> np.nda
     Q = Q_base.copy()
     Q[0, 0] *= scale
     return Q
-
-
-def _alat_ceiling_at(
-    v: float,
-    ceiling_flat: float = 7.5,
-    ceiling_slope: float = 0.47,
-    ceiling_intercept: float = 2.46,
-) -> float:
-    """
-    FSDS's sustained lateral-acceleration ceiling at speed v (m/s^2).
-    Mirrors model/vehicle_physics.py's alat_ceiling_at() -- keep in sync
-    (CLAUDE.md's plant/model parity rule). Defaults match
-    MPCParams.alat_ceiling_flat / _slope / _intercept.
-    """
-    return max(ceiling_flat, ceiling_slope * abs(v) + ceiling_intercept)
-
-
-def _corner_demand(
-    kappa_max_abs: float,
-    car_speed: float,
-    ceiling_flat: float = 7.5,
-    ceiling_slope: float = 0.47,
-    ceiling_intercept: float = 2.46,
-) -> float:
-    """
-    "How much of the car's available cornering does the path ahead demand at
-    the current speed?" -- kappa_max_abs / kappa_limit(v), where
-    kappa_limit = a_lat_ceiling(v) / v^2 is the tightest curvature holdable
-    before the ceiling binds.
-
-    0 = straight, ~1 = the corner needs everything available at this speed,
-    >1 = cannot be held at this speed (must slow). Scale-free and
-    speed-aware, so one set of constants covers gradual sweepers, tight
-    corners and U-turns instead of needing a per-corner-type threshold --
-    see the demand-normalisation note at module scope (and
-    MPCParams.adaptive_q_demand_normalised) for why raw kappa was the
-    wrong parameterisation. Returns 0.0 below a small speed so a stationary
-    or crawling car does not report infinite demand.
-
-    ceiling_flat/slope/intercept parameterise the a_lat ceiling law passed
-    through to _alat_ceiling_at; defaults match MPCParams.
-    """
-    v = abs(car_speed)
-    if v < 1.0 or kappa_max_abs <= 0.0:
-        return 0.0
-    kappa_limit = _alat_ceiling_at(
-        v, ceiling_flat, ceiling_slope, ceiling_intercept
-    ) / (v * v)
-    if kappa_limit <= 1e-9:
-        return 0.0
-    return float(kappa_max_abs / kappa_limit)
-
-
-def _demand_frac(demand: float, demand_half: float = 0.5) -> float:
-    """
-    Map a 0..inf corner demand onto a 0..1 boost fraction via the same
-    saturating shape used elsewhere, but with the half-response point set in
-    DEMAND units (demand_half, default MPCParams.adaptive_q_demand_half)
-    rather than raw curvature -- so the configured maxima are actually
-    reachable on real corners.
-    """
-    h = max(demand_half, 1e-6)
-    return demand / (demand + h)
-
-
-def _lookahead_approach_boost(
-    kappa_max_abs: float,
-    car_speed: float = 0.0,
-    boost_max: float = 2.0,
-    demand_normalised: bool = True,
-    k_approach: float = 8.0,
-    demand_half: float = 0.5,
-    ceiling_flat: float = 7.5,
-    ceiling_slope: float = 0.47,
-    ceiling_intercept: float = 2.46,
-) -> float:
-    """
-    Continuous (no threshold/discontinuity) multiplier on Q[0,0] (lateral
-    error) that rises smoothly as the corner ahead gets more demanding, so
-    the controller commits lateral authority BEFORE the car is off-centre
-    approaching a corner -- see the lookahead Q-boost module comment for
-    the motivating failure mode. 1.0 with no corner ahead; saturates toward
-    boost_max (default MPCParams.adaptive_q_lookahead_q_boost_max).
-
-    With demand_normalised (default, MPCParams.adaptive_q_demand_normalised)
-    the input is corner DEMAND
-    (see _corner_demand) rather than raw curvature, which is what makes the
-    same constants work for gradual/sharp/U-turn corners and makes the
-    configured ceiling actually reachable. Set that flag False to restore
-    the legacy raw-kappa curve (gain k_approach) for A/B comparison.
-    """
-    if demand_normalised:
-        frac = _demand_frac(
-            _corner_demand(
-                kappa_max_abs, car_speed,
-                ceiling_flat, ceiling_slope, ceiling_intercept,
-            ),
-            demand_half,
-        )
-    else:
-        frac = 1.0 - 1.0 / (1.0 + k_approach * kappa_max_abs)
-    return 1.0 + (boost_max - 1.0) * frac
-
-
-def _lookahead_epsi_approach_boost(
-    kappa_max_abs: float,
-    car_speed: float = 0.0,
-    boost_max: float = 1.5,
-    demand_normalised: bool = True,
-    k_epsi_approach: float = 8.0,
-    demand_half: float = 0.5,
-    ceiling_flat: float = 7.5,
-    ceiling_slope: float = 0.47,
-    ceiling_intercept: float = 2.46,
-) -> float:
-    """
-    Continuous (no threshold/discontinuity) multiplier on Q[2,2] (heading
-    error) that rises smoothly as the largest curvature within the
-    lookahead window grows -- same shape and signal as
-    _lookahead_approach_boost, applied to heading instead of lateral error.
-    Exists because short/sudden corners otherwise show insufficient
-    commitment on BOTH lateral and heading error: without it,
-    Q[2,2] only gets anticipatory help from _lookahead_exit_boost (which
-    only activates AFTER a peak has already been recorded, decaying
-    through the exit), so heading error would have no boost at all
-    before/during turn-in. Composes multiplicatively with _lookahead_exit_boost on the
-    same Q[2,2] entry -- the two are never both large at once in practice
-    (approach rises while still approaching a peak; exit only starts
-    contributing once a peak has been latched and decays afterward) but
-    multiplying rather than taking a max keeps this continuous either way.
-
-    boost_max defaults to
-    MPCParams.adaptive_q_lookahead_epsi_approach_boost_max; k_epsi_approach is
-    the legacy raw-kappa gain, used only when demand_normalised is False.
-    """
-    if demand_normalised:
-        frac = _demand_frac(
-            _corner_demand(
-                kappa_max_abs, car_speed,
-                ceiling_flat, ceiling_slope, ceiling_intercept,
-            ),
-            demand_half,
-        )
-    else:
-        frac = 1.0 - 1.0 / (1.0 + k_epsi_approach * kappa_max_abs)
-    return 1.0 + (boost_max - 1.0) * frac
-
-
-def _uturn_severity(
-    heading_change_abs: float,
-    thresh_rad: float = math.radians(60.0),
-    sat_rad: float = math.radians(120.0),
-) -> float:
-    """
-    Continuous 0..1 "how much of a U-turn is coming" score from the
-    accumulated |heading change| over the lookahead window (see
-    _lookahead_curvature_profile). 0 below thresh_rad (default
-    MPCParams.adaptive_q_uturn_heading_thresh_rad -- ordinary corners score
-    nothing, so this never disturbs the already-working sudden-corner
-    behaviour), ramping linearly to 1.0 at sat_rad (default
-    MPCParams.adaptive_q_uturn_heading_sat_rad). Clamped both ends, so it is
-    continuous everywhere and bounded regardless of how extreme the path is.
-    """
-    lo = thresh_rad
-    hi = sat_rad
-    if hi <= lo:
-        return 0.0
-    return float(np.clip((abs(heading_change_abs) - lo) / (hi - lo), 0.0, 1.0))
-
-
-def _uturn_boost(severity: float, boost_max: float) -> float:
-    """
-    Blend 1.0 -> boost_max by a 0..1 severity from _uturn_severity. Used for
-    both the Q[0,0] and Q[2,2] U-turn boosts (boost_max > 1) and the Q[3,3]
-    yaw-rate relaxation (boost_max < 1, blending downward instead).
-    """
-    return 1.0 + (boost_max - 1.0) * severity
-
-
-def _lookahead_exit_boost(
-    last_peak_kappa_abs: float,
-    dist_since_peak: float,
-    decay_dist: float = 5.0,
-    k_exit_norm: float = 0.05,
-    boost_max: float = 1.5,
-) -> float:
-    """
-    Continuous multiplier on Q[2,2] (heading error) that is largest right at
-    a corner's peak curvature and decays linearly to 1.0 over decay_dist
-    (default MPCParams.adaptive_q_lookahead_exit_decay_dist) metres of travel
-    afterward, scaled by how sharp that corner was (a gentle bend gets less
-    exit correction than a hairpin, via k_exit_norm =
-    MPCParams.adaptive_q_lookahead_k_exit_norm). Returns 1.0 (no-op) once
-    fully decayed or if no peak has been recorded yet
-    (dist_since_peak == inf). boost_max defaults to
-    MPCParams.adaptive_q_lookahead_epsi_boost_max.
-    """
-    if dist_since_peak >= decay_dist or not math.isfinite(dist_since_peak):
-        return 1.0
-    decay_frac = 1.0 - dist_since_peak / decay_dist
-    sharpness = last_peak_kappa_abs / (last_peak_kappa_abs + k_exit_norm)
-    return 1.0 + (boost_max - 1.0) * decay_frac * sharpness
-
-
-def _lookahead_yaw_rate_relax(
-    kappa_max_abs: float,
-    car_speed: float = 0.0,
-    floor: float = 0.5,
-    demand_normalised: bool = True,
-    k_r_relax: float = 8.0,
-    demand_half: float = 0.5,
-    ceiling_flat: float = 7.5,
-    ceiling_slope: float = 0.47,
-    ceiling_intercept: float = 2.46,
-) -> float:
-    """
-    Continuous (no threshold/discontinuity) multiplier on Q[3,3] (yaw rate r)
-    that FALLS smoothly as the largest curvature within the lookahead window
-    grows -- the mirror image of _lookahead_approach_boost's rise, applied to
-    yaw-rate penalty instead of lateral-error penalty. 1.0 at kappa_max_abs=0
-    (no corner ahead, full yaw-rate damping as tuned); floors toward
-    `floor` (default MPCParams.adaptive_q_lookahead_r_floor) as curvature rises, so the MPC is less
-    penalised for the fast rotation a real turn-in needs, and -- because this
-    uses the same forward lookahead as the Q[0,0] boost, not the car's
-    current-position kappa -- the relaxation is already in effect before the
-    car reaches the corner, addressing "turns late/slowly" rather than only
-    reacting once already mid-turn.
-
-    k_r_relax is the legacy raw-kappa gain, used only when demand_normalised
-    is False.
-    """
-    if demand_normalised:
-        frac = _demand_frac(
-            _corner_demand(
-                kappa_max_abs, car_speed,
-                ceiling_flat, ceiling_slope, ceiling_intercept,
-            ),
-            demand_half,
-        )
-    else:
-        frac = 1.0 - 1.0 / (1.0 + k_r_relax * kappa_max_abs)
-    return 1.0 - (1.0 - floor) * frac
-
-
-def _lookahead_steer_effort_relax(
-    kappa_max_abs: float,
-    car_speed: float = 0.0,
-    floor: float = 0.5,
-    demand_normalised: bool = True,
-    k_steer_relax: float = 8.0,
-    demand_half: float = 0.5,
-    ceiling_flat: float = 7.5,
-    ceiling_slope: float = 0.47,
-    ceiling_intercept: float = 2.46,
-) -> float:
-    """
-    Continuous (no threshold/discontinuity) multiplier on R[0,0] (steering
-    EFFORT) that FALLS smoothly as the largest curvature within the
-    lookahead window grows -- mirrors _lookahead_yaw_rate_relax's shape
-    exactly (same demand-normalised corner-severity curve), applied to
-    steering effort instead of yaw-rate penalty. 1.0 at kappa_max_abs=0 (no
-    corner ahead); floors toward `floor` (default
-    MPCParams.adaptive_q_lookahead_steer_relax_floor) as curvature rises.
-
-    Added 2026-08-12: closes a gap _adaptive_R_scaling and
-    _steer_effort_straight_boost left open. _adaptive_R_scaling makes R[0,0]
-    steadily MORE expensive as speed rises with no lookahead relief at all,
-    and _steer_effort_straight_boost only ever RAISES R[0,0] (on a clear
-    straight) or relaxes back to the unscaled baseline as a corner is
-    detected -- neither ever pushes R[0,0] BELOW baseline for an approaching
-    corner. A car entering a corner hot therefore paid the full speed
-    penalty on steering effort exactly when it most needed to commit to
-    turn-in, which live driving reported as sluggish/late turn-in at speed.
-    Composes multiplicatively with both of those existing R[0,0] scalings.
-
-    k_steer_relax is the legacy raw-kappa gain, used only when
-    demand_normalised is False.
-    """
-    if demand_normalised:
-        frac = _demand_frac(
-            _corner_demand(
-                kappa_max_abs, car_speed,
-                ceiling_flat, ceiling_slope, ceiling_intercept,
-            ),
-            demand_half,
-        )
-    else:
-        frac = 1.0 - 1.0 / (1.0 + k_steer_relax * kappa_max_abs)
-    return 1.0 - (1.0 - floor) * frac
-
-
-def _lookahead_straight_lateral_reduce(
-    kappa_max_abs: float,
-    ey_floor: float = 0.7,
-    ey_k: float = 20.0,
-) -> float:
-    """
-    Continuous (no threshold/discontinuity) multiplier on Q[0,0] (lateral
-    error) that RISES from ey_floor (default
-    MPCParams.adaptive_q_straight_ey_floor) toward 1.0 as the
-    largest curvature within the lookahead window grows -- i.e. reduced
-    lateral-error cost on a genuinely clear straight (kappa_max_abs~0),
-    fading back to full baseline weight as a corner enters the lookahead
-    window, where it composes multiplicatively with
-    _lookahead_approach_boost's rise above 1.0. Reuses
-    _lookahead_straight_boost's exact formula with a sub-1.0 ceiling --
-    that function's derivation makes no assumption boost_max > 1.0, it is
-    simply "blend from boost_max at kappa_max_abs=0 to 1.0 as kappa_max_abs
-    grows", which is exactly the shape needed here, just reducing instead
-    of boosting.
-
-    Addresses residual hunting that persists even with the
-    Q[2,2]/Q[3,3] straight-line boosts and a stronger anti-hunt boost ceiling
-    (MPCParams.anti_hunt_boost_max) in place --
-    distinct from (and composes multiplicatively with)
-    _adaptive_Q_scaling's existing |e_y|-based softening, which triggers on
-    "currently centred" regardless of curvature; this instead triggers on
-    "no corner anywhere near", independent of the car's instantaneous
-    lateral error.
-    """
-    return _lookahead_straight_boost(kappa_max_abs, ey_floor, ey_k)
-
-
-def _lookahead_straight_boost(kappa_max_abs: float, boost_max: float, k: float) -> float:
-    """
-    Continuous (no threshold/discontinuity) multiplier that FALLS from
-    boost_max toward 1.0 as the largest curvature within the lookahead
-    window grows -- the mirror image of _lookahead_yaw_rate_relax's fall
-    (which relaxes a cost approaching a corner), used here to instead RAISE
-    a cost on straights and fade it back to baseline as a corner is
-    detected ahead. Shared helper for Q[2,2] (heading error), Q[3,3] (yaw
-    rate), and R[0,0] (steering effort) straight-line boosts, which
-    together keep the car pointed straighter, damp yaw
-    wander, and discourage steering deflection at all when no corner is
-    near. Q[2,2]'s boost_max is kept deliberately small (see
-    MPCParams.adaptive_q_straight_epsi_boost_max) since a stronger heading-error
-    weight on straights amplifies the QP's reaction to ordinary heading
-    noise, i.e. the exact small-error hunting _adaptive_Q_scaling exists to
-    fight elsewhere -- Q[3,3]/R[0,0] (less prone to that particular
-    noise-driven chatter) can safely take a larger boost. k controls how
-    sharply the boost fades as curvature is detected ahead -- R[0,0]'s k is
-    set much higher than Q[2,2]/Q[3,3]'s so it collapses to baseline almost
-    as soon as a real turn is asked for, rather than lingering into it.
-    """
-    return 1.0 + (boost_max - 1.0) * (1.0 / (1.0 + k * kappa_max_abs))
-
-
-def _steer_effort_straight_boost(
-    kappa_max_abs: float,
-    boost_max: float = 1.5,
-    k: float = 20.0,
-) -> float:
-    """
-    R[0,0] (steering EFFORT -- how far the wheel is turned -- NOT
-    rate-of-change; that's R_rate[0,0], boosted separately by
-    _steer_rate_anti_hunt) instance of _lookahead_straight_boost: 1.5x on a
-    clear straight, fading sharply (K=20, much sharper than the Q-side
-    straight boosts) toward 1.0 as a corner enters the lookahead window.
-    Composes with _adaptive_R_scaling's existing speed-dependent scaling on
-    R[0,0] via multiplication. boost_max/k default to
-    MPCParams.steer_effort_straight_boost_max / .steer_effort_straight_k.
-    """
-    return _lookahead_straight_boost(kappa_max_abs, boost_max, k)
 
 
 def _curvature(path: np.ndarray, idx: int) -> float:
@@ -1053,91 +390,56 @@ def _curvature(path: np.ndarray, idx: int) -> float:
     return dpsi / ds if ds > 1e-6 else 0.0
 
 
-def _curvature_horizon_profile(
-    path: np.ndarray, base_idx: int, car_speed: float, N: int, dt: float,
-) -> np.ndarray:
+def _corner_factor(kappa: float, k: float) -> float:
     """
-    Sample signed path curvature at the arc-length position the car is
-    PREDICTED to reach at each of the QP's N horizon steps (s_k = k*v_x*dt
-    ahead of base_idx), for use as the curvature-forcing term in the
-    dynamics constraint -- see _build_qp's W_p Parameter.
-
-    Distinct from _lookahead_curvature_profile: that function returns a
-    single scalar (the PEAK |curvature| anywhere in the window, used to
-    reweight Q/R). This returns curvature AT each predicted step,
-    including sign, because the forcing term needs to know which
-    direction the path bends at each point in the horizon, not just how
-    sharply the sharpest point bends anywhere in it.
-
-    Holds car_speed constant across the whole horizon for this arc-length
-    walk (matching _discrete_model's own choice to build Ad/Bd from a
-    single per-tick speed rather than a predicted speed profile) --
-    consistent with the rest of the QP's linearization, not a new
-    approximation.
-
-    Returns an (N,) array. Positions beyond the end of path repeat the
-    last waypoint's curvature (0.0, since _curvature returns 0 at the
-    array boundary) rather than erroring, so a corner near the end of a
-    short/partial path doesn't crash the solve.
+    0 (straight) -> 1 (full corner), a single continuous saturating curve
+    of the CURRENT |kappa| (the ~1m-preview curvature _error_state already
+    computes every tick, same signal _adaptive_R_rate/_steer_rate_anti_hunt
+    use). Deliberately the SAME functional shape for both rising (entry)
+    and falling (exit) curvature -- no separate decay-distance timer, no
+    hysteresis state: this is a pure function of the current instantaneous
+    signal, replacing the whole deleted lookahead approach/exit-boost
+    family (see the module comment near the top of this file). k is
+    MPCParams.corner_factor_k, the curve's sharpness.
     """
-    kappas = np.zeros(N)
+    return 1.0 - 1.0 / (1.0 + k * abs(kappa))
+
+
+def _blend(straight_val: float, corner_val: float, corner_frac: float) -> float:
+    """
+    Simple linear interpolation from straight_val (corner_frac=0) to
+    corner_val (corner_frac=1). Shared helper for every current-state
+    Q/R_rate weight schedule in compute() -- see _corner_factor/
+    _low_speed_corner_boost for how corner_frac itself is built.
+    """
+    return straight_val + (corner_val - straight_val) * corner_frac
+
+
+def _low_speed_corner_boost(
+    car_speed: float, corner_factor: float,
+    v_half: float, max_extra: float,
+) -> float:
+    """
+    Extra push in the SAME direction as corner_factor's "full corner"
+    endpoint (i.e. an ADDITIONAL fraction, not a separate blend), active
+    ONLY when corner_factor > 0 AND speed is low -- multiplicatively gated
+    on corner_factor so this is an exact no-op on a straight regardless of
+    speed. This is what makes it safe where the deleted
+    _low_speed_steer_rate_boost was NOT: that function fired on low speed
+    ALONE, with no curvature/lookahead signal to distinguish wanted
+    low-speed turn-in from unwanted post-exit wobble, and live testing
+    found it taxed both indistinguishably. Gating on corner_factor instead
+    of a forward scan keeps this current-state: it only ever pushes harder
+    on a corner the car is ALREADY turning through, never anticipates one.
+
+    car_speed=0 gives the full max_extra (scaled by corner_factor); the
+    boost falls off toward 0 as speed rises past v_half (the speed at
+    which half of max_extra remains), same saturating-curve style used
+    throughout this file.
+    """
     v = max(abs(car_speed), 0.0)
-    idx = base_idx
-    accumulated = 0.0
-    n_path = len(path)
-    for k in range(N):
-        target_dist = v * (k + 1) * dt
-        while idx < n_path - 1 and accumulated < target_dist:
-            accumulated += float(np.linalg.norm(path[idx + 1] - path[idx]))
-            idx += 1
-        kappas[k] = _curvature(path, idx)
-    return kappas
-
-
-def _lookahead_curvature_profile(
-    path: np.ndarray, base_idx: int, lookahead_dist: float
-) -> tuple[float, int, float, float]:
-    """
-    Scan forward from base_idx up to lookahead_dist (arc length, m) and
-    return (kappa_max_abs, idx_at_peak, dist_at_peak, heading_change_abs):
-    the largest-MAGNITUDE signed curvature found in the window, the waypoint
-    index it occurred at, how far ahead (m) that point is, and the TOTAL
-    accumulated |heading change| (rad) across the window.
-
-    Uses |kappa|, not signed kappa, so an S-curve's second corner (opposite
-    sign to the first) contributes exactly as much as either corner alone --
-    sign never cancels magnitude here. See ADAPTIVE_Q_LOOKAHEAD's module
-    comment for why this matters.
-
-    heading_change_abs is the U-turn discriminator: a
-    long, GRADUAL U-turn has unremarkable peak curvature (large radius) but
-    a very large total heading change, so kappa_max_abs alone scores it like
-    a mild bend and under-boosts turn-in. Summing |kappa| * ds across the
-    window captures "how much total rotation is coming" independently of how
-    sharp any single point is -- a U-turn that saturates steering can show a
-    large accumulated heading change (order 2+ rad) while its peak kappa
-    stays modest.
-
-    Returns (0.0, base_idx, 0.0, 0.0) if the window can't be scanned (path
-    too short / already at the end).
-    """
-    accumulated   = 0.0
-    kappa_max_abs = 0.0
-    idx_at_peak   = base_idx
-    dist_at_peak  = 0.0
-    heading_change_abs = 0.0
-    for i in range(base_idx, len(path) - 1):
-        ds = float(np.linalg.norm(path[i + 1] - path[i]))
-        accumulated += ds
-        if accumulated > lookahead_dist:
-            break
-        k = abs(_curvature(path, i + 1))
-        heading_change_abs += k * ds
-        if k > kappa_max_abs:
-            kappa_max_abs = k
-            idx_at_peak   = i + 1
-            dist_at_peak  = accumulated
-    return kappa_max_abs, idx_at_peak, dist_at_peak, heading_change_abs
+    speed_frac = v_half / (v_half + v) if v_half > 0.0 else 0.0
+    return corner_factor * max_extra * speed_frac
 
 
 # ---------------------------------------------------------------------------
@@ -1309,45 +611,6 @@ class MPCController:
         # re-verify before re-enabling.
         self.adaptive_q_scaling_enabled = self.params.adaptive_q_scaling_enabled
 
-        # ADAPTIVE_Q_LOOKAHEAD_ENABLED (settings.py, fsae_MPCTest) — see the
-        # ADAPTIVE_Q_LOOKAHEAD module comment above for the full mechanism.
-        # TEMPORARY/EXPERIMENTAL, NOT VALIDATED: addresses
-        # adaptive_Q_scaling's documented late-turn-in failure mode via
-        # curvature lookahead instead. When this flag was disabled to isolate
-        # a jitter/jerk regression, the regression PERSISTED, ruling this
-        # mechanism out as the cause of that particular regression. It is
-        # enabled because without it the car does not turn in early enough
-        # at corners (the exact failure mode this mechanism exists to
-        # address) and pins MAX_STEER_RAD (25 deg, confirmed as
-        # FSDS's real hardware limit, upstream issue #270) for over a
-        # second in at least one corner as a result. A separate e_y-excursion
-        # concern (approach boost vs. braking priority) is
-        # still not independently re-verified -- watch for it specifically.
-        self.adaptive_q_lookahead_enabled = self.params.adaptive_q_lookahead_enabled
-
-        # STEER_EFFORT_STRAIGHT_BOOST_ENABLED (settings.py, fsae_MPCTest) —
-        # see _steer_effort_straight_boost above. Makes steering EFFORT
-        # (R[0,0], not just its rate of
-        # change -- that's _steer_rate_anti_hunt, separate) expensive on a
-        # clear straight too. (Renamed from adaptive_r_steer_straight_boost*
-        # after the old name was confused for the
-        # rate-of-change mechanism.) NOT VALIDATED -- enabled for
-        # live testing; treat results as unconfirmed until re-checked.
-        self.steer_effort_straight_boost_enabled = (
-            self.params.steer_effort_straight_boost_enabled
-        )
-
-        # LOOKAHEAD_STEER_EFFORT_RELAX_ENABLED (settings.py, fsae_MPCTest) —
-        # see _lookahead_steer_effort_relax above. Distinct from
-        # steer_effort_straight_boost_enabled just above: that one only ever
-        # raises R[0,0] (on a straight) or relaxes back to baseline as a
-        # corner is detected; this one pushes R[0,0] BELOW baseline as the
-        # corner ahead gets more demanding, so steering effort gets cheaper
-        # specifically where turn-in commitment matters.
-        self.lookahead_steer_effort_relax_enabled = (
-            self.params.lookahead_steer_effort_relax_enabled
-        )
-
         # STEER_RATE_ANTI_HUNT_ENABLED (settings.py, fsae_MPCTest) — see
         # _steer_rate_anti_hunt above. Temporary experiment requested to
         # suppress low-error steering hunt; NOT validated against a live
@@ -1355,13 +618,6 @@ class MPCController:
         # no-settings.py-on-the-car rule; keep in sync with fsae_MPCTest's
         # copy while this is being tried.
         self.steer_rate_anti_hunt_enabled = self.params.steer_rate_anti_hunt_enabled
-
-        # LOW_SPEED_STEER_RATE_BOOST_ENABLED (settings.py, fsae_MPCTest) —
-        # see _low_speed_steer_rate_boost's docstring for the mechanism and
-        # the log evidence motivating it (2026-08-12 low-speed exit wobble).
-        self.low_speed_steer_rate_boost_enabled = (
-            self.params.low_speed_steer_rate_boost_enabled
-        )
 
         # ADAPTIVE_R_RATE_ENABLE_IN_CORNERS (settings.py, fsae_MPCTest) —
         # see _adaptive_R_rate's enable_in_corners param above (renamed from
@@ -1424,19 +680,13 @@ class MPCController:
         # unlimited, mirroring _v_des_filtered's None handling above.
         self._ref_psi_prev: float | None = None
 
-        # ADAPTIVE_Q_LOOKAHEAD peak-tracker (see module comment above and
-        # _update_lookahead_peak below). _dist_since_peak starts at +inf so
-        # _lookahead_exit_boost is a no-op (1.0) until the first corner peak
-        # is ever seen. Tracks LOCAL peaks (via _armed_for_next_peak, which
-        # re-arms once the lookahead window clears near zero after a
-        # corner) rather than a global running maximum -- a global maximum
-        # would silently fail to re-trigger the exit boost on a second
-        # corner of equal or lesser curvature than an earlier one, which is
-        # a completely ordinary case (most tracks reuse corner radii), not
-        # just a rare S-curve edge case.
-        self._last_peak_kappa_abs: float = 0.0
-        self._dist_since_peak: float = float("inf")
-        self._armed_for_next_peak: bool = True
+        # Precomputed shaped heading-lead profile (see
+        # late_turn_in_investigation.md Part 8/9, set_heading_profile()
+        # below). None until set by the owning node, gated on the
+        # node-level use_precomputed_heading_profile parameter -- when
+        # None, _error_state falls back to today's geometric path tangent
+        # for e_psi's reference, a byte-for-byte no-op.
+        self._heading_profile: np.ndarray | None = None
 
         # Rolling history of recently issued u_opt, oldest-first, used by
         # predict_ahead() to roll x0 forward through however many steps the
@@ -1476,12 +726,6 @@ class MPCController:
         # row 0, delta_cmd, is actually read from it).
         r_a_accel_param = cp.Parameter(nonneg=True, name="r_a_accel")
         r_a_brake_param = cp.Parameter(nonneg=True, name="r_a_brake")
-        # Curvature-forcing term for the dynamics: see _curvature_horizon_profile
-        # and MPCParams.curvature_forcing_enabled's field comment for the
-        # mechanism. Zero everywhere except row 2 (e_psi) when the feature
-        # is enabled; left at the CVXPY default (0) when disabled, which is
-        # exactly a no-op addition to the dynamics constraint below.
-        w_p = cp.Parameter((nx, N), name="w")
 
         x     = cp.Variable((nx, N + 1))
         u     = cp.Variable((nu, N))
@@ -1492,7 +736,7 @@ class MPCController:
         # Dynamics constraints
         constraints = [
             x[:, 0] == x0_p,
-            x[:, 1:] == Ad_p @ x[:, :-1] + Bd_p @ u + w_p,
+            x[:, 1:] == Ad_p @ x[:, :-1] + Bd_p @ u,
             u >= self.u_min[:, None],
             u <= self.u_max[:, None],
             x[0, :-1] <=  3.5 + slack,
@@ -1552,7 +796,6 @@ class MPCController:
             "sqrtRr": sqrtRr_param,
             "r_a_accel": r_a_accel_param,
             "r_a_brake": r_a_brake_param,
-            "w":     w_p,
             "weighted_u_prev": weighted_u_prev_param,
             "u":     u,
         }
@@ -1647,6 +890,17 @@ class MPCController:
         e_y_proj = dy * math.cos(path_yaw) - dx * math.sin(path_yaw)
         e_y = e_y_proj
 
+        # ── Precomputed shaped heading-lead profile (Part 8/9) ──────────────
+        # Substitutes ONLY the reference e_psi is measured against -- e_y
+        # above already used the GEOMETRIC path_yaw for its projection and
+        # is unaffected, same precedent as ref_heading_rate_limit_enabled's
+        # own "only e_psi changes" pattern immediately below. Length-checked
+        # per-tick (not just at set_heading_profile() time) since `path`
+        # itself isn't known until compute() is called with it.
+        if (self._heading_profile is not None
+                and len(self._heading_profile) == len(path)):
+            path_yaw = float(self._heading_profile[base_idx])
+
         # ── Reference-heading rate limit (ref_heading_rate_limit_enabled) ──
         # Mirrors fsae_MPCTest/sim/rollout_core.py's planner branch exactly:
         # only e_psi is recomputed from the limited reference; e_y above is
@@ -1689,23 +943,6 @@ class MPCController:
                 break
         kappa = _curvature(path, preview_idx)
 
-        # ── Lookahead curvature scan (adaptive_q_lookahead) ────────────────
-        # Distinct from the single-point preview kappa above (which drives
-        # _adaptive_R_rate/_steer_rate_anti_hunt): this scans the whole
-        # speed-scaled window ahead for the largest |curvature|, so the Q
-        # boost can anticipate a corner before the car reaches it. See the
-        # module comment about the lookahead corner-anticipation Q-boost, and
-        # MPCParams.adaptive_q_lookahead_time_s / _dist_min / _dist_max.
-        lookahead_dist = float(np.clip(
-            car_speed * self.params.adaptive_q_lookahead_time_s,
-            self.params.adaptive_q_lookahead_dist_min,
-            self.params.adaptive_q_lookahead_dist_max,
-        ))
-        (kappa_max_abs, lookahead_idx, lookahead_peak_dist,
-         lookahead_heading_change) = _lookahead_curvature_profile(
-            path, base_idx, lookahead_dist
-        )
-
         x0 = np.array([
             e_y,
             e_yd,
@@ -1724,10 +961,6 @@ class MPCController:
             "kappa":      kappa,
             "base_idx":   base_idx,
             "preview_idx": preview_idx,
-            "kappa_max_abs":       kappa_max_abs,
-            "lookahead_idx":       lookahead_idx,
-            "lookahead_peak_dist": lookahead_peak_dist,
-            "lookahead_heading_change": lookahead_heading_change,
         }
         return x0, kappa, dbg
 
@@ -1768,62 +1001,31 @@ class MPCController:
 
         return self._n_delay
 
-    def _update_lookahead_peak(self, kappa: float, car_speed: float) -> float:
+    def set_heading_profile(self, psi_target: np.ndarray | None) -> None:
         """
-        Track distance travelled since the last LOCAL peak in CURRENT-POSITION
-        curvature, for _lookahead_exit_boost's decay.
+        Store a precomputed, per-waypoint SHAPED heading reference (see
+        late_turn_in_investigation.md Part 8/9's design), row-aligned with
+        `path` (the SAME array `set_static_path` was given, from the SAME
+        CSV load_path_heading_profile_csv read). Called ONCE by the owning
+        node, gated on the node-level `use_precomputed_heading_profile`
+        parameter -- NEVER called from compute() itself.
 
-        Keyed on `kappa` (the ~1m preview curvature at the car's own
-        position, same signal _adaptive_R_rate/_steer_rate_anti_hunt use),
-        NOT kappa_max_abs (the full speed-scaled lookahead window,
-        default 10-17m ahead at speed): keying on kappa_max_abs would fire
-        the decay clock 10-17m before the car
-        physically reaches the corner (kappa_max_abs detects a corner the
-        moment it enters the far lookahead window, not when the car is
-        actually in it), so _lookahead_exit_boost's whole 5m decay window
-        (default MPCParams.adaptive_q_lookahead_exit_decay_dist) would already
-        have elapsed by the time the car is anywhere near the physical apex --
-        making the exit-heading boost structurally inert on essentially every
-        real corner taken at speed, not merely mistimed. kappa peaks at the
-        car's own physical apex by construction, so decay starts from
-        the moment that matters.
+        This array requires no computation here (the shaping already
+        happened offline in
+        tuner/tools/raceline_optimizer.py) -- this is a plain store, not a
+        build step. `_error_state` looks it up by `base_idx` in place of
+        the geometric `path_yaw` it computes today, ONLY for e_psi's
+        reference; e_y's projection is unaffected (mirrors
+        ref_heading_rate_limit_enabled's existing "only e_psi changes"
+        precedent).
 
-        This is a rising-edge-after-a-clear detector, not "any new global
-        maximum": _armed_for_next_peak only goes True again once kappa has
-        dropped back to <= MPCParams.adaptive_q_lookahead_peak_hysteresis
-        (i.e. the car itself is genuinely on a straight, not just that the
-        far lookahead window is clear), and a peak only latches while armed.
-        Comparing against the running maximum instead
-        (kappa > self._last_peak_kappa_abs) would silently fail to
-        re-trigger on a second corner of equal or LESSER curvature than an
-        earlier one -- an ordinary case (most tracks reuse corner radii),
-        not just a rare S-curve edge case. This way each distinct corner
-        gets its own fresh decay cycle regardless of how its curvature
-        compares to any previous corner's.
-
-        Returns the updated _dist_since_peak for this tick.
+        psi_target=None (or a length mismatch against whatever `path` is
+        passed to compute()/`_error_state` later) falls back to today's
+        geometric heading, a byte-for-byte no-op -- the length check
+        happens per-tick in `_error_state` since `path` itself isn't known
+        until then.
         """
-        kappa_abs = abs(kappa)
-        if kappa_abs <= self.params.adaptive_q_lookahead_peak_hysteresis:
-            self._armed_for_next_peak = True
-        elif self._armed_for_next_peak:
-            # Genuine new corner: the car was on a straight last tick (or
-            # this is the very first corner ever seen) and is now curving --
-            # this is the only case that resets the decay clock to 0.
-            self._last_peak_kappa_abs = kappa_abs
-            self._dist_since_peak = 0.0
-            self._armed_for_next_peak = False
-        elif kappa_abs > self._last_peak_kappa_abs:
-            # Still inside the same corner but curvature is still rising
-            # (approaching the apex) -- update the tracked peak MAGNITUDE (so
-            # _lookahead_exit_boost's sharpness term stays accurate) without
-            # touching the distance clock: the car has been continuously
-            # turning this whole time, not restarting, so resetting distance
-            # here would make boost_exit wobble non-monotonically through
-            # corner entry instead of decaying cleanly after the true apex.
-            self._last_peak_kappa_abs = kappa_abs
-        self._dist_since_peak += abs(car_speed) * self.dt
-        return self._dist_since_peak
+        self._heading_profile = psi_target
 
     def _solve_qp(
         self,
@@ -1835,7 +1037,6 @@ class MPCController:
         Q_scaled:      np.ndarray | None = None,
         r_a_accel:     float | None = None,
         r_a_brake:     float | None = None,
-        w:             np.ndarray | None = None,
     ) -> np.ndarray:
         """
         Solves the MPC optimization problem utilizing warm starts.
@@ -1845,13 +1046,9 @@ class MPCController:
         own [1,1] entry is NOT used for a_cmd (only [0,0], delta_cmd, is
         read from sqrtR) -- callers still pass a full R_scaled for shape/
         parity but must supply r_a_accel/r_a_brake to actually set the
-        accel/brake weights. Defaults to self.params.r_a_accel/r_a_brake
-        when omitted (no adaptive gain currently scales these).
-
-        w: (nx, N) curvature-forcing disturbance added to the dynamics
-        constraint (see _build_qp/_curvature_horizon_profile). None
-        (default) sends an all-zero array, making the constraint an exact
-        no-op -- identical to the dynamics before this term existed.
+        accel/brake weights. compute() passes the heading-error-scaled
+        r_a_accel_eff/r_a_brake_eff (see MPCParams.epsi_ra_half_rad) rather
+        than the raw params directly.
         """
         if self._qp is None:
             self._build_qp()
@@ -1861,7 +1058,6 @@ class MPCController:
         qp["Bd"].value = Bd
         qp["x0"].value = x0
         qp["u_prev"].value = self._u_prev
-        qp["w"].value = np.zeros((self.nx, self.N)) if w is None else w
 
         # Format arrays for cp.sum_squares element-wise multiplication
         Q_for_solve = self.Q if Q_scaled is None else Q_scaled
@@ -2015,59 +1211,51 @@ class MPCController:
         else:
             n_delay = 0
 
-        # kappa_max_abs (lookahead) is computed unconditionally in
-        # _error_state, independent of adaptive_q_lookahead_enabled -- safe
-        # to read here for _adaptive_R_rate's entering-floor even though
-        # the Q-boost application below is still gated on that flag.
-        kappa_max_abs = dbg.get("kappa_max_abs", 0.0)
-
         # ── Adaptive-feature trace ────────────────────────────────────────
         # Every adaptive multiplier below is recorded into `adapt` as it is
         # applied, then merged into last_telemetry so a live log shows WHICH
         # feature fired and BY HOW MUCH on every tick -- not just the
-        # resulting error. Without this, attributing a tracking failure to a
-        # specific boost meant re-deriving each function's value by hand from
-        # kappa/speed after the fact, which is how the demand-scaling
-        # saturation bug (all real corners sitting in the flat 17-62% region
-        # of the old 1-1/(1+8k) curve) went unnoticed for as long as it did.
-        # These are pure observations of values already computed -- adding or
-        # removing a trace entry must never change a control output.
+        # resulting error. These are pure observations of values already
+        # computed -- adding or removing a trace entry must never change a
+        # control output.
         adapt: dict[str, float] = {}
+
+        # ── CURRENT-STATE corner factor (2026-08-13) ───────────────────────
+        # Replaces the deleted lookahead gain-scheduling family (see the
+        # module comment near the top of this file): 0 (straight) -> 1 (full
+        # corner), a single continuous saturating curve of the CURRENT
+        # ~1m-preview curvature `kappa` -- the same signal _adaptive_R_rate/
+        # _steer_rate_anti_hunt already use. No forward scan, no separate
+        # decay-distance timer/hysteresis state: entry and exit are
+        # symmetric, driven purely by how `kappa` itself rises and falls.
+        corner_factor = _corner_factor(kappa, self.params.corner_factor_k)
+        adapt["corner_factor"] = corner_factor
+
+        # Extra push in the SAME direction as corner_factor's "full corner"
+        # endpoint, active only when BOTH corner_factor > 0 AND speed is
+        # low -- gated on corner_factor (multiplicatively) so this cannot
+        # fire on low speed alone with no corner, unlike the deleted
+        # _low_speed_steer_rate_boost (which fired on speed alone and ended
+        # up taxing wanted low-speed turn-in indistinguishably from
+        # unwanted post-exit wobble).
+        low_speed_boost = _low_speed_corner_boost(
+            car_speed, corner_factor,
+            v_half=self.params.low_speed_corner_boost_v_half,
+            max_extra=self.params.low_speed_corner_boost_max_extra,
+        )
+        adapt["low_speed_corner_boost"] = low_speed_boost
+        # Combined corner fraction driving every blend below: corner_factor
+        # itself, boosted further (never past 1.0) at low speed in-corner.
+        corner_frac = float(np.clip(corner_factor + low_speed_boost, 0.0, 1.0))
+        adapt["corner_frac"] = corner_frac
 
         R_scaled = _adaptive_R_scaling(car_speed, self.R)
         adapt["m_R_speed"] = float(R_scaled[0, 0] / self.R[0, 0]) if self.R[0, 0] else 1.0
-        if self.steer_effort_straight_boost_enabled:
-            R_scaled = R_scaled.copy()
-            m = _steer_effort_straight_boost(
-                kappa_max_abs,
-                boost_max=self.params.steer_effort_straight_boost_max,
-                k=self.params.steer_effort_straight_k,
-            )
-            R_scaled[0, 0] *= m
-            adapt["m_R_straight"] = m
-        else:
-            adapt["m_R_straight"] = 1.0
-        if self.lookahead_steer_effort_relax_enabled:
-            m = _lookahead_steer_effort_relax(
-                kappa_max_abs, car_speed,
-                floor=self.params.adaptive_q_lookahead_steer_relax_floor,
-                demand_normalised=self.params.adaptive_q_demand_normalised,
-                demand_half=self.params.adaptive_q_demand_half,
-                ceiling_flat=self.params.alat_ceiling_flat,
-                ceiling_slope=self.params.alat_ceiling_slope,
-                ceiling_intercept=self.params.alat_ceiling_intercept,
-            )
-            R_scaled[0, 0] *= m
-            adapt["m_R_steer_relax"] = m
-        else:
-            adapt["m_R_steer_relax"] = 1.0
+
         R_rate_scaled = _adaptive_R_rate(
             kappa, self.R_rate,
             enable_in_corners=self.adaptive_r_rate_enable_in_corners,
-            kappa_max_abs=kappa_max_abs,
             during_floor=self.params.adaptive_r_rate_during_floor,
-            entering_floor=self.params.adaptive_r_rate_entering_floor,
-            k_entering=self.params.adaptive_r_rate_k_entering,
         )
         adapt["m_Rrate_corner"] = (
             float(R_rate_scaled[0, 0] / self.R_rate[0, 0]) if self.R_rate[0, 0] else 1.0
@@ -2077,175 +1265,49 @@ class MPCController:
             kappa, x0[0], R_rate_scaled, self.steer_rate_anti_hunt_enabled,
             e_psi=x0[2],
             boost_max=self.params.anti_hunt_boost_max,
-            kappa_max_abs=kappa_max_abs,
-            k_lookahead=self.params.anti_hunt_k_lookahead,
         )
         adapt["m_Rrate_antihunt"] = (
             float(R_rate_scaled[0, 0] / _rr_before_hunt) if _rr_before_hunt else 1.0
         )
-        _rr_before_lowspeed = float(R_rate_scaled[0, 0])
-        R_rate_scaled = _low_speed_steer_rate_boost(
-            car_speed, R_rate_scaled, self.low_speed_steer_rate_boost_enabled,
-            boost_max=self.params.low_speed_steer_rate_boost_max,
-            k=self.params.low_speed_steer_rate_boost_k,
-        )
-        adapt["m_Rrate_lowspeed"] = (
-            float(R_rate_scaled[0, 0] / _rr_before_lowspeed) if _rr_before_lowspeed else 1.0
-        )
-        # ── Lookahead corner-anticipation Q-boost (adaptive_q_lookahead) ───
-        # Applied to self.Q FIRST, then _adaptive_Q_scaling's centred-
-        # softening multiplies on top of the result below -- see the module
-        # comment about the lookahead corner-anticipation Q-boost for why this
-        # ordering avoids the corner boost being silently cancelled by the
-        # centred-softening floor while keeping both continuous.
-        Q_base = self.Q
-        if self.adaptive_q_lookahead_enabled:
-            self._update_lookahead_peak(kappa, car_speed)
-            Q_base = self.Q.copy()
-            m = _lookahead_approach_boost(
-                kappa_max_abs, car_speed,
-                boost_max=self.params.adaptive_q_lookahead_q_boost_max,
-                demand_normalised=self.params.adaptive_q_demand_normalised,
-                k_approach=self.params.adaptive_q_lookahead_k_approach,
-                demand_half=self.params.adaptive_q_demand_half,
-                ceiling_flat=self.params.alat_ceiling_flat,
-                ceiling_slope=self.params.alat_ceiling_slope,
-                ceiling_intercept=self.params.alat_ceiling_intercept,
-            )
-            Q_base[0, 0] *= m
-            adapt["m_Q_ey_approach"] = m
-            m = _lookahead_straight_lateral_reduce(
-                kappa_max_abs,
-                ey_floor=self.params.adaptive_q_straight_ey_floor,
-                ey_k=self.params.adaptive_q_straight_ey_k,
-            )
-            Q_base[0, 0] *= m
-            adapt["m_Q_ey_straight"] = m
-            m = _lookahead_epsi_approach_boost(
-                kappa_max_abs, car_speed,
-                boost_max=self.params.adaptive_q_lookahead_epsi_approach_boost_max,
-                demand_normalised=self.params.adaptive_q_demand_normalised,
-                k_epsi_approach=self.params.adaptive_q_lookahead_k_epsi_approach,
-                demand_half=self.params.adaptive_q_demand_half,
-                ceiling_flat=self.params.alat_ceiling_flat,
-                ceiling_slope=self.params.alat_ceiling_slope,
-                ceiling_intercept=self.params.alat_ceiling_intercept,
-            )
-            Q_base[2, 2] *= m
-            adapt["m_Q_epsi_approach"] = m
-            # Speed-scaled, same shape as the approach-side lookahead_dist
-            # above -- see MPCParams.adaptive_q_lookahead_exit_decay_time_s's
-            # metadata and _lookahead_exit_boost's docstring for why a FIXED
-            # decay_dist undershoots at speed: |e_y|/|e_psi| don't peak right
-            # at the apex, they peak several seconds of travel after it (the
-            # car is still sliding wide/yawing back through the exit), so a
-            # short fixed window had already fully decayed by the time
-            # tracking error was at its worst.
-            exit_decay_dist = float(np.clip(
-                car_speed * self.params.adaptive_q_lookahead_exit_decay_time_s,
-                self.params.adaptive_q_lookahead_exit_decay_dist,
-                self.params.adaptive_q_lookahead_exit_decay_dist_max,
-            ))
-            m = _lookahead_exit_boost(
-                self._last_peak_kappa_abs, self._dist_since_peak,
-                decay_dist=exit_decay_dist,
-                k_exit_norm=self.params.adaptive_q_lookahead_k_exit_norm,
-                boost_max=self.params.adaptive_q_lookahead_epsi_boost_max,
-            )
-            Q_base[2, 2] *= m
-            adapt["m_Q_epsi_exit"] = m
-            m = _lookahead_straight_boost(
-                kappa_max_abs,
-                self.params.adaptive_q_straight_epsi_boost_max,
-                self.params.adaptive_q_straight_k,
-            )
-            Q_base[2, 2] *= m
-            adapt["m_Q_epsi_straight"] = m
-            m = _lookahead_yaw_rate_relax(
-                kappa_max_abs, car_speed,
-                floor=self.params.adaptive_q_lookahead_r_floor,
-                demand_normalised=self.params.adaptive_q_demand_normalised,
-                k_r_relax=self.params.adaptive_q_lookahead_k_r_relax,
-                demand_half=self.params.adaptive_q_demand_half,
-                ceiling_flat=self.params.alat_ceiling_flat,
-                ceiling_slope=self.params.alat_ceiling_slope,
-                ceiling_intercept=self.params.alat_ceiling_intercept,
-            )
-            Q_base[3, 3] *= m
-            adapt["m_Q_r_relax"] = m
-            m = _lookahead_straight_boost(
-                kappa_max_abs,
-                self.params.adaptive_q_straight_r_boost_max,
-                self.params.adaptive_q_straight_k,
-            )
-            Q_base[3, 3] *= m
-            adapt["m_Q_r_straight"] = m
 
-            # ── U-turn extra commitment (see MPCParams.adaptive_q_uturn_*) ──
-            # Scored from accumulated heading change, NOT peak curvature, so
-            # a long gradual U-turn is no longer under-boosted just because
-            # its radius is large. Zero below 90 deg, so ordinary corners
-            # (including the sudden-corner case that already works) are
-            # completely unaffected. Only meaningful while steering is still
-            # unsaturated on approach -- see the scope note on the constants.
-            uturn = _uturn_severity(
-                dbg.get("lookahead_heading_change", 0.0),
-                thresh_rad=self.params.adaptive_q_uturn_heading_thresh_rad,
-                sat_rad=self.params.adaptive_q_uturn_heading_sat_rad,
-            )
-            adapt["uturn_severity"] = uturn
-            if uturn > 0.0:
-                m = _uturn_boost(uturn, self.params.adaptive_q_uturn_ey_boost_max)
-                Q_base[0, 0] *= m
-                adapt["m_Q_ey_uturn"] = m
-                m = _uturn_boost(uturn, self.params.adaptive_q_uturn_epsi_boost_max)
-                Q_base[2, 2] *= m
-                adapt["m_Q_epsi_uturn"] = m
-                m = _uturn_boost(uturn, self.params.adaptive_q_uturn_r_relax_floor)
-                Q_base[3, 3] *= m
-                adapt["m_Q_r_uturn"] = m
+        # ── Current-state Q[0,0]/Q[2,2]/Q[3,3] and R_rate[0,0] blend ───────
+        # Straight-line-blend, PER WEIGHT, between a "straight" endpoint and
+        # a "full corner" endpoint, driven by corner_frac above. Replaces
+        # the deleted per-mechanism multiplicative lookahead gates with one
+        # shared current-state schedule. R[0,0] (steering effort) is a
+        # special case: blended toward a MIDDLE value, not the same
+        # corner-floor extreme as R_rate/Q[3,3], per the user's own framing
+        # ("should be somewhere in between the two extremes to discourage
+        # saturation") -- see _blend/the R_steer_corner_mid field comment.
+        Q_base = self.Q.copy()
+        Q_base[0, 0] = _blend(
+            self.params.q_ey_straight, self.params.q_ey_corner, corner_frac)
+        Q_base[2, 2] = _blend(
+            self.params.q_epsi_straight, self.params.q_epsi_corner, corner_frac)
+        Q_base[3, 3] = _blend(
+            self.params.q_r_straight, self.params.q_r_corner, corner_frac)
+        adapt["Q_ey_base"]   = float(Q_base[0, 0])
+        adapt["Q_epsi_base"] = float(Q_base[2, 2])
+        adapt["Q_r_base"]    = float(Q_base[3, 3])
+
+        R_rate_scaled = R_rate_scaled.copy()
+        R_rate_scaled[0, 0] = _blend(
+            self.params.rrate_steer_straight, self.params.rrate_steer_corner,
+            corner_frac,
+        )
+        adapt["Rrate_steer_corner_blend"] = float(R_rate_scaled[0, 0])
+
+        R_scaled = R_scaled.copy()
+        R_scaled[0, 0] = _blend(
+            R_scaled[0, 0], self.params.r_steer_corner_mid, corner_frac)
+        adapt["R_steer_corner_blend"] = float(R_scaled[0, 0])
 
         # x0[0] is e_y (delay-compensated, if n_delay>0 above rolled it
         # forward) -- compute() has no bare e_y in scope, only x0.
-        Q_scaled      = _adaptive_Q_scaling(x0[0], Q_base, self.adaptive_q_scaling_enabled)
+        Q_scaled = _adaptive_Q_scaling(x0[0], Q_base, self.adaptive_q_scaling_enabled)
         adapt["m_Q_ey_soften"] = (
             float(Q_scaled[0, 0] / Q_base[0, 0]) if Q_base[0, 0] else 1.0
         )
-
-        # Defaults for the U-turn entries, which are only written when the
-        # detector actually fires -- a missing key would otherwise become an
-        # empty CSV cell and silently break any downstream numeric parse.
-        adapt.setdefault("m_Q_ey_uturn", 1.0)
-        adapt.setdefault("m_Q_epsi_uturn", 1.0)
-        adapt.setdefault("m_Q_r_uturn", 1.0)
-        adapt.setdefault("uturn_severity", 0.0)
-
-        # Corner demand (see _corner_demand): kappa_max_abs expressed as a
-        # fraction of what the FSDS lateral-acceleration ceiling actually
-        # permits at this speed. This is the single most diagnostic scalar in
-        # the log -- demand > 1 means the corner ahead is not achievable at
-        # the current speed no matter how the weights are set, so a wide line
-        # there is a speed-profile problem, not a gain problem.
-        _demand = _corner_demand(
-            kappa_max_abs, car_speed,
-            self.params.alat_ceiling_flat,
-            self.params.alat_ceiling_slope,
-            self.params.alat_ceiling_intercept,
-        )
-        adapt["corner_demand"] = _demand
-        adapt["demand_frac"]   = _demand_frac(
-            _demand, self.params.adaptive_q_demand_half
-        )
-        adapt["alat_ceiling"]  = _alat_ceiling_at(
-            car_speed,
-            self.params.alat_ceiling_flat,
-            self.params.alat_ceiling_slope,
-            self.params.alat_ceiling_intercept,
-        )
-        adapt["dist_since_peak"] = float(
-            min(self._dist_since_peak, 999.0)   # starts at +inf; keep CSV finite
-        )
-        adapt["last_peak_kappa"] = float(self._last_peak_kappa_abs)
 
         # Absolute post-scaling weights actually handed to the QP. The
         # multipliers above say how hard each feature pushed; these say where
@@ -2256,37 +1318,25 @@ class MPCController:
         adapt["Q_r_eff"]    = float(Q_scaled[3, 3])
         adapt["R_steer_eff"]      = float(R_scaled[0, 0])
         adapt["Rrate_steer_eff"]  = float(R_rate_scaled[0, 0])
-        adapt["R_a_accel_eff"] = self.params.r_a_accel
-        adapt["R_a_brake_eff"] = self.params.r_a_brake
 
-        # ── Curvature-forcing term for the QP's own dynamics ──────────────
-        # Without this the QP's prediction cannot "see" the path bending
-        # ahead at all: with e_y = e_psi = 0 (car dead on-line approaching a
-        # corner) its 35-step rollout predicts staying at 0 forever, because
-        # nothing in Ad/Bd represents the REFERENCE turning away from the
-        # car. Every lookahead mechanism above only reweights an EXISTING
-        # error, so none of them can make the controller start turning while
-        # there is no error yet. See _curvature_horizon_profile and
-        # MPCParams.curvature_forcing_enabled.
-        w_forcing = None
-        if self.params.curvature_forcing_enabled:
-            kappa_horizon = _curvature_horizon_profile(
-                path, dbg.get("base_idx", 0), car_speed, self.N, self.dt,
-            )
-            w_forcing = np.zeros((self.nx, self.N))
-            # e_psi = car_yaw - path_yaw, and the path's heading advances at
-            # v_x * kappa (rad/s) along the reference, so a path curving
-            # LEFT (kappa > 0) drives e_psi NEGATIVE over the horizon even
-            # with the car holding a constant heading -- hence the minus.
-            w_forcing[2, :] = (
-                -car_speed * kappa_horizon * self.dt
-                * self.params.curvature_forcing_gain
-            )
-            adapt["kappa_horizon_end"] = float(kappa_horizon[-1])
-            adapt["w_epsi_sum"] = float(w_forcing[2, :].sum())
-        else:
-            adapt["kappa_horizon_end"] = 0.0
-            adapt["w_epsi_sum"] = 0.0
+        # ── Heading-error-driven accel/brake asymmetry (2026-08-13) ────────
+        # Always-on, independent of the corner_frac scheduler above: a
+        # continuous 0->1 fraction of CURRENT |e_psi| (x0[2]) scales
+        # r_a_accel toward accel_boost_max (more expensive, so the MPC
+        # doesn't keep accelerating through a heading error it should be
+        # correcting) and r_a_brake toward brake_floor (cheaper, so braking
+        # authority is freed up specifically when heading error is large).
+        # Not a replacement for _adaptive_R_scaling (current-speed-driven
+        # R[0,0] scaling), which is left untouched.
+        epsi_abs = abs(x0[2])
+        epsi_half = max(self.params.epsi_ra_half_rad, 1e-6)
+        frac_epsi = epsi_abs / (epsi_abs + epsi_half)
+        r_a_accel_eff = self.params.r_a_accel * (
+            1.0 + (self.params.epsi_ra_accel_boost_max - 1.0) * frac_epsi)
+        r_a_brake_eff = self.params.r_a_brake * (
+            1.0 - (1.0 - self.params.epsi_ra_brake_floor) * frac_epsi)
+        adapt["R_a_accel_eff"] = float(r_a_accel_eff)
+        adapt["R_a_brake_eff"] = float(r_a_brake_eff)
 
         # Wall-clock the QP so the log can distinguish "the solver is slow"
         # from "the pipeline upstream of us is slow" — see solve_ms in
@@ -2294,8 +1344,7 @@ class MPCController:
         _t_solve0 = time.perf_counter()
         u_opt = self._solve_qp(
             x0, Ad, Bd, R_scaled, R_rate_scaled, Q_scaled,
-            r_a_accel=self.params.r_a_accel, r_a_brake=self.params.r_a_brake,
-            w=w_forcing,
+            r_a_accel=r_a_accel_eff, r_a_brake=r_a_brake_eff,
         )
         solve_ms = (time.perf_counter() - _t_solve0) * 1e3
         self._u_history.append(u_opt.copy())
