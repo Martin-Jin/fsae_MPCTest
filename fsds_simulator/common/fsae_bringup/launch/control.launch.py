@@ -15,6 +15,10 @@ from launch_ros.actions import Node
 # relative path back to src/ needed, unlike map_path's hardcoded absolute
 # default below (which points at data, not code on the Python path).
 from fsae_control.mpc_params import MPC_PARAM_FIELDS
+# NMPCParams' fields (nonlinear-MPC controller, use_nmpc default false) are
+# generated into launch args by the SAME mechanism as MPCParams' -- see
+# nmpc_params.py's own note on why they are a separate dataclass.
+from fsae_control.nmpc_params import NMPC_PARAM_FIELDS
 
 
 # Control subsystem: a path-tracking controller + the FSDS command bridge.
@@ -44,6 +48,8 @@ def generate_launch_description():
     use_precomputed_speed = LaunchConfiguration('use_precomputed_speed')
     path_map_path = LaunchConfiguration('path_map_path')
     use_precomputed_path = LaunchConfiguration('use_precomputed_path')
+    use_precomputed_corner_map = LaunchConfiguration('use_precomputed_corner_map')
+    use_precomputed_heading_profile = LaunchConfiguration('use_precomputed_heading_profile')
     v_max = LaunchConfiguration('v_max')
     v_min = LaunchConfiguration('v_min')
     stanley_gain = LaunchConfiguration('stanley_gain')
@@ -59,6 +65,9 @@ def generate_launch_description():
     # risk -- see the plan this was built from).
     mpc_param_configs = {
         name: LaunchConfiguration(name) for name, _default, _meta in MPC_PARAM_FIELDS
+    }
+    nmpc_param_configs = {
+        name: LaunchConfiguration(name) for name, _default, _meta in NMPC_PARAM_FIELDS
     }
     # Effective map_path handed to the node: '' whenever the feature is
     # switched off, regardless of what map_path itself is set to -- so
@@ -134,6 +143,11 @@ def generate_launch_description():
 
     mpc_launch_args = [
         _mpc_launch_arg(name, default, meta) for name, default, meta in MPC_PARAM_FIELDS
+    ] + [
+        # Same generator, same guarantee: leaving every one of these unset
+        # changes nothing (use_nmpc defaults false -> the LTV-QP MPCController
+        # runs exactly as it does today).
+        _mpc_launch_arg(name, default, meta) for name, default, meta in NMPC_PARAM_FIELDS
     ]
 
     return LaunchDescription([
@@ -180,7 +194,7 @@ def generate_launch_description():
                 "fsae_planning clone can use it immediately -- no "
                 "fsae_MPCTest checkout required to READ it (only to produce "
                 "a NEW one; see tracks/README or fsae_MPCTest's "
-                "tuner/tools/export_speed_profile.py). Has no effect unless "
+                "tuner/export_speed_profile.py). Has no effect unless "
                 "use_precomputed_speed:=true. Applies to `mpc`, "
                 "`mpc_standalone`, AND `stanley` (all three declare this "
                 "param) -- letting Stanley and MPC runs on the same track "
@@ -201,7 +215,7 @@ def generate_launch_description():
             )),
         DeclareLaunchArgument(
             # Same x,y,psi,v_target file FORMAT as map_path, but a different
-            # default FILE: the track's raceline.csv (tuner/tools/raceline_optimizer.py's
+            # default FILE: the track's raceline.csv (tuner/raceline_optimizer.py's
             # minimum-time line) rather than its speed_profile.csv (the
             # centreline). The MPC's optimum is always e_y=0 on whatever path
             # it is given, so it can never invent a racing line from a
@@ -231,6 +245,40 @@ def generate_launch_description():
                 "mapped. On by default, matching "
                 "use_precomputed_speed -- set false for the planner-in-loop "
                 "diagnostic/experiment mode instead."
+            )),
+        DeclareLaunchArgument(
+            'use_precomputed_corner_map', default_value='false',
+            description=(
+                "true -> segment path_map_path's STATIC path into per-corner "
+                "metadata once at load (see mpc_core.py's CornerMap / "
+                "_segment_corners), replacing the live kappa_max_abs "
+                "lookahead scan / exit-decay tracker with exact lookups. "
+                "Has no effect unless use_precomputed_path is ALSO true "
+                "(nothing static to segment otherwise) -- same dependency "
+                "shape as use_precomputed_path itself depending on "
+                "path_map_path being set. Unlike use_precomputed_speed/"
+                "use_precomputed_path, this is forwarded straight through "
+                "(no IfElseSubstitution): it's a pure behaviour switch with "
+                "no string to conditionally blank. Off by default: land "
+                "off, prove live before flipping. MPC-only (like "
+                "path_map_path) -- stanley_controller.py doesn't declare "
+                "this."
+            )),
+        DeclareLaunchArgument(
+            'use_precomputed_heading_profile', default_value='false',
+            description=(
+                "true -> use path_map_path's shaped psi_target column (see "
+                "tuner/tools/raceline_optimizer.py's "
+                "build_shaped_heading_profile and "
+                "late_turn_in_investigation.md Part 8/9) as the reference "
+                "e_psi is measured against, in place of the geometric path "
+                "tangent -- e_y is unaffected. Has no effect unless "
+                "use_precomputed_path is ALSO true. A 4-column (older) "
+                "raceline.csv with no psi_target column degrades to the "
+                "geometric tangent automatically -- a no-op. Off by "
+                "default: land off, prove live before flipping. MPC-only "
+                "(like path_map_path) -- stanley_controller.py doesn't "
+                "declare this."
             )),
         # v_max/v_min/stanley_gain: overrides the shared controller.ros__parameters
         # block in fsae_params.yaml (applies to stanley, mpc, and mpc_standalone
@@ -277,6 +325,8 @@ def generate_launch_description():
                 'log_csv': log_csv, 'log_dir': log_dir,
                 'map_path': effective_map_path,
                 'path_map_path': effective_path_map_path,
+                'use_precomputed_corner_map': use_precomputed_corner_map,
+                'use_precomputed_heading_profile': use_precomputed_heading_profile,
                 'v_max': v_max, 'v_min': v_min,
                 'enable_dynamic_speed_cap': enable_dynamic_speed_cap,
                 'dynamic_cap_a_lat_max': dynamic_cap_a_lat_max,
@@ -288,6 +338,10 @@ def generate_launch_description():
                 # mpc_params.py's declare_mpc_params()), so unlike
                 # stanley_gain these are safe to pass unconditionally here.
                 **mpc_param_configs,
+                # Both MPC nodes declare every NMPCParams field (see
+                # nmpc_params.declare_nmpc_params()), so these are safe to
+                # pass unconditionally alongside mpc_param_configs.
+                **nmpc_param_configs,
             }],
             condition=run_controller_mpc,
         ),

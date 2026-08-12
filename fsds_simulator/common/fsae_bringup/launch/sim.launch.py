@@ -10,6 +10,7 @@ from launch.substitutions import LaunchConfiguration, PythonExpression
 # See control.launch.py's own comment on this import -- fsae_control is an
 # installed package by launch-description-generation time, same as any node.
 from fsae_control.mpc_params import MPC_PARAM_FIELDS
+from fsae_control.nmpc_params import NMPC_PARAM_FIELDS
 
 
 # Top-level simulator bring-up: composes perception + planning + control.
@@ -49,6 +50,8 @@ def generate_launch_description():
     use_precomputed_speed = LaunchConfiguration('use_precomputed_speed')
     path_map_path = LaunchConfiguration('path_map_path')
     use_precomputed_path = LaunchConfiguration('use_precomputed_path')
+    use_precomputed_corner_map = LaunchConfiguration('use_precomputed_corner_map')
+    use_precomputed_heading_profile = LaunchConfiguration('use_precomputed_heading_profile')
     v_max = LaunchConfiguration('v_max')
     v_min = LaunchConfiguration('v_min')
     stanley_gain = LaunchConfiguration('stanley_gain')
@@ -61,6 +64,11 @@ def generate_launch_description():
     mpc_param_configs = {
         name: LaunchConfiguration(name) for name, _default, _meta in MPC_PARAM_FIELDS
     }
+    # NMPCParams (nonlinear MPC; use_nmpc default false) — forwarded straight
+    # through to control.launch.py, same as mpc_param_configs.
+    mpc_param_configs.update({
+        name: LaunchConfiguration(name) for name, _default, _meta in NMPC_PARAM_FIELDS
+    })
 
     # Skidpad needs the whole cone map up front to reconstruct the figure-8.
     full_track = PythonExpression(
@@ -121,7 +129,7 @@ def generate_launch_description():
             default_value='/home/Formula-Student-Driverless-Simulator/ros2/src/fsae_planning/tracks/comp_test_map_3/raceline.csv',
             description="Passed through to control.launch.py — see that file's "
                         "path_map_path description. Points at the raceline "
-                        "(raceline.csv, tuner/tools/raceline_optimizer.py's "
+                        "(raceline.csv, tuner/raceline_optimizer.py's "
                         "minimum-time line) rather than the centreline "
                         "(speed_profile.csv) so the tracked geometry actually "
                         "contains the widen-entry/clip-apex shape a corner "
@@ -148,6 +156,18 @@ def generate_launch_description():
                         "the loop. Override with use_precomputed_path:=false "
                         "on the command line for the planner-vs-controller "
                         "isolation / live-planner-in-loop experiment mode."),
+        DeclareLaunchArgument(
+            'use_precomputed_corner_map',
+            default_value='false',
+            description="Passed through to control.launch.py — see that file's "
+                        "use_precomputed_corner_map description. Off by "
+                        "default: land off, prove live before flipping."),
+        DeclareLaunchArgument(
+            'use_precomputed_heading_profile',
+            default_value='false',
+            description="Passed through to control.launch.py — see that file's "
+                        "use_precomputed_heading_profile description. Off by "
+                        "default: land off, prove live before flipping."),
         DeclareLaunchArgument(
             'v_max', default_value='15.0',
             description='m/s -- top speed on straights (overrides fsae_params.yaml controller.v_max)'),
@@ -177,7 +197,7 @@ def generate_launch_description():
                 f"{' (' + meta['unit'] + ')' if meta.get('unit') and meta['unit'] != 'unitless' else ''}"
                 " -- passed through to control.launch.py, see that file's own description"
             ),
-        ) for name, default, meta in MPC_PARAM_FIELDS),
+        ) for name, default, meta in (*MPC_PARAM_FIELDS, *NMPC_PARAM_FIELDS)),
         include('perception.launch.py', {'full_track': full_track}),
         include('planning.launch.py',   {'planner': planner}),
         include('control.launch.py',    {
@@ -185,6 +205,8 @@ def generate_launch_description():
             'log_csv': log_csv, 'log_dir': log_dir,
             'map_path': map_path, 'use_precomputed_speed': use_precomputed_speed,
             'path_map_path': path_map_path, 'use_precomputed_path': use_precomputed_path,
+            'use_precomputed_corner_map': use_precomputed_corner_map,
+            'use_precomputed_heading_profile': use_precomputed_heading_profile,
             'v_max': v_max, 'v_min': v_min, 'stanley_gain': stanley_gain,
             'enable_dynamic_speed_cap': enable_dynamic_speed_cap,
             'dynamic_cap_a_lat_max': dynamic_cap_a_lat_max,

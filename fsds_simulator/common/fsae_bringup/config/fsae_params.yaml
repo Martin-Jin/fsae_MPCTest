@@ -90,16 +90,16 @@ controller:
     # effort, R_rate penalises tick-to-tick jerk. States x are
     # [e_y, e_yd, e_psi, r, e_v, e_a, delta_act, a_act]; inputs u are
     # [delta_cmd, a_cmd].
-    q_e_y: 5.2                # lateral deviation from path centreline (1/m^2)
-    q_e_yd: 0.2                # rate of change of lateral deviation (1/(m/s)^2)
-    q_e_psi: 1.52              # heading error relative to path tangent (1/rad^2)
-    q_r: 0.5                   # yaw rate (1/(rad/s)^2)
-    q_e_v: 4.0                 # speed error: car_speed - desired_speed (1/(m/s)^2)
-    r_delta: 1.16              # steering command effort (1/rad^2)
-    r_a_accel: 1.0             # acceleration command effort, a_cmd >= 0 (1/(m/s^2)^2)
-    r_a_brake: 0.6             # acceleration command effort, a_cmd < 0 -- braking (1/(m/s^2)^2)
-    r_rate_delta: 2.1          # steering rate of change (1/(rad/s)^2)
-    r_rate_a: 2.6              # acceleration rate of change (1/(m/s^3)^2)
+    q_e_y: 6.35                # lateral deviation from path centreline (1/m^2)
+    q_e_yd: 0.5                # rate of change of lateral deviation (1/(m/s)^2)
+    q_e_psi: 2.0               # heading error relative to path tangent (1/rad^2)
+    q_r: 1.0                   # yaw rate (1/(rad/s)^2)
+    q_e_v: 5.35                # speed error: car_speed - desired_speed (1/(m/s)^2)
+    r_delta: 1.8               # steering command effort (1/rad^2)
+    r_a_accel: 2.5             # acceleration command effort, a_cmd >= 0 (1/(m/s^2)^2)
+    r_a_brake: 0.5             # acceleration command effort, a_cmd < 0 -- braking (1/(m/s^2)^2)
+    r_rate_delta: 2.0          # steering rate of change (1/(rad/s)^2)
+    r_rate_a: 2.35             # acceleration rate of change (1/(m/s^3)^2)
     terminal_q_scale: 1.0      # extra weight on terminal predicted state; 1.0 = no-op
 
     # Feature enable/disable flags
@@ -130,7 +130,9 @@ controller:
     adaptive_q_lookahead_time_s: 1.13         # s — speed -> lookahead distance
     adaptive_q_lookahead_dist_min: 3.0        # m — lookahead distance clamp floor
     adaptive_q_lookahead_dist_max: 25.0       # m — lookahead distance clamp ceiling (raised from 17.0 on 2026-08-12 to match the exit-side ceiling and stop clamping lookahead below ~1s at typical corner-approach speed)
-    adaptive_q_lookahead_q_boost_max: 2.0     # max Q[0,0] multiplier approaching a corner
+    adaptive_q_extended_lookahead_dist_max: 0.0   # m — corner-map-only: search PAST adaptive_q_lookahead_dist_max for the next corner, fading its severity smoothly. 0.0 = disabled. LIVE-TESTED 2026-08-13, performed WORSE, disabled -- see late_turn_in_investigation.md Part 16.
+    adaptive_q_extended_lookahead_k: 0.1           # 1/m — fade sharpness of the extended search vs extra distance
+    adaptive_q_lookahead_q_boost_max: 2.0     # max Q[0,0] multiplier approaching a corner -- briefly raised to 3.0 on 2026-08-12, reverted same day to isolate-test the heading (epsi) boost alone
     adaptive_q_lookahead_k_approach: 8.0      # legacy (non-demand-normalised) approach ramp sharpness
 
     # Demand-normalised corner scoring (FSDS lateral-accel ceiling law:
@@ -139,8 +141,9 @@ controller:
     alat_ceiling_slope: 0.47                  # (m/s^2)/(m/s)
     alat_ceiling_intercept: 2.46              # m/s^2
     adaptive_q_demand_half: 0.5               # corner demand at which a boost reaches half its max
+    adaptive_q_growth_rate_weight: 1.0        # blends lookahead curvature GROWTH RATE into effective kappa_max_abs for a gradual-entry corner (m); 0.0 = disabled. Set to 1.0 2026-08-12 per user request to test live. NOT YET LIVE-TESTED.
     adaptive_q_lookahead_epsi_boost_max: 1.5           # max Q[2,2] multiplier exiting a corner
-    adaptive_q_lookahead_epsi_approach_boost_max: 1.5  # max Q[2,2] multiplier approaching a corner
+    adaptive_q_lookahead_epsi_approach_boost_max: 1.5  # max Q[2,2] multiplier approaching a corner -- tried 2.5 then 2.0 on 2026-08-12, both live-tested WORSE than baseline and reverted same day. Do not re-raise without new evidence.
     adaptive_q_lookahead_k_epsi_approach: 8.0          # legacy (non-demand-normalised) epsi-approach ramp sharpness
 
     # U-turn detector (accumulated heading change over the lookahead window).
@@ -157,6 +160,7 @@ controller:
     adaptive_q_lookahead_exit_decay_dist_max: 25.0  # m — exit boost taper distance clamp ceiling
     adaptive_q_lookahead_k_exit_norm: 0.05     # 1/m — normalises exit boost by corner sharpness
     adaptive_q_lookahead_peak_hysteresis: 0.01 # 1/m — "cleared" threshold that re-arms peak detection
+    adaptive_q_lookahead_epsi_hold_thresh_rad: 0.0  # rad — only active w/ use_precomputed_corner_map=True: hold exit boost while |e_psi| exceeds this. 0.0 = disabled. NOT YET LIVE-TESTED (late_turn_in_investigation.md 3f-pre).
 
     # Yaw-rate relaxation approaching a corner
     adaptive_q_lookahead_r_floor: 0.5      # min Q[3,3] multiplier at high lookahead curvature
@@ -170,11 +174,11 @@ controller:
 
     # Straight-line Q[2,2]/Q[3,3] boosts
     adaptive_q_straight_epsi_boost_max: 1.1    # max Q[2,2] multiplier on a clear straight
-    adaptive_q_straight_r_boost_max: 1.5       # max Q[3,3] multiplier on a clear straight
+    adaptive_q_straight_r_boost_max: 3.0       # max Q[3,3] multiplier on a clear straight -- raised from 1.5 on 2026-08-12 per user request
     adaptive_q_straight_k: 8.0                 # shared fade-out sharpness vs lookahead curvature
 
     # Straight-line Q[0,0] floor
-    adaptive_q_straight_ey_floor: 0.7    # min Q[0,0] multiplier on a clear straight
+    adaptive_q_straight_ey_floor: 0.7    # min Q[0,0] multiplier on a clear straight -- reverted back to 0.7 (from a same-day 0.85 trial) per subsequent live tuning
     adaptive_q_straight_ey_k: 8.0        # ramp sharpness vs lookahead curvature -- lowered from 20.0 on 2026-08-12, see mpc_params.py's field comment
 
     # Straight-line R[0,0] (steering effort) boost
@@ -185,6 +189,9 @@ controller:
     anti_hunt_boost_max: 6.0   # ceiling on the steer_rate_anti_hunt multiplier
     anti_hunt_k_lookahead: 15.0   # anti-hunt fade sharpness vs LOOKAHEAD curvature (kappa_max_abs) -- relaxes anti-hunt once a corner is CLOSE/SHARP (was 60.0, too eager: halved damping at kappa_max_abs=0.02 and amplified pre-existing pose-noise oscillation into worse turn-in + wrong-direction flicks; see mpc_params.py's comment)
 
+    # adaptive_Q_scaling's centred-softening lookahead gate (see mpc_params.py's comment)
+    adaptive_q_scaling_k_lookahead: 30.0   # fade sharpness of the centred-softening floor vs LOOKAHEAD curvature (kappa_max_abs) -- relaxes the floor once a corner is detected ahead, so it stops fighting lookahead_approach_boost on a well-centred corner approach
+
     # Adaptive R_rate corner softening floors
     adaptive_r_rate_during_floor: 0.625     # R_rate[0,0] floor driven by CURRENT-position curvature
     adaptive_r_rate_entering_floor: 0.85    # R_rate[0,0] floor driven by LOOKAHEAD curvature
@@ -193,5 +200,46 @@ controller:
     # Low-speed R_rate[0,0] (steering rate) boost -- disabled, see low_speed_steer_rate_boost_enabled above
     low_speed_steer_rate_boost_max: 2.5   # R_rate[0,0] multiplier at vx=0, decaying toward 1.0 as speed rises
     low_speed_steer_rate_boost_k: 0.35    # decay sharpness of the low-speed boost vs speed
+
+    # ── NONLINEAR MPC (nmpc_core.py's NMPCController) ────────────────────
+    # use_nmpc=false (default) means none of this is used and the LTV-QP
+    # MPCController runs exactly as it always has. Single source of truth for
+    # these is fsae_control/nmpc_params.py's NMPCParams dataclass — every
+    # field there has a matching key here with the SAME default.
+    #
+    # Unlike the MPC block above, these have NO fsae_MPCTest/settings.py
+    # counterpart and are NOT part of CLAUDE.md's numeric-parity table: the
+    # NMPC is live-only for now (see late_turn_in_investigation.md Part 16),
+    # so there is nothing offline to keep them identical to yet. If/when the
+    # NMPC is mirrored into fsae_MPCTest, that changes and this note must go.
+
+    use_nmpc: false   # true -> use nmpc_core.NMPCController (Frenet-frame nonlinear MPC) instead of mpc_core.MPCController (LTV-QP). Default false.
+    nmpc_horizon: 20   # prediction horizon in steps (20 * dt=0.05 = 1.0 s). Measured better than 35 (MPCController's value) on tracking error — see the sweep table above and Part 16 §16.7 (steps)
+    nmpc_sqp_iters: 1   # max Gauss-Newton SQP iterations per control tick (real-time-iteration style: the previous tick's shifted solution is the warm start, so one iteration per tick still converges across ticks). 1 measu... (iterations)
+    nmpc_solve_budget_ms: 25.0   # wall-clock budget per tick; SQP stops early (shipping the best feasible iterate) once exceeded. Half of the 50 ms control period, leaving the rest of the tick for the node (ms)
+    nmpc_rk_substeps: 2   # RK4 substeps per dt in the prediction rollout. 2 is needed because tau_a=0.02 s is stiff against dt=0.05 s (lambda*dt = -2.5, near RK4's real-axis stability edge) (substeps)
+    nmpc_jac_substeps: 1   # RK4 substeps used when finite-differencing the QP's A_k/B_k sensitivities. Deliberately coarser than nmpc_rk_substeps: these only set the SQP STEP DIRECTION, never the predicted trajectory, and thi... (substeps)
+    nmpc_trust_delta_rad: 0.15707963267948966   # per-iteration trust region on each stage's steering deviation. 9 deg = MPCController's own du_max steering slew per tick (180 deg/s * 0.05 s) — reused, not invented (rad)
+    nmpc_trust_a: 0.6   # per-iteration trust region on each stage's accel deviation. 0.6 = MPCController's du_max[1] — reused, not invented (m/s^2)
+    nmpc_backtrack_max: 2   # max step halvings if a full SQP step increases the true nonlinear cost (divergence guard). 0 disables backtracking (halvings)
+    nmpc_track_halfwidth: 3.5   # soft |e_y| bound with slack, copied from _build_qp's existing +-3.5 m literal. <=0 removes the constraint (and its slack variables) entirely (m)
+    nmpc_slack_weight: 10000.0   # penalty on the track-bound slack, copied from _build_qp's existing W_slack = 10000.0 (1/m^2)
+    nmpc_curvature_dense_step: 0.5   # arc-length resampling step for the kappa(s) reference (= curvature_speed()'s dense_step) (m)
+    nmpc_curvature_smooth_w: 3   # moving-average width applied before differencing headings (= curvature_speed()'s w). 1 disables smoothing (samples)
+    nmpc_kappa_clip: 0.5   # hard clamp on |kappa(s)|. GUARD, not a tuning knob: 0.5 = a 2 m radius, the tightest corner curvature_speed()'s own docstring contemplates, so it is inert on any real track line and only catches a ... (1/m)
+    nmpc_alat_ceiling_enabled: true   # include FSDS's measured sustained lateral-acceleration ceiling (MPCParams.alat_ceiling_flat/_slope/_intercept, the same law mpc_core._alat_ceiling_at uses) as a smooth saturation of the prediction'...
+    nmpc_q_e_y: -1.0   # override MPCParams.q_e_y for the NMPC only (-1 = inherit) (1/m^2)
+    nmpc_q_e_yd: -1.0   # override MPCParams.q_e_yd (-1 = inherit) (1/(m/s)^2)
+    nmpc_q_e_psi: -1.0   # override MPCParams.q_e_psi (-1 = inherit) (1/rad^2)
+    nmpc_q_epsi_dot: -1.0   # override MPCParams.q_r (-1 = inherit). NOTE this weights HEADING-ERROR rate (r - kappa*s_dot), not absolute yaw rate — see the module docstring (1/(rad/s)^2)
+    nmpc_q_e_v: -1.0   # override MPCParams.q_e_v (-1 = inherit) (1/(m/s)^2)
+    nmpc_r_delta: -1.0   # override MPCParams.r_delta (-1 = inherit) (1/rad^2)
+    nmpc_r_a_accel: -1.0   # override MPCParams.r_a_accel (-1 = inherit) (1/(m/s^2)^2)
+    nmpc_r_a_brake: -1.0   # override MPCParams.r_a_brake (-1 = inherit) (1/(m/s^2)^2)
+    nmpc_r_rate_delta: -1.0   # override MPCParams.r_rate_delta (-1 = inherit) (1/rad^2)
+    nmpc_r_rate_a: -1.0   # override MPCParams.r_rate_a (-1 = inherit) (1/(m/s^2)^2)
+    nmpc_terminal_scale: -1.0   # override MPCParams.terminal_q_scale (-1 = inherit)
+    nmpc_osqp_max_iter: 500   # OSQP iteration cap for the SQP subproblem. Bounded well below MPCController's 8000 on purpose: this is a step DIRECTION that the true-cost backtracking test validates before it is kept, so a hard s... (iterations)
+    nmpc_osqp_eps: 0.0001   # OSQP eps_abs/eps_rel for the SQP subproblem. Looser than MPCController's 1e-5 on purpose: an SQP subproblem is a STEP direction that the next iteration corrects, not the final answer, so sub-1e-4 a...
 fsds_bridge:
   ros__parameters: {}   # no tunables yet

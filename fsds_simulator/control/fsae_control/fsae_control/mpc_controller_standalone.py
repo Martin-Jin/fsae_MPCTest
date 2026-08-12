@@ -77,10 +77,13 @@ from rclpy.time import Time
 
 from fsae_control.control_utils import (
     curvature_speed, dynamic_speed_cap, load_path_profile_csv,
+    load_path_heading_profile_csv,
     load_speed_profile_csv, precomputed_speed_at, tracking_error_speed_gate,
 )
 from fsae_control.mpc_core import MAX_STEER_RAD, MPCController
+from fsae_control.nmpc_core import NMPCController
 from fsae_control.mpc_params import declare_mpc_params, mpc_params_from_node
+from fsae_control.nmpc_params import declare_nmpc_params, nmpc_params_from_node
 from fsae_control.telemetry_logger import ControlLogger, LapProgressTracker
 
 CONTROL_HZ = 20.0   # must match MPCController(dt=0.05); dt = 1 / CONTROL_HZ
@@ -134,7 +137,7 @@ class MPCControllerStandaloneNode(Node):
                 ('log_csv', False),   # write CSV telemetry to log_dir
                 ('log_dir', ''),      # '' -> ~/fsae_logs
                 ('map_path', ''),     # '' -> live curvature_speed() (default);
-                                       # else a fsae_MPCTest tuner/tools/export_speed_profile.py
+                                       # else a fsae_MPCTest tuner/export_speed_profile.py
                                        # CSV to use instead — see USE_PRECOMPUTED_SPEED_PROFILE
                                        # in fsae_MPCTest/settings.py.
                 ('path_map_path', ''),  # '' -> live /fsae/planning/selected_trajectory
@@ -145,6 +148,24 @@ class MPCControllerStandaloneNode(Node):
                                        # Removes centerline_planner.py from the control loop
                                        # entirely, to isolate controller/plant tracking error
                                        # from planner-induced path error.
+                ('use_precomputed_corner_map', False),  # only has an effect when
+                                       # path_map_path is ALSO set (nothing static to
+                                       # segment otherwise) — see mpc_core.py's CornerMap /
+                                       # _segment_corners and
+                                       # late_turn_in_investigation.md Part 4/5. Replaces
+                                       # the live kappa_max_abs lookahead scan / exit-decay
+                                       # tracker with exact per-corner lookups computed once
+                                       # at load. Default False: land off, prove live before
+                                       # flipping.
+                ('use_precomputed_heading_profile', False),  # only has an effect
+                                       # when path_map_path is ALSO set -- see
+                                       # mpc_core.py's set_heading_profile() and
+                                       # late_turn_in_investigation.md Part 8/9. Uses
+                                       # raceline_optimizer.py's shaped psi_target
+                                       # column (heading-lead reference) in place of
+                                       # the geometric path tangent for e_psi's
+                                       # reference ONLY (e_y is unaffected). Default
+                                       # False: land off, prove live before flipping.
             ],
         )
         # All MPCController tuning (Q/R/R_rate weights, adaptive-gain shape
@@ -153,6 +174,14 @@ class MPCControllerStandaloneNode(Node):
         # launch-time defaults/overrides.
         declare_mpc_params(self)
         mpc_params = mpc_params_from_node(self)
+        # NMPCParams: the nonlinear-MPC controller's own tunables plus its
+        # master switch (use_nmpc, default False). Declared unconditionally so
+        # control.launch.py can always pass them; nothing below changes unless
+        # use_nmpc is true. See nmpc_params.py for why these are a separate
+        # dataclass from MPCParams (settings.py parity) and nmpc_core.py for
+        # the formulation.
+        declare_nmpc_params(self)
+        nmpc_params = nmpc_params_from_node(self)
 
         self._v_max = self.get_parameter('v_max').get_parameter_value().double_value
         self._v_min = self.get_parameter('v_min').get_parameter_value().double_value
@@ -196,6 +225,32 @@ class MPCControllerStandaloneNode(Node):
                 self.get_logger().error(
                     f'Failed to load path_map_path={path_map_path}: {exc}. '
                     'Falling back to the live planner topic.'
+                )
+
+        use_precomputed_corner_map = self.get_parameter(
+            'use_precomputed_corner_map').get_parameter_value().bool_value
+        if use_precomputed_corner_map and self._static_path is None:
+            self.get_logger().info(
+                'use_precomputed_corner_map=True but path_map_path is unset — '
+                'nothing static to segment, ignoring.'
+            )
+
+        self._heading_profile: np.ndarray | None = None
+        use_precomputed_heading_profile = self.get_parameter(
+            'use_precomputed_heading_profile').get_parameter_value().bool_value
+        if use_precomputed_heading_profile:
+            if path_map_path:
+                try:
+                    self._heading_profile = load_path_heading_profile_csv(path_map_path)
+                except (OSError, ValueError) as exc:
+                    self.get_logger().error(
+                        f'Failed to load heading profile from path_map_path='
+                        f'{path_map_path}: {exc}. Falling back to geometric heading.'
+                    )
+            else:
+                self.get_logger().info(
+                    'use_precomputed_heading_profile=True but path_map_path is '
+                    'unset — nothing to load, ignoring.'
                 )
 
         self._telemetry = None
@@ -272,7 +327,47 @@ class MPCControllerStandaloneNode(Node):
         self._cone_reset_done = False
 
         dt = 1.0 / CONTROL_HZ
-        self._mpc = MPCController(dt=dt, N=35, params=mpc_params)
+        # Controller selection. use_nmpc=False (default) constructs exactly
+        # what this node has always constructed; the NMPC is a separate class
+        # with the same compute()/reset()/set_static_path()/
+        # set_heading_profile()/last_telemetry surface, so nothing downstream
+        # branches on which one is running.
+        if nmpc_params.use_nmpc:
+            self._mpc = NMPCController(
+                dt=dt, params=mpc_params, nmpc=nmpc_params,
+                logger=self.get_logger(),
+            )
+            self.get_logger().warn(
+                f'use_nmpc=True: running the NONLINEAR MPC '
+                f'(nmpc_core.NMPCController, N={self._mpc.N}, '
+                f'sqp_iters={nmpc_params.nmpc_sqp_iters}) instead of the '
+                'LTV-QP MPCController. Its adaptive gain schedule and '
+                'use_precomputed_heading_profile do NOT apply -- see '
+                'nmpc_core.py.'
+            )
+        else:
+            self._mpc = MPCController(dt=dt, N=35, params=mpc_params)
+        # set_static_path() means different things to the two controllers, and
+        # both want it: for MPCController it builds the CornerMap (gated on
+        # use_precomputed_corner_map); for NMPCController it precomputes the
+        # arc-length / curvature / reference-heading profile its prediction
+        # needs, which is not optional and has nothing to do with the corner
+        # map -- without this call it would rebuild that on the first tick
+        # instead (correct, just not free).
+        if self._static_path is not None and (
+                use_precomputed_corner_map or nmpc_params.use_nmpc):
+            self._mpc.set_static_path(self._static_path)
+            if use_precomputed_corner_map and not nmpc_params.use_nmpc:
+                self.get_logger().info(
+                    f'Corner map segmented from {path_map_path} '
+                    '(use_precomputed_corner_map=True).'
+                )
+        if self._heading_profile is not None:
+            self._mpc.set_heading_profile(self._heading_profile)
+            self.get_logger().info(
+                f'Shaped heading profile loaded from {path_map_path} '
+                '(use_precomputed_heading_profile=True).'
+            )
 
         self.create_timer(dt, self._control_loop)
         self.get_logger().info(

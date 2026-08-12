@@ -31,7 +31,8 @@ the file without re-deriving the scaling.
 
 Trailing the above is the adaptive-feature trace — curvature/demand context
 plus one column per adaptive multiplier and the resulting absolute weights.
-See ADAPTIVE_COLUMNS below for the full list and what each one means.
+See ADAPTIVE_COLUMNS below for the full list and what each one means
+(its tail carries the NMPC-only columns, empty on LTV-QP runs).
 
 Path CSV columns: t, idx, x, y — waypoint snapshots at ~1 Hz.
 
@@ -75,6 +76,8 @@ ADAPTIVE_COLUMNS = (
     # Curvature / demand context -- what the controller was reacting to.
     'kappa',            # curvature at the car's current path position (1/m)
     'kappa_max_abs',    # peak |curvature| within the lookahead window (1/m)
+    'kappa_growth_rate',       # slope of |kappa| vs arc length across the lookahead window (1/m^2); see MPCParams.adaptive_q_growth_rate_weight
+    'kappa_max_abs_effective', # kappa_max_abs after blending in kappa_growth_rate; what corner_demand below is ACTUALLY computed from when the growth-rate weight is nonzero
     'corner_demand',    # kappa_max_abs / (a_lat ceiling / v^2); >1 = infeasible
     'demand_frac',      # corner_demand mapped to 0..1, the boosts' drive signal
     'alat_ceiling',     # modelled FSDS lateral-accel ceiling at this speed
@@ -96,6 +99,28 @@ ADAPTIVE_COLUMNS = (
     # kappa (current-position curvature) rises is the signature of the QP
     # actually anticipating the corner rather than reacting to it.
     'kappa_horizon_end', 'w_epsi_sum',
+    # ── NMPC-only columns (nmpc_core.NMPCController; empty for every LTV-QP
+    # run, exactly as the m_* columns are empty for Stanley). Appended at the
+    # END so the existing column order — and every offline script that parses
+    # these CSVs by name — is unaffected.
+    #
+    # These are the NMPC's equivalent of the m_* decomposition: they say what
+    # the solver did (how many Gauss-Newton iterations, whether the QP
+    # subproblem actually solved, the achieved cost) and what its own
+    # prediction expected (terminal e_y/e_psi, peak predicted |e_y|,
+    # curvature at the far end of the horizon). A run where nmpc_status
+    # spends time at 0, or where nmpc_pred_ey_end disagrees badly with the
+    # e_y actually reached ~1 s later, is a model/solver problem rather than
+    # a weighting problem — which is the distinction the LTV-QP's telemetry
+    # could never make.
+    'nmpc_iters',              # Gauss-Newton SQP iterations actually taken this tick
+    'nmpc_status',             # 1.0 = QP subproblem solved, 0.0 = not (rejected/failed/budget)
+    'nmpc_cost',               # achieved nonlinear cost of the shipped trajectory
+    'nmpc_s0',                 # arc length of the car's Frenet projection (m)
+    'nmpc_kappa_horizon_end',  # kappa(s) at the far end of the PREDICTED horizon (1/m)
+    'nmpc_pred_ey_end',        # predicted e_y at the end of the horizon (m)
+    'nmpc_pred_epsi_end',      # predicted e_psi at the end of the horizon (rad)
+    'nmpc_pred_ey_max_abs',    # peak predicted |e_y| anywhere in the horizon (m)
 )
 
 
