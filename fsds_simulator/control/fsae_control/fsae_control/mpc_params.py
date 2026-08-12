@@ -128,7 +128,21 @@ class MPCParams:
     # ── Lookahead corner-anticipation Q-boost ───────────────────────────
     adaptive_q_lookahead_time_s: float = field(default=1.13, metadata={"unit": "s", "desc": "speed -> lookahead distance"})
     adaptive_q_lookahead_dist_min: float = field(default=3.0, metadata={"unit": "m", "desc": "lookahead distance clamp floor"})
-    adaptive_q_lookahead_dist_max: float = field(default=17.0, metadata={"unit": "m", "desc": "lookahead distance clamp ceiling"})
+    # Raised 17.0 -> 25.0 on 2026-08-12 (matching adaptive_q_lookahead_exit_
+    # decay_dist_max, which was already 25.0 -- the approach-side ceiling
+    # was tighter than the exit-side one for no documented reason). At
+    # typical corner-approach speed (16-17 m/s) the desired lookahead
+    # (car_speed * adaptive_q_lookahead_time_s) is 18.3-19.4 m, which the
+    # old 17.0 m ceiling was silently clamping down to under 1s of lead
+    # time regardless of how fast the car was actually going. This is a
+    # pure QP-cost-scheduling parameter (how far the Q[0,0]/Q[2,2]
+    # corner-anticipation boosts scan ahead), not a sensing/FOV limit --
+    # raising it is safe on a precomputed path where the whole route is
+    # already known. Does not manufacture tracking error the way
+    # curvature_forcing_enabled tried to (see that field's comment) --
+    # this only widens the window these boosts can react within once real
+    # error/curvature appears in it.
+    adaptive_q_lookahead_dist_max: float = field(default=25.0, metadata={"unit": "m", "desc": "lookahead distance clamp ceiling -- raised from 17.0 on 2026-08-12, see field comment"})
     adaptive_q_lookahead_q_boost_max: float = field(default=2.0, metadata={"unit": "unitless", "desc": "max Q[0,0] multiplier approaching a corner"})
     adaptive_q_lookahead_k_approach: float = field(default=8.0, metadata={"unit": "unitless", "desc": "legacy (non-demand-normalised) approach ramp sharpness"})
 

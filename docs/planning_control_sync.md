@@ -2083,13 +2083,75 @@ safe operating point.
 **Late turn-in on sudden corners is therefore still an open problem** —
 this session's attempted fix is reverted, not replaced. The
 reference-heading-lead mechanism (§12.8 in `sim_to_real_investigation.md`,
-also flagged in CLAUDE.md's "Still open" list) remains the next avenue to
-pursue: in both stacks the planner's reference heading swings faster than
-either car can ever yaw, and drives most heading-error growth — that is
-testable offline, no live session required, and doesn't share
-curvature-forcing's dynamics-disturbance failure mode since it changes the
-reference the error is measured against rather than perturbing the QP's
-own recursion.
+also flagged in CLAUDE.md's "Still open" list) was investigated as the
+next avenue — **but it applies to the live-planner branch specifically**
+(the planner's per-tick, FOV-limited centreline rebuild), not to driving
+against a precomputed `map_path`/`path_map_path` raceline, which is the
+actual live driving configuration. On a precomputed path there is no
+per-tick rebuild to swing unpredictably; the reference is fixed in
+advance. Re-measured anyway out of thoroughness (see below) before this
+scope mismatch was caught — the re-measurement itself is real and worth
+keeping on file, but is not the fix for the precomputed-path late-turn-in
+symptom.
+
+**Re-measurement note (2026-08-12, for the live-planner branch only,
+scope above notwithstanding)**: `tuner/reference_heading_geometry_check.py`
+and `tuner/reference_excess_mechanism_check.py` (§26/§27 of
+`sim_to_real_investigation.md`) were deleted in the same-day `tuner/`
+reorg (`c182a05`) as "concluded one-off investigation scripts," but the
+investigation's own "Open — mechanism confirmed real, first candidate fix
+tried live and FAILED" status (its last recorded state) was never actually
+closed, and — separately — an 2026-08-08 parity bug fix (§31,
+`SimPlanner` never passing live-tuned smoothing/blend params) invalidated
+every number §26/§27 measured, with no re-measurement ever done. Restored
+both scripts from git history (`c182a05^`) and re-ran against the
+corrected planner: the mechanism now measures **larger**, not smaller —
+planner/geometric reference-rate ratio 1.66/1.76/6.91/12.84
+(mean/p90/p99/max), correlation with true track geometry down to 0.336
+(was 1.22/1.87/3.51 and 0.80 pre-fix), and 110 ticks (of 1045) show
+>30°/s excess swing, only 9% explained by the known seed-jump artifact —
+unchanged from before, so the remaining ~91% is still an unlocalized,
+distinct planner mechanism. This is a real, larger-than-previously-known
+open item **for the live-planner branch** — restored scripts are back in
+`tuner/` for whoever next drives with `use_planner=True` instead of a
+precomputed path.
+
+## Lookahead corner-anticipation window widened, approach side (2026-08-12)
+
+`adaptive_q_lookahead_dist_max` raised `17.0` → `25.0` (both sides,
+`fsae_params.yaml`, `fsds_simulator` mirror) to match
+`adaptive_q_lookahead_exit_decay_dist_max`, which was already `25.0` — the
+approach-side ceiling was tighter than the exit-side one for no documented
+reason (each field's own git history shows it was only ever set once, at
+`MPCParams` centralization, ported over from whatever value predated that
+with no dedicated tuning record). At typical corner-approach speed
+(16-17 m/s, from `mpc_standalone_control_1786513486.csv`) the intended
+lookahead (`car_speed * adaptive_q_lookahead_time_s` = 18.3-19.4 m) was
+being silently clamped to 17.0 m — under 1 s of lead time regardless of
+actual speed.
+
+**This is NOT expected to fix late turn-in on its own.** `adaptive_
+q_lookahead` (§4.4 in `tuning.md`) only reweights `Q[0,0]`/`Q[2,2]` on an
+*existing* tracking error — with `e_y ≈ e_psi ≈ 0` on approach, a wider
+window lets the boost detect the corner's curvature a little sooner, but
+multiplying a still-near-zero error by a bigger number is still
+near-zero. This is the same "reweighting cannot manufacture an error"
+ceiling documented at length in the curvature-forcing postmortem above,
+and in `junior_project_mpc_docs.md`. Expected effect, if any: the
+boosts (and downstream steering commitment) trigger marginally sooner and
+larger once real error/curvature *does* appear inside the window, not
+before. `sim/rollout_core.py`'s hardcoded `(1.13, 3.0, 17.0)` literal was
+updated to `(1.13, 3.0, 25.0)` to match — kept as a plain literal, not
+sourced from a new `settings.py` constant, since `fsae_MPCTest` and
+`fsae_planning` must never share an import dependency in either
+direction (`fsae_planning`'s standing "no settings.py-on-the-car"
+constraint applies symmetrically here). Not yet live-tested.
+
+**A genuine fix for before-any-error anticipation on a precomputed path**
+would need to change what the reference/error is measured against — e.g.
+compute `e_psi` against a lookahead point on the path rather than the
+nearest point — not reweight costs on the current-position error. This is
+unexplored; no design or implementation exists yet.
 
 ## Straight-line lateral-error snap-back was too sharp (2026-08-12)
 

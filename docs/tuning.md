@@ -267,7 +267,26 @@ to restore the old raw-curvature curve for A/B comparison.
 
 **Known constraints**: not validated against `VALIDATION_SUITE`/recorded-map
 or any live log as a whole mechanism; treat changes here as experimental
-until re-validated.
+until re-validated. **This whole mechanism only reweights the COST of an
+existing tracking error — it cannot manufacture one.** With `e_y ≈ e_psi ≈
+0` on the approach (car still dead on-line), a bigger `Q[0,0]`/`Q[2,2]`
+multiplier still multiplies a near-zero error by a bigger number. It helps
+the controller react a bit sooner/harder once real error starts appearing
+inside the lookahead window, not before. Do not expect this section's
+knobs to fix genuine before-any-error anticipation — see the
+"curvature-forcing term" postmortem (disabled 2026-08-12, this same file)
+for what was tried for that and why it failed; a working fix needs to
+change what the reference/error itself measures, not reweight costs on it.
+
+**`adaptive_q_lookahead_dist_max` raised 17.0 → 25.0 (2026-08-12)**: at
+typical corner-approach speed (16-17 m/s) the desired lookahead
+(`car_speed * adaptive_q_lookahead_time_s`) is 18.3-19.4 m, which the old
+17.0 m ceiling was silently clamping to under 1 s of lead time regardless
+of how fast the car was going — tighter than `adaptive_q_lookahead_exit_
+decay_dist_max`'s already-25.0 m ceiling on the exit side, for no
+documented reason. Pure QP-cost-scheduling change (widens the window these
+boosts can react within once real error/curvature appears in it) — does
+**not** by itself close the gap described above. Not yet live-tested.
 
 **`adaptive_q_lookahead_steer_relax_floor` specifically (added 2026-08-12)**:
 closes a gap the speed-based steering-effort penalty (`adaptive_R_scaling`,

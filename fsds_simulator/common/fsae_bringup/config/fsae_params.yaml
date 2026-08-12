@@ -129,7 +129,7 @@ controller:
     # Lookahead corner-anticipation Q-boost
     adaptive_q_lookahead_time_s: 1.13         # s — speed -> lookahead distance
     adaptive_q_lookahead_dist_min: 3.0        # m — lookahead distance clamp floor
-    adaptive_q_lookahead_dist_max: 17.0       # m — lookahead distance clamp ceiling
+    adaptive_q_lookahead_dist_max: 25.0       # m — lookahead distance clamp ceiling (raised from 17.0 on 2026-08-12 to match the exit-side ceiling and stop clamping lookahead below ~1s at typical corner-approach speed)
     adaptive_q_lookahead_q_boost_max: 2.0     # max Q[0,0] multiplier approaching a corner
     adaptive_q_lookahead_k_approach: 8.0      # legacy (non-demand-normalised) approach ramp sharpness
 

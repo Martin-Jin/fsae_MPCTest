@@ -888,7 +888,7 @@ def run_core_rollout(
         # total accumulated heading change, so the Q boost can anticipate a
         # corner before the car reaches it, and a long gradual U-turn is
         # recognised even with unremarkable peak curvature.
-        lookahead_dist = float(np.clip(vx_true * 1.13, 3.0, 17.0))
+        lookahead_dist = float(np.clip(vx_true * 1.13, 3.0, 25.0))
         (kappa_max_abs, _lookahead_idx, _lookahead_peak_dist,
          lookahead_heading_change) = lookahead_curvature_profile(
             path_xy, idx, lookahead_dist
