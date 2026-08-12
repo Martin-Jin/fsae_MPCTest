@@ -251,6 +251,49 @@ class MPCParams:
     low_speed_steer_rate_boost_max: float = field(default=2.5, metadata={"unit": "unitless", "desc": "R_rate[0,0] multiplier at vx=0, decaying toward 1.0 as speed rises"})
     low_speed_steer_rate_boost_k: float = field(default=0.35, metadata={"unit": "s/m", "desc": "decay sharpness of the low-speed boost vs speed"})
 
+    # ── NMPC weight overrides (nmpc_core.NMPCController only) ────────────
+    # Moved here 2026-08-13 from nmpc_params.py's NMPCParams (see that
+    # file's module docstring for the full "why here now" reasoning): these
+    # are the Frenet-frame nonlinear MPC's cost weights, kept alongside
+    # every OTHER weight in this file rather than split across two
+    # dataclasses, now that fsae_MPCTest's own offline NMPC port
+    # (controller/nmpc_optimiser.py) gives them a real settings.py parity
+    # partner (see that file's "NMPC weight overrides" section) the same
+    # way every other field in this file already has.
+    #
+    # -1.0 = inherit the field of the SAME ROW below (q_e_y -> nmpc_q_e_y,
+    # r_delta -> nmpc_r_delta, ...), so the NMPC starts from the LTV-QP's
+    # tuned weights rather than a fresh guess, and a plain launch with
+    # every nmpc_* field left at -1.0 reproduces that inheritance exactly.
+    # Set one to a real value to diverge ONLY that weight for the NMPC
+    # without touching the LTV-QP's own tuned set. nmpc_core.NMPCController
+    # is what reads these (see its __init__'s `_pick(override, inherited)`).
+    #
+    # nmpc_q_epsi_dot is the ONE weight whose MEANING differs from its row
+    # above (q_r): the nonlinear model's matching output is heading-error
+    # RATE (r - kappa(s)*s_dot), not absolute yaw rate — penalising absolute
+    # yaw rate in a curvature-aware model would penalise the yaw rate the
+    # car MUST hold to follow a corner (r = kappa*v), the exact failure the
+    # NMPC exists to remove. Same slot, different regressor: expect this
+    # one to need its own sweep rather than inheriting q_r unchanged. See
+    # late_turn_in_investigation.md Part 16 §16.3 choice (1).
+    nmpc_q_e_y: float = field(default=-1.0, metadata={"unit": "1/m^2", "desc": "override q_e_y for the NMPC only (-1 = inherit)"})
+    nmpc_q_e_yd: float = field(default=-1.0, metadata={"unit": "1/(m/s)^2", "desc": "override q_e_yd (-1 = inherit)"})
+    nmpc_q_e_psi: float = field(default=-1.0, metadata={"unit": "1/rad^2", "desc": "override q_e_psi (-1 = inherit)"})
+    nmpc_q_epsi_dot: float = field(default=-1.0, metadata={
+        "unit": "1/(rad/s)^2",
+        "desc": "override q_r (-1 = inherit). NOTE this weights HEADING-ERROR "
+                "rate (r - kappa*s_dot), not absolute yaw rate — see this "
+                "section's own comment above",
+    })
+    nmpc_q_e_v: float = field(default=-1.0, metadata={"unit": "1/(m/s)^2", "desc": "override q_e_v (-1 = inherit)"})
+    nmpc_r_delta: float = field(default=-1.0, metadata={"unit": "1/rad^2", "desc": "override r_delta (-1 = inherit)"})
+    nmpc_r_a_accel: float = field(default=-1.0, metadata={"unit": "1/(m/s^2)^2", "desc": "override r_a_accel (-1 = inherit)"})
+    nmpc_r_a_brake: float = field(default=-1.0, metadata={"unit": "1/(m/s^2)^2", "desc": "override r_a_brake (-1 = inherit)"})
+    nmpc_r_rate_delta: float = field(default=-1.0, metadata={"unit": "1/rad^2", "desc": "override r_rate_delta (-1 = inherit)"})
+    nmpc_r_rate_a: float = field(default=-1.0, metadata={"unit": "1/(m/s^2)^2", "desc": "override r_rate_a (-1 = inherit)"})
+    nmpc_terminal_scale: float = field(default=-1.0, metadata={"unit": "unitless", "desc": "override terminal_q_scale (-1 = inherit)"})
+
 
 DEFAULT_MPC_PARAMS = MPCParams()
 

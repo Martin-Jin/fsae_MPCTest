@@ -727,6 +727,118 @@ R_A_BRAKE = 0.5
 
 
 # ------------------------------------------------------------------------------
+# Nonlinear MPC (NMPC) — a SECOND controller (controller/nmpc_optimiser.py)
+# ------------------------------------------------------------------------------
+# USE_NMPC — "Which controller does the closed-loop rollout actually solve?"
+# False (default) = controller/optimiser.py's solve_mpc(), the linear
+# time-varying QP everything above this section tunes. True =
+# controller/nmpc_optimiser.py's NMPCController, a Frenet-frame NONLINEAR MPC
+# (arc length is a state, path curvature kappa(s) is looked up from it
+# directly, instead of the linear model's e_psi_dot = yaw-rate-only). See
+# docs/junior_project_mpc_docs.md's §4.2 for the plain-language explanation
+# of why the linear model needs this at all, and docs/tuning.md's NMPC
+# section for the tuning surface.
+#
+# Closes a structural gap the linear model has: with the car exactly on-line
+# and on-heading approaching a corner, the linear model's own horizon
+# rollout predicts staying at 0 forever (checked directly, not assumed —
+# see tuner/nmpc_offline_check.py's turn-in test), so no amount of cost
+# reweighting can make it commit to steering before real tracking error
+# exists. The WHOLE adaptive-gain-shape section below (and every
+# ADAPTIVE_*_ENABLED flag) exists to synthesise anticipation this linear
+# model cannot produce on its own -- none of it applies when USE_NMPC=True
+# (the nonlinear model anticipates structurally, so layering the same
+# mechanisms on top would double-count an effect that's now built in).
+#
+# Mirrors the live side's `use_nmpc` node parameter (mpc_params.py's "NMPC
+# weight overrides" section handles the WEIGHTS below; this file's NMPC_*
+# constants mirror nmpc_params.py's remaining structural/solver fields) --
+# kept numerically identical by hand, the same discipline as every other
+# constant in this file, per CLAUDE.md's parity rule. Land this off; prove
+# it live before flipping the live side's default.
+USE_NMPC = False
+
+# ── NMPC weight overrides ────────────────────────────────────────────────
+# -1.0 = inherit the corresponding Q_diag/R_diag/R_rate_diag/TERMINAL_Q_SCALE
+# entry above (the SAME weight set a tuner run passes to run_core_rollout,
+# so a CMA-ES sweep reaches the NMPC's weights exactly the way it reaches
+# the LTV-QP's). Set a real value to diverge only that one weight for the
+# NMPC without touching the LTV-QP's tuned set.
+#
+# NMPC_Q_EPSI_DOT is the one weight whose MEANING differs from its LTV-QP
+# counterpart (Q_diag[3]): the nonlinear model's 4th output is heading-error
+# RATE (r - kappa(s)*s_dot), not absolute yaw rate. Penalising absolute yaw
+# rate in a curvature-aware model would penalise the yaw rate the car MUST
+# hold to follow a corner (r = kappa*v) -- the exact opposite of what's
+# wanted. Same slot, different regressor: expect this one to need its own
+# sweep rather than inheriting Q_diag[3] unchanged.
+NMPC_Q_E_Y       = -1.0
+NMPC_Q_E_YD      = -1.0
+NMPC_Q_E_PSI     = -1.0
+NMPC_Q_EPSI_DOT  = -1.0
+NMPC_Q_E_V       = -1.0
+NMPC_R_DELTA     = -1.0
+NMPC_R_A_ACCEL   = -1.0
+NMPC_R_A_BRAKE   = -1.0
+NMPC_R_RATE_DELTA = -1.0
+NMPC_R_RATE_A    = -1.0
+NMPC_TERMINAL_SCALE = -1.0
+
+# ── Structural / solver settings ─────────────────────────────────────────
+# No LTV-QP counterpart to inherit from (there's no "linear horizon length"
+# concept these could default to) -- these are genuine NMPC-only constants,
+# each measured rather than guessed; see the live repo's
+# late_turn_in_investigation.md Part 16 §16.7 for the sweep behind the
+# horizon/iteration defaults specifically.
+NMPC_HORIZON = 20                          # steps (x DT=0.05s = 1.0s). Measured BETTER than
+                                            # N_HORIZON=35 on tracking: the model is optimistic
+                                            # (linear tyres, no suspension), and that mismatch
+                                            # compounds over a longer horizon.
+NMPC_SQP_ITERS = 1                         # Gauss-Newton iterations/tick (real-time-iteration
+                                            # style -- the warm start carries convergence
+                                            # across ticks). Measured better AND ~2x cheaper
+                                            # than 2.
+NMPC_SOLVE_BUDGET_MS = 25.0                # wall-clock budget/tick; ships the best feasible
+                                            # iterate rather than overrunning DT=0.05s.
+NMPC_RK_SUBSTEPS = 2                       # RK4 substeps in the prediction rollout -- needed
+                                            # because tau_a=0.02s is stiff against DT=0.05s.
+NMPC_JAC_SUBSTEPS = 1                       # RK4 substeps for the QP's sensitivity Jacobians
+                                            # only (never the prediction itself) -- the
+                                            # dominant per-iteration cost, deliberately coarser.
+NMPC_TRUST_DELTA_RAD = np.radians(9.0)      # per-iteration steering trust region = MAX_STEER's
+                                            # own slew-rate limit per tick (180 deg/s * DT) --
+                                            # reused, not invented.
+NMPC_TRUST_A = 0.6                          # per-iteration accel trust region = du_max[1].
+NMPC_BACKTRACK_MAX = 2                      # step halvings if a full SQP step increases the
+                                            # true nonlinear cost (divergence guard).
+NMPC_TRACK_HALFWIDTH = 3.5                  # soft |e_y| bound with slack, matching
+                                            # controller/optimiser.py's own +-3.5m literal.
+NMPC_SLACK_WEIGHT = 10000.0                 # matches controller/optimiser.py's W_SLACK.
+NMPC_CURVATURE_DENSE_STEP = 0.5             # kappa(s)/heading-reference smoothing -- same
+NMPC_CURVATURE_SMOOTH_W = 3                 # denoise precedent as sim/speed_profile.py's
+                                            # curvature_speed() (dense_step=0.5, w=3), not new
+                                            # smoothing constants.
+NMPC_KAPPA_CLIP = 0.5                       # hard |kappa(s)| clamp -- a 2m-radius guard,
+                                            # inert on any real track line, only catches a
+                                            # degenerate/spiking path.
+NMPC_OSQP_MAX_ITER = 500                    # bounded well below solve_mpc's ~8000: this is a
+                                            # step DIRECTION validated by the backtracking cost
+                                            # check before being kept, so a hard subproblem
+                                            # should cost bounded time and be retried next tick.
+NMPC_OSQP_EPS = 1e-4                        # looser than solve_mpc's 1e-5 on purpose -- a step
+                                            # direction the next iteration corrects doesn't need
+                                            # sub-1e-4 accuracy.
+NMPC_ALAT_CEILING_ENABLED = True            # model FSDS's measured sustained a_lat ceiling
+                                            # (ALAT_CEILING_FLAT/_SLOPE/_INTERCEPT below) inside
+                                            # the NMPC's own prediction. NOT optional on FSDS:
+                                            # without it the linear-tyre prediction believes it
+                                            # can hold any corner at any speed, and the car spins
+                                            # mid-lap (see Part 16 §16.6, live repo). False only
+                                            # for real-vehicle work where that ceiling doesn't
+                                            # exist.
+
+
+# ------------------------------------------------------------------------------
 # Adaptive-gain SHAPE constants
 # ------------------------------------------------------------------------------
 # The *_ENABLED flags further up decide WHETHER each adaptive-gain mechanism

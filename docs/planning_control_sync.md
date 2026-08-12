@@ -2641,15 +2641,22 @@ lead to the approach phase only rather than letting it propagate into a
 corner's own interior). Do not re-enable at the current default without
 addressing that gating.
 
-## Nonlinear MPC (`use_nmpc`) — a SECOND controller, LIVE-ONLY, NOT MIRRORED (2026-08-13)
+## Nonlinear MPC (`use_nmpc`) — a SECOND controller (added 2026-08-13; offline port added 2026-08-13)
 
-**Scope warning first: nothing in this section exists in `fsae_MPCTest`.** There
-is no offline counterpart to `nmpc_core.py`, `nmpc_params.py` or `NMPCParams`,
-and `NMPCParams`' 24 fields are deliberately **NOT** part of the
-"Numeric-parity constants" table below — they have nothing on this side to be
-identical to. Live-only, same as the two features above it, by the standing
-instruction that has governed the whole late-turn-in investigation. If it is
-ever mirrored, that changes and this warning must be deleted.
+**Update (2026-08-13): this now has an offline counterpart.**
+`controller/nmpc_optimiser.py`'s `NMPCController` is an independent PORT of
+the live `nmpc_core.py` module (same model, same SQP/OSQP scheme — not an
+import; the two repos still cannot import each other), wired into
+`sim/rollout_core.py`'s `run_core_rollout()` behind `settings.USE_NMPC`
+(default false) the same way every other controller-mode flag works.
+Structural/solver constants (`NMPC_HORIZON`, `NMPC_SQP_ITERS`, ...) live in
+`settings.py`'s "Nonlinear MPC (NMPC)" section, kept numerically identical
+to `nmpc_params.NMPCParams` by hand. The cost-weight overrides moved
+live-side from `nmpc_params.py` into `mpc_params.MPCParams` itself (see
+that file's own section) — `settings.py`'s matching `NMPC_Q_E_Y` etc.
+constants mirror that move. See `docs/tuning.md`'s NMPC section for the
+tuning surface, and reproduce the validation with
+`python -m tuner.nmpc_offline_check` (no ROS/FSDS session needed).
 
 ### What it is
 

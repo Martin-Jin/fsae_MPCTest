@@ -1,40 +1,48 @@
 # Title: nmpc_params.py
 
 """
-nmpc_params.py — tunables for the NONLINEAR MPC path-tracking controller
-(nmpc_core.NMPCController). See late_turn_in_investigation.md Part 16 for the
-research/decision record behind the formulation.
+nmpc_params.py — STRUCTURAL/SOLVER tunables for the NONLINEAR MPC
+path-tracking controller (nmpc_core.NMPCController). See
+late_turn_in_investigation.md Part 16 for the research/decision record
+behind the formulation.
 
-WHY A SEPARATE DATACLASS FROM MPCParams
----------------------------------------
-Every field of mpc_params.MPCParams carries a hard numeric-parity obligation
-against fsae_MPCTest/settings.py (CLAUDE.md's "Single source of truth for MPC
-tuning, per side" — ~56 values, kept identical by hand). The NMPC is a NEW,
-default-OFF second controller that has no offline counterpart yet, so adding
-its knobs to MPCParams would immediately create parity debt against a
-settings.py that has nothing to mirror them with. Keeping them here means:
+WHAT LIVES HERE VS. IN mpc_params.py (2026-08-13 split)
+--------------------------------------------------------
+This file originally held the NMPC's cost-weight OVERRIDES too
+(`nmpc_q_e_y`, `nmpc_r_delta`, ...). Those have since MOVED to
+mpc_params.MPCParams's own "NMPC weight overrides" section — see that
+file's module docstring for why (in short: fsae_MPCTest now has a genuine
+offline NMPC port, controller/nmpc_optimiser.py, with its own settings.py
+constants; the weight overrides now have a real parity partner on both
+sides, and grouping them with every OTHER cost weight in one file is more
+discoverable than splitting weights across two dataclasses). Do not re-add
+weight fields here — see mpc_params.py instead.
 
-  * MPCParams <-> settings.py's existing field-by-field mapping is untouched
-    (nothing to add to planning_control_sync.md's numeric-parity table),
-  * the NMPC can be retuned live without editing a file that the offline
-    tuner also owns.
+What remains here are fields that have NO LTV-QP analogue to inherit
+from — horizon length, SQP iteration count, trust-region size, solver
+tolerances, curvature-smoothing parameters. These are genuinely NMPC-only
+mechanics, not "MPC weights" in the sense the rest of MPCParams's fields
+are.
 
-The COST WEIGHTS are deliberately NOT duplicated here. NMPCController reads
-q_e_y / q_e_yd / q_e_psi / q_r / q_e_v / r_delta / r_a_accel / r_a_brake /
-r_rate_delta / r_rate_a / terminal_q_scale straight out of the MPCParams
-instance the node already builds, so the LTV-QP's tuned weights are the
-NMPC's starting point rather than a fresh guess. Each of those has an
-override field below (`nmpc_q_e_y`, ...) whose sentinel value -1.0 means
-"inherit from MPCParams"; set one to a real value to diverge only that one
-weight. That is the intended retuning surface.
+PARITY, NOW THAT AN OFFLINE NMPC EXISTS
+-----------------------------------------
+Before fsae_MPCTest's offline NMPC port (controller/nmpc_optimiser.py),
+these structural fields had no offline counterpart, so CLAUDE.md's
+numeric-parity rule didn't apply to them. It does now: every field below
+has a matching settings.py NMPC_* constant (see that file's "Nonlinear MPC
+(NMPC)" section), kept numerically identical by hand — the same
+discipline as Q_diag/R_diag/R_rate_diag always have been. Extend both
+sides together if either changes.
 
-ONE WEIGHT DOES NOT TRANSFER WITH IDENTICAL MEANING: q_r. In the LTV-QP it
-weights absolute yaw rate `r`; in the Frenet NMPC it weights the
-heading-error RATE `r - kappa*s_dot` (see nmpc_core._outputs). Penalising
-absolute `r` in a curvature-aware model would penalise the yaw rate the car
-MUST hold to follow a corner (r = kappa*v), i.e. it would fight cornering —
-which is the exact failure this controller exists to remove. Same number,
-different regressor: expect to re-sweep it. See Part 16 §16.3 choice (1).
+ONE WEIGHT (now in mpc_params.py) DOES NOT TRANSFER WITH IDENTICAL
+MEANING: q_r / nmpc_q_epsi_dot. In the LTV-QP it weights absolute yaw rate
+`r`; in the Frenet NMPC it weights the heading-error RATE
+`r - kappa*s_dot` (see nmpc_core._outputs). Penalising absolute `r` in a
+curvature-aware model would penalise the yaw rate the car MUST hold to
+follow a corner (r = kappa*v), i.e. it would fight cornering — which is
+the exact failure this controller exists to remove. Same number,
+different regressor: expect to re-sweep it. See Part 16 §16.3 choice (1),
+and mpc_params.py's own docstring for the field itself.
 
 PROVENANCE OF EVERY DEFAULT BELOW
 ---------------------------------
@@ -184,26 +192,6 @@ class NMPCParams:
                 "for real-vehicle work, mirroring "
                 "model/vehicle_physics.VehicleParams.alat_ceiling_enabled",
     })
-
-    # ── Cost-weight overrides (-1.0 = inherit from MPCParams) ───────────
-    # See the module docstring: these exist so the NMPC can be retuned
-    # without touching MPCParams (which carries settings.py parity duty).
-    nmpc_q_e_y: float = field(default=-1.0, metadata={"unit": "1/m^2", "desc": "override MPCParams.q_e_y for the NMPC only (-1 = inherit)"})
-    nmpc_q_e_yd: float = field(default=-1.0, metadata={"unit": "1/(m/s)^2", "desc": "override MPCParams.q_e_yd (-1 = inherit)"})
-    nmpc_q_e_psi: float = field(default=-1.0, metadata={"unit": "1/rad^2", "desc": "override MPCParams.q_e_psi (-1 = inherit)"})
-    nmpc_q_epsi_dot: float = field(default=-1.0, metadata={
-        "unit": "1/(rad/s)^2",
-        "desc": "override MPCParams.q_r (-1 = inherit). NOTE this weights "
-                "HEADING-ERROR rate (r - kappa*s_dot), not absolute yaw rate — "
-                "see the module docstring",
-    })
-    nmpc_q_e_v: float = field(default=-1.0, metadata={"unit": "1/(m/s)^2", "desc": "override MPCParams.q_e_v (-1 = inherit)"})
-    nmpc_r_delta: float = field(default=-1.0, metadata={"unit": "1/rad^2", "desc": "override MPCParams.r_delta (-1 = inherit)"})
-    nmpc_r_a_accel: float = field(default=-1.0, metadata={"unit": "1/(m/s^2)^2", "desc": "override MPCParams.r_a_accel (-1 = inherit)"})
-    nmpc_r_a_brake: float = field(default=-1.0, metadata={"unit": "1/(m/s^2)^2", "desc": "override MPCParams.r_a_brake (-1 = inherit)"})
-    nmpc_r_rate_delta: float = field(default=-1.0, metadata={"unit": "1/rad^2", "desc": "override MPCParams.r_rate_delta (-1 = inherit)"})
-    nmpc_r_rate_a: float = field(default=-1.0, metadata={"unit": "1/(m/s^2)^2", "desc": "override MPCParams.r_rate_a (-1 = inherit)"})
-    nmpc_terminal_scale: float = field(default=-1.0, metadata={"unit": "unitless", "desc": "override MPCParams.terminal_q_scale (-1 = inherit)"})
 
     # ── Solver tolerance ────────────────────────────────────────────────
     nmpc_osqp_max_iter: int = field(default=500, metadata={

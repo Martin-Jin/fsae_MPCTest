@@ -724,14 +724,17 @@ class NMPCController:
             raise ValueError(f'NMPC horizon must be >= 2 (got {self.N})')
 
         self.nx, self.nu = NX, NU
-        pm0 = params if params is not None else DEFAULT_MPC_PARAMS
         nm0 = nmpc if nmpc is not None else DEFAULT_NMPC_PARAMS
-        self.plant = _Plant(
-            alat_ceiling_enabled=bool(nm0.nmpc_alat_ceiling_enabled),
-            alat_ceiling_flat=pm0.alat_ceiling_flat,
-            alat_ceiling_slope=pm0.alat_ceiling_slope,
-            alat_ceiling_intercept=pm0.alat_ceiling_intercept,
-        )
+        # alat_ceiling_flat/_slope/_intercept are FSDS's measured plant
+        # constant (the sustained lateral-accel ceiling law), not a tuning
+        # weight -- MPCParams no longer carries them (removed along with the
+        # whole corner_demand/lookahead-gain-scheduling family they used to
+        # parameterise), so _Plant's own hardcoded defaults (7.5/0.47/2.46,
+        # the same measured values) are used directly here, the same
+        # precedent this class already follows for lf/lr/m/Iz/Cf/Cr. Only
+        # nmpc_alat_ceiling_enabled (a genuine NMPC-only on/off switch, not a
+        # shared plant constant) still comes from NMPCParams.
+        self.plant = _Plant(alat_ceiling_enabled=bool(nm0.nmpc_alat_ceiling_enabled))
         # Convenience aliases so telemetry/geometry code reads like mpc_core's.
         self.lf, self.lr = self.plant.lf, self.plant.lr
 
@@ -745,26 +748,31 @@ class NMPCController:
         self.du_max = np.array([math.radians(180.0) * self.dt, 0.6])
 
         # ── Weights: MPCParams, with per-NMPC overrides ─────────────────
+        # The override fields (nmpc_q_e_y, ...) live in MPCParams itself
+        # (moved there 2026-08-13 from NMPCParams — see mpc_params.py's
+        # "NMPC weight overrides" section for why), alongside the base
+        # fields they inherit from when left at -1.0. NMPCParams (self.nmpc)
+        # no longer carries any weight field at all — only structural/
+        # solver settings.
         def _pick(override, inherited):
             return float(inherited if override is None or override < 0.0 else override)
 
-        n = self.nmpc
         pm = self.params
         self.w_out = np.array([
-            _pick(n.nmpc_q_e_y,      pm.q_e_y),
-            _pick(n.nmpc_q_e_yd,     pm.q_e_yd),
-            _pick(n.nmpc_q_e_psi,    pm.q_e_psi),
-            _pick(n.nmpc_q_epsi_dot, pm.q_r),
-            _pick(n.nmpc_q_e_v,      pm.q_e_v),
+            _pick(pm.nmpc_q_e_y,      pm.q_e_y),
+            _pick(pm.nmpc_q_e_yd,     pm.q_e_yd),
+            _pick(pm.nmpc_q_e_psi,    pm.q_e_psi),
+            _pick(pm.nmpc_q_epsi_dot, pm.q_r),
+            _pick(pm.nmpc_q_e_v,      pm.q_e_v),
         ])
-        self.r_delta = _pick(n.nmpc_r_delta, pm.r_delta)
-        self.r_a_accel = _pick(n.nmpc_r_a_accel, pm.r_a_accel)
-        self.r_a_brake = _pick(n.nmpc_r_a_brake, pm.r_a_brake)
+        self.r_delta = _pick(pm.nmpc_r_delta, pm.r_delta)
+        self.r_a_accel = _pick(pm.nmpc_r_a_accel, pm.r_a_accel)
+        self.r_a_brake = _pick(pm.nmpc_r_a_brake, pm.r_a_brake)
         self.r_rate = np.array([
-            _pick(n.nmpc_r_rate_delta, pm.r_rate_delta),
-            _pick(n.nmpc_r_rate_a, pm.r_rate_a),
+            _pick(pm.nmpc_r_rate_delta, pm.r_rate_delta),
+            _pick(pm.nmpc_r_rate_a, pm.r_rate_a),
         ])
-        self.terminal_scale = _pick(n.nmpc_terminal_scale, pm.terminal_q_scale)
+        self.terminal_scale = _pick(pm.nmpc_terminal_scale, pm.terminal_q_scale)
 
         # ── Continuity memory (mirrors MPCController's) ─────────────────
         self._delta_act = 0.0

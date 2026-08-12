@@ -510,13 +510,16 @@ is redesigned and re-enabled.
 
 ---
 
-### 4.5d Nonlinear MPC (`use_nmpc`) — LIVE-ONLY, added 2026-08-13, NOT MIRRORED
+### 4.5d Nonlinear MPC (`use_nmpc`) — added 2026-08-13; offline port added 2026-08-13
 
 `use_nmpc=true` swaps `mpc_core.MPCController` (linear time-varying QP) for
 `nmpc_core.NMPCController` (Frenet-frame nonlinear MPC, Gauss-Newton SQP).
-Default **false**. There is no `settings.py` counterpart for any of it — see
-`planning_control_sync.md`'s "Nonlinear MPC (`use_nmpc`)" section for the full
-description, the offline A/B numbers, and the scope warning.
+Default **false**. This repo now has its own offline port too
+(`controller/nmpc_optimiser.py`, selected by `settings.USE_NMPC`, same
+default false) — see `planning_control_sync.md`'s "Nonlinear MPC
+(`use_nmpc`)" section for the full description, and
+`tuner/nmpc_offline_check.py` for the reproducible validation suite
+(`python -m tuner.nmpc_offline_check`, no ROS/FSDS session needed).
 
 **Tuning implications, which is what this doc is for:**
 
@@ -536,9 +539,13 @@ description, the offline A/B numbers, and the scope warning.
   than proportional to how hard the corner is. Penalising absolute `r` in a
   curvature-aware model would fight cornering. Same number, different
   regressor: **re-sweep this one first**.
-- **To retune the NMPC without touching `MPCParams`**, use the `nmpc_q_*` /
-  `nmpc_r_*` override fields (sentinel `-1.0` = inherit). This exists
-  specifically so NMPC tuning cannot drift `MPCParams` away from `settings.py`.
+- **To retune the NMPC without touching the LTV-QP's own weights**, use the
+  `nmpc_q_*` / `nmpc_r_*` override fields, which now live IN `MPCParams`
+  itself (moved there 2026-08-13 from a separate `NMPCParams`, alongside the
+  base weights they inherit from at their `-1.0` sentinel — see
+  `mpc_params.py`'s own "NMPC weight overrides" section). Both the base
+  weights and these overrides carry the same `settings.py`
+  (`NMPC_Q_E_Y`, ...) parity obligation as every other `MPCParams` field.
   `ros2/launch_all.sh` carries a commented-out shortlist of the likely ones.
 - **Structural knobs and where their values came from** (all measured, see
   `late_turn_in_investigation.md` Part 16 §16.7): `nmpc_horizon=20` (1.0 s —

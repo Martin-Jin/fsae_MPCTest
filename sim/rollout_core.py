@@ -34,6 +34,7 @@ from model.vehicle_physics import (
     find_closest_reference_bounded,
 )
 from controller.optimiser import solve_mpc
+from controller.nmpc_optimiser import NMPCController
 from sim.sim_track import SimPerception, SimPlanner, calculate_dynamic_max_steps
 from controller.model_utils import (
     curvature_estimate, adaptive_R_rate, adaptive_R_scaling, adaptive_Q_scaling,
@@ -79,7 +80,21 @@ from settings import (
     LOOKAHEAD_STEER_EFFORT_RELAX_ENABLED, ADAPTIVE_Q_LOOKAHEAD_STEER_RELAX_FLOOR,
     CURVATURE_FORCING_ENABLED, CURVATURE_FORCING_GAIN,
     ANTI_HUNT_K_LOOKAHEAD,
+    USE_NMPC, NMPC_HORIZON, NMPC_SQP_ITERS, NMPC_SOLVE_BUDGET_MS,
+    NMPC_RK_SUBSTEPS, NMPC_JAC_SUBSTEPS, NMPC_TRUST_DELTA_RAD, NMPC_TRUST_A,
+    NMPC_BACKTRACK_MAX, NMPC_TRACK_HALFWIDTH, NMPC_SLACK_WEIGHT,
+    NMPC_CURVATURE_DENSE_STEP, NMPC_CURVATURE_SMOOTH_W, NMPC_KAPPA_CLIP,
+    NMPC_OSQP_MAX_ITER, NMPC_OSQP_EPS, NMPC_ALAT_CEILING_ENABLED,
+    NMPC_Q_E_Y, NMPC_Q_E_YD, NMPC_Q_E_PSI, NMPC_Q_EPSI_DOT, NMPC_Q_E_V,
+    NMPC_R_DELTA, NMPC_R_A_ACCEL, NMPC_R_A_BRAKE,
+    NMPC_R_RATE_DELTA, NMPC_R_RATE_A, NMPC_TERMINAL_SCALE,
 )
+
+
+def _nmpc_pick(override, base):
+    """-1.0 (or None) = inherit `base`; otherwise use `override`. See
+    settings.py's "NMPC weight overrides" comment."""
+    return base if override is None or override < 0.0 else override
 
 STALL_CHECK_INTERVAL = 60   # Steps between rolling stall checks (3 s at 20 Hz)
 STALL_MIN_DISTANCE = 3.0    # Minimum distance (m) expected per interval
@@ -434,6 +449,7 @@ def run_core_rollout(
     n_horizon=N_HORIZON, eps=ROLLOUT_EPS, max_iter=ROLLOUT_MAX_ITER,
     want_history=False, want_horizon_pred=False,
     optimal_time=None, continue_after_dnf=False,
+    use_nmpc=USE_NMPC,
 ):
     """
     Run one closed-loop MPC rollout: nonlinear plant + MPC controller.
@@ -472,6 +488,17 @@ def run_core_rollout(
         time bonus on a clean finish.
     use_planner : bool
         Planner-in-the-loop vs. oracle tracking against the global path.
+    use_nmpc : bool
+        False (default, = settings.USE_NMPC) -> controller/optimiser.py's
+        linear time-varying QP, as always. True -> controller/
+        nmpc_optimiser.py's Frenet-frame nonlinear MPC instead -- see that
+        module's docstring. Explicit parameter (not read from settings.py
+        at call time) so a caller (e.g. an A/B script) can toggle it without
+        relying on module-attribute mutation after settings.py has already
+        been imported elsewhere, which has no effect on an already-bound
+        `from settings import USE_NMPC` name -- see tuner/
+        nmpc_offline_check.py's closed-loop test for exactly this gotcha,
+        found by testing this parameter's own first version.
     model_lookup : callable(vx, dt) -> (Ad, Bd)
         Bicycle-model lookup. Pass offline_tuner.get_cached_model — both
         callers already share this cache.
@@ -613,6 +640,42 @@ def run_core_rollout(
             seed=POSE_HOLD_SEED,
         )
 
+    # ── Nonlinear MPC (settings.USE_NMPC) ──────────────────────────────────
+    # Constructed ONCE per rollout, same as command_queue/lookahead_peak_state
+    # above, so its warm-started SQP solution persists tick to tick exactly
+    # like the LTV path's u_prev/command_queue do. See controller/
+    # nmpc_optimiser.py's module docstring for the full design, and
+    # settings.py's "NMPC weight overrides" comment for why Q/R/R_rate (the
+    # CURRENT weight set -- settings.py's tuned values or a CMA-ES candidate,
+    # whichever this rollout was called with) rather than settings.py's
+    # constants directly are what the overrides inherit from.
+    nmpc = None
+    if use_nmpc:
+        nmpc = NMPCController(
+            dt=DT, N=NMPC_HORIZON, vehicle_params=vehicle_params,
+            u_min=u_min, u_max=u_max, du_max=du_max,
+            q_e_y=_nmpc_pick(NMPC_Q_E_Y, Q[0, 0]),
+            q_e_yd=_nmpc_pick(NMPC_Q_E_YD, Q[1, 1]),
+            q_e_psi=_nmpc_pick(NMPC_Q_E_PSI, Q[2, 2]),
+            q_epsi_dot=_nmpc_pick(NMPC_Q_EPSI_DOT, Q[3, 3]),
+            q_e_v=_nmpc_pick(NMPC_Q_E_V, Q[4, 4]),
+            r_delta=_nmpc_pick(NMPC_R_DELTA, R[0, 0]),
+            r_a_accel=_nmpc_pick(NMPC_R_A_ACCEL, R_A_ACCEL),
+            r_a_brake=_nmpc_pick(NMPC_R_A_BRAKE, R_A_BRAKE),
+            r_rate_delta=_nmpc_pick(NMPC_R_RATE_DELTA, R_rate[0, 0]),
+            r_rate_a=_nmpc_pick(NMPC_R_RATE_A, R_rate[1, 1]),
+            terminal_scale=_nmpc_pick(NMPC_TERMINAL_SCALE, TERMINAL_Q_SCALE),
+            sqp_iters=NMPC_SQP_ITERS, solve_budget_ms=NMPC_SOLVE_BUDGET_MS,
+            rk_substeps=NMPC_RK_SUBSTEPS, jac_substeps=NMPC_JAC_SUBSTEPS,
+            trust_delta_rad=NMPC_TRUST_DELTA_RAD, trust_a=NMPC_TRUST_A,
+            backtrack_max=NMPC_BACKTRACK_MAX,
+            track_halfwidth=NMPC_TRACK_HALFWIDTH, slack_weight=NMPC_SLACK_WEIGHT,
+            osqp_max_iter=NMPC_OSQP_MAX_ITER, osqp_eps=NMPC_OSQP_EPS,
+            alat_ceiling_enabled=NMPC_ALAT_CEILING_ENABLED,
+            alat_flat=ALAT_CEILING_FLAT, alat_slope=ALAT_CEILING_SLOPE,
+            alat_intercept=ALAT_CEILING_INTERCEPT,
+        )
+
     metrics = RolloutMetrics()
     idx = 0
     last_idx = 0
@@ -637,6 +700,16 @@ def run_core_rollout(
             "e_y_true": [], "e_psi_true": [],
             "pred_X": [], "pred_Y": [], "solver_failed": [],
             "failed": False, "offtrack": False, "fail_reason": None,
+            # NMPC-only diagnostics (see controller/nmpc_optimiser.py's
+            # compute_step() diag dict) -- always present, None on every
+            # LTV-QP-controlled step, exactly like "planner_X"/"planner_Y"
+            # are only meaningful in planner mode. Distinct from "e_y"/
+            # "e_psi" above, which stay the SAME tracking-error-helper value
+            # regardless of controller so existing plots/scoring keep
+            # meaning what they always have; these are the NMPC's OWN
+            # Frenet e_y/e_psi and solver state.
+            "nmpc_iters": [], "nmpc_status": [], "nmpc_cost": [],
+            "nmpc_e_y": [], "nmpc_e_psi": [], "nmpc_solve_ms": [],
         }
         if use_planner:
             # Per-step snapshot of SimPlanner's live centreline (distinct from
@@ -881,167 +954,237 @@ def run_core_rollout(
             e_y, e_y_dot, e_psi, state[5], vx_true - v_target, 0.0, state[6], state[7],
         ])
 
-        # ── Lookahead curvature scan (ADAPTIVE_Q_LOOKAHEAD) ─────────────────
-        # Distinct from the single-point curvature_estimate() below (which
-        # drives adaptive_R_rate/steer_rate_anti_hunt): scans the whole
-        # speed-scaled window ahead for the largest |curvature| and the
-        # total accumulated heading change, so the Q boost can anticipate a
-        # corner before the car reaches it, and a long gradual U-turn is
-        # recognised even with unremarkable peak curvature.
-        lookahead_dist = float(np.clip(vx_true * 1.13, 3.0, 25.0))
-        (kappa_max_abs, _lookahead_idx, _lookahead_peak_dist,
-         lookahead_heading_change) = lookahead_curvature_profile(
-            path_xy, idx, lookahead_dist
-        )
+        if use_nmpc:
+            # ── Nonlinear MPC path ───────────────────────────────────────────
+            # Deliberately skips the WHOLE adaptive-gain-schedule block the
+            # `else` branch below runs (lookahead curvature scan,
+            # adaptive_R_rate/_scaling, steer_rate_anti_hunt,
+            # adaptive_Q_lookahead/_scaling, curvature-forcing): all of it
+            # exists to synthesise anticipation the LINEAR model cannot
+            # produce on its own. The nonlinear model anticipates a bend
+            # structurally (kappa(s) is looked up from a STATE, arc length,
+            # not reweighted after the fact), so applying the same
+            # mechanisms on top would double-count an effect that's now
+            # built into the prediction. See settings.py's USE_NMPC comment.
+            pending_cmds = list(command_queue)[1:]
+            if DELAY_JITTER_STEPS > 0.0:
+                # Same delay-belief-error model as the LTV branch below —
+                # see that branch's identical comment for the rationale.
+                n_true = len(pending_cmds)
+                n_believed = int(round(n_true + delay_rng.normal(0.0, DELAY_JITTER_STEPS)))
+                n_believed = int(np.clip(n_believed, 0, max(n_true, 0) + 2))
+                if n_believed <= n_true:
+                    pending_cmds = pending_cmds[n_true - n_believed:] if n_believed else []
+                else:
+                    pad = n_believed - n_true
+                    oldest = pending_cmds[0] if pending_cmds else u_prev
+                    pending_cmds = [oldest] * pad + pending_cmds
 
-        # ── Adaptive gain scaling ────────────────────────────────────────────
-        kappa = curvature_estimate(state)
-        R_rate_scaled = adaptive_R_rate(
-            kappa, R_rate, enable_in_corners=ADAPTIVE_R_RATE_ENABLE_IN_CORNERS,
-            kappa_max_abs=kappa_max_abs,
-            during_floor=ADAPTIVE_R_RATE_DURING_FLOOR,
-            entering_floor=ADAPTIVE_R_RATE_ENTERING_FLOOR,
-            k_entering=ADAPTIVE_R_RATE_K_ENTERING,
-        )
-        R_rate_scaled = steer_rate_anti_hunt(
-            kappa, e_y, R_rate_scaled, enabled=STEER_RATE_ANTI_HUNT_ENABLED, e_psi=e_psi,
-            kappa_max_abs=kappa_max_abs, k_lookahead=ANTI_HUNT_K_LOOKAHEAD,
-        )
-        R_rate_scaled = low_speed_steer_rate_boost(
-            vx_true, R_rate_scaled, enabled=LOW_SPEED_STEER_RATE_BOOST_ENABLED,
-            boost_max=LOW_SPEED_STEER_RATE_BOOST_MAX,
-            k=LOW_SPEED_STEER_RATE_BOOST_K,
-        )
-        R_scaled = adaptive_R_scaling(vx, R)
-        if STEER_EFFORT_STRAIGHT_BOOST_ENABLED:
-            R_scaled = R_scaled.copy()
-            R_scaled[0, 0] *= steer_effort_straight_boost(kappa_max_abs)
-        if LOOKAHEAD_STEER_EFFORT_RELAX_ENABLED:
-            R_scaled = R_scaled.copy()
-            R_scaled[0, 0] *= lookahead_steer_effort_relax(
-                kappa_max_abs, vx,
-                floor=ADAPTIVE_Q_LOOKAHEAD_STEER_RELAX_FLOOR,
+            # The NMPC tracks its own Frenet path reference and needs the
+            # SAME path source e_y/e_psi were just computed against above
+            # (the live planner's centreline when one is ready, otherwise
+            # the oracle path) -- not the LTV-only path_xy array reused
+            # blindly regardless of mode.
+            if use_planner and cl is not None and len(cl) >= 2:
+                nmpc_path_xy = np.column_stack([cl_x, cl_y])
+            else:
+                nmpc_path_xy = path_xy
+
+            u_opt, nmpc_diag = nmpc.compute_step(
+                nmpc_path_xy, car_pos_np, psi_est, vx_true, v_target,
+                car_yaw_rate=state_est[5], car_vy=state_est[4],
+                pending_cmds=(pending_cmds if pending_cmds else None),
+                dense_step=NMPC_CURVATURE_DENSE_STEP,
+                smooth_w=NMPC_CURVATURE_SMOOTH_W, kappa_clip=NMPC_KAPPA_CLIP,
+                step_index=step,
+            )
+            # The warm-start-projection invariant (see NMPCController.
+            # _project_feasible) means compute_step() always ships a
+            # feasible u_opt, even on a tick where the SQP subproblem itself
+            # didn't solve -- so "solver failed" in the LTV sense (fall back
+            # to u_prev, count toward consecutive_fails/MAX_FAILS) does not
+            # apply here. nmpc_diag['status']/['solved'] carry the SQP's own
+            # per-tick outcome for diagnostic purposes instead.
+            solver_failed = False
+            inaccurate = False
+            x0_mpc = None   # no linear x0 here -- guards the cosmetic block below
+        else:
+            # ── Linear time-varying QP path (unchanged) ─────────────────────
+            # ── Lookahead curvature scan (ADAPTIVE_Q_LOOKAHEAD) ─────────────
+            # Distinct from the single-point curvature_estimate() below (which
+            # drives adaptive_R_rate/steer_rate_anti_hunt): scans the whole
+            # speed-scaled window ahead for the largest |curvature| and the
+            # total accumulated heading change, so the Q boost can anticipate a
+            # corner before the car reaches it, and a long gradual U-turn is
+            # recognised even with unremarkable peak curvature.
+            lookahead_dist = float(np.clip(vx_true * 1.13, 3.0, 25.0))
+            (kappa_max_abs, _lookahead_idx, _lookahead_peak_dist,
+             lookahead_heading_change) = lookahead_curvature_profile(
+                path_xy, idx, lookahead_dist
+            )
+
+            # ── Adaptive gain scaling ────────────────────────────────────────
+            kappa = curvature_estimate(state)
+            R_rate_scaled = adaptive_R_rate(
+                kappa, R_rate, enable_in_corners=ADAPTIVE_R_RATE_ENABLE_IN_CORNERS,
+                kappa_max_abs=kappa_max_abs,
+                during_floor=ADAPTIVE_R_RATE_DURING_FLOOR,
+                entering_floor=ADAPTIVE_R_RATE_ENTERING_FLOOR,
+                k_entering=ADAPTIVE_R_RATE_K_ENTERING,
+            )
+            R_rate_scaled = steer_rate_anti_hunt(
+                kappa, e_y, R_rate_scaled, enabled=STEER_RATE_ANTI_HUNT_ENABLED, e_psi=e_psi,
+                kappa_max_abs=kappa_max_abs, k_lookahead=ANTI_HUNT_K_LOOKAHEAD,
+            )
+            R_rate_scaled = low_speed_steer_rate_boost(
+                vx_true, R_rate_scaled, enabled=LOW_SPEED_STEER_RATE_BOOST_ENABLED,
+                boost_max=LOW_SPEED_STEER_RATE_BOOST_MAX,
+                k=LOW_SPEED_STEER_RATE_BOOST_K,
+            )
+            R_scaled = adaptive_R_scaling(vx, R)
+            if STEER_EFFORT_STRAIGHT_BOOST_ENABLED:
+                R_scaled = R_scaled.copy()
+                R_scaled[0, 0] *= steer_effort_straight_boost(kappa_max_abs)
+            if LOOKAHEAD_STEER_EFFORT_RELAX_ENABLED:
+                R_scaled = R_scaled.copy()
+                R_scaled[0, 0] *= lookahead_steer_effort_relax(
+                    kappa_max_abs, vx,
+                    floor=ADAPTIVE_Q_LOOKAHEAD_STEER_RELAX_FLOOR,
+                    demand_normalised=ADAPTIVE_Q_DEMAND_NORMALISED,
+                    demand_half=ADAPTIVE_Q_DEMAND_HALF,
+                    alat_flat=ALAT_CEILING_FLAT,
+                    alat_slope=ALAT_CEILING_SLOPE,
+                    alat_intercept=ALAT_CEILING_INTERCEPT,
+                )
+
+            # ── Lookahead corner-anticipation Q-boost (ADAPTIVE_Q_LOOKAHEAD) ─
+            # Applied to Q FIRST, then adaptive_Q_scaling's centred-softening
+            # multiplies on top of the result below -- see model_utils.py's
+            # module docstring for why this ordering avoids the corner boost
+            # being silently cancelled by the centred-softening floor while
+            # keeping both continuous.
+            if ADAPTIVE_Q_LOOKAHEAD_ENABLED:
+                lookahead_peak_state = update_lookahead_peak(
+                    lookahead_peak_state, kappa, vx_true, DT
+                )
+            Q_base = adaptive_Q_lookahead(
+                Q, kappa_max_abs, vx_true,
+                lookahead_peak_state["last_peak_kappa_abs"],
+                lookahead_peak_state["dist_since_peak"],
+                lookahead_heading_change,
+                enabled=ADAPTIVE_Q_LOOKAHEAD_ENABLED,
                 demand_normalised=ADAPTIVE_Q_DEMAND_NORMALISED,
+                ey_straight_floor=ADAPTIVE_Q_STRAIGHT_EY_FLOOR,
+                ey_straight_k=ADAPTIVE_Q_STRAIGHT_EY_K,
+                epsi_straight_boost_max=ADAPTIVE_Q_STRAIGHT_EPSI_BOOST_MAX,
+                epsi_straight_k=ADAPTIVE_Q_STRAIGHT_K,
+                r_straight_boost_max=ADAPTIVE_Q_STRAIGHT_R_BOOST_MAX,
+                r_straight_k=ADAPTIVE_Q_STRAIGHT_K,
+                uturn_ey_boost_max=ADAPTIVE_Q_UTURN_EY_BOOST_MAX,
+                uturn_epsi_boost_max=ADAPTIVE_Q_UTURN_EPSI_BOOST_MAX,
+                uturn_r_relax_floor=ADAPTIVE_Q_UTURN_R_RELAX_FLOOR,
+                uturn_thresh_rad=ADAPTIVE_Q_UTURN_HEADING_THRESH_RAD,
+                uturn_sat_rad=ADAPTIVE_Q_UTURN_HEADING_SAT_RAD,
                 demand_half=ADAPTIVE_Q_DEMAND_HALF,
                 alat_flat=ALAT_CEILING_FLAT,
                 alat_slope=ALAT_CEILING_SLOPE,
                 alat_intercept=ALAT_CEILING_INTERCEPT,
+                exit_decay_dist_floor=ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_DIST,
+                exit_decay_time_s=ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_TIME_S,
+                exit_decay_dist_max=ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_DIST_MAX,
+            )
+            Q_scaled = adaptive_Q_scaling(e_y, Q_base, enabled=ADAPTIVE_Q_SCALING_ENABLED)
+            Ad, Bd = model_lookup(vx, DT)
+
+            # ── Delay compensation ───────────────────────────────────────────
+            # command_queue[0] is applied to the plant THIS step; everything after
+            # it (DELAY_STEPS commands) is already committed but still in transit
+            # and will land before the u_opt computed below ever reaches the
+            # plant. Predict the state forward through those so the solve isn't
+            # reacting to a stale x0 (see settings.py DELAY_STEPS note).
+            pending_cmds = list(command_queue)[1:]
+            if DELAY_JITTER_STEPS > 0.0:
+                # Perturb only the controller's BELIEF about how many commands are
+                # in flight — the queue itself (and so the plant's real lag) is
+                # untouched. Rounding a Gaussian gives the live failure mode: the
+                # estimate is usually right, occasionally off by a step, which is
+                # what makes x0 jump between rollforward depths on the real car.
+                n_true = len(pending_cmds)
+                n_believed = int(round(n_true + delay_rng.normal(0.0, DELAY_JITTER_STEPS)))
+                # Cap over-estimates at the live MAX_DELAY_COMPENSATION_STEPS
+                # equivalent so a tail draw can't roll forward absurdly far.
+                n_believed = int(np.clip(n_believed, 0, max(n_true, 0) + 2))
+                if n_believed <= n_true:
+                    pending_cmds = pending_cmds[n_true - n_believed:] if n_believed else []
+                else:
+                    # Over-estimating: the controller thinks more commands are in
+                    # flight than there are, so it rolls forward through the
+                    # oldest one extra times — the same over-compensation a
+                    # too-large pose_age_s produces live.
+                    pad = n_believed - n_true
+                    oldest = pending_cmds[0] if pending_cmds else u_prev
+                    pending_cmds = [oldest] * pad + pending_cmds
+            if pending_cmds:
+                x0_mpc = predict_ahead(x0_mpc, Ad, Bd, pending_cmds)
+
+            # ── Curvature-forcing term for the QP's own dynamics ─────────────
+            # Without this the QP's prediction cannot "see" the path bending
+            # ahead at all: with e_y = e_psi = 0 (car dead on-line approaching a
+            # corner) its N-step rollout predicts staying at 0 forever, because
+            # nothing in Ad/Bd represents the REFERENCE turning away from the
+            # car -- every lookahead mechanism above only reweights an EXISTING
+            # error. See model_utils.curvature_horizon_profile.
+            w_forcing = None
+            if CURVATURE_FORCING_ENABLED:
+                kappa_horizon = curvature_horizon_profile(path_xy, idx, vx_true, n_horizon, DT)
+                w_forcing = np.zeros((8, n_horizon))
+                # e_psi = car_yaw - path_yaw; the path's heading advances at
+                # v_x * kappa (rad/s) along the reference, so a path curving
+                # LEFT (kappa > 0) drives e_psi NEGATIVE over the horizon even
+                # with the car holding a constant heading -- hence the minus.
+                w_forcing[2, :] = -vx_true * kappa_horizon * DT * CURVATURE_FORCING_GAIN
+
+            # ── MPC solve ─────────────────────────────────────────────────────
+            mpc_result = solve_mpc(
+                x0_mpc, Ad, Bd, n_horizon, Q_scaled, R_scaled, u_min, u_max,
+                R_rate=R_rate_scaled, u_prev=u_prev, silent=True,
+                return_status=True, eps_abs=eps, eps_rel=eps,
+                max_iter=max_iter, warm_start=(step != 0),
+                du_max=du_max, terminal_scale=TERMINAL_Q_SCALE,
+                r_a_accel=R_A_ACCEL, r_a_brake=R_A_BRAKE,
+                w=w_forcing,
             )
 
-        # ── Lookahead corner-anticipation Q-boost (ADAPTIVE_Q_LOOKAHEAD) ────
-        # Applied to Q FIRST, then adaptive_Q_scaling's centred-softening
-        # multiplies on top of the result below -- see model_utils.py's
-        # module docstring for why this ordering avoids the corner boost
-        # being silently cancelled by the centred-softening floor while
-        # keeping both continuous.
-        if ADAPTIVE_Q_LOOKAHEAD_ENABLED:
-            lookahead_peak_state = update_lookahead_peak(
-                lookahead_peak_state, kappa, vx_true, DT
-            )
-        Q_base = adaptive_Q_lookahead(
-            Q, kappa_max_abs, vx_true,
-            lookahead_peak_state["last_peak_kappa_abs"],
-            lookahead_peak_state["dist_since_peak"],
-            lookahead_heading_change,
-            enabled=ADAPTIVE_Q_LOOKAHEAD_ENABLED,
-            demand_normalised=ADAPTIVE_Q_DEMAND_NORMALISED,
-            ey_straight_floor=ADAPTIVE_Q_STRAIGHT_EY_FLOOR,
-            ey_straight_k=ADAPTIVE_Q_STRAIGHT_EY_K,
-            epsi_straight_boost_max=ADAPTIVE_Q_STRAIGHT_EPSI_BOOST_MAX,
-            epsi_straight_k=ADAPTIVE_Q_STRAIGHT_K,
-            r_straight_boost_max=ADAPTIVE_Q_STRAIGHT_R_BOOST_MAX,
-            r_straight_k=ADAPTIVE_Q_STRAIGHT_K,
-            uturn_ey_boost_max=ADAPTIVE_Q_UTURN_EY_BOOST_MAX,
-            uturn_epsi_boost_max=ADAPTIVE_Q_UTURN_EPSI_BOOST_MAX,
-            uturn_r_relax_floor=ADAPTIVE_Q_UTURN_R_RELAX_FLOOR,
-            uturn_thresh_rad=ADAPTIVE_Q_UTURN_HEADING_THRESH_RAD,
-            uturn_sat_rad=ADAPTIVE_Q_UTURN_HEADING_SAT_RAD,
-            demand_half=ADAPTIVE_Q_DEMAND_HALF,
-            alat_flat=ALAT_CEILING_FLAT,
-            alat_slope=ALAT_CEILING_SLOPE,
-            alat_intercept=ALAT_CEILING_INTERCEPT,
-            exit_decay_dist_floor=ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_DIST,
-            exit_decay_time_s=ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_TIME_S,
-            exit_decay_dist_max=ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_DIST_MAX,
-        )
-        Q_scaled = adaptive_Q_scaling(e_y, Q_base, enabled=ADAPTIVE_Q_SCALING_ENABLED)
-        Ad, Bd = model_lookup(vx, DT)
-
-        # ── Delay compensation ───────────────────────────────────────────────
-        # command_queue[0] is applied to the plant THIS step; everything after
-        # it (DELAY_STEPS commands) is already committed but still in transit
-        # and will land before the u_opt computed below ever reaches the
-        # plant. Predict the state forward through those so the solve isn't
-        # reacting to a stale x0 (see settings.py DELAY_STEPS note).
-        pending_cmds = list(command_queue)[1:]
-        if DELAY_JITTER_STEPS > 0.0:
-            # Perturb only the controller's BELIEF about how many commands are
-            # in flight — the queue itself (and so the plant's real lag) is
-            # untouched. Rounding a Gaussian gives the live failure mode: the
-            # estimate is usually right, occasionally off by a step, which is
-            # what makes x0 jump between rollforward depths on the real car.
-            n_true = len(pending_cmds)
-            n_believed = int(round(n_true + delay_rng.normal(0.0, DELAY_JITTER_STEPS)))
-            # Cap over-estimates at the live MAX_DELAY_COMPENSATION_STEPS
-            # equivalent so a tail draw can't roll forward absurdly far.
-            n_believed = int(np.clip(n_believed, 0, max(n_true, 0) + 2))
-            if n_believed <= n_true:
-                pending_cmds = pending_cmds[n_true - n_believed:] if n_believed else []
+            solver_failed = mpc_result is None
+            inaccurate = False
+            if solver_failed:
+                consecutive_fails += 1
+                u_opt = u_prev.copy()
             else:
-                # Over-estimating: the controller thinks more commands are in
-                # flight than there are, so it rolls forward through the
-                # oldest one extra times — the same over-compensation a
-                # too-large pose_age_s produces live.
-                pad = n_believed - n_true
-                oldest = pending_cmds[0] if pending_cmds else u_prev
-                pending_cmds = [oldest] * pad + pending_cmds
-        if pending_cmds:
-            x0_mpc = predict_ahead(x0_mpc, Ad, Bd, pending_cmds)
-
-        # ── Curvature-forcing term for the QP's own dynamics ────────────────
-        # Without this the QP's prediction cannot "see" the path bending
-        # ahead at all: with e_y = e_psi = 0 (car dead on-line approaching a
-        # corner) its N-step rollout predicts staying at 0 forever, because
-        # nothing in Ad/Bd represents the REFERENCE turning away from the
-        # car -- every lookahead mechanism above only reweights an EXISTING
-        # error. See model_utils.curvature_horizon_profile.
-        w_forcing = None
-        if CURVATURE_FORCING_ENABLED:
-            kappa_horizon = curvature_horizon_profile(path_xy, idx, vx_true, n_horizon, DT)
-            w_forcing = np.zeros((8, n_horizon))
-            # e_psi = car_yaw - path_yaw; the path's heading advances at
-            # v_x * kappa (rad/s) along the reference, so a path curving
-            # LEFT (kappa > 0) drives e_psi NEGATIVE over the horizon even
-            # with the car holding a constant heading -- hence the minus.
-            w_forcing[2, :] = -vx_true * kappa_horizon * DT * CURVATURE_FORCING_GAIN
-
-        # ── MPC solve ─────────────────────────────────────────────────────────
-        mpc_result = solve_mpc(
-            x0_mpc, Ad, Bd, n_horizon, Q_scaled, R_scaled, u_min, u_max,
-            R_rate=R_rate_scaled, u_prev=u_prev, silent=True,
-            return_status=True, eps_abs=eps, eps_rel=eps,
-            max_iter=max_iter, warm_start=(step != 0),
-            du_max=du_max, terminal_scale=TERMINAL_Q_SCALE,
-            r_a_accel=R_A_ACCEL, r_a_brake=R_A_BRAKE,
-            w=w_forcing,
-        )
-
-        solver_failed = mpc_result is None
-        inaccurate = False
-        if solver_failed:
-            consecutive_fails += 1
-            u_opt = u_prev.copy()
-        else:
-            u_opt, status = mpc_result
-            consecutive_fails = 0
-            inaccurate = status in (cp.OPTIMAL_INACCURATE, "optimal_inaccurate")
-        if inaccurate:
-            inaccurate_count_total += 1
+                u_opt, status = mpc_result
+                consecutive_fails = 0
+                inaccurate = status in (cp.OPTIMAL_INACCURATE, "optimal_inaccurate")
+            if inaccurate:
+                inaccurate_count_total += 1
 
         if want_history:
             history["solver_failed"].append(solver_failed)
             history["u_steer"].append(u_opt[0])
             history["u_accel"].append(u_opt[1])
+            if use_nmpc:
+                history["nmpc_iters"].append(nmpc_diag['iters'])
+                history["nmpc_status"].append(nmpc_diag['status'])
+                history["nmpc_cost"].append(nmpc_diag['cost'])
+                history["nmpc_e_y"].append(nmpc_diag['e_y'])
+                history["nmpc_e_psi"].append(nmpc_diag['e_psi'])
+                history["nmpc_solve_ms"].append(nmpc_diag['solve_ms'])
+            else:
+                history["nmpc_iters"].append(None)
+                history["nmpc_status"].append(None)
+                history["nmpc_cost"].append(None)
+                history["nmpc_e_y"].append(None)
+                history["nmpc_e_psi"].append(None)
+                history["nmpc_solve_ms"].append(None)
 
         # ── Apply transport delay ────────────────────────────────────────────
         command_queue.append(u_opt)
@@ -1049,15 +1192,26 @@ def run_core_rollout(
 
         # ── Horizon prediction (GUI-only, cosmetic — plant never uses this) ───
         if want_history and want_horizon_pred:
-            px, py = [], []
-            x_p_tmp = x0_mpc.copy()
-            for k in range(n_horizon):
-                e_y_pred = x_p_tmp[0]
-                px.append(X_g + (k + 1) * state[3] * np.cos(psi_g) * DT - e_y_pred * np.sin(rpsi))
-                py.append(Y_g + (k + 1) * state[3] * np.sin(psi_g) * DT + e_y_pred * np.cos(rpsi))
-                x_p_tmp = Ad @ x_p_tmp + Bd @ u_opt
-            history["pred_X"].append(px)
-            history["pred_Y"].append(py)
+            if use_nmpc:
+                # No linear Ad/Bd model exists to build this cosmetic line
+                # from when the NMPC is active -- empty snapshot, same
+                # precedent as the "planner not ready" case above, rather
+                # than a misleading LTV-based prediction. The NMPC's own
+                # predicted trajectory is not cosmetic-plotted here (it
+                # predicts in Frenet coordinates, not global X/Y) -- left as
+                # a possible future GUI addition, not attempted here.
+                history["pred_X"].append(np.empty(0))
+                history["pred_Y"].append(np.empty(0))
+            else:
+                px, py = [], []
+                x_p_tmp = x0_mpc.copy()
+                for k in range(n_horizon):
+                    e_y_pred = x_p_tmp[0]
+                    px.append(X_g + (k + 1) * state[3] * np.cos(psi_g) * DT - e_y_pred * np.sin(rpsi))
+                    py.append(Y_g + (k + 1) * state[3] * np.sin(psi_g) * DT + e_y_pred * np.cos(rpsi))
+                    x_p_tmp = Ad @ x_p_tmp + Bd @ u_opt
+                history["pred_X"].append(px)
+                history["pred_Y"].append(py)
 
         # ── Termination checks ──────────────────────────────────────────────
         # idx (from find_closest_reference_bounded's forward-bounded search,
