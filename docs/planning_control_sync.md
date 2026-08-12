@@ -254,7 +254,7 @@ writing — re-confirm before relying on them, since a resync can move them.
 | Low-speed steering-rate boost | `settings.py` (`LOW_SPEED_STEER_RATE_BOOST_ENABLED`/`_MAX`/`_K`) | `mpc_params.py` (`low_speed_steer_rate_boost_enabled`/`_max`/`_k`) | `False` / `2.5` / `0.35` — disabled, see "Low-speed steering-rate boost" below |
 | Steering-effort relaxation approaching a corner | `settings.py` (`LOOKAHEAD_STEER_EFFORT_RELAX_ENABLED`, `ADAPTIVE_Q_LOOKAHEAD_STEER_RELAX_FLOOR`) | `mpc_params.py` (`lookahead_steer_effort_relax_enabled`, `adaptive_q_lookahead_steer_relax_floor`) | `True` / `0.5` — see "Steering-effort relaxation approaching a corner" below |
 | Curvature forcing term (QP dynamics) | `settings.py` (`CURVATURE_FORCING_ENABLED`, `CURVATURE_FORCING_GAIN`), read by `controller/optimiser.py`'s `solve_mpc(w=)` | `mpc_params.py` (`curvature_forcing_enabled`, `curvature_forcing_gain`), read by `mpc_core.py`'s `_solve_qp` | `True` / `1.0` — see "Curvature-forcing term" below |
-| Anti-hunt lookahead gate | `settings.py` (`ANTI_HUNT_K_LOOKAHEAD`), read by `controller/model_utils.py`'s `steer_rate_anti_hunt(k_lookahead=)` | `mpc_params.py` (`anti_hunt_k_lookahead`), read by `mpc_core.py`'s `_steer_rate_anti_hunt` | `60.0` — see "Curvature-forcing term" below |
+| Anti-hunt lookahead gate | `settings.py` (`ANTI_HUNT_K_LOOKAHEAD`), read by `controller/model_utils.py`'s `steer_rate_anti_hunt(k_lookahead=)` | `mpc_params.py` (`anti_hunt_k_lookahead`), read by `mpc_core.py`'s `_steer_rate_anti_hunt` | `15.0` (was `60.0`, too eager — see "Curvature-forcing term" below) |
 
 Notes on how these are actually used:
 
@@ -1946,14 +1946,59 @@ lookahead window — not just once the car is already turning through it.
 `CURVATURE_FORCING_GAIN`, `ANTI_HUNT_K_LOOKAHEAD`), `fsae_params.yaml`,
 `launch_all.sh`'s shortlist, and the `fsds_simulator` mirror.
 
-**Not yet re-tested live as the combined fix** (curvature forcing + the
-anti-hunt gate together) — the sign/mechanism verification above used
-synthetic paths and a closed-loop simulation, not a live session. If
-sudden-turn lateness persists after this, check `w_epsi_sum`/
-`kappa_horizon_end` in telemetry to confirm the forcing term is actually
-firing (nonzero, growing before the corner) before assuming this fix
-didn't work — and check `m_Rrate_antihunt` isn't still elevated during
-that same window before assuming the gate isn't helping.
+**Re-tested live (2026-08-12) — regression found and fixed: `anti_hunt_k_lookahead=60.0`
+was itself too aggressive.** The combined fix made things *worse*: still no
+earlier net turn-in, plus a new symptom — brief wrong-direction (rightward)
+steering flicks right before some left corners, occasionally costing enough
+line to miss the corner.
+
+Log analysis (`mpc_standalone_control_1786509640.csv`) found the actual
+mechanism has nothing to do with curvature-forcing's sign or magnitude —
+`w_epsi_sum` was firing correctly and its tick-to-tick drift was negligible
+(±0.01–0.02) throughout the approach. Instead, `steer_deg` was swinging
+±9° almost every tick with an exactly-repeating pattern, the signature of a
+**pre-existing, already-documented mechanism**: `predict_ahead()`'s
+rollforward (see `mpc_core.py`'s "Delay compensation" comment) compounds
+pose noise through `n_delay` steps with no ground-truth correction, and
+that noise reaches the steering command directly at small `e_y`/`e_psi` —
+"steer swinging +-5-10 deg per tick... causing late turn-in and running
+wide," exactly as that comment already warned, unrelated to today's work.
+
+What changed today is how much that pre-existing noise gets damped.
+`boost_lookahead = 1/(1 + k_lookahead·|kappa_max_abs|)` with `k=60` already
+cuts anti-hunt's damping in half at `kappa_max_abs=0.02` — a corner still
+far outside the window curvature-forcing actually needs help fighting
+through (`kappa_max_abs` there is usually 0.06+ by the time forcing's
+correction matters). Comparing the same approach-window statistics before
+vs. after the gate: mean anti-hunt multiplier fell at **every** curvature
+level (e.g. `kappa_max_abs<0.02`: `2.19×→1.50×`), and mean `|Δsteer_deg|`
+per tick rose correspondingly (`2.74→3.46`, `2.63→2.93`, `3.59→4.26`) —
+confirming the gate was relaxing damping broadly, not selectively where
+curvature-forcing's early correction needed room, letting the pre-existing
+noise oscillate more everywhere. Reversal *rate* alone looked unchanged
+(0.171 vs 0.174) precisely because this is amplified-noise, not new noise —
+the amplitude grew, not the frequency, which is why it read as "still late"
+(bigger, noisier swings, no more net commitment) rather than a raw increase
+in direction changes.
+
+**Fix**: lowered `anti_hunt_k_lookahead` from `60.0` to `15.0` on both
+sides (`mpc_params.py`, `settings.py`, `fsae_params.yaml`,
+`launch_all.sh`'s shortlist, `fsds_simulator` mirror). At `k=15`,
+`boost_lookahead` stays close to `1.0` (little relaxation) until
+`kappa_max_abs` is around `0.05`+, and only drops substantially past
+`0.1`–`0.15` — inert during the very early, faint lookahead signal, active
+once a corner is close/sharp enough for curvature-forcing's correction to
+actually need the room. **Not yet re-tested live at `k=15`** — this is a
+targeted correction of the over-triggering, not a re-validated tuning; the
+same telemetry columns (`w_epsi_sum`, `kappa_horizon_end`,
+`m_Rrate_antihunt`, and now especially `kappa_max_abs` alongside
+`m_Rrate_antihunt`) are what to check on the next log.
+
+**While investigating this, the `MPC_ANTI_HUNT_K_LOOKAHEAD` comment in
+`launch_all.sh` was found to have the tuning direction backwards** ("Lower
+= relaxes anti-hunt sooner/more" — actually the opposite: higher `k` means
+more relaxation at a given `kappa_max_abs`, since `k` multiplies inside the
+denominator). Fixed alongside this change.
 
 ## Straight-line lateral-error snap-back was too sharp (2026-08-12)
 

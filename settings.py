@@ -558,10 +558,26 @@ CURVATURE_FORCING_GAIN = 1.0
 # produces on approach to a corner, and anti-hunt was cancelling that
 # correction every tick, reproducing the same "still turns in late" symptom
 # curvature forcing exists to fix. This adds a fourth factor
-# (kappa_max_abs-gated, same k=60 as the existing current-kappa term) that
-# relaxes anti-hunt's boost once a real corner is detected ahead. Mirrors
-# mpc_core.py's anti_hunt_k_lookahead -- keep both in sync.
-ANTI_HUNT_K_LOOKAHEAD = 60.0
+# (kappa_max_abs-gated) that relaxes anti-hunt's boost once a real corner is
+# detected ahead. Mirrors mpc_core.py's anti_hunt_k_lookahead -- keep both in
+# sync.
+#
+# Originally k=60 (matching the existing current-kappa term, boost_kappa),
+# but a same-day live test showed that was far too eager:
+# 1/(1+60*kappa_max_abs) already halves anti-hunt damping at
+# kappa_max_abs=0.02 -- a corner still well outside the window
+# curvature_forcing actually needs help in. That let a pre-existing,
+# already-documented pose-noise oscillation (mpc_core.py's "Delay
+# compensation" note: noise compounding through predict_ahead()'s
+# rollforward causes +-5-10 deg/tick steering thrash at small e_y/e_psi) get
+# bigger at EVERY curvature level, not just where the forcing term needed
+# room -- reproducing "still turns in late" (the extra swing is noise, not
+# net commitment) plus a new symptom, brief wrong-direction flicks right
+# before some corners. Lowered to k=15 so the gate stays inert until a
+# corner is meaningfully close/sharp (kappa_max_abs 0.05-0.15+), rather than
+# firing on the first faint lookahead signal. Re-tune from a live log with
+# m_Rrate_antihunt and kappa_max_abs side by side, not in isolation.
+ANTI_HUNT_K_LOOKAHEAD = 15.0
 
 # ------------------------------------------------------------------------------
 # Cost function weights (for simulator only)

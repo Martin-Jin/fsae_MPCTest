@@ -94,9 +94,10 @@ controller:
     q_e_yd: 0.2                # rate of change of lateral deviation (1/(m/s)^2)
     q_e_psi: 1.52              # heading error relative to path tangent (1/rad^2)
     q_r: 0.5                   # yaw rate (1/(rad/s)^2)
-    q_e_v: 5.0                 # speed error: car_speed - desired_speed (1/(m/s)^2)
+    q_e_v: 4.0                 # speed error: car_speed - desired_speed (1/(m/s)^2)
     r_delta: 1.16              # steering command effort (1/rad^2)
-    r_a: 0.77                  # acceleration command effort (1/(m/s^2)^2)
+    r_a_accel: 1.0             # acceleration command effort, a_cmd >= 0 (1/(m/s^2)^2)
+    r_a_brake: 0.6             # acceleration command effort, a_cmd < 0 -- braking (1/(m/s^2)^2)
     r_rate_delta: 2.1          # steering rate of change (1/(rad/s)^2)
     r_rate_a: 2.6              # acceleration rate of change (1/(m/s^3)^2)
     terminal_q_scale: 1.0      # extra weight on terminal predicted state; 1.0 = no-op
@@ -106,10 +107,13 @@ controller:
     adaptive_q_lookahead_enabled: true            # curvature-lookahead Q boosts/relaxations approaching/exiting corners
     adaptive_q_demand_normalised: true            # score corners by grip DEMAND (speed-aware) instead of raw curvature
     steer_effort_straight_boost_enabled: true     # make R[0,0] (steering effort) expensive on a clear straight
+    lookahead_steer_effort_relax_enabled: true    # make R[0,0] (steering effort) CHEAPER approaching a corner, so turn-in isn't fighting the speed-based effort penalty
     steer_rate_anti_hunt_enabled: true            # extra R_rate[0,0] penalty when centred/aligned/uncurving
     adaptive_r_rate_enable_in_corners: true       # keep R_rate softening active in corners (continuous, no cutoff)
     delay_compensation_enabled: true              # roll x0 forward through pending commands via predict_ahead()
     ref_heading_rate_limit_enabled: false         # cap how fast the tracked reference heading may change per tick
+    low_speed_steer_rate_boost_enabled: false     # extra R_rate[0,0] penalty at low speed -- disabled 2026-08-12, also taxed turn-in with no curvature/lookahead awareness to tell it apart from post-exit overcorrection
+    curvature_forcing_enabled: true               # feed reference-path curvature into the QP's dynamics so its prediction can 'see' an upcoming corner -- see mpc_core.py's _curvature_horizon_profile
 
     # Reference-heading rate limit (only used if ref_heading_rate_limit_enabled)
     ref_heading_rise_rate_deg_s: 90.0   # deg/s — max rate the reference heading may change
@@ -148,13 +152,21 @@ controller:
     adaptive_q_uturn_ey_boost_max: 1.6         # extra Q[0,0] multiplier at full U-turn detection
     adaptive_q_uturn_epsi_boost_max: 1.6       # extra Q[2,2] multiplier at full U-turn detection
     adaptive_q_uturn_r_relax_floor: 0.6        # Q[3,3] multiplier at full U-turn detection
-    adaptive_q_lookahead_exit_decay_dist: 5.0  # m — exit boost taper distance
+    adaptive_q_lookahead_exit_decay_dist: 5.0       # m — exit boost taper distance floor (see _time_s/_dist_max for the speed-scaled ceiling)
+    adaptive_q_lookahead_exit_decay_time_s: 2.5     # s — speed -> exit boost taper distance, mirrors adaptive_q_lookahead_time_s
+    adaptive_q_lookahead_exit_decay_dist_max: 25.0  # m — exit boost taper distance clamp ceiling
     adaptive_q_lookahead_k_exit_norm: 0.05     # 1/m — normalises exit boost by corner sharpness
     adaptive_q_lookahead_peak_hysteresis: 0.01 # 1/m — "cleared" threshold that re-arms peak detection
 
     # Yaw-rate relaxation approaching a corner
     adaptive_q_lookahead_r_floor: 0.5      # min Q[3,3] multiplier at high lookahead curvature
     adaptive_q_lookahead_k_r_relax: 8.0    # legacy (non-demand-normalised) yaw-rate relax ramp sharpness
+
+    # Steering-effort relaxation approaching a corner
+    adaptive_q_lookahead_steer_relax_floor: 0.5   # min R[0,0] multiplier at high corner demand
+
+    # Curvature forcing term in the QP dynamics (see curvature_forcing_enabled above)
+    curvature_forcing_gain: 1.0   # scale on the curvature forcing term; 1.0 = physically exact
 
     # Straight-line Q[2,2]/Q[3,3] boosts
     adaptive_q_straight_epsi_boost_max: 1.1    # max Q[2,2] multiplier on a clear straight
@@ -163,7 +175,7 @@ controller:
 
     # Straight-line Q[0,0] floor
     adaptive_q_straight_ey_floor: 0.7    # min Q[0,0] multiplier on a clear straight
-    adaptive_q_straight_ey_k: 20.0       # ramp sharpness vs lookahead curvature
+    adaptive_q_straight_ey_k: 8.0        # ramp sharpness vs lookahead curvature -- lowered from 20.0 on 2026-08-12, see mpc_params.py's field comment
 
     # Straight-line R[0,0] (steering effort) boost
     steer_effort_straight_boost_max: 1.5   # max R[0,0] multiplier on a clear straight
@@ -171,10 +183,15 @@ controller:
 
     # Straight-line R_rate[0,0] (steering rate) anti-hunt boost
     anti_hunt_boost_max: 6.0   # ceiling on the steer_rate_anti_hunt multiplier
+    anti_hunt_k_lookahead: 15.0   # anti-hunt fade sharpness vs LOOKAHEAD curvature (kappa_max_abs) -- relaxes anti-hunt once a corner is CLOSE/SHARP (was 60.0, too eager: halved damping at kappa_max_abs=0.02 and amplified pre-existing pose-noise oscillation into worse turn-in + wrong-direction flicks; see mpc_params.py's comment)
 
     # Adaptive R_rate corner softening floors
     adaptive_r_rate_during_floor: 0.625     # R_rate[0,0] floor driven by CURRENT-position curvature
     adaptive_r_rate_entering_floor: 0.85    # R_rate[0,0] floor driven by LOOKAHEAD curvature
     adaptive_r_rate_k_entering: 4.0         # ramp sharpness of the entering floor vs lookahead curvature
+
+    # Low-speed R_rate[0,0] (steering rate) boost -- disabled, see low_speed_steer_rate_boost_enabled above
+    low_speed_steer_rate_boost_max: 2.5   # R_rate[0,0] multiplier at vx=0, decaying toward 1.0 as speed rises
+    low_speed_steer_rate_boost_k: 0.35    # decay sharpness of the low-speed boost vs speed
 fsds_bridge:
   ros__parameters: {}   # no tunables yet

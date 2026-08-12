@@ -181,9 +181,23 @@ class MPCParams:
     # detected ahead (kappa_max_abs), not just when current kappa/e_y/e_psi
     # are all small -- otherwise anti-hunt actively cancels the early,
     # deliberately-small steering corrections curvature_forcing_enabled
-    # produces on approach. Same k=60 as the existing current-kappa term
-    # (boost_kappa) so both fade at a comparable curvature scale.
-    anti_hunt_k_lookahead: float = field(default=60.0, metadata={"unit": "unitless", "desc": "anti-hunt fade sharpness vs LOOKAHEAD curvature (kappa_max_abs)"})
+    # produces on approach. Originally set to k=60 (matching the existing
+    # current-kappa term, boost_kappa) but a same-day live test showed that
+    # was far too eager: 1/(1+60*kappa_max_abs) already halves anti-hunt
+    # damping at kappa_max_abs=0.02 -- a corner still well outside the
+    # window curvature_forcing actually needs help in. That let a
+    # pre-existing, already-documented pose-noise oscillation (see
+    # predict_ahead()'s "Delay compensation" note: noise compounding through
+    # the rollforward causes +-5-10 deg/tick steering thrash at small
+    # e_y/e_psi) get bigger at EVERY curvature level, not just where the
+    # forcing term needed room -- reproducing "still turns in late" (the
+    # extra swing is noise, not net commitment) plus a new symptom, brief
+    # wrong-direction flicks right before some corners. Lowered to k=15 so
+    # the gate stays inert until a corner is meaningfully close/sharp
+    # (kappa_max_abs 0.05-0.15+), rather than firing on the first faint
+    # lookahead signal. Re-tune from a live log with m_Rrate_antihunt and
+    # kappa_max_abs side by side, not in isolation.
+    anti_hunt_k_lookahead: float = field(default=15.0, metadata={"unit": "unitless", "desc": "anti-hunt fade sharpness vs LOOKAHEAD curvature (kappa_max_abs)"})
 
     # ── Adaptive R_rate corner softening floors ─────────────────────────
     adaptive_r_rate_during_floor: float = field(default=0.625, metadata={"unit": "unitless", "desc": "R_rate[0,0] floor driven by CURRENT-position curvature"})

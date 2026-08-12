@@ -191,6 +191,24 @@ approaching-a-corner-with-forcing-active) that only `kappa_max_abs` can
 tell apart. Not validated against `VALIDATION_SUITE`/recorded-map or any
 live log as a whole mechanism; treat as experimental.
 
+**`anti_hunt_k_lookahead` was first set to `60.0` (matching the
+current-curvature term's own `k`), then found live the same day to be far
+too aggressive and lowered to `15.0`.** `boost_lookahead =
+1/(1+k·|kappa_max_abs|)` at `k=60` already halves anti-hunt's damping at
+`kappa_max_abs=0.02` — a corner still well outside the window
+curvature-forcing's correction actually needs help fighting through. That
+let a pre-existing, already-documented pose-noise oscillation
+(`predict_ahead()`'s rollforward compounding noise into ±5-10°/tick
+steering thrash, see `mpc_core.py`'s "Delay compensation" comment) grow
+bigger at every curvature level, not just near real corners — the car
+still didn't turn in earlier (the extra swing was noise, not commitment)
+and gained a new symptom, brief wrong-direction flicks right before some
+corners. At `k=15`, the gate stays close to inert until `kappa_max_abs` is
+around `0.05`+ and only relaxes substantially past `0.1`-`0.15`. Diagnose
+with `m_Rrate_antihunt` plotted against `kappa_max_abs`, not in isolation —
+a low `m_Rrate_antihunt` value is only a problem if it's occurring far from
+a real corner.
+
 ### 4.3 Adaptive R-rate corner softening (`adaptive_r_rate_enable_in_corners`)
 
 **Purpose**: continuously softens the steering-rate-of-change cost as
