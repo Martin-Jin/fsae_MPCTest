@@ -14,6 +14,7 @@ system, that one explains how to operate/extend it.
 5. [How the Offline Tuner Works](#how-the-offline-tuner-works)
 6. [The Composite Score](#the-composite-score)
 7. [Module Reference](#module-reference)
+8. [Second Controller: Nonlinear MPC (`use_nmpc`)](#second-controller-nonlinear-mpc-use_nmpc--live-only-2026-08-13)
 
 ---
 

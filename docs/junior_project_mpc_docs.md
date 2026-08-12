@@ -67,6 +67,7 @@ The trade-off is complexity and computation cost: solving an optimisation proble
 3. [FSDS vs. This Repo's Simulator](#3-fsds-vs-this-repos-simulator)
 4. [The Two Vehicle Models: MPC's Model vs. the Simulator's Plant](#4-the-two-vehicle-models-mpcs-model-vs-the-simulators-plant)
    - [4.1 Why a Linear Model, When the Real Car Is Nonlinear?](#why-a-linear-model-when-the-real-car-is-nonlinear)
+   - [4.2 A Second, Separate Blindness: the Linear Model Can't See the Road Bend — and the Nonlinear MPC That Fixes It](#42-a-second-separate-blindness-the-linear-model-cant-see-the-road-bend--and-the-nonlinear-mpc-that-fixes-it)
 5. [Vehicle Physics, Explained](#5-vehicle-physics-explained)
    - [5.1 The 24-State Plant Model](#51-the-24-state-plant-model)
    - [5.2 Tyres and Slip, Explained](#52-tyres-and-slip-explained)
@@ -730,6 +731,96 @@ Here's the actual tradeoff this buys:
 >, otherwise the controller's internal picture of the car quietly stops matching the physics it's
 > actually driving, which shows up as degraded tracking with no obvious cause. See
 > `docs/architecture.md`'s "If you import new tyre data" note.
+
+### 4.2 A second, separate blindness: the linear model can't see the road bend — and the nonlinear MPC that fixes it
+
+Section 4.1 was about tyres being nonlinear (grip saturates, forces bend as slip
+angle grows). This is a **different** limitation, about the *geometry* of the
+path itself, and it exists even with perfect, linear tyres.
+
+**The problem, in one sentence:** the controller's prediction model has no idea
+the road is about to bend, until the car is already partway around the bend.
+
+Here's why. The MPC tracks *errors* relative to the path — how far sideways
+(`e_y`), and how much its heading is off (`e_psi`) — not the car's raw
+position. That's a good design choice (Section 1.2), but it has a hidden
+consequence: the model that predicts how those errors evolve
+(`x_{i+1} = A·x_i + B·u_i`, Section 1.3) only knows how the CAR moves. It has
+no term at all for "and the reference path itself is turning away from
+whatever direction the car is currently pointed." If you do the maths (or just
+watch it happen): put the car exactly on the centreline, heading exactly the
+right way (`e_y = 0`, `e_psi = 0`), with a sharp corner 10 metres ahead. Ask
+the model to predict 1.75 seconds into the future assuming the car does
+nothing. It predicts... `e_y = 0`, `e_psi = 0` — forever. Nothing in the model
+says otherwise, because nothing in the model represents the path bending.
+
+That sounds like it shouldn't matter — surely the controller notices the error
+building up and reacts? It does, but only *after* the car is already
+partway into the corner and the error is no longer zero. By then it's playing
+catch-up on a corner it could, in principle, have seen coming. This shows up
+as **late turn-in**: the car keeps going straight for too long, then has to
+crank on a lot of steering all at once to catch up, which is both slower and
+harder on the tyres than committing early and turning in smoothly.
+
+**Why not just tell the model about the upcoming corner directly?** This was
+tried several ways during this project (documented in the live repo's
+`late_turn_in_investigation.md`, Parts 2/7/15, if you want the full story) —
+feeding the path's curvature into the model as an extra input, or shifting
+the cost function's target ahead of time. All of them shared the same failure
+mode: they told the solver about a correction it would need to make **later**,
+at some future step in its plan, while leaving it completely free to choose
+*when* within that plan to actually make it. Given that freedom, the solver
+sometimes found it "cheaper" (in total squared-error terms) to steer briefly
+the **wrong way first**, then swing back — a worse, backwards-feeling result
+than doing nothing extra at all. The lesson: bolting a curvature signal onto
+a model that fundamentally doesn't have a concept of "the path is turning"
+is a trap, not a fix.
+
+**The actual fix needs the path's bend built into the model's equations
+themselves, not tacked onto the outside of them — which means abandoning the
+QP.** This project's live ROS 2 side (not this offline repo) has a second
+controller for exactly this, `nmpc_core.py`'s `NMPCController`, switched on
+with a flag (`use_nmpc`, off by default). Concretely, it changes *which
+quantity the model tracks progress with*: instead of the car's raw x/y
+position, its state includes **`s`, the distance travelled along the path
+itself** — and the path's curvature at that distance, `kappa(s)`, is looked
+up and fed straight into the equation for how heading error evolves:
+
+```
+e_psi_dot = r - kappa(s) * s_dot     <-- this term is what the linear model is missing
+```
+
+Because `s` is now something the model predicts forward (via the car's own
+predicted speed), a bend at some future distance along the path is
+automatically "seen" by the prediction the moment it's within the horizon —
+there's no separate signal to inject, and so no separate freedom for the
+solver to defer paying for it. This is genuinely a **nonlinear** model now
+(that equation multiplies two state-dependent quantities, `kappa(s)` and
+`s_dot`, together — no longer "state times fixed number"), so it can't be
+solved as one convex QP the way Section 1.5 describes. It's solved instead by
+repeatedly re-linearising around the model's own predicted trajectory and
+solving a sequence of QPs that converge toward the true nonlinear optimum
+(this scheme is called **Sequential Quadratic Programming**, SQP) — more
+expensive per tick than one convex QP, but still fast enough: measured around
+9 ms per tick on this project's hardware, comfortably inside the 50 ms budget,
+versus a linear QP's roughly 1-5 ms.
+
+Does it help? Tested offline (identical cost-function weights, identical
+simulated vehicle, same track, so it's an honest apples-to-apples comparison):
+steering saturation (pinning at the mechanical limit, the classic symptom of
+"reacting too late") dropped from 12.5% of ticks to 0.8%, and the car started
+turning into every single corner tested earlier than the linear controller did
+— by 25 metres, on average, on the harder corners. It has not yet been tested
+on the real/simulated FSDS car, only in this offline pipeline.
+
+| | **Linear MPC** (Sections 1-4.1, this project's main controller) | **Nonlinear MPC** (`use_nmpc`, live ROS 2 side only) |
+|---|---|---|
+| Sees the tyre curve bend? | No (Section 4.1) | No — same linear tyre assumption, this is a separate axis |
+| Sees the ROAD bend ahead? | **No** — predicts `e_y`/`e_psi` staying at 0 forever if they start at 0 | **Yes** — `kappa(s)` is part of the equations, not bolted on |
+| Solved as | One convex QP per tick | A sequence of QPs (SQP), re-solved to convergence per tick |
+| Solve time (measured) | ~1-5 ms | ~9 ms mean, ~12 ms p95 |
+| Where it lives | `model/bicycle_model.py` (this repo) + `mpc_core.py` (live) | `nmpc_core.py` (live ROS 2 side only — no offline copy in this repo yet) |
+
 
 ---
 

@@ -498,8 +498,9 @@ Two independent ROS launch args, both consumed by `mpc`/`mpc_standalone`
 |------|---------|--------|
 | `map_path` + `use_precomputed_speed` | `fsae_planning`'s `tracks/comp_test_map_3/speed_profile.csv` | Look up target speed from the CSV's oracle profile instead of live `curvature_speed()` per tick |
 | `path_map_path` + `use_precomputed_path` | `fsae_planning`'s `tracks/comp_test_map_3/raceline.csv` | Track the CSV's geometry instead of subscribing to `centerline_planner.py`'s `/fsae/planning/selected_trajectory` — removes the live planner from the control loop entirely |
+| `use_nmpc` | `false` | Swap `MPCController` (linear QP) for `nmpc_core.NMPCController` (Frenet-frame nonlinear MPC) entirely. See `planning_control_sync.md`'s "Nonlinear MPC (`use_nmpc`)" section and `architecture.md`'s "Second controller" section — not covered further here since it's a whole separate controller, not a launch-time data source like the two rows above. |
 
-Both default `true`, so a bare `ros2 launch fsae_bringup sim.launch.py`
+Both `use_precomputed_speed`/`use_precomputed_path` default `true`, so a bare `ros2 launch fsae_bringup sim.launch.py`
 already drives the default track's precomputed line and speed with the
 planner out of the loop. `map_path` and `path_map_path` can point at
 different files (e.g. speed from the centreline, geometry from the raceline)
