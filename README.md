@@ -83,10 +83,14 @@ for how to run the CMA-ES weight tuner instead.
 
 | Doc | Covers |
 |---|---|
-| [docs/architecture.md](docs/architecture.md) | How the system works: the closed-loop architecture, `settings.py`/`model/vehicle_physics.py` configuration reference, the full MPC formulation (state vector, cost function, solver), how the offline CMA-ES tuner works, the composite scoring function, and a per-file module reference. |
-| [docs/developer_guide.md](docs/developer_guide.md) | How to use and extend the project: running the simulator and offline tuner, FSDS/ROS 2 integration (including Windows/WSL/Docker setup from scratch), manual drive mode, dependencies, adding a new synthetic path, and debugging solver failures. |
+| [docs/architecture.md](docs/architecture.md) | How the system works: the closed-loop architecture, `settings.py`/`model/vehicle_physics.py` configuration reference, the full MPC and NMPC formulations (state vector, cost function, solver), how the offline CMA-ES tuner works, the composite scoring function, and a per-file module reference. |
+| [docs/tuning.md](docs/tuning.md) | Practical tuning reference: what each `Q`/`R`/`R_rate` weight and adaptive-gain constant actually does, the corner-factor scheduler's fields, and how to change/validate a weight set — the "which knob, and why" companion to architecture.md's "how it works." |
+| [docs/developer_guide.md](docs/developer_guide.md) | How to use and extend the project: running the simulator and offline tuner, FSDS/ROS 2 integration (including Windows/WSL/Docker setup from scratch), manual drive mode, dependencies, adding a new synthetic path, recording/exporting a track, and debugging solver failures. |
 | [docs/vehicle_physics_guide.md](docs/vehicle_physics_guide.md) | Plain-English walkthrough of the 24-state nonlinear plant in `model/vehicle_physics.py` (tyres, suspension, weight transfer, aero) for readers who don't already know vehicle dynamics. |
 | [docs/planning_control_sync.md](docs/planning_control_sync.md) | Reference for re-syncing `planning/` and `fsds_simulator/` against a newer `fsae_planning` upstream clone: file mapping, deliberate non-mirrors, numeric-parity constants, and the resync procedure. |
+| [docs/junior_project_mpc_docs.md](docs/junior_project_mpc_docs.md) | Standalone high-level wiki page introducing MPC/NMPC/tuning to a newcomer with no prior control-theory background — self-contained by design, so it overlaps other docs rather than just linking to them. |
+| [docs/fsae_planning_pending_pr.md](docs/fsae_planning_pending_pr.md) | Running summary of uncommitted changes in the live `fsae_planning` checkout, for PR purposes — mirrors that repo's own `CHANGES.md`. |
+| [docs/logs/](docs/logs/) | Append-only research/investigation logs (sim-to-real gap, late-turn/lookahead history, dated change logs) — historical record, not current-state reference; see each file's own header for scope. |
 | [fsds_simulator/README.md](fsds_simulator/README.md) | How to build and run the full ROS 2 stack (Stanley / MPC / MPC-standalone) from `fsds_simulator/` alone, plus FSDS — no separate `fsae_planning` checkout needed. |
 
 ---

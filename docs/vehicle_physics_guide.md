@@ -269,6 +269,40 @@ force to one rear wheel than the other, based on yaw rate, to help rotate
 the car through a corner. Increasing it makes the car turn in more eagerly
 under power; too much can make it feel unpredictable or nervous.
 
+### The FSDS lateral-acceleration ceiling (`alat_ceiling*`)
+
+This is not a real tyre-grip limit — it's a model of a *simulator quirk*.
+FSDS itself caps how much sustained lateral acceleration a car can actually
+achieve to roughly 7-9 m/s² depending on speed, well below what this
+plant's own tyres are otherwise capable of (measured up to ~14.5 m/s²
+unaided, and the real car reaches ~12.3 m/s² on a lap). Without modelling
+this, the offline simulator lets the car take corners the real FSDS car
+physically cannot, so weights tuned against the unconstrained plant assume
+cornering authority that doesn't exist once you actually drive in FSDS.
+
+The mechanism works by adding a **restoring yaw moment** once the car's
+current lateral acceleration exceeds a speed-dependent ceiling — pulling
+the yaw rate back down, the same way FSDS itself apparently does
+internally (its exact internal cause is unknown; this only reproduces the
+external symptom). It is a soft, lagged pushback, not a hard clip — the car
+can briefly exceed the ceiling before being pulled back, which is what
+produces the small measured overshoot on a hard, sudden corner entry.
+
+| Parameter | Plain English | Increase it → | Decrease it → |
+|---|---|---|---|
+| `alat_ceiling_enabled` | Whether this mechanism runs at all. | N/A — set `False` to recover the unconstrained plant (e.g. for real-vehicle work, where this ceiling doesn't apply). | N/A |
+| `alat_ceiling`, `alat_ceiling_slope`, `alat_ceiling_intercept` | Together define the ceiling itself as a function of speed: flat at low speed, then rising as `intercept + slope·v` once that line climbs above the flat value. | Higher ceiling — the car is allowed more sustained lateral g before the restoring moment engages. | Lower ceiling — the pushback engages sooner and more often, capping cornering speed harder. |
+| `alat_ceiling_mode` | Which control law converts "how far over the ceiling" into restoring moment. Leave on `'pi'` (the validated choice) — `'p'` is a legacy mode kept only to reproduce the measurement that rejected it. | N/A | N/A |
+| `alat_ceiling_gain` | How strongly the restoring moment reacts to sustained excess above the ceiling. | Pulls the car back to the ceiling more firmly — less overshoot past it. | Weaker pushback — the car can run further over the ceiling before being reined in. |
+| `alat_ceiling_tau` | How quickly the restoring moment builds once the ceiling is exceeded (a lag, not an instant clip). | Slower to engage — bigger transient overshoot on a sudden hard corner entry, but no effect on the settled cornering level. | Faster to engage — less overshoot, again with no effect on the settled level. |
+
+Full derivation (the open-loop measurements this was fitted to, why the
+integral law replaced an earlier proportional one, and what's still
+unresolved) lives in
+[planning_control_sync.md](planning_control_sync.md)'s "MECHANISM: a
+dynamically-enforced lateral-acceleration ceiling" section and CLAUDE.md's
+sim-to-real summary — not repeated here.
+
 ---
 
 ## 6. Quick Reference: Symptom → Likely Parameter
@@ -293,6 +327,10 @@ first places to look:
 - **Car rolls/wallows too much in corners** → increase `k_arb_f`/`k_arb_r`
   or `k_susp_f`/`k_susp_r`.
 - **Car coasts too far / doesn't slow down off-throttle** → increase `Crr`.
+- **Car corners noticeably harder in the offline simulator than it can on
+  the real FSDS car** → check `alat_ceiling_enabled` is `True` and the
+  ceiling parameters match the latest measurement — this is the known,
+  deliberately modelled gap, not a tyre-grip mismatch.
 
 ---
 

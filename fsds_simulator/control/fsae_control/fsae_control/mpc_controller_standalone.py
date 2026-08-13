@@ -47,7 +47,7 @@ in control.launch.py, which skips fsds_bridge for that mode.
 CONTROL LOOP PHASES (see _control_loop)
 ----------------------------------------------------------------------------
   Phase 1 — Hold at start line until GO signal received.
-  Phase 2 — Emergency brake if the planner path is missing/stale (>TARGET_TIMEOUT
+  Phase 2 — Emergency brake if the planner path is missing/stale (>PATH_TIMEOUT
             old) or has fewer than 2 points, or the SLAM pose hasn't arrived yet;
             also resets the MPC so it doesn't warm-start from a stale trajectory
             once the path returns. When path_map_path is set, the path can

@@ -397,8 +397,8 @@ YET LIVE-TESTED.**
 | Field | Purpose |
 |---|---|
 | `use_precomputed_heading_profile` | node-level launch parameter (NOT an `MPCParams` field) — use `raceline.csv`'s shaped `psi_target` column as `e_psi`'s reference instead of the geometric path tangent. Default `false`. Only has an effect when `use_precomputed_path` is ALSO true, and requires a re-exported `raceline.csv` with the `psi_target` column (an older 4-column file degrades to the geometric tangent, a no-op). |
-| `HEADING_LEAD_AUTHORITY_FRAC` | (offline constant, `raceline_optimizer.py`, NOT an `MPCParams` field — set at export time, baked into the CSV) fraction of the car's achievable yaw rate to pre-spend as heading lead. Default `0.5`. Re-export the CSV to change it. |
-| `SLIP_LIMIT_RAD` | (offline constant, `raceline_optimizer.py`) diagnostic-only rear-slip-angle bound used to flag stations, unvalidated placeholder (5°). |
+| `HEADING_LEAD_AUTHORITY_FRAC` | (offline constant, `tuner/tools/raceline_optimizer.py`, NOT an `MPCParams` field — set at export time, baked into the CSV) fraction of the car's achievable yaw rate to pre-spend as heading lead. Default `0.5`. Re-export the CSV to change it. |
+| `SLIP_LIMIT_RAD` | (offline constant, `tuner/tools/raceline_optimizer.py`) diagnostic-only rear-slip-angle bound used to flag stations, unvalidated placeholder (5°). |
 
 **Purpose**: precompute a heading reference that already leads the
 geometric path tangent by however much yaw is achievable at the planned

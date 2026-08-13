@@ -198,17 +198,23 @@ so you can see how much of the run's time was actually productive.
 
 ### 5. Apply the weights
 
-Copy the three arrays into **both**:
+Copy the values into **both**:
 
 - `settings.py` — `Q_diag`, `R_diag`, `R_rate_diag` (used by `gui/simulation.py`
   and, from there, everything that imports them)
-- `mpc_core.py` — the same three arrays hardcoded inside
-  `MPCController.__init__` (used by the live ROS 2 controller)
+- `mpc_params.py` (`ros2/src/fsae_planning/control/fsae_control/fsae_control/`,
+  staged under `fsds_simulator/`) — the matching individual fields on the
+  `MPCParams` dataclass (`q_e_y`, `q_e_yd`, `q_e_psi`, `q_r`, `q_e_v`,
+  `r_delta`, `r_a_accel`/`r_a_brake`, `r_rate_delta`, `r_rate_a`). `mpc_core.py`
+  builds its own `Q_diag`/`R_diag`/`R_rate_diag` from `self.params.*` at
+  `MPCController.__init__` time — it no longer hardcodes them, so `mpc_params.py`
+  is the file to edit, not `mpc_core.py` itself.
 
 Both must stay in sync manually — the tuner was designed against the same
 plant and horizon used by both, but there is currently no single shared
-import between them (`mpc_core.py` is a standalone file so the live
-ROS 2 node has no simulator dependencies).
+import between them (the live ROS 2 node has no simulator dependencies). See
+[planning_control_sync.md](planning_control_sync.md)'s "MPC weight/gain
+parity" table for the full field-by-field mapping.
 
 ### 6. Log the result
 
@@ -327,7 +333,7 @@ option already handles this — it skips `fsds_bridge` automatically.)
 1. **Hold at start line** — full brake until the `/fsds/signal/go` signal is
    received.
 2. **Stale-path emergency brake** — full brake, and `MPCController.reset()`,
-   if no fresh path has arrived within `TARGET_TIMEOUT` (0.5 s) or the path
+   if no fresh path has arrived within `PATH_TIMEOUT` (0.5 s) or the path
    has fewer than 2 points. The reset discards the QP's warm start and
    actuator-lag memory so the controller doesn't resume from stale state
    once the path returns.
@@ -417,7 +423,8 @@ ros2 launch fsae_bringup cone_recorder.launch.py out_path:=/path/to/cone_map.jso
 )
 
 It starts recording on the first `/fsds/signal/go`, accumulates cones the
-same way `centerline_planner.py`'s `ConeMap` does, and writes the file once
+same way `cone_map.py`'s `ConeMap` (imported by `centerline_planner.py`)
+does, and writes the file once
 the car returns near its start pose after having driven at least
 `min_lap_dist` (default 8 m) away from it — i.e. one closed lap. If the lap
 never closes (e.g. a DNF) it writes anyway after `max_record_time` (default
@@ -1051,8 +1058,9 @@ frequently shows `OPTIMAL_INACCURATE`:
 
 - **Weight scaling** — OSQP is sensitive to poorly-conditioned matrices. If
   any entry of `Q`, `R`, or `R_rate` exceeds `1e4` or drops below `1e-4`,
-  convergence can suffer. Check `adaptive_R_scaling()`'s output at your
-  test speed isn't blowing up the steering cost unexpectedly.
+  convergence can suffer. Check `controller/model_utils.py`'s
+  `adaptive_R_scaling()`'s output at your test speed isn't blowing up the
+  steering cost unexpectedly.
 - **Kinematic vs. dynamic gap** — if the car consistently fails at tight
   hairpins, `sim/speed_profile.py` may be commanding a speed that demands more
   lateral force than the Pacejka friction circle can supply at that

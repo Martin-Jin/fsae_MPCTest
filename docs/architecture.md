@@ -318,26 +318,14 @@ can't do.
 
 The plant computes tyre grip using the Pacejka **MF94** "Magic Formula" —
 an empirical curve fit to real tyre test data, rather than a physics-derived
-equation. The same shape function is used for both lateral (cornering) and
-longitudinal (acceleration/braking) force, with separate coefficient sets
-per axle (`B_f/C_f/D_f/E_f` for front, `B_r/C_r/D_r/E_r` for rear):
+equation:
 Fy = mu · Fz · sin(C · atan(B·α − E·(B·α − atan(B·α))))
 
 Where `α` is slip angle (lateral) or slip ratio (longitudinal), and `Fz` is
-the tyre's current normal load. What each coefficient physically means:
-
-| Coefficient | Meaning | Effect of increasing it |
-|---|---|---|
-| `B` (stiffness) | How sharply grip builds up as slip starts from zero | Grip ramps up faster for small slip angles — more responsive, twitchier steering feel |
-| `C` (shape) | How rounded vs. peaked the grip curve is | Lower = sharper, narrower peak; higher (→2) = flatter, more forgiving peak |
-| `D` (peak) | The maximum grip multiplier at the ideal slip angle | Directly scales peak available grip — higher = more overall traction |
-| `E` (curvature) | Shape of the curve past its peak | More negative = grip falls off more sharply after peak (typical for a racing slick); values near 1 give a rounder, more gradual fall-off |
-| `Sv`, `Sh` | Small vertical/horizontal offsets | Model minor real-tyre asymmetries (construction imperfections); usually left near zero |
-
-`mu` is the peak friction coefficient, further reduced by **load
-sensitivity** (`k_sens`) — real tyres get proportionally less grip per unit
-of load as that load increases, so a heavily-loaded tyre (e.g. the outside
-front tyre mid-corner) doesn't grip as well as its `Fz` alone would suggest.
+the tyre's current normal load. See
+[vehicle_physics_guide.md §4](vehicle_physics_guide.md#4-what-is-full-mf94-pacejka-and-what-is-a-tyre-model-at-all)
+for what each coefficient (`B`/`C`/`D`/`E`/`Sv`/`Sh`), `mu`/`k_sens`, tyre
+relaxation, and the friction ellipse physically mean — not repeated here.
 
 This curve is where the plant's nonlinearity actually shows up numerically.
 Near `α = 0` it's *approximately* a straight line through the origin —
@@ -350,12 +338,6 @@ slip buys noticeably less extra force than the last, until it saturates at
 the slip angle out here does **not** double the force — it might only add
 20% more, or none at all — which is exactly the behaviour a fixed-multiplier
 linear model cannot represent.
-
-**Tyre relaxation** (`sigma_y_f`, `sigma_y_r`) adds a first-order lag
-between a slip angle change and the resulting force — a tyre's contact
-patch needs to physically travel roughly one "relaxation length" before its
-grip fully catches up, which matters at 20 Hz where this lag is a
-non-negligible fraction of one control step.
 
 ---
 ## How the MPC Works
@@ -1252,38 +1234,19 @@ this controller. What actually happens:
   curved section and `kappa` (current-position curvature) started feeding
   the state error directly.
 - **Attempted 2026-08-12 as `curvature_forcing_enabled`
-  (`CURVATURE_FORCING_ENABLED` offline), then disabled the same day —
-  structurally unsound, not a working fix.** The reference path's
-  curvature was injected into the dynamics as a per-step forcing term,
-  `e_psi[k+1] += -v_x·κ(s_k)·dt·curvature_forcing_gain`, added as a new `w`
-  term to the dynamics constraint (`x[:,1:] == Ad@x[:,:-1] + Bd@u + w`,
-  zero everywhere except the `e_psi` row — see
-  `_curvature_horizon_profile`/`curvature_horizon_profile`). A first,
-  single-snapshot synthetic test looked promising (steering leaned toward
-  a bend before any tracking error existed), but isolated QP testing
-  across a range of gains found the mechanism doesn't actually work: at the
-  physically-exact `gain=1.0`, the QP's own `e_psi` decay
-  (`Ad[2,2]≈0.946`/step) bleeds off a small constant forcing almost as fast
-  as it accumulates, so the resulting steering response stays sub-1° —
-  noise-scale, not a real early correction. Raising gain to compensate
-  makes it *worse*, not better: at `gain≈6` the QP finds it cheaper (lower
-  total quadratic cost) to swing steering hard AWAY from the corner first
-  (predicted `e_psi` driven to -24°, `e_y` to -2.3 m) before reversing
-  toward it, than to commit directly — a real, reproducible
-  transient-overshoot artifact, not tuning noise. Only `gain≈20` (20× the
-  physical value) restores the correct net sign, well past saturation.
-  Root cause: a forcing term on the dynamics constraint enters the *same*
-  recursion the QP optimizes total cost over, so the solver is free to
-  choose *how* to spend the disturbance across the whole horizon — nothing
-  in that formulation prevents the cheapest predicted trajectory from
-  including a wrong-direction transient. **Disabled**
-  (`curvature_forcing_enabled=False`/`CURVATURE_FORCING_ENABLED=False`) —
-  code kept in place for a future redesign that shifts the *reference* the
-  error is measured against, rather than perturbing the QP's own
-  recursion. See `planning_control_sync.md`'s "Curvature-forcing term"
-  section for the full numeric trace, including the gain sweep and the
-  anti-hunt interaction (`anti_hunt_k_lookahead`) that was fixed alongside
-  it and is now a no-op with forcing disabled.
+  (`CURVATURE_FORCING_ENABLED` offline), disabled the same day, fully
+  removed in the 2026-08-13 rewrite — structurally unsound, not a working
+  fix.** The reference path's curvature was injected into the dynamics as a
+  per-step forcing term on the `e_psi` row of the dynamics constraint. A gain
+  sweep found no working operating point: the physically-exact gain bled off
+  too fast to matter (QP's own `e_psi` decay ate the forcing before it
+  accumulated), while a compensating higher gain made the QP choose a
+  wrong-direction transient first (cheaper total quadratic cost) rather than
+  committing straight to the corner — a structural property of forcing terms
+  inside the dynamics constraint, not a tuning problem. See
+  `planning_control_sync.md`'s "Curvature-forcing term" section for the full
+  numeric gain-sweep trace and the anti-hunt interaction it was fixed
+  alongside — not repeated here to avoid duplicating either.
   See `junior_project_mpc_docs.md`'s "How the MPC Controller Works" section
   for a from-scratch explanation of the underlying limitation this was
   meant to close — that limitation is still open.

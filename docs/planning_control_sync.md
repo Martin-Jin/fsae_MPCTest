@@ -372,20 +372,13 @@ family had also been raised/live-tested/reverted piecemeal for a long
 time without a clear net win — see CHANGES.md and this doc's own dated
 sections above for that history.
 
-**What replaced it**: `_corner_factor(kappa, corner_factor_k)` — a single
-continuous 0 (straight) → 1 (full corner) saturating curve of the CURRENT
-curvature only (`1 - 1/(1 + k·|kappa|)`), no forward scan, no
-decay-distance timer, no hysteresis state. `_low_speed_corner_boost` adds
-extra weight at low speed, gated multiplicatively on `corner_factor` so it
-cannot fire on low speed alone. The combined `corner_frac` drives a shared
-linear blend (`_blend(straight_val, corner_val, corner_frac)`) across four
-weights (`Q[0,0]`, `Q[2,2]`, `Q[3,3]`, `R_rate[0,0]`), each with its own
-straight/corner endpoint pair in `MPCParams`, plus `R[0,0]` blending toward
-a middle value instead of an extreme. A fourth, independent mechanism —
-heading-error-driven accel/brake asymmetry (`epsi_ra_*`) — is always-on and
-not part of the corner_frac blend at all. See `architecture.md`'s
-"Corner-factor scheduler" section for the full formulas and
-`tuning.md` §4.3b for the tuning-surface reference.
+**What replaced it**: `_corner_factor`/`_low_speed_corner_boost`/`_blend` — a
+single continuous CURRENT-curvature-only fraction blending four `Q`/`R_rate`
+weights between a straight/corner endpoint, plus an always-on,
+independent heading-error-driven accel/brake asymmetry (`epsi_ra_*`). See
+`architecture.md`'s "Corner-factor scheduler" section for the full formulas
+and mechanism, and `tuning.md` §4.3b for the tuning-surface reference — not
+repeated here to avoid duplicating either.
 
 **Mirrored the same day**: `fsae_MPCTest/controller/model_utils.py`
 (`_corner_factor`/`_low_speed_corner_boost`/`_blend`, and `settings.py`'s
