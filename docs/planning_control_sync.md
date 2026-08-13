@@ -3180,3 +3180,22 @@ parity holds at 1e-13/1e-14 (both live/mirror and offline, well under the
 `python -m tuner.nmpc_offline_check`'s full suite (model parity, SQP
 convergence, turn-in/wrong-direction, closed-loop) passes with no regression
 in the closed-loop `|e_y|`/`|e_psi|`/saturation numbers.
+
+**LIVE-TESTED 2026-08-13 and CONFIRMED FIXED.** First live attempt after
+copying the fix to the live checkout (`mpc_standalone_control_1786595389.csv`)
+still showed the hard-lock snap — traced to the ROS 2 workspace not having
+been rebuilt, **not** a flaw in the fix: this project's `--symlink-install`
+setup symlinks `ros2/build/fsae_control/fsae_control` back to
+`src/fsae_planning/control/fsae_control/fsae_control`, but the running
+Python process had an older module already loaded/cached from before the
+edit, so the source-level edit was invisible until the workspace was
+rebuilt and the nodes restarted. This is exactly the class of issue
+`ros2/launch_all.sh`'s own commented-out `--symlink-install` rebuild step
+exists to catch (see that file: *"an edit to `src/` after the last build is
+silently invisible to `ros2 launch` until rebuilt"* — previously bit twice
+in one session per that comment, now a third time). After rebuilding,
+`mpc_standalone_control_1786595530.csv` shows the fix working exactly as
+predicted: steering never exceeds ~18° in the first two seconds (previously
+pegged at the full ±25° lock for most of a second), and the full run (1107
+ticks, a complete lap) posted the best numbers of the whole session —
+`|e_y|` mean 0.195 m, max 0.968 m, steering saturation 0.09%.
