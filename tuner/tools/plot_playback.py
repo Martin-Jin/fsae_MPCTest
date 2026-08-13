@@ -71,7 +71,11 @@ from tuner import csv_log
 
 # One row per signal by default -- covers the "lateral error / heading error /
 # corner curvature / steering / speed" ask directly; --signals overrides this.
-DEFAULT_SIGNALS = ['e_y', 'e_psi_deg', 'kappa', 'steer_deg', 'v']
+# 'corner_frac' (0=straight -> 1=full corner, see ADAPTIVE_COLUMNS in
+# telemetry_logger.py) stands in for curvature -- there is no raw `kappa`
+# column in the control CSV schema (live node or offline tuner), so a bare
+# 'kappa' here would always warn-and-skip.
+DEFAULT_SIGNALS = ['e_y', 'e_psi_deg', 'corner_frac', 'steer_deg', 'v']
 
 # Auto-search target when no CSV path is given on the command line. Not
 # populated automatically by any live-node launch path (that's controlled by
