@@ -2831,3 +2831,94 @@ sibling checkout).
 (CasADi is not installable into the ROS interpreter on Ubuntu 24.04 without
 `--break-system-packages`); the SQP and its Jacobians are numpy, and CasADi was
 used once, from a private `--target` install, purely to cross-check the optimum.
+
+### Three MPCC-inspired additions to the NMPC (added 2026-08-13)
+
+Prompted by a comparison against Alexander Liniger's Model Predictive
+Contouring Control (MPCC — the "C" is Contouring; see
+`https://github.com/alexliniger/MPCC`). MPCC's headline idea — treating
+progress along the track `θ` as a free decision variable the solver
+*maximises*, with a contouring-error/lag-error split against a parametric
+spline — was assessed and **not adopted**: `θ̇`-maximisation is a more
+aggressive version of exactly the "exogenous, schedulable future obligation"
+failure mode this NMPC's own `kappa(s)`-as-state design exists to avoid (see
+"Why it exists" above), and adopting it would need the same falsification
+testing (Part 16 §16.6's dead-on-line synthetic corner approach) before being
+trusted. Three narrower, self-contained ideas survived that filter. All three
+are NMPC-only (`mpc_core.py`, the LTV-QP, is untouched by any of them) and
+implemented identically in both `nmpc_core.py` (live) and
+`controller/nmpc_optimiser.py` (offline port) — see each file's own
+docstrings for the exact mechanics.
+
+**1. Spline-based path reference — `nmpc_spline_reference_enabled` /
+`NMPC_SPLINE_REFERENCE_ENABLED`, default `true`.** `PathReference` now fits
+`x(s)` and `y(s)` as two independent `scipy.interpolate.CubicSpline` objects
+over cumulative arc length, and derives `kappa(s)` / `psi_ref(s)` analytically
+from the spline's own first/second derivatives
+(`kappa = (x'y'' - y'x'') / (x'^2+y'^2)^1.5`), instead of the old
+dense-resample + moving-average + finite-difference-headings pipeline. This
+is MPCC's *reference-parametrisation* mechanism (a continuous spline in arc
+length) adopted on its own, decoupled from the contouring/progress apparatus
+built on top of it in the original paper. Unlike the two flags below, this
+defaults **on**: it is a strict numerical-quality improvement with no new
+coupling to solver dynamics, and it directly targets the open, unfixed
+"centreline curvature spikes" defect (CLAUDE.md) — a proper spline fit was
+one of that defect's two previously-*named-but-unattempted* remedies. The old
+moving-average path is kept intact (not deleted) behind the flag, so it can
+still be A/B'd if a regression turns up. `kappa_at`/`kappa_scalar`/
+`psi_ref_at`/`project` needed no changes — only how `self.s_kappa`/
+`self.kappa`/`self.s_psi`/`self.psi_ref` get populated changed.
+
+**2. Horizon speed profile — `nmpc_horizon_speed_profile_enabled` /
+`NMPC_HORIZON_SPEED_PROFILE_ENABLED`, default `false`, EXPERIMENTAL.** Today
+`v_ref` (the cost's speed target, `H[:,4] = v_x - v_ref`) is a single scalar
+held constant across the whole horizon — deliberately, per the module
+docstring, so a live A/B of feature 1's lateral-model change alone wouldn't
+be confounded by a simultaneous longitudinal change. This flag is that
+deferred change: a new `PathReference.v_ref_at(s)` samples a precomputed
+per-lap speed profile at each horizon stage's own **predicted** arc length
+`s_k`, the same way `kappa_at(s)` is already looked up against the predicted
+state rather than scheduled by horizon step. That choice is deliberate and
+important: it is what lets this feature inherit `kappa(s)`'s
+non-schedulability property (see "Why it exists" above) instead of
+reproducing the three earlier curvature-scheduling failures in a new,
+longitudinal form. It targets the still-open Part 11 braking-lag problem.
+Only takes effect when a speed-profile array is actually supplied at
+`PathReference` construction time; **fully wired** in
+`sim/rollout_core.py`'s NMPC construction/`compute_step()` call (offline) and
+`mpc_controller_standalone.py`'s `set_static_path()` call (live mirror);
+**deliberately not wired** in `mpc_controller.py` (the LTV-QP-parity node) —
+with no array supplied, or with the flag off, `v_ref` is the exact same
+frozen scalar as before. Treat this as a genuine, unvalidated experiment: run
+it in isolation (a synthetic dead-on-line approach to a braking zone, mirror
+of Part 16 §16.6's methodology) before trusting it, given how reliably
+"future information the solver can pre-pay" has misfired here previously.
+
+**3. Friction-circle hard constraint — `nmpc_friction_circle_enabled` /
+`NMPC_FRICTION_CIRCLE_ENABLED`, default `false`, EXPERIMENTAL.** Adds a hard
+`|F_yf|, |F_yr| <= F_max` bound to the condensed QP, **additional to, not a
+replacement for**, the existing soft `tanh` lateral-force saturation already
+inside `_f`/`_f_scalar` (difference #3 under "Model, and what it reuses"
+above) — that soft mechanism is untouched, per CLAUDE.md's standing caution
+against re-litigating it without new measurement evidence. `F_max` is derived
+from the same measured ceiling law (`alat_ceiling_flat/_slope/_intercept`)
+via `F_max = m * ceiling(v_x) / 2` per axle. Mechanically: `_outputs()` grows
+two extra, cost-UNWEIGHTED rows (tyre forces, computed post-soft-saturation)
+that ride through the existing `_output_jacobians` finite-differencing for
+free, so `dF/dU_flat` reuses the condensing step's own `S = dx/dU_flat`
+rather than needing a second rollout; `_build_qp`/`_solve_step` add `2*N` new
+hard rows only when the flag is on, changing the QP's fixed sparsity pattern
+(read once at construction, like the existing soft-slack rows). When off,
+`_build_qp`/`_outputs`/`_output_jacobians`/`_solve_step` are IDENTICAL —
+same array shapes, same QP dimensions — to before this feature existed, not
+merely "the extra rows are empty." Telemetry exposes
+`nmpc_fyf_max_abs`/`nmpc_fyr_max_abs` only when enabled. Loosely inspired by
+MPCC's friction-ellipse tyre constraints, adapted to bound the same tyre-force
+quantity this NMPC's plant already computes rather than introducing a new
+force model.
+
+None of the three has offline A/B numbers yet (feature 1 is a numerical
+improvement to an existing mechanism and is default-on; features 2 and 3 are
+default-off and unvalidated) — reproduce a comparison with
+`python -m tuner.nmpc_offline_check` once one exists. Do not enable 2 or 3
+for a live run without first validating offline.
