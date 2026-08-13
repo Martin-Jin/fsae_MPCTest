@@ -157,32 +157,18 @@ MAX_BRAKE: float = 7.0
 # either side of a bin boundary) — see mpc_params.py for the current values.
 
 # ── Lookahead gain-scheduling family: removed ──────────────────────────────
-# This file used to carry ~15 interacting mechanisms that scanned forward
-# along the path (producing a scalar kappa_max_abs = peak curvature within a
-# lookahead window) and reweighted today's Q/R cost matrices based on what's
-# coming up: _lookahead_curvature_profile, CornerMap/_segment_corners/
-# _corner_map_lookahead (a precomputed-path fast path for the same scan),
-# _lookahead_approach_boost, _lookahead_epsi_approach_boost,
-# _lookahead_exit_boost, _lookahead_yaw_rate_relax,
-# _lookahead_steer_effort_relax, _lookahead_straight_lateral_reduce,
-# _lookahead_straight_boost, _steer_effort_straight_boost, _uturn_severity/
-# _uturn_boost, _corner_demand/_demand_frac/_alat_ceiling_at, and the
-# kappa_max_abs-driven terms inside _steer_rate_anti_hunt/_adaptive_Q_scaling/
-# _adaptive_R_rate. Removed because this MPC formulation already predicts
-# state error against the reference at each future horizon step; reweighting
-# TODAY's (usually near-zero) cost based on a forward scan doesn't change
-# what the horizon predicts when the car actually gets there, so the
-# mechanism did roughly nothing useful. Replaced by three CURRENT-STATE-driven
-# factors — see _corner_factor/_low_speed_corner_boost below and their use in
-# compute() — plus a fourth, independent heading-error-driven accel/brake
-# asymmetry. Also removed as unused/didn't-work: the curvature-forcing
-# QP-disturbance term (curvature_forcing_enabled, _curvature_horizon_profile,
-# the `w` parameter in _build_qp/_solve_qp — structurally unsound, see
-# CHANGES.md) and _low_speed_steer_rate_boost (disabled by default, gated on
-# speed alone with no way to distinguish wanted low-speed turn-in from
-# unwanted post-exit wobble). Mirror this removal in fsae_MPCTest/controller/
-# model_utils.py per CLAUDE.md's parity rule. See CHANGES.md for the full
-# history of what was tried before this replacement.
+# Removed ~15 mechanisms that scanned forward along the path and reweighted
+# today's Q/R cost based on a corner not yet reached (approach/exit boosts,
+# demand normalisation, U-turn detector, straight-line adjustments, curvature
+# forcing, the precomputed CornerMap fast path — full list in
+# planning_control_sync.md's "Corner-factor scheduler rewrite" section)
+# because this MPC formulation already predicts state error at each future
+# horizon step; reweighting TODAY's near-zero cost based on a forward scan
+# doesn't change what the horizon predicts once the car gets there. Replaced
+# by _corner_factor/_low_speed_corner_boost below (current-state only) plus
+# an independent heading-error-driven accel/brake asymmetry. Mirror any
+# change here into fsae_MPCTest/controller/model_utils.py per CLAUDE.md's
+# parity rule.
 
 
 def predict_ahead(
@@ -779,8 +765,13 @@ class MPCController:
 
     def _discrete_model(self, v_x: float) -> tuple[np.ndarray, np.ndarray]:
         """
-        ZOH exact discretization of the bicycle model.
-        Forces dense sparsity pattern with epsilon to prevent OSQP reallocation.
+        ZOH exact discretization of the speed-blended kinematic/dynamic
+        bicycle model. Forces dense sparsity pattern with epsilon to prevent
+        OSQP reallocation. Byte-for-byte the same model as
+        bicycle_model.get_8state_discrete_model — see that function's
+        docstring for the full kinematic/dynamic blend derivation and the
+        ZOH/sparsity reasoning; kept here uncommented-per-line only to avoid
+        two independently-maintained comment sets drifting apart.
         """
         v_x_safe = max(0.01, abs(v_x))
         m, Iz, lf, lr = self.m, self.Iz, self.lf, self.lr
@@ -791,12 +782,15 @@ class MPCController:
         A_dyn = np.ones((self.nx, self.nx)) * 1e-12
 
         A_kin[0, 2] = v_x_safe
-        A_kin[2, 6] = v_x_safe / (lf + lr) 
+        A_kin[2, 6] = v_x_safe / (lf + lr)
         A_kin[4, 5] = 1.0
         A_kin[5, 7] = 1.0
         A_kin[6, 6] = -1.0 / td
         A_kin[7, 7] = -1.0 / ta
 
+        # Dynamic (tyre-force) model — see bicycle_model.py's DYNAMIC BICYCLE
+        # MODEL section for the linearised-bicycle derivation each entry below
+        # comes from; same terms, same axle convention (2*Cf/2*Cr).
         A_dyn[0, 1] = 1.0
         A_dyn[1, 1] = -(2 * Cf + 2 * Cr) / (m * v_x_safe)
         A_dyn[1, 2] = (2 * Cf + 2 * Cr) / m
@@ -807,14 +801,14 @@ class MPCController:
         A_dyn[3, 2] = (2 * Cf * lf - 2 * Cr * lr) / Iz
         A_dyn[3, 3] = -(2 * Cf * lf**2 + 2 * Cr * lr**2) / (Iz * v_x_safe)
         A_dyn[3, 6] = (2 * Cf * lf) / Iz
-        A_dyn[4, 5] = 1.0   
-        A_dyn[5, 7] = 1.0   
-        A_dyn[6, 6] = -1.0 / td   
-        A_dyn[7, 7] = -1.0 / ta   
+        A_dyn[4, 5] = 1.0
+        A_dyn[5, 7] = 1.0
+        A_dyn[6, 6] = -1.0 / td
+        A_dyn[7, 7] = -1.0 / ta
 
         B = np.ones((self.nx, self.nu)) * 1e-12
-        B[6, 0] = 1.0 / td
-        B[7, 1] = 1.0 / ta
+        B[6, 0] = 1.0 / td   # steering command drives steering-lag integrator
+        B[7, 1] = 1.0 / ta   # accel command drives accel-lag integrator
 
         alpha = np.clip((v_x - 1.0) / (2.5 - 1.0), 0.0, 1.0)
         A_c = (1.0 - alpha) * A_kin + alpha * A_dyn
@@ -1082,6 +1076,10 @@ class MPCController:
         except cp.error.SolverError as exc:
             print(f"[MPC] Warning: Clarabel also failed: {exc!r}")
 
+        # Both solvers failed: hold the last commanded steering angle (avoids
+        # a sudden straighten-out mid-corner) and command full brake (a
+        # fail-safe deceleration) rather than coasting or repeating a
+        # possibly-bad last accel command.
         return np.array([self._u_prev[0], -self.a_max_brake])
 
     def compute(

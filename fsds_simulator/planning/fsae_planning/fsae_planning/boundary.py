@@ -23,10 +23,19 @@ from fsae_planning.path_utils import (
 # Cone-wall barrier planner
 # ---------------------------------------------------------------------------
 
+# _WALL_MAX_DIST/_WALL_MID_DIST: wide enough that a normal cone gap never
+# breaks the link/pairing (missing a genuine link truncates the wall at that
+# gap), but well under a typical track width so a wall never bridges across
+# to the opposite boundary or a midpoint pairs with the wrong-side cone.
 _WALL_MAX_DIST      = 7.0      # metres — max dist to link same-colour cones into wall
 _WALL_MID_DIST      = 4.0      # metres — max blue-yellow dist for midpoint candidates
+# Large enough that no distance/angle saving in the greedy walk ever makes
+# crossing into the wall mesh worth it — acts as a hard constraint expressed
+# as a cost, not a real magnitude to be weighed against other terms.
 _WALL_CROSS_PENALTY = 100000.0   # cost per wall segment crossed by a path step
 _WALL_PATH_MAX_STEP = 10.0     # metres — max step between consecutive path midpoints
+# Sized so the walk is never cut short by count before _WALL_PLAN_HORIZON (25 m)
+# cuts it short by distance: 18 * _WALL_PATH_MAX_STEP comfortably exceeds it.
 _WALL_PATH_MAX_WALK = 18       # max midpoints in the constructed path
 # Softest per-step turn the walk will accept, as cos(max turn).  The old walk
 # used a hard 0.0 (a 90° per-step ceiling): at a tight hairpin every next

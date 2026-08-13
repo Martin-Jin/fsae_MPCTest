@@ -85,27 +85,11 @@ def compute_composite_score(
     default so existing positional callers (which predate this metric)
     don't break; new callers should pass it explicitly.
 
-    steering_reversal_rms is an RMS, magnitude-weighted measure of steering
-    direction reversals (sqrt(Σ swing² / n steps)) — see
-    RolloutMetrics.finalize(). A reversal's "swing" is how far the steering
-    command travelled from its previous value before flipping sign, so a
-    tiny back-and-forth trim correction near zero contributes almost nothing
-    while a large aggressive swing contributes proportionally (squared) more.
-    This also keeps a twistier path (which legitimately needs more direction
-    changes) from being penalised the same as controller-induced dithering,
-    since a path-demanded reversal is typically a small, deliberate swing
-    while hunting/chatter tends to produce many small-to-moderate swings that
-    still individually average out much lower than one genuine large
-    correction. Normalising by n steps keeps it on a comparable per-step
-    scale to the other RMS metrics instead of mechanically growing with
-    rollout length or shrinking with DT.
-
-    accel_reversal_rms is the identical construction applied to u_opt[1]
-    (a_cmd) instead of u_opt[0] (delta_cmd): steering_reversal_rms only ever
-    looks at u_opt[0], so without this nothing in the score discourages
-    a_cmd from oscillating across zero even though the same
-    magnitude-weighted-swing rationale applies identically to accel/brake
-    effort.
+    steering_reversal_rms/accel_reversal_rms: magnitude-weighted RMS of
+    direction reversals, distinguishing controller hunting from a
+    legitimately twisty path — see docs/architecture.md's metric table
+    (metrics 9, 12) for the full construction and rationale, not repeated
+    here.
     """
     metrics = np.array(
         [
@@ -137,25 +121,14 @@ def compute_composite_score(
     progress = float(np.clip(progress, 0.0, 1.0))
 
     # ── TIER 1: hard constraints ──────────────────────────────────────────
-    # A run that crashed, left the track, or never finished is INFEASIBLE. It
-    # is not a run with a bad score — it is not a valid data point about how
-    # the car drives, because the metrics were accumulated over a trajectory
-    # that ended in failure.
-    #
-    # Previously these were flat additive penalties (+3.0 DNF, +3.0 more for
-    # off-track) competing on the same axis as the twelve continuous metrics.
-    # That is a scalarisation, and it let a run BUY its way out of a crash:
-    # a set of gains that tracked the line tightly enough could out-earn the
-    # penalty on the quality terms. It also made the objective discontinuous
-    # in a way that dominated the tuner — measured, a single DNF in ten tasks
-    # moved the aggregate objective by ~0.9, swamping every quality signal.
-    #
-    # Feasible runs now occupy a band strictly below CONSTRAINT_FLOOR, and
-    # infeasible ones strictly above it, so no amount of good driving in the
-    # quality terms can promote an infeasible run above a feasible one. Within
-    # the infeasible band, ordering still rewards getting further (progress)
-    # before failing, which keeps a gradient for the optimiser to climb
-    # instead of a flat wall of equally-bad scores.
+    # A run that crashed, left the track, or never finished is INFEASIBLE —
+    # not a valid data point about how the car drives, since the metrics were
+    # accumulated over a trajectory that ended in failure. Feasible runs
+    # occupy a band strictly below CONSTRAINT_FLOOR, infeasible ones strictly
+    # above it, so no amount of good driving can promote an infeasible run
+    # above a feasible one. See docs/architecture.md "Why three tiers instead
+    # of one sum" for why a flat additive penalty (the pre-2026-08-06
+    # approach) let a run buy its way out of a crash — not repeated here.
     if dnf or offtrack:
         severity = DNF_PENALTY + (DNF_OFFTRACK_PENALTY if offtrack else 0.0)
         # Deeper progress -> less bad, but never good enough to cross the floor.

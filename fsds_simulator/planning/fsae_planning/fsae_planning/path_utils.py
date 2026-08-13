@@ -2,6 +2,11 @@
 Path computation, smoothing, speed estimation, and control helpers.
 
 Depends on cone_sorting for the low-level NN fallback path builder.
+
+Car-frame projections in this file (get_lookahead_waypoint, _resample_forward,
+roll_loop_to_car) use the same FSDS ENU convention (x forward, y left) as
+control_utils.py's StanleyController docstring — see that class docstring
+for the full sign-convention statement, not repeated here.
 """
 import math
 

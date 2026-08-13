@@ -83,6 +83,9 @@ def _nmpc_pick(override, base):
     settings.py's "NMPC weight overrides" comment."""
     return base if override is None or override < 0.0 else override
 
+# Conservative defaults, not independently measured/tuned: 3 s / 3 m is slow
+# even for a car recovering from a bad line, so this only catches a genuine
+# stall (stuck oscillating, not actually progressing), not normal driving.
 STALL_CHECK_INTERVAL = 60   # Steps between rolling stall checks (3 s at 20 Hz)
 STALL_MIN_DISTANCE = 3.0    # Minimum distance (m) expected per interval
 
@@ -1181,6 +1184,11 @@ def run_core_rollout(
         # the path happens to pass close to its own last point — which a
         # closed-loop recorded lap does routinely (a start/finish straight,
         # a figure-eight crossing) well before the lap is actually done.
+        # 10% window / 3 m radius: conservative defaults, not independently
+        # measured — wide enough to reliably catch idx lagging the true
+        # finish, narrow enough not to false-trigger on a lap's own
+        # start/finish straight or figure-eight crossing (see above).
+        # Mirrored in telemetry_logger.py's LapProgressTracker.
         near_end = idx >= len(path_X) - int(0.1 * len(path_X)) - 2
         dist_to_finish = math.hypot(state[0] - path_X[-1], state[1] - path_Y[-1])
         if idx >= len(path_X) - 2 or (near_end and dist_to_finish <= 3.0):

@@ -1237,7 +1237,9 @@ if __name__ == "__main__":
     popsize = default_popsize
 
     max_evals = MAX_EVALS
-    max_restarts = 7  # BIPOP restart budget
+    max_restarts = 7  # BIPOP restart budget — a round number, not measured;
+                       # raise it if MAX_EVALS is raised enough that restarts
+                       # exhaust before the eval budget does
     num_cores = max(1, mp.cpu_count() - 1)  # Leave one core for the OS
 
     print("\n[Offline Tuner] Strategy: BIPOP + lq-CMA-ES (surrogate-assisted)")

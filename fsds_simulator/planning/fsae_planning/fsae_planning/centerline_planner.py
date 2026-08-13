@@ -54,12 +54,9 @@ class CenterlinePlanner(Node):
         # Arc-length horizon (m) the published centreline is clamped to.  Keeps
         # the near path in front of the car invariant to how far the lookahead
         # reaches (extra far midpoints no longer reshape it) and stops distant
-        # apex points dragging the corner line inward.  See build_path_walls.
-        # 25.0 matches boundary._WALL_PLAN_HORIZON and
-        # control_utils.curvature_speed's scan_end — the car needs ~24 m to
-        # brake from v_max down to a tight hairpin's speed at a realistic
-        # achieved deceleration; a shorter horizon revealed such corners too
-        # late, saturating steering and spinning out at corner entry.
+        # apex points dragging the corner line inward. Must match
+        # boundary._WALL_PLAN_HORIZON — see that constant's comment for why
+        # 25.0 (braking-distance math), not repeated here.
         self.declare_parameter('plan_horizon', 25.0)
         self._plan_horizon = self.get_parameter('plan_horizon').get_parameter_value().double_value
 
