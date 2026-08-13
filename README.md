@@ -2,9 +2,21 @@
 
 A high-fidelity 2D closed-loop simulator and offline weight tuner for a Formula
 Student autonomous vehicle. The system pairs a nonlinear 24-state vehicle plant
-with a linear time-varying Model Predictive Controller (MPC), and provides
-CMA-ES-based automated weight optimisation so the controller's cost weights
-don't have to be hand-tuned by trial and error.
+with a Model Predictive Controller, and provides CMA-ES-based automated weight
+optimisation so the controller's cost weights don't have to be hand-tuned by
+trial and error.
+
+There are **two interchangeable MPC implementations**, selected by a single
+flag (`use_nmpc` in `settings.py` / the live ROS 2 node's launch args):
+
+- **LTV-QP** (default) — `mpc_core.MPCController`, a linear time-varying MPC
+  solved as one convex QP per tick.
+- **NMPC** — `nmpc_core.NMPCController`, a Frenet-frame nonlinear MPC that
+  tracks arc length as a state and looks up path curvature directly, closing
+  a structural blind spot the LTV-QP's linear prediction has no term for.
+
+See [docs/architecture.md](docs/architecture.md)'s "Second controller:
+nonlinear MPC" section for the full comparison and why the NMPC exists.
 
 This repository also includes a ROS 2 control node (`mpc_controller_standalone.py`
 / `mpc_core.py`, staged under `fsds_simulator/` — see below) that runs the

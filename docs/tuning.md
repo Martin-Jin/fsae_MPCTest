@@ -16,6 +16,16 @@ as tuning continues and a second copy of the numbers here would just be one
 more place to fall out of sync. See CLAUDE.md's parity rule: any change here
 must be applied to **both** `settings.py` and `mpc_params.py`.
 
+**Two controllers, two tuning surfaces.** Sections 1-4.4/4.9 below tune the
+default linear time-varying MPC (LTV-QP). The NMPC (`use_nmpc=true`, see
+[§4.5d](#45d-nonlinear-mpc-use_nmpc--added-2026-08-13-offline-port-added-2026-08-13))
+shares the LTV-QP's base weights (section 1) as its starting point but is
+entirely unaffected by all of section 4's adaptive machinery, and can be
+retuned independently via its own `nmpc_q_*`/`nmpc_r_*` override fields
+without touching the LTV-QP. See
+[architecture.md](architecture.md#second-controller-nonlinear-mpc-use_nmpc--live-only-2026-08-13)
+for what the NMPC is and why it exists.
+
 ## How to use this doc
 
 1. Find the parameter or feature you want to change below.

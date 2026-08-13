@@ -5,6 +5,13 @@ For quick-start usage, tuning workflow, and FSDS integration steps, see
 [Developer Guide](developer_guide.md) instead — this document explains the
 system, that one explains how to operate/extend it.
 
+**Two MPC implementations exist**, selected by one flag (`use_nmpc`):
+sections 2-7 below describe the default linear time-varying MPC (LTV-QP,
+`mpc_core.MPCController`); section 8, [Second Controller: Nonlinear
+MPC](#second-controller-nonlinear-mpc-use_nmpc--live-only-2026-08-13),
+describes the alternative Frenet-frame nonlinear MPC
+(`nmpc_core.NMPCController`) and how it differs.
+
 ## Table of Contents
 
 1. [Architecture Overview](#architecture-overview)
