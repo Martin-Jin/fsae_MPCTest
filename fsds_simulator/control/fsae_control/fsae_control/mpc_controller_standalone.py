@@ -336,7 +336,20 @@ class MPCControllerStandaloneNode(Node):
             # CornerMap -- without this call it would rebuild that on the
             # first tick instead (correct, just not free).
             if self._static_path is not None:
-                self._mpc.set_static_path(self._static_path)
+                # self._speed_profile (path_X, path_Y, path_V), when loaded,
+                # is a SEPARATE array from self._static_path -- a different
+                # CSV load entirely (see load_speed_profile_csv vs
+                # load_path_profile_csv above) -- so it is passed through
+                # explicitly rather than assumed identical. No-op unless
+                # nmpc_horizon_speed_profile_enabled is also set.
+                if self._speed_profile is not None:
+                    sp_x, sp_y, sp_v = self._speed_profile
+                    self._mpc.set_static_path(
+                        self._static_path,
+                        path_v_xy=np.column_stack([sp_x, sp_y]), path_v=sp_v,
+                    )
+                else:
+                    self._mpc.set_static_path(self._static_path)
         else:
             self._mpc = MPCController(dt=dt, N=35, params=mpc_params)
         if self._heading_profile is not None:
