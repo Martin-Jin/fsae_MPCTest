@@ -521,6 +521,26 @@ def _f(X, U, ref, p):
 
     blend = np.clip((v_x - p.v_blend_lo) / (p.v_blend_hi - p.v_blend_lo), 0.0, 1.0)
 
+    # Fade tyre forces out at low speed, same `blend` the kinematic/dynamic
+    # mix already uses. WITHOUT this, alpha_f/alpha_r's speed-floored
+    # denominator (v_safe, needed to avoid a divide-by-zero as v_x -> 0) makes
+    # a stationary tyre's slip angle track the STEERING COMMAND directly
+    # (alpha_f ~= -d when v_y, r are small), so the model predicts a large
+    # cornering force from steering alone at v_x = 0 -- backwards from a real
+    # tyre, which generates ~zero force with no rolling contact velocity.
+    # Uncommanded, this manufactured force propagates through v_y_dot_dyn/
+    # r_dot_dyn into a large, entirely fictitious predicted e_y/e_psi
+    # excursion over the horizon while the car has not physically moved,
+    # which is what caused the NMPC's steering command to snap to the full
+    # +-25 deg mechanical lock in the first ~0.5-0.7s of every run from a
+    # standing start (measured 2026-08-13: nmpc_pred_ey_end reached -1.9 m
+    # while v_actual was still ~0). The dynamic branch's own OUTPUT
+    # (v_y_dot_dyn/r_dot_dyn) is already blended out by `blend` below, but
+    # that happens too late to stop the force itself from existing --
+    # F_yf/F_yr must be scaled here, at the source, not just downstream.
+    F_yf = F_yf * blend
+    F_yr = F_yr * blend
+
     v_x_dot = a + blend * r * v_y
 
     v_y_dot_dyn = (F_yf * cos_d + F_yr) / p.m - r * v_x
@@ -607,6 +627,12 @@ def _f_scalar(x, u, kap, p):
 
     blend = (v_x - p.v_blend_lo) / (p.v_blend_hi - p.v_blend_lo)
     blend = 0.0 if blend < 0.0 else (1.0 if blend > 1.0 else blend)
+
+    # Mirror of _f's low-speed tyre-force fade -- see that copy's comment for
+    # why this must scale F_yf/F_yr at the source, not just blend v_y_dot_dyn/
+    # r_dot_dyn downstream.
+    F_yf *= blend
+    F_yr *= blend
 
     v_x_dot = a + blend * r * v_y
     v_y_dot_dyn = (F_yf * cos_d + F_yr) / p.m - r * v_x

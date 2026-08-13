@@ -325,13 +325,14 @@ def _tyre_forces(X, p):
     """
     Front/rear axle lateral tyre force (N), vectorised over stages, AFTER
     the existing soft alat-ceiling tanh saturation (if p.alat_ceiling_enabled)
-    -- i.e. the SAME F_yf/F_yr that actually enter _f's dynamics, not the
-    raw linear-tyre value. A function of STATE only (v_y, r, delta are all
-    states; steering/accel COMMAND only affects delta's rate, not the
-    instantaneous force at this stage), which is what lets these ride along
-    as extra _outputs() rows with no extra rollout cost -- see NH_FRICTION's
-    comment. Kept a line-by-line mirror of _f's own force computation; if
-    that changes, update this too.
+    AND the low-speed fade (see _f's comment on why this must happen at the
+    force itself, not just downstream) -- i.e. the SAME F_yf/F_yr that
+    actually enter _f's dynamics, not the raw linear-tyre value. A function
+    of STATE only (v_y, r, delta are all states; steering/accel COMMAND only
+    affects delta's rate, not the instantaneous force at this stage), which
+    is what lets these ride along as extra _outputs() rows with no extra
+    rollout cost -- see NH_FRICTION's comment. Kept a line-by-line mirror of
+    _f's own force computation; if that changes, update this too.
     """
     v_x = X[:, IDX_VX]
     v_y = X[:, IDX_VY]
@@ -353,6 +354,10 @@ def _tyre_forces(X, p):
         sat = np.where(ratio > 1e-6, np.tanh(ratio) / np.maximum(ratio, 1e-6), 1.0)
         F_yf = F_yf * sat
         F_yr = F_yr * sat
+
+    blend = np.clip((v_x - p.v_blend_lo) / (p.v_blend_hi - p.v_blend_lo), 0.0, 1.0)
+    F_yf = F_yf * blend
+    F_yr = F_yr * blend
     return F_yf, F_yr
 
 
@@ -404,6 +409,16 @@ def _f(X, U, ref, p):
         F_yr = F_yr * sat
 
     blend = np.clip((v_x - p.v_blend_lo) / (p.v_blend_hi - p.v_blend_lo), 0.0, 1.0)
+
+    # Fade tyre forces out at low speed -- see live nmpc_core.py's `_f` for
+    # the full derivation (mirrored here: without this, alpha_f/alpha_r's
+    # speed-floored denominator makes a stationary tyre's slip angle track
+    # the steering command directly, producing a fictitious cornering force
+    # at v_x = 0 that a real tyre with no rolling contact velocity would not
+    # generate).
+    F_yf = F_yf * blend
+    F_yr = F_yr * blend
+
     v_x_dot = a + blend * r * v_y
     v_y_dot_dyn = (F_yf * cos_d + F_yr) / p.m - r * v_x
     r_dot_dyn = (p.lf * F_yf * cos_d - p.lr * F_yr) / p.Iz
@@ -471,6 +486,10 @@ def _f_scalar(x, u, kap, p):
 
     blend = (v_x - p.v_blend_lo) / (p.v_blend_hi - p.v_blend_lo)
     blend = 0.0 if blend < 0.0 else (1.0 if blend > 1.0 else blend)
+
+    # Mirror of _f's low-speed tyre-force fade.
+    F_yf *= blend
+    F_yr *= blend
 
     v_x_dot = a + blend * r * v_y
     v_y_dot_dyn = (F_yf * cos_d + F_yr) / p.m - r * v_x

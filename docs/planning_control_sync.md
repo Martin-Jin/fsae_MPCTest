@@ -3122,3 +3122,61 @@ reproduce a comparison with `python -m tuner.nmpc_offline_check` once one
 exists. Do not re-enable 2 or 3 without first fixing the identified
 mechanism, adding an offline A/B, and (for feature 3) the missing telemetry
 columns above.
+
+### Fixed: NMPC steers hard-right at a standstill on every run (2026-08-13)
+
+**Symptom:** every NMPC run from a standing start — independent of any of
+the three features above, reproduces with only feature 1 (spline reference,
+default-on) active — commanded a hard, transient right-steer excursion in
+the first ~0.5-0.7s: steering reaches the full ±25° mechanical lock by
+t≈0.59-0.65s, `nmpc_pred_ey_end` (the horizon's own predicted terminal
+lateral error) swings to roughly -3.3 m, while `v_actual` is still
+essentially zero. The car recovers once genuinely moving and does not
+repeat the excursion on later laps through the same map location.
+
+**Not the track/spawn geometry.** The car spawns at `(0,0)` facing `+x`;
+the track's first recorded waypoint sits at `x≈1.76, y≈-0.18` with
+`psi≈0.006-0.009` rad — a small, ordinary offset (`e_y≈0.16` m at t=0,
+`nmpc_s0≈-1.06` m, i.e. the Frenet projection lands just behind the path's
+recorded start). Ruled out as the cause by a same-day, same-spawn A/B: both
+the LTV-QP (`mpc_core.py`, `Linear mpc/mpc_standalone_control_1786594804.csv`)
+and Stanley (`stanley_control_1786594710.csv`) see the identical `e_y≈0.16-0.17`
+at t=0 and show no equivalent hard-lock snap — Stanley's initial command is
+-8.9°, converging smoothly; the LTV-QP's is a few degrees, also smooth. Since
+both react to the same starting error without incident, the cause has to be
+specific to the NMPC's own model, not the track/spawn setup — track padding
+was considered and rejected as a fix for this reason (the same v_x=0 startup
+condition would recur at any new start point).
+
+**Root cause: `_f`/`_f_scalar`'s tyre-slip-angle formula manufactures a
+lateral force from steering ALONE at `v_x≈0`.** `alpha_f = arctan((v_y +
+lf*r)/v_safe) - d`, where `v_safe = max(|v_x|, v_blend_hi)` floors the
+denominator to avoid a divide-by-zero as `v_x -> 0`. That floor is necessary,
+but its side effect is that at `v_x=0` with `v_y, r` small, `alpha_f ≈ -d` —
+the slip angle tracks the commanded steering angle directly, producing a
+substantial `F_yf` (and `F_yr`) purely from steering, with zero forward
+speed. A real tyre generates ~zero lateral force with no rolling contact
+velocity, regardless of steering angle — this was backwards. The
+`blend` factor already computed for the kinematic/dynamic mix (0 at
+`v_x <= v_blend_lo`, 1 at `v_x >= v_blend_hi`) already excludes
+`v_y_dot_dyn`/`r_dot_dyn` from the state derivative at low speed, but that
+happens too late: the force itself already existed and was available to the
+SQP's cost/Jacobians before that exclusion, and (for
+`nmpc_friction_circle_enabled`, when it's ever re-enabled) would have been
+visible to the friction-circle constraint too.
+
+**Fix:** scale `F_yf`/`F_yr` by the same `blend` factor immediately after
+they're computed (and after the existing `alat_ceiling` soft saturation),
+in all three copies — `nmpc_core.py` (live and mirror) and
+`controller/nmpc_optimiser.py`'s `_f`, `_f_scalar`, and its
+`nmpc_friction_circle_enabled`-only `_tyre_forces()` helper (which computes
+the same force independently for telemetry/constraint rows and must stay a
+line-by-line mirror of `_f`'s own computation per its own docstring). At
+`v_x=0` with any commanded steering, every lateral-dynamics derivative
+(`e_y_dot`, `v_y_dot`, `r_dot`) is now confirmed exactly zero (previously
+`v_y_dot`/`r_dot` were nonzero purely from `d`). Verified: `_f`/`_f_scalar`
+parity holds at 1e-13/1e-14 (both live/mirror and offline, well under the
+1e-12 bar `test_scalar_matches_vectorised` requires), and
+`python -m tuner.nmpc_offline_check`'s full suite (model parity, SQP
+convergence, turn-in/wrong-direction, closed-loop) passes with no regression
+in the closed-loop `|e_y|`/`|e_psi|`/saturation numbers.
