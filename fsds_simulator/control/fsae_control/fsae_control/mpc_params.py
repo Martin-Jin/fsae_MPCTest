@@ -44,51 +44,51 @@ class MPCParams:
     # ── Core cost weights ───────────────────────────────────────────────
     # Q_diag index -> state penalised (states x are [e_y, e_yd, e_psi, r,
     # e_v, e_a, delta_act, a_act]; see mpc_core.py module docstring):
-    q_e_y:   float = field(default=6.35, metadata={"unit": "1/m^2",   "desc": "lateral deviation from path centreline"})
-    q_e_yd:  float = field(default=0.5,  metadata={"unit": "1/(m/s)^2", "desc": "rate of change of lateral deviation"})
-    q_e_psi: float = field(default=1.65, metadata={"unit": "1/rad^2", "desc": "heading error relative to path tangent"})
-    q_r:     float = field(default=1.0, metadata={"unit": "1/(rad/s)^2", "desc": "yaw rate"})
-    q_e_v:   float = field(default=5.40,  metadata={"unit": "1/(m/s)^2", "desc": "speed error: car_speed - desired_speed"})
+    q_e_y:   float = field(default=6.35, metadata={"unit": "1/m^2",   "desc": "lateral deviation from path centreline", "controller": "both"})
+    q_e_yd:  float = field(default=0.5,  metadata={"unit": "1/(m/s)^2", "desc": "rate of change of lateral deviation", "controller": "both"})
+    q_e_psi: float = field(default=1.65, metadata={"unit": "1/rad^2", "desc": "heading error relative to path tangent", "controller": "both"})
+    q_r:     float = field(default=1.0, metadata={"unit": "1/(rad/s)^2", "desc": "yaw rate (LTV-QP). Shared base value the NMPC also reads (see nmpc_q_epsi_dot below), but under the NMPC it weights heading-error RATE, not absolute yaw rate -- same slot, different regressor", "controller": "both"})
+    q_e_v:   float = field(default=5.40,  metadata={"unit": "1/(m/s)^2", "desc": "speed error: car_speed - desired_speed", "controller": "both"})
     # R_diag index -> input penalised (inputs u are [delta_cmd, a_cmd]):
-    r_delta: float = field(default=1.8, metadata={"unit": "1/rad^2",     "desc": "steering command effort"})
+    r_delta: float = field(default=1.8, metadata={"unit": "1/rad^2",     "desc": "steering command effort", "controller": "both"})
     # a_cmd>=0 (accel) and a_cmd<0 (brake) get independent effort weights
     # instead of one weight applied symmetrically to |a_cmd| -- a single
     # shared weight cannot be tuned for acceleration and braking
     # independently. See mpc_core.py's _build_qp/_solve_qp for the
     # cp.pos/cp.neg split and planning_control_sync.md's "Accel/brake
     # effort weight split" section for the diagnosis.
-    r_a_accel: float = field(default=2.25, metadata={"unit": "1/(m/s^2)^2", "desc": "acceleration command effort, a_cmd >= 0"})
-    r_a_brake: float = field(default=0.5, metadata={"unit": "1/(m/s^2)^2", "desc": "acceleration command effort, a_cmd < 0 (braking)"})
+    r_a_accel: float = field(default=2.25, metadata={"unit": "1/(m/s^2)^2", "desc": "acceleration command effort, a_cmd >= 0", "controller": "both"})
+    r_a_brake: float = field(default=0.5, metadata={"unit": "1/(m/s^2)^2", "desc": "acceleration command effort, a_cmd < 0 (braking)", "controller": "both"})
     # R_rate_diag index -> input RATE-OF-CHANGE penalised (tick-to-tick jerk):
-    r_rate_delta: float = field(default=2.5, metadata={"unit": "1/(rad/s)^2",     "desc": "steering rate of change"})
-    r_rate_a:     float = field(default=2.25, metadata={"unit": "1/(m/s^3)^2",     "desc": "acceleration rate of change"})
+    r_rate_delta: float = field(default=2.5, metadata={"unit": "1/(rad/s)^2",     "desc": "steering rate of change", "controller": "both"})
+    r_rate_a:     float = field(default=2.25, metadata={"unit": "1/(m/s^3)^2",     "desc": "acceleration rate of change", "controller": "both"})
     # Extra weight on the final predicted state x[:,N]. 1.0 = no-op, the
     # only value ever validated against the Q_diag/R_diag/R_rate_diag above.
-    terminal_q_scale: float = field(default=1.0, metadata={"unit": "unitless", "desc": "extra weight on terminal predicted state"})
+    terminal_q_scale: float = field(default=1.0, metadata={"unit": "unitless", "desc": "extra weight on terminal predicted state", "controller": "both"})
 
     # ── Feature enable/disable flags ────────────────────────────────────
-    adaptive_q_scaling_enabled: bool = field(default=True, metadata={"desc": "soften Q[0,0] near centreline to reduce small-error hunting"})
-    steer_rate_anti_hunt_enabled: bool = field(default=True, metadata={"desc": "extra R_rate[0,0] penalty when centred/aligned/uncurving"})
-    adaptive_r_rate_enable_in_corners: bool = field(default=True, metadata={"desc": "keep R_rate softening active in corners (continuous, no cutoff)"})
-    delay_compensation_enabled: bool = field(default=True, metadata={"desc": "roll x0 forward through pending commands via predict_ahead()"})
-    ref_heading_rate_limit_enabled: bool = field(default=False, metadata={"desc": "cap how fast the tracked reference heading may change per tick"})
+    adaptive_q_scaling_enabled: bool = field(default=True, metadata={"desc": "soften Q[0,0] near centreline to reduce small-error hunting", "controller": "ltv_qp_only"})
+    steer_rate_anti_hunt_enabled: bool = field(default=True, metadata={"desc": "extra R_rate[0,0] penalty when centred/aligned/uncurving", "controller": "ltv_qp_only"})
+    adaptive_r_rate_enable_in_corners: bool = field(default=True, metadata={"desc": "keep R_rate softening active in corners (continuous, no cutoff)", "controller": "ltv_qp_only"})
+    delay_compensation_enabled: bool = field(default=True, metadata={"desc": "roll x0 forward through pending commands via predict_ahead()", "controller": "both"})
+    ref_heading_rate_limit_enabled: bool = field(default=False, metadata={"desc": "cap how fast the tracked reference heading may change per tick", "controller": "ltv_qp_only"})
 
     # ── Reference-heading rate limit ────────────────────────────────────
-    ref_heading_rise_rate_deg_s: float = field(default=90.0, metadata={"unit": "deg/s", "desc": "max rate the reference heading may change, if enabled"})
+    ref_heading_rise_rate_deg_s: float = field(default=90.0, metadata={"unit": "deg/s", "desc": "max rate the reference heading may change, if enabled", "controller": "ltv_qp_only"})
 
     # ── Delay compensation ──────────────────────────────────────────────
-    max_delay_compensation_steps: int = field(default=3, metadata={"unit": "steps", "desc": "cap on predict_ahead() rollforward depth"})
-    predict_epsi_clip: float = field(default=0.5, metadata={"unit": "rad", "desc": "small-angle bound used inside predict_ahead()"})
+    max_delay_compensation_steps: int = field(default=3, metadata={"unit": "steps", "desc": "cap on predict_ahead() rollforward depth", "controller": "both"})
+    predict_epsi_clip: float = field(default=0.5, metadata={"unit": "rad", "desc": "small-angle bound used inside predict_ahead()", "controller": "ltv_qp_only"})
 
     # ── n_delay stabilisation ────────────────────────────────────────────
-    pose_age_lp_alpha: float = field(default=0.15, metadata={"unit": "unitless", "desc": "per-tick low-pass coefficient on pose_age_s"})
-    n_delay_hysteresis: float = field(default=0.25, metadata={"unit": "steps", "desc": "deadband either side of an n_delay bin boundary"})
+    pose_age_lp_alpha: float = field(default=0.15, metadata={"unit": "unitless", "desc": "per-tick low-pass coefficient on pose_age_s", "controller": "both"})
+    n_delay_hysteresis: float = field(default=0.25, metadata={"unit": "steps", "desc": "deadband either side of an n_delay bin boundary", "controller": "both"})
 
     # ── Adaptive R_rate corner softening floor ──────────────────────────
-    adaptive_r_rate_during_floor: float = field(default=0.625, metadata={"unit": "unitless", "desc": "R_rate[0,0] floor driven by CURRENT-position curvature"})
+    adaptive_r_rate_during_floor: float = field(default=0.625, metadata={"unit": "unitless", "desc": "R_rate[0,0] floor driven by CURRENT-position curvature", "controller": "ltv_qp_only"})
 
     # ── Straight-line R_rate[0,0] (steering rate) anti-hunt boost ───────
-    anti_hunt_boost_max: float = field(default=6.0, metadata={"unit": "unitless", "desc": "ceiling on the steer_rate_anti_hunt multiplier"})
+    anti_hunt_boost_max: float = field(default=6.0, metadata={"unit": "unitless", "desc": "ceiling on the steer_rate_anti_hunt multiplier", "controller": "ltv_qp_only"})
 
     # ── Current-state corner-factor scheduler ────────────────────────────
     # Replaces the whole deleted lookahead gain-scheduling family (see
@@ -98,34 +98,34 @@ class MPCParams:
     # k=8.0 matches the deleted lookahead mechanisms' own default sharpness
     # (8.0) -- same curve shape, now applied to the current-position signal
     # instead of a forward-scanned one.
-    corner_factor_k: float = field(default=8.0, metadata={"unit": "unitless", "desc": "corner_factor curve sharpness vs CURRENT |kappa|"})
+    corner_factor_k: float = field(default=8.0, metadata={"unit": "unitless", "desc": "corner_factor curve sharpness vs CURRENT |kappa|", "controller": "ltv_qp_only"})
 
     # Q[0,0] (e_y): straight/corner blend endpoints. Corner value ~= 2x the
     # straight value, the same order of magnitude boost the deleted
     # lookahead mechanism used to apply multiplicatively, now a
     # straight-line blend between two fixed endpoints instead of a
     # multiplier on a variable base.
-    q_ey_straight: float = field(default=4.5, metadata={"unit": "1/m^2", "desc": "Q[0,0] on a clear straight (corner_frac=0)"})
-    q_ey_corner: float = field(default=9.0, metadata={"unit": "1/m^2", "desc": "Q[0,0] at full corner (corner_frac=1)"})
+    q_ey_straight: float = field(default=4.5, metadata={"unit": "1/m^2", "desc": "Q[0,0] on a clear straight (corner_frac=0)", "controller": "ltv_qp_only"})
+    q_ey_corner: float = field(default=9.0, metadata={"unit": "1/m^2", "desc": "Q[0,0] at full corner (corner_frac=1)", "controller": "ltv_qp_only"})
 
     # Q[2,2] (e_psi): straight/corner blend endpoints. Corner value ~= 1.5x
     # the straight value.
-    q_epsi_straight: float = field(default=1.5, metadata={"unit": "1/rad^2", "desc": "Q[2,2] on a clear straight (corner_frac=0)"})
-    q_epsi_corner: float = field(default=3.0, metadata={"unit": "1/rad^2", "desc": "Q[2,2] at full corner (corner_frac=1)"})
+    q_epsi_straight: float = field(default=1.5, metadata={"unit": "1/rad^2", "desc": "Q[2,2] on a clear straight (corner_frac=0)", "controller": "ltv_qp_only"})
+    q_epsi_corner: float = field(default=3.0, metadata={"unit": "1/rad^2", "desc": "Q[2,2] at full corner (corner_frac=1)", "controller": "ltv_qp_only"})
 
     # Q[3,3] (r, yaw rate): RELAXES in-corner (corner value LOWER than
     # straight, at half the straight value) -- the MPC needs to be able to
     # rotate fast enough in-corner to hit the tighter Q[0,0]/Q[2,2] targets
     # above, so yaw-rate penalty must come DOWN as the other two go UP.
-    q_r_straight: float = field(default=1.0, metadata={"unit": "1/(rad/s)^2", "desc": "Q[3,3] on a clear straight (corner_frac=0)"})
-    q_r_corner: float = field(default=0.5, metadata={"unit": "1/(rad/s)^2", "desc": "Q[3,3] at full corner (corner_frac=1)"})
+    q_r_straight: float = field(default=1.0, metadata={"unit": "1/(rad/s)^2", "desc": "Q[3,3] on a clear straight (corner_frac=0)", "controller": "ltv_qp_only"})
+    q_r_corner: float = field(default=0.5, metadata={"unit": "1/(rad/s)^2", "desc": "Q[3,3] at full corner (corner_frac=1)", "controller": "ltv_qp_only"})
 
     # R_rate[0,0] (steering rate cost): RELAXES in-corner, same direction as
     # Q[3,3] above and for the same reason (the car must be able to steer
     # fast enough to hit the tighter lateral/heading targets); higher on
     # straights to discourage hunting.
-    rrate_steer_straight: float = field(default=2.0, metadata={"unit": "1/(rad/s)^2", "desc": "R_rate[0,0] on a clear straight (corner_frac=0)"})
-    rrate_steer_corner: float = field(default=1.25, metadata={"unit": "1/(rad/s)^2", "desc": "R_rate[0,0] at full corner (corner_frac=1)"})
+    rrate_steer_straight: float = field(default=2.0, metadata={"unit": "1/(rad/s)^2", "desc": "R_rate[0,0] on a clear straight (corner_frac=0)", "controller": "ltv_qp_only"})
+    rrate_steer_corner: float = field(default=1.25, metadata={"unit": "1/(rad/s)^2", "desc": "R_rate[0,0] at full corner (corner_frac=1)", "controller": "ltv_qp_only"})
 
     # R[0,0] (steering effort): a SPECIAL case, blended toward a MIDDLE
     # value rather than the same corner-floor extreme as R_rate/Q[3,3] --
@@ -138,7 +138,7 @@ class MPCParams:
     # relaxed floor around 0.9 -- i.e. relaxed vs. the (speed-scaled)
     # straight value, but clamped above where R_rate/Q[3,3] bottom out, not
     # all the way down with them.
-    r_steer_corner_mid: float = field(default=1.35, metadata={"unit": "1/rad^2", "desc": "R[0,0] blend target at full corner (corner_frac=1) -- a MIDDLE value, not the same low extreme as R_rate/Q[3,3]"})
+    r_steer_corner_mid: float = field(default=1.35, metadata={"unit": "1/rad^2", "desc": "R[0,0] blend target at full corner (corner_frac=1) -- a MIDDLE value, not the same low extreme as R_rate/Q[3,3]", "controller": "ltv_qp_only"})
 
     # ── Low-speed-in-corner extra boost ──────────────────────────────────
     # A corner-GATED mechanism -- unlike a speed-only gate, this is
@@ -147,8 +147,8 @@ class MPCParams:
     # any straight regardless of speed -- "be able to turn even more at low
     # speed during turning" per the user's own framing, not "penalise
     # steering rate whenever slow".
-    low_speed_corner_boost_v_half: float = field(default=4.0, metadata={"unit": "m/s", "desc": "speed at which the low-speed corner boost has decayed to half its max_extra"})
-    low_speed_corner_boost_max_extra: float = field(default=0.3, metadata={"unit": "unitless", "desc": "max extra corner_frac added at car_speed=0, fully inside a corner"})
+    low_speed_corner_boost_v_half: float = field(default=4.0, metadata={"unit": "m/s", "desc": "speed at which the low-speed corner boost has decayed to half its max_extra", "controller": "ltv_qp_only"})
+    low_speed_corner_boost_max_extra: float = field(default=0.3, metadata={"unit": "unitless", "desc": "max extra corner_frac added at car_speed=0, fully inside a corner", "controller": "ltv_qp_only"})
 
     # ── Heading-error-driven accel/brake asymmetry ───────────────────────
     # Always-on, independent of the corner-factor scheduler above: scales
@@ -156,9 +156,9 @@ class MPCParams:
     # (x0[2]) -- see mpc_core.py's compute() for the exact blend. Not
     # gain-scheduled off a forward scan; purely reactive to the car's own
     # current heading error.
-    epsi_ra_half_rad: float = field(default=math.radians(10.0), metadata={"unit": "rad", "desc": "|e_psi| at which the accel/brake asymmetry reaches half its max effect"})
-    epsi_ra_accel_boost_max: float = field(default=2.0, metadata={"unit": "unitless", "desc": "max multiplier on r_a_accel (more expensive to accelerate) at large |e_psi|"})
-    epsi_ra_brake_floor: float = field(default=0.5, metadata={"unit": "unitless", "desc": "min multiplier on r_a_brake (cheaper to brake) at large |e_psi|"})
+    epsi_ra_half_rad: float = field(default=math.radians(10.0), metadata={"unit": "rad", "desc": "|e_psi| at which the accel/brake asymmetry reaches half its max effect", "controller": "ltv_qp_only"})
+    epsi_ra_accel_boost_max: float = field(default=2.0, metadata={"unit": "unitless", "desc": "max multiplier on r_a_accel (more expensive to accelerate) at large |e_psi|", "controller": "ltv_qp_only"})
+    epsi_ra_brake_floor: float = field(default=0.5, metadata={"unit": "unitless", "desc": "min multiplier on r_a_brake (cheaper to brake) at large |e_psi|", "controller": "ltv_qp_only"})
 
     # ── NMPC weight overrides (nmpc_core.NMPCController only) ────────────
     # NMPC weight overrides live here; see nmpc_params.py for the
@@ -186,22 +186,23 @@ class MPCParams:
     # NMPC exists to remove. Same slot, different regressor: expect this
     # one to need its own sweep rather than inheriting q_r unchanged. See
     # late_turn_in_investigation.md Part 16 §16.3 choice (1).
-    nmpc_q_e_y: float = field(default=-1.0, metadata={"unit": "1/m^2", "desc": "override q_e_y for the NMPC only (-1 = inherit)"})
-    nmpc_q_e_yd: float = field(default=-1.0, metadata={"unit": "1/(m/s)^2", "desc": "override q_e_yd (-1 = inherit)"})
-    nmpc_q_e_psi: float = field(default=-1.0, metadata={"unit": "1/rad^2", "desc": "override q_e_psi (-1 = inherit)"})
+    nmpc_q_e_y: float = field(default=-1.0, metadata={"unit": "1/m^2", "desc": "override q_e_y for the NMPC only (-1 = inherit)", "controller": "nmpc_only"})
+    nmpc_q_e_yd: float = field(default=-1.0, metadata={"unit": "1/(m/s)^2", "desc": "override q_e_yd (-1 = inherit)", "controller": "nmpc_only"})
+    nmpc_q_e_psi: float = field(default=-1.0, metadata={"unit": "1/rad^2", "desc": "override q_e_psi (-1 = inherit)", "controller": "nmpc_only"})
     nmpc_q_epsi_dot: float = field(default=-1.0, metadata={
         "unit": "1/(rad/s)^2",
         "desc": "override q_r (-1 = inherit). NOTE this weights HEADING-ERROR "
                 "rate (r - kappa*s_dot), not absolute yaw rate — see this "
                 "section's own comment above",
+        "controller": "nmpc_only",
     })
-    nmpc_q_e_v: float = field(default=-1.0, metadata={"unit": "1/(m/s)^2", "desc": "override q_e_v (-1 = inherit)"})
-    nmpc_r_delta: float = field(default=-1.0, metadata={"unit": "1/rad^2", "desc": "override r_delta (-1 = inherit)"})
-    nmpc_r_a_accel: float = field(default=-1.0, metadata={"unit": "1/(m/s^2)^2", "desc": "override r_a_accel (-1 = inherit)"})
-    nmpc_r_a_brake: float = field(default=-1.0, metadata={"unit": "1/(m/s^2)^2", "desc": "override r_a_brake (-1 = inherit)"})
-    nmpc_r_rate_delta: float = field(default=-1.0, metadata={"unit": "1/rad^2", "desc": "override r_rate_delta (-1 = inherit)"})
-    nmpc_r_rate_a: float = field(default=-1.0, metadata={"unit": "1/(m/s^2)^2", "desc": "override r_rate_a (-1 = inherit)"})
-    nmpc_terminal_scale: float = field(default=-1.0, metadata={"unit": "unitless", "desc": "override terminal_q_scale (-1 = inherit)"})
+    nmpc_q_e_v: float = field(default=-1.0, metadata={"unit": "1/(m/s)^2", "desc": "override q_e_v (-1 = inherit)", "controller": "nmpc_only"})
+    nmpc_r_delta: float = field(default=-1.0, metadata={"unit": "1/rad^2", "desc": "override r_delta (-1 = inherit)", "controller": "nmpc_only"})
+    nmpc_r_a_accel: float = field(default=-1.0, metadata={"unit": "1/(m/s^2)^2", "desc": "override r_a_accel (-1 = inherit)", "controller": "nmpc_only"})
+    nmpc_r_a_brake: float = field(default=-1.0, metadata={"unit": "1/(m/s^2)^2", "desc": "override r_a_brake (-1 = inherit)", "controller": "nmpc_only"})
+    nmpc_r_rate_delta: float = field(default=-1.0, metadata={"unit": "1/rad^2", "desc": "override r_rate_delta (-1 = inherit)", "controller": "nmpc_only"})
+    nmpc_r_rate_a: float = field(default=-1.0, metadata={"unit": "1/(m/s^2)^2", "desc": "override r_rate_a (-1 = inherit)", "controller": "nmpc_only"})
+    nmpc_terminal_scale: float = field(default=-1.0, metadata={"unit": "unitless", "desc": "override terminal_q_scale (-1 = inherit)", "controller": "nmpc_only"})
 
 
 DEFAULT_MPC_PARAMS = MPCParams()

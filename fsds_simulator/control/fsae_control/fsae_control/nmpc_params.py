@@ -63,6 +63,7 @@ class NMPCParams:
         "unit": "bool",
         "desc": "true -> use nmpc_core.NMPCController (Frenet-frame nonlinear MPC) "
                 "instead of mpc_core.MPCController (LTV-QP). Default false.",
+        "controller": "nmpc_only",
     })
 
     # ── Horizon / real-time budget ──────────────────────────────────────
@@ -79,6 +80,7 @@ class NMPCParams:
         "unit": "steps",
         "desc": "prediction horizon in steps (20 * dt=0.05 = 1.0 s). "
                 "See Part 16 §16.7 for the horizon choice.",
+        "controller": "nmpc_only",
     })
     # 1, not 2 — see §16.7. A single Gauss-Newton iteration per tick is the
     # standard real-time-iteration scheme — the warm start carries
@@ -90,18 +92,21 @@ class NMPCParams:
                 "iteration style: the previous tick's shifted solution is the "
                 "warm start, so one iteration per tick still converges across "
                 "ticks). See Part 16 §16.7 for the iteration-count choice.",
+        "controller": "nmpc_only",
     })
     nmpc_solve_budget_ms: float = field(default=25.0, metadata={
         "unit": "ms",
         "desc": "wall-clock budget per tick; SQP stops early (shipping the best "
                 "feasible iterate) once exceeded. Half of the 50 ms control "
                 "period, leaving the rest of the tick for the node",
+        "controller": "nmpc_only",
     })
     nmpc_rk_substeps: int = field(default=2, metadata={
         "unit": "substeps",
         "desc": "RK4 substeps per dt in the prediction rollout. 2 is needed "
                 "because tau_a=0.02 s is stiff against dt=0.05 s (lambda*dt = "
                 "-2.5, near RK4's real-axis stability edge)",
+        "controller": "nmpc_only",
     })
 
     nmpc_jac_substeps: int = field(default=1, metadata={
@@ -111,6 +116,7 @@ class NMPCParams:
                 "these only set the SQP STEP DIRECTION, never the predicted "
                 "trajectory, and this is the dominant cost per iteration "
                 "(see nmpc_core._jacobians)",
+        "controller": "nmpc_only",
     })
 
     # ── SQP step control ────────────────────────────────────────────────
@@ -119,16 +125,19 @@ class NMPCParams:
         "desc": "per-iteration trust region on each stage's steering deviation. "
                 "9 deg = MPCController's own du_max steering slew per tick "
                 "(180 deg/s * 0.05 s) — reused, not invented",
+        "controller": "nmpc_only",
     })
     nmpc_trust_a: float = field(default=0.6, metadata={
         "unit": "m/s^2",
         "desc": "per-iteration trust region on each stage's accel deviation. "
                 "0.6 = MPCController's du_max[1] — reused, not invented",
+        "controller": "nmpc_only",
     })
     nmpc_backtrack_max: int = field(default=2, metadata={
         "unit": "halvings",
         "desc": "max step halvings if a full SQP step increases the true "
                 "nonlinear cost (divergence guard). 0 disables backtracking",
+        "controller": "nmpc_only",
     })
 
     # ── Soft track constraint (mirrors MPCController's own) ─────────────
@@ -137,11 +146,13 @@ class NMPCParams:
         "desc": "soft |e_y| bound with slack, copied from _build_qp's existing "
                 "+-3.5 m literal. <=0 removes the constraint (and its slack "
                 "variables) entirely",
+        "controller": "nmpc_only",
     })
     nmpc_slack_weight: float = field(default=10000.0, metadata={
         "unit": "1/m^2",
         "desc": "penalty on the track-bound slack, copied from _build_qp's "
                 "existing W_slack = 10000.0",
+        "controller": "nmpc_only",
     })
 
     # ── Curvature reference construction ────────────────────────────────
@@ -154,11 +165,13 @@ class NMPCParams:
         "unit": "m",
         "desc": "arc-length resampling step for the kappa(s) reference "
                 "(= curvature_speed()'s dense_step)",
+        "controller": "nmpc_only",
     })
     nmpc_curvature_smooth_w: int = field(default=3, metadata={
         "unit": "samples",
         "desc": "moving-average width applied before differencing headings "
                 "(= curvature_speed()'s w). 1 disables smoothing",
+        "controller": "nmpc_only",
     })
     nmpc_kappa_clip: float = field(default=0.5, metadata={
         "unit": "1/m",
@@ -166,6 +179,7 @@ class NMPCParams:
                 "2 m radius, the tightest corner curvature_speed()'s own "
                 "docstring contemplates, so it is inert on any real track "
                 "line and only catches a degenerate/spiking path",
+        "controller": "nmpc_only",
     })
 
     nmpc_alat_ceiling_enabled: bool = field(default=True, metadata={
@@ -176,6 +190,7 @@ class NMPCParams:
                 "prediction's tyre forces. True is correct for FSDS; set False "
                 "for real-vehicle work, mirroring "
                 "model/vehicle_physics.VehicleParams.alat_ceiling_enabled",
+        "controller": "nmpc_only",
     })
 
     # ── Path reference construction ─────────────────────────────────────
@@ -190,6 +205,7 @@ class NMPCParams:
                 "new solver coupling, so it defaults on -- unlike every other "
                 "flag in this file. False restores the old moving-average "
                 "path exactly (kept, not deleted), for A/B comparison",
+        "controller": "nmpc_only",
     })
 
     # ── Horizon speed profile (EXPERIMENTAL, default off) ────────────────
@@ -206,6 +222,7 @@ class NMPCParams:
                 "supplied at PathReference construction time -- otherwise "
                 "this flag is a no-op and v_ref stays the frozen scalar. "
                 "Default False: genuine experiment, not yet validated",
+        "controller": "nmpc_only",
     })
 
     # ── Friction-circle hard constraint (EXPERIMENTAL, default off) ──────
@@ -224,6 +241,7 @@ class NMPCParams:
                 "_output_jacobians/_solve_step produce IDENTICAL output "
                 "(including array shapes) to before this feature existed. "
                 "Default False: genuine experiment, not yet validated",
+        "controller": "nmpc_only",
     })
 
     # ── Solver tolerance ────────────────────────────────────────────────
@@ -236,6 +254,7 @@ class NMPCParams:
                 "next tick rather than blow the 50 ms control period (an "
                 "uncapped version spent up to 90 ms in single ticks — Part 16 "
                 "§16.7)",
+        "controller": "nmpc_only",
     })
     nmpc_osqp_eps: float = field(default=1e-4, metadata={
         "unit": "unitless",
@@ -243,6 +262,7 @@ class NMPCParams:
                 "MPCController's 1e-5 on purpose: an SQP subproblem is a STEP "
                 "direction that the next iteration corrects, not the final "
                 "answer, so sub-1e-4 accuracy buys nothing and costs iterations",
+        "controller": "nmpc_only",
     })
 
 

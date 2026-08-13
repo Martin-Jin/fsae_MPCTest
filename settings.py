@@ -35,7 +35,7 @@ from sim.sim_track import TRACK_HALF_WIDTH
 #     weights tuned here won't behave the same on the real car.
 N_HORIZON = 35
 
-# TERMINAL_Q_SCALE — "How much extra does the controller care about where it
+# [shared] TERMINAL_Q_SCALE — "How much extra does the controller care about where it
 # ends up at the very end of its plan, compared to every other step?"
 # With no terminal cost or constraint, the MPC has exactly the same incentive
 # to track well at the last predicted step as at every other step, and no
@@ -360,7 +360,7 @@ PLANNER_LOOK_RADIUS = 25.0      # m; omni-directional cone-map crop radius
 PLANNER_PLAN_HORIZON = 25.0     # m; arc-length the published centreline is clamped to
 PLANNER_PATH_BLEND = 0.4        # 0<a<=1; temporal EMA weight toward each freshly-planned path
 
-# REF_HEADING_RISE_RATE — "How fast is the planner's steering target allowed
+# [LTV-QP only] REF_HEADING_RISE_RATE — "How fast is the planner's steering target allowed
 # to swing before we start holding it back?"
 # The planner's published centreline can point further into an upcoming
 # corner than the car has actually turned yet ("anticipating" a corner
@@ -382,7 +382,7 @@ PLANNER_PATH_BLEND = 0.4        # 0<a<=1; temporal EMA weight toward each freshl
 REF_HEADING_RATE_LIMIT_ENABLED = False
 REF_HEADING_RISE_RATE = 90.0   # deg/s — only used when the flag above is True
 
-# ADAPTIVE_Q_SCALING_ENABLED — "Should the controller relax its lateral-error
+# [LTV-QP only] ADAPTIVE_Q_SCALING_ENABLED — "Should the controller relax its lateral-error
 # penalty when it's already close to the centreline, to stop small-error
 # hunting?" See controller/model_utils.py::adaptive_Q_scaling for the full
 # mechanism. Not reproduced on the offline recorded-map rollout as currently
@@ -392,7 +392,7 @@ REF_HEADING_RISE_RATE = 90.0   # deg/s — only used when the flag above is True
 # re-tuning around this.
 ADAPTIVE_Q_SCALING_ENABLED = True
 
-# STEER_RATE_ANTI_HUNT_ENABLED — TEMPORARY/EXPERIMENTAL, fsds sim only.
+# [LTV-QP only] STEER_RATE_ANTI_HUNT_ENABLED — TEMPORARY/EXPERIMENTAL, fsds sim only.
 # Heavily penalises steering-rate-of-change on top of adaptive_R_rate's
 # existing curvature softening, but only when the car is already centred
 # (|e_y| small) AND not currently curving (kappa small) -- see
@@ -404,7 +404,7 @@ ADAPTIVE_Q_SCALING_ENABLED = True
 # Kept enabled to match the live controller.
 STEER_RATE_ANTI_HUNT_ENABLED = True
 
-# ADAPTIVE_R_RATE_ENABLE_IN_CORNERS — TEMPORARY/EXPERIMENTAL, fsds sim only.
+# [LTV-QP only] ADAPTIVE_R_RATE_ENABLE_IN_CORNERS — TEMPORARY/EXPERIMENTAL, fsds sim only.
 # (Renamed from ADAPTIVE_R_RATE_DISABLE_IN_CORNERS, whose True/False
 # polarity was inverted from what the name suggested.) adaptive_R_rate
 # (above STEER_RATE_ANTI_HUNT_ENABLED's mechanism, see
@@ -447,7 +447,7 @@ ADAPTIVE_R_RATE_ENABLE_IN_CORNERS = True
 # low-speed turn-in from unwanted post-exit wobble).
 
 # ── Current-state corner-factor scheduler ────────────────────────────────────
-# _corner_factor(kappa, CORNER_FACTOR_K) is a single continuous 0 (straight)
+# [LTV-QP only] _corner_factor(kappa, CORNER_FACTOR_K) is a single continuous 0 (straight)
 # -> 1 (full corner) curve of CURRENT |kappa| only -- no forward scan,
 # symmetric on entry/exit. k=8.0 matches the deleted lookahead mechanisms'
 # own default sharpness (8.0) -- same curve shape, now applied to the
@@ -455,7 +455,7 @@ ADAPTIVE_R_RATE_ENABLE_IN_CORNERS = True
 # MPCParams.corner_factor_k.
 CORNER_FACTOR_K = 8.0
 
-# Q[0,0] (e_y) / Q[2,2] (e_psi) / Q[3,3] (r) / R_rate[0,0] straight/corner
+# [LTV-QP only] Q[0,0] (e_y) / Q[2,2] (e_psi) / Q[3,3] (r) / R_rate[0,0] straight/corner
 # blend endpoints, and R[0,0]'s special MIDDLE blend target -- see
 # mpc_core.py's compute() for the exact _blend() wiring these feed. Q[3,3]/
 # R_rate[0,0] RELAX in-corner (corner value LOWER than straight) so the MPC
@@ -476,7 +476,7 @@ RRATE_STEER_CORNER = 1.25
 R_STEER_CORNER_MID = 1.35
 
 # ── Low-speed-in-corner extra boost ──────────────────────────────────────────
-# A NEW, corner-GATED mechanism -- distinct from the removed
+# [LTV-QP only] A NEW, corner-GATED mechanism -- distinct from the removed
 # LOW_SPEED_STEER_RATE_BOOST_* (which fired on speed ALONE with no way to
 # tell wanted low-speed turn-in from unwanted post-exit wobble). This only
 # ever adds to corner_frac (see model_utils._low_speed_corner_boost), so it
@@ -487,7 +487,7 @@ LOW_SPEED_CORNER_BOOST_V_HALF = 4.0
 LOW_SPEED_CORNER_BOOST_MAX_EXTRA = 0.3
 
 # ── Heading-error-driven accel/brake asymmetry ───────────────────────────────
-# Always-on, independent of the corner-factor scheduler above: scales
+# [LTV-QP only] Always-on, independent of the corner-factor scheduler above: scales
 # R_A_ACCEL/R_A_BRAKE (below) by a continuous 0->1 fraction of CURRENT
 # |e_psi| -- see mpc_core.py's compute() for the exact blend. Not
 # gain-scheduled off a forward scan; purely reactive to the car's own
@@ -513,12 +513,15 @@ EPSI_RA_BRAKE_FLOOR = 0.5
 # by no more than 20-30% at a time and re-test — small changes can have
 # surprisingly large effects because they interact with each other.
 #
-# Q_diag index -> state penalised (see bicycle_model.py's STATE VECTOR comment
+# [shared] Q_diag index -> state penalised (see bicycle_model.py's STATE VECTOR comment
 # for the full state definitions):
 #   [0] e_y        lateral deviation from path centreline (m)
 #   [1] e_y_dot    rate of change of lateral deviation (m/s)
 #   [2] e_psi      heading error relative to path tangent (rad)
-#   [3] e_psi_dot  yaw rate (rad/s)
+#   [3] e_psi_dot  yaw rate (rad/s). Shared base value the NMPC also reads
+#                  (NMPC_Q_EPSI_DOT below), but under the NMPC it weights
+#                  HEADING-ERROR rate, not absolute yaw rate -- same slot,
+#                  different regressor
 #   [4] e_v        speed error: vx - v_target (m/s)
 #   [5] e_a        unused (always 0.0, kept for structural consistency only)
 #   [6] delta_act  actuator-lagged steering angle (rad) -- always 0.0, no
@@ -533,7 +536,7 @@ EPSI_RA_BRAKE_FLOOR = 0.5
 # phase when re-tuning this.
 # Mirrors mpc_params.py's Q_diag.
 Q_diag      = [6.0, 0.8, 1.65, 0.70, 5.40, 0.0, 0.0, 0.0]
-# R_diag index -> input penalised:
+# [shared] R_diag index -> input penalised:
 #   [0] delta_cmd  steering command effort (rad)
 #   [1] a_cmd      acceleration command effort (m/s^2)
 # R_diag[1]=0.77 is car-tuned toward cheap braking AND acceleration effort.
@@ -562,14 +565,14 @@ Q_diag      = [6.0, 0.8, 1.65, 0.70, 5.40, 0.0, 0.0, 0.0]
 # above) -- the live side's R_A_ACCEL/R_A_BRAKE split (below) is what
 # actually matters for a_cmd's effort cost.
 R_diag      = [1.8, 0.77]
-# R_rate_diag index -> input RATE-OF-CHANGE penalised (tick-to-tick jerk, not
+# [shared] R_rate_diag index -> input RATE-OF-CHANGE penalised (tick-to-tick jerk, not
 # the input itself):
 #   [0] delta_cmd  steering rate of change
 #   [1] a_cmd      acceleration rate of change
 # Mirrors mpc_params.py's R_rate_diag.
 R_rate_diag = [2.5, 2.25]
 
-# R_A_ACCEL / R_A_BRAKE — separate effort weights for acceleration and
+# [shared] R_A_ACCEL / R_A_BRAKE — separate effort weights for acceleration and
 # braking. solve_mpc()'s a_cmd effort cost is r_a_accel*pos(a_cmd)^2 +
 # r_a_brake*neg(a_cmd)^2 (see controller/optimiser.py), not R_diag[1]*a_cmd^2
 # -- R_diag[1] is read only as the fallback default when a caller omits
@@ -594,7 +597,7 @@ R_A_BRAKE = 0.5
 # ------------------------------------------------------------------------------
 # Nonlinear MPC (NMPC) — a SECOND controller (controller/nmpc_optimiser.py)
 # ------------------------------------------------------------------------------
-# USE_NMPC — "Which controller does the closed-loop rollout actually solve?"
+# [NMPC only] USE_NMPC — "Which controller does the closed-loop rollout actually solve?"
 # False (default) = controller/optimiser.py's solve_mpc(), the linear
 # time-varying QP everything above this section tunes. True =
 # controller/nmpc_optimiser.py's NMPCController, a Frenet-frame NONLINEAR MPC
@@ -624,7 +627,7 @@ R_A_BRAKE = 0.5
 USE_NMPC = False
 
 # ── NMPC weight overrides ────────────────────────────────────────────────
-# -1.0 = inherit the corresponding Q_diag/R_diag/R_rate_diag/TERMINAL_Q_SCALE
+# [NMPC only] -1.0 = inherit the corresponding Q_diag/R_diag/R_rate_diag/TERMINAL_Q_SCALE
 # entry above (the SAME weight set a tuner run passes to run_core_rollout,
 # so a CMA-ES sweep reaches the NMPC's weights exactly the way it reaches
 # the LTV-QP's). Set a real value to diverge only that one weight for the
@@ -650,7 +653,7 @@ NMPC_R_RATE_A    = -1.0
 NMPC_TERMINAL_SCALE = -1.0
 
 # ── Structural / solver settings ─────────────────────────────────────────
-# No LTV-QP counterpart to inherit from (there's no "linear horizon length"
+# [NMPC only] No LTV-QP counterpart to inherit from (there's no "linear horizon length"
 # concept these could default to) -- these are genuine NMPC-only constants,
 # each measured rather than guessed; see the live repo's
 # late_turn_in_investigation.md Part 16 §16.7 for the sweep behind the
@@ -702,7 +705,7 @@ NMPC_ALAT_CEILING_ENABLED = True            # model FSDS's measured sustained a_
                                             # for real-vehicle work where that ceiling doesn't
                                             # exist.
 
-# NMPC_SPLINE_REFERENCE_ENABLED -- True (default): PathReference builds kappa(s)/
+# [NMPC only] NMPC_SPLINE_REFERENCE_ENABLED -- True (default): PathReference builds kappa(s)/
 # psi_ref(s) from an analytic CubicSpline fit to the raw waypoints (x(s), y(s)
 # each independently splined over cumulative arc length), instead of the old
 # dense-resample + moving-average + finite-difference pipeline. A strict
@@ -713,7 +716,7 @@ NMPC_ALAT_CEILING_ENABLED = True            # model FSDS's measured sustained a_
 # regression shows up. False restores the pre-existing behaviour exactly.
 NMPC_SPLINE_REFERENCE_ENABLED = True
 
-# NMPC_HORIZON_SPEED_PROFILE_ENABLED -- False (default, EXPERIMENTAL): sample a
+# [NMPC only] NMPC_HORIZON_SPEED_PROFILE_ENABLED -- False (default, EXPERIMENTAL): sample a
 # precomputed per-lap speed profile v(s) at each horizon stage's own
 # PREDICTED arc length s_k (PathReference.v_ref_at), instead of holding a
 # single scalar v_ref constant across the whole horizon. Mirrors kappa(s)'s
@@ -727,7 +730,7 @@ NMPC_SPLINE_REFERENCE_ENABLED = True
 # scalar as before. NMPC-only; the LTV-QP (mpc_core.py) is untouched.
 NMPC_HORIZON_SPEED_PROFILE_ENABLED = False
 
-# NMPC_FRICTION_CIRCLE_ENABLED -- False (default, EXPERIMENTAL): add a HARD
+# [NMPC only] NMPC_FRICTION_CIRCLE_ENABLED -- False (default, EXPERIMENTAL): add a HARD
 # per-axle |F_yf|/|F_yr| bound to the condensed QP (on top of, not instead
 # of, the existing SOFT alat-ceiling tanh saturation inside _f/_f_scalar --
 # see CLAUDE.md's strong warning against touching that mechanism, which this
@@ -754,7 +757,7 @@ NMPC_FRICTION_CIRCLE_ENABLED = False
 # Mirrors the live side's MPCParams (mpc_params.py) field-for-field; keep the
 # numbers identical across both per CLAUDE.md's planning/control parity rule.
 
-# adaptive_R_rate's softening floor on the steering rate-of-change cost
+# [LTV-QP only] adaptive_R_rate's softening floor on the steering rate-of-change cost
 # R_rate[0,0] — "how much of the rate penalty survives in a corner?" Driven
 # by the car's CURRENT curvature. Raising it means less softening (more
 # damping, but a controller more penalised for the steering rate a corner

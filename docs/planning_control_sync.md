@@ -2832,6 +2832,135 @@ sibling checkout).
 `--break-system-packages`); the SQP and its Jacobians are numpy, and CasADi was
 used once, from a private `--target` install, purely to cross-check the optimum.
 
+### Which settings affect which controller — the full map
+
+Every `MPCParams`/`NMPCParams` field now carries an explicit
+`metadata["controller"]` tag (`"both"`, `"ltv_qp_only"`, or `"nmpc_only"`) —
+see `mpc_params.py`/`nmpc_params.py` themselves for the authoritative
+per-field value; the tables below are a reader-facing summary of the same
+classification, verified against actual usage in `mpc_core.py`/`nmpc_core.py`
+(not inferred from field names). `settings.py` mirrors the same three tags as
+a `[LTV-QP only]`/`[NMPC only]`/`[shared]` prefix on each constant's comment,
+and `ros2/launch_all.sh` tags its two shortlists the same way. See "What is
+inactive when `use_nmpc=true`" above for *why* the LTV-QP-only mechanisms
+don't apply under NMPC — this section only maps *which* fields fall in each
+bucket.
+
+**`MPCParams` base weights — shared, both controllers read them
+(`mpc_params.py:47-67`):**
+
+| Field | Live line | NMPC read site | Notes |
+|---|---|---|---|
+| `q_e_y` | `mpc_params.py:47` | `nmpc_core.py:864` | identical meaning |
+| `q_e_yd` | `mpc_params.py:48` | `nmpc_core.py:865` | identical meaning |
+| `q_e_psi` | `mpc_params.py:49` | `nmpc_core.py:866` | identical meaning |
+| `q_r` | `mpc_params.py:50` | `nmpc_core.py:867` | **meaning differs**: LTV-QP weights absolute yaw rate `r`; NMPC (via `nmpc_q_epsi_dot`'s inherited base) weights heading-error RATE `r - kappa*s_dot`. Same slot, different regressor — see field's own docstring |
+| `q_e_v` | `mpc_params.py:51` | `nmpc_core.py:868` | identical meaning |
+| `r_delta` | `mpc_params.py:53` | `nmpc_core.py:870` | identical meaning |
+| `r_a_accel` | `mpc_params.py:60` | `nmpc_core.py:871` | identical meaning |
+| `r_a_brake` | `mpc_params.py:61` | `nmpc_core.py:872` | identical meaning |
+| `r_rate_delta` | `mpc_params.py:63` | `nmpc_core.py:874` | identical meaning |
+| `r_rate_a` | `mpc_params.py:64` | `nmpc_core.py:875` | identical meaning |
+| `terminal_q_scale` | `mpc_params.py:67` | `nmpc_core.py:877` | identical meaning |
+
+All ten are read by `nmpc_core.py`'s `__init__` through the same `_pick(override,
+inherited)` helper (`nmpc_core.py:859-860`) that resolves each `nmpc_q_*`/
+`nmpc_r_*` override below — a plain launch with every override left at its
+`-1.0` sentinel means the NMPC starts from the LTV-QP's own tuned set exactly.
+
+**`MPCParams` delay-compensation / n_delay fields — shared, both controllers
+read them (`mpc_params.py:73, 80, 84-85`):**
+
+| Field | Live line | NMPC read site |
+|---|---|---|
+| `delay_compensation_enabled` | `mpc_params.py:73` | `nmpc_core.py:1433` |
+| `max_delay_compensation_steps` | `mpc_params.py:80` | `nmpc_core.py:1370,1505-1506` |
+| `pose_age_lp_alpha` | `mpc_params.py:84` | `nmpc_core.py:1376` |
+| `n_delay_hysteresis` | `mpc_params.py:85` | `nmpc_core.py:1378` |
+
+The mechanism itself differs (the NMPC rolls `x0` forward through the
+nonlinear model instead of `predict_ahead()`'s linearisation — `nmpc_core.py`
+comment at line 1430), but all four fields gate/shape it identically on both
+sides. `predict_epsi_clip` (`mpc_params.py:81`) is the one exception in this
+group: it is a small-angle bound specific to `predict_ahead()`'s LINEAR
+rollforward (`mpc_core.py:1182-1184`) and has no NMPC read site — LTV-QP only.
+
+**`MPCParams` adaptive-gain-schedule fields — LTV-QP only
+(`mpc_params.py:70-72, 74, 77, 81, 88, 91, 101-161`):**
+
+None of these have any read site in `nmpc_core.py` (verified by grep, not
+just absence from its docstring) — the entire corner-factor scheduler and
+everything built on it is inert under `use_nmpc=true`, per "What is inactive"
+above.
+
+| Field | Live line |
+|---|---|
+| `adaptive_q_scaling_enabled` | `mpc_params.py:70` |
+| `steer_rate_anti_hunt_enabled` | `mpc_params.py:71` |
+| `adaptive_r_rate_enable_in_corners` | `mpc_params.py:72` |
+| `ref_heading_rate_limit_enabled` | `mpc_params.py:74` |
+| `ref_heading_rise_rate_deg_s` | `mpc_params.py:77` |
+| `predict_epsi_clip` | `mpc_params.py:81` |
+| `adaptive_r_rate_during_floor` | `mpc_params.py:88` |
+| `anti_hunt_boost_max` | `mpc_params.py:91` |
+| `corner_factor_k` | `mpc_params.py:101` |
+| `q_ey_straight` / `q_ey_corner` | `mpc_params.py:108-109` |
+| `q_epsi_straight` / `q_epsi_corner` | `mpc_params.py:113-114` |
+| `q_r_straight` / `q_r_corner` | `mpc_params.py:120-121` |
+| `rrate_steer_straight` / `rrate_steer_corner` | `mpc_params.py:127-128` |
+| `r_steer_corner_mid` | `mpc_params.py:141` |
+| `low_speed_corner_boost_v_half` / `_max_extra` | `mpc_params.py:150-151` |
+| `epsi_ra_half_rad` / `_accel_boost_max` / `_brake_floor` | `mpc_params.py:159-161` |
+
+**`MPCParams` NMPC weight overrides — NMPC only, by construction
+(`mpc_params.py:189-205`):** every `nmpc_q_*`/`nmpc_r_*`/`nmpc_terminal_scale`
+field exists solely to be read by `nmpc_core.py`'s `_pick()` calls
+(`nmpc_core.py:864-877`); `mpc_core.py` never references any of them.
+
+| Field | Live line | Overrides |
+|---|---|---|
+| `nmpc_q_e_y` | `mpc_params.py:189` | `q_e_y` |
+| `nmpc_q_e_yd` | `mpc_params.py:190` | `q_e_yd` |
+| `nmpc_q_e_psi` | `mpc_params.py:191` | `q_e_psi` |
+| `nmpc_q_epsi_dot` | `mpc_params.py:192` | `q_r` (different regressor — see above) |
+| `nmpc_q_e_v` | `mpc_params.py:199` | `q_e_v` |
+| `nmpc_r_delta` | `mpc_params.py:200` | `r_delta` |
+| `nmpc_r_a_accel` | `mpc_params.py:201` | `r_a_accel` |
+| `nmpc_r_a_brake` | `mpc_params.py:202` | `r_a_brake` |
+| `nmpc_r_rate_delta` | `mpc_params.py:203` | `r_rate_delta` |
+| `nmpc_r_rate_a` | `mpc_params.py:204` | `r_rate_a` |
+| `nmpc_terminal_scale` | `mpc_params.py:205` | `terminal_q_scale` |
+
+**`NMPCParams` — all 20 fields NMPC only, by the file's own design
+(`nmpc_params.py`):** the module docstring states this file holds only
+structural/solver fields with no LTV-QP analogue (`nmpc_params.py:9-19`);
+`mpc_core.py` never imports or reads `NMPCParams` at all. This includes the
+master switch `use_nmpc` itself (`nmpc_params.py:62-66`), horizon/solver
+settings (`nmpc_horizon`, `nmpc_sqp_iters`, `nmpc_solve_budget_ms`,
+`nmpc_rk_substeps`, `nmpc_jac_substeps` — `nmpc_params.py:78-114`), SQP step
+control (`nmpc_trust_delta_rad`, `nmpc_trust_a`, `nmpc_backtrack_max` —
+`nmpc_params.py:117-132`), the soft track constraint
+(`nmpc_track_halfwidth`, `nmpc_slack_weight` — `nmpc_params.py:135-145`),
+curvature-reference construction (`nmpc_curvature_dense_step`,
+`nmpc_curvature_smooth_w`, `nmpc_kappa_clip` — `nmpc_params.py:153-169`),
+`nmpc_alat_ceiling_enabled` (`nmpc_params.py:171-179`), the three
+MPCC-inspired flags documented in the subsection immediately below
+(`nmpc_spline_reference_enabled`, `nmpc_horizon_speed_profile_enabled`,
+`nmpc_friction_circle_enabled` — `nmpc_params.py:182-227`), and solver
+tolerances (`nmpc_osqp_max_iter`, `nmpc_osqp_eps` — `nmpc_params.py:230-246`).
+
+**`settings.py`-only flags with no dataclass field (offline side only,
+LTV-QP-adjacent but not part of `MPCParams`/`NMPCParams`'s own field list):**
+`USE_PRECOMPUTED_SPEED_PROFILE`, `ENABLE_DYNAMIC_SPEED_CAP` and its
+`DYNAMIC_CAP_*` shape constants, `DELAY_STEPS`/`DELAY_JITTER_*`,
+`ALAT_CEILING_FLAT`/`_SLOPE`/`_INTERCEPT` (a plant-physics constant consumed
+by both controllers' in-prediction ceiling models, not a `MPCParams` field)
+are out of this table's scope — they configure the ROLLOUT/PLANT, not
+`MPCController`/`NMPCController` directly. `settings.py`'s own
+`[LTV-QP only]`/`[NMPC only]`/`[shared]` comment tags cover only the
+constants that DO have a dataclass-field counterpart, consistent with this
+table.
+
 ### Three MPCC-inspired additions to the NMPC (added 2026-08-13)
 
 Prompted by a comparison against Alexander Liniger's Model Predictive
