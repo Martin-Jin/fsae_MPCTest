@@ -29,11 +29,15 @@ Usage
 -----
     python -m tuner.tools.plot_playback <control_csv> [<control_csv> ...]
 
-    # no CSV given -> auto-load and overlay every run in RECORDED_RUNS_DIR
-    # (fsds_simulator/recorded_runs/ -- see that constant below)
+    # no CSV given -> auto-load the newest run from each subfolder of
+    # RECORDED_RUNS_DIR (fsds_simulator/recorded_runs/ -- see that constant
+    # below), e.g. one from LMPC/, one from NMPC/, one from Stanley/
     python -m tuner.tools.plot_playback
 
-    # no CSV given, but only want the newest run
+    # no CSV given, but want every run in every subfolder overlaid
+    python -m tuner.tools.plot_playback --all
+
+    # no CSV given, but only want the single newest run overall
     python -m tuner.tools.plot_playback --latest-only
 
     # overlay two explicit runs -- each gets its own colour, signal lines,
@@ -61,7 +65,7 @@ import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.widgets import CheckButtons, Slider
+from matplotlib.widgets import CheckButtons, RadioButtons, Slider
 
 from tuner import csv_log
 
@@ -78,44 +82,65 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(_HERE))
 RECORDED_RUNS_DIR = os.path.join(_REPO_ROOT, 'fsds_simulator', 'recorded_runs')
 
 
+def _find_control_csvs(log_dir):
+    """Return every `*_control_<epoch>.csv` directly in or under `log_dir`.
+
+    Recurses one or more levels so per-controller subfolders (e.g.
+    `recorded_runs/LMPC/`, `recorded_runs/NMPC/`, `recorded_runs/Stanley/`)
+    are picked up alongside anything left flat in `log_dir` itself.
+    """
+    return glob.glob(os.path.join(log_dir, '**', '*_control_*.csv'), recursive=True)
+
+
+def _stamp(path):
+    name = os.path.splitext(os.path.basename(path))[0]
+    try:
+        return int(name.rsplit('_control_', 1)[1])
+    except (IndexError, ValueError):
+        return -1
+
+
 def find_latest_log(log_dir=RECORDED_RUNS_DIR):
-    """Return the most recently recorded `*_control_<epoch>.csv` in `log_dir`.
+    """Return the most recently recorded `*_control_<epoch>.csv` under `log_dir`.
 
     Sorts on the numeric epoch-seconds suffix ControlLogger stamps each
     filename with (see telemetry_logger.py's `stamp = int(time.time())`),
     not lexicographic filename order, so it's correct even if `tag` differs
     in length between runs (e.g. 'mpc_standalone' vs 'stanley').
     """
-    candidates = glob.glob(os.path.join(log_dir, '*_control_*.csv'))
+    candidates = _find_control_csvs(log_dir)
     if not candidates:
         return None
-
-    def _stamp(path):
-        name = os.path.splitext(os.path.basename(path))[0]
-        try:
-            return int(name.rsplit('_control_', 1)[1])
-        except (IndexError, ValueError):
-            return -1
-
     return max(candidates, key=_stamp)
 
 
+def find_latest_per_folder(log_dir=RECORDED_RUNS_DIR):
+    """Return the newest `*_control_<epoch>.csv` from each immediate
+    subfolder of `log_dir` (e.g. one from `LMPC/`, one from `NMPC/`, one
+    from `Stanley/`), oldest-newest first. Runs left flat directly in
+    `log_dir` (not in any subfolder) are grouped together as one "folder".
+
+    This is what `--latest-only` uses, since with per-controller subfolders
+    the useful "latest" comparison is one representative run per
+    controller, not just the single most recent file across all of them
+    (which could leave every other controller unrepresented).
+    """
+    candidates = _find_control_csvs(log_dir)
+    by_folder = {}
+    for path in candidates:
+        folder = os.path.dirname(os.path.abspath(path))
+        if _stamp(path) > _stamp(by_folder.get(folder, '')):
+            by_folder[folder] = path
+    return sorted(by_folder.values(), key=_stamp)
+
+
 def find_all_logs(log_dir=RECORDED_RUNS_DIR):
-    """Return every `*_control_<epoch>.csv` in `log_dir`, oldest first.
+    """Return every `*_control_<epoch>.csv` under `log_dir`, oldest first.
 
     Same stamp-based ordering as `find_latest_log`, so multiple runs overlay
     in the order they were recorded rather than filename order.
     """
-    candidates = glob.glob(os.path.join(log_dir, '*_control_*.csv'))
-
-    def _stamp(path):
-        name = os.path.splitext(os.path.basename(path))[0]
-        try:
-            return int(name.rsplit('_control_', 1)[1])
-        except (IndexError, ValueError):
-            return -1
-
-    return sorted(candidates, key=_stamp)
+    return sorted(_find_control_csvs(log_dir), key=_stamp)
 
 # Signals not literally a CSV column, built from two columns that are.
 # {name: (col_a, col_b, label)} -> plotted as two lines sharing one row.
@@ -156,15 +181,17 @@ def load_log(path):
 
 
 def _label_for(path, meta):
-    tag = os.path.basename(path).split('_control_')[0]
-    score = meta.get('composite_score')
-    lap = meta.get('lap_time_s')
-    extra = []
-    if score is not None:
-        extra.append(f'score={float(score):.3f}')
-    if lap is not None:
-        extra.append(f'lap={float(lap):.1f}s')
-    return f"{tag} ({', '.join(extra)})" if extra else tag
+    """Short label for a run: its `recorded_runs/<folder>/` name if it's in
+    one (e.g. 'LMPC', 'NMPC', 'Stanley' -- the real signal for which
+    controller produced it, since `tag` is often shared between controllers,
+    e.g. both LMPC and NMPC logs use 'mpc_standalone'), else the filename
+    tag. Kept short deliberately (no score/lap suffix) since it's reused
+    verbatim as a checkbox/radio-button/legend label.
+    """
+    parent = os.path.basename(os.path.dirname(os.path.abspath(path)))
+    if parent and parent != os.path.basename(os.path.abspath(RECORDED_RUNS_DIR)):
+        return parent
+    return os.path.basename(path).split('_control_')[0]
 
 
 CAR_TRIANGLE = np.array([
@@ -307,14 +334,31 @@ class Playback:
             _Run(path, COLORS[i % len(COLORS)])
             for i, path in enumerate(control_csvs)
         ]
+        self._dedupe_labels()
         # Shared "now" ranges over the union of every run's time span, so
         # the slider can always reach the start/end of the longest run.
         self.t_min = min(run.t[0] for run in self.runs)
         self.t_max = max(run.t[-1] for run in self.runs)
 
+        self.focus_idx = 0  # index into self.runs the zoom view tracks
+
         self._build_figure()
         self._draw_static()
         self._update(self.t_min)
+
+    def _dedupe_labels(self):
+        """Suffix ` #2`, ` #3`, ... onto labels shared by multiple runs.
+
+        Folder-based labels (e.g. two 'LMPC' runs recorded at different
+        times) collide by design -- checkboxes/radio buttons/legends all key
+        off `run.label`, so duplicates must be told apart for those lookups
+        to resolve the right run.
+        """
+        seen = {}
+        for run in self.runs:
+            seen[run.label] = seen.get(run.label, 0) + 1
+            if seen[run.label] > 1:
+                run.label = f'{run.label} #{seen[run.label]}'
 
     # ------------------------------------------------------------------
     # Layout
@@ -413,12 +457,43 @@ class Playback:
         self.slider.on_changed(self._on_slide)
 
         self._build_checkboxes()
+        self._build_focus_selector()
+
+    def _build_focus_selector(self):
+        """Radio buttons choosing which run the zoom view (bottom right)
+        tracks. Only useful with 2+ runs -- with one run there's nothing to
+        switch between.
+        """
+        if len(self.runs) < 2:
+            return
+        height = 0.1 * len(self.runs)
+        radio_ax = self.fig.add_axes([0.005, 0.06, 0.08, height])
+        radio_ax.set_xticks([])
+        radio_ax.set_yticks([])
+        radio_ax.set_title('Zoom focus', fontsize=7)
+        labels = [run.label for run in self.runs]
+        self.focus_radio = RadioButtons(radio_ax, labels, active=self.focus_idx)
+        colors = [run.color for run in self.runs]
+        for label, color in zip(self.focus_radio.labels, colors):
+            label.set_color(color)
+
+        def _on_focus(label):
+            self.focus_idx = next(i for i, r in enumerate(self.runs) if r.label == label)
+            self._update(self.slider.val)
+            self.fig.canvas.draw_idle()
+
+        self.focus_radio.on_clicked(_on_focus)
 
     def _build_checkboxes(self):
         if len(self.runs) < 2:
             return  # nothing to disambiguate with a single run
-        check_ax = self.fig.add_axes([0.005, 0.4, 0.08, 0.12 * len(self.runs)])
-        check_ax.set_axis_off()
+        radio_height = 0.1 * len(self.runs)
+        check_height = 0.12 * len(self.runs)
+        check_ax = self.fig.add_axes(
+            [0.005, 0.06 + radio_height + 0.06, 0.08, check_height])
+        check_ax.set_xticks([])
+        check_ax.set_yticks([])
+        check_ax.set_title('Show/hide', fontsize=7)
         labels = [run.label for run in self.runs]
         self.checks = CheckButtons(check_ax, labels, [True] * len(labels))
         colors = [run.color for run in self.runs]
@@ -487,10 +562,10 @@ class Playback:
                 run.cols['car_x'][:i + 1], run.cols['car_y'][:i + 1],
             )
 
-        # Zoom on the primary (first) run's car position -- with multiple
-        # runs this keeps the zoomed section anchored to one consistent car
-        # rather than jumping between them.
-        primary = self.runs[0]
+        # Zoom on the focused run's car position (default: first run; pick
+        # another via the radio buttons) -- keeps the zoomed section
+        # anchored to one consistent car rather than jumping between them.
+        primary = self.runs[self.focus_idx]
         i0 = primary.index_for_time(t_now)
         car_x, car_y = primary.cols['car_x'][i0], primary.cols['car_y'][i0]
         self.zoom_ax.set_xlim(car_x - ZOOM_HALF_WIDTH_M, car_x + ZOOM_HALF_WIDTH_M)
@@ -498,8 +573,9 @@ class Playback:
 
         e_y = primary.cols['e_y'][i0] if 'e_y' in primary.cols else float('nan')
         e_psi = primary.cols['e_psi_deg'][i0] if 'e_psi_deg' in primary.cols else float('nan')
+        focus_tag = f' [{primary.label}]' if len(self.runs) > 1 else ''
         self.zoom_ax.set_title(
-            f'Current section (zoomed) — e_y={e_y:.2f} m, e_psi={e_psi:.1f}°',
+            f'Current section (zoomed){focus_tag} — e_y={e_y:.2f} m, e_psi={e_psi:.1f}°',
             fontsize=9,
         )
 
@@ -511,17 +587,22 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('logs', nargs='*',
-                     help='control telemetry CSV(s). Omit to auto-load every run in '
-                          f'{RECORDED_RUNS_DIR} (or just the newest with --latest-only)')
+                     help='control telemetry CSV(s). Omit to auto-load the newest run '
+                          f'from each subfolder of {RECORDED_RUNS_DIR} (e.g. one from '
+                          'LMPC/, one from NMPC/, one from Stanley/ -- see --all/'
+                          '--latest-only for other auto-load modes)')
     ap.add_argument('--signals', default=None,
                      help=f'comma-separated column names for the left panel '
                           f'(default: {",".join(DEFAULT_SIGNALS)})')
     ap.add_argument('--recorded-runs', default=RECORDED_RUNS_DIR,
                      help='directory to auto-search when no CSV is given '
                           f'(default: {RECORDED_RUNS_DIR})')
+    ap.add_argument('--all', action='store_true',
+                     help='when no CSV is given, load every run in --recorded-runs '
+                          'instead of just the newest per subfolder')
     ap.add_argument('--latest-only', action='store_true',
-                     help='when no CSV is given, load only the newest run instead of '
-                          'overlaying every run in --recorded-runs')
+                     help='when no CSV is given, load only the single newest run '
+                          'across all of --recorded-runs (overrides --all)')
     args = ap.parse_args()
 
     logs = args.logs
@@ -529,8 +610,10 @@ def main():
         if args.latest_only:
             latest = find_latest_log(args.recorded_runs)
             logs = [latest] if latest is not None else []
-        else:
+        elif args.all:
             logs = find_all_logs(args.recorded_runs)
+        else:
+            logs = find_latest_per_folder(args.recorded_runs)
         if not logs:
             sys.exit(f'No *_control_*.csv found in {args.recorded_runs} and no CSV '
                       'path was given. Copy a log there, or pass one explicitly:\n'

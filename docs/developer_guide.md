@@ -714,8 +714,8 @@ missing from a given log (e.g. the `m_Q_*`/`m_R_*` adaptive-weight columns,
 `solve_ms`, on a Stanley run) is skipped for that run with a warning rather
 than plotting an empty line — runs don't need identical columns to overlay
 the ones they share. The figure title and each line's legend label include
-the run's tag and, when present in the header, `composite_score`/
-`lap_time_s`, so a comparison plot is self-labelled without cross-referencing
+the run's short label (its controller subfolder name, e.g. `LMPC`/`NMPC`/
+`Stanley`), so a comparison plot is self-labelled without cross-referencing
 the raw CSV.
 
 Each run's sibling `<tag>_path_<stamp>.csv` (same directory, same timestamp,
@@ -733,27 +733,44 @@ independently looks up its own nearest sample, so mismatched logs still
 overlay correctly.
 
 **Auto-search folder: `fsds_simulator/recorded_runs/`.** Running the script
-with no CSV argument searches this folder for `*_control_*.csv` files and
-loads and overlays all of them, oldest to newest (by the epoch-seconds
-timestamp `ControlLogger` stamps into the filename, not file mtime) — pass
-`--latest-only` to load just the newest one instead. The folder starts empty (tracked via a
-`.gitkeep`; its CSVs are gitignored, same rationale as the outer FSDS repo's
-`fsae_logs/`) — nothing writes into it automatically yet. A live run's
-actual output location is `log_dir` (default `~/fsae_logs`, or whatever
-`ros2/launch_all.sh`'s `log_dir:=` argument points at, in the outer
-`fsae_planning`-adjacent launch script — outside this repo, not modified by
-this feature), so after a run, copy or move the CSV pair yourself:
+with no CSV argument searches this folder **recursively** for
+`*_control_*.csv` files — including one level of per-controller subfolders,
+e.g. `recorded_runs/LMPC/`, `recorded_runs/NMPC/`, `recorded_runs/Stanley/`
+— by the epoch-seconds timestamp `ControlLogger` stamps into the filename
+(not file mtime). By default it loads just the **newest run from each
+subfolder** (one representative LMPC run, one NMPC run, one Stanley run,
+...; runs left flat directly in `recorded_runs/` are grouped as one
+"folder" for this purpose) — pass `--all` to overlay every run in every
+subfolder instead, or `--latest-only` to load only the single newest run
+across the whole tree (which may leave other controllers unrepresented).
+Each run's plot label is its `recorded_runs/<folder>/` name (e.g. `LMPC`,
+`NMPC`, `Stanley`) rather than the raw filename tag, since the tag alone is
+often ambiguous (both LMPC and NMPC logs use the same `mpc_standalone`
+tag) — runs left flat directly in `recorded_runs/` fall back to the
+filename tag; if a folder has multiple loaded runs (e.g. under `--all`),
+duplicates get a ` #2`, ` #3`, ... suffix. The CSVs under this folder are
+tracked in git (not gitignored) so reference runs for each controller
+travel with the repo. A live run's actual output location is `log_dir`
+(default `~/fsae_logs`, or whatever `ros2/launch_all.sh`'s `log_dir:=` argument points at, in the
+outer `fsae_planning`-adjacent launch script — outside this repo, not
+modified by this feature), so after a run, copy or move the CSV pair into
+the right controller subfolder yourself:
 
 ```bash
 cp ~/fsae_logs/mpc_standalone_control_<ts>.csv \
    ~/fsae_logs/mpc_standalone_path_<ts>.csv \
-   fsds_simulator/recorded_runs/
+   fsds_simulator/recorded_runs/LMPC/
 python -m tuner.tools.plot_playback       # picks up the one you just copied in
 ```
 
 Point the search elsewhere with `--recorded-runs <dir>` (e.g. to auto-load
 straight out of `~/fsae_logs` without copying, or to compare two specific
-takes you keep in their own directories).
+takes you keep in their own directories). When two or more runs are loaded,
+a **"Zoom focus"** radio-button widget appears bottom-left of the figure —
+pick a run there to change which one the bottom-right zoomed view tracks
+(it defaults to the first-loaded run). The separate **"Show/hide"**
+checkbox widget above it toggles each run's visibility everywhere
+(signals, map, zoom) without changing zoom focus.
 
 ### Launching nodes with FSDS on Windows (WSL + Docker)
 
