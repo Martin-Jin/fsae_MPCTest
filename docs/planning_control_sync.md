@@ -3070,13 +3070,55 @@ hard rows only when the flag is on, changing the QP's fixed sparsity pattern
 `_build_qp`/`_outputs`/`_output_jacobians`/`_solve_step` are IDENTICAL —
 same array shapes, same QP dimensions — to before this feature existed, not
 merely "the extra rows are empty." Telemetry exposes
-`nmpc_fyf_max_abs`/`nmpc_fyr_max_abs` only when enabled. Loosely inspired by
-MPCC's friction-ellipse tyre constraints, adapted to bound the same tyre-force
-quantity this NMPC's plant already computes rather than introducing a new
-force model.
+`nmpc_fyf_max_abs`/`nmpc_fyr_max_abs` only when enabled (but see the
+telemetry gap noted below — these never actually reached a CSV column).
+Loosely inspired by MPCC's friction-ellipse tyre constraints, adapted to
+bound the same tyre-force quantity this NMPC's plant already computes rather
+than introducing a new force model.
+
+**LIVE-TESTED 2026-08-13 and REJECTED — much more severely broken than
+feature 2.** Enabled alone (spline reference also on, horizon speed profile
+off) on `comp_test_map_3`, `mpc_standalone_control_1786585910.csv`: the SQP
+subproblem failed to solve (`nmpc_status=0`) on **77.5% of all 614 ticks**,
+steering sat at the mechanical hard lock (±25°) on **30.8% of ticks**
+starting as early as t=0.65s, and the run ended in a full stall — car
+stopped (`v_actual≈0`), 4.94 m off-track, heading error -52°, every column
+frozen tick-for-tick for the final ~1 s of the log. This was enabled with NO
+prior offline A/B (unlike features 1/2), against the explicit caution given
+before testing it live; the result confirms that caution was warranted.
+**Reverted to `false`** in `launch_all.sh` immediately.
+
+Root cause: unlike the soft `tanh` saturation it sits alongside (which only
+engages once *beyond* the ceiling, and is a smooth penalty the solver can
+trade off against), the new hard `|F_yf|,|F_yr| <= F_max` rows have no slack
+variable — there is nothing for the QP to give up if ordinary cornering
+geometry and the force bound conflict simultaneously, which they evidently
+do under completely normal driving on this track, not just extreme
+conditions. When that happens the subproblem goes infeasible, `_solve_step`
+correctly refuses to act on the resulting garbage direction (per its own
+documented safety logic), and the practical effect is the controller
+stops updating its steering command tick after tick — exactly the "pretty
+much doesn't work anymore" symptom observed, compounding into a spin/stall
+as the geometry degrades further with no correction being applied. This
+means `F_max = m * ceiling(v_x) / 2` per axle is measurably **tighter than
+what normal cornering actually needs** on this plant/track, not merely a
+conservative-but-workable bound.
+
+**Bug found alongside this (separate from the rejection above, worth fixing
+regardless of whether this feature is ever revisited):** `nmpc_fyf_max_abs`/
+`nmpc_fyr_max_abs` never actually appeared in the CSV — `telemetry_logger.py`'s
+`NMPC_COLUMNS` is a hand-maintained tuple, unlike `build_config_lines()`'s
+`dataclasses.asdict()`-based config dump, and nobody added the two new field
+names to it when the feature was implemented. This silently dropped exactly
+the diagnostic that would have shown, tick-by-tick, how close to (or over)
+`F_max` the solve was running — the post-mortem above had to rely on
+`nmpc_status`/steering/stall behaviour alone because of this gap. Fix
+`NMPC_COLUMNS` before ever re-attempting this feature.
 
 None of the three has offline A/B numbers yet (feature 1 is a numerical
 improvement to an existing mechanism and is default-on; features 2 and 3 are
-default-off and unvalidated) — reproduce a comparison with
-`python -m tuner.nmpc_offline_check` once one exists. Do not enable 2 or 3
-for a live run without first validating offline.
+default-off, both now live-tested-and-rejected in their current form) —
+reproduce a comparison with `python -m tuner.nmpc_offline_check` once one
+exists. Do not re-enable 2 or 3 without first fixing the identified
+mechanism, adding an offline A/B, and (for feature 3) the missing telemetry
+columns above.

@@ -129,6 +129,13 @@ ADAPTIVE_COLUMNS = (
     'nmpc_pred_ey_end',        # predicted e_y at the end of the horizon (m)
     'nmpc_pred_epsi_end',      # predicted e_psi at the end of the horizon (rad)
     'nmpc_pred_ey_max_abs',    # peak predicted |e_y| anywhere in the horizon (m)
+    # nmpc_friction_circle_enabled only (empty otherwise, same convention as
+    # every other column above) -- added 2026-08-13, missing here for one
+    # live test (mpc_standalone_control_1786585910.csv) that could have used
+    # them to confirm how close to F_max the solve was running; see
+    # planning_control_sync.md's "Three MPCC-inspired additions" section.
+    'nmpc_fyf_max_abs',        # peak |front-axle lateral tyre force| anywhere in the horizon (N)
+    'nmpc_fyr_max_abs',        # peak |rear-axle lateral tyre force| anywhere in the horizon (N)
 )
 
 
