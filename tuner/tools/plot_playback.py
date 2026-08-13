@@ -470,6 +470,9 @@ class Playback:
         radio_ax = self.fig.add_axes([0.005, 0.06, 0.08, height])
         radio_ax.set_xticks([])
         radio_ax.set_yticks([])
+        radio_ax.patch.set_alpha(0)
+        for spine in radio_ax.spines.values():
+            spine.set_visible(False)
         radio_ax.set_title('Zoom focus', fontsize=7)
         labels = [run.label for run in self.runs]
         self.focus_radio = RadioButtons(radio_ax, labels, active=self.focus_idx)
@@ -493,6 +496,9 @@ class Playback:
             [0.005, 0.06 + radio_height + 0.06, 0.08, check_height])
         check_ax.set_xticks([])
         check_ax.set_yticks([])
+        check_ax.patch.set_alpha(0)
+        for spine in check_ax.spines.values():
+            spine.set_visible(False)
         check_ax.set_title('Show/hide', fontsize=7)
         labels = [run.label for run in self.runs]
         self.checks = CheckButtons(check_ax, labels, [True] * len(labels))
