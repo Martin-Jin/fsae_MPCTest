@@ -702,6 +702,43 @@ NMPC_ALAT_CEILING_ENABLED = True            # model FSDS's measured sustained a_
                                             # for real-vehicle work where that ceiling doesn't
                                             # exist.
 
+# NMPC_SPLINE_REFERENCE_ENABLED -- True (default): PathReference builds kappa(s)/
+# psi_ref(s) from an analytic CubicSpline fit to the raw waypoints (x(s), y(s)
+# each independently splined over cumulative arc length), instead of the old
+# dense-resample + moving-average + finite-difference pipeline. A strict
+# numerical-quality improvement to the documented "centreline curvature
+# spikes" defect (see CLAUDE.md) with no new coupling to solver dynamics, so
+# it defaults ON unlike the two flags below -- but is still flagged so the
+# old moving-average path (kept, not deleted) can be A/B'd against it if a
+# regression shows up. False restores the pre-existing behaviour exactly.
+NMPC_SPLINE_REFERENCE_ENABLED = True
+
+# NMPC_HORIZON_SPEED_PROFILE_ENABLED -- False (default, EXPERIMENTAL): sample a
+# precomputed per-lap speed profile v(s) at each horizon stage's own
+# PREDICTED arc length s_k (PathReference.v_ref_at), instead of holding a
+# single scalar v_ref constant across the whole horizon. Mirrors kappa(s)'s
+# own non-schedulable, state-keyed lookup on purpose -- see PathReference's
+# docstring and nmpc_core.py's module docstring on why curvature-as-
+# exogenous-horizon-data produced wrong-direction transients in three earlier
+# attempts; v_ref(s) is wired the same way specifically to inherit that
+# property. Only takes effect when a speed-profile array is actually
+# supplied to PathReference (see run_core_rollout's NMPC construction) --
+# with no such array, or with this False, v_ref is the exact same frozen
+# scalar as before. NMPC-only; the LTV-QP (mpc_core.py) is untouched.
+NMPC_HORIZON_SPEED_PROFILE_ENABLED = False
+
+# NMPC_FRICTION_CIRCLE_ENABLED -- False (default, EXPERIMENTAL): add a HARD
+# per-axle |F_yf|/|F_yr| bound to the condensed QP (on top of, not instead
+# of, the existing SOFT alat-ceiling tanh saturation inside _f/_f_scalar --
+# see CLAUDE.md's strong warning against touching that mechanism, which this
+# does not). The bound is derived from the SAME measured ceiling law
+# (ALAT_CEILING_FLAT/_SLOPE/_INTERCEPT) via F_max = m * ceiling(v_x) / 2 per
+# axle (see nmpc_optimiser.py's _fmax_flat/_fmax_slope/_fmax_intercept for
+# the exact conversion). When False, _build_qp/_outputs/_output_jacobians/
+# _solve_step are all IDENTICAL (same array shapes, same QP dimensions) to
+# before this feature existed -- not just "the extra rows are empty".
+NMPC_FRICTION_CIRCLE_ENABLED = False
+
 
 # ------------------------------------------------------------------------------
 # Adaptive-gain SHAPE constants

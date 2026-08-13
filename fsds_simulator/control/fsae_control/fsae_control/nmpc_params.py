@@ -178,6 +178,54 @@ class NMPCParams:
                 "model/vehicle_physics.VehicleParams.alat_ceiling_enabled",
     })
 
+    # ── Path reference construction ─────────────────────────────────────
+    nmpc_spline_reference_enabled: bool = field(default=True, metadata={
+        "unit": "bool",
+        "desc": "true (default) -> PathReference builds kappa(s)/psi_ref(s) "
+                "from an analytic CubicSpline fit to the raw waypoints "
+                "(x(s), y(s) each independently splined over cumulative arc "
+                "length) instead of the dense-resample + moving-average + "
+                "finite-difference pipeline. A strict numerical-quality fix "
+                "to the documented centreline-curvature-spikes defect with no "
+                "new solver coupling, so it defaults on -- unlike every other "
+                "flag in this file. False restores the old moving-average "
+                "path exactly (kept, not deleted), for A/B comparison",
+    })
+
+    # ── Horizon speed profile (EXPERIMENTAL, default off) ────────────────
+    nmpc_horizon_speed_profile_enabled: bool = field(default=False, metadata={
+        "unit": "bool",
+        "desc": "true -> sample a precomputed per-lap speed profile v(s) at "
+                "each horizon stage's own PREDICTED arc length s_k "
+                "(PathReference.v_ref_at) instead of holding v_ref constant "
+                "across the horizon. Mirrors kappa(s)'s own state-keyed, "
+                "non-schedulable lookup so it inherits the same property "
+                "(see nmpc_core.py's module docstring on why curvature-as-"
+                "exogenous-horizon-data produced wrong-direction transients). "
+                "Only takes effect when a speed-profile array is actually "
+                "supplied at PathReference construction time -- otherwise "
+                "this flag is a no-op and v_ref stays the frozen scalar. "
+                "Default False: genuine experiment, not yet validated",
+    })
+
+    # ── Friction-circle hard constraint (EXPERIMENTAL, default off) ──────
+    nmpc_friction_circle_enabled: bool = field(default=False, metadata={
+        "unit": "bool",
+        "desc": "true -> add a HARD |F_yf|/|F_yr| <= F_max bound to the "
+                "condensed QP, ADDITIONAL to (not a replacement for) the "
+                "existing SOFT alat-ceiling tanh saturation inside _f/"
+                "_f_scalar -- see CLAUDE.md's warning against touching that "
+                "mechanism, which this does not. F_max is derived from the "
+                "SAME measured ceiling law "
+                "(alat_ceiling_flat/_slope/_intercept) via "
+                "F_max = m * ceiling(v_x) / 2 per axle. Changes the QP's "
+                "fixed sparsity pattern, so it is read once at construction "
+                "time, not per-tick. When False, _build_qp/_outputs/"
+                "_output_jacobians/_solve_step produce IDENTICAL output "
+                "(including array shapes) to before this feature existed. "
+                "Default False: genuine experiment, not yet validated",
+    })
+
     # ── Solver tolerance ────────────────────────────────────────────────
     nmpc_osqp_max_iter: int = field(default=500, metadata={
         "unit": "iterations",
