@@ -3018,10 +3018,39 @@ Only takes effect when a speed-profile array is actually supplied at
 `mpc_controller_standalone.py`'s `set_static_path()` call (live mirror);
 **deliberately not wired** in `mpc_controller.py` (the LTV-QP-parity node) —
 with no array supplied, or with the flag off, `v_ref` is the exact same
-frozen scalar as before. Treat this as a genuine, unvalidated experiment: run
-it in isolation (a synthetic dead-on-line approach to a braking zone, mirror
-of Part 16 §16.6's methodology) before trusting it, given how reliably
-"future information the solver can pre-pay" has misfired here previously.
+frozen scalar as before.
+
+**LIVE-TESTED 2026-08-13 and REJECTED.** Enabled alone (spline reference
+also on, friction circle off) on `comp_test_map_3`,
+`mpc_standalone_control_1786585464.csv` shows the exact predicted failure
+mode, worse than the curvature case it was modelled on: at t≈58–61s
+approaching a corner, `v_actual` climbs from ~5.7 to **16.7 m/s** while
+`v_desired` **drops** to 3.3–5 m/s and stays there for ~2s — `a_cmd` is
+strongly positive (0.6 to 2.5+ m/s²) throughout, i.e. the controller is
+actively accelerating, not merely failing to brake. `e_y` grows to **-3.6 m**
+(car off-track; `nmpc_track_halfwidth` is 3.5 m) before the corner
+geometrically opens back up and it recovers. Mechanism: unlike `kappa(s)`,
+whose obligation only exists once the predicted trajectory's own `s` has
+actually reached it, summing `v_x - v_ref(s_k)` across all 20 horizon stages
+lets a high `v_ref` at a later stage (the straight after this corner) offset
+the cost of a low `v_ref` at an earlier stage (the corner itself) *in the
+same solve* — the QP's net gradient can favour accelerating now against a
+target that's about to rise, even though the current target is low. This is
+the same "solver pre-pays a future obligation" trap as the three
+curvature-scheduling failures (Parts 2/7/15), but the failure surfaces as
+real off-track excursions rather than a self-correcting steering wobble,
+because a wrong-direction speed decision carries real kinetic energy into
+the corner for the LATERAL controller to then fight. **Reverted to
+`false`.** Do not re-enable without addressing the underlying mechanism
+(e.g. bounding how far ahead along `s` the sampled `v_ref` may rise, or
+some other per-stage clamp preventing a later high-speed stage from
+outvoting an earlier low-speed one) and revalidating offline first — the
+non-schedulability property this feature was designed to inherit from
+`kappa(s)` does not actually transfer to a *summed* cost over the horizon;
+`kappa(s)`'s safety came from the state coupling, not from being
+state-indexed per se, and speed's cost structure (a plain sum of squared
+errors across all stages) breaks that coupling in a way curvature's
+structure did not.
 
 **3. Friction-circle hard constraint — `nmpc_friction_circle_enabled` /
 `NMPC_FRICTION_CIRCLE_ENABLED`, default `false`, EXPERIMENTAL.** Adds a hard
