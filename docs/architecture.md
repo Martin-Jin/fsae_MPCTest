@@ -1851,9 +1851,32 @@ curvature term), and the telemetry CSV's `m_*` columns are empty while eight
 score, the scoring pipeline, the path/speed-profile plumbing and the delay
 compensation are unchanged.
 
+**Three further, NMPC-only additions (2026-08-13)**, assessed against
+Alexander Liniger's Model Predictive Contouring Control (MPCC) but narrower
+than it — full MPCC's progress-maximisation apparatus was considered and
+rejected as too close to a failure mode already eliminated here (see
+`planning_control_sync.md`'s writeup for why). One is on by default, two are
+off:
+
+- `nmpc_spline_reference_enabled` (default **true**) — `PathReference`'s
+  `kappa(s)`/`psi_ref(s)` come from an analytic cubic-spline fit to the
+  waypoints instead of moving-average-smoothed finite differences. A
+  numerical-quality fix, not a new coupling to the solver.
+- `nmpc_horizon_speed_profile_enabled` (default **false**, experimental) —
+  samples a precomputed speed profile at each horizon stage's own predicted
+  arc length, the same state-keyed pattern `kappa(s)` already uses, instead
+  of holding one frozen speed target across the horizon.
+- `nmpc_friction_circle_enabled` (default **false**, experimental) — a hard
+  per-axle tyre-force bound in the QP, additional to (not replacing) the
+  existing soft `alat_ceiling` saturation.
+
+All three are implemented identically in `nmpc_core.py` and the offline
+`controller/nmpc_optimiser.py`; none touch `mpc_core.py` (the LTV-QP).
+
 Full detail: `planning_control_sync.md`'s "Nonlinear MPC (`use_nmpc`)" section
 (what it is, what it reuses, what is inactive, offline A/B numbers, the offline
-port, and a matched same-day LIVE A/B — steering saturation 6.45% → 0.58%,
-lap 54.72s → 52.35s), `tuning.md` §4.5d (tuning surface), and
-`late_turn_in_investigation.md` Part 16 (research survey, formulation
-choice, validation, the four bugs found in testing).
+port, a matched same-day LIVE A/B — steering saturation 6.45% → 0.58%,
+lap 54.72s → 52.35s — and the "Which settings affect which controller" map
+and the three MPCC-inspired additions above), `tuning.md` §4.5d (tuning
+surface), and `late_turn_in_investigation.md` Part 16 (research survey,
+formulation choice, validation, the four bugs found in testing).

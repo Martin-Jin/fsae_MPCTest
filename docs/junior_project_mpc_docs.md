@@ -820,8 +820,11 @@ simulated vehicle, same track, so it's an honest apples-to-apples comparison):
 steering saturation (pinning at the mechanical limit, the classic symptom of
 "reacting too late") dropped from 12.5% of ticks to 0.8%, and the car started
 turning into every single corner tested earlier than the linear controller did
-— by 25 metres, on average, on the harder corners. It has not yet been tested
-on the real/simulated FSDS car, only in this offline pipeline.
+— by 25 metres, on average, on the harder corners. **Update: it has since been
+tested live in FSDS too**, on a matched same-day pair on the same track —
+steering saturation dropped from 6.45% to 0.58% and lap time improved by about
+2.4 seconds, the same direction and a similar-sized improvement as the offline
+result above (see `docs/planning_control_sync.md` for the full live numbers).
 
 | | **Linear MPC** (Sections 1-4.1, this project's main controller) | **Nonlinear MPC** (`use_nmpc` / `settings.USE_NMPC`) |
 |---|---|---|
@@ -832,6 +835,54 @@ on the real/simulated FSDS car, only in this offline pipeline.
 | Solve time (measured) | ~1-5 ms | ~9 ms mean, ~12 ms p95 |
 | Where it lives | `model/bicycle_model.py` (this repo) + `mpc_core.py` (live) | `nmpc_core.py` (live) + `controller/nmpc_optimiser.py` (this repo's offline port, `settings.USE_NMPC`) |
 
+#### 4.2.1 Three smaller upgrades borrowed from a published racing controller (2026-08-13)
+
+After the nonlinear MPC above was built, it got compared against a published
+academic controller with a similar goal — **MPCC** (Model Predictive
+Contouring Control, from a paper/codebase by Alexander Liniger — the "C" is
+for "Contouring"). MPCC's big idea is more radical than anything in this
+project: instead of being *told* a target speed and a target line to follow,
+it treats "how far along the track have I got" as something the solver itself
+gets to choose and is rewarded for maximising, trading that off against how
+precisely it's tracking the racing line. That idea was looked at seriously
+and **not adopted** — it's a fancier version of exactly the "tell the solver
+about a future correction in advance" trick that was tried and failed three
+times already in Section 4.2 above (the wrong-direction dip). Three smaller,
+narrower ideas from the same paper *were* worth borrowing, though:
+
+1. **A smoother path, mathematically.** The controller needs to know the
+   path's curvature at every point in the distance the car might travel.
+   Previously that came from a slightly crude method (average nearby points,
+   then measure how much the direction changes between them) — the analogue
+   of two paperclip bends being read off, and it was contributing to a
+   known bug where a perfectly smooth corner sometimes gets misread as having
+   a sudden spike in it. MPCC instead fits a **proper mathematical curve**
+   (a cubic spline) through the waypoints and reads the curvature straight
+   off its equation instead of estimating it from nearby points. This is
+   just a better ruler, not a different idea about what to do with it — so
+   it's turned **on by default**.
+2. **A speed target that also looks ahead, not just the road.** Right now the
+   controller is given one single target speed for its whole ~1-second
+   planning window. This adds the *option* to instead look up the "correct"
+   speed at each point along the plan, using the same "don't tell the solver
+   about the future too far in advance" trick that made the curvature idea
+   above safe (Section 4.2). This one is genuinely experimental and ships
+   **off by default** — it needs the same kind of careful testing that caught
+   the wrong-direction-dip bug before, applied fresh to speed instead of
+   steering.
+3. **A backup speed-limit check.** The car already has one safety mechanism
+   preventing the model from believing it can corner arbitrarily hard
+   (Section 4.1's `alat_ceiling`). This adds a second, independent check of
+   the same limit, done a different way (as a hard rule the solver cannot
+   break, rather than a soft nudge). It doesn't replace the first mechanism —
+   it's a second pair of hands on the same problem. Also **off by default**,
+   also unvalidated.
+
+All three only affect the nonlinear MPC (`use_nmpc`/`settings.USE_NMPC`) —
+the linear MPC that's this project's main controller is completely
+unaffected by any of them. Full technical detail (exact formulas, which files
+changed, why MPCC's headline idea specifically was rejected):
+`planning_control_sync.md`'s "Three MPCC-inspired additions" subsection.
 
 ---
 

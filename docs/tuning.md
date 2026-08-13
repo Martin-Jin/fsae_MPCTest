@@ -636,6 +636,16 @@ default false) — see `planning_control_sync.md`'s "Nonlinear MPC
   `nmpc_curvature_dense_step=0.5` / `nmpc_curvature_smooth_w=3` are
   `control_utils.curvature_speed()`'s existing denoise precedent — none of the
   four is a new constant to tune.
+- **Three MPCC-inspired flags, all NMPC-only (2026-08-13)**:
+  `nmpc_spline_reference_enabled` (default true — not really "tunable", a
+  numerical-quality fix; set false only to A/B against the old moving-average
+  path), `nmpc_horizon_speed_profile_enabled` and
+  `nmpc_friction_circle_enabled` (both default false, genuine unvalidated
+  experiments — do not enable for a live run without an offline A/B first).
+  See `planning_control_sync.md`'s "Three MPCC-inspired additions" subsection
+  for the mechanism and "Which settings affect which controller" for the
+  complete field-by-field controller-scope map (which settings are LTV-QP-only,
+  NMPC-only, or shared).
 
 ## 5. Dynamic speed cap — disabled, do not re-enable without re-diagnosis
 
