@@ -571,6 +571,9 @@ class NMPCController:
 
     # ------------------------------------------------------------------
     def _build_qp(self):
+        """Allocate the condensed QP once with fixed sparsity — see the live
+        nmpc_core.py's _build_qp for the constraint-row layout (box/slew/
+        soft-track-boundary rows); identical here."""
         N = self.N
         n_du = NU * N
         self._use_slack = self.track_halfwidth > 0.0
@@ -629,6 +632,10 @@ class NMPCController:
 
     # ------------------------------------------------------------------
     def _rollout(self, x0, U, ref):
+        """Roll the nonlinear model forward from the measured state under
+        the current input guess, scalar fast path — see the live
+        nmpc_core.py's _rollout for why this makes the QP's dynamics defect
+        exactly zero (the linearisation point is always feasible)."""
         N = self.N
         X = np.empty((N + 1, NX))
         X[0] = x0
@@ -640,6 +647,10 @@ class NMPCController:
         return X
 
     def _jacobians(self, X, U, ref):
+        """Finite-difference the one-step dynamics Jacobians A_k/B_k,
+        vectorised across all horizon stages at once — see the live
+        nmpc_core.py's _jacobians for why finite-differencing (not
+        hand-derived) and the nmpc_jac_substeps accuracy/cost tradeoff."""
         N = self.N
         Xs = X[:N]
         p, dt, n_sub = self.plant, self.dt, self.jac_substeps
@@ -657,6 +668,9 @@ class NMPCController:
         return A, B
 
     def _output_jacobians(self, X, ref, v_ref):
+        """Finite-difference the stage-output Jacobians C_k (h(x) w.r.t.
+        state) — see the live nmpc_core.py's _output_jacobians; identical
+        here."""
         H0 = _outputs(X, ref, self.plant, v_ref)
         C = np.empty((X.shape[0], NH, NX))
         for j in range(NX):
@@ -666,6 +680,9 @@ class NMPCController:
         return H0, C
 
     def _cost(self, X, U, H):
+        """True nonlinear cost at a candidate (X, U) — used for the
+        backtracking check after each SQP step; see the live nmpc_core.py's
+        _cost for the Gauss-Newton stage-output weighting this mirrors."""
         w = self.w_out
         stage = float(np.sum(w * H[:-1] ** 2)) + float(
             self.terminal_scale * np.sum(w * H[-1] ** 2))
@@ -697,6 +714,11 @@ class NMPCController:
         return Up
 
     def _solve_step(self, X, U, ref, v_ref):
+        """One Gauss-Newton SQP iteration: condense, solve the QP, return dU
+        and the OSQP status. Because X was rolled forward from the measured
+        state (see _rollout), the linearised dynamics have ZERO defect, so
+        the condensed sensitivities alone describe the subproblem exactly —
+        see the live nmpc_core.py's _solve_step; identical here."""
         N = self.N
         qp = self._qp
         n_du, n_slack, nz, n_rows = qp['n_du'], qp['n_slack'], qp['nz'], qp['n_rows']

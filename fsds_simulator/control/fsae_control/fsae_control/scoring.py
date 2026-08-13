@@ -154,6 +154,13 @@ def compute_composite_score(
     of SCORE_WEIGHTS — the metrics array below is built positionally, not
     by name. accel_reversal_rms is keyword-only with a default so existing
     positional callers (which predate this metric) don't break.
+
+    See fsae_MPCTest/docs/architecture.md's composite-score metric table
+    (metrics 9, 12) for the steering_reversal_rms/accel_reversal_rms
+    magnitude-weighted-swing construction, and its "Why three tiers instead
+    of one sum" section for the TIER 1/2/3 structure below — this repo has
+    no local copy of that doc, but the reasoning applies unchanged since
+    this function is a verbatim copy of sim/scoring.py.
     """
     metrics = np.array(
         [

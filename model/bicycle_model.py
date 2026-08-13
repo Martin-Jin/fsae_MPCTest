@@ -126,14 +126,6 @@ def get_8state_discrete_model(v_x, dt):
     # ── 1. KINEMATIC BICYCLE MODEL ────────────────────────────────────────────
     # Valid at low speeds where tyre slip angles are negligible. The car steers
     # like a rigid linkage: heading rate = vx * tan(delta) / L ≈ vx * delta / L.
-    #
-    # State equations (continuous time):
-    #   ė_y       = v_x * e_psi   (lateral drift proportional to heading error and speed)
-    #   ė_psi     = v_x * delta_act / L   (yaw rate from Ackermann steer geometry)
-    #   ẋ_4       = e_v  (placeholder; e_v integrates through e_a)
-    #   ẋ_5       = e_a  (placeholder; a_act integrates through command)
-    #   δ̇_act     = −delta_act / tau_delta   (first-order lag toward commanded δ)
-    #   ȧ_act     = −a_act / tau_a            (first-order lag toward commanded a)
     A_kin[0, 2] = v_x_safe           # ė_y = v_x * e_psi
     A_kin[2, 6] = v_x_safe / L       # ė_psi = v_x/L * delta_act  (Ackermann geometry)
     A_kin[4, 5] = 1.0                # ė_v = e_a  (acceleration integrates to speed error)

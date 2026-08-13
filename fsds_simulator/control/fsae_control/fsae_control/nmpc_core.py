@@ -11,120 +11,46 @@ LTV-QP controller remains the default and is completely untouched. Selection
 happens at node construction time via NMPCParams.use_nmpc (default False) —
 see mpc_controller.py / mpc_controller_standalone.py.
 
-WHY IT EXISTS (the structural gap this closes)
----------------------------------------------
-MPCController's prediction model (`_discrete_model`) is the bicycle model in
-ERROR coordinates with the reference frame's own rotation dropped. The exact
-missing term is one line of the Frenet kinematics:
+WHY IT EXISTS: MPCController's prediction model has no term for the path
+itself bending (`e_psi_dot = r`, missing `- kappa(s)*s_dot`), so with the car
+dead on-line approaching a corner the QP predicts staying on-line forever and
+no cost weighting can produce turn-in before real error exists — measured at
+exactly 0.000 deg commanded across 8 synthetic states. Here `kappa(s)` is
+looked up against arc length `s`, which is itself a STATE driven by the car's
+predicted motion, not indexed by horizon step — so unlike three earlier
+attempts to inject curvature as exogenous horizon data (all producing a
+wrong-direction transient, see below), the obligation isn't schedulable.
+Full derivation, the model equations, the cost construction, and the
+real-time SQP structure (roll-forward feasibility, condensing, warm-start,
+solve-time budget): `planning_control_sync.md`'s "Nonlinear MPC (use_nmpc)"
+section and `late_turn_in_investigation.md` Part 16 (§16.1 gap, §16.3 model,
+§16.5 correctness checks, §16.7 solve time/horizon-iteration sweep).
 
-    e_psi_dot = r - kappa(s) * s_dot        <-- the "- kappa(s)*s_dot" is absent
-
-Consequence, confirmed repeatedly in late_turn_in_investigation.md: with
-e_y = e_psi = 0 (car dead on-line, corner ahead) the QP's whole 35-step rollout
-predicts staying at 0 forever, so NO cost weighting can produce turn-in before
-real error exists. Three separate attempts to bolt the term on as exogenous,
-horizon-indexed data — a dynamics disturbance `w[k]` (Part 2), a shifting cost
-target (Part 7), a per-step reference array (Part 15) — all produced a
-WRONG-DIRECTION transient, because a future obligation known at solve time
-lets the solver choose when to pay it, and an early wrong-way dip can integrate
-to lower total quadratic cost.
-
-Here `kappa` is not indexed by horizon step: it is `kappa(s)` where `s` is a
-STATE driven by the car's own predicted motion. The obligation is therefore not
-schedulable — steering the wrong way makes e_psi, and then e_y, grow from the
-very next step, and every later step inherits the worse state through the
-dynamics. That is the argument; it is checked empirically (synthetic
-dead-centre corner approach, both "does it turn in early" and "does it dip the
-wrong way first") in late_turn_in_investigation.md Part 16 §16.6, not assumed.
-
-MODEL
------
-    x = [s, e_y, e_psi, v_x, v_y, r, delta_act, a_act]     (nx = 8)
-    u = [delta_cmd, a_cmd]                                 (nu = 2)
-
-    s_dot         = (v_x*cos(e_psi) - v_y*sin(e_psi)) / (1 - kappa(s)*e_y)
-    e_y_dot       =  v_x*sin(e_psi) + v_y*cos(e_psi)
-    e_psi_dot     =  r - kappa(s)*s_dot
-    v_x_dot       =  a_act + alpha*r*v_y
-    v_y_dot       =  (1-alpha)*v_y_dot_kin + alpha*(F_yf*cos(d) + F_yr)/m - alpha*r*v_x
-    r_dot         =  (1-alpha)*r_dot_kin   + alpha*(lf*F_yf*cos(d) - lr*F_yr)/Iz
-    delta_act_dot = (delta_cmd - delta_act)/tau_delta
-    a_act_dot     = (a_cmd     - a_act    )/tau_a
-
-with linear tyres F_yf = -2*Cf*alpha_f, F_yr = -2*Cr*alpha_r (the same 2*Cf /
-2*Cr axle convention `_discrete_model` uses), and the SAME kinematic->dynamic
-blend breakpoints MPCController already uses (alpha = clip((v_x-1.0)/1.5, 0, 1)),
-whose kinematic branch is r = v_x*tan(delta_act)/(lf+lr), v_y = lr*r,
-differentiated to give r_dot_kin / v_y_dot_kin.
-
-EVERY vehicle constant (lf, lr, m, Iz, Cf, Cr, tau_delta, tau_a, MAX_STEER_RAD,
-MAX_ACCEL, MAX_BRAKE, du_max) is taken from MPCController unchanged — imported
-from mpc_core where module-level, copied with a comment where it is set in
-MPCController.__init__. No new physical constant is introduced.
-
-WHERE THE ERRORS ARE MEASURED
------------------------------
-Identical to `MPCController._error_state`: nearest waypoint to the FRONT AXLE
-(car_pos + lf*heading), e_y as the perpendicular projection onto that segment
-(not Euclidean distance), e_psi wrapped to [-pi, pi], e_y_dot =
-v_x*sin(e_psi) + v_y*cos(e_psi). That mixture of a front-axle measurement point
-with a CoG-frame e_y_dot is inherited deliberately, not "fixed" here: it is
-what vehicle_physics.plant_to_tracking_error / rollout_core.py and every logged
-run already use, so e_y / e_psi in an NMPC log mean exactly what they mean in
-an LTV-QP log.
-
-COST
-----
-Gauss-Newton least squares on the stage output
-
-    h(x) = [e_y,  e_y_dot,  e_psi,  (r - kappa(s)*s_dot),  v_x - v_ref]
-
-weighted by (q_e_y, q_e_yd, q_e_psi, q_r, q_e_v) from the SAME MPCParams the
-LTV-QP uses, plus input effort (r_delta; r_a_accel/r_a_brake selected per stage
-by the sign of the current iterate's a_cmd) and input rate (r_rate_delta,
-r_rate_a), plus MPCParams.terminal_q_scale on the final stage and the same soft
-+-3.5 m |e_y| slack penalty (W_slack = 10000) `_build_qp` carries. See
-nmpc_params.py for which weights can be overridden per-NMPC and for the ONE
-weight whose meaning changes (q_r -> heading-error rate, not absolute yaw rate).
+State/input vectors: x = [s, e_y, e_psi, v_x, v_y, r, delta_act, a_act],
+u = [delta_cmd, a_cmd]. Every vehicle constant (lf, lr, m, Iz, Cf, Cr,
+tau_delta, tau_a, MAX_STEER_RAD, MAX_ACCEL, MAX_BRAKE, du_max) is taken from
+MPCController unchanged, including its kinematic/dynamic blend breakpoints —
+no new physical constant is introduced. Error measurement (front-axle
+projection, e_psi wrap, e_y_dot) is identical to `MPCController._error_state`
+so an NMPC log means exactly what an LTV-QP log means. Cost weights come from
+the SAME MPCParams the LTV-QP uses — see nmpc_params.py for the per-NMPC
+override fields and the one weight whose meaning changes (q_r -> heading-error
+rate, not absolute yaw rate).
 
 WHAT THIS CONTROLLER DELIBERATELY DOES NOT DO
 ---------------------------------------------
-* No adaptive gain schedule. Every mechanism in mpc_core's ~17-multiplier stack
-  (_lookahead_approach_boost, _lookahead_epsi_approach_boost,
-  _lookahead_yaw_rate_relax, _steer_rate_anti_hunt, ...) exists to synthesise
-  anticipation the curvature-blind model could not produce. A curvature-aware
-  model anticipates in the prediction itself, so layering those on top would
-  double-count an effect that is now structural. They are left available and
-  untouched on the LTV-QP path.
+* No adaptive gain schedule (mpc_core's corner-factor/heading-error-asymmetry
+  stack) — that exists to synthesise anticipation a curvature-blind model
+  can't produce; layering it on a curvature-aware model would double-count an
+  effect that's now structural. Left untouched on the LTV-QP path.
 * No shaped heading-lead profile. set_heading_profile() is accepted (so the
-  nodes need no branch) and IGNORED with a one-time log line: the shaped
-  psi_target of Part 8/9 is a workaround for the same missing curvature term.
+  nodes need no branch) and IGNORED with a one-time log line — that profile is
+  a workaround for the same missing curvature term this controller closes
+  structurally.
 * No speed profile over the horizon. v_ref is the caller's single, already
-  low-passed desired_speed held constant across the horizon — the same
-  information the LTV-QP gets. Part 11's braking-lag problem is NOT addressed
-  here on purpose; changing the longitudinal reference at the same time as the
-  lateral model would make a live A/B unreadable.
-
-REAL-TIME STRUCTURE
--------------------
-Per tick: warm-start the input trajectory from the previous tick (shifted one
-step), then up to NMPCParams.nmpc_sqp_iters Gauss-Newton iterations, each:
-(1) roll the nonlinear model forward from the measured state under the current
-input guess — so the linearisation point is always dynamically FEASIBLE and the
-QP's dynamics defect is exactly zero; (2) finite-difference the one-step
-Jacobians A_k/B_k and the output Jacobians C_k, vectorised across all horizon
-stages at once; (3) condense to a dense QP in the input deviations only
-(nu*N + N variables); (4) solve with OSQP, warm-started, fixed sparsity so only
-the data arrays are updated; (5) take the step with a box trust region and
-optional backtracking if the true nonlinear cost got worse. A wall-clock budget
-(nmpc_solve_budget_ms) stops the loop early and ships the best iterate rather
-than overrunning the 50 ms tick.
-
-Jacobians are finite-differenced rather than hand-derived on purpose: a model
-change cannot silently desynchronise from its derivative. Accuracy is verified
-against complex-step/central differences and against CasADi+IPOPT offline —
-see late_turn_in_investigation.md Part 16 §16.5/§16.7 for both the check and
-the measured solve times.
+  low-passed desired_speed held constant across the horizon, same as the
+  LTV-QP gets — deliberately not addressing the (separate) braking-lag
+  problem here, so a live A/B isolates the lateral-model change alone.
 """
 
 import math

@@ -265,6 +265,10 @@ class LapProgressTracker:
         d2 = (window - car_pos[0]) ** 2 + (self._path_Y[self._idx:] - car_pos[1]) ** 2
         self._idx += int(np.argmin(d2))
 
+        # 10% window / 3 m radius: mirrors fsae_MPCTest/sim/rollout_core.py's
+        # identical check — see that file's comment for why these values
+        # (not independently measured, but wide/narrow enough to avoid a
+        # false trigger on a lap's own start/finish straight).
         near_end = self._idx >= len(self._path_X) - max(1, int(0.1 * len(self._path_X))) - 1
         dist_to_finish = math.hypot(
             car_pos[0] - self._path_X[-1], car_pos[1] - self._path_Y[-1]

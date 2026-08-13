@@ -120,14 +120,9 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max, du_max=None, terminal_scale=
 
     Returns
     -------
-    dict with keys:
-        'prob'           : cp.Problem  — compiled problem object
-        'A', 'B'         : cp.Parameter — dynamics matrices
-        'x0'             : cp.Parameter — initial state
-        'sqrtQ', 'sqrtR', 'sqrtR_rate' : cp.Parameter — cost weights
-        'weighted_u_prev': cp.Parameter — rate cost anchor at step 0
-        'u_prev'         : cp.Parameter — raw u_prev, step-0 slew constraint anchor
-        'u'              : cp.Variable  — control variable (for extracting u[0])
+    dict of cp.Problem/Parameter/Variable handles — see the inline comments
+    at each cp.Parameter(...)/cp.Variable(...) declaration below for what
+    each one is.
 
     Called by: solve_mpc() — on first call or when N changes
     """
@@ -196,8 +191,7 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max, du_max=None, terminal_scale=
         cp.multiply(sqrtR_rate_param[:, 0], u[:, 0]) - weighted_u_prev_param
     )
 
-    # Rate-of-change cost (subsequent steps): penalise Δu = u[:,i+1] - u[:,i]
-    # cp.diff computes first differences along axis=1: Δu[:,i] = u[:,i+1] - u[:,i]
+    # Rate-of-change cost (subsequent steps): Δu = u[:,i+1] - u[:,i], vectorized
     if N > 1:
         du    = cp.diff(u, axis=1)                                    # Shape (nu, N-1)
         cost += cp.sum(cp.sum_squares(cp.multiply(sqrtR_rate_param, du)))
@@ -292,38 +286,19 @@ def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max, R_rate=None, u_prev=None,
       4. Solves with OSQP; falls back to Clarabel if OSQP fails.
       5. Returns u[0] (the first step's control action to apply to the plant).
 
-    SOLVER STRATEGY
-    ---------------
-    OSQP is the primary solver: it exploits the problem's sparsity, supports
-    warm-starting (reusing the previous solution as the initial guess), and
-    runs in ~1-5 ms for this problem size at N=25.
-
-    Clarabel is the fallback: a newer interior-point solver, slightly slower
-    but more robust to poorly conditioned problems. Used when OSQP returns
-    a non-optimal status (e.g. time limit hit, numerical difficulties).
-
-    WARM STARTING
-    -------------
-    warm_start=True (default) reuses the previous solve's primal/dual variables
-    as the initial guess for OSQP. In the receding horizon, consecutive solves
-    differ by only one step, so the previous solution is an excellent warm start
-    and typically converges in 50-200 iterations vs. 500-2000 cold.
+    SOLVER STRATEGY: OSQP primary (sparse, warm-startable, ~1-5 ms at N=25),
+    Clarabel fallback on a non-optimal OSQP status. See architecture.md's
+    "The solver" section for the full OSQP/Clarabel/OPTIMAL_INACCURATE
+    reasoning — not repeated here.
 
     warm_start=False is used by the offline tuner for the FIRST step of each
-    rollout to avoid inheriting stale state from a previous rollout.
+    rollout only, to avoid inheriting stale state from a previous rollout —
+    every other caller wants the default True.
 
-    SOLVER TOLERANCES
-    -----------------
-    eps_abs / eps_rel: OSQP convergence criteria. Tighter = more accurate but
-    slower. Both gui/simulation.py and tuner/offline_tuner.py pass settings.ROLLOUT_EPS
-    (currently 1e-4) rather than this function's 1e-5 default, trading a
-    small amount of accuracy for faster rollouts — the same value is shared
-    by live and offline runs so tuned weights stay comparable to what the
-    simulator actually sees.
-
-    max_iter: OSQP iteration cap. settings.ROLLOUT_MAX_ITER (8000) is used by
-    both gui/simulation.py and tuner/offline_tuner.py; this function's own default
-    (8000) only applies to callers that don't pass max_iter explicitly.
+    eps_abs/eps_rel/max_iter: both gui/simulation.py and tuner/offline_tuner.py
+    pass settings.ROLLOUT_EPS/ROLLOUT_MAX_ITER rather than this function's own
+    defaults, so live and offline runs solve to the same tolerance and stay
+    comparable.
 
     Parameters
     ----------
@@ -479,15 +454,11 @@ def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max, R_rate=None, u_prev=None,
         status = _mpc_cache['prob'].status
 
         if status == cp.OPTIMAL_INACCURATE and not silent:
-            # OPTIMAL_INACCURATE: OSQP converged but not to full tolerance.
-            # The solution is still usable at 20 Hz — better to use it than
-            # to fall back to holding the previous command.
+            # Usable despite inaccuracy; better than falling back to a held command.
             print(f"[MPC] Warning: OSQP returned OPTIMAL_INACCURATE "
                   f"(consider tightening eps or checking weight magnitudes)")
 
         if status not in (cp.OPTIMAL, cp.OPTIMAL_INACCURATE):
-            # OSQP failed outright (infeasible, unbounded, or numerical error).
-            # Attempt Clarabel — a more robust but slower interior-point solver.
             _mpc_cache['prob'].solve(solver=cp.CLARABEL)
             status = _mpc_cache['prob'].status
 

@@ -165,6 +165,13 @@ def tracking_error_speed_gate(e_y, e_psi,
     the worse of the two, and saturates at `floor` rather than 0 above _hi —
     the car still needs some speed to steer itself back to the path.
 
+    The five default thresholds are reasonable-default judgement calls, not
+    independently measured/tuned: _lo is set well past normal tracking noise
+    so the gate doesn't fire during ordinary driving, _hi is set at a clearly
+    "badly off" error, and floor stops short of zero so the car never loses
+    all steering authority. Retune via tuning.md if live data suggests either
+    threshold fires too early/late.
+
     Parameters
     ----------
     e_y : float     Lateral tracking error (m).   Sign ignored.
@@ -523,11 +530,9 @@ def load_path_heading_profile_csv(csv_path: str):
     caller is responsible for loading both from one file, not mixing
     sources.
 
-    For a 4-column CSV (no psi_target column — an older raceline.csv
-    export, or speed_profile.csv), _load_profile_csv already returns
-    path_Psi as path_PsiTarget's value (see that function's own
-    docstring), so this degrades to the plain geometric heading — a
-    genuine no-op versus not having a heading-profile column at all.
+    For a 4-column CSV (no psi_target column), degrades to the plain
+    geometric heading — see _load_profile_csv's docstring for why that's a
+    genuine no-op, not repeated here.
 
     Parameters
     ----------

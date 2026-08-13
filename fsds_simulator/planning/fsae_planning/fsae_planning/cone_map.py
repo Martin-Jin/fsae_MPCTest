@@ -10,6 +10,8 @@ removed, so the map grows monotonically and historical walls are preserved.
 """
 import numpy as np
 
+# Well under typical cone spacing but comfortably above realistic
+# position noise between two detections of the same physical cone.
 MERGE_DIST = 0.8   # metres — two detections closer than this → same cone
 
 
