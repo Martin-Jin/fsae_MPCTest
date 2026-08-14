@@ -2,11 +2,9 @@
 
 **Designer:** Martin Jin
 **Design leader:** N/A
-**CTO:** N/A
-**Supervisor:** N/A
-**Timeline:** 20/06/2026 - 20/07/2026
-
-**THIS DOCS PAGE IS STILL A WORK IN PROGRESS.**
+**CTO:** Jonty Clark
+**Supervisor:** Siva Sriram
+**Timeline:** 20/06/2026 - 13/08/2026
 
 ---
 
@@ -48,36 +46,42 @@ The trade-off is complexity and computation cost: solving an optimisation proble
 
 ## Index
 
-1. [How the MPC Controller Works](#1-how-the-mpc-controller-works)
-   - [1.1 The Big Idea: Receding Horizon Control](#11-the-big-idea-receding-horizon-control)
-   - [1.2 What the Controller Tracks (The State Vector)](#12-what-the-controller-tracks-the-state-vector)
-   - [1.3 The Prediction Model](#13-the-prediction-model)
-   - [1.4 The Cost Function](#14-the-cost-function)
-   - [1.5 The Solver](#15-the-solver)
-   - [1.6 Special Features: Adaptive Gain Scheduling, Delay Compensation, Speed Gating](#16-special-features-adaptive-gain-scheduling-delay-compensation-speed-gating)
-2. [Tuning the Controller](#2-tuning-the-controller)
-   - [2.1 Why an Automatic Tuner?](#21-why-an-automatic-tuner)
-   - [2.2 How the Tuner Works (CMA-ES)](#22-how-the-tuner-works-cma-es)
-   - [2.3 The Optuna Pre-Search Warm Start](#23-the-optuna-pre-search-warm-start)
-   - [2.4 How a Run Gets Scored](#24-how-a-run-gets-scored)
-   - [2.5 Running the Tuner](#25-running-the-tuner)
-   - [2.6 Manual Tuning Guide](#26-manual-tuning-guide)
-   - [2.7 Key Settings Reference](#27-key-settings-reference)
-   - [2.8 Adding a New Test Track](#28-adding-a-new-test-track)
-3. [FSDS vs. This Repo's Simulator](#3-fsds-vs-this-repos-simulator)
-4. [The Two Vehicle Models: MPC's Model vs. the Simulator's Plant](#4-the-two-vehicle-models-mpcs-model-vs-the-simulators-plant)
-   - [4.1 Why a Linear Model, When the Real Car Is Nonlinear?](#why-a-linear-model-when-the-real-car-is-nonlinear)
-   - [4.2 A Second, Separate Blindness: the Linear Model Can't See the Road Bend — and the Nonlinear MPC That Fixes It](#42-a-second-separate-blindness-the-linear-model-cant-see-the-road-bend--and-the-nonlinear-mpc-that-fixes-it)
-5. [Vehicle Physics, Explained](#5-vehicle-physics-explained)
-   - [5.1 The 24-State Plant Model](#51-the-24-state-plant-model)
-   - [5.2 Tyres and Slip, Explained](#52-tyres-and-slip-explained)
-   - [5.3 Suspension and Weight Transfer, Explained](#53-suspension-and-weight-transfer-explained)
-   - [5.4 Aerodynamics, Rolling Resistance, and Actuator Lag](#54-aerodynamics-rolling-resistance-and-actuator-lag)
-6. [Running the Simulator (GUI)](#6-running-the-simulator-gui)
-7. [Manual Drive Mode](#7-manual-drive-mode)
-8. [Running Against the Real FSDS Simulator](#8-running-against-the-real-fsds-simulator)
-   - [8.1 Driving a Precomputed Track Instead of the Live Planner](#81-driving-a-precomputed-track-instead-of-the-live-planner)
-9. [Module Reference](#9-module-reference)
+- [Junior Project: MPC Path Tracking Controller](#junior-project-mpc-path-tracking-controller)
+  - [Skills you will learn](#skills-you-will-learn)
+  - [Overview](#overview)
+    - [What this project delivers](#what-this-project-delivers)
+  - [Index](#index)
+  - [1. How the MPC Controller Works](#1-how-the-mpc-controller-works)
+    - [1.1 The Big Idea: Receding Horizon Control](#11-the-big-idea-receding-horizon-control)
+    - [1.2 What the Controller Tracks (The State Vector)](#12-what-the-controller-tracks-the-state-vector)
+    - [1.3 The Prediction Model](#13-the-prediction-model)
+    - [1.4 The Cost Function](#14-the-cost-function)
+    - [1.5 The Solver](#15-the-solver)
+    - [1.6 Special Features: Adaptive Gain Scheduling, Delay Compensation, Speed Gating](#16-special-features-adaptive-gain-scheduling-delay-compensation-speed-gating)
+  - [2. Tuning the Controller](#2-tuning-the-controller)
+    - [2.1 Why an Automatic Tuner?](#21-why-an-automatic-tuner)
+    - [2.2 How the Tuner Works (CMA-ES)](#22-how-the-tuner-works-cma-es)
+    - [2.3 The Optuna Pre-Search Warm Start](#23-the-optuna-pre-search-warm-start)
+    - [2.4 How a Run Gets Scored](#24-how-a-run-gets-scored)
+    - [2.5 Running the Tuner](#25-running-the-tuner)
+    - [2.6 Manual Tuning Guide](#26-manual-tuning-guide)
+    - [2.7 Key Settings Reference](#27-key-settings-reference)
+    - [2.8 Adding a New Test Track](#28-adding-a-new-test-track)
+  - [3. FSDS vs. This Repo's Simulator](#3-fsds-vs-this-repos-simulator)
+  - [4. The Two Vehicle Models: MPC's Model vs. the Simulator's Plant](#4-the-two-vehicle-models-mpcs-model-vs-the-simulators-plant)
+    - [Why a linear model, when the real car is nonlinear?](#why-a-linear-model-when-the-real-car-is-nonlinear)
+    - [4.2 A second, separate blindness: the linear model can't see the road bend — and the nonlinear MPC that fixes it](#42-a-second-separate-blindness-the-linear-model-cant-see-the-road-bend--and-the-nonlinear-mpc-that-fixes-it)
+      - [4.2.1 Three smaller upgrades borrowed from a published racing controller (2026-08-13)](#421-three-smaller-upgrades-borrowed-from-a-published-racing-controller-2026-08-13)
+  - [5. Vehicle Physics, Explained](#5-vehicle-physics-explained)
+    - [5.1 The 24-State Plant Model](#51-the-24-state-plant-model)
+    - [5.2 Tyres and Slip, Explained](#52-tyres-and-slip-explained)
+    - [5.3 Suspension and Weight Transfer, Explained](#53-suspension-and-weight-transfer-explained)
+    - [5.4 Aerodynamics, Rolling Resistance, and Actuator Lag](#54-aerodynamics-rolling-resistance-and-actuator-lag)
+  - [6. Running the Simulator (GUI)](#6-running-the-simulator-gui)
+  - [7. Manual Drive Mode](#7-manual-drive-mode)
+  - [8. Running Against the Real FSDS Simulator](#8-running-against-the-real-fsds-simulator)
+    - [8.1 Driving a Precomputed Track Instead of the Live Planner](#81-driving-a-precomputed-track-instead-of-the-live-planner)
+  - [9. Module Reference](#9-module-reference)
 
 ---
 
