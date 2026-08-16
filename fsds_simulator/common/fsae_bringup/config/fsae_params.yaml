@@ -211,6 +211,13 @@ controller:
     nmpc_curvature_smooth_w: 3   # moving-average width applied before differencing headings (= curvature_speed()'s w). 1 disables smoothing (samples)
     nmpc_kappa_clip: 0.5   # hard clamp on |kappa(s)|. GUARD, not a tuning knob: 0.5 = a 2 m radius, the tightest corner curvature_speed()'s own docstring contemplates, so it is inert on any real track line and only catches a ... (1/m)
     nmpc_alat_ceiling_enabled: true   # include FSDS's measured sustained lateral-acceleration ceiling (MPCParams.alat_ceiling_flat/_slope/_intercept, the same law mpc_core._alat_ceiling_at uses) as a smooth saturation of the prediction'...
+    # [NMPC only] MPCC-inspired additions (2026-08-13) -- see mpc_params.py's
+    # own field metadata (controller: "nmpc_only") and
+    # fsae_MPCTest/docs/planning_control_sync.md's "Three MPCC-inspired
+    # additions" / "Which settings affect which controller" sections.
+    nmpc_spline_reference_enabled: true   # [NMPC only] true (default) -> PathReference builds kappa(s)/psi_ref(s) from an analytic CubicSpline fit to the raw waypoints instead of the dense-resample + moving-average + finite-difference pipeline. Numerical-quality fix, no new solver coupling, defaults on unlike every other flag in this block. False restores the old moving-average path exactly, for A/B comparison (bool)
+    nmpc_horizon_speed_profile_enabled: false   # [NMPC only, EXPERIMENTAL] true -> sample a precomputed per-lap speed profile v(s) at each horizon stage's own PREDICTED arc length s_k instead of holding v_ref constant across the horizon. Mirrors kappa(s)'s state-keyed, non-schedulable lookup on purpose. No-op unless a speed-profile array is supplied at PathReference construction time. Default false: unvalidated, do not enable for a live run without an offline A/B first (bool)
+    nmpc_friction_circle_enabled: false   # [NMPC only, EXPERIMENTAL] true -> add a HARD |F_yf|/|F_yr| <= F_max bound to the condensed QP, ADDITIONAL to (not a replacement for) the existing SOFT alat-ceiling tanh saturation. F_max derived from the same measured ceiling law via F_max = m * ceiling(v_x) / 2 per axle. Default false: unvalidated, do not enable for a live run without an offline A/B first (bool)
     nmpc_osqp_max_iter: 500   # OSQP iteration cap for the SQP subproblem. Bounded well below MPCController's 8000 on purpose: this is a step DIRECTION that the true-cost backtracking test validates before it is kept, so a hard s... (iterations)
     nmpc_osqp_eps: 0.0001   # OSQP eps_abs/eps_rel for the SQP subproblem. Looser than MPCController's 1e-5 on purpose: an SQP subproblem is a STEP direction that the next iteration corrects, not the final answer, so sub-1e-4 a...
 fsds_bridge:

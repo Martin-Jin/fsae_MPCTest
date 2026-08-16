@@ -129,6 +129,7 @@ working-tree-only.
 
 ## Build/package plumbing
 
+
 - `setup.py` (all four packages): new `console_scripts` entry points —
   `mpc_controller_standalone` (control), `cone_recorder` (perception).
   Without these, `ros2 run` can't launch either new node even though the
@@ -153,8 +154,3 @@ working-tree-only.
   **and never declared the corner-factor rewrite's own telemetry** (silently
   dropped from every CSV instead of logged). Now lists exactly what
   `compute()` currently writes.
-
-## Discarded, not part of this PR
-
-`steering_sysid.py`/`steering_step.py` — standalone diagnostics, not MPC
-runtime dependencies.
