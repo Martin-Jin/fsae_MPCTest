@@ -79,6 +79,16 @@ this repo and FSDS, with no separate `fsae_planning` checkout at all.
   `USE_PRECOMPUTED_PATH` shell variables and pass them through, and the
   mirror picked up the `--symlink-install` rebuild step (§49) and `log_dir`
   launch arg it was missing relative to the live copy.
+- **2026-08-13: `steering_sysid.py`/`steering_step.py` and their harness
+  scripts removed again, on both sides.** Upstream never committed either
+  file — they were discarded from `fsae_planning`'s own working tree before
+  a PR was ever raised (see `fsae_MPCTest/docs/fsae_planning_pending_pr.md`'s
+  "Discarded, not part of this PR" note) — so the 2026-08-09 mirror above is
+  superseded, not just stale: there is no longer an upstream file for this
+  mirror to track. Removed here to match: both node files, `setup.py`'s two
+  matching entry points, and `run_steering_step.sh`/`run_steering_sysid.sh`.
+  `tuner/checks/steering_sysid_analysis.py`/`steering_step_analysis.py`
+  remain `fsae_MPCTest`-only, unaffected either way.
 
 ## File mapping
 
@@ -112,19 +122,17 @@ offline tuner cares about:
 | `control/fsae_control/fsae_control/fsds_bridge.py` | `control/fsae_control/fsae_control/fsds_bridge.py` | Direct mirror. Needed by both `stanley_controller.py` and `mpc_controller.py` (not `mpc_controller_standalone.py`, which bypasses it). |
 | `control/fsae_control/fsae_control/telemetry_logger.py` | `control/fsae_control/fsae_control/telemetry_logger.py` | Direct mirror. CSV telemetry shared by all three controller nodes. Also computes the run's composite score (via `scoring.py`) and prepends it to the control CSV as a `#`-commented header on `close()`. Includes `LapProgressTracker` (added 2026-08-11) — computes real `progress`/`reached_end`/`time_bonus` from the precomputed track path, fixing the live composite score being permanently pinned at `13.0`; see "Live/offline score parity" below. |
 | `control/fsae_control/fsae_control/scoring.py` | *(no upstream counterpart — never existed in `fsae_planning`'s git history)* | **Not a direct mirror.** Staged here for upstreaming, same direction as `mpc_controller_standalone.py` above. It **is** a verbatim copy of this repo's own `sim/scoring.py` — see "Live/offline score parity" below. Changes must be made in `sim/scoring.py` first, then re-copied here (and eventually upstreamed). |
-| `control/fsae_control/fsae_control/steering_sysid.py` | *(not in `fsae_planning`'s committed git history — mirrored from its working tree, same status as `mpc_controller_standalone.py`/`scoring.py` above)* | Direct mirror of the live working-tree file (added 2026-08-09 — see "Last resynced" above; previously deliberately absent, see "Why none of it is mirrored" further down for the historical rationale). Open-loop steering system-ID diagnostic node. |
-| `control/fsae_control/fsae_control/steering_step.py` | *(same git-history status as `steering_sysid.py` above)* | Direct mirror of the live working-tree file (added 2026-08-09, same resync as `steering_sysid.py`). Step-input transient diagnostic node. |
-| `control/fsae_control/setup.py` | `control/fsae_control/setup.py` | Direct mirror **except** the `mpc_controller_standalone`/`scoring.py` entry points/imports this repo's own two staged-for-upstream files above need — those exist here but not upstream. Registers six console-script entry points (`controller`, `mpc_controller`, `mpc_controller_standalone`, `fsds_bridge`, `steering_sysid`, `steering_step`) — the last two used to be an intentional one-line-each omission (see below) until both nodes were mirrored 2026-08-09. |
+| `control/fsae_control/setup.py` | `control/fsae_control/setup.py` | Direct mirror **except** the `mpc_controller_standalone`/`scoring.py` entry points/imports this repo's own two staged-for-upstream files above need — those exist here but not upstream. Registers four console-script entry points (`controller`, `mpc_controller`, `mpc_controller_standalone`, `fsds_bridge`). |
 
-> **Former intentional divergence in `setup.py`, resolved 2026-08-09.** Until
-> then, the live working tree had two entry points this mirror's `setup.py`
-> didn't (`steering_sysid`, and later `steering_step`) — both open-loop
-> diagnostic nodes, deliberately not mirrored per "do not add files that were
-> never there" (see "Why none of it is mirrored" below for the full
-> historical rationale). Copying an entry point without its module would
-> have pointed `setup.py` at a non-existent target. Once both nodes were
-> genuinely mirrored (see "Last resynced" above), both entry-point lines were
-> added at the same time, per the standing rule this note originally set out.
+> **`steering_sysid.py`/`steering_step.py` removed from both sides (2026-08-13).**
+> Both nodes were briefly mirrored here (2026-08-09) and had entry points in this
+> `setup.py`, but neither ever existed in `fsae_planning`'s committed git history
+> — they were working-tree-only diagnostics upstream, and upstream discarded them
+> before ever committing/PR-ing them (see `fsae_MPCTest/docs/fsae_planning_pending_pr.md`).
+> This mirror followed suit the same day: both files and their `setup.py` entry
+> points, `run_steering_step.sh`/`run_steering_sysid.sh` were all deleted here too.
+> Nothing currently in either tree needs a "why isn't this mirrored" explanation for
+> these two files — there's no upstream counterpart to explain a gap against.
 
 > **`zip_safe=False` (2026-08-08, S49) — no longer a divergence as of
 > 2026-08-09.** All four of this mirror's `setup.py` files
@@ -1123,14 +1131,18 @@ same reason.
 
 `fsds_simulator/` is a PR-staging snapshot, and its rule is "do not add files
 that were never there". At the time this section was written, all three
-files were new and none were mirrored, for the reasons below. **This is no
-longer current** — `steering_sysid.py` and `run_steering_sysid.sh` (plus the
+files were new and none were mirrored, for the reasons below. **Superseded
+twice since** — `steering_sysid.py` and `run_steering_sysid.sh` (plus the
 equivalent `steering_step.py`/`run_steering_step.sh` pair) were genuinely
-mirrored 2026-08-09 at explicit user request; see "Last resynced" at the top
-of this document and the file-mapping table above for where they landed.
-Kept below for the record, since the *reasoning* (not the outcome) is still
-useful context for judging future "should this diagnostic be mirrored?"
-calls:
+mirrored 2026-08-09 at explicit user request, then **both node files and
+their harness scripts were deleted again on both sides 2026-08-13** — they
+never existed in upstream `fsae_planning`'s committed git history, and
+upstream discarded them from its own working tree before ever committing
+them (see `fsae_MPCTest/docs/fsae_planning_pending_pr.md`'s changelog for
+that PR). Neither file exists in this mirror or upstream as of 2026-08-13;
+see the file-mapping table above. Kept below for the record, since the
+*reasoning* (not the outcome) is still useful context for judging future
+"should this diagnostic be mirrored?" calls:
 
 - `steering_sysid.py` — a diagnostic, not part of the car's runtime stack.
   That is still true; it was mirrored anyway because the user wants this
@@ -1145,11 +1157,11 @@ calls:
 - `steering_sysid_analysis.py` — lives in `fsae_MPCTest` only; nothing to
   mirror. Still true, unaffected by the 2026-08-09 resync.
 
-The one knock-on **used to be**: `setup.py`'s `steering_sysid` entry point
-was deliberately omitted from the mirror's copy, since the module wasn't
-there. Both node modules are there now, so both entry points (`steering_sysid`
-and `steering_step`) are registered — see the `setup.py` row in the
-file-mapping table.
+The `setup.py` entry-point knock-on has gone full circle: omitted while the
+modules didn't exist, added when both were mirrored 2026-08-09, removed
+again 2026-08-13 when both files were deleted on both sides — see the
+`setup.py` row in the file-mapping table for the current (four-entry-point)
+state.
 
 The log records the **raw normalised `cmd.steering`** alongside the roadwheel
 angle we assume it maps to. That assumption is the thing under test, so

@@ -114,8 +114,6 @@ to edit it again for yours. Every other file in this mirror is a byte-for-byte c
 - `fsds_ros2_bridge` itself — part of FSDS, not this stack.
 - Anything under `ros2/src/fsae_planning`'s `.git/`, `build/`, `install/`, `log/`,
   `__pycache__/` — build artifacts, not source.
-- `steering_sysid.py` / `steering_step.py` and their harness scripts — standalone
-  open-loop diagnostics, not part of the MPC controller's runtime dependencies.
 - `launch_terminals.sh` — a simpler multi-terminal opener superseded by this
   mirror's own `launch_all.sh`, which additionally waits for FSDS's RPC
   server and odom before launching and tears everything down on exit.
