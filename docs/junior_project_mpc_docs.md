@@ -36,13 +36,11 @@ MPC also has two structural advantages over Stanley on paper:
 
 Based on testing so far, **Stanley is currently the better controller, and MPC has not replaced it.**
 
-Early in the project, the Stanley baseline really was turning corners slowly and looked like a clear case for MPC to fix. But the improvement that actually closed most of that gap turned out to be unrelated to MPC at all: adding a proper speed profile (a target speed that varies with upcoming curvature, rather than one fixed number) to what the car is being driven against. Once Stanley got that same speed profile, it improved enough to become roughly equal to the linear MPC (LMPC) on tracking accuracy, and it's noticeably **more stable on straights** than either MPC variant.
-
-The current rough ranking, based on testing so far:
+The current rough ranking:
 
 1. **Stanley + speed profile**: best overall. Comparable tracking accuracy to the MPC variants, and the most stable on straights.
 2. **Nonlinear MPC (NMPC)**: better corner turn-in than the linear MPC (Section 4.2 onward), and somewhat more stable than the linear MPC on straights, but still not as stable as Stanley.
-3. **Linear MPC (LMPC)**: the original/baseline MPC (Sections 1-4.1). Still the weakest of the three on straight-line stability, and still turns corners slowly/late relative to the other two: the "late turn-in" problem described in Section 4.2 that motivated building the nonlinear MPC in the first place.
+3. **Linear MPC (LMPC)**: the original/baseline MPC (Sections 1-4.1). The weakest of the three on straight-line stability, and turns corners slowly/late relative to the other two: the "late turn-in" problem described in Section 4.2.
 
 **An important caveat on what "more stable" actually means here.** Stanley's advantage is specifically about steering-command smoothness, not a functional tracking failure on the MPC side:
 
@@ -51,7 +49,7 @@ The current rough ranking, based on testing so far:
 - The real concern is longer-term: this is the kind of repeated small back-and-forth motion that's plausibly hard on a real steering actuator over time, even though it isn't a driving-quality problem in the simulator's own metrics.
 - Stanley's much simpler reactive law doesn't produce this chatter at all. That's why it still comes out ahead despite MPC's theoretical planning advantage: the win is actuator longevity and visual smoothness, not tracking capability.
 
-None of this means MPC was a wrong direction to explore. The write-up below documents the design, the maths, and several genuine attempts at giving it real corner-anticipation (Section 4.2 onward), which is a harder and more interesting problem than the original slow-Stanley symptom implied, and NMPC's corner behaviour is a real improvement over LMPC's. But readers should not take "this project built an MPC controller" to mean MPC is what's currently recommended for the car. As of this writing, **Stanley plus a curvature-aware speed profile is the best-performing, most stable controller**, and that combination is what should be treated as the baseline to beat, not Stanley alone.
+None of this means MPC is a dead end. NMPC's corner behaviour is a real improvement over LMPC's, and corner-anticipation (Section 4.2 onward) is a harder and more interesting problem than a simple average-tracking comparison suggests. But readers should not take "this project built an MPC controller" to mean MPC is what's currently recommended for the car. As of this writing, **Stanley plus a curvature-aware speed profile is the best-performing, most stable controller**, and that combination is what should be treated as the baseline to beat, not Stanley alone.
 
 The trade-off MPC pays for its theoretical advantages is real regardless of the above: complexity and computation cost, solving an optimisation problem 20 times a second, instead of simple trigonometry.
 
@@ -92,7 +90,7 @@ The trade-off MPC pays for its theoretical advantages is real regardless of the 
   - [4. The Two Vehicle Models: MPC's Model vs. the Simulator's Plant](#4-the-two-vehicle-models-mpcs-model-vs-the-simulators-plant)
     - [Why a linear model, when the real car is nonlinear?](#why-a-linear-model-when-the-real-car-is-nonlinear)
     - [4.2 A second, separate blindness: the linear model can't see the road bend, and the nonlinear MPC that fixes it](#42-a-second-separate-blindness-the-linear-model-cant-see-the-road-bend--and-the-nonlinear-mpc-that-fixes-it)
-      - [4.2.1 Three smaller upgrades borrowed from a published racing controller (2026-08-13)](#421-three-smaller-upgrades-borrowed-from-a-published-racing-controller-2026-08-13)
+      - [4.2.1 Optional NMPC Refinements](#421-optional-nmpc-refinements)
   - [5. Vehicle Physics, Explained](#5-vehicle-physics-explained)
     - [5.1 The 24-State Plant Model](#51-the-24-state-plant-model)
     - [5.2 Tyres and Slip, Explained](#52-tyres-and-slip-explained)
@@ -123,7 +121,7 @@ graph LR
 
 The key trick is steps D and E: even though the controller plans a whole 1.25-second sequence, it only ever uses the very first command from that plan, then immediately re-plans from scratch next tick. This is called **receding horizon control**.
 
-Why this matters: the controller's internal model of the car is a simplification of the real physics (see [Section 4](#4-the-two-vehicle-models-mpcs-model-vs-the-simulators-plant)). Replanning every tick is what makes MPC robust to that. Any prediction error gets caught and corrected on the very next tick, 20 times a second.
+Why this matters: the controller's internal model of the car is a simplification of the real physics (see [Section 4](#4-the-two-vehicle-models-mpcs-model-vs-the-simulators-plant)). Replanning every tick is what makes MPC robust to that: any prediction error gets caught and corrected on the very next tick, 20 times a second.
 
 ### 1.2 What the Controller Tracks (The State Vector)
 
@@ -144,7 +142,7 @@ $$
 | 6 | $\delta_{act}$ | Where the steering actuator has *actually* reached so far (it lags behind commands) | rad |
 | 7 | $a_{act}$ | Where the throttle/brake actuator has *actually* reached so far | m/s² |
 
-States 6 and 7 exist because a real steering rack or throttle doesn't snap instantly to a new value, it eases toward it (a "first-order lag"). Tracking the actuator's actual current position, not just the last command sent, lets the model predict the car's motion more accurately.
+States 6 and 7 exist because a real steering rack or throttle doesn't snap instantly to a new value; it eases toward it (a "first-order lag"). Tracking the actuator's actual position, not just the last command sent, lets the model predict the car's motion more accurately.
 
 **How the error is actually measured: the Frenet frame.**
 
@@ -154,7 +152,7 @@ States 6 and 7 exist because a real steering rack or throttle doesn't snap insta
 
 ### 1.3 The Prediction Model
 
-The car is modelled as a **bicycle model**: one wheel on the front axle, one on the rear, both on the centreline, instead of four separate wheels. This is the standard simplification used in vehicle control: it captures the two things that matter for path tracking (how the front wheel steers, and how the whole car rotates/slides) while staying simple enough to solve 20 times a second.
+The car is modelled as a **bicycle model**: one wheel on the front axle, one on the rear, both on the centreline, instead of four separate wheels. This is the standard simplification in vehicle control. It captures the two things that matter for path tracking (how the front wheel steers, how the whole car rotates/slides) while staying simple enough to solve 20 times a second.
 
 Every linear model in control theory has the same general form:
 
@@ -162,7 +160,7 @@ $$
 \dot{x} = A \cdot x + B \cdot u
 $$
 
-Read this as: *"the rate of change of the state (ẋ) is some fixed mixture of the current state (x) plus some fixed mixture of the current command (u)."* $A$ and $B$ are just tables of numbers saying how much of each state feeds into the rate of change of every other state.
+In plain English: *the rate of change of the state (ẋ) is a fixed mixture of the current state (x), plus a fixed mixture of the current command (u).* $A$ and $B$ are just tables of numbers saying how much of each state feeds into the rate of change of every other state.
 
 Two different physical assumptions are blended together to build $A$:
 
@@ -199,13 +197,13 @@ $$
 \alpha = \text{clip}\left(\frac{v_x - 1.0}{2.5 - 1.0},\ 0,\ 1\right) \qquad A_c = (1-\alpha)A_{kin} + \alpha A_{dyn}
 $$
 
-$\alpha$ ramps linearly from 0 to 1 between 1 m/s and 2.5 m/s. Below 1 m/s it's pure kinematic, above 2.5 m/s it's pure dynamic, in between it's a proportional mix. This avoids a sudden jump in predicted behaviour right at the switch-over speed.
+$\alpha$ ramps linearly from 0 to 1 between 1 m/s and 2.5 m/s: pure kinematic below 1 m/s, pure dynamic above 2.5 m/s, a proportional mix in between. This avoids a sudden jump in predicted behaviour right at the switch-over speed.
 
-**From continuous to discrete (Zero-Order Hold).** The equation above, $\dot{x}=A_c x + B_c u$, describes an instant rate of change, a speedometer reading, not a per-tick step. But the controller only makes one decision every $dt = 0.05\text{s}$ and holds the command fixed until the next tick ("zero-order hold" on the input, it holds at a constant value, order zero, between updates, rather than ramping or curving).
+**From continuous to discrete (Zero-Order Hold).** The equation above, $\dot{x}=A_c x + B_c u$, describes an instant rate of change (a speedometer reading), not a per-tick step. The controller only makes one decision every $dt = 0.05\text{s}$ and holds the command fixed until the next tick. That's a "zero-order hold" on the input: it holds at a constant value (order zero) between updates, rather than ramping or curving.
 
-What the solver actually needs is the one-step version, $x[k{+}1] = A_d x[k] + B_d u[k]$: given the state and the (held-constant) command, what state does that produce exactly $dt$ seconds later?
+What the solver actually needs is the one-step version, $x[k{+}1] = A_d x[k] + B_d u[k]$: given the state and the held-constant command, what state does that produce exactly $dt$ seconds later?
 
-**Zero-Order Hold (ZOH)** answers that by solving the continuous equation exactly, assuming $u$ is frozen for the whole $dt$ window, which produces new matrices $A_d$/$B_d$ folding in that time step:
+**Zero-Order Hold (ZOH)** answers that by solving the continuous equation exactly, assuming $u$ is frozen for the whole $dt$ window. That produces new matrices $A_d$/$B_d$ folding in the time step:
 
 $$
 \exp\!\left(\begin{bmatrix}A_c & B_c\\0&0\end{bmatrix}dt\right)=\begin{bmatrix}A_d & B_d\\0&I\end{bmatrix}
@@ -213,32 +211,15 @@ $$
 
 This matrix exponential is the standard closed-form trick for solving a linear ODE exactly over a fixed interval. The code doesn't approximate it step-by-step; it computes $A_d$/$B_d$ directly from $A_c$/$B_c$/$dt$ once per tick (`scipy.linalg.expm` under the hood).
 
-Because the input actually *is* held constant by the controller between ticks (it only issues one command per $dt$), ZOH isn't an approximation here, it's exact. That makes it more accurate than a simpler method like Euler integration, which assumes the rate of change stays constant over the step and builds up error every tick.
+Because the controller really does hold the input constant between ticks (only one command issued per $dt$), ZOH isn't an approximation here — it's exact. That makes it more accurate than a simpler method like Euler integration, which assumes the rate of change stays constant over the step and builds up error every tick.
 
-**A common misconception, worth stating explicitly: the MPC does not "see" the path curving ahead.** It is tempting to picture the controller as looking at the upcoming corner and planning to turn early because it can see the bend coming. That is not what the equations above actually do.
+**A common misconception, worth stating explicitly: the MPC does not "see" the path curving ahead.** It's tempting to picture the controller looking at an upcoming corner and planning to turn early because it can see the bend coming. That isn't what the equations above do.
 
-Look again at $A_{kin}$/$A_{dyn}$: every term in them describes how the state ($e_y$, $e_\psi$, etc.) evolves *in response to the current state and the chosen control input*, for example $\dot{e}_y = v_x \cdot e_\psi$ says "if the car's heading is already off, lateral error will grow", and the $\delta_{act}$ terms say "steering changes future heading error." None of them contain $\kappa$ (the actual curvature of the real path ahead). So if the car is currently sitting dead-centre and pointed straight along the path ($e_y \approx 0$, $e_\psi \approx 0$) and holds the steering wheel at zero, the model's own prediction for all $N$ future steps is *also* $e_y \approx 0$, $e_\psi \approx 0$: flat, no matter how sharply the real path bends 20 metres ahead. The model has nothing in it that represents "the road itself is turning away from the car"; it only knows how a control input changes the error state, never how the *reference* itself changes shape over the horizon.
+Every term in $A_{kin}$/$A_{dyn}$ describes how the state ($e_y$, $e_\psi$, etc.) evolves *in response to the current state and the chosen control input*. For example, $\dot{e}_y = v_x \cdot e_\psi$ says "if the car's heading is already off, lateral error will grow," and the $\delta_{act}$ terms say "steering changes future heading error." None of them contain $\kappa$, the actual curvature of the real path ahead.
 
-This is exactly why the "adaptive gain scheduling" features that existed at the time (`adaptive_Q_lookahead` etc., since removed, see [architecture.md](architecture.md#adaptive-gain-scheduling-controllermodel_utilspy)'s "Historical" section) were built at all. They scanned the real path geometry ahead (a genuine lookahead, done outside the QP) and used it to make an *existing* tracking error more expensive to leave uncorrected: Q[0,0]/Q[2,2] got boosted approaching a corner, R[0,0] got relaxed to make steering cheaper. But reweighting a cost cannot manufacture an error that isn't there yet. If $e_y \approx e_\psi \approx 0$ on the approach (the car is still exactly on the still-straight section of the path), there was nothing for those boosts to act on, and the QP's genuinely optimal answer stayed "keep going straight" until the car had physically entered the curved section and picked up real curvature/heading error the state vector can see. Live telemetry showed exactly this pattern: the lookahead-driven cost multipliers moved correctly and early, while the commanded steering angle itself stayed near zero for over a second, only starting to ramp once the car was already inside the bend. This whole family was replaced on 2026-08-13 by a simpler current-curvature-only scheduler (`_corner_factor`, see the same architecture.md section) that doesn't attempt lookahead at all. The analysis above is exactly why: lookahead-based reweighting couldn't manufacture anticipation the model itself doesn't structurally have.
+So if the car is currently dead-centre and pointed straight along the path ($e_y \approx 0$, $e_\psi \approx 0$) and holds the steering wheel at zero, the model predicts $e_y \approx 0$, $e_\psi \approx 0$ for every future step — flat, no matter how sharply the real path bends 20 metres ahead. The model has nothing in it representing "the road itself is turning away from the car." It only knows how a control input changes the error state, never how the *reference* itself changes shape over the horizon.
 
-**An attempted fix on 2026-08-12** (`curvature_forcing_enabled` / `CURVATURE_FORCING_ENABLED`) tried injecting the precomputed path's own curvature into the dynamics as a forcing term over the horizon: $-v_x\cdot\kappa(s_k)\cdot dt$ added to the predicted $e_\psi$ at each step $k$, using the path's actual curvature at the arc-length position the car is predicted to reach by step $k$ (see `_curvature_horizon_profile` in `mpc_core.py`). The idea was sound: give the model a term that predicts heading/lateral error growing on its own as a modelled straight-line car approaches a real bend, something a plain reweighting of $Q$/$R$ can never do. A first, single-scenario synthetic test looked like it worked (steering leaned toward a bend before any tracking error existed).
-
-**It was disabled the same day after closer testing showed it doesn't actually work.**
-
-- Adding a term to the *dynamics constraint* ($x_{k+1} = Ax_k + Bu_k + w_k$) means it becomes part of the same equation the QP is choosing the cheapest possible trajectory through. The solver isn't "informed that the road bends"; it is handed an extra disturbance term and is free to decide the cheapest way to respond to it anywhere across the whole 35-step horizon.
-- At the physically-correct forcing size, the model's own natural error-decay (the $e_\psi$ row loses about 5% of its value every 50 ms step, independent of anything else) ate the forcing almost as fast as it was added, so the resulting steering command barely moved (well under 1°, weaker than ordinary sensor noise). No real early turn-in resulted.
-- Trying to compensate by making the forcing bigger made things actively worse: past a certain size, the *cheapest* predicted trajectory the QP could find involved steering hard away from the corner for the first several tenths of a second, then snapping back, an artifact of the optimizer, not of the road.
-- Only an unrealistically large forcing (about 20x the physically correct size) restored the right direction, by which point the steering command was pinned at its hard limit throughout, which is not useful anticipation.
-
-The term was disabled, then fully removed the next day along with the whole adaptive-gain-scheduling family described above (see [architecture.md](architecture.md#adaptive-gain-scheduling-controllermodel_utilspy)'s "Historical" note). A working version would need to change what the *reference* the car is being compared against looks like, rather than adding a disturbance to the same equation the optimizer is minimizing cost over. The NMPC section below reached that goal a different, structurally sound way.
-
-This means the underlying limitation described above, the MPC does not manufacture a tracking error ahead of a corner it hasn't reached yet, was still open as of that attempt.
-
-**A different fix, tried 2026-08-12, changes the reference instead of the dynamics** (`use_precomputed_heading_profile`, live ROS 2 controller only). Instead of telling the QP's *prediction* about the road bending ahead (which, as above, just hands the solver a disturbance it is free to exploit however is cheapest across the whole horizon), this precomputes a heading TARGET for every waypoint on a known/recorded track, offline, before the car ever drives it (`tuner/tools/raceline_optimizer.py`'s `build_shaped_heading_profile`). At each waypoint, the target already leads the path's true geometric heading by however much the car can *actually* achieve turning between here and the next waypoint, given the speed it's planned to be going (using the same $v/(l_f+l_r)\cdot\delta_{max}$ relationship $A_{kin}$ already uses for its own yaw-rate row), so a corner taken slowly gets proportionally more lead per metre than one taken fast, since there's more time available per metre at lower speed.
-
-The key difference from the forcing-term attempt: this doesn't add anything to the horizon's dynamics at all. It changes what $e_\psi$ *already equals* the moment the QP starts solving, the car's current heading compared against a target that's already looking a little further down the track, exactly as if the car had genuinely drifted off a straight reference. There's no future obligation for the solver to schedule around, so the "cheapest trick is to steer the wrong way first, then correct" failure mode above cannot occur here: synthetic testing (a realistic corner-entry ramp, several speeds) showed the resulting steering command move directly and monotonically toward the target, with no wrong-direction dip. A first version of this idea used a fixed lookahead distance instead of scaling by achievable yaw rate, and that version failed differently: as little as 8 m of fixed lead was enough to snap steering to full lock immediately on a realistic corner, at every speed tested, which is why the achievable-yaw-rate scaling is essential, not a refinement.
-
-This is genuinely narrower in scope than the forcing-term idea, though: it only works for a track that's fully known and mapped ahead of time (the shaping happens once, offline, before the lap starts). A car exploring a new track live, driving off the planner's own SLAM-built centreline, has no future path to precompute a lead into, so this still doesn't touch that case. See `planning_control_sync.md`'s "Precomputed shaped heading-lead profile" section for the full mechanism and an important caveat: on the track this was first tested against, the lead ends up active across almost the entire lap rather than only near corners, because that particular track has very few genuinely straight sections. Live-tested with a high-variance, inconclusive result (some runs the best of the session, others among the worst); currently shipped ON pending more data, not because it's confirmed to help. See `planning_control_sync.md` for the full run-by-run numbers.
+This is the fundamental limitation that Section 4.2's nonlinear MPC exists to fix, by changing what the model tracks progress against rather than trying to patch the cost function. See Section 4.2 for the actual fix.
 
 ### 1.4 The Cost Function
 
@@ -257,9 +238,11 @@ In plain English, three things are being penalised at once:
 | $R_{rate}$ (rate cost) | How jerky/abrupt the commands are, tick to tick |
 | Slack | A soft penalty for crossing a ±3.5 m lane boundary, allowed only as a last resort |
 
-**Why the lane boundary needs slack at all.** The bound is `e_y <= 3.5 + slack` (and symmetrically for `-3.5`) rather than a plain hard `e_y <= 3.5`. The reason is feasibility, not tuning: `x_0` is pinned to the *measured* state by the hard constraint above, so if the car is already outside the corridor right now (e.g. recovering from an off-track excursion), a plain hard bound would demand `x_0 <= 3.5` while `x_0 == e_{y,\text{measured}} = 4.0`, say. Those are two constraints that directly contradict each other, with no feasible solution at all.
+**Why the lane boundary needs slack at all.** The bound is `e_y <= 3.5 + slack` (and symmetrically for `-3.5`) rather than a plain hard `e_y <= 3.5`. The reason is feasibility, not tuning.
 
-The solver would return nothing, not even a "best effort" trajectory. `slack` absorbs that contradiction (it can grow to cover however far outside the corridor the car currently is), and the large `W_slack = 10000` weight then pressures the solver to shrink it back toward zero as fast as the dynamics allow. See [architecture.md](architecture.md#L911) for the full explanation.
+`x_0` is pinned to the *measured* state by the hard constraint above. If the car is already outside the corridor (e.g. recovering from an off-track excursion), a plain hard bound would demand `x_0 <= 3.5` while `x_0 == e_{y,\text{measured}} = 4.0`, say. Those two constraints directly contradict each other, so there's no feasible solution at all, and the solver returns nothing — not even a "best effort" trajectory.
+
+`slack` absorbs that contradiction (it can grow to cover however far outside the corridor the car currently is), and the large `W_slack = 10000` weight then pressures the solver to shrink it back toward zero as fast as the dynamics allow. See [architecture.md](architecture.md#L911) for the full explanation.
 
 Subject to hard constraints that can never be broken:
 
@@ -291,7 +274,7 @@ $$
 
 ### 1.5 The Solver
 
-The cost function above is **quadratic** (everything is squared), and every constraint is **linear**. A quadratic cost with linear constraints is called a **Quadratic Program (QP)**, a well-studied category of problem with fast, purpose-built, off-the-shelf solvers already available. This is deliberate: it's *why* the cost function is built with squared terms rather than something more exotic, and it's what keeps the whole problem inside this fast-to-solve category.
+The cost function above is **quadratic** (everything is squared), and every constraint is **linear**. A quadratic cost with linear constraints is called a **Quadratic Program (QP)**, a well-studied category of problem with fast, purpose-built, off-the-shelf solvers already available. This is deliberate: it's why the cost function uses squared terms rather than something more exotic, and it's what keeps the whole problem inside this fast-to-solve category.
 
 **This is exactly where the model's linearity earns its keep.** The constraint $x_{i+1} = A_d x_i + B_d u_i$ is only linear because $A_d$/$B_d$ come from the linear bicycle model in [Section 1.3](#13-the-prediction-model), not the nonlinear 24-state plant. If that constraint used the plant's real Pacejka tyre curves instead:
 
@@ -331,7 +314,9 @@ See `controller/optimiser.py`'s `init_parameterized_mpc()` / `solve_mpc()` for t
 
 ### 1.6 Special Features: Adaptive Gain Scheduling, Delay Compensation, Speed Gating
 
-The tuned $Q$/$R$/$R_{rate}$ weights are optimised for one "average" operating point. Two small functions rescale $R$ and $R_{rate}$ **every tick** to compensate for known, predictable ways the car's needs change with speed and cornering, without needing a separate tuned weight set for every situation.
+The tuned $Q$/$R$/$R_{rate}$ weights are optimised for one "average" operating point. A handful of small functions rescale $Q$/$R$/$R_{rate}$ **every tick** to compensate for known, predictable ways the car's needs change with speed and cornering, so a single tuned weight set can still cover every situation.
+
+> All of these functions return a **copy** of the base matrix — your tuned weights in `settings.py` are never permanently modified, only scaled on top of, fresh, every tick.
 
 **Steering gets more conservative at higher speed** (`adaptive_R_scaling`):
 
@@ -339,7 +324,7 @@ $$
 \text{steer\_scale} = 1 + \frac{1.5\,v_x}{6.0+v_x} \qquad(\to 1.0 \text{ at } v_x{=}0,\ \to 2.5 \text{ as } v_x\to\infty)
 $$
 
-At higher speed the same steering angle produces much more lateral acceleration ($a_{lat}\approx v_x^2\kappa$), so the same steering command is more destabilising. This is a saturating ("Hill function") curve rather than a straight ramp specifically so steering cost never exceeds 2.5x base; the controller is never fully locked out of steering even at very high speed.
+At higher speed the same steering angle produces much more lateral acceleration ($a_{lat}\approx v_x^2\kappa$), so the same steering command is more destabilising. This is a saturating curve rather than a straight ramp, so steering cost never exceeds 2.5x base — the controller is never fully locked out of steering, even at very high speed.
 
 **Smoothness penalty relaxes in tight corners** (`adaptive_R_rate`):
 
@@ -347,69 +332,50 @@ $$
 \text{scale} = \min\Big(\underbrace{\max\!\left(0.625,\ \tfrac{1}{1+3|\kappa|}\right)}_{\text{"during" — current curvature}},\ \underbrace{\max\!\left(0.85,\ \tfrac{1}{1+4\,\kappa_{\max}}\right)}_{\text{"entering" — lookahead curvature}}\Big)
 $$
 
-In a straight, the full smoothness penalty applies (discourage unnecessary jitter). In a tight corner, the penalty is floored, enough softening to let the controller make the fast steering changes a tight corner genuinely needs, without ever letting the rate cost vanish completely (which would allow arbitrarily rapid oscillation).
+On a straight, the full smoothness penalty applies (discourage unnecessary jitter). In a tight corner, the penalty is floored — enough softening to let the controller make the fast steering changes a corner genuinely needs, without letting the rate cost vanish completely (which would allow arbitrarily rapid oscillation).
 
-- There are actually *two* floors here, combined by taking whichever is more aggressive (`min`): one driven by the curvature the car is turning through *right now* ($\kappa$, from the car's own yaw rate, see `curvature_estimate`), and a shallower one driven by $\kappa_{\max}$, the sharpest curvature seen in a forward scan of the path ahead (see **corner anticipation**, below). This means the cost is already softening slightly *before* the car reaches a corner, not just once it's already turning.
-- **Tuning note:** the during-floor (0.625) was raised from an earlier 0.55 after a live run with the entering-floor at 0.85 showed steering oscillating through zero several times a second mid-corner while tracking error stayed small (under-damped steering-rate hunt, not a tracking problem), so the fix was *less* softening while actually turning, not more lateral authority.
+There are two floors here, combined by taking whichever is more aggressive (`min`):
 
-> Both functions return a **copy** of the base matrix, your tuned weights in `settings.py` are
-> never permanently modified, only scaled on top of, fresh, every tick.
+- One driven by the curvature the car is turning through *right now* ($\kappa$, from the car's own yaw rate, see `curvature_estimate`).
+- A shallower one driven by $\kappa_{\max}$, the sharpest curvature seen in a forward scan of the path ahead. This means the cost is already softening slightly *before* the car reaches a corner, not just once it's already turning.
 
-**Softening the lateral-error cost near the centreline** (`adaptive_Q_scaling`, **enabled by default since 2026-08-09**, to match the live controller):
+An `enable_in_corners` flag (on by default) controls whether this curvature-based softening applies at all; leave it on.
+
+**Softening the lateral-error cost near the centreline** (`adaptive_Q_scaling`, on by default, matches the live controller):
 
 $$
 \text{scale} = \begin{cases} \text{floor} & |e_y| \le e_{y,lo} \\ \text{floor} + (1-\text{floor})\frac{|e_y|-e_{y,lo}}{e_{y,hi}-e_{y,lo}} & e_{y,lo} < |e_y| < e_{y,hi} \\ 1.0 & |e_y| \ge e_{y,hi} \end{cases}
 $$
 
-- **The idea:** a quadratic cost pulls toward zero error with the same proportional strength no matter how small the error already is, which can feed a correct-overcorrect cycle right where the controller should be settling onto the line instead of still correcting. Softening `Q[e_y]` when already close reduces that pull.
-- **Motivation:** a live-only symptom (steering reversal rate rising as `|e_y|` got *smaller*) that has **not** been reproduced offline. The offline recorded-map rollout shows the opposite trend. Re-validate against a live log before trusting this long-term.
+A quadratic cost pulls toward zero error with the same proportional strength no matter how small the error already is, which can feed a correct-overcorrect cycle right where the controller should be settling onto the line rather than still adjusting. Softening `Q[e_y]` once the car is already close reduces that pull.
 
-**Suppressing steering hunt on straights** (`steer_rate_anti_hunt`, **enabled by default since 2026-08-09**): `adaptive_R_rate` above only ever *softens* the steering-rate cost, and only in corners. This function instead *stiffens* it, up to a 6x boost, when the car is simultaneously nearly straight ($\kappa$ near zero), already close to the centreline ($|e_y|$ small), *and* already pointed the right way ($|e_\psi|$ small):
+**Suppressing steering hunt on straights** (`steer_rate_anti_hunt`, on by default): `adaptive_R_rate` above only ever *softens* the steering-rate cost, and only in corners. This function instead *stiffens* it, up to a 6x boost, when the car is simultaneously nearly straight ($\kappa$ near zero), already close to the centreline ($|e_y|$ small), *and* already pointed the right way ($|e_\psi|$ small):
 
 $$
 \text{scale} = 1 + (6.0-1)\cdot\underbrace{\tfrac{1}{1+60|\kappa|}}_{\text{boost}_\kappa}\cdot\underbrace{\tfrac{1}{1+30|e_y|}}_{\text{boost}_{e_y}}\cdot\underbrace{\tfrac{1}{1+23|e_\psi|}}_{\text{boost}_{e_\psi}}
 $$
 
-- Each of the three factors fades toward 1.0 independently as its own input grows, so the full 6x only kicks in when the car is straight, centred, *and* aligned all at once, never as a hard on/off switch.
-- **Why $e_\psi$:** $\kappa$ and $e_y$ alone can't tell "genuinely straight and settled" apart from "geometrically straight but still pointed the wrong way after exiting a corner". Without it, exactly the steering correction the car needs in that second case would get made artificially expensive.
-- This is the "should be settled, not still adjusting" regime neither of the other two gain-scheduling functions targets, and it composes on top of `adaptive_R_rate`'s output rather than replacing it.
+Each of the three factors fades toward 1.0 independently as its own input grows, so the full 6x only kicks in when the car is straight, centred, *and* aligned all at once — never as a hard on/off switch.
 
-**A dead end worth knowing about** (`adaptive_R_rate`'s `enable_in_corners` flag, renamed from `disable_in_corners` after its polarity was found to be the opposite of what the name suggested): setting it `False` *undoes* the curvature-based softening once past a small cornering threshold, restoring the full unscaled rate cost. Tried once and reverted the same day. It made cornering lag noticeably worse, most likely because the discontinuous cost jump at the threshold destabilises the QP's warm-start on ticks straddling it. Left in the code (on by default, the setting that keeps softening active) as a documented reason not to re-try it casually, not as a feature to enable.
+$e_\psi$ is needed because $\kappa$ and $e_y$ alone can't tell "genuinely straight and settled" apart from "geometrically straight but still pointed the wrong way after exiting a corner." Without it, exactly the steering correction the car needs in that second case would get made artificially expensive. This targets a "should be settled, not still adjusting" regime the other gain-scheduling functions don't cover, and composes on top of `adaptive_R_rate`'s output rather than replacing it.
 
-**Anticipating corners before you're in them** (`adaptive_Q_lookahead`, enabled by default but still experimental/not validated): every function above reacts to curvature the car is *at right now*. This one instead scans a speed-scaled stretch of path ahead of the car (about 3-17 m, depending on speed) for the sharpest curvature coming up, $\kappa_{\max}$, and uses it to reshape $Q$ *before* the car ever drifts off-line approaching that corner:
+**Current-curvature corner scheduler** (`_corner_factor` in `mpc_core.py`): reshapes $Q$ based on the curvature the car is at *right now* — reading a smoother, spline-fitted curvature by default rather than a cruder point-to-point estimate — to commit to steering through a corner and relax the yaw-rate penalty enough that turn-in doesn't feel sluggish. It doesn't attempt to look ahead at path geometry the car hasn't reached yet (see Section 1.3's misconception note and Section 4.2 for why lookahead-based reweighting can't manufacture that anticipation, and how NMPC solves it properly instead).
 
-- **Approaching**: boosts $Q_{e_y}$ (up to 2x) and $Q_{e_\psi}$ (up to 1.5x) so the controller commits to steering early, and *relaxes* $Q_{r}$ (yaw rate, down to 0.5x) so a normally-high straight-line yaw-rate penalty doesn't itself make turn-in feel sluggish.
-- **Exiting**: keeps a heading-error boost active for a few metres after the sharpest point, tapering off, scaled by how sharp the corner actually was.
-- **On a genuinely clear straight**: does the opposite. Softens $Q_{e_y}$ slightly and nudges $Q_{e_\psi}$/$Q_r$ up a little, to keep the car pointed straighter and calm residual wander.
+**Compensating for real, unmeasured delay** (live ROS 2 controller only, `mpc_core.py`'s `predict_ahead()`): the pose the controller just received may already be several ticks old by the time it's solved against, since the car has moved and turned since that measurement was taken. Planning as if the car is still there means planning against the wrong starting point.
 
-**Why not just use $\kappa_{\max}$ directly?** Real corners span such a wide range of radii that a plain curve like the ones above turns out badly scaled. A gentle sweeper and a tight corner both land in the flat, barely-responding part of the curve, so turning up the boost ceiling barely changes anything. For example:
-
-| Corner | Raw curvature | Boost reached |
-|---|---|---|
-| Gradual sweeper (R=40 m) | κ=0.025 | 17% |
-| Typical corner (R=12 m) | κ=0.083 | 40% |
-
-- **The fix:** score corners by **demand** instead of raw curvature, roughly, "how much of the car's available grip at this speed does this corner actually need" (formally, $\kappa_{\max}$ divided by the tightest curvature the car could hold at its current speed before FSDS's cornering-acceleration ceiling binds).
-- A demand near 1.0 means "this corner needs everything you've got right now". Because that's true whether the corner is a gentle sweeper taken fast or a tight hairpin taken slow, one set of boost constants works for both instead of needing a different threshold per corner shape (`ADAPTIVE_Q_DEMAND_NORMALISED`, on by default, set `False` to compare against the old raw-curvature curve).
-
-**A second wrinkle: long U-turns.** Everything above keys off *peak* curvature, but a long, gradual U-turn can have an unremarkable peak curvature (it's a big, gentle arc) while still demanding a huge total change of direction, exactly what peak curvature is bad at seeing.
-
-- **Fix:** the lookahead scan also totals up the accumulated heading change over the whole window. Once that passes 60° of turning within the lookahead distance, an *extra* boost kicks in on top of everything else (up to 1.6x on $Q_{e_y}$/$Q_{e_\psi}$, down to 0.6x on $Q_r$), ramping to full strength by 120°.
-- **Known limit:** this only helps *before* the corner, while the steering wheel still has room to turn more. On the log that motivated it, the car was already pinned at the full steering stop for over a second mid-corner, so no amount of extra $Q$ boost could have added steering that didn't exist. That residual case needs a slower entry speed, not more cost-function cleverness.
-
-**The same idea for steering effort, not just $Q$** (`steer_effort_straight_boost`, experimental, since removed, see below): a matching straight-line boost on $R_{\delta}$ itself (not its rate of change; that's `steer_rate_anti_hunt` above). Up to 1.5x more expensive to hold *any* steering angle at all on a clear straight, fading back to baseline sharply as soon as a corner appears in the lookahead window.
-
-**Why "scan ahead every tick" at all, when the track doesn't move?** Everything above approximated "which corner, how far into/past it" from local curvature, re-derived from scratch every single tick, because in general the path *can* move (the live planner rebuilds it from SLAM as the car drives, on an unmapped track). But when the tracked path was a fixed, precomputed one instead (a recorded lap, driven again), the whole path was already a known array before the car ever started moving, so corner identity didn't need to be *approximated* at all; it could be computed exactly, once, at load time. `use_precomputed_corner_map` (live ROS 2 controller only, `mpc_core.py`'s `CornerMap`/`_segment_corners`, added 2026-08-12) did exactly this for that one case: it fixed a real, confirmed bug where the exit-heading boost above decayed back to baseline purely by *distance* travelled since the corner's peak, with no way to tell "corner's over" apart from "still mid-recovery from a bigger-than-usual heading error." **The entire lookahead-scanning family described in this section, `adaptive_Q_lookahead`, the U-turn detector, the straight-line boosts, and this corner map, was removed on 2026-08-13**, replaced by the current-curvature-only `_corner_factor` scheduler (see [architecture.md](architecture.md#adaptive-gain-scheduling-controllermodel_utilspy)'s "Historical" section for why: none of it could manufacture anticipation the linear model doesn't structurally have, which is the same conclusion the forcing-term analysis above reached).
-
-**Compensating for real, unmeasured delay** (live ROS 2 controller only, `mpc_core.py`'s `predict_ahead()`): imagine the pose the controller just received is actually 3 ticks (0.15 s) old by the time it gets solved against. The car has already moved and turned since that measurement was taken, so planning as if it's still *there* means planning against the wrong starting point.
-
-- **Offline vs. live:** the offline simulator can assume a fixed, known delay (`DELAY_STEPS` in `settings.py`) because it controls the whole loop. The real car can't; perception, planning, control and actuation latency add up to something unknown and time-varying.
-- **Fix:** every solve is told how old its pose actually is (from that message's own timestamp, not when the callback happened to fire), works out how many recent commands haven't taken effect on the car yet, and rolls its internal error state forward through exactly those commands before solving, so it plans against where the car will actually be, not where it was 0.15 s ago.
-- **Why smoothed first:** the raw age measurement is noisy (ordinary control-loop jitter), so it's low-pass filtered and only allowed to change the resulting whole-step count once the smoothed value has clearly crossed into the next step. Otherwise the "how many steps behind are we" count would flicker every tick and inject its own disturbance into the very thing it's trying to fix.
+- **Offline vs. live:** the offline simulator can assume a fixed, known delay (`DELAY_STEPS` in `settings.py`) because it controls the whole loop. The real car can't — perception, planning, control and actuation latency add up to something unknown and time-varying.
+- **Fix:** every solve is told how old its pose actually is (from the message's own timestamp, not when the callback fired), works out how many recent commands haven't taken effect on the car yet, and rolls its internal error state forward through exactly those commands before solving. That way it plans against where the car will actually be, not where it was a tick or two ago.
+- **Why smoothed first:** the raw age measurement is noisy from ordinary control-loop jitter, so it's low-pass filtered and only allowed to change the resulting whole-step count once the smoothed value has clearly crossed into the next step. Otherwise the "how many steps behind are we" count would flicker every tick and inject its own disturbance into the very thing it's trying to fix.
 
 See [architecture.md's delay-compensation section](architecture.md#adaptive-gain-scheduling-controllermodel_utilspy) for the exact filtering/hysteresis constants.
 
-**Slowing down when the car isn't tracking well** (`tracking_error_speed_gate`, both live controller nodes): `curvature_speed()` only looks at the *shape* of the road ahead; it has no idea whether the car is actually near that road right now. This gate watches the lateral and heading tracking error and scales the target speed down (with a floor, so the car never loses so much speed it can't steer itself back) once either error grows large. Paired with a limiter on how fast the speed target is allowed to *rise* (braking requests are never delayed, only "speed up" is capped), so a momentary bad reading can't spike the target back up the very next tick.
+**Precomputed shaped heading-lead profile** (`use_precomputed_heading_profile`, live ROS 2 controller only, shipped but still being validated): for a track that's fully known and mapped ahead of time, this precomputes a heading target for every waypoint that already leads the path's geometric heading by however much the car can actually achieve turning between here and the next waypoint, given its planned speed (using the same achievable-yaw-rate relationship $A_{kin}$ already uses for its own yaw-rate row). A corner taken slowly gets proportionally more lead per metre than one taken fast, since there's more time available per metre at lower speed.
+
+This changes what $e_\psi$ *already equals* the moment the QP starts solving — the car's current heading compared against a target already looking a little further down the track — rather than adding a future obligation to the horizon dynamics. That avoids the "solver schedules the cheapest fix for whenever suits it" failure mode that a plain lookahead disturbance would hit (see Section 1.3).
+
+This only works for a track that's fully known offline; a car exploring a new track live, off the planner's own SLAM-built centreline, has no future path to precompute a lead into. See `planning_control_sync.md`'s "Precomputed shaped heading-lead profile" section for the full mechanism and current live-test status.
+
+**Slowing down when the car isn't tracking well** (`tracking_error_speed_gate`, both live controller nodes): `curvature_speed()` only looks at the *shape* of the road ahead — it has no idea whether the car is actually near that road right now. This gate watches the lateral and heading tracking error and scales the target speed down (with a floor, so the car never loses so much speed it can't steer itself back) once either error grows large. It's paired with a limiter on how fast the speed target is allowed to *rise* (braking requests are never delayed, only "speed up" is capped), so a momentary bad reading can't spike the target back up the very next tick.
 
 ---
 
@@ -448,7 +414,7 @@ $$
 
 The 30% tail term exists so the tuner can't find a setting that looks great *on average* by driving one corner shape perfectly and another badly. Every shape in the suite has to be reasonably good, not just the average.
 
-`TAIL_QUANTILE` (default `0.8`) replaced a plain "worst score" on 2026-08-06. A DNF adds a flat +3.0, so taking the single worst task let **one** unlucky run out of ten shift the objective by ~0.9 and drown out all twelve driving-quality metrics. A sensible hand-picked setting was measured ranking 3rd-worst of six, below two deliberately-bad settings, purely because one of its ten tests DNF'd. Using the ~2nd-worst instead means one bad test still hurts a lot, but two bad tests hurt much more. Set it to `1.0` to get the old behaviour back.
+`TAIL_QUANTILE` (default `0.8`) is used instead of a plain "worst score" because a DNF adds a flat +3.0, and taking the single worst task would let **one** unlucky run out of ten shift the objective by ~0.9 and drown out all twelve driving-quality metrics. Using the ~2nd-worst instead means one bad test still hurts a lot, but two bad tests hurt much more. Set it to `1.0` to get plain-worst-score behaviour.
 
 ### 2.3 The Optuna Pre-Search Warm Start
 
@@ -477,9 +443,9 @@ graph LR
 
 Every rollout, whether from the tuner, or from **Show Metrics**/**Benchmark All Paths** in the GUI, is scored through the exact same code (`sim/scoring.py`), so a GUI run and an offline tuning run always produce comparable numbers.
 
-This now extends to the **real car** too. The ROS 2 control package carries a verbatim copy of `sim/scoring.py` (`fsae_control/scoring.py`), and `telemetry_logger.py` accumulates the same 13 metrics every control step, writing the finished score as a `#`-commented header on top of the run's CSV. So a number off the car is directly comparable to a number out of the tuner.
+This extends to the **real car** too. The ROS 2 control package carries a verbatim copy of `sim/scoring.py` (`fsae_control/scoring.py`), and `telemetry_logger.py` accumulates the same 13 metrics every control step, writing the finished score as a `#`-commented header on top of the run's CSV. So a number off the car is directly comparable to a number out of the tuner.
 
-When a precomputed speed profile is loaded (the normal live-driving setup), `telemetry_logger.py`'s `LapProgressTracker` now also derives real `progress`/`reached_end`/`time_bonus` from the car's position against that path, so a finished run is scored properly instead of every run being pinned at the `13.0` DNF ceiling (fixed 2026-08-11, see [`planning_control_sync.md`](planning_control_sync.md)'s "Live/offline score parity" section for the mechanism).
+When a precomputed speed profile is loaded (the normal live-driving setup), `telemetry_logger.py`'s `LapProgressTracker` derives real `progress`/`reached_end`/`time_bonus` from the car's position against that path, so a finished run is scored properly. See [`planning_control_sync.md`](planning_control_sync.md)'s "Live/offline score parity" section for the mechanism.
 
 One caveat remains: the car still can't measure `offtrack` (needs ground-truth track edges), and a run against the live planner topic instead of a precomputed profile has no known path end either. Either case leaves `score_is_partial=1` in the header. See [`planning_control_sync.md`](planning_control_sync.md) for the delay/perception differences that still make the simulator easier than reality.
 
@@ -496,10 +462,10 @@ One caveat remains: the car still can't measure `offtrack` (needs ground-truth t
 | 6 | `steering_sat_ratio` | How often steering was pinned within 95% of its max limit |
 | 7 | `jerk_rms` | Smoothness *of the smoothness*, how abruptly the rate of change itself changed |
 | 8 | `max_yaw_rate` | The fastest the car's heading was ever spinning |
-| 9 | `steering_reversal_rms` | How large the car's steering direction flip-flops were, magnitude-weighted (RMS of each reversal's swing size) rather than a flat per-flip count. A tiny trim wiggle counts for almost nothing while a large aggressive swing dominates, so a twisty path needing lots of small direction changes isn't scored the same as genuine "hunting"/indecisive control. The raw flip-flop count and its per-step rate are still reported separately, informational only |
+| 9 | `steering_reversal_rms` | How large the car's steering direction flip-flops were, magnitude-weighted (RMS of each reversal's swing size) rather than a flat per-flip count. A tiny trim wiggle counts for almost nothing, a large aggressive swing dominates, so a twisty path needing lots of small direction changes isn't scored the same as genuine "hunting." The raw flip-flop count and its per-step rate are still reported separately, informational only |
 | 10 | `peak_lateral_error` | The single worst sideways error at any point, a safety-margin check, independent of the average |
 | 11 | `speed_rmse` | How well actual speed tracked the target speed |
-| 12 | `accel_reversal_rms` | The same magnitude-weighted reversal construction as `steering_reversal_rms` (metric 9), applied to the throttle/brake command instead of steering. Without it, nothing in the score discourages `a_cmd` oscillating back and forth across zero, even though the same chatter concern applies to accel/brake as to steering. Keyword-only with a default, so older positional callers written before this metric existed keep working unmodified |
+| 12 | `accel_reversal_rms` | Same magnitude-weighted reversal construction as `steering_reversal_rms` (metric 9), applied to the throttle/brake command instead. Without it, nothing in the score discourages `a_cmd` oscillating back and forth across zero, even though the same chatter concern applies to accel/brake as to steering |
 
 **Combining into one score:**
 
@@ -519,74 +485,35 @@ if inaccurate_count > 0:
     score += abs(score) * min(5, inaccurate_count) * 0.1           # capped at 50%
 ```
 
-**Why it's three steps and not one sum (changed 2026-08-06).** Adding everything into a single weighted total has a mathematical limit: some good behaviours are simply unreachable no matter what weights you pick. We measured it: a set of gains that deliberately "hunted" (wobbled the steering constantly) still scored *better* than a sensible set, because it hugged the line more tightly and that was the biggest term. Changing weights couldn't fix it.
+**Why three steps and not one sum.** Adding everything into a single weighted total has a mathematical limit: some good behaviours become simply unreachable no matter what weights you pick. A set of gains that deliberately "hunts" (wobbles the steering constantly) could still score *better* than a sensible set if line-hugging is the biggest term in the sum — changing weights alone can't fix that. The three steps instead ask three different kinds of question:
 
-The three steps fix it by asking three different kinds of question:
-
-1. **A crash is not a price.** It used to just add `+3.0`, which meant a run that tracked the line well enough could effectively *pay for* crashing. Now a failed run is put in a separate band above `CONSTRAINT_FLOOR` that no amount of good driving can climb out of. (It still scores slightly better for getting further before failing, so the tuner can tell "crashed at the first corner" from "crashed near the end".)
-2. **Lap time is the real goal**, and it's now in meaningful units: `time_cost = 0.15` means "took about 18% longer than this car could physically manage on this track". This is what stops the hunting cheat: wobbling the steering doesn't make you faster, so now it only costs.
+1. **A crash is not a price.** A failed run sits in a separate band above `CONSTRAINT_FLOOR` that no amount of good driving can climb out of. (It still scores slightly better for getting further before failing, so the tuner can tell "crashed at the first corner" from "crashed near the end.")
+2. **Lap time is the real goal**, in meaningful units: `time_cost = 0.15` means "took about 18% longer than this car could physically manage on this track." This is what rules out the hunting cheat — wobbling the steering doesn't make you faster, so it only costs.
 3. **Smoothness is the tie-breaker**, deciding between two similarly-fast laps rather than deciding the winner outright.
 
-One subtlety: completion is judged by `reached_end`, not `progress`. `progress` is computed by a search that stops just short of the final path point, so even a perfect lap reports about 0.90. Thresholding on it would have marked every successful run a failure.
+One subtlety: completion is judged by `reached_end`, not `progress`. `progress` is computed by a search that stops just short of the final path point, so even a perfect lap reports about 0.90. Thresholding on it would mark every successful run a failure.
 
-- **`METRIC_SCALES`** (in `settings.py`) is a 13-entry array of "what counts as a normal amount of this". Each metric is divided by its entry **before** being weighted. This is what makes a weight mean what it says.
+- **`METRIC_SCALES`** (in `settings.py`) is a 13-entry array of "what counts as a normal amount of this." Each metric is divided by its entry **before** being weighted — this is what makes a weight mean what it says.
 
-  Why it exists: the 13 metrics have wildly different natural sizes (`steering_reversal_rms` ~0.007, `speed_rmse` ~2.5). Without normalising, a metric's real influence is *weight × typical magnitude*, not weight. A metric with a nominally large weight but a tiny typical magnitude can end up contributing almost nothing to the score, effectively making the objective single-metric in practice no matter how the weights are set.
+  Why it exists: the 13 metrics have wildly different natural sizes (`steering_reversal_rms` ~0.007, `speed_rmse` ~2.5). Without normalising, a metric's real influence is *weight × typical magnitude*, not weight. A metric with a nominally large weight but a tiny typical magnitude can end up contributing almost nothing to the score, making the objective effectively single-metric no matter how the weights are set.
 
   So: to change **priority**, change `SCORE_WEIGHTS`. To correct for a metric's typical size having genuinely shifted, change `METRIC_SCALES`. Two separate jobs.
 
-- **`SCORE_WEIGHTS`** (in `settings.py`) is the 13-entry array of how much each metric above matters, applied *after* normalisation. It's kept summing to `1.0`, which now carries real meaning: a run with every metric sitting exactly at its reference scale scores exactly `1.0` before bonuses and penalties.
+- **`SCORE_WEIGHTS`** (in `settings.py`) is the 13-entry array of how much each metric above matters, applied *after* normalisation. It's kept summing to `1.0`, so a run with every metric sitting exactly at its reference scale scores exactly `1.0` before bonuses and penalties.
 - **Completion/time bonuses** are subtracted (i.e. improve the score) for finishing the track at all, and for finishing it quickly.
 - **DNF penalties** are added if the car didn't finish, with an extra penalty if it left the track, so the tuner can't "cheat" by driving slowly and carefully forever without ever finishing.
-- **The inaccurate-solver penalty** inflates an already-computed score proportionally (up to +50% at 5+ occurrences) if the solver returned a not-fully-converged answer too often, still usable, but penalised, rather than thrown out outright.
+- **The inaccurate-solver penalty** inflates an already-computed score proportionally (up to +50% at 5+ occurrences) if the solver returned a not-fully-converged answer too often — still usable, but penalised, rather than thrown out outright.
 
 **Lower is always better.** A good finishing run typically scores around **0.4 to 1.0**; anything **above 10.0** means the run crashed, left the track, or didn't finish.
-
-> **Note on scale, it changed TWICE on 2026-08-06.** Originally the raw weighted
-> sum was much smaller than the bonuses, so essentially every finishing run
-> scored negative (roughly -0.5 to -0.3). Then `METRIC_SCALES` put the metric
-> term on a comparable footing to the bonuses, and then the constrained 3-tier
-> restructure replaced the bonus/penalty arithmetic entirely.
->
-> | era | good completed run | failed run |
-> |---|---|---|
-> | original | ~-0.5 to -0.3 | +3.0 added, could be out-earned |
-> | + `METRIC_SCALES` | ~-0.3 to +0.3 | same |
-> | + 3-tier (current) | **~0.4 to 1.0** | **>= 10.0, unreachable from below** |
->
-> All three are different functions. **Do not compare a score across any of
-> these boundaries in either direction**, a bigger number is not a worse car.
-> See the closed-book header in `tuning history.txt`.
 
 **Where to find results: `tuning history.txt`.** Every tuning run automatically appends:
 
 - Timestamp, the three weight arrays (copy-pasteable), duration, the tuner's own score, and the git commit hash.
-- The score weights and bonus/penalty weights actually used for that run. Recording these alongside the score means an older logged run stays interpretable even after `SCORE_WEIGHTS` itself changes later.
+- The score weights and bonus/penalty weights actually used for that run, so an older logged run stays interpretable even after `SCORE_WEIGHTS` itself changes later.
 - Whether the Optuna pre-pass ran, and if so, its trial count and best result.
 - An `Overall score` field, left blank for you to fill in by hand once you've actually tested those weights in FSDS. The offline score is a good guide but doesn't perfectly predict real-world performance, so this file is where the two get reconciled over time.
 
-> **⚠️ Entries before 2026-08-06 are a closed book.** Everything logged above
-> the `COMPARABLE HISTORY RESUMES HERE` marker in `tuning history.txt` was
-> produced under a different combination of planner, scoring function and
-> tuner configuration, so:
->
-> - **Tuner scores are not comparable across those entries**, they measure
->   different functions. The apparent improving trend is partly the ruler
->   changing, not better driving.
-> - **Those Q/R gain sets can't be used as validation data**, because a gain
->   set tuned against a different objective is a sample from a different
->   problem.
-> - **Every one of those entries has `Overall score = Haven't been tested`**,
->   none was ever reconciled against FSDS, which is what the field above was
->   for. That reconciliation is the single most valuable thing you can do.
->
-> Note the bullet above this box promises recorded score weights keep old runs
-> interpretable. That only works if they're recorded *every* run, in practice
-> only the last two entries have them, which is a large part of why the rest
-> are closed. When you log a run, also record the planner mode
-> (`USE_PLANNER`) and the tuner configuration, not just the commit hash: the
-> hash identifies the code but doesn't make it visible at a glance what
-> changed underneath.
+When you log a run, also record the planner mode (`USE_PLANNER`) and the tuner configuration alongside the commit hash — the hash identifies the code but doesn't show at a glance what changed underneath.
 
 ### 2.5 Running the Tuner
 
@@ -645,8 +572,8 @@ All of these live in `settings.py`, with a full plain-English explanation as a c
 |---|---|---|
 | `N_HORIZON` | How many 0.05s steps ahead the MPC plans (35 = 1.75s look-ahead). Must match `N_horizon` in `gui/simulation.py` and `N` in `mpc_core.py` | ±5 steps at a time |
 | `USE_PLANNER` | Test with the full simulated cone-perception pipeline (`True`), or the perfect/precomputed reference path and speed profile (`False`, default, also faster) | Leave `False` (matches the live ROS side's `path_map_path` mode) unless you specifically want to test perception/planner mistakes |
-| `DELAY_STEPS` | Simulated command lag, for robustness testing. `rollout_core.py` predicts the state forward through the commands already queued (`predict_ahead()`) before solving, so raising this doesn't cause the large-oscillation/DNF behaviour it used to | Adjust as needed for the robustness scenario you're testing |
-| `DELAY_JITTER_STEPS` | How *wrong* the car's guess about its own lag is allowed to be. `DELAY_STEPS` on its own is compensated perfectly, which the real car can never manage: it works the lag out from a timestamp, and its control loop doesn't tick perfectly evenly. Default `0.2` matches what was measured on the real car | Leave at `0.2`. Set `0.0` only if you want the old, optimistic behaviour |
+| `DELAY_STEPS` | Simulated command lag, for robustness testing. `rollout_core.py` predicts the state forward through the commands already queued (`predict_ahead()`) before solving, so raising this doesn't cause large oscillation/DNFs | Adjust as needed for the robustness scenario you're testing |
+| `DELAY_JITTER_STEPS` | How *wrong* the car's guess about its own lag is allowed to be. `DELAY_STEPS` on its own is compensated perfectly, which the real car can never manage: it works the lag out from a timestamp, and its control loop doesn't tick perfectly evenly. Default `0.2` matches what was measured on the real car | Leave at `0.2`. Set `0.0` only for the optimistic, perfectly-compensated case |
 | `DELAY_JITTER_SEED` | Keeps the above repeatable, so two candidate weight sets are graded against the identical run of bad luck | Leave alone |
 | `SLAM_NOISE_ENABLED` | Off by default. When on, adds jitter + slow drift to the pose the controller/planner *see* (the plant and the score itself stay on ground truth). Models the real car's ZED-odometry/`cone_mapper` error, which FSDS's own ground-truth-relaying `sim_perception` doesn't have | Enable to test robustness to localisation noise, not for normal tuning runs |
 | `SLAM_POS_JITTER_STD` / `SLAM_YAW_JITTER_STD` | Per-step white noise on the estimated pose (2 cm / 0.3°), the component that provokes steering chatter | Leave alone unless specifically investigating chatter sensitivity |
@@ -661,10 +588,10 @@ All of these live in `settings.py`, with a full plain-English explanation as a c
 | `PATH_N_POINTS` | How finely each synthetic test track is resampled | 200-500 at a time |
 | `SCORE_WEIGHTS` | The 13-entry "what does good driving mean" array (see [2.4](#24-how-a-run-gets-scored)). Kept summing to roughly 1.0 by convention | Move 0.01-0.03 from one weight to another |
 | `VALIDATION_SUITE` | Which synthetic corner shapes the tuner actually scores against | Add/remove one at a time, watch tuning time change |
-| `COMPLETION_BONUS_WEIGHT` / `TIME_BONUS_WEIGHT` | **No longer used by the score** (kept for logging fields only). Finishing is now a hard requirement, and speed is the main objective rather than a bonus | Don't, change `TIME_OBJECTIVE_WEIGHT` / `QUALITY_WEIGHT` instead |
+| `COMPLETION_BONUS_WEIGHT` / `TIME_BONUS_WEIGHT` | **Not used by the score** (kept for logging fields only). Finishing is a hard requirement, and speed is the main objective rather than a bonus | Don't; change `TIME_OBJECTIVE_WEIGHT` / `QUALITY_WEIGHT` instead |
 | `TIME_OBJECTIVE_WEIGHT` / `QUALITY_WEIGHT` | How much the score cares about lap time vs. smooth driving | 0.05 at a time on `QUALITY_WEIGHT` |
 | `CONSTRAINT_FLOOR` / `COMPLETION_THRESHOLD` | The line between "this run counts" and "this run failed" | Rarely; raise the floor only if good scores ever approach 10.0 |
-| `DNF_PENALTY` / `DNF_OFFTRACK_PENALTY` | How much worse a crash is than simply not finishing. Now scales position *within* the failed band, rather than being added to a normal score | 0.5-1.0 at a time |
+| `DNF_PENALTY` / `DNF_OFFTRACK_PENALTY` | How much worse a crash is than simply not finishing. Scales position *within* the failed band, rather than being added to a normal score | 0.5-1.0 at a time |
 | `FAST_TEST_MODE` | Shrinks everything for a ~1 minute smoke-test after a code change. **Never** paste weights tuned with this on into `Q_diag` etc, it's a correctness check, not a real tuning result | `True` only for quick dev iteration |
 
 ### 2.8 Adding a New Test Track
@@ -715,14 +642,14 @@ graph LR
 
 ### Why a linear model, when the real car is nonlinear?
 
-Every real vehicle is nonlinear: tyre grip saturates, weight shifts under braking, drag scales with speed squared. None of that is a straight-line relationship. So it's fair to ask why the controller's internal model throws all of that away and pretends the car behaves linearly. The short answer: a linear model is not more *accurate*, it's what makes the optimisation problem solvable fast enough to be useful at all.
+Every real vehicle is nonlinear: tyre grip saturates, weight shifts under braking, drag scales with speed squared. None of that is a straight-line relationship, so why does the controller's internal model pretend the car behaves linearly? Because a linear model isn't more *accurate* — it's what makes the optimisation solvable fast enough to be useful at all.
 
 **What "linear" and "nonlinear" mean here, for the MPC's own model:**
 
-- The MPC's internal prediction model (`Ad`, `Bd` from [Section 1.3](#13-the-prediction-model)) is **linear** because every entry of those matrices is a single fixed number, the next state is always "this state times a fixed multiplier, plus that state times a fixed multiplier, ..." added up.
-- Double the current heading error, and its contribution to the predicted lateral error exactly doubles, no matter what speed or slip angle the car happens to be at.
-- That rigid, fixed-multiplier structure is exactly what a Quadratic Program (QP) solver requires, and exactly what the real plant doesn't have (see [Section 5.2](#52-tyres-and-slip-explained) for a concrete example of the plant's own curved, nonlinear tyre behaviour).
-- If the MPC instead tried to plan against equations whose multipliers depend on the current state, e.g. tyre force that bends and saturates as slip angle grows, the relationship connecting state `x_{i+1}` to `x_i` and `u_i` would no longer be a fixed-multiplier sum, and the optimisation would stop being a QP and become a much harder **nonlinear program (NLP)**.
+- The MPC's internal prediction model (`Ad`, `Bd` from [Section 1.3](#13-the-prediction-model)) is **linear** because every entry of those matrices is a single fixed number: the next state is always "this state times a fixed multiplier, plus that state times a fixed multiplier, ..." added up.
+- Double the current heading error, and its contribution to the predicted lateral error exactly doubles, no matter what speed or slip angle the car is at.
+- That rigid, fixed-multiplier structure is exactly what a Quadratic Program (QP) solver requires, and exactly what the real plant doesn't have (see [Section 5.2](#52-tyres-and-slip-explained) for the plant's own curved, nonlinear tyre behaviour).
+- If the MPC instead planned against equations whose multipliers depend on the current state (e.g. tyre force bending and saturating as slip angle grows), the relationship connecting `x_{i+1}` to `x_i` and `u_i` would no longer be a fixed-multiplier sum. The optimisation would stop being a QP and become a much harder **nonlinear program (NLP)**.
 
 Here's the actual tradeoff this buys:
 
@@ -739,7 +666,7 @@ Here's the actual tradeoff this buys:
 - Net trade: a small, bounded loss of prediction accuracy for a large, guaranteed win in solve speed and reliability. Given the re-planning safety net already forgives the accuracy loss, that trade is a clear win here.
 - This is also exactly why the 24-state nonlinear plant still exists. It's used as the simulated "real car" to test against, not as something the controller ever tries to solve against directly.
 
-**Critically, the controller never sees the plant's 24 internal states directly.** It only receives the tracking error computed from the plant's global position each tick, exactly like a real controller only has GPS/odometry, not X-ray vision into the tyres. This closed-loop feedback, re-planning every 50ms, is what makes MPC robust to the gap between its simple internal model and the much more complex real car: any misprediction just shows up as tracking error next tick and gets corrected.
+**Critically, the controller never sees the plant's 24 internal states directly.** It only receives the tracking error computed from the plant's global position each tick — exactly like a real controller only has GPS/odometry, not X-ray vision into the tyres. This closed-loop feedback, re-planning every 50ms, is what makes MPC robust to the gap between its simple internal model and the much more complex real car: any misprediction just shows up as tracking error next tick and gets corrected.
 
 > If you ever import new real tyre test data into `vehicle_physics.py`, you **must** also
 > recompute `Cf`/`Cr` (used by the MPC's *internal* model) to match the new curve's initial slope,
@@ -751,25 +678,29 @@ Here's the actual tradeoff this buys:
 
 Section 4.1 was about tyres being nonlinear (grip saturates, forces bend as slip angle grows). This is a **different** limitation, about the *geometry* of the path itself, and it exists even with perfect, linear tyres.
 
-**The one-sentence version of the whole section, if you remember nothing else:** the linear MPC predicts how the car's *current* error drifts if nothing changes; it has no idea the path itself bends up ahead. The nonlinear MPC predicts how the car's error will evolve **relative to where the path is actually going**, because the path's future bend is baked into its equations of motion, not just its current snapshot. Same "predict forward and optimise" idea both times (Section 1.1), the difference is *what* is being predicted forward: the linear model only extrapolates the car; the nonlinear model extrapolates the car **against a path that is itself curving**.
+**The one-sentence version of the whole section:** the linear MPC predicts how the car's *current* error drifts if nothing changes, with no idea the path itself bends up ahead. The nonlinear MPC predicts how the car's error will evolve **relative to where the path is actually going**, because the path's future bend is baked into its equations of motion, not just its current snapshot. Same "predict forward and optimise" idea both times (Section 1.1) — the difference is *what* gets predicted forward: the linear model only extrapolates the car; the nonlinear model extrapolates the car **against a path that is itself curving**.
 
 **The problem, in one sentence:** the controller's prediction model has no idea the road is about to bend, until the car is already partway around the bend.
 
-Here's why. The MPC tracks *errors* relative to the path, how far sideways (`e_y`), and how much its heading is off (`e_psi`), not the car's raw position. That's a good design choice (Section 1.2), but it has a hidden consequence: the model that predicts how those errors evolve (`x_{i+1} = A·x_i + B·u_i`, Section 1.3) only knows how the CAR moves. It has no term at all for "and the reference path itself is turning away from whatever direction the car is currently pointed." If you do the maths (or just watch it happen): put the car exactly on the centreline, heading exactly the right way (`e_y = 0`, `e_psi = 0`), with a sharp corner 10 metres ahead. Ask the model to predict 1.75 seconds into the future assuming the car does nothing. It predicts `e_y = 0`, `e_psi = 0`, forever. Nothing in the model says otherwise, because nothing in the model represents the path bending.
+Here's why. The MPC tracks *errors* relative to the path — how far sideways (`e_y`), how much its heading is off (`e_psi`) — not the car's raw position. That's a good design choice (Section 1.2), but it has a hidden consequence: the model that predicts how those errors evolve (`x_{i+1} = A·x_i + B·u_i`, Section 1.3) only knows how the CAR moves. It has no term for "the reference path itself is turning away from whatever direction the car is currently pointed."
 
-That sounds like it shouldn't matter, surely the controller notices the error building up and reacts? It does, but only *after* the car is already partway into the corner and the error is no longer zero. By then it's playing catch-up on a corner it could, in principle, have seen coming. This shows up as **late turn-in**: the car keeps going straight for too long, then has to crank on a lot of steering all at once to catch up, which is both slower and harder on the tyres than committing early and turning in smoothly.
+Put the car exactly on the centreline, heading exactly the right way (`e_y = 0`, `e_psi = 0`), with a sharp corner 10 metres ahead, and ask the model to predict 1.75 seconds ahead assuming the car does nothing. It predicts `e_y = 0`, `e_psi = 0`, forever — nothing in the model represents the path bending.
 
-**Why not just tell the model about the upcoming corner directly?** This was tried several ways during this project (documented in the live repo's `late_turn_in_investigation.md`, Parts 2/7/15, if you want the full story): feeding the path's curvature into the model as an extra input, or shifting the cost function's target ahead of time. All of them shared the same failure mode: they told the solver about a correction it would need to make **later**, at some future step in its plan, while leaving it completely free to choose *when* within that plan to actually make it. Given that freedom, the solver sometimes found it "cheaper" (in total squared-error terms) to steer briefly the **wrong way first**, then swing back, a worse, backwards-feeling result than doing nothing extra at all. The lesson: bolting a curvature signal onto a model that fundamentally doesn't have a concept of "the path is turning" is a trap, not a fix.
+Doesn't the controller notice the error building up and react? It does, but only *after* the car is already partway into the corner and the error is no longer zero. By then it's playing catch-up on a corner it could, in principle, have seen coming. This shows up as **late turn-in**: the car keeps going straight for too long, then has to crank on a lot of steering all at once to catch up — both slower and harder on the tyres than committing early and turning in smoothly.
 
-**The actual fix needs the path's bend built into the model's equations themselves, not tacked onto the outside of them, which means abandoning the QP.** This project's live ROS 2 side (not this offline repo) has a second controller for exactly this, `nmpc_core.py`'s `NMPCController`, switched on with a flag (`use_nmpc`, off by default). Concretely, it changes *which quantity the model tracks progress with*: instead of the car's raw x/y position, its state includes **`s`, the distance travelled along the path itself**, and the path's curvature at that distance, `kappa(s)`, is looked up and fed straight into the equation for how heading error evolves:
+**Why not just tell the model about the upcoming corner directly?** Any approach that feeds the path's curvature into the model as an extra input, or shifts the cost function's target ahead of time without changing the dynamics themselves, hits the same failure mode: it tells the solver about a correction it will need to make **later**, at some future step in its plan, while leaving it completely free to choose *when* within that plan to actually make it. Given that freedom, the solver can find it "cheaper" (in total squared-error terms) to steer briefly the **wrong way first**, then swing back — worse than doing nothing extra at all. Bolting a curvature signal onto a model that fundamentally doesn't have a concept of "the path is turning" is a trap, not a fix.
+
+**The actual fix needs the path's bend built into the model's equations themselves, not tacked onto the outside of them, which means abandoning the QP.** This project's live ROS 2 side (not this offline repo) has a second controller for exactly this, `nmpc_core.py`'s `NMPCController`, switched on with a flag (`use_nmpc`, off by default). It changes *which quantity the model tracks progress with*: instead of the car's raw x/y position, its state includes **`s`, the distance travelled along the path itself**, and the path's curvature at that distance, `kappa(s)`, is looked up and fed straight into the equation for how heading error evolves:
 
 ```
 e_psi_dot = r - kappa(s) * s_dot     <-- this term is what the linear model is missing
 ```
 
-Because `s` is now something the model predicts forward (via the car's own predicted speed), a bend at some future distance along the path is automatically "seen" by the prediction the moment it's within the horizon. There's no separate signal to inject, and so no separate freedom for the solver to defer paying for it. This is genuinely a **nonlinear** model now (that equation multiplies two state-dependent quantities, `kappa(s)` and `s_dot`, together, no longer "state times fixed number"), so it can't be solved as one convex QP the way Section 1.5 describes. It's solved instead by repeatedly re-linearising around the model's own predicted trajectory and solving a sequence of QPs that converge toward the true nonlinear optimum (this scheme is called **Sequential Quadratic Programming**, SQP), more expensive per tick than one convex QP, but still fast enough: measured around 9 ms per tick on this project's hardware, comfortably inside the 50 ms budget, versus a linear QP's roughly 1-5 ms.
+Because `s` is now something the model predicts forward (via the car's own predicted speed), a bend at some future distance along the path is automatically "seen" the moment it's within the horizon. There's no separate signal to inject, so no separate freedom for the solver to defer paying for it.
 
-Does it help? Tested offline (identical cost-function weights, identical simulated vehicle, same track, so it's an honest apples-to-apples comparison): steering saturation (pinning at the mechanical limit, the classic symptom of "reacting too late") dropped from 12.5% of ticks to 0.8%, and the car started turning into every single corner tested earlier than the linear controller did, by 25 metres, on average, on the harder corners. **Update: it has since been tested live in FSDS too**, on a matched same-day pair on the same track: steering saturation dropped from 6.45% to 0.58% and lap time improved by about 2.4 seconds, the same direction and a similar-sized improvement as the offline result above (see `docs/planning_control_sync.md` for the full live numbers).
+This is genuinely a **nonlinear** model (that equation multiplies two state-dependent quantities, `kappa(s)` and `s_dot`, together — no longer "state times fixed number"), so it can't be solved as one convex QP the way Section 1.5 describes. Instead it's solved by repeatedly re-linearising around the model's own predicted trajectory and solving a sequence of QPs that converge toward the true nonlinear optimum — **Sequential Quadratic Programming (SQP)**. This is more expensive per tick than one convex QP, but still fast enough: measured around 9 ms per tick on this project's hardware, comfortably inside the 50 ms budget, versus a linear QP's roughly 1-5 ms.
+
+**Does it help?** Yes, both offline and live. Offline (identical cost-function weights, identical simulated vehicle, same track): steering saturation (pinning at the mechanical limit, the classic symptom of "reacting too late") dropped from 12.5% of ticks to 0.8%, and the car started turning into every corner tested earlier than the linear controller did, by 25 metres on average on the harder corners. Live in FSDS, on a matched same-day pair on the same track: steering saturation dropped from 6.45% to 0.58% and lap time improved by about 2.4 seconds — the same direction and a similar-sized improvement as offline (see `docs/planning_control_sync.md` for the full live numbers).
 
 | | **Linear MPC** (Sections 1-4.1, this project's main controller) | **Nonlinear MPC** (`use_nmpc` / `settings.USE_NMPC`) |
 |---|---|---|
@@ -780,15 +711,15 @@ Does it help? Tested offline (identical cost-function weights, identical simulat
 | Solve time (measured) | ~1-5 ms | ~9 ms mean, ~12 ms p95 |
 | Where it lives | `model/bicycle_model.py` (this repo) + `mpc_core.py` (live) | `nmpc_core.py` (live) + `controller/nmpc_optimiser.py` (this repo's offline port, `settings.USE_NMPC`) |
 
-#### 4.2.1 Three smaller upgrades borrowed from a published racing controller (2026-08-13)
+#### 4.2.1 Optional NMPC Refinements
 
-After the nonlinear MPC above was built, it got compared against a published academic controller with a similar goal, **MPCC** (Model Predictive Contouring Control, from a paper/codebase by Alexander Liniger, the "C" is for "Contouring"). MPCC's big idea is more radical than anything in this project: instead of being *told* a target speed and a target line to follow, it treats "how far along the track have I got" as something the solver itself gets to choose and is rewarded for maximising, trading that off against how precisely it's tracking the racing line. That idea was looked at seriously and **not adopted**. It's a fancier version of exactly the "tell the solver about a future correction in advance" trick that was tried and failed three times already in Section 4.2 above (the wrong-direction dip). Three smaller, narrower ideas from the same paper *were* worth borrowing, though:
+The nonlinear MPC has three smaller, optional refinements, all affecting only `use_nmpc`/`settings.USE_NMPC` — the linear MPC that's this project's main controller is completely unaffected by any of them:
 
-1. **A smoother path, mathematically.** The controller needs to know the path's curvature at every point in the distance the car might travel. Previously that came from a slightly crude method (average nearby points, then measure how much the direction changes between them), the analogue of two paperclip bends being read off, and it was contributing to a known bug where a perfectly smooth corner sometimes gets misread as having a sudden spike in it. MPCC instead fits a **proper mathematical curve** (a cubic spline) through the waypoints and reads the curvature straight off its equation instead of estimating it from nearby points. This is just a better ruler, not a different idea about what to do with it, so it's turned **on by default**.
-2. **A speed target that also looks ahead, not just the road.** Right now the controller is given one single target speed for its whole ~1-second planning window. This adds the *option* to instead look up the "correct" speed at each point along the plan, using the same "don't tell the solver about the future too far in advance" trick that made the curvature idea above safe (Section 4.2). This one is genuinely experimental and ships **off by default**, it needs the same kind of careful testing that caught the wrong-direction-dip bug before, applied fresh to speed instead of steering.
-3. **A backup speed-limit check.** The car already has one safety mechanism preventing the model from believing it can corner arbitrarily hard (Section 4.1's `alat_ceiling`). This adds a second, independent check of the same limit, done a different way (as a hard rule the solver cannot break, rather than a soft nudge). It doesn't replace the first mechanism, it's a second pair of hands on the same problem. Also **off by default**, also unvalidated.
+1. **Smoother curvature reading, on by default.** The controller needs the path's curvature at every point along the distance the car might travel. A cruder method (average nearby points, then measure how much direction changes between them) can misread a perfectly smooth corner as having a sudden spike in it. Fitting a proper mathematical curve (a cubic spline) through the waypoints and reading curvature straight off its equation avoids that, and is just a better ruler with no behaviour trade-off — hence on by default.
+2. **Lookahead speed profile, off by default, experimental.** Instead of one single target speed for the whole ~1-second planning window, this looks up the "correct" speed at each point along the plan. It needs careful validation before it should be trusted, since a naively-implemented lookahead signal can produce the same wrong-direction dip described in Section 4.2, applied to speed instead of steering.
+3. **Backup speed-limit check, off by default, unvalidated.** The car already has one safety mechanism preventing the model from believing it can corner arbitrarily hard (Section 4.1's `alat_ceiling`). This adds a second, independent check of the same limit, enforced as a hard rule the solver cannot break rather than a soft cost nudge — a second pair of hands on the same problem, not a replacement for the first mechanism.
 
-All three only affect the nonlinear MPC (`use_nmpc`/`settings.USE_NMPC`), the linear MPC that's this project's main controller is completely unaffected by any of them. Full technical detail (exact formulas, which files changed, why MPCC's headline idea specifically was rejected): `planning_control_sync.md`'s "Three MPCC-inspired additions" subsection.
+Full technical detail (exact formulas, which files changed): `planning_control_sync.md`'s "Three MPCC-inspired additions" subsection.
 
 ---
 
@@ -817,7 +748,7 @@ The plant tracks 24 numbers describing the car's complete physical situation at 
 
 ### 5.2 Tyres and Slip, Explained
 
-A tyre doesn't grip like a rigid block on sandpaper, its rubber contact patch physically deforms before it actually slides. Because of that, grip force isn't a simple constant × weight; it depends on **how much the tyre is being asked to slip**, in a curved, nonlinear way.
+A tyre doesn't grip like a rigid block on sandpaper — its rubber contact patch physically deforms before it actually slides. Grip force isn't a simple constant × weight; it depends on **how much the tyre is being asked to slip**, in a curved, nonlinear way.
 
 There are two kinds of slip:
 
@@ -844,12 +775,12 @@ $\mu$ (peak friction) is further reduced by **load sensitivity**: a heavily load
 
 - Near $\alpha = 0$, the Pacejka curve above is *approximately* a straight line through the origin. Its slope there is exactly the linear cornering-stiffness ($C_f$/$C_r$) the MPC's own internal model assumes holds everywhere (see [Section 4](#4-the-two-vehicle-models-mpcs-model-vs-the-simulators-plant)).
 - Push slip angle out past roughly 5-8° (typical of a car near its cornering limit), and the real curve visibly bends over: each extra degree of slip buys noticeably less extra grip than the last.
-- Past its peak ($D$), the tyre saturates and can even lose force, the classic "sliding" feeling of a tyre that's broken traction.
-- A fixed-multiplier (linear) model has no way to represent that bend. It just keeps extrapolating the same straight line forever, which is exactly why the MPC's internal picture of the car quietly stops matching reality at high slip.
+- Past its peak ($D$), the tyre saturates and can even lose force — the classic "sliding" feeling of a tyre that's broken traction.
+- A fixed-multiplier (linear) model can't represent that bend; it just keeps extrapolating the same straight line forever. That's why the MPC's internal picture of the car quietly stops matching reality at high slip.
 
-**Tyre relaxation:** real grip doesn't appear instantly when slip angle changes, the contact patch needs to physically travel roughly one "relaxation length" before the force catches up. This shows up as states 18-21 above: the actual, lagged force chasing a freshly-computed target each sub-step. In practice: **a very sudden steering input doesn't produce full grip immediately**, there's a small, physically realistic delay before the car actually responds.
+**Tyre relaxation:** real grip doesn't appear instantly when slip angle changes — the contact patch needs to physically travel roughly one "relaxation length" before the force catches up. This shows up as states 18-21 above: the actual, lagged force chasing a freshly-computed target each sub-step. In practice, **a very sudden steering input doesn't produce full grip immediately**; there's a small, physically realistic delay before the car actually responds.
 
-**The friction ellipse:** a tyre has one shared, finite grip budget, not two separate pools for sideways and forward/backward force. Using grip for braking leaves less available for cornering, and vice versa, this is why braking hard *while* cornering hard is a classic way to lose the car. It's modelled explicitly: whatever fraction of grip is spent on `Fx` directly reduces how much `Fy` is still available that instant.
+**The friction ellipse:** a tyre has one shared, finite grip budget, not two separate pools for sideways and forward/backward force. Using grip for braking leaves less available for cornering, and vice versa — this is why braking hard *while* cornering hard is a classic way to lose the car. It's modelled explicitly: whatever fraction of grip is spent on `Fx` directly reduces how much `Fy` is still available that instant.
 
 ### 5.3 Suspension and Weight Transfer, Explained
 
@@ -859,7 +790,7 @@ Each corner of the car has a simulated spring + damper + anti-roll bar:
 - **Dampers** resist how *fast* the suspension moves (this is what stops the car bouncing forever after a bump).
 - **Anti-roll bars (ARBs)** link the left and right sides together, resisting the car leaning in a corner by transferring load from the compressing (outside) wheel to the extending (inside) wheel.
 
-**Why this matters for driving performance:** under braking or hard cornering, weight physically shifts between corners of the car (braking shifts weight forward; cornering shifts it to the outside). Tyre grip depends on how much weight (`Fz`) is on that tyre, so this weight transfer directly changes how much grip is available at each corner, moment to moment. That's exactly what makes braking-while-cornering, or trail-braking into a corner, behave realistically, rather than the car just having one fixed "turns this well" number.
+**Why this matters for driving performance:** under braking or hard cornering, weight physically shifts between corners of the car (braking shifts weight forward; cornering shifts it to the outside). Tyre grip depends on how much weight (`Fz`) is on that tyre, so weight transfer directly changes how much grip is available at each corner, moment to moment. That's what makes braking-while-cornering, or trail-braking into a corner, behave realistically, rather than the car having one fixed "turns this well" number.
 
 ### 5.4 Aerodynamics, Rolling Resistance, and Actuator Lag
 
@@ -888,13 +819,13 @@ For the run command, controls, and workflow, see [developer_guide.md's Manual Dr
 
 ## 8. Running Against the Real FSDS Simulator
 
-The live ROS 2 side of this project lives as a proper ROS 2 package, `fsae_control`, under `fsds_simulator/control/fsae_control/`, rather than the old set of loose files this section used to describe. It ships three selectable console-script controllers plus a shared bridge node, wired together in `fsds_simulator/common/fsae_bringup/launch/control.launch.py`:
+The live ROS 2 side of this project lives as a proper ROS 2 package, `fsae_control`, under `fsds_simulator/control/fsae_control/`. It ships three selectable console-script controllers plus a shared bridge node, wired together in `fsds_simulator/common/fsae_bringup/launch/control.launch.py`:
 
 | Executable | Backing file | What it does |
 |---|---|---|
 | `controller` (`controller:=stanley`, the default) | `stanley_controller.py` | The active reactive Stanley controller, publishes `cmd_vel`, routes through `fsds_bridge` like `mpc_controller` does |
 | `mpc_controller` (`controller:=mpc`) | `mpc_controller.py` (uses `mpc_core.MPCController`) | Publishes only steering through the shared `cmd_vel` interface; `fsds_bridge` computes throttle/brake itself from a simple speed-error loop, the same way it does for Stanley |
-| `mpc_controller_standalone` (`controller:=mpc_standalone`) | `mpc_controller_standalone.py` (also uses `mpc_core.MPCController`) | Publishes `fs_msgs/ControlCommand` directly using the MPC's own throttle/brake output unchanged, the one that preserves the offline-tuned longitudinal behaviour from `tuner/offline_tuner.py`/`gui/simulation.py`, since both of those also drive the plant with the MPC's own commanded acceleration (see `sim/rollout_core.py`) |
+| `mpc_controller_standalone` (`controller:=mpc_standalone`) | `mpc_controller_standalone.py` (also uses `mpc_core.MPCController`) | Publishes `fs_msgs/ControlCommand` directly, using the MPC's own throttle/brake output unchanged. This preserves the offline-tuned longitudinal behaviour from `tuner/offline_tuner.py`/`gui/simulation.py`, since both also drive the plant with the MPC's own commanded acceleration (see `sim/rollout_core.py`) |
 
 `fsds_bridge` converts the shared `cmd_vel` interface into `fs_msgs/ControlCommand`, and owns GO-gating plus cone-proximity e-braking for both `stanley` and `mpc` modes. The `mpc_standalone` controller owns all of that itself instead, since it talks to FSDS directly, so `fsds_bridge` is skipped automatically when `controller:=mpc_standalone` is selected (running both would leave `fsds_bridge`'s output unused, and race the standalone node for the same output topic).
 
