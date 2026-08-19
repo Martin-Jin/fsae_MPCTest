@@ -313,7 +313,16 @@ def _steer_rate_anti_hunt(
     """
     if not enabled:
         return R_rate_base
-    k_kappa, k_ey, k_epsi = 60.0, 30.0, 23.0
+    # Relaxed 2026-08-19 (halved from 60.0/30.0/23.0): the original constants
+    # faded the boost out too fast on genuinely gentle curves -- boost_kappa
+    # was already down to ~0.45 by |kappa|=0.02 (a ~50 m-radius bend), so
+    # R_rate[0,0] had mostly relaxed back toward baseline exactly where
+    # residual steering jitter was still visible. Halving each k_* doubles
+    # the |kappa|/|e_y|/|e_psi| each factor reaches before dropping to half
+    # its max contribution (kappa: ~0.017 -> ~0.033 1/m; e_y: ~3.3 -> ~6.7 cm;
+    # e_psi: ~2.5 -> ~5.0 deg). Applies to both controllers -- nmpc_core.py
+    # imports this function verbatim, not a separate copy.
+    k_kappa, k_ey, k_epsi = 30.0, 15.0, 11.5
     boost_kappa = 1.0 / (1.0 + k_kappa * abs(kappa))
     boost_ey    = 1.0 / (1.0 + k_ey * abs(e_y))
     boost_epsi  = 1.0 / (1.0 + k_epsi * abs(e_psi))

@@ -280,7 +280,10 @@ def steer_rate_anti_hunt(kappa, e_y, R_rate_base, enabled=False, e_psi=0.0):
     if not enabled:
         return R_rate_base
 
-    k_kappa, k_ey, k_epsi = 60.0, 30.0, 23.0
+    # Relaxed 2026-08-19 (halved from 60.0/30.0/23.0) -- see mpc_core.py's
+    # _steer_rate_anti_hunt for the full reasoning (faded out too fast on
+    # gentle curves, leaving residual jitter under-damped). Keep in sync.
+    k_kappa, k_ey, k_epsi = 30.0, 15.0, 11.5
     boost_max = 6.0
     boost_kappa = 1.0 / (1.0 + k_kappa * abs(kappa))
     boost_ey    = 1.0 / (1.0 + k_ey * abs(e_y))
