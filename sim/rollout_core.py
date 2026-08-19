@@ -77,6 +77,8 @@ from settings import (
     NMPC_R_RATE_DELTA, NMPC_R_RATE_A, NMPC_TERMINAL_SCALE,
     NMPC_SPLINE_REFERENCE_ENABLED, NMPC_HORIZON_SPEED_PROFILE_ENABLED,
     NMPC_FRICTION_CIRCLE_ENABLED, NMPC_STEER_RATE_ANTI_HUNT_ENABLED,
+    NMPC_CORNER_RRATE_BLEND_ENABLED, NMPC_CORNER_FACTOR_K,
+    NMPC_RRATE_STEER_STRAIGHT, NMPC_RRATE_STEER_CORNER,
 )
 
 
@@ -661,6 +663,10 @@ def run_core_rollout(
             horizon_speed_profile_enabled=NMPC_HORIZON_SPEED_PROFILE_ENABLED,
             friction_circle_enabled=NMPC_FRICTION_CIRCLE_ENABLED,
             steer_rate_anti_hunt_enabled=NMPC_STEER_RATE_ANTI_HUNT_ENABLED,
+            corner_rrate_blend_enabled=NMPC_CORNER_RRATE_BLEND_ENABLED,
+            corner_factor_k=_nmpc_pick(NMPC_CORNER_FACTOR_K, CORNER_FACTOR_K),
+            rrate_steer_straight=_nmpc_pick(NMPC_RRATE_STEER_STRAIGHT, RRATE_STEER_STRAIGHT),
+            rrate_steer_corner=_nmpc_pick(NMPC_RRATE_STEER_CORNER, RRATE_STEER_CORNER),
         )
 
     metrics = RolloutMetrics()
@@ -1038,8 +1044,12 @@ def run_core_rollout(
                 kappa, R_rate, enable_in_corners=ADAPTIVE_R_RATE_ENABLE_IN_CORNERS,
                 during_floor=ADAPTIVE_R_RATE_DURING_FLOOR,
             )
+            _rr_before_hunt = float(R_rate_scaled[0, 0])
             R_rate_scaled = steer_rate_anti_hunt(
                 kappa, e_y, R_rate_scaled, enabled=STEER_RATE_ANTI_HUNT_ENABLED, e_psi=e_psi,
+            )
+            m_rrate_antihunt = (
+                float(R_rate_scaled[0, 0] / _rr_before_hunt) if _rr_before_hunt else 1.0
             )
             R_scaled = adaptive_R_scaling(vx, R)
 
@@ -1057,9 +1067,14 @@ def run_core_rollout(
             Q_base[2, 2] = _blend(Q_EPSI_STRAIGHT, Q_EPSI_CORNER, corner_frac)
             Q_base[3, 3] = _blend(Q_R_STRAIGHT, Q_R_CORNER, corner_frac)
 
+            # Fixed 2026-08-19: this used to OVERWRITE R_rate_scaled[0,0]
+            # outright, discarding whatever adaptive_R_rate/steer_rate_anti_hunt
+            # (above) had just computed -- see mpc_core.py's matching fix for
+            # the full reasoning. Blend sets the BASE value, anti-hunt's
+            # already-computed ratio is reapplied multiplicatively on top.
             R_rate_scaled = R_rate_scaled.copy()
             R_rate_scaled[0, 0] = _blend(
-                RRATE_STEER_STRAIGHT, RRATE_STEER_CORNER, corner_frac)
+                RRATE_STEER_STRAIGHT, RRATE_STEER_CORNER, corner_frac) * m_rrate_antihunt
 
             R_scaled = R_scaled.copy()
             R_scaled[0, 0] = _blend(R_scaled[0, 0], R_STEER_CORNER_MID, corner_frac)

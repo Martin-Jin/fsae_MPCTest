@@ -68,7 +68,7 @@ import numpy as np
 import scipy.sparse as sp
 from scipy.interpolate import CubicSpline
 
-from controller.model_utils import steer_rate_anti_hunt
+from controller.model_utils import steer_rate_anti_hunt, _corner_factor, _blend
 
 try:
     import osqp
@@ -659,6 +659,10 @@ class NMPCController:
         horizon_speed_profile_enabled=False,
         friction_circle_enabled=False,
         steer_rate_anti_hunt_enabled=False,
+        corner_rrate_blend_enabled=False,
+        corner_factor_k=8.0,
+        rrate_steer_straight=2.0,
+        rrate_steer_corner=1.25,
     ):
         if osqp is None:      # pragma: no cover - dependency guard
             raise ImportError(
@@ -684,6 +688,13 @@ class NMPCController:
         # NMPC_STEER_RATE_ANTI_HUNT_ENABLED comment. Independent of any
         # LTV-QP-side anti-hunt flag.
         self.steer_rate_anti_hunt_enabled = bool(steer_rate_anti_hunt_enabled)
+        # Alternative to the above, not a composition with it -- see
+        # settings.py's NMPC_CORNER_RRATE_BLEND_ENABLED comment. Takes
+        # priority over steer_rate_anti_hunt_enabled if both are set.
+        self.corner_rrate_blend_enabled = bool(corner_rrate_blend_enabled)
+        self.corner_factor_k = float(corner_factor_k)
+        self.rrate_steer_straight = float(rrate_steer_straight)
+        self.rrate_steer_corner = float(rrate_steer_corner)
         if self.friction_circle_enabled:
             # F_max = m * ceiling(v_x) / 2 per axle: the measured ceiling law
             # bounds TOTAL lateral force (F_yf*cos(d) + F_yr) / m, split
@@ -1129,14 +1140,23 @@ class NMPCController:
             float(car_yaw_rate), self._delta_act, self._a_act,
         ])
 
-        # Anti-hunt (EXPERIMENTAL, default off) -- mirrors nmpc_core.py's
-        # own block exactly: same signal (current kappa/e_y/e_psi), same
-        # function (model_utils.steer_rate_anti_hunt, imported not
+        # Corner-blend / anti-hunt (EXPERIMENTAL, default off) -- mirrors
+        # nmpc_core.py's own block exactly: ALTERNATIVES, not composed (blend
+        # takes priority when both are enabled). Same signal (current
+        # kappa/e_y/e_psi), same functions (model_utils, imported not
         # reimplemented), computed once per compute_step() call and applied
-        # UNIFORMLY across the whole horizon for this tick's solve. When
-        # disabled (default), self._Rr_flat/self._ErE are untouched here, so
-        # behaviour is byte-identical to before this feature existed.
-        if self.steer_rate_anti_hunt_enabled:
+        # UNIFORMLY across the whole horizon for this tick's solve. When both
+        # flags are off (default), self._Rr_flat/self._ErE are untouched
+        # here, so behaviour is byte-identical to before either existed.
+        if self.corner_rrate_blend_enabled:
+            kappa_now = float(ref.kappa_at(np.array([s0]))[0])
+            corner_frac = _corner_factor(kappa_now, self.corner_factor_k)
+            rrate_blend = _blend(self.rrate_steer_straight, self.rrate_steer_corner, corner_frac)
+            r_rate_tick = np.array([rrate_blend, self.r_rate[1]])
+            Rr_flat = np.tile(r_rate_tick, self.N)
+            self._Rr_flat = Rr_flat
+            self._ErE = self._E.T @ (Rr_flat[:, None] * self._E)
+        elif self.steer_rate_anti_hunt_enabled:
             kappa_now = float(ref.kappa_at(np.array([s0]))[0])
             R2 = steer_rate_anti_hunt(
                 kappa_now, e_y, np.diag(self.r_rate), enabled=True, e_psi=e_psi,

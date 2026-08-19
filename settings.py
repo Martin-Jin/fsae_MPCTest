@@ -666,6 +666,20 @@ NMPC_TERMINAL_SCALE = -1.0
 # offline-side constant to parameterise this with yet.
 NMPC_STEER_RATE_ANTI_HUNT_ENABLED = False
 
+# [NMPC only, EXPERIMENTAL, added 2026-08-19] A narrower, ALTERNATIVE port of
+# the LTV-QP's corner_factor family -- blends R_rate[0,0] between
+# NMPC_RRATE_STEER_STRAIGHT/_CORNER by CURRENT curvature alone
+# (model_utils._corner_factor/_blend, imported not reimplemented). Unlike the
+# rest of that family (Q_EY/Q_EPSI/Q_R/R_STEER, deliberately excluded above),
+# only R_rate[steer] is touched, to limit how much of the "no adaptive gain
+# schedule" reasoning this overrides. NOT composed with
+# NMPC_STEER_RATE_ANTI_HUNT_ENABLED -- takes priority over it when both are
+# set; use one or the other, not both. UNVALIDATED for the NMPC.
+NMPC_CORNER_RRATE_BLEND_ENABLED = False
+NMPC_CORNER_FACTOR_K = -1.0        # -1 = inherit CORNER_FACTOR_K
+NMPC_RRATE_STEER_STRAIGHT = -1.0   # -1 = inherit RRATE_STEER_STRAIGHT
+NMPC_RRATE_STEER_CORNER = -1.0     # -1 = inherit RRATE_STEER_CORNER
+
 # ── Structural / solver settings ─────────────────────────────────────────
 # [NMPC only] No LTV-QP counterpart to inherit from (there's no "linear horizon length"
 # concept these could default to) -- these are genuine NMPC-only constants,

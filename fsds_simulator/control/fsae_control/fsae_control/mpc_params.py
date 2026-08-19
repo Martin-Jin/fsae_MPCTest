@@ -222,6 +222,22 @@ class MPCParams:
     nmpc_steer_rate_anti_hunt_enabled: bool = field(default=False, metadata={"unit": "bool", "desc": "EXPERIMENTAL: apply steer_rate_anti_hunt's extra R_rate[0,0] penalty (centred/aligned/uncurving) to the NMPC too, gain-scheduled per tick and applied uniformly across the horizon -- not a temporal filter, so it adds no lag. Independent of steer_rate_anti_hunt_enabled above. Default False, unvalidated", "controller": "nmpc_only"})
     nmpc_anti_hunt_boost_max: float = field(default=-1.0, metadata={"unit": "unitless", "desc": "override anti_hunt_boost_max for the NMPC only (-1 = inherit). Only read when nmpc_steer_rate_anti_hunt_enabled is True", "controller": "nmpc_only"})
 
+    # Straight/corner R_rate[steer] blend, ported narrowly from mpc_core.py's
+    # corner_factor family -- current-curvature-only, linear _blend() between
+    # a straight and a corner endpoint (see _corner_factor/_blend in
+    # mpc_core.py, imported verbatim by nmpc_core.py, not reimplemented).
+    # Deliberately narrower than the LTV-QP's full family (which also blends
+    # Q[e_y]/Q[e_psi]/Q[r]/R[steer]) -- only R_rate[steer] is touched, to
+    # limit how much of the "no adaptive gain schedule for the NMPC"
+    # rationale in nmpc_core.py's module docstring this overrides. Meant as
+    # an ALTERNATIVE to nmpc_steer_rate_anti_hunt_enabled above, not a
+    # composition with it -- nmpc_core.py checks this flag first and skips
+    # anti-hunt entirely when it's on; run with anti-hunt OFF when using this.
+    nmpc_corner_rrate_blend_enabled: bool = field(default=False, metadata={"unit": "bool", "desc": "EXPERIMENTAL: blend R_rate[0,0] between nmpc_rrate_steer_straight/_corner by CURRENT curvature (mpc_core._corner_factor/_blend). Takes priority over nmpc_steer_rate_anti_hunt_enabled if both are set -- use one or the other, not both. Default False, unvalidated", "controller": "nmpc_only"})
+    nmpc_corner_factor_k: float = field(default=-1.0, metadata={"unit": "unitless", "desc": "override corner_factor_k for the NMPC only (-1 = inherit). Only read when nmpc_corner_rrate_blend_enabled is True", "controller": "nmpc_only"})
+    nmpc_rrate_steer_straight: float = field(default=-1.0, metadata={"unit": "1/(rad/s)^2", "desc": "override rrate_steer_straight for the NMPC only (-1 = inherit). Only read when nmpc_corner_rrate_blend_enabled is True", "controller": "nmpc_only"})
+    nmpc_rrate_steer_corner: float = field(default=-1.0, metadata={"unit": "1/(rad/s)^2", "desc": "override rrate_steer_corner for the NMPC only (-1 = inherit). Only read when nmpc_corner_rrate_blend_enabled is True", "controller": "nmpc_only"})
+
 
 DEFAULT_MPC_PARAMS = MPCParams()
 
