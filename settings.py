@@ -404,6 +404,18 @@ ADAPTIVE_Q_SCALING_ENABLED = True
 # Kept enabled to match the live controller.
 STEER_RATE_ANTI_HUNT_ENABLED = True
 
+# [LTV-QP only, EXPERIMENTAL, added 2026-08-20] Soft constraint against
+# steering REVERSALS (tick-to-tick sign flip), approximated by boosting
+# R_rate[0,0] whenever LAST tick's steering was already close to zero -- see
+# controller/model_utils.py::reversal_penalty_boost's docstring for why a
+# reversal can't be detected directly inside a convex QP and this
+# approximates it. Composes multiplicatively with STEER_RATE_ANTI_HUNT
+# above (mirrors mpc_core.py's own composition fix), does not replace it.
+# Default False: genuine experiment, not yet validated.
+REVERSAL_PENALTY_ENABLED = False
+REVERSAL_PENALTY_BOOST_MAX = 4.0   # ceiling multiplier, applied when u_prev steer == 0
+REVERSAL_PENALTY_K = 8.0           # 1/rad; half-boost at ~7.2deg of previous steering
+
 # [shared, both controllers, EXPERIMENTAL, added 2026-08-19] Post-solve
 # moving-average filter on the FINAL steering command, applied identically
 # regardless of which controller (LTV-QP or NMPC) produced it -- mirrors
@@ -715,6 +727,20 @@ NMPC_CORNER_RRATE_BLEND_ENABLED = False
 NMPC_CORNER_FACTOR_K = -1.0        # -1 = inherit CORNER_FACTOR_K
 NMPC_RRATE_STEER_STRAIGHT = -1.0   # -1 = inherit RRATE_STEER_STRAIGHT
 NMPC_RRATE_STEER_CORNER = -1.0     # -1 = inherit RRATE_STEER_CORNER
+
+# [NMPC only, EXPERIMENTAL, added 2026-08-20] Applies
+# model_utils.reversal_penalty_boost (the same function
+# REVERSAL_PENALTY_ENABLED above already gates for the LTV-QP) to the NMPC too
+# -- gain-scheduled per tick from LAST tick's steering command and applied
+# uniformly across the horizon, exactly like the two flags above. Unlike those
+# two, this one COMPOSES with either of them rather than replacing them: it is
+# keyed on u_prev, not curvature/e_y/e_psi, so all three multipliers stack onto
+# the same R_rate[0,0] (see nmpc_optimiser.compute_step's rrate_steer_current).
+# Mirrors the live MPCParams.nmpc_reversal_penalty_* override fields.
+# UNVALIDATED on the car; offline-A/B'd only.
+NMPC_REVERSAL_PENALTY_ENABLED = False
+NMPC_REVERSAL_PENALTY_BOOST_MAX = -1.0  # -1 = inherit REVERSAL_PENALTY_BOOST_MAX
+NMPC_REVERSAL_PENALTY_K = -1.0          # -1 = inherit REVERSAL_PENALTY_K
 
 # ── Structural / solver settings ─────────────────────────────────────────
 # [NMPC only] No LTV-QP counterpart to inherit from (there's no "linear horizon length"

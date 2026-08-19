@@ -295,6 +295,66 @@ def steer_rate_anti_hunt(kappa, e_y, R_rate_base, enabled=False, e_psi=0.0):
     return R
 
 
+def reversal_penalty_boost(u_prev_steer, R_rate_base, enabled=False,
+                            boost_max=4.0, k=8.0):
+    """
+    TEMPORARY/EXPERIMENTAL (fsds sim only, off by default): soft constraint
+    against steering REVERSALS (a tick-to-tick sign flip), approximated by
+    boosting R_rate[0,0] whenever LAST tick's steering command was already
+    close to zero -- the one state a reversal must pass through. Mirrors
+    mpc_core.py's _reversal_penalty_boost, keep both in sync.
+
+    A reversal can't be detected directly inside one solve (it depends on
+    THIS tick's own decision, the thing being optimised), so this penalises
+    the precondition instead: the closer steering already sits to zero, the
+    more expensive it is to change further this tick, making a full sign
+    flip specifically disproportionately costly relative to a same-side
+    ramp of the same magnitude made from a large starting angle.
+
+    Same saturating-curve style as steer_rate_anti_hunt (single input here).
+    k=8.0 (rad^-1) sets half-boost at ~7.2 deg of PREVIOUS steering.
+    Deliberately keyed on u_prev (a known constant by solve time), not the
+    current solve's own steering variable -- using the variable itself would
+    make the cost non-convex.
+
+    Parameters
+    ----------
+    u_prev_steer : float
+        LAST tick's actual commanded steering (rad). Sign does not matter;
+        only magnitude is used.
+    R_rate_base : np.ndarray, shape (2, 2)
+        Rate-of-change cost matrix to boost -- pass the ALREADY
+        curvature/anti-hunt-adjusted output so mechanisms compose rather
+        than one undoing the other.
+    enabled : bool, optional
+        Master off-switch. False (default) returns R_rate_base completely
+        unmodified -- not even copied.
+    boost_max : float, optional
+        Ceiling multiplier, applied when u_prev_steer is exactly zero.
+    k : float, optional
+        Fade rate (1/rad) of the boost as |u_prev_steer| grows.
+
+    Returns
+    -------
+    R : np.ndarray
+        R_rate_base unchanged if enabled=False. Otherwise a copy with
+        R[0,0] boosted when the previous steering command was near zero.
+
+    Called by: sim/rollout_core.py (run_core_rollout, LTV-QP path) and
+    controller/nmpc_optimiser.py (compute_step, NMPC path) -- opt-in only,
+    via REVERSAL_PENALTY_ENABLED / NMPC_REVERSAL_PENALTY_ENABLED respectively.
+    """
+    if not enabled:
+        return R_rate_base
+
+    boost_near_zero = 1.0 / (1.0 + k * abs(u_prev_steer))
+    scale = 1.0 + (boost_max - 1.0) * boost_near_zero
+
+    R = np.array(R_rate_base, copy=True)
+    R[0, 0] *= scale
+    return R
+
+
 def adaptive_Q_scaling(e_y, Q_base, enabled=False):
     """
     Soften the lateral-error cost Q[0,0] when the car is already close to the

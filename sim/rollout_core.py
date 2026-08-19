@@ -38,7 +38,8 @@ from controller.nmpc_optimiser import NMPCController
 from sim.sim_track import SimPerception, SimPlanner, calculate_dynamic_max_steps
 from controller.model_utils import (
     curvature_estimate, adaptive_R_rate, adaptive_R_scaling, adaptive_Q_scaling,
-    steer_rate_anti_hunt, _corner_factor, _blend, _low_speed_corner_boost,
+    steer_rate_anti_hunt, reversal_penalty_boost, _corner_factor, _blend,
+    _low_speed_corner_boost,
 )
 from sim.scoring import RolloutMetrics
 import sim.speed_profile as sp
@@ -56,6 +57,7 @@ from settings import (
     REF_HEADING_RATE_LIMIT_ENABLED, REF_HEADING_RISE_RATE,
     TERMINAL_Q_SCALE, ADAPTIVE_Q_SCALING_ENABLED,
     USE_PRECOMPUTED_SPEED_PROFILE, STEER_RATE_ANTI_HUNT_ENABLED,
+    REVERSAL_PENALTY_ENABLED, REVERSAL_PENALTY_BOOST_MAX, REVERSAL_PENALTY_K,
     ENABLE_DYNAMIC_SPEED_CAP, DYNAMIC_CAP_A_LAT_MAX, DYNAMIC_CAP_SAFETY,
     ADAPTIVE_R_RATE_ENABLE_IN_CORNERS,
     ADAPTIVE_R_RATE_DURING_FLOOR,
@@ -81,6 +83,8 @@ from settings import (
     NMPC_STEER_RATE_ANTI_HUNT_ENABLED,
     NMPC_CORNER_RRATE_BLEND_ENABLED, NMPC_CORNER_FACTOR_K,
     NMPC_RRATE_STEER_STRAIGHT, NMPC_RRATE_STEER_CORNER,
+    NMPC_REVERSAL_PENALTY_ENABLED, NMPC_REVERSAL_PENALTY_BOOST_MAX,
+    NMPC_REVERSAL_PENALTY_K,
     OUTPUT_SMOOTHING_ENABLED, OUTPUT_SMOOTHING_ALPHA, OUTPUT_SMOOTHING_CORNER_FLOOR,
     OUTPUT_SMOOTHING_K_EY, OUTPUT_SMOOTHING_K_EPSI,
 )
@@ -675,6 +679,10 @@ def run_core_rollout(
             corner_factor_k=_nmpc_pick(NMPC_CORNER_FACTOR_K, CORNER_FACTOR_K),
             rrate_steer_straight=_nmpc_pick(NMPC_RRATE_STEER_STRAIGHT, RRATE_STEER_STRAIGHT),
             rrate_steer_corner=_nmpc_pick(NMPC_RRATE_STEER_CORNER, RRATE_STEER_CORNER),
+            reversal_penalty_enabled=NMPC_REVERSAL_PENALTY_ENABLED,
+            reversal_penalty_boost_max=_nmpc_pick(
+                NMPC_REVERSAL_PENALTY_BOOST_MAX, REVERSAL_PENALTY_BOOST_MAX),
+            reversal_penalty_k=_nmpc_pick(NMPC_REVERSAL_PENALTY_K, REVERSAL_PENALTY_K),
         )
 
     metrics = RolloutMetrics()
@@ -1062,6 +1070,14 @@ def run_core_rollout(
             m_rrate_antihunt = (
                 float(R_rate_scaled[0, 0] / _rr_before_hunt) if _rr_before_hunt else 1.0
             )
+            _rr_before_reversal = float(R_rate_scaled[0, 0])
+            R_rate_scaled = reversal_penalty_boost(
+                float(u_prev[0]), R_rate_scaled, enabled=REVERSAL_PENALTY_ENABLED,
+                boost_max=REVERSAL_PENALTY_BOOST_MAX, k=REVERSAL_PENALTY_K,
+            )
+            m_rrate_reversal = (
+                float(R_rate_scaled[0, 0] / _rr_before_reversal) if _rr_before_reversal else 1.0
+            )
             R_scaled = adaptive_R_scaling(vx, R)
 
             # ── Current-state Q[0,0]/Q[2,2]/Q[3,3] and R_rate[0,0] blend ─────
@@ -1085,7 +1101,8 @@ def run_core_rollout(
             # already-computed ratio is reapplied multiplicatively on top.
             R_rate_scaled = R_rate_scaled.copy()
             R_rate_scaled[0, 0] = _blend(
-                RRATE_STEER_STRAIGHT, RRATE_STEER_CORNER, corner_frac) * m_rrate_antihunt
+                RRATE_STEER_STRAIGHT, RRATE_STEER_CORNER, corner_frac
+            ) * m_rrate_antihunt * m_rrate_reversal
 
             R_scaled = R_scaled.copy()
             R_scaled[0, 0] = _blend(R_scaled[0, 0], R_STEER_CORNER_MID, corner_frac)

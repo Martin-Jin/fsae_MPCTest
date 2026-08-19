@@ -68,7 +68,9 @@ import numpy as np
 import scipy.sparse as sp
 from scipy.interpolate import CubicSpline
 
-from controller.model_utils import steer_rate_anti_hunt, _corner_factor, _blend
+from controller.model_utils import (
+    steer_rate_anti_hunt, reversal_penalty_boost, _corner_factor, _blend,
+)
 
 try:
     import osqp
@@ -666,6 +668,9 @@ class NMPCController:
         corner_factor_k=8.0,
         rrate_steer_straight=2.0,
         rrate_steer_corner=1.25,
+        reversal_penalty_enabled=False,
+        reversal_penalty_boost_max=4.0,
+        reversal_penalty_k=8.0,
     ):
         if osqp is None:      # pragma: no cover - dependency guard
             raise ImportError(
@@ -698,6 +703,14 @@ class NMPCController:
         self.corner_factor_k = float(corner_factor_k)
         self.rrate_steer_straight = float(rrate_steer_straight)
         self.rrate_steer_corner = float(rrate_steer_corner)
+        # EXPERIMENTAL, default off -- see settings.py's
+        # NMPC_REVERSAL_PENALTY_ENABLED comment. Unlike the two flags above,
+        # this one COMPOSES with either of them (it is keyed on u_prev, a
+        # different signal from curvature/e_y/e_psi), so it is not an
+        # alternative to them; see compute_step()'s rrate_steer_current.
+        self.reversal_penalty_enabled = bool(reversal_penalty_enabled)
+        self.reversal_penalty_boost_max = float(reversal_penalty_boost_max)
+        self.reversal_penalty_k = float(reversal_penalty_k)
         if self.friction_circle_enabled:
             # F_max = m * ceiling(v_x) / 2 per axle: the measured ceiling law
             # bounds TOTAL lateral force (F_yf*cos(d) + F_yr) / m, split
@@ -1236,17 +1249,39 @@ class NMPCController:
         # of whether the R_rate weight-blend feature itself is active.
         kappa_now = float(ref.kappa_at(np.array([s0]))[0])
         corner_frac = _corner_factor(kappa_now, self.corner_factor_k)
+        m_rrate_antihunt = 1.0
+        # Tracks R_rate[0,0]'s running value through the if/elif AND the
+        # reversal-penalty composition below, so the reversal penalty (which
+        # applies regardless of which branch ran) boosts whatever value is
+        # actually current rather than always the pre-if/elif base -- the same
+        # silent-discard bug already found and fixed in mpc_core.py's own
+        # corner-blend/anti-hunt composition. Mirrors nmpc_core.py.
+        rrate_steer_current = float(self.r_rate[0])
         if self.corner_rrate_blend_enabled:
             rrate_blend = _blend(self.rrate_steer_straight, self.rrate_steer_corner, corner_frac)
-            r_rate_tick = np.array([rrate_blend, self.r_rate[1]])
-            Rr_flat = np.tile(r_rate_tick, self.N)
-            self._Rr_flat = Rr_flat
-            self._ErE = self._E.T @ (Rr_flat[:, None] * self._E)
+            rrate_steer_current = float(rrate_blend)
         elif self.steer_rate_anti_hunt_enabled:
             R2 = steer_rate_anti_hunt(
                 kappa_now, e_y, np.diag(self.r_rate), enabled=True, e_psi=e_psi,
             )
-            r_rate_tick = np.array([R2[0, 0], self.r_rate[1]])
+            m_rrate_antihunt = (
+                float(R2[0, 0] / self.r_rate[0]) if self.r_rate[0] else 1.0)
+            rrate_steer_current = float(R2[0, 0])
+
+        m_rrate_reversal = 1.0
+        if self.reversal_penalty_enabled:
+            R3 = reversal_penalty_boost(
+                float(self._u_prev[0]), np.diag([rrate_steer_current, self.r_rate[1]]),
+                enabled=True, boost_max=self.reversal_penalty_boost_max,
+                k=self.reversal_penalty_k,
+            )
+            m_rrate_reversal = (
+                float(R3[0, 0] / rrate_steer_current) if rrate_steer_current else 1.0)
+            rrate_steer_current = float(R3[0, 0])
+
+        if (self.corner_rrate_blend_enabled or self.steer_rate_anti_hunt_enabled
+                or self.reversal_penalty_enabled):
+            r_rate_tick = np.array([rrate_steer_current, self.r_rate[1]])
             Rr_flat = np.tile(r_rate_tick, self.N)
             self._Rr_flat = Rr_flat
             self._ErE = self._E.T @ (Rr_flat[:, None] * self._E)
@@ -1324,6 +1359,13 @@ class NMPCController:
             'pred_ey_max_abs': float(np.abs(X[:, IDX_EY]).max()),
             'solve_ms': (time.perf_counter() - t0) * 1e3,
             'corner_frac': corner_frac,
+            # Same keys/semantics as nmpc_core.py's last_telemetry:
+            # per-mechanism multipliers, plus the FINAL fully-composed
+            # R_rate[0,0] actually used this tick (post corner-blend AND
+            # anti-hunt AND reversal-penalty), not just one stage in isolation.
+            'm_Rrate_antihunt': m_rrate_antihunt,
+            'm_Rrate_reversal': m_rrate_reversal,
+            'Rrate_steer_corner_blend': rrate_steer_current,
         }
         if self.friction_circle_enabled:
             # H's two extra (unweighted) rows -- realized per-axle force at
