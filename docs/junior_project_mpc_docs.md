@@ -39,19 +39,28 @@ Based on testing so far, **Stanley is currently the better controller, and MPC h
 The current rough ranking:
 
 1. **Stanley + speed profile**: best overall. Comparable tracking accuracy to the MPC variants, and the most stable on straights.
-2. **Nonlinear MPC (NMPC)**: better corner turn-in than the linear MPC (Section 4.2 onward), and somewhat more stable than the linear MPC on straights, but still not as stable as Stanley.
-3. **Linear MPC (LMPC)**: the original/baseline MPC (Sections 1-4.1). The weakest of the three on straight-line stability, and turns corners slowly/late relative to the other two: the "late turn-in" problem described in Section 4.2.
+2. **Nonlinear MPC (NMPC)**: better corner turn-in than the linear MPC (Section 5), and somewhat more stable than the linear MPC on straights, but still not as stable as Stanley.
+3. **Linear MPC (LMPC)**: the original/baseline MPC (Sections 1-4). The weakest of the three on straight-line stability, and turns corners slowly/late relative to the other two — the "late turn-in" problem described in Section 5.
 
-**An important caveat on what "more stable" actually means here.** Stanley's advantage is specifically about steering-command smoothness, not a functional tracking failure on the MPC side:
+**An important caveat on what "more stable" actually means here.** Stanley's advantage is specifically about steering-command smoothness, not a functional tracking failure on the MPC side.
 
-- Both MPC variants produce noisy, rapidly-switching small steering commands even on a straight, dead-centre section of track where nothing meaningful is actually changing tick to tick. This is a consequence of re-solving "what minimises cost right now" from scratch every tick (Section 1.1), where small amounts of sensor/model noise shift which candidate looks marginally cheapest.
-- This noise does not degrade tracking and does not cause hunting (a sustained, growing oscillation that feeds back on itself). It's small-amplitude chatter around the correct line, not the controller losing its line. Visually it shows up as a very slight wobble, easy to miss unless you're looking for it.
-- The real concern is longer-term: this is the kind of repeated small back-and-forth motion that's plausibly hard on a real steering actuator over time, even though it isn't a driving-quality problem in the simulator's own metrics.
-- Stanley's much simpler reactive law doesn't produce this chatter at all. That's why it still comes out ahead despite MPC's theoretical planning advantage: the win is actuator longevity and visual smoothness, not tracking capability.
+**What the noise actually is:**
+- Both MPC variants produce noisy, rapidly-switching small steering commands even on a straight, dead-centre section of track where nothing meaningful is actually changing tick to tick.
+- Cause: the controller re-solves "what minimises cost right now" from scratch every tick (Section 1.1). Small amounts of sensor/model noise shift which candidate looks marginally cheapest, tick to tick.
 
-None of this means MPC is a dead end. NMPC's corner behaviour is a real improvement over LMPC's, and corner-anticipation (Section 4.2 onward) is a harder and more interesting problem than a simple average-tracking comparison suggests. But readers should not take "this project built an MPC controller" to mean MPC is what's currently recommended for the car. As of this writing, **Stanley plus a curvature-aware speed profile is the best-performing, most stable controller**, and that combination is what should be treated as the baseline to beat, not Stanley alone.
+**What it isn't:**
+- It does not degrade tracking, and it does not cause hunting (a sustained, growing oscillation that feeds back on itself).
+- It's small-amplitude chatter around the correct line, not the controller losing its line — visually a very slight wobble, easy to miss unless you're looking for it.
 
-The trade-off MPC pays for its theoretical advantages is real regardless of the above: complexity and computation cost, solving an optimisation problem 20 times a second, instead of simple trigonometry.
+**Why it still matters:**
+- The concern is longer-term wear, not immediate driving quality: this kind of repeated small back-and-forth motion is plausibly hard on a real steering actuator over time, even though it isn't a driving-quality problem in the simulator's own metrics.
+- Stanley's much simpler reactive law doesn't produce this chatter at all. That's the actual reason it still comes out ahead despite MPC's theoretical planning advantage — the win is actuator longevity and visual smoothness, not tracking capability.
+
+None of this makes MPC a dead end:
+
+- NMPC's corner behaviour is a real improvement over LMPC's, and corner-anticipation (Section 5) is a harder, more interesting problem than a simple average-tracking comparison suggests.
+- But don't read "this project built an MPC controller" as "MPC is what's currently recommended for the car." As of this writing, **Stanley plus a curvature-aware speed profile is the best-performing, most stable controller** — that combination is the baseline to beat, not Stanley alone.
+- The trade-off MPC pays for its theoretical advantages is real regardless: complexity and computation cost, solving an optimisation problem 20 times a second instead of simple trigonometry.
 
 ### What this project delivers
 
@@ -206,9 +215,11 @@ $$
 
 $\alpha$ ramps linearly from 0 to 1 between 1 m/s and 2.5 m/s: pure kinematic below 1 m/s, pure dynamic above 2.5 m/s, a proportional mix in between. This avoids a sudden jump in predicted behaviour right at the switch-over speed.
 
-**From continuous to discrete (Zero-Order Hold).** The equation above, $\dot{x}=A_c x + B_c u$, describes an instant rate of change (a speedometer reading), not a per-tick step. The controller only makes one decision every $dt = 0.05\text{s}$ and holds the command fixed until the next tick. That's a "zero-order hold" on the input: it holds at a constant value (order zero) between updates, rather than ramping or curving.
+**From continuous to discrete (Zero-Order Hold).**
 
-What the solver actually needs is the one-step version, $x[k{+}1] = A_d x[k] + B_d u[k]$: given the state and the held-constant command, what state does that produce exactly $dt$ seconds later?
+- The equation above, $\dot{x}=A_c x + B_c u$, describes an instant rate of change (a speedometer reading), not a per-tick step.
+- The controller only makes one decision every $dt = 0.05\text{s}$ and holds the command fixed until the next tick — a "zero-order hold" on the input: constant between updates (order zero), rather than ramping or curving.
+- What the solver actually needs is the one-step version instead: $x[k{+}1] = A_d x[k] + B_d u[k]$ — given the state and the held-constant command, what state does that produce exactly $dt$ seconds later?
 
 **Zero-Order Hold (ZOH)** answers that by solving the continuous equation exactly, assuming $u$ is frozen for the whole $dt$ window. That produces new matrices $A_d$/$B_d$ folding in the time step:
 
@@ -216,17 +227,19 @@ $$
 \exp\!\left(\begin{bmatrix}A_c & B_c\\0&0\end{bmatrix}dt\right)=\begin{bmatrix}A_d & B_d\\0&I\end{bmatrix}
 $$
 
-This matrix exponential is the standard closed-form trick for solving a linear ODE exactly over a fixed interval. The code doesn't approximate it step-by-step; it computes $A_d$/$B_d$ directly from $A_c$/$B_c$/$dt$ once per tick (`scipy.linalg.expm` under the hood).
+- This matrix exponential is the standard closed-form trick for solving a linear ODE exactly over a fixed interval.
+- The code doesn't approximate it step-by-step; it computes $A_d$/$B_d$ directly from $A_c$/$B_c$/$dt$ once per tick (`scipy.linalg.expm` under the hood).
+- Because the controller really does hold the input constant between ticks (only one command issued per $dt$), ZOH isn't an approximation here — it's exact. That's more accurate than a simpler method like Euler integration, which assumes the rate of change stays constant over the step and builds up error every tick.
 
-Because the controller really does hold the input constant between ticks (only one command issued per $dt$), ZOH isn't an approximation here — it's exact. That makes it more accurate than a simpler method like Euler integration, which assumes the rate of change stays constant over the step and builds up error every tick.
+**A common misconception, worth stating explicitly: the MPC does not "see" the path curving ahead.**
 
-**A common misconception, worth stating explicitly: the MPC does not "see" the path curving ahead.** It's tempting to picture the controller looking at an upcoming corner and planning to turn early because it can see the bend coming. That isn't what the equations above do.
+It's tempting to picture the controller looking at an upcoming corner and planning to turn early because it can see the bend coming. That isn't what the equations above do:
 
-Every term in $A_{kin}$/$A_{dyn}$ describes how the state ($e_y$, $e_\psi$, etc.) evolves *in response to the current state and the chosen control input*. For example, $\dot{e}_y = v_x \cdot e_\psi$ says "if the car's heading is already off, lateral error will grow," and the $\delta_{act}$ terms say "steering changes future heading error." None of them contain $\kappa$, the actual curvature of the real path ahead.
+- Every term in $A_{kin}$/$A_{dyn}$ describes how the state ($e_y$, $e_\psi$, etc.) evolves *in response to the current state and the chosen control input* — e.g. $\dot{e}_y = v_x \cdot e_\psi$ says "if the car's heading is already off, lateral error will grow," and the $\delta_{act}$ terms say "steering changes future heading error." None of them contain $\kappa$, the actual curvature of the real path ahead.
+- Consequence: if the car is currently dead-centre and pointed straight along the path ($e_y \approx 0$, $e_\psi \approx 0$) and holds the steering wheel at zero, the model predicts $e_y \approx 0$, $e_\psi \approx 0$ for every future step — flat, no matter how sharply the real path bends 20 metres ahead.
+- The model has nothing in it representing "the road itself is turning away from the car." It only knows how a control input changes the error state, never how the *reference* itself changes shape over the horizon.
 
-So if the car is currently dead-centre and pointed straight along the path ($e_y \approx 0$, $e_\psi \approx 0$) and holds the steering wheel at zero, the model predicts $e_y \approx 0$, $e_\psi \approx 0$ for every future step — flat, no matter how sharply the real path bends 20 metres ahead. The model has nothing in it representing "the road itself is turning away from the car." It only knows how a control input changes the error state, never how the *reference* itself changes shape over the horizon.
-
-This is the fundamental limitation that Section 4.2's nonlinear MPC exists to fix, by changing what the model tracks progress against rather than trying to patch the cost function. See Section 4.2 for the actual fix.
+This is the fundamental limitation that the nonlinear MPC in Section 5 exists to fix, by changing what the model tracks progress against rather than trying to patch the cost function.
 
 ### 1.4 The Cost Function
 
@@ -363,21 +376,26 @@ Each of the three factors fades toward 1.0 independently as its own input grows,
 
 $e_\psi$ is needed because $\kappa$ and $e_y$ alone can't tell "genuinely straight and settled" apart from "geometrically straight but still pointed the wrong way after exiting a corner." Without it, exactly the steering correction the car needs in that second case would get made artificially expensive. This targets a "should be settled, not still adjusting" regime the other gain-scheduling functions don't cover, and composes on top of `adaptive_R_rate`'s output rather than replacing it.
 
-**Current-curvature corner scheduler** (`_corner_factor` in `mpc_core.py`): reshapes $Q$ based on the curvature the car is at *right now* — reading a smoother, spline-fitted curvature by default rather than a cruder point-to-point estimate — to commit to steering through a corner and relax the yaw-rate penalty enough that turn-in doesn't feel sluggish. It doesn't attempt to look ahead at path geometry the car hasn't reached yet (see Section 1.3's misconception note and Section 4.2 for why lookahead-based reweighting can't manufacture that anticipation, and how NMPC solves it properly instead).
+**Current-curvature corner scheduler** (`_corner_factor` in `mpc_core.py`): reshapes $Q$ based on the curvature the car is at *right now* — reading a smoother, spline-fitted curvature by default rather than a cruder point-to-point estimate — to commit to steering through a corner and relax the yaw-rate penalty enough that turn-in doesn't feel sluggish. It doesn't attempt to look ahead at path geometry the car hasn't reached yet (see Section 1.3's misconception note and Section 5 for why lookahead-based reweighting can't manufacture that anticipation, and how NMPC solves it properly instead).
 
-**Compensating for real, unmeasured delay** (live ROS 2 controller only, `mpc_core.py`'s `predict_ahead()`): the pose the controller just received may already be several ticks old by the time it's solved against, since the car has moved and turned since that measurement was taken. Planning as if the car is still there means planning against the wrong starting point.
+**Compensating for real, unmeasured delay** (live ROS 2 controller only, `mpc_core.py`'s `predict_ahead()`).
 
+- **The problem:** the pose the controller just received may already be several ticks old by the time it's solved against, since the car has moved and turned since that measurement was taken. Planning as if the car is still there means planning against the wrong starting point.
 - **Offline vs. live:** the offline simulator can assume a fixed, known delay (`DELAY_STEPS` in `settings.py`) because it controls the whole loop. The real car can't — perception, planning, control and actuation latency add up to something unknown and time-varying.
-- **Fix:** every solve is told how old its pose actually is (from the message's own timestamp, not when the callback fired), works out how many recent commands haven't taken effect on the car yet, and rolls its internal error state forward through exactly those commands before solving. That way it plans against where the car will actually be, not where it was a tick or two ago.
-- **Why smoothed first:** the raw age measurement is noisy from ordinary control-loop jitter, so it's low-pass filtered and only allowed to change the resulting whole-step count once the smoothed value has clearly crossed into the next step. Otherwise the "how many steps behind are we" count would flicker every tick and inject its own disturbance into the very thing it's trying to fix.
+- **Fix, step by step:** every solve is told how old its pose actually is (from the message's own timestamp, not when the callback fired). It then works out how many recent commands haven't taken effect on the car yet, and rolls its internal error state forward through exactly those commands before solving — so it plans against where the car will actually be, not where it was a tick or two ago.
+- **Why smoothed first:** the raw age measurement is noisy from ordinary control-loop jitter. It's low-pass filtered, and only allowed to change the resulting whole-step count once the smoothed value has clearly crossed into the next step — otherwise the "how many steps behind are we" count would flicker every tick and inject its own disturbance into the very thing it's trying to fix.
 
 See [architecture.md's delay-compensation section](architecture.md#adaptive-gain-scheduling-controllermodel_utilspy) for the exact filtering/hysteresis constants.
 
-**Precomputed shaped heading-lead profile** (`use_precomputed_heading_profile`, live ROS 2 controller only, shipped but still being validated): for a track that's fully known and mapped ahead of time, this precomputes a heading target for every waypoint that already leads the path's geometric heading by however much the car can actually achieve turning between here and the next waypoint, given its planned speed (using the same achievable-yaw-rate relationship $A_{kin}$ already uses for its own yaw-rate row). A corner taken slowly gets proportionally more lead per metre than one taken fast, since there's more time available per metre at lower speed.
+**Precomputed shaped heading-lead profile** (`use_precomputed_heading_profile`, live ROS 2 controller only, shipped but still being validated).
 
-This changes what $e_\psi$ *already equals* the moment the QP starts solving — the car's current heading compared against a target already looking a little further down the track — rather than adding a future obligation to the horizon dynamics. That avoids the "solver schedules the cheapest fix for whenever suits it" failure mode that a plain lookahead disturbance would hit (see Section 1.3).
+- **What it does:** for a track that's fully known and mapped ahead of time, this precomputes a heading target for every waypoint that already leads the path's geometric heading — by however much the car can actually achieve turning between here and the next waypoint, given its planned speed.
+- **How the "achievable turning" amount is found:** the kinematic model's own yaw-rate row already answers "how fast can the car's heading change at this speed and steering angle" (that's what $A_{kin}$'s $\dot{e}_\psi = v_x \cdot \delta_{act} / L$ term from Section 1.3 computes) — this reuses that exact relationship rather than inventing a new one.
+- A corner taken slowly gets proportionally more lead per metre than one taken fast, since there's more time available per metre at lower speed.
+- **Why this avoids the wrong-direction trap other lookahead ideas hit:** it changes what $e_\psi$ *already equals* the moment the QP starts solving — the car's current heading compared against a target already looking a little further down the track — rather than adding a future obligation to the horizon dynamics. That's different from a plain lookahead disturbance, which the solver is free to "pay for" whenever is cheapest (see Section 1.3's misconception note).
+- **Limitation:** only works for a track that's fully known offline. A car exploring a new track live, off the planner's own SLAM-built centreline, has no future path to precompute a lead into.
 
-This only works for a track that's fully known offline; a car exploring a new track live, off the planner's own SLAM-built centreline, has no future path to precompute a lead into. See `planning_control_sync.md`'s "Precomputed shaped heading-lead profile" section for the full mechanism and current live-test status.
+See `planning_control_sync.md`'s "Precomputed shaped heading-lead profile" section for the full mechanism and current live-test status.
 
 **Slowing down when the car isn't tracking well** (`tracking_error_speed_gate`, both live controller nodes): `curvature_speed()` only looks at the *shape* of the road ahead — it has no idea whether the car is actually near that road right now. This gate watches the lateral and heading tracking error and scales the target speed down (with a floor, so the car never loses so much speed it can't steer itself back) once either error grows large. It's paired with a limiter on how fast the speed target is allowed to *rise* (braking requests are never delayed, only "speed up" is capped), so a momentary bad reading can't spike the target back up the very next tick.
 
@@ -391,7 +409,7 @@ $Q$, $R$, and $R_{rate}$ have 9 tunable numbers between them (`Q_diag[0:5]`, `R_
 
 ### 2.2 How the Tuner Works (CMA-ES)
 
-**CMA-ES** (Covariance Matrix Adaptation Evolution Strategy) is a derivative-free, black-box optimiser. It's the right tool here because the objective, "how well did the car drive?", is noisy, non-convex, and has no usable gradient. You can't analytically differentiate "how smooth did the steering feel" with respect to a cost weight, the way you could with a simple curve-fitting problem.
+**CMA-ES** (Covariance Matrix Adaptation Evolution Strategy) is a derivative-free, black-box optimiser — meaning it doesn't need a formula for "how does the score change if I nudge this weight," only the ability to run a rollout and read off a score. That's the right tool here: "how well did the car drive?" is noisy (two runs with identical weights can score slightly differently) and has no clean formula connecting a weight to the score at all, unlike fitting a straight line to data, where calculus can tell you exactly which direction improves the fit.
 
 ```mermaid
 graph TD

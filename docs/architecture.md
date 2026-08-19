@@ -244,14 +244,18 @@ Tuned to the normal run: `POSE_HOLD_PROB = 0.05`, `MEAN_TICKS = 2.1`,
 `MAX_TICKS = 5` reproduces 5.8% repeated ticks / mean hold 2.10 against the
 measured 5.3% / 2.08.
 
-> **This does NOT close the sim-to-real gap.** With the model on and firing
-> correctly, steering saturation moves only 3.4% → 4.4% against a live 21.1%,
-> and heading error 6.0° → 6.3° against a live 15.9°. The pose hold is real and
-> now faithfully reproduced, but it is **not** the cause of the gap. Plant grip,
-> corner entry speed, planner centreline quality, SLAM pose noise, extra
-> actuation delay and planner update rate have each also been tested and
-> eliminated. The cause remains open — do not treat offline scores as
-> predictive of live behaviour until it is found.
+> **This does NOT close the sim-to-real gap.**
+>
+> - With the model on and firing correctly, steering saturation moves only
+>   3.4% → 4.4% against a live 21.1%, and heading error 6.0° → 6.3° against
+>   a live 15.9°.
+> - The pose hold is real and now faithfully reproduced, but it is **not**
+>   the cause of the gap.
+> - Also tested and eliminated: plant grip, corner entry speed, planner
+>   centreline quality, SLAM pose noise, extra actuation delay, and planner
+>   update rate.
+> - The cause remains open — do not treat offline scores as predictive of
+>   live behaviour until it is found.
 
 ---
 
@@ -304,14 +308,17 @@ per axle — see [The Pacejka Tyre Model](#the-pacejka-tyre-model) below for
 what each coefficient physically means). If you replace these with real TTC
 data:
 
-> **You must also recompute `Cf` and `Cr`** (the *linear* cornering
+> **You must also recompute `Cf` and `Cr`** — the *linear* cornering
 > stiffnesses used by the MPC's internal bicycle model in
-> `model/bicycle_model.py`) to match the new Pacejka curve's initial slope near
-> zero slip angle: `C_eff ≈ mu * Fz_nominal * B * C * D`. If `Cf`/`Cr` don't
-> match the new Pacejka peak (`D`) and stiffness (`B`), the MPC's internal
-> prediction model will diverge from the plant it's actually controlling,
-> degrading tracking performance in ways that are hard to diagnose from the
-> symptoms alone.
+> `model/bicycle_model.py`, a completely separate pair of constants from
+> the Pacejka coefficients above.
+>
+> - **Why:** `Cf`/`Cr` need to match the new Pacejka curve's initial slope
+>   near zero slip angle, via `C_eff ≈ mu * Fz_nominal * B * C * D`.
+> - **What happens if you skip this:** the MPC's internal prediction model
+>   quietly stops matching the plant it's actually controlling. It doesn't
+>   error out — it just produces degraded tracking with no obvious cause,
+>   since nothing flags the mismatch directly.
 
 ### Actuator limits
 
@@ -854,14 +861,21 @@ since it's decided at model-construction time even though it only matters
 once the solver is involved.
 
 All matrices start as `1e-12` (not exact `0.0`) rather than `np.zeros(...)`.
-OSQP analyses which matrix entries are nonzero on its *first* solve and
-caches that pattern (the "sparsity pattern" — the *set* of matrix
-positions holding a nonzero value) for speed. If a later solve produces an
-entry that rounds exactly to zero where it was previously nonzero (which
-can happen as `vx` changes and terms like `1/vx` shrink), OSQP's cached
-factorisation becomes invalid and it throws a reallocation error. Filling
-every entry with a tiny nonzero epsilon keeps the sparsity pattern
-identical at every speed, so OSQP never needs to re-analyse it mid-run. See
+Here's why:
+
+- **What a sparsity pattern is:** OSQP analyses which matrix entries are
+  nonzero on its *first* solve, then caches that pattern — the *set* of
+  matrix positions holding a nonzero value — for speed on every later
+  solve.
+- **The bug this avoids:** if a later solve produces an entry that rounds
+  exactly to zero where it was previously nonzero (which can happen as
+  `vx` changes and terms like `1/vx` shrink), OSQP's cached factorisation
+  becomes invalid and it throws a reallocation error.
+- **The fix:** filling every entry with a tiny nonzero epsilon keeps the
+  sparsity pattern identical at every speed, so OSQP never needs to
+  re-analyse it mid-run.
+
+See
 [The solver](#the-solver) for what OSQP is doing with these matrices and
 why sparsity matters to it in the first place.
 
@@ -898,14 +912,16 @@ not a change in what's being penalised (`‖√w·x‖² = w·x²`).
 **Why states 5-7 (`e_a`, `delta_act`, `a_act`) are never tuned:** only the
 first 5 diagonal entries of `Q` (`e_y` through `e_v`) and both entries of
 `R`/`R_rate` are exposed to the offline tuner (`TUNABLE_Q_IDX = [0,1,2,3,4]`
-in `tuner/offline_tuner.py`). `Q[5,5]` (`e_a`) stays at 0 because that state is a
-structural placeholder with no independent target — penalising it would
-just add noise to the cost with no corresponding control lever. `Q[6,6]`
-and `Q[7,7]` (`delta_act`, `a_act`) also stay at 0 because those are
-*measurements* of where the actuator currently is, not tracking errors —
-there's no "correct" value for them to be pulled toward; the actual
-steering/acceleration commands are already penalised directly through `R`
-and `R_rate` instead.
+in `tuner/offline_tuner.py`) — for two different reasons:
+
+- **`Q[5,5]` (`e_a`)** stays at 0 because that state is a structural
+  placeholder with no independent target. Penalising it would just add
+  noise to the cost with no corresponding control lever to actually fix it.
+- **`Q[6,6]`/`Q[7,7]` (`delta_act`, `a_act`)** also stay at 0, for a
+  different reason: those are *measurements* of where the actuator
+  currently is, not tracking errors. There's no "correct" value for them
+  to be pulled toward — the actual steering/acceleration commands are
+  already penalised directly through `R` and `R_rate` instead.
 
 **The rate-of-change (smoothness) cost is split into two pieces** because
 the first horizon step needs a different "previous command" than every
@@ -1412,15 +1428,25 @@ is enabled.
 ### CMA-ES: what it's doing and why
 
 CMA-ES (Covariance Matrix Adaptation Evolution Strategy) is a
-derivative-free black-box optimiser well suited to this problem because the
-objective (drive N corners well) is noisy, non-convex, and has no usable
-gradient — you can't analytically differentiate "how smooth did the
-steering feel" with respect to a cost weight. CMA-ES instead maintains a
-multivariate Gaussian distribution over candidate solutions, samples a
-population from it each generation, evaluates them, and adapts the
-distribution's mean and covariance toward better-scoring regions —
-learning, over generations, not just *where* good solutions are but which
-*directions* in parameter space matter and which don't.
+**derivative-free black-box optimiser** — it doesn't need a formula for how
+the score changes as a weight changes, only the ability to run a rollout
+and read off a score.
+
+**Why that matters here:** the objective (drive N corners well) is noisy —
+two rollouts with identical weights can score slightly differently — and
+has no clean formula connecting a weight to the score, the way fitting a
+straight line to data does. There's no calculus shortcut available, so any
+optimiser that needs one is off the table.
+
+**How CMA-ES actually searches**, each generation:
+
+1. Maintain a multivariate Gaussian distribution over candidate solutions
+   (think: a fuzzy cloud centred on the current best guess).
+2. Sample a population of candidates from that cloud, and run a real
+   rollout to score each one.
+3. Adapt the cloud's centre and shape toward the better-scoring region —
+   learning, over generations, not just *where* good solutions are but
+   which *directions* in parameter space matter and which don't.
 
 This project specifically uses `cma.fmin_lq_surr2`, which layers two
 additional techniques on top of plain CMA-ES:
@@ -1689,14 +1715,33 @@ the car arrives there.
 **Structure**: states `[s, e_y, e_psi, v_x, v_y, r, delta_act, a_act]`, inputs
 `[delta_cmd, a_cmd]`, linear-tyre bicycle dynamics with the same constants and
 the same low-speed kinematic blend as the LTV-QP, plus a `tanh` saturation of
-the predicted lateral force at FSDS's measured `a_lat` ceiling. Solved by
-Gauss-Newton SQP: nonlinear rollout from the measured state (so the
-linearisation point is always dynamically feasible and the QP's dynamics defect
-is zero), finite-difference Jacobians vectorised across horizon stages,
-condensed into a dense QP in the input deviations only, solved by OSQP with a
-box trust region, one iteration per tick warm-started from the previous tick
-(real-time iteration). Horizon 20 steps (1.0 s); measured solve time mean
-8.9 ms, p95 11.6 ms.
+the predicted lateral force at FSDS's measured `a_lat` ceiling.
+
+**How it's solved (Gauss-Newton SQP)**, step by step each tick:
+
+1. **Roll the nonlinear model forward** from the car's actually-measured
+   state — not an approximation, the real equations from Section 4.2 above.
+   Starting from a real state means the rollout is always physically
+   consistent with where the car actually is (no "dynamics defect" to
+   correct for later).
+2. **Linearise around that rollout**: compute how a small change in each
+   input would change the predicted trajectory, via finite-difference
+   Jacobians (the same "how much does nudging this affect that" idea
+   Section 1.3's `A`/`B` matrices capture, just recomputed fresh around
+   this tick's specific rollout instead of a fixed formula). Done for every
+   horizon stage at once (vectorised), not one at a time.
+3. **Condense into a QP** — fold the whole 20-step problem down into one
+   solved for input *changes* only (not full trajectories), which OSQP can
+   solve the same way it solves the LTV-QP's problem.
+4. **Solve with a trust region**: cap how large a step OSQP is allowed to
+   take from this tick's rollout, since the linearisation from step 2 is
+   only accurate near it.
+5. **One iteration per tick, warm-started from last tick's answer**
+   ("real-time iteration") — rather than looping steps 1-4 until full
+   convergence within a single tick, which would risk missing the 50 ms
+   deadline.
+
+Horizon 20 steps (1.0 s); measured solve time mean 8.9 ms, p95 11.6 ms.
 
 **Consequences for the rest of the architecture**: when `use_nmpc=true` the
 entire adaptive gain schedule, the precomputed corner map and the shaped

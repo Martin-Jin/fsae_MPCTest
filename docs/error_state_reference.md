@@ -31,7 +31,7 @@ truth:
   - [2.1 Worked example](#21-worked-example)
   - [2.2 Is this current-error or forward-looking?](#22-is-this-current-error-or-forward-looking)
 - [3. Why the LTV-QP can't just "re-project at every future step"](#3-why-the-ltv-qp-cant-just-re-project-at-every-future-step)
-  - [3.1 Your instinct is basically right — here's the part that breaks it](#31-your-instinct-is-basically-right--heres-the-part-that-breaks-it)
+  - [3.1 The part that breaks it: this search can't live inside a QP](#31-the-part-that-breaks-it-this-search-cant-live-inside-a-qp)
   - [3.2 What was actually tried, and why it failed anyway](#32-what-was-actually-tried-and-why-it-failed-anyway)
 - [4. NMPC (`nmpc_core.py`) error calculation, step by step](#4-nmpc-nmpc_corepy-error-calculation-step-by-step)
   - [4.1 Worked example](#41-worked-example)
@@ -127,15 +127,20 @@ Rotating a vector `(dx, dy)` by `-path_yaw` and taking the resulting
 y-component is exactly `dy·cos(path_yaw) - dx·sin(path_yaw)`; that's all
 this line is.
 
-**Why not just use the raw distance to the nearest point?** Because that
-number conflates "sideways off the line" with "further down the line than
-the nearest waypoint happens to be." A car that is 5 m further along a dead
-straight path, but only 0.2 m sideways off it, has a Euclidean
-nearest-point distance of `sqrt(5² + 0.2²) ≈ 5.004` — reporting the car as
-5 metres off the racing line, when it's really almost exactly on it. The
-rotation above throws away the "along the path" component (`dx·cos +
-dy·sin`, not used here) and keeps only the perpendicular component, which is
-what a lateral-error term is actually supposed to measure.
+**Why not just use the raw distance to the nearest point?**
+
+That number conflates "sideways off the line" with "further down the line
+than the nearest waypoint happens to be" — it's the wrong thing to measure.
+
+Concrete counter-example: a car that is 5 m further along a dead straight
+path, but only 0.2 m sideways off it, has a Euclidean nearest-point
+distance of `sqrt(5² + 0.2²) ≈ 5.004` — reporting the car as 5 metres off
+the racing line, when it's really almost exactly on it.
+
+The rotation above avoids this by throwing away the "along the path"
+component (`dx·cos + dy·sin`, not used here) and keeping only the
+perpendicular component — which is what a lateral-error term is actually
+supposed to measure.
 
 **Step 5 — Heading error (`e_psi`).**
 
@@ -394,38 +399,20 @@ own natural decay in the linear model is `Ad[2,2] ≈ 0.946` per 0.05 s tick
 (i.e. any nonzero `e_psi` shrinks by about 5.4% every tick even with zero
 input) — that decay is fighting the forcing term every step.
 
-- **At `gain = 1.0`** (the physically exact value, from `path_yaw_rate =
-  v_x·κ`): the injected nudge per tick is roughly
-  `w = -v_x·kappa·dt·gain = -15·0.05·0.05·1.0 ≈ -0.0375` rad/step
-  (≈ -2.15°/step) — but the QP's own decay bleeds off about 94.6% of
-  whatever accumulates from the *previous* tick before this tick's nudge
-  even lands. Net effect measured on this test: resulting commanded
-  steering under 1°, indistinguishable from ordinary solver noise. **Too
-  weak to produce any real anticipation.**
-- **Raise `gain` to compensate (say `gain ≈ 6`)**: now the nudge is large
-  enough to matter, but it also makes the *cheapest total path* through the
-  QP's cost landscape change character. Picture the cost as a landscape the
-  solver is finding the lowest point of: a large forcing term partway
-  through the horizon can make a brief dip in the *wrong* direction earlier
-  in the horizon (cheap in steering-rate terms, since it's a small early
-  correction) followed by a bigger *correct*-direction swing later, sum to
-  a lower total squared-cost than committing to the correct direction
-  immediately. This was confirmed directly: at this gain, the solver's
-  chosen trajectory steers measurably away from the corner for the first
-  few steps before reversing.
-- **Push `gain` to ≈ 20** to force early correct-direction commitment to
-  win outright: by this point the forcing term is so large it saturates
-  steering at the mechanical limit for the *entire* horizon regardless of
-  actual tracking error, which defeats the purpose (the controller is now
-  just always turning at maximum, not responding to the actual corner).
+**`gain = 1.0`** (the physically exact value, from `path_yaw_rate = v_x·κ`):
+- Injected nudge per tick: `w = -v_x·kappa·dt·gain = -15·0.05·0.05·1.0 ≈ -0.0375` rad/step (≈ -2.15°/step).
+- But the QP's own decay bleeds off about 94.6% of whatever accumulated from the *previous* tick before this tick's nudge even lands.
+- **Result:** commanded steering under 1° — indistinguishable from ordinary solver noise. Too weak to produce any real anticipation.
 
-There is no gain in between that is simultaneously large enough to produce
-meaningful anticipation and free of the wrong-direction transient — this
-isn't a case of "try harder to tune it," it's the geometry of the cost
-landscape itself changing shape as gain increases, which is exactly the
-structural property described above (the solver optimizes whatever total
-cost the numbers describe, and for a wide middle range of gains, a
-wrong-direction dip is genuinely cheaper).
+**Raise `gain` to compensate, say `gain ≈ 6`:**
+- The nudge is now large enough to matter — but it also changes the *cheapest total path* through the QP's cost landscape.
+- Picture the cost as a landscape the solver is finding the lowest point of: a large forcing term partway through the horizon can make a brief dip in the *wrong* direction early (cheap in steering-rate terms, since it's a small correction) followed by a bigger *correct*-direction swing later — summing to a lower total squared-cost than committing immediately.
+- **Result, confirmed directly:** at this gain, the solver's chosen trajectory steers measurably away from the corner for the first few steps before reversing.
+
+**Push `gain` to ≈ 20** to force early correct-direction commitment to win outright:
+- **Result:** the forcing term is now so large it saturates steering at the mechanical limit for the *entire* horizon, regardless of actual tracking error — the controller is always turning at maximum, not responding to the real corner. This defeats the purpose just as badly as the first failure mode.
+
+**No gain in between works either.** This isn't a case of "try harder to tune it" — it's the geometry of the cost landscape itself changing shape as gain increases, the same structural property described above: the solver optimizes whatever total cost the numbers describe, and for a wide middle range of gains, a wrong-direction dip is genuinely cheaper.
 
 **The fix that actually worked:** make the curvature obligation impossible
 to defer, by making it a **structural consequence of the car's own predicted
