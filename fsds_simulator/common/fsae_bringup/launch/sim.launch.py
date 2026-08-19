@@ -196,7 +196,7 @@ def generate_launch_description():
             description='EMA coefficient for output_smoothing_enabled; lower = more '
                         'smoothing/more lag -- passed through to control.launch.py.'),
         DeclareLaunchArgument(
-            'output_smoothing_corner_floor', default_value='0.3',
+            'output_smoothing_corner_floor', default_value='0.1',
             description='min smoothing weight retained even at full curvature -- '
                         'passed through to control.launch.py.'),
         *(DeclareLaunchArgument(

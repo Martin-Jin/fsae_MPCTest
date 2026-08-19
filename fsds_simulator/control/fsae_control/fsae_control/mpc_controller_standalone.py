@@ -164,7 +164,7 @@ class MPCControllerStandaloneNode(Node):
                 ('output_smoothing_enabled', False),
                 ('output_smoothing_alpha', 0.3),          # EMA coefficient on the
                                        # smoothed signal; lower = more smoothing/more lag
-                ('output_smoothing_corner_floor', 0.3),   # min smoothing weight
+                ('output_smoothing_corner_floor', 0.1),   # min smoothing weight
                                        # retained even at full curvature (corner_frac=1) --
                                        # smoothing never fully switches off, just weakens
             ],

@@ -421,7 +421,11 @@ STEER_RATE_ANTI_HUNT_ENABLED = True
 # so a sharp corner still gets a mostly-instant response.
 OUTPUT_SMOOTHING_ENABLED = False
 OUTPUT_SMOOTHING_ALPHA = 0.3          # EMA coefficient; lower = more smoothing/more lag
-OUTPUT_SMOOTHING_CORNER_FLOOR = 0.3   # min smoothing weight retained even at full curvature
+# lowered 0.3->0.1 on 2026-08-19: at 0.3 the filter's own lag showed up as a
+# ~2.5s delayed correction at corner entry/exit (e_y overshot then swung back
+# well after corner_frac had already dropped), a slow "sway" distinct from
+# the high-frequency jitter this filter was built to remove.
+OUTPUT_SMOOTHING_CORNER_FLOOR = 0.1   # min smoothing weight retained even at full curvature
 
 # [LTV-QP only] ADAPTIVE_R_RATE_ENABLE_IN_CORNERS — TEMPORARY/EXPERIMENTAL, fsds sim only.
 # (Renamed from ADAPTIVE_R_RATE_DISABLE_IN_CORNERS, whose True/False

@@ -109,7 +109,7 @@ class MPCControllerNode(Node):
                 # final steering command, NOT a QP weight change).
                 ('output_smoothing_enabled', False),
                 ('output_smoothing_alpha', 0.3),
-                ('output_smoothing_corner_floor', 0.3),
+                ('output_smoothing_corner_floor', 0.1),
             ],
         )
         # All MPCController tuning (Q/R/R_rate weights, adaptive-gain shape
