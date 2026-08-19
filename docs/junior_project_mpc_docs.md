@@ -65,7 +65,7 @@ None of this makes MPC a dead end:
 ### What this project delivers
 
 - **A working MPC controller**: takes in odometry (position, heading, speed) and outputs a throttle + steering command.
-- **A working 2D simulator**: used to visualise and test the controller, and to run the offline tuner against. (This is a separate, lightweight simulator from FSDS, see [FSDS vs. This Repo's Simulator](#fsds-vs-this-repos-simulator) below.)
+- **A working 2D simulator**: used to visualise and test the controller, and to run the offline tuner against. (This is a separate, lightweight simulator from FSDS, see [FSDS vs. This Repo's Simulator](#3-fsds-vs-this-repos-simulator) below.)
 - **A working auto-tuner**: the controller's cost function has ~9 numbers that need tuning for it to drive well; this searches for good values automatically instead of by hand.
 - **Working ROS 2 nodes**: drop-in replacements for the old Stanley controller nodes in the FSDS/planning stack, so the MPC can be validated against the real simulator.
 - **Documentation**: the repo [README](https://github.com/Martin-Jin/fsae_MPCTest) and this docs page.
