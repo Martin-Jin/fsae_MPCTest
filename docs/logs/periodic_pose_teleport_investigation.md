@@ -9,17 +9,20 @@ centreline-curvature-spike defect (`planning_control_sync.md`) — it is a new,
 separate, currently-unexplained failure mode found while triaging a "the car
 randomly steers off" report.
 
-**Status: root cause NOT found, but substantially narrowed.** Two live
-captures (see "Capture result" and "Second capture result" below) have
-exonerated `sim_perception.py` entirely, shown the bridge's raw 250 Hz odom
-output sustaining only ~22-36 Hz for nearly the whole run, and then — the
-decisive result — shown that **FSDS's own internal simulation clock never
-drops out of lockstep with wall time, including in the exact seconds the
-position teleports**. That overturns the "FSDS/Unreal's own frame/tick rate
-is slow" reading of the first capture: the simulation itself is not
-stalling. The bottleneck is somewhere in how `getCarState()`'s RPC response
-is produced or relayed, independent of the underlying simulation's own
-clock — see "Second capture result" for what that rules in/out.
+**Status: root cause NOT found, but substantially narrowed.** Three live
+captures (see "Capture result", "Second capture result", and "Third capture
+result" below) have exonerated `sim_perception.py` entirely, shown the
+bridge's raw 250 Hz odom output sustaining only ~22-36 Hz for nearly the
+whole run, shown that **FSDS's own internal simulation clock never drops out
+of lockstep with wall time, including in the exact seconds the position
+teleports**, and then — the third, decisive result — shown that **`/clock`'s
+own *arrival* stalls in lockstep with odom's**, roughly every 33-34 seconds,
+ruling out the leading "it's specific to `getCarState()`" hypothesis. The
+stall is shared across at least two independent RPC-sourced topics
+(`getCarState()`-driven odom and the GSS-sourced `/clock`), which points at
+the RPC/AirSim transport boundary itself rather than anything specific to
+the car-state call. See "Third capture result" for the measurement and what
+it does/doesn't rule out.
 
 **Why it exists.** The investigation started as "is this a controller or
 planner bug" and ended by ruling out both — worth recording precisely because
@@ -307,38 +310,92 @@ state and what `getCarState()`'s RPC response actually delivers** — a stale
 cached response, a server-side buffering/queueing behaviour independent of
 the simulation clock, or something in how the RPC transport itself
 serialises/delivers responses under a periodic condition this hasn't
-identified yet. Whatever it is, it does not touch the GSS-sourced `/clock`
-RPC path the same way it touches the `getCarState()` path used for odom —
-those two RPC calls behave differently under whatever this condition is.
+identified yet.
 
-## Next step (2026-08-19 — clock-drift check now run once; root cause still open)
+**Correction (see "Third capture result" below): the claim in the previous
+paragraph that this "does not touch the GSS-sourced `/clock` RPC path the
+same way" is wrong.** It was based only on `/clock`'s *value* never drifting
+from wall time, not on whether `/clock` itself arrives late. The very next
+capture, adding a `/clock` arrival-rate measurement, shows `/clock` stalls on
+the same ~33 s cadence as odom.
+
+## Third capture result (2026-08-20, `topic_hz_diagnostics/*_1787169224.*`, ~426 s run)
+
+The `/clock` arrival-rate capture from "Next step" (previous revision of this
+doc) is now wired into `launch_all.sh` and has been run once, alongside the
+existing odom/car_position/clock-drift captures, in the same session.
+
+**`/clock`'s own arrival rate collapses in lockstep with odom, on the same
+~33-34 s cadence.** Three independent measurements from this one run agree:
+
+- `clock_drift_1787169224.csv`'s raw wall-clock timestamps (the
+  `clock_drift_check.py` subscriber, sampling at ~100 Hz) show 7 gaps of
+  1.4-1.7 s in `/clock` arrival, at wall-clock offsets t = 1.8, 35.8, 69.5,
+  103.2, 137.4, 171.4, 205.0 s from run start — a consistent ~33.7 s period,
+  matching the ~31.7 s teleport cadence from the first two captures within
+  the variance already seen between runs.
+- The independent `ros2 topic hz -w 5 /clock` process (`clock_hz_*.log`)
+  shows its own average rate repeatedly collapsing from a ~95-107 Hz baseline
+  down to ~2.6-3.5 Hz, at the same cadence.
+- `odom_hz_1787169224.log` shows its familiar ~22-36 Hz sustained-degradation
+  baseline (as in both prior captures) additionally punctuated by sharper
+  drops at matching intervals (sample-index gaps of ~32 between drops, at
+  ~1.05 s per printed sample ⇒ ~33.6 s).
+
+**This overturns the leading hypothesis from the "Second capture result"
+above.** The stall is not specific to `getCarState()`'s RPC path — it hits
+`/clock`, which is sourced from a *different* RPC call (the GSS clock read;
+see the comment above the `/clock` capture in `launch_all.sh`). Whatever is
+periodically stalling responses, it is shared across at least two distinct
+RPC calls, which points at the RPC/AirSim transport boundary itself (a
+shared server-side thread, queue, or lock that both calls contend on) rather
+than at anything specific to how `getCarState()` in particular is computed or
+cached.
+
+**What this does not yet tell us:** whether *every* RPC call stalls together
+(a single shared bottleneck) or whether this is coincidental overlap between
+two of several independently-stalling calls — testing a third, unrelated RPC
+topic would distinguish these. It also does not explain *why* the stall
+recurs on such a precise, fixed period (~33-34 s) rather than under load or
+at random — that periodicity is itself a strong clue (something is running
+on a fixed internal timer/tick — a GC pause, a periodic flush, a polling
+loop with a ~33 s interval) that hasn't been chased down yet.
+
+## Next step (2026-08-20 — /clock question answered; root cause still open)
 
 `ros2/launch_all.sh` launches, right after the bridge comes up (search for
-`TEMPORARY (2026-08-19)`): two `ros2 topic hz -w 5` background captures
-(`/fsds/testing_only/odom`, `/fsae/slam/car_position`) plus
-`ros2/clock_drift_check.py` subscribing to `/clock`, all logging into
-`fsae_logs/topic_hz_diagnostics/`, torn down alongside the bridge in
-`cleanup()`. Two sessions have now been captured and analysed (see both
-"Capture result" sections above) — `sim_perception.py` and FSDS's own
-simulation clock are both cleared; the open question is now specifically
-about `getCarState()`'s RPC path.
+`TEMPORARY (2026-08-19)`): four background captures — `ros2 topic hz -w 5`
+on `/fsds/testing_only/odom`, `/fsae/slam/car_position`, and `/clock` itself,
+plus `ros2/clock_drift_check.py` subscribing to `/clock` for its value-drift
+check — all logging into `fsae_logs/topic_hz_diagnostics/`, torn down
+alongside the bridge in `cleanup()`. Three sessions have now been captured
+and analysed (see all three "Capture result" sections above) —
+`sim_perception.py`, FSDS's own simulation clock, and "specific to
+`getCarState()`" are all cleared; the open question is now about what's
+shared at the RPC/AirSim transport boundary that stalls on a fixed ~33-34 s
+period.
 
-**What's answered:** `sim_perception.py` is not the cause (candidate 2,
-ruled out twice); FSDS's own simulation clock is not stalling (the "Unreal
-frame rate" reading of candidate 1 is overturned).
+**What's answered:** `sim_perception.py` is not the cause (candidate 2, ruled
+out twice); FSDS's own simulation clock is not stalling (the "Unreal frame
+rate" reading of candidate 1 is overturned); the stall is not specific to
+`getCarState()` — it hits the independently-sourced `/clock` RPC on the same
+cadence (Third capture result).
 
 **What's still open**, and the most promising next things to try:
 
-- **Does `/clock`'s own *arrival rate* (not just its value) collapse the
-  same way odom's does?** `clock_drift_check.py` currently only logs
-  `(wall_time, sim_time)`, which answered "is the sim clock's VALUE falling
-  behind" (no) but not "does `/clock` itself suffer the same ~25-36 Hz
-  publish-rate collapse odom does." Add a third `ros2 topic hz -w 5 /clock`
-  capture alongside the existing two — if `/clock` stays clean at its full
-  100 Hz while odom collapses, that would pin the problem specifically to
-  `getCarState()`'s RPC path (not RPC/AirSim in general); if `/clock` also
-  collapses, the bottleneck is shared across RPC calls generally, closer to
-  candidate 1's original network/RPC-boundary framing.
+- **Does a third, unrelated RPC call stall on the same cadence?** Only two
+  RPC-sourced topics have been checked (`getCarState()`/odom, the GSS-sourced
+  `/clock`). If a third bridge-side polled topic also stalls at the same
+  ~33-34 s period, that confirms a single shared bottleneck (thread, queue,
+  or lock) rather than two calls coincidentally stalling together.
+- **What has a ~33-34 s period?** The stall's precision (not just "under
+  load" but on a fixed cadence) is itself a strong clue. Worth checking for:
+  a GC pause on whatever runs the AirSim RPC server, a periodic
+  flush/checkpoint inside Unreal or AirSim, or a polling/timeout loop with a
+  ~33 s interval somewhere in the RPC transport (msgpack-rpc client or
+  server side). This is a different kind of investigation than the
+  topic-hz captures already in place — likely needs either AirSim/Unreal-side
+  logging or profiling during a run, not another ROS2-side capture.
 - **Instrument `odom_cb` directly** (candidate "RPC round-trip timing
   inside the bridge" from the options considered when this instrumentation
   was added — deferred so far because it needs a C++ rebuild): log the wall
@@ -350,6 +407,10 @@ frame rate" reading of candidate 1 is overturned).
   itself hasn't computed a new state yet" as the reason for a stale
   response, so a stale-but-fast RPC response would specifically implicate a
   caching layer between Unreal's true state and what `getCarState()` returns.
+  This candidate is now somewhat weaker than before the third capture, since
+  a caching layer specific to `getCarState()` would not obviously explain why
+  `/clock` also stalls — unless both calls share the same cache/queue
+  mechanism.
 
 This block is temporary and should be removed from `launch_all.sh` (the
 launch-time block, its `cleanup()` teardown, and `ros2/clock_drift_check.py`)
