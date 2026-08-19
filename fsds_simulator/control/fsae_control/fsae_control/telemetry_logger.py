@@ -136,6 +136,10 @@ ADAPTIVE_COLUMNS = (
     # planning_control_sync.md's "Three MPCC-inspired additions" section.
     'nmpc_fyf_max_abs',        # peak |front-axle lateral tyre force| anywhere in the horizon (N)
     'nmpc_fyr_max_abs',        # peak |rear-axle lateral tyre force| anywhere in the horizon (N)
+    # nmpc_speed_limit_enabled only (empty otherwise) -- added 2026-08-19,
+    # registered here up front per the fyf/fyr lesson above (that column was
+    # missing from this tuple for one whole live test before being caught).
+    'nmpc_speed_limit_over_max',  # peak predicted v_x above v_max(s)+margin anywhere in the horizon (m/s); 0 = bound never active
 )
 
 

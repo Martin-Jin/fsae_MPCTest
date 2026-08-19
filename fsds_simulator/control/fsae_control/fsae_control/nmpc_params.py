@@ -244,6 +244,50 @@ class NMPCParams:
         "controller": "nmpc_only",
     })
 
+    # ── Soft per-stage speed limit (EXPERIMENTAL, default off) ───────────
+    nmpc_speed_limit_enabled: bool = field(default=False, metadata={
+        "unit": "bool",
+        "desc": "true -> add a SOFT (slack-backed) v_x_k <= v_ref_at(s_k) + "
+                "nmpc_speed_limit_margin + slack_v_k row per stage, same "
+                "PathReference.v_ref_at(s_k) state-keyed lookup as "
+                "nmpc_horizon_speed_profile_enabled, same slack-with-weight "
+                "pattern as the existing soft track-bound rows (never a hard "
+                "bound like nmpc_friction_circle_enabled -- that one's zero-"
+                "slack hard bound went infeasible under ordinary cornering "
+                "and stalled the car; see planning_control_sync.md). Added "
+                "2026-08-19 because nmpc_horizon_speed_profile_enabled's cost "
+                "term alone was live-tested and rejected: the QP just SUMS "
+                "(v_x-v_ref)^2 across stages with no ordering, so the solver "
+                "can trade a bad early (in-corner) residual against a good "
+                "late (post-corner) one in the SAME solve, producing v_actual "
+                "~16.7 m/s against v_ref ~3-5 m/s approaching a corner. A "
+                "per-stage INEQUALITY can't be traded away that way -- it "
+                "must hold at every stage individually. Only takes effect "
+                "when a speed-profile array is supplied (ref.v_target is not "
+                "None), exactly like nmpc_horizon_speed_profile_enabled's own "
+                "gating; can be enabled independently of that flag. Default "
+                "False: genuine experiment, not yet validated",
+        "controller": "nmpc_only",
+    })
+    nmpc_speed_limit_margin: float = field(default=0.5, metadata={
+        "unit": "m/s",
+        "desc": "added on top of v_ref_at(s_k) before the hard-but-soft bound "
+                "applies, so ordinary tracking noise around the profile "
+                "doesn't constantly engage slack. 0 = bound exactly at the "
+                "profile's own value",
+        "controller": "nmpc_only",
+    })
+    nmpc_speed_limit_slack_weight: float = field(default=200.0, metadata={
+        "unit": "1/(m/s)^2",
+        "desc": "penalty on the speed-limit slack, same role as "
+                "nmpc_slack_weight for the track bound but a separate, much "
+                "smaller constant: a speed overshoot of a few m/s for a tick "
+                "or two while braking is expected and should cost noticeably "
+                "less than actually leaving the track (nmpc_slack_weight = "
+                "10000), not be pinned to zero as aggressively",
+        "controller": "nmpc_only",
+    })
+
     # ── Solver tolerance ────────────────────────────────────────────────
     nmpc_osqp_max_iter: int = field(default=500, metadata={
         "unit": "iterations",

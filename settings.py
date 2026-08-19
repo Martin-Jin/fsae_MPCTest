@@ -793,6 +793,45 @@ NMPC_HORIZON_SPEED_PROFILE_ENABLED = False
 # before this feature existed -- not just "the extra rows are empty".
 NMPC_FRICTION_CIRCLE_ENABLED = False
 
+# [NMPC only] NMPC_SPEED_LIMIT_ENABLED -- False (default, EXPERIMENTAL): add a
+# SOFT (slack-backed) v_x_k <= v_ref_at(s_k) + NMPC_SPEED_LIMIT_MARGIN +
+# slack_v_k row to the condensed QP at EVERY horizon stage, using the same
+# state-keyed PathReference.v_ref_at(s_k) lookup as
+# NMPC_HORIZON_SPEED_PROFILE_ENABLED and the same slack-with-weight pattern as
+# the existing soft track-bound rows. Never a HARD bound like
+# NMPC_FRICTION_CIRCLE_ENABLED -- that one's zero-slack hard bound went
+# infeasible under ordinary cornering and stalled the car (see
+# docs/planning_control_sync.md), so this one always carries slack and can
+# never make the subproblem infeasible.
+#
+# Added 2026-08-19 because NMPC_HORIZON_SPEED_PROFILE_ENABLED's COST term
+# alone was live-tested and REJECTED: the QP just SUMS (v_x - v_ref)^2 across
+# stages with no ordering constraint, so the solver can trade a bad early
+# (in-corner) residual against a good late (post-corner) one in the SAME
+# solve -- it never has to actually slow down in time, only make the total
+# look good. Measured live: v_actual ~16.5 m/s against v_ref already down to
+# ~7-9 m/s on corner entry, with worse off-track excursions than doing
+# nothing. A per-stage INEQUALITY cannot be traded away that way: each
+# stage's bound must individually hold.
+#
+# Only takes effect when a speed-profile array is actually supplied to
+# PathReference (see run_core_rollout's NMPC construction / ref.v_target),
+# exactly like NMPC_HORIZON_SPEED_PROFILE_ENABLED's own gating; the two flags
+# are independent and either, both or neither can be enabled. Default False:
+# genuine experiment, not yet live-tested.
+NMPC_SPEED_LIMIT_ENABLED = False
+NMPC_SPEED_LIMIT_MARGIN = 0.5               # m/s added on top of v_ref_at(s_k) before the
+                                            # bound applies, so ordinary tracking noise around
+                                            # the profile doesn't constantly engage slack.
+                                            # 0 = bound exactly at the profile's own value.
+NMPC_SPEED_LIMIT_SLACK_WEIGHT = 200.0       # penalty on the speed-limit slack -- same role as
+                                            # NMPC_SLACK_WEIGHT for the track bound, but a
+                                            # separate, much smaller constant: a few m/s of
+                                            # overshoot for a tick or two while braking is
+                                            # expected and should cost noticeably less than
+                                            # actually leaving the track (10000), not be pinned
+                                            # to zero as aggressively.
+
 
 # ------------------------------------------------------------------------------
 # Adaptive-gain SHAPE constants

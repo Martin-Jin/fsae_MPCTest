@@ -893,6 +893,9 @@ class NMPCController:
             self._fmax_flat = 0.5 * self.plant.m * self.plant.alat_ceiling_flat
             self._fmax_slope = 0.5 * self.plant.m * self.plant.alat_ceiling_slope
             self._fmax_intercept = 0.5 * self.plant.m * self.plant.alat_ceiling_intercept
+        self.speed_limit_enabled = bool(nm0.nmpc_speed_limit_enabled)
+        self.speed_limit_margin = float(nm0.nmpc_speed_limit_margin)
+        self.speed_limit_slack_weight = float(nm0.nmpc_speed_limit_slack_weight)
 
         # ── Limits: identical to MPCController's ────────────────────────
         self.a_max = MAX_ACCEL
@@ -1043,14 +1046,16 @@ class NMPCController:
     # ------------------------------------------------------------------
     def _build_qp(self) -> None:
         """
-        Allocate the condensed QP once: variables z = [dU (nu*N); slack (N)],
-        with the constraint rows
+        Allocate the condensed QP once: variables
+        z = [dU (nu*N); slack (N); slack_v (N)], with the constraint rows
 
             (1) box/trust region on dU                       nu*N rows
             (2) input slew rate |u_k - u_{k-1}| <= du_max     nu*N rows
             (3) e_y_k - slack_k <= +halfwidth                 N rows
             (4) e_y_k + slack_k >= -halfwidth                 N rows
             (5) slack >= 0                                    N rows
+            (6) v_x_k - slack_v_k <= v_max_k                  N rows
+            (7) slack_v >= 0                                  N rows
 
         Rows (3)-(5) and the slack variables are omitted entirely when
         nmpc_track_halfwidth <= 0. The pattern never changes after this, so
@@ -1065,12 +1070,25 @@ class NMPCController:
         per-tick — since it changes the QP's fixed sparsity pattern. When
         False, n_rows/nz and every array below are IDENTICAL to before this
         feature existed.
+
+        Speed-limit rows (6)-(7) (self.speed_limit_enabled, see
+        NMPCParams.nmpc_speed_limit_enabled): a SEPARATE one-sided soft bound
+        with its OWN slack_v (not sharing the track bound's slack, so the two
+        constraints can't offset each other's cost), one row per stage plus
+        one non-negativity row per stage. v_max_k is filled in per-tick from
+        PathReference.v_ref_at(s_k) + nmpc_speed_limit_margin in _solve_step;
+        when no speed-profile array is available at solve time the rows are
+        left inert (l=-inf, u=inf) rather than omitted, since (like the
+        friction-circle rows) the sparsity pattern is fixed once here, not
+        per-tick. Read ONCE here, at construction time, like _use_slack.
         """
         N = self.N
         n_du = NU * N
         self._use_slack = self.nmpc.nmpc_track_halfwidth > 0.0
         n_slack = N if self._use_slack else 0
-        nz = n_du + n_slack
+        self._use_vslack = self.speed_limit_enabled
+        n_vslack = N if self._use_vslack else 0
+        nz = n_du + n_slack + n_vslack
         n_fric = 2 * N if self.friction_circle_enabled else 0
 
         # First-difference operator E: diff_k = u_k - u_{k-1} (u_{-1} = u_prev).
@@ -1083,16 +1101,20 @@ class NMPCController:
         self._Rr_flat = np.tile(self.r_rate, N)
         self._ErE = E.T @ (self._Rr_flat[:, None] * E)
 
-        # P pattern: dense upper triangle over dU, plus the slack diagonal.
+        # P pattern: dense upper triangle over dU, plus the slack diagonals.
         p_mask = np.zeros((nz, nz), dtype=bool)
         p_mask[:n_du, :n_du] = np.triu(np.ones((n_du, n_du), dtype=bool))
         if n_slack:
-            idx = np.arange(n_du, nz)
+            idx = np.arange(n_du, n_du + n_slack)
+            p_mask[idx, idx] = True
+        if n_vslack:
+            idx = np.arange(n_du + n_slack, nz)
             p_mask[idx, idx] = True
         P, p_rows, p_cols = _csc_pattern(p_mask)
 
         # A pattern.
-        n_rows = 2 * n_du + (3 * N if self._use_slack else 0) + n_fric
+        n_rows = (2 * n_du + (3 * N if self._use_slack else 0)
+                  + n_fric + (2 * N if self._use_vslack else 0))
         a_mask = np.zeros((n_rows, nz), dtype=bool)
         a_mask[:n_du, :n_du] = np.eye(n_du, dtype=bool)
         a_mask[n_du:2 * n_du, :n_du] = E != 0.0
@@ -1109,6 +1131,14 @@ class NMPCController:
         if n_fric:
             rf0 = 2 * n_du + (3 * N if self._use_slack else 0)
             a_mask[rf0:rf0 + n_fric, :n_du] = True
+        if n_vslack:
+            rv0 = 2 * n_du + (3 * N if self._use_slack else 0) + n_fric
+            # Speed rows are dense in dU for the same reason the track rows
+            # are: stage k's v_x depends on every earlier input through S.
+            a_mask[rv0:rv0 + N, :n_du] = True
+            for k in range(N):
+                a_mask[rv0 + k, n_du + n_slack + k] = True           # -slack_v_k
+                a_mask[rv0 + N + k, n_du + n_slack + k] = True       # slack_v_k >= 0
         A, a_rows, a_cols = _csc_pattern(a_mask)
 
         q = np.zeros(nz)
@@ -1132,7 +1162,8 @@ class NMPCController:
             prob=prob, P=P, A=A,
             p_rows=p_rows, p_cols=p_cols,
             a_rows=a_rows, a_cols=a_cols,
-            n_du=n_du, n_slack=n_slack, n_fric=n_fric, nz=nz, n_rows=n_rows,
+            n_du=n_du, n_slack=n_slack, n_vslack=n_vslack, n_fric=n_fric,
+            nz=nz, n_rows=n_rows,
         )
 
     # ------------------------------------------------------------------
@@ -1238,19 +1269,25 @@ class NMPCController:
             C[:, :, j] = (Hp - H0) / _FD_EPS_X[j]
         return H0, C
 
-    def _cost(self, X, U, H):
+    def _cost(self, X, U, H, ref=None):
         """
         True (nonlinear) cost of a candidate trajectory — used only by the
         backtracking test, so it must match the QP's objective term for term:
         weighted output residuals with the terminal scale, input effort with
-        the accel/brake split, input rate against u_prev, and the soft-track
+        the accel/brake split, input rate against u_prev, the soft-track
         slack penalty at its optimal value for this trajectory (max(0, |e_y| -
-        halfwidth), which is what the QP's slack would be).
+        halfwidth), which is what the QP's slack would be), and (when
+        speed_limit_enabled) the analogous soft speed-limit slack penalty
+        (max(0, v_x - v_max(s)), the slack_v the QP would choose).
 
         H may carry NH_FRICTION extra (unweighted) columns when
         friction_circle_enabled -- sliced down to the original NH cost rows
         here so w (len NH) always broadcasts correctly and the objective
         itself never includes the friction rows, per the feature's spec.
+
+        ref is only required when self._use_vslack; omitted (None) is fine
+        for callers that never enable that flag, matching every other
+        experimental feature's opt-in-only signature footprint.
         """
         w = self.w_out
         H = H[:, :NH]
@@ -1267,7 +1304,12 @@ class NMPCController:
             over = np.maximum(np.abs(X[1:, IDX_EY]) - self.nmpc.nmpc_track_halfwidth,
                               0.0)
             slack = float(self.nmpc.nmpc_slack_weight * np.sum(over ** 2))
-        return stage + eff + rate + slack
+        vslack = 0.0
+        if self._use_vslack and ref is not None and ref.v_target is not None:
+            v_max = ref.v_ref_at(X[1:, IDX_S]) + self.speed_limit_margin
+            over_v = np.maximum(X[1:, IDX_VX] - v_max, 0.0)
+            vslack = float(self.speed_limit_slack_weight * np.sum(over_v ** 2))
+        return stage + eff + rate + slack + vslack
 
     def _solve_step(self, X, U, ref, v_ref):
         """
@@ -1286,7 +1328,8 @@ class NMPCController:
         """
         N = self.N
         qp = self._qp
-        n_du, n_slack, nz, n_rows = qp['n_du'], qp['n_slack'], qp['nz'], qp['n_rows']
+        n_du, n_slack, n_vslack, nz, n_rows = (
+            qp['n_du'], qp['n_slack'], qp['n_vslack'], qp['nz'], qp['n_rows'])
 
         A_k, B_k = self._jacobians(X, U, ref)
         H, C = self._output_jacobians(X, ref, v_ref)
@@ -1329,8 +1372,11 @@ class NMPCController:
         q = np.zeros(nz)
         q[:n_du] = 2.0 * grad
         if n_slack:
-            idx = np.arange(n_du, nz)
+            idx = np.arange(n_du, n_du + n_slack)
             P_dense[idx, idx] = 2.0 * self.nmpc.nmpc_slack_weight
+        if n_vslack:
+            idx = np.arange(n_du + n_slack, nz)
+            P_dense[idx, idx] = 2.0 * self.speed_limit_slack_weight
 
         A_dense = np.zeros((n_rows, nz))
         l = np.empty(n_rows)
@@ -1396,6 +1442,29 @@ class NMPCController:
             A_dense[rf0 + N:rf0 + 2 * N, :n_du] = dF_dU[:, 1, :]
             l[rf0 + N:rf0 + 2 * N] = -F_max - F0[:, 1]
             u[rf0 + N:rf0 + 2 * N] = F_max - F0[:, 1]
+
+        if n_vslack:
+            rv0 = 2 * n_du + (3 * N if n_slack else 0) + n_fric
+            S_vx = S[1:, IDX_VX, :]              # (N, n_du)
+            vx = X[1:, IDX_VX]
+            if ref.v_target is not None:
+                v_max = ref.v_ref_at(X[1:, IDX_S]) + self.speed_limit_margin
+            else:
+                # No profile supplied this tick (e.g. live-planner mode with
+                # no precomputed speed CSV) -- leave the rows inert rather
+                # than tightening around whatever v_max happened to be last,
+                # same "no-op when data is absent" contract as
+                # horizon_speed_profile_enabled's own ref.v_target gate.
+                v_max = np.full(N, np.inf)
+            # (6) v_x_k - slack_v_k <= v_max_k.
+            A_dense[rv0:rv0 + N, :n_du] = S_vx
+            A_dense[rv0:rv0 + N, n_du + n_slack:] = -np.eye(N)
+            l[rv0:rv0 + N] = -np.inf
+            u[rv0:rv0 + N] = v_max - vx
+            # (7) slack_v >= 0.
+            A_dense[rv0 + N:rv0 + 2 * N, n_du + n_slack:] = np.eye(N)
+            l[rv0 + N:rv0 + 2 * N] = 0.0
+            u[rv0 + N:rv0 + 2 * N] = np.inf
 
         qp['prob'].update(
             Px=P_dense[qp['p_rows'], qp['p_cols']],
@@ -1560,7 +1629,7 @@ class NMPCController:
         H = _outputs(X, ref, self.plant, v_ref,
                      horizon_speed_profile_enabled=self.horizon_speed_profile_enabled,
                      friction_circle_enabled=self.friction_circle_enabled)
-        cost = self._cost(X, U, H)
+        cost = self._cost(X, U, H, ref)
         iters = 0
         status = 'warm-start-only'
         for _ in range(max(1, int(self.nmpc.nmpc_sqp_iters))):
@@ -1578,7 +1647,7 @@ class NMPCController:
                 H_try = _outputs(X_try, ref, self.plant, v_ref,
                                  horizon_speed_profile_enabled=self.horizon_speed_profile_enabled,
                                  friction_circle_enabled=self.friction_circle_enabled)
-                cost_try = self._cost(X_try, U_try, H_try)
+                cost_try = self._cost(X_try, U_try, H_try, ref)
                 # ONLY a genuine improvement is accepted. Accepting the
                 # smallest trial regardless (an earlier version of this loop
                 # did, "so a tick always makes progress") means a bad search
@@ -1674,6 +1743,14 @@ class NMPCController:
             # the FINAL accepted trajectory, see _outputs' docstring.
             self.last_telemetry['nmpc_fyf_max_abs'] = float(np.abs(H[:, NH]).max())
             self.last_telemetry['nmpc_fyr_max_abs'] = float(np.abs(H[:, NH + 1]).max())
+        if self.speed_limit_enabled and ref.v_target is not None:
+            # Worst predicted overspeed vs the profile at the FINAL accepted
+            # trajectory -- 0 means the soft bound was never active this
+            # tick, a positive value shows how much slack the QP actually
+            # needed (same diagnostic role as nmpc_pred_ey_max_abs above).
+            v_max_final = ref.v_ref_at(X[1:, IDX_S]) + self.speed_limit_margin
+            self.last_telemetry['nmpc_speed_limit_over_max'] = float(
+                np.maximum(X[1:, IDX_VX] - v_max_final, 0.0).max())
         return steering, throttle, brake
 
     def _path_reference(self, path) -> PathReference | None:
