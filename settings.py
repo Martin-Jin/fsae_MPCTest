@@ -652,6 +652,20 @@ NMPC_R_RATE_DELTA = -1.0
 NMPC_R_RATE_A    = -1.0
 NMPC_TERMINAL_SCALE = -1.0
 
+# [NMPC only, EXPERIMENTAL, added 2026-08-19] Reuses model_utils.steer_rate_anti_hunt
+# (the same function STEER_RATE_ANTI_HUNT_ENABLED above already gates for the
+# LTV-QP) on the NMPC too -- independent flag, not inherited, since the live
+# nmpc_core.py module docstring documents a deliberate decision NOT to port
+# mpc_core's adaptive gain-schedule family onto the curvature-aware NMPC
+# (double-count risk); anti-hunt is offered separately because it only ever
+# makes steering-rate MORE expensive when already centred/aligned/uncurving,
+# the opposite direction from anticipation. UNVALIDATED for the NMPC. Note:
+# model_utils.steer_rate_anti_hunt hardcodes boost_max=6.0 internally (no
+# settings.py override exists for EITHER controller's use of it, pre-existing
+# limitation, not introduced here) -- ANTI_HUNT_BOOST_MAX has no live
+# offline-side constant to parameterise this with yet.
+NMPC_STEER_RATE_ANTI_HUNT_ENABLED = False
+
 # ── Structural / solver settings ─────────────────────────────────────────
 # [NMPC only] No LTV-QP counterpart to inherit from (there's no "linear horizon length"
 # concept these could default to) -- these are genuine NMPC-only constants,

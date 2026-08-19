@@ -204,6 +204,24 @@ class MPCParams:
     nmpc_r_rate_a: float = field(default=-1.0, metadata={"unit": "1/(m/s^2)^2", "desc": "override r_rate_a (-1 = inherit)", "controller": "nmpc_only"})
     nmpc_terminal_scale: float = field(default=-1.0, metadata={"unit": "unitless", "desc": "override terminal_q_scale (-1 = inherit)", "controller": "nmpc_only"})
 
+    # steer_rate_anti_hunt_enabled/anti_hunt_boost_max above are LTV-QP-only
+    # in nmpc_core.py's own docstring ("no adaptive gain schedule ... layering
+    # it on a curvature-aware model would double-count"), which is about the
+    # corner-factor/heading-error-asymmetry FAMILY (mechanisms that add
+    # anticipation the LTV-QP structurally lacks). Anti-hunt is narrower and
+    # points the other way -- it only ever makes steering-rate MORE expensive,
+    # and only when already centred/aligned/uncurving -- so it is offered here
+    # as an independent, separately-defaulted-False opt-in rather than folded
+    # into the LTV-QP's own flag, since the double-count concern above may or
+    # may not apply to it. UNVALIDATED for the NMPC: reuses the exact
+    # kappa/e_y/e_psi signal nmpc_core.py's module docstring already flags as
+    # partially redundant with the spline reference's own noise fix (see
+    # PathReference's docstring on why raw-tangent quantisation doesn't
+    # reach the NMPC the way it reaches the LTV-QP) -- offline A/B before
+    # enabling live.
+    nmpc_steer_rate_anti_hunt_enabled: bool = field(default=False, metadata={"unit": "bool", "desc": "EXPERIMENTAL: apply steer_rate_anti_hunt's extra R_rate[0,0] penalty (centred/aligned/uncurving) to the NMPC too, gain-scheduled per tick and applied uniformly across the horizon -- not a temporal filter, so it adds no lag. Independent of steer_rate_anti_hunt_enabled above. Default False, unvalidated", "controller": "nmpc_only"})
+    nmpc_anti_hunt_boost_max: float = field(default=-1.0, metadata={"unit": "unitless", "desc": "override anti_hunt_boost_max for the NMPC only (-1 = inherit). Only read when nmpc_steer_rate_anti_hunt_enabled is True", "controller": "nmpc_only"})
+
 
 DEFAULT_MPC_PARAMS = MPCParams()
 

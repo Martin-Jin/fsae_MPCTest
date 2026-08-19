@@ -180,6 +180,8 @@ controller:
     nmpc_r_rate_delta: -1.0   # override r_rate_delta (-1 = inherit) (1/rad^2)
     nmpc_r_rate_a: -1.0       # override r_rate_a (-1 = inherit) (1/(m/s^2)^2)
     nmpc_terminal_scale: -1.0 # override terminal_q_scale (-1 = inherit)
+    nmpc_steer_rate_anti_hunt_enabled: false   # EXPERIMENTAL: apply steer_rate_anti_hunt to the NMPC too (independent of steer_rate_anti_hunt_enabled above), unvalidated (bool)
+    nmpc_anti_hunt_boost_max: -1.0             # override anti_hunt_boost_max for the NMPC only (-1 = inherit). Only read when nmpc_steer_rate_anti_hunt_enabled is true
 
     # ── NONLINEAR MPC (nmpc_core.py's NMPCController) ────────────────────
     # use_nmpc=false (default) means none of this is used and the LTV-QP

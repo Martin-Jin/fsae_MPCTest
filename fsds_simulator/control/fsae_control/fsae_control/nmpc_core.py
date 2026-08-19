@@ -42,7 +42,12 @@ WHAT THIS CONTROLLER DELIBERATELY DOES NOT DO
 * No adaptive gain schedule (mpc_core's corner-factor/heading-error-asymmetry
   stack) — that exists to synthesise anticipation a curvature-blind model
   can't produce; layering it on a curvature-aware model would double-count an
-  effect that's now structural. Left untouched on the LTV-QP path.
+  effect that's now structural. Left untouched on the LTV-QP path. The one
+  exception is steer_rate_anti_hunt (see EXPERIMENTAL ADDITIONS below) — it
+  only ever makes steering-RATE more expensive when already
+  centred/aligned/uncurving, the opposite direction from anticipation, so it
+  is offered as a separate, independently-defaulted-False opt-in rather than
+  assumed exempt from this section's reasoning.
 * No shaped heading-lead profile. set_heading_profile() is accepted (so the
   nodes need no branch) and IGNORED with a one-time log line — that profile is
   a workaround for the same missing curvature term this controller closes
@@ -68,6 +73,16 @@ exactly)
   |F_yf|/|F_yr| <= F_max QP constraint on top of (not instead of) the
   existing soft alat-ceiling saturation below — see NH_FRICTION and
   _build_qp/_solve_step.
+* nmpc_steer_rate_anti_hunt_enabled (MPCParams field, default False):
+  reuses mpc_core._steer_rate_anti_hunt verbatim (imported, not
+  reimplemented, so it is byte-identical by construction) to scale
+  R_rate[0,0] up to nmpc_anti_hunt_boost_max (inherits anti_hunt_boost_max)
+  when the CURRENT state is centred/aligned/uncurving. Computed once per
+  compute() call from the measured state (not per SQP iteration, not a
+  function of horizon step), so it is fresh every tick with no cross-tick
+  memory — unlike a temporal low-pass filter on the output, this adds no
+  lag. See "WHAT THIS CONTROLLER DELIBERATELY DOES NOT DO" above for why
+  this is scoped separately from the rest of the gain-schedule family.
 """
 
 import math
@@ -84,7 +99,9 @@ except ImportError as _exc:      # pragma: no cover - see package.xml
     osqp = None
     _OSQP_IMPORT_ERROR = _exc
 
-from fsae_control.mpc_core import MAX_ACCEL, MAX_BRAKE, MAX_STEER_RAD
+from fsae_control.mpc_core import (
+    MAX_ACCEL, MAX_BRAKE, MAX_STEER_RAD, _steer_rate_anti_hunt,
+)
 from fsae_control.mpc_params import DEFAULT_MPC_PARAMS, MPCParams
 from fsae_control.nmpc_params import DEFAULT_NMPC_PARAMS, NMPCParams
 
@@ -902,6 +919,13 @@ class NMPCController:
         ])
         self.terminal_scale = _pick(pm.nmpc_terminal_scale, pm.terminal_q_scale)
 
+        # Independent of steer_rate_anti_hunt_enabled (the LTV-QP's own
+        # flag) — see nmpc_params.py/mpc_params.py's field comments and the
+        # module docstring's "WHAT THIS CONTROLLER DELIBERATELY DOES NOT DO"
+        # for why this is opt-in and separately defaulted False.
+        self.steer_rate_anti_hunt_enabled = bool(pm.nmpc_steer_rate_anti_hunt_enabled)
+        self.anti_hunt_boost_max = _pick(pm.nmpc_anti_hunt_boost_max, pm.anti_hunt_boost_max)
+
         # ── Continuity memory (mirrors MPCController's) ─────────────────
         self._delta_act = 0.0
         self._a_act = 0.0
@@ -1451,6 +1475,30 @@ class NMPCController:
             self._delta_act, self._a_act,
         ])
 
+        # ── Anti-hunt (EXPERIMENTAL, default off — see module docstring) ─
+        # Same signal, same function, as the LTV-QP path (imported verbatim
+        # from mpc_core, not reimplemented) — scale R_rate[0,0] up to
+        # anti_hunt_boost_max when CURRENT kappa/e_y/e_psi are all small.
+        # Computed once per compute() call (this tick's measured state), and
+        # applied UNIFORMLY across the whole horizon for this tick's solve —
+        # not a function of horizon step, so it does not schedule a future
+        # obligation the way the deleted lookahead family did. self._Rr_flat/
+        # self._ErE are ordinarily fixed at _build_qp() time; when this flag
+        # is off (default), neither is touched here, so behaviour is
+        # byte-identical to before this feature existed.
+        kappa_now = float(ref.kappa_at(np.array([s0]))[0])
+        m_rrate_antihunt = 1.0
+        if self.steer_rate_anti_hunt_enabled:
+            R2 = _steer_rate_anti_hunt(
+                kappa_now, e_y, np.diag(self.r_rate), True,
+                e_psi=e_psi, boost_max=self.anti_hunt_boost_max,
+            )
+            m_rrate_antihunt = float(R2[0, 0] / self.r_rate[0]) if self.r_rate[0] else 1.0
+            r_rate_tick = np.array([R2[0, 0], self.r_rate[1]])
+            Rr_flat = np.tile(r_rate_tick, self.N)
+            self._Rr_flat = Rr_flat
+            self._ErE = self._E.T @ (Rr_flat[:, None] * self._E)
+
         # ── Delay compensation (nonlinear rollforward) ──────────────────
         # Same trigger/depth logic as the LTV-QP path, but rolled forward
         # through the NONLINEAR model instead of predict_ahead()'s linear
@@ -1561,9 +1609,10 @@ class NMPCController:
             'e_y': float(e_y),
             'e_psi': float(e_psi),
             'e_v': float(car_speed - v_ref),
-            'kappa': float(ref.kappa_at(np.array([s0]))[0]),
+            'kappa': kappa_now,
             'base_idx': int(base_idx),
             'kappa_max_abs': float(np.abs(kap_horizon).max()),
+            'm_Rrate_antihunt': m_rrate_antihunt,
             'pose_age_s': float(pose_age_s),
             'n_delay': int(n_delay),
             'solve_ms': float(solve_ms),

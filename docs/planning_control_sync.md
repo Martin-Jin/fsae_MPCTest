@@ -341,7 +341,7 @@ table used to list; those fields no longer exist on either side.
 | `epsi_ra_half_rad` | `EPSI_RA_HALF_RAD` | `radians(10.0)` (matched) |
 | `epsi_ra_accel_boost_max` | `EPSI_RA_ACCEL_BOOST_MAX` | `2.0` (matched) |
 | `epsi_ra_brake_floor` | `EPSI_RA_BRAKE_FLOOR` | `0.5` (matched) |
-| `nmpc_q_e_y` … `nmpc_terminal_scale` (11 override fields) | `NMPC_Q_E_Y` … `NMPC_TERMINAL_SCALE` | all `-1.0` (inherit sentinel, matched) — see "Nonlinear MPC" section below |
+| `nmpc_q_e_y` … `nmpc_anti_hunt_boost_max` (13 override fields, added `nmpc_steer_rate_anti_hunt_enabled`/`nmpc_anti_hunt_boost_max` 2026-08-19) | `NMPC_Q_E_Y` … `NMPC_STEER_RATE_ANTI_HUNT_ENABLED` | all `-1.0`/`False` (inherit sentinel, matched) — see "Nonlinear MPC" section below. `NMPC_ANTI_HUNT_BOOST_MAX` has no offline constant (see that section) |
 
 The remaining `MPCParams` fields (`max_delay_compensation_steps`,
 `predict_epsi_clip`, `pose_age_lp_alpha`, `n_delay_hysteresis`,
@@ -2775,10 +2775,25 @@ Three deliberate differences, all of which matter when reading a log:
 ### What is inactive when `use_nmpc=true`
 
 - The **entire adaptive gain schedule** (every mechanism documented in the
-  sections above: lookahead approach/exit boosts, yaw-rate relax, anti-hunt,
-  straight boosts, centred softening, U-turn detector). They exist to
-  synthesise anticipation this model does structurally. No `m_*` telemetry
-  columns are written.
+  sections above: lookahead approach/exit boosts, yaw-rate relax, straight
+  boosts, centred softening, U-turn detector). They exist to synthesise
+  anticipation this model does structurally. No `m_*` telemetry columns are
+  written for these.
+- **Exception, added 2026-08-19: `nmpc_steer_rate_anti_hunt_enabled`
+  (default False).** Unlike the rest of this family, anti-hunt only ever
+  makes steering-RATE more expensive when the current state is already
+  centred/aligned/uncurving — the opposite direction from anticipation — so
+  it is offered as an independent NMPC opt-in (`mpc_params.py`'s
+  `nmpc_steer_rate_anti_hunt_enabled`/`nmpc_anti_hunt_boost_max`, NOT
+  inherited from the LTV-QP's own `steer_rate_anti_hunt_enabled`). Reuses
+  `mpc_core._steer_rate_anti_hunt` verbatim (imported, not reimplemented) on
+  the live side and `model_utils.steer_rate_anti_hunt` on the offline side.
+  `m_Rrate_antihunt` IS written when this is on (the existing shared column,
+  same one the LTV-QP already populates). UNVALIDATED — offline A/B before
+  a live test. See `mpc_params.py`'s field comment and `nmpc_core.py`'s
+  module docstring ("WHAT THIS CONTROLLER DELIBERATELY DOES NOT DO") for the
+  full reasoning on why this one mechanism is treated differently from the
+  rest of the excluded family.
 - **`use_precomputed_heading_profile`** — no effect (one startup log line says
   so). It approximates the curvature the NMPC models exactly.
 - `curvature_forcing_enabled`, `ref_heading_rate_limit_enabled` — LTV-QP-only.
@@ -2942,6 +2957,8 @@ field exists solely to be read by `nmpc_core.py`'s `_pick()` calls
 | `nmpc_r_rate_delta` | `mpc_params.py:203` | `r_rate_delta` |
 | `nmpc_r_rate_a` | `mpc_params.py:204` | `r_rate_a` |
 | `nmpc_terminal_scale` | `mpc_params.py:205` | `terminal_q_scale` |
+| `nmpc_steer_rate_anti_hunt_enabled` (added 2026-08-19) | `mpc_params.py:222` | independent bool, NOT inherited from `steer_rate_anti_hunt_enabled` — see field comment for why |
+| `nmpc_anti_hunt_boost_max` (added 2026-08-19) | `mpc_params.py:223` | `anti_hunt_boost_max` |
 
 **`NMPCParams` — all 20 fields NMPC only, by the file's own design
 (`nmpc_params.py`):** the module docstring states this file holds only

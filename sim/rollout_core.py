@@ -76,7 +76,7 @@ from settings import (
     NMPC_R_DELTA, NMPC_R_A_ACCEL, NMPC_R_A_BRAKE,
     NMPC_R_RATE_DELTA, NMPC_R_RATE_A, NMPC_TERMINAL_SCALE,
     NMPC_SPLINE_REFERENCE_ENABLED, NMPC_HORIZON_SPEED_PROFILE_ENABLED,
-    NMPC_FRICTION_CIRCLE_ENABLED,
+    NMPC_FRICTION_CIRCLE_ENABLED, NMPC_STEER_RATE_ANTI_HUNT_ENABLED,
 )
 
 
@@ -660,6 +660,7 @@ def run_core_rollout(
             spline_reference_enabled=NMPC_SPLINE_REFERENCE_ENABLED,
             horizon_speed_profile_enabled=NMPC_HORIZON_SPEED_PROFILE_ENABLED,
             friction_circle_enabled=NMPC_FRICTION_CIRCLE_ENABLED,
+            steer_rate_anti_hunt_enabled=NMPC_STEER_RATE_ANTI_HUNT_ENABLED,
         )
 
     metrics = RolloutMetrics()

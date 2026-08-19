@@ -68,6 +68,8 @@ import numpy as np
 import scipy.sparse as sp
 from scipy.interpolate import CubicSpline
 
+from controller.model_utils import steer_rate_anti_hunt
+
 try:
     import osqp
 except ImportError as _exc:      # pragma: no cover - see README's dependency list
@@ -656,6 +658,7 @@ class NMPCController:
         spline_reference_enabled=True,
         horizon_speed_profile_enabled=False,
         friction_circle_enabled=False,
+        steer_rate_anti_hunt_enabled=False,
     ):
         if osqp is None:      # pragma: no cover - dependency guard
             raise ImportError(
@@ -677,6 +680,10 @@ class NMPCController:
         self.spline_reference_enabled = bool(spline_reference_enabled)
         self.horizon_speed_profile_enabled = bool(horizon_speed_profile_enabled)
         self.friction_circle_enabled = bool(friction_circle_enabled)
+        # EXPERIMENTAL, unvalidated for the NMPC -- see settings.py's
+        # NMPC_STEER_RATE_ANTI_HUNT_ENABLED comment. Independent of any
+        # LTV-QP-side anti-hunt flag.
+        self.steer_rate_anti_hunt_enabled = bool(steer_rate_anti_hunt_enabled)
         if self.friction_circle_enabled:
             # F_max = m * ceiling(v_x) / 2 per axle: the measured ceiling law
             # bounds TOTAL lateral force (F_yf*cos(d) + F_yr) / m, split
@@ -1121,6 +1128,23 @@ class NMPCController:
             s0, e_y, e_psi, max(float(car_speed), 0.0), float(car_vy),
             float(car_yaw_rate), self._delta_act, self._a_act,
         ])
+
+        # Anti-hunt (EXPERIMENTAL, default off) -- mirrors nmpc_core.py's
+        # own block exactly: same signal (current kappa/e_y/e_psi), same
+        # function (model_utils.steer_rate_anti_hunt, imported not
+        # reimplemented), computed once per compute_step() call and applied
+        # UNIFORMLY across the whole horizon for this tick's solve. When
+        # disabled (default), self._Rr_flat/self._ErE are untouched here, so
+        # behaviour is byte-identical to before this feature existed.
+        if self.steer_rate_anti_hunt_enabled:
+            kappa_now = float(ref.kappa_at(np.array([s0]))[0])
+            R2 = steer_rate_anti_hunt(
+                kappa_now, e_y, np.diag(self.r_rate), enabled=True, e_psi=e_psi,
+            )
+            r_rate_tick = np.array([R2[0, 0], self.r_rate[1]])
+            Rr_flat = np.tile(r_rate_tick, self.N)
+            self._Rr_flat = Rr_flat
+            self._ErE = self._E.T @ (Rr_flat[:, None] * self._E)
 
         if pending_cmds:
             xk = [float(v) for v in x0]
