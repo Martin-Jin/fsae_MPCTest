@@ -357,35 +357,42 @@ three files that must be kept in numeric agreement — `model/bicycle_model.py`
 by the simulator/tuner), and `mpc_core.py` (a self-contained duplicate of
 both, used by the live ROS 2 node so it has no simulator dependencies).
 
-### Linear vs nonlinear, in plain English
+This section assumes no prior background — every term below (model, state,
+input, cost function, solver) is defined in plain English the first time it
+appears.
 
-Before going further, it's worth being precise about what "linear" means
-for the MPC's own model, since the word gets used constantly below. A
-model is **linear** if every output is just a fixed multiple of each input,
-added together — double an input and its contribution exactly doubles, and
-no input's effect depends on the current value of another input. Every
-matrix (`A`, `B`, `Ad`, `Bd`) built in the sections below is exactly this: a
-table of fixed multipliers, so `x_{k+1} = Ad·x_k + Bd·u_k` is always "this
-state times a fixed number, plus that state times a fixed number, ...",
-never anything that bends or saturates depending on where the car currently
-is. That rigid structure is what lets the solver treat "find the best
-control sequence" as a Quadratic Program (QP) — see below — with a fast,
-predictable solve and a guaranteed global optimum every tick.
+### Four terms you need before anything else makes sense
 
-The real plant (`model/vehicle_physics.py`) has no such structure — its
-tyre forces, weight transfer, and heading kinematics genuinely curve and
-saturate (see the tyre section above for concrete numbers). If the MPC
-tried to plan against those equations directly, the relationship between
-`x_{k+1}` and `(x_k, u_k)` would no longer reduce to a fixed multiplier
-table, and the problem would stop being a QP and become a much harder
-nonlinear program (NLP) — no guaranteed optimum, no fast off-the-shelf
-solver, and solve times that can balloon unpredictably. That's exactly why
-the MPC doesn't try to plan against the real nonlinear plant directly: it
-builds a much simpler **linear** approximation of the car's behaviour (good
-near the car's *current* operating point) and re-linearises it fresh every
-single tick as speed and conditions change — see the kinematic/dynamic
-blend below. The nonlinear plant is reserved for simulating what actually
-happens to the "real" car in response to a command.
+- **State**: the set of numbers that describe "where things stand right
+  now." For this controller, state doesn't mean the car's raw (X, Y)
+  position — it means *how far off the intended path the car currently is*
+  (see [The 8-state error vector](#the-8-state-error-vector) below for the
+  actual list). Written as a vector, `x`.
+- **Input** (also called a **command**): the numbers the controller
+  actually gets to choose each tick — steering angle and
+  acceleration/braking. Written as a vector, `u`.
+- **Model**: a mathematical rule that answers *"given the current state `x`
+  and a chosen input `u`, what will the state be a moment later?"* It's the
+  controller's internal, simplified stand-in for "how the car behaves,"
+  used purely for planning — not the real car itself. This project's model
+  is a **bicycle model**: instead of simulating all four wheels, the car is
+  approximated as one wheel on the front axle and one on the rear, both on
+  the centreline. That's a standard simplification in vehicle control — it
+  captures the two things that matter most for path tracking (how the
+  front wheel steers, and how the whole car rotates/slides) while staying
+  simple enough to evaluate thousands of times a second.
+- **Cost function**: a single number that scores "how bad" a candidate plan
+  is — bigger tracking error, more control effort, or jerkier commands all
+  make this number bigger. The controller's whole job each tick is to
+  search for the sequence of inputs that makes this number as small as
+  possible. The thing doing that search is called the **solver** (see [The
+  solver](#the-solver) below) — you don't write a search algorithm
+  yourself, you hand the cost function and the model to an existing,
+  purpose-built solver library and it finds the best answer.
+
+With those four ideas in hand, the rest of this section builds up exactly
+what this controller's state, input, model, and cost function actually are,
+in full detail.
 
 ### What "MPC" means here
 
@@ -801,6 +808,42 @@ Ad, Bd = Md[:8, :8], Md[:8, 8:]
 matrices `A_c`/`B_c` above exist only as an intermediate step to build them
 correctly.
 
+#### Linear vs nonlinear, in plain English
+
+Now that `Ad`/`Bd` exist concretely, it's worth being precise about what
+"linear" actually means here, since the word gets used constantly below. A
+model is **linear** if every output is just a fixed multiple of each input,
+added together — double an input and its contribution exactly doubles, and
+no input's effect depends on the current value of another input. Every
+matrix built above (`A`, `B`, `Ad`, `Bd`) is exactly this: a table of fixed
+multipliers, so `x[k+1] = Ad·x[k] + Bd·u[k]` is always "this state times a
+fixed number, plus that state times a fixed number, ...", never anything
+that bends or saturates depending on where the car currently is.
+
+That rigid structure is what lets the solver treat "find the best control
+sequence" as a **Quadratic Program (QP)** — see [The cost function and
+QP](#the-cost-function-and-qp-controlleroptimiserpy) and [The
+solver](#the-solver) below — with a fast, predictable solve and a
+guaranteed global optimum every tick.
+
+The real plant (`model/vehicle_physics.py`) has no such structure — its
+tyre forces, weight transfer, and heading kinematics genuinely curve and
+saturate (see the tyre section above for concrete numbers). If the MPC
+tried to plan against those equations directly, the relationship between
+`x[k+1]` and `(x[k], u[k])` would no longer reduce to a fixed multiplier
+table, and the problem would stop being a QP and become a much harder
+nonlinear program (NLP) — no guaranteed optimum, no fast off-the-shelf
+solver, and solve times that can balloon unpredictably.
+
+That's exactly why the MPC doesn't plan against the real nonlinear plant
+directly: it builds the much simpler **linear** approximation derived above
+(good near the car's *current* operating point, thanks to the
+kinematic/dynamic blend) and re-linearises it fresh every single tick as
+speed and conditions change. The nonlinear plant is reserved for simulating
+what actually happens to the "real" car in response to a command — see
+[Configuring the Vehicle](#configuring-the-vehicle-modelvehicle_physicspy)
+above.
+
 #### Note on OSQP sparsity
 
 `Ad` and `Bd` are consumed a few sections down by **OSQP**, the QP
@@ -824,7 +867,9 @@ why sparsity matters to it in the first place.
 
 ### The cost function and QP (`controller/optimiser.py`)
 
-Each solve minimises, over the predicted `N`-step horizon:
+The cost function is the concrete answer to "how bad is this candidate
+plan" (see the plain-English definition at the top of this section). Each
+solve minimises, over the predicted `N`-step horizon:
 
 ```
 min  Σᵢ ‖√Q ⊙ x[:,i]‖²   (state/tracking cost, all N+1 predicted states)
