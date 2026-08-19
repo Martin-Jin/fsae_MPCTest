@@ -103,6 +103,13 @@ class MPCControllerNode(Node):
                                        # mpc_controller_standalone.py's identical param
                                        # for the full rationale — only has an effect
                                        # when path_map_path is ALSO set.
+                # EXPERIMENTAL, added 2026-08-19 — see
+                # mpc_controller_standalone.py's identical params for the
+                # full mechanism (post-solve moving-average filter on the
+                # final steering command, NOT a QP weight change).
+                ('output_smoothing_enabled', False),
+                ('output_smoothing_alpha', 0.3),
+                ('output_smoothing_corner_floor', 0.3),
             ],
         )
         # All MPCController tuning (Q/R/R_rate weights, adaptive-gain shape
@@ -129,6 +136,14 @@ class MPCControllerNode(Node):
             'dynamic_cap_a_lat_max').get_parameter_value().double_value
         self._dynamic_cap_safety = self.get_parameter(
             'dynamic_cap_safety').get_parameter_value().double_value
+
+        self._output_smoothing_enabled = self.get_parameter(
+            'output_smoothing_enabled').get_parameter_value().bool_value
+        self._output_smoothing_alpha = self.get_parameter(
+            'output_smoothing_alpha').get_parameter_value().double_value
+        self._output_smoothing_corner_floor = self.get_parameter(
+            'output_smoothing_corner_floor').get_parameter_value().double_value
+        self._steer_filtered: float | None = None
 
         self._speed_profile = None  # (path_X, path_Y, path_V) or None
         map_path = self.get_parameter('map_path').get_parameter_value().string_value
@@ -446,6 +461,23 @@ class MPCControllerNode(Node):
         else:
             self._delta_filt += self._steer_lp * (steering - self._delta_filt)
         steering = self._delta_filt
+
+        # ── Output smoothing (EXPERIMENTAL, default off, added 2026-08-19) ──
+        # See mpc_controller_standalone.py's identical block for the full
+        # mechanism/reasoning. Applied ON TOP of steer_lp above (which this
+        # node already had and mpc_controller_standalone.py does not) --
+        # when off (default), steer_lp's existing behaviour is completely
+        # unchanged. Stacking both if both are non-trivial compounds lag;
+        # this node's steer_lp already provides flat smoothing, so leave
+        # output_smoothing_enabled off here unless specifically testing the
+        # curvature-aware floor behaviour on this node too.
+        if self._output_smoothing_enabled:
+            if self._steer_filtered is None:
+                self._steer_filtered = steering
+            self._steer_filtered += self._output_smoothing_alpha * (steering - self._steer_filtered)
+            corner_frac = self._mpc.last_telemetry.get('corner_frac', 0.0)
+            w_smoothed = max(self._output_smoothing_corner_floor, 1.0 - corner_frac)
+            steering = (1.0 - w_smoothed) * steering + w_smoothed * self._steer_filtered
 
         msg = AckermannDriveStamped()
         msg.header.stamp = self.get_clock().now().to_msg()

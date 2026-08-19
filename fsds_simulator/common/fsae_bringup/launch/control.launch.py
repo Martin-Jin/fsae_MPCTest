@@ -56,6 +56,9 @@ def generate_launch_description():
     enable_dynamic_speed_cap = LaunchConfiguration('enable_dynamic_speed_cap')
     dynamic_cap_a_lat_max = LaunchConfiguration('dynamic_cap_a_lat_max')
     dynamic_cap_safety = LaunchConfiguration('dynamic_cap_safety')
+    output_smoothing_enabled = LaunchConfiguration('output_smoothing_enabled')
+    output_smoothing_alpha = LaunchConfiguration('output_smoothing_alpha')
+    output_smoothing_corner_floor = LaunchConfiguration('output_smoothing_corner_floor')
     # Every MPCController tuning field (Q/R/R_rate weights, adaptive-gain
     # shape constants, feature flags) -- see mpc_params.py's MPCParams for
     # the authoritative field list/defaults/units. Generated from
@@ -336,6 +339,19 @@ def generate_launch_description():
             'dynamic_cap_safety', default_value='0.9',
             description='safety margin for the dynamic speed cap only '
                         '(overrides fsae_params.yaml controller.dynamic_cap_safety)'),
+        DeclareLaunchArgument(
+            'output_smoothing_enabled', default_value='false',
+            description='EXPERIMENTAL (added 2026-08-19): post-solve moving-average '
+                        'filter on the final steering command, NOT a QP weight change '
+                        '-- see mpc_controller_standalone.py\'s Output smoothing block.'),
+        DeclareLaunchArgument(
+            'output_smoothing_alpha', default_value='0.3',
+            description='EMA coefficient for output_smoothing_enabled; lower = more '
+                        'smoothing/more lag'),
+        DeclareLaunchArgument(
+            'output_smoothing_corner_floor', default_value='0.3',
+            description='min smoothing weight retained even at full curvature, when '
+                        'output_smoothing_enabled is true'),
         *mpc_launch_args,
         Node(
             package='fsae_control',
@@ -351,6 +367,9 @@ def generate_launch_description():
                 'enable_dynamic_speed_cap': enable_dynamic_speed_cap,
                 'dynamic_cap_a_lat_max': dynamic_cap_a_lat_max,
                 'dynamic_cap_safety': dynamic_cap_safety,
+                'output_smoothing_enabled': output_smoothing_enabled,
+                'output_smoothing_alpha': output_smoothing_alpha,
+                'output_smoothing_corner_floor': output_smoothing_corner_floor,
                 # stanley_gain deliberately omitted here: neither
                 # mpc_controller.py nor mpc_controller_standalone.py declares
                 # it, so passing it would raise ParameterNotDeclaredException.

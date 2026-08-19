@@ -57,6 +57,9 @@ def generate_launch_description():
     enable_dynamic_speed_cap = LaunchConfiguration('enable_dynamic_speed_cap')
     dynamic_cap_a_lat_max = LaunchConfiguration('dynamic_cap_a_lat_max')
     dynamic_cap_safety = LaunchConfiguration('dynamic_cap_safety')
+    output_smoothing_enabled = LaunchConfiguration('output_smoothing_enabled')
+    output_smoothing_alpha = LaunchConfiguration('output_smoothing_alpha')
+    output_smoothing_corner_floor = LaunchConfiguration('output_smoothing_corner_floor')
     # Every MPCController tuning field, forwarded to control.launch.py --
     # see that file's own comment on MPC_PARAM_FIELDS for why these are
     # generated instead of hand-written.
@@ -182,6 +185,20 @@ def generate_launch_description():
             'dynamic_cap_safety', default_value='0.9',
             description='safety margin for the dynamic speed cap only '
                         '(overrides fsae_params.yaml controller.dynamic_cap_safety)'),
+        DeclareLaunchArgument(
+            'output_smoothing_enabled', default_value='false',
+            description='EXPERIMENTAL (added 2026-08-19): post-solve moving-average '
+                        'filter on the final steering command, NOT a QP weight change '
+                        '-- passed through to control.launch.py, see that file\'s own '
+                        'description.'),
+        DeclareLaunchArgument(
+            'output_smoothing_alpha', default_value='0.3',
+            description='EMA coefficient for output_smoothing_enabled; lower = more '
+                        'smoothing/more lag -- passed through to control.launch.py.'),
+        DeclareLaunchArgument(
+            'output_smoothing_corner_floor', default_value='0.3',
+            description='min smoothing weight retained even at full curvature -- '
+                        'passed through to control.launch.py.'),
         *(DeclareLaunchArgument(
             name,
             default_value=('true' if default else 'false') if isinstance(default, bool) else str(default),
@@ -203,6 +220,9 @@ def generate_launch_description():
             'enable_dynamic_speed_cap': enable_dynamic_speed_cap,
             'dynamic_cap_a_lat_max': dynamic_cap_a_lat_max,
             'dynamic_cap_safety': dynamic_cap_safety,
+            'output_smoothing_enabled': output_smoothing_enabled,
+            'output_smoothing_alpha': output_smoothing_alpha,
+            'output_smoothing_corner_floor': output_smoothing_corner_floor,
             **mpc_param_configs,
         }),
         IncludeLaunchDescription(
