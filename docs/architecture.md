@@ -8,7 +8,7 @@ system, that one explains how to operate/extend it.
 **Two MPC implementations exist**, selected by one flag (`use_nmpc`):
 sections 2-7 below describe the default linear time-varying MPC (LTV-QP,
 `mpc_core.MPCController`); section 8, [Second Controller: Nonlinear
-MPC](#second-controller-nonlinear-mpc-use_nmpc--live-only-2026-08-13),
+MPC](#second-controller-nonlinear-mpc-use_nmpc-2026-08-13),
 describes the alternative Frenet-frame nonlinear MPC
 (`nmpc_core.NMPCController`) and how it differs.
 
@@ -21,7 +21,7 @@ describes the alternative Frenet-frame nonlinear MPC
 5. [How the Offline Tuner Works](#how-the-offline-tuner-works)
 6. [The Composite Score](#the-composite-score)
 7. [Module Reference](#module-reference)
-8. [Second Controller: Nonlinear MPC (`use_nmpc`)](#second-controller-nonlinear-mpc-use_nmpc--live-only-2026-08-13)
+8. [Second Controller: Nonlinear MPC (`use_nmpc`)](#second-controller-nonlinear-mpc-use_nmpc-2026-08-13)
 
 ---
 
