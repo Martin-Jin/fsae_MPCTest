@@ -167,6 +167,24 @@ class MPCControllerStandaloneNode(Node):
                 ('output_smoothing_corner_floor', 0.1),   # min smoothing weight
                                        # retained even at full curvature (corner_frac=1) --
                                        # smoothing never fully switches off, just weakens
+                # EXPERIMENTAL, added 2026-08-20: fade smoothing down (never
+                # off) as CURRENT tracking error grows, on top of the
+                # curvature-based fade above -- large e_y/e_psi means the car
+                # needs its raw, fast-reacting command NOW, same rationale as
+                # the corner_floor fade but keyed on tracking error instead
+                # of curvature. 0.0 disables the corresponding factor
+                # (saturates at 1.0, i.e. no extra fade from that term).
+                # Initial guesses of 3.0/5.0 were too sensitive: on
+                # comp_test_map_3 (recorded, NMPC) ordinary tracking noise
+                # (mean |e_y|~0.25m, |e_psi|~4.5deg) already faded smoothing
+                # to ~0.4-0.7, undoing most of the jitter-suppression benefit
+                # (offline score 0.639 vs 0.623 with the fade OFF). Lowered
+                # to 0.5/0.8 (offline score 0.598, saturation 2.74%->0.19%)
+                # so the fade stays near 1.0 for normal driving and only
+                # meaningfully engages at disturbance-scale errors (>~1m /
+                # >~15deg).
+                ('output_smoothing_k_ey', 0.5),     # 1/m; higher = fades out faster per metre of |e_y|
+                ('output_smoothing_k_epsi', 0.8),   # 1/rad; higher = fades out faster per radian of |e_psi|
             ],
         )
         # All MPCController tuning (Q/R/R_rate weights, adaptive-gain shape
@@ -199,6 +217,10 @@ class MPCControllerStandaloneNode(Node):
             'output_smoothing_alpha').get_parameter_value().double_value
         self._output_smoothing_corner_floor = self.get_parameter(
             'output_smoothing_corner_floor').get_parameter_value().double_value
+        self._output_smoothing_k_ey = self.get_parameter(
+            'output_smoothing_k_ey').get_parameter_value().double_value
+        self._output_smoothing_k_epsi = self.get_parameter(
+            'output_smoothing_k_epsi').get_parameter_value().double_value
         self._steer_filtered: float | None = None
 
         self._speed_profile = None  # (path_X, path_Y, path_V) or None
@@ -621,12 +643,26 @@ class MPCControllerStandaloneNode(Node):
         # clean straight, fading toward output_smoothing_corner_floor (never
         # below it) as the car actually turns, so a sharp corner still gets
         # a mostly-instant response while a straight gets a smoothed one.
+        #
+        # EXPERIMENTAL, added 2026-08-20: ALSO fade smoothing down (never
+        # off, same floor) as CURRENT tracking error grows -- large |e_y| or
+        # |e_psi| means the car needs its raw, fast-reacting command right
+        # now regardless of curvature (e.g. recovering from a disturbance on
+        # a straight, where corner_frac alone would keep smoothing at full
+        # strength). Same saturating-curve style as mpc_core's
+        # _steer_rate_anti_hunt (1/(1+k*|x|), independent per input,
+        # multiplied together), just fading the OUTPUT weight down instead
+        # of boosting a QP cost up. k=0 disables the corresponding factor.
         if self._output_smoothing_enabled:
             if self._steer_filtered is None:
                 self._steer_filtered = steering
             self._steer_filtered += self._output_smoothing_alpha * (steering - self._steer_filtered)
-            corner_frac = self._mpc.last_telemetry.get('corner_frac', 0.0)
+            tel = self._mpc.last_telemetry
+            corner_frac = tel.get('corner_frac', 0.0)
             w_smoothed = max(self._output_smoothing_corner_floor, 1.0 - corner_frac)
+            fade_ey = 1.0 / (1.0 + self._output_smoothing_k_ey * abs(tel.get('e_y', 0.0)))
+            fade_epsi = 1.0 / (1.0 + self._output_smoothing_k_epsi * abs(tel.get('e_psi', 0.0)))
+            w_smoothed = max(self._output_smoothing_corner_floor, w_smoothed * fade_ey * fade_epsi)
             steering = (1.0 - w_smoothed) * steering + w_smoothed * self._steer_filtered
 
         cmd.steering, cmd.throttle, cmd.brake = steering, throttle, brake

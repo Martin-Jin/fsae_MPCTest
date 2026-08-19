@@ -427,6 +427,19 @@ OUTPUT_SMOOTHING_ALPHA = 0.3          # EMA coefficient; lower = more smoothing/
 # the high-frequency jitter this filter was built to remove.
 OUTPUT_SMOOTHING_CORNER_FLOOR = 0.1   # min smoothing weight retained even at full curvature
 
+# [shared, both controllers, EXPERIMENTAL, added 2026-08-20] ALSO fade
+# smoothing down (never below OUTPUT_SMOOTHING_CORNER_FLOOR) as CURRENT
+# tracking error grows, on top of the curvature-based fade above -- large
+# |e_y| or |e_psi| means the car needs its raw, fast-reacting command right
+# now regardless of curvature (e.g. recovering from a disturbance on a
+# straight, where curvature alone would keep smoothing at full strength).
+# Same saturating-curve style as model_utils.steer_rate_anti_hunt
+# (1/(1+k*|x|), independent per input, multiplied together), just fading the
+# OUTPUT weight down instead of boosting a QP cost up. 0.0 disables the
+# corresponding factor (saturates at 1.0, i.e. no extra fade from that term).
+OUTPUT_SMOOTHING_K_EY = 0.5      # 1/m; higher = fades out faster per metre of |e_y|
+OUTPUT_SMOOTHING_K_EPSI = 0.8    # 1/rad; higher = fades out faster per radian of |e_psi|
+
 # [LTV-QP only] ADAPTIVE_R_RATE_ENABLE_IN_CORNERS — TEMPORARY/EXPERIMENTAL, fsds sim only.
 # (Renamed from ADAPTIVE_R_RATE_DISABLE_IN_CORNERS, whose True/False
 # polarity was inverted from what the name suggested.) adaptive_R_rate

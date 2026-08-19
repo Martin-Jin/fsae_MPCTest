@@ -82,6 +82,7 @@ from settings import (
     NMPC_CORNER_RRATE_BLEND_ENABLED, NMPC_CORNER_FACTOR_K,
     NMPC_RRATE_STEER_STRAIGHT, NMPC_RRATE_STEER_CORNER,
     OUTPUT_SMOOTHING_ENABLED, OUTPUT_SMOOTHING_ALPHA, OUTPUT_SMOOTHING_CORNER_FLOOR,
+    OUTPUT_SMOOTHING_K_EY, OUTPUT_SMOOTHING_K_EPSI,
 )
 
 
@@ -1167,11 +1168,21 @@ def run_core_rollout(
         # -- see that file for the full mechanism/reasoning. Applied to
         # u_opt[0] (steering) AFTER the solve, so it's identical whichever
         # controller (LTV-QP or NMPC) produced it, same as the live node.
+        #
+        # EXPERIMENTAL, added 2026-08-20: ALSO fade smoothing down (never
+        # off, same floor) as CURRENT tracking error grows -- e_y/e_psi are
+        # already in scope above (used to build x0_mpc before the branch
+        # split), identical for both controllers. See
+        # mpc_controller_standalone.py's identical block for the full
+        # mechanism/reasoning.
         if OUTPUT_SMOOTHING_ENABLED:
             if steer_filtered is None:
                 steer_filtered = u_opt[0]
             steer_filtered += OUTPUT_SMOOTHING_ALPHA * (u_opt[0] - steer_filtered)
             w_smoothed = max(OUTPUT_SMOOTHING_CORNER_FLOOR, 1.0 - corner_frac)
+            fade_ey = 1.0 / (1.0 + OUTPUT_SMOOTHING_K_EY * abs(e_y))
+            fade_epsi = 1.0 / (1.0 + OUTPUT_SMOOTHING_K_EPSI * abs(e_psi))
+            w_smoothed = max(OUTPUT_SMOOTHING_CORNER_FLOOR, w_smoothed * fade_ey * fade_epsi)
             u_opt = u_opt.copy()
             u_opt[0] = (1.0 - w_smoothed) * u_opt[0] + w_smoothed * steer_filtered
 

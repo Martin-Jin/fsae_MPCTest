@@ -110,6 +110,12 @@ class MPCControllerNode(Node):
                 ('output_smoothing_enabled', False),
                 ('output_smoothing_alpha', 0.3),
                 ('output_smoothing_corner_floor', 0.1),
+                # EXPERIMENTAL, added 2026-08-20 — see
+                # mpc_controller_standalone.py's identical params for the
+                # full mechanism (fade smoothing down, never off, as CURRENT
+                # tracking error grows, on top of the curvature-based fade).
+                ('output_smoothing_k_ey', 0.5),
+                ('output_smoothing_k_epsi', 0.8),
             ],
         )
         # All MPCController tuning (Q/R/R_rate weights, adaptive-gain shape
@@ -143,6 +149,10 @@ class MPCControllerNode(Node):
             'output_smoothing_alpha').get_parameter_value().double_value
         self._output_smoothing_corner_floor = self.get_parameter(
             'output_smoothing_corner_floor').get_parameter_value().double_value
+        self._output_smoothing_k_ey = self.get_parameter(
+            'output_smoothing_k_ey').get_parameter_value().double_value
+        self._output_smoothing_k_epsi = self.get_parameter(
+            'output_smoothing_k_epsi').get_parameter_value().double_value
         self._steer_filtered: float | None = None
 
         self._speed_profile = None  # (path_X, path_Y, path_V) or None
@@ -307,6 +317,8 @@ class MPCControllerNode(Node):
                     'output_smoothing_enabled': self._output_smoothing_enabled,
                     'output_smoothing_alpha': self._output_smoothing_alpha,
                     'output_smoothing_corner_floor': self._output_smoothing_corner_floor,
+                    'output_smoothing_k_ey': self._output_smoothing_k_ey,
+                    'output_smoothing_k_epsi': self._output_smoothing_k_epsi,
                 },
                 mpc_params=mpc_params,
                 nmpc_params=(nmpc_params if nmpc_params.use_nmpc else None),
@@ -478,8 +490,12 @@ class MPCControllerNode(Node):
             if self._steer_filtered is None:
                 self._steer_filtered = steering
             self._steer_filtered += self._output_smoothing_alpha * (steering - self._steer_filtered)
-            corner_frac = self._mpc.last_telemetry.get('corner_frac', 0.0)
+            tel = self._mpc.last_telemetry
+            corner_frac = tel.get('corner_frac', 0.0)
             w_smoothed = max(self._output_smoothing_corner_floor, 1.0 - corner_frac)
+            fade_ey = 1.0 / (1.0 + self._output_smoothing_k_ey * abs(tel.get('e_y', 0.0)))
+            fade_epsi = 1.0 / (1.0 + self._output_smoothing_k_epsi * abs(tel.get('e_psi', 0.0)))
+            w_smoothed = max(self._output_smoothing_corner_floor, w_smoothed * fade_ey * fade_epsi)
             steering = (1.0 - w_smoothed) * steering + w_smoothed * self._steer_filtered
 
         msg = AckermannDriveStamped()
