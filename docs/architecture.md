@@ -1682,6 +1682,7 @@ not here.
 | `fsds_simulator/` (whole tree) | Full staging mirror of upstream's ROS 2 workspace — every package, not just control — so a clone of this repo plus FSDS can build and run the complete stack (`stanley`, `mpc`, or `mpc_standalone`) with no separate `fsae_planning` checkout. See [docs/planning_control_sync.md](planning_control_sync.md) and [fsds_simulator/README.md](../fsds_simulator/README.md). |
 
 
+<a id="second-controller-nonlinear-mpc-use_nmpc-2026-08-13"></a>
 ## Second controller: nonlinear MPC (`use_nmpc`) — 2026-08-13
 
 Everything under "How the MPC Works" above describes `mpc_core.MPCController`:
