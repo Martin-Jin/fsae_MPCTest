@@ -90,6 +90,11 @@ class MPCParams:
     # ── Straight-line R_rate[0,0] (steering rate) anti-hunt boost ───────
     anti_hunt_boost_max: float = field(default=6.0, metadata={"unit": "unitless", "desc": "ceiling on the steer_rate_anti_hunt multiplier", "controller": "ltv_qp_only"})
 
+    # ── Soft steering-reversal penalty ──────────────────────────────────
+    reversal_penalty_enabled: bool = field(default=False, metadata={"unit": "bool", "desc": "EXPERIMENTAL, not yet validated: soft-constrain steering reversals by boosting R_rate[0,0] whenever LAST tick's steering was already close to zero (see mpc_core._reversal_penalty_boost's docstring for why a reversal can't be detected directly inside a convex QP and this approximates it). Composes multiplicatively with steer_rate_anti_hunt_enabled/the corner blend, does not replace them.", "controller": "ltv_qp_only"})
+    reversal_penalty_boost_max: float = field(default=4.0, metadata={"unit": "unitless", "desc": "ceiling on the reversal-penalty multiplier, applied when last tick's steering was exactly zero", "controller": "ltv_qp_only"})
+    reversal_penalty_k: float = field(default=8.0, metadata={"unit": "1/rad", "desc": "fade rate of the reversal-penalty boost as |last tick's steering| grows; 8.0 sets half-boost at ~7.2 deg", "controller": "ltv_qp_only"})
+
     # ── Current-state corner-factor scheduler ────────────────────────────
     # Replaces the whole deleted lookahead gain-scheduling family (see
     # mpc_core.py's module comment): _corner_factor(kappa, corner_factor_k)
@@ -221,6 +226,18 @@ class MPCParams:
     # enabling live.
     nmpc_steer_rate_anti_hunt_enabled: bool = field(default=False, metadata={"unit": "bool", "desc": "EXPERIMENTAL: apply steer_rate_anti_hunt's extra R_rate[0,0] penalty (centred/aligned/uncurving) to the NMPC too, gain-scheduled per tick and applied uniformly across the horizon -- not a temporal filter, so it adds no lag. Independent of steer_rate_anti_hunt_enabled above. Default False, unvalidated", "controller": "nmpc_only"})
     nmpc_anti_hunt_boost_max: float = field(default=-1.0, metadata={"unit": "unitless", "desc": "override anti_hunt_boost_max for the NMPC only (-1 = inherit). Only read when nmpc_steer_rate_anti_hunt_enabled is True", "controller": "nmpc_only"})
+
+    # Soft steering-reversal penalty, ported verbatim from mpc_core.py's
+    # _reversal_penalty_boost (imported, not reimplemented) -- unlike
+    # nmpc_corner_rrate_blend_enabled/nmpc_steer_rate_anti_hunt_enabled
+    # above, this composes with EITHER of those (not mutually exclusive):
+    # it's keyed on a different signal (last tick's actual steering, not
+    # curvature/e_y/e_psi), so there's no double-counting risk to guard
+    # against the way the LTV-QP's own module docstring reasons about the
+    # rest of the adaptive-gain family.
+    nmpc_reversal_penalty_enabled: bool = field(default=False, metadata={"unit": "bool", "desc": "EXPERIMENTAL: apply reversal_penalty_boost's extra R_rate[0,0] penalty (last tick's steering near zero) to the NMPC too, gain-scheduled per tick and applied uniformly across the horizon. Composes with nmpc_steer_rate_anti_hunt_enabled/nmpc_corner_rrate_blend_enabled, does not replace either. Default False, unvalidated", "controller": "nmpc_only"})
+    nmpc_reversal_penalty_boost_max: float = field(default=-1.0, metadata={"unit": "unitless", "desc": "override reversal_penalty_boost_max for the NMPC only (-1 = inherit). Only read when nmpc_reversal_penalty_enabled is True", "controller": "nmpc_only"})
+    nmpc_reversal_penalty_k: float = field(default=-1.0, metadata={"unit": "1/rad", "desc": "override reversal_penalty_k for the NMPC only (-1 = inherit). Only read when nmpc_reversal_penalty_enabled is True", "controller": "nmpc_only"})
 
     # Straight/corner R_rate[steer] blend, ported narrowly from mpc_core.py's
     # corner_factor family -- current-curvature-only, linear _blend() between

@@ -332,6 +332,51 @@ def _steer_rate_anti_hunt(
     return R
 
 
+def _reversal_penalty_boost(
+    u_prev_steer: float,
+    R_rate_base: np.ndarray,
+    enabled: bool,
+    boost_max: float = 4.0,
+    k: float = 8.0,
+) -> np.ndarray:
+    """
+    TEMPORARY/EXPERIMENTAL, NOT VALIDATED: soft constraint against steering
+    REVERSALS (a tick-to-tick sign flip), approximated inside the convex QP
+    by boosting R_rate[0,0] whenever LAST tick's steering command
+    (u_prev_steer, rad) was already close to zero -- the one state a
+    reversal must pass through, since delta_cmd is continuous. A reversal
+    can't be detected directly inside one solve (it depends on this tick's
+    OWN decision, the thing being optimised), so this penalises the
+    precondition instead: the closer steering already sits to zero, the
+    more it costs to change it further this tick, making a full sign flip
+    specifically (as opposed to a same-side ramp toward/away from zero)
+    disproportionately expensive relative to a swing of the same size made
+    from a large starting angle.
+
+    Same saturating-curve style as _steer_rate_anti_hunt (single input here,
+    not a product of several) so it fades continuously rather than snapping,
+    and composes the same way: applied multiplicatively on top of whatever
+    _adaptive_R_rate/_steer_rate_anti_hunt/the corner blend already produced,
+    never replacing them. enabled=False returns R_rate_base untouched.
+
+    k=8.0 (rad^-1) sets half-boost at ~7.2 deg of PREVIOUS steering (a
+    reversal starting from near-centre gets close to the full boost_max;
+    one starting from a large existing angle -- already unlikely to flip
+    sign in one 50ms tick without an equally large du -- is barely
+    affected). Deliberately keyed on u_prev, not the CURRENT solve's u[0,0]
+    (a QP variable): using the variable itself would make the cost
+    non-convex (a rational function of the decision), whereas u_prev is a
+    known constant by solve time, keeping this an ordinary quadratic term.
+    """
+    if not enabled:
+        return R_rate_base
+    boost_near_zero = 1.0 / (1.0 + k * abs(u_prev_steer))
+    scale = 1.0 + (boost_max - 1.0) * boost_near_zero
+    R = R_rate_base.copy()
+    R[0, 0] *= scale
+    return R
+
+
 def _adaptive_Q_scaling(
     e_y: float, Q_base: np.ndarray, enabled: bool,
 ) -> np.ndarray:
@@ -592,6 +637,12 @@ class MPCController:
         # standing no-settings.py-on-the-car rule; keep in sync with
         # fsae_MPCTest's copy.
         self.steer_rate_anti_hunt_enabled = self.params.steer_rate_anti_hunt_enabled
+
+        # _reversal_penalty_boost above. EXPERIMENTAL, not validated against
+        # a live log or VALIDATION_SUITE. Default off, inlined per the
+        # standing no-settings.py-on-the-car rule; keep in sync with
+        # fsae_MPCTest's copy.
+        self.reversal_penalty_enabled = self.params.reversal_penalty_enabled
 
         # ADAPTIVE_R_RATE_ENABLE_IN_CORNERS (settings.py, fsae_MPCTest) —
         # see _adaptive_R_rate's enable_in_corners param above (renamed from
@@ -1253,6 +1304,15 @@ class MPCController:
         adapt["m_Rrate_antihunt"] = (
             float(R_rate_scaled[0, 0] / _rr_before_hunt) if _rr_before_hunt else 1.0
         )
+        _rr_before_reversal = float(R_rate_scaled[0, 0])
+        R_rate_scaled = _reversal_penalty_boost(
+            float(self._u_prev[0]), R_rate_scaled, self.reversal_penalty_enabled,
+            boost_max=self.params.reversal_penalty_boost_max,
+            k=self.params.reversal_penalty_k,
+        )
+        adapt["m_Rrate_reversal"] = (
+            float(R_rate_scaled[0, 0] / _rr_before_reversal) if _rr_before_reversal else 1.0
+        )
 
         # ── Current-state Q[0,0]/Q[2,2]/Q[3,3] and R_rate[0,0] blend ───────
         # Straight-line-blend, PER WEIGHT, between a "straight" endpoint and
@@ -1283,11 +1343,16 @@ class MPCController:
         # is reapplied multiplicatively on top -- so on a genuine clean
         # straight (corner_frac~0 AND centred/aligned/uncurving) the two
         # compose instead of the second silently discarding the first.
+        # m_Rrate_reversal (added 2026-08-20) is reapplied the SAME way, for
+        # the SAME reason -- this overwrite point is exactly where
+        # m_Rrate_antihunt's own effect was previously getting silently
+        # dropped, so any future multiplier computed before this line must
+        # be threaded through here too, not just at the point it's computed.
         R_rate_scaled = R_rate_scaled.copy()
         R_rate_scaled[0, 0] = _blend(
             self.params.rrate_steer_straight, self.params.rrate_steer_corner,
             corner_frac,
-        ) * adapt["m_Rrate_antihunt"]
+        ) * adapt["m_Rrate_antihunt"] * adapt["m_Rrate_reversal"]
         adapt["Rrate_steer_corner_blend"] = float(R_rate_scaled[0, 0])
 
         R_scaled = R_scaled.copy()

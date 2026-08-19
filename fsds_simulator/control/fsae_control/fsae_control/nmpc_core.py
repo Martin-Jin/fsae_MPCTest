@@ -110,7 +110,7 @@ except ImportError as _exc:      # pragma: no cover - see package.xml
 
 from fsae_control.mpc_core import (
     MAX_ACCEL, MAX_BRAKE, MAX_STEER_RAD, _steer_rate_anti_hunt,
-    _corner_factor, _blend,
+    _corner_factor, _blend, _reversal_penalty_boost,
 )
 from fsae_control.mpc_params import DEFAULT_MPC_PARAMS, MPCParams
 from fsae_control.nmpc_params import DEFAULT_NMPC_PARAMS, NMPCParams
@@ -939,6 +939,15 @@ class NMPCController:
         self.steer_rate_anti_hunt_enabled = bool(pm.nmpc_steer_rate_anti_hunt_enabled)
         self.anti_hunt_boost_max = _pick(pm.nmpc_anti_hunt_boost_max, pm.anti_hunt_boost_max)
 
+        # Composes with EITHER of the two flags above (not an alternative to
+        # either) -- see mpc_params.py's nmpc_reversal_penalty_enabled field
+        # comment for why this one's signal (last tick's actual steering)
+        # doesn't double-count with curvature/e_y/e_psi-keyed mechanisms.
+        self.reversal_penalty_enabled = bool(pm.nmpc_reversal_penalty_enabled)
+        self.reversal_penalty_boost_max = _pick(
+            pm.nmpc_reversal_penalty_boost_max, pm.reversal_penalty_boost_max)
+        self.reversal_penalty_k = _pick(pm.nmpc_reversal_penalty_k, pm.reversal_penalty_k)
+
         # Alternative to the above, not a composition with it -- see
         # mpc_params.py's nmpc_corner_rrate_blend_enabled field comment.
         self.corner_rrate_blend_enabled = bool(pm.nmpc_corner_rrate_blend_enabled)
@@ -1582,20 +1591,38 @@ class NMPCController:
         # weight-blend feature itself is active.
         corner_frac = _corner_factor(kappa_now, self.corner_factor_k)
         rrate_steer_corner_blend = float(self.r_rate[0])
+        # Tracks R_rate[0,0]'s running value through the if/elif AND the
+        # reversal-penalty composition below, so the reversal penalty (which
+        # applies regardless of which branch ran) boosts whatever value is
+        # actually current rather than always the pre-if/elif base -- the
+        # same silent-discard bug already found and fixed twice tonight in
+        # mpc_core.py's own corner-blend/anti-hunt composition.
+        rrate_steer_current = rrate_steer_corner_blend
         if self.corner_rrate_blend_enabled:
             rrate_steer_corner_blend = _blend(
                 self.rrate_steer_straight, self.rrate_steer_corner, corner_frac)
-            r_rate_tick = np.array([rrate_steer_corner_blend, self.r_rate[1]])
-            Rr_flat = np.tile(r_rate_tick, self.N)
-            self._Rr_flat = Rr_flat
-            self._ErE = self._E.T @ (Rr_flat[:, None] * self._E)
+            rrate_steer_current = rrate_steer_corner_blend
         elif self.steer_rate_anti_hunt_enabled:
             R2 = _steer_rate_anti_hunt(
                 kappa_now, e_y, np.diag(self.r_rate), True,
                 e_psi=e_psi, boost_max=self.anti_hunt_boost_max,
             )
             m_rrate_antihunt = float(R2[0, 0] / self.r_rate[0]) if self.r_rate[0] else 1.0
-            r_rate_tick = np.array([R2[0, 0], self.r_rate[1]])
+            rrate_steer_current = float(R2[0, 0])
+
+        m_rrate_reversal = 1.0
+        if self.reversal_penalty_enabled:
+            R3 = _reversal_penalty_boost(
+                float(self._u_prev[0]), np.diag([rrate_steer_current, self.r_rate[1]]),
+                True, boost_max=self.reversal_penalty_boost_max, k=self.reversal_penalty_k,
+            )
+            m_rrate_reversal = (
+                float(R3[0, 0] / rrate_steer_current) if rrate_steer_current else 1.0)
+            rrate_steer_current = float(R3[0, 0])
+
+        if (self.corner_rrate_blend_enabled or self.steer_rate_anti_hunt_enabled
+                or self.reversal_penalty_enabled):
+            r_rate_tick = np.array([rrate_steer_current, self.r_rate[1]])
             Rr_flat = np.tile(r_rate_tick, self.N)
             self._Rr_flat = Rr_flat
             self._ErE = self._E.T @ (Rr_flat[:, None] * self._E)
@@ -1714,8 +1741,13 @@ class NMPCController:
             'base_idx': int(base_idx),
             'kappa_max_abs': float(np.abs(kap_horizon).max()),
             'm_Rrate_antihunt': m_rrate_antihunt,
+            'm_Rrate_reversal': m_rrate_reversal,
             'corner_frac': corner_frac,
-            'Rrate_steer_corner_blend': rrate_steer_corner_blend,
+            # The FINAL, fully-composed R_rate[0,0] actually used this tick
+            # -- same semantic as mpc_core.py's own Rrate_steer_corner_blend
+            # column (post corner-blend AND anti-hunt AND reversal-penalty),
+            # not just the corner-blend stage in isolation.
+            'Rrate_steer_corner_blend': rrate_steer_current,
             'pose_age_s': float(pose_age_s),
             'n_delay': int(n_delay),
             'solve_ms': float(solve_ms),

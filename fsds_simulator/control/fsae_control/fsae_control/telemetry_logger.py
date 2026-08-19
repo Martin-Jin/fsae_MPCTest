@@ -104,6 +104,7 @@ ADAPTIVE_COLUMNS = (
     'm_R_speed',          # adaptive_R_scaling's speed-based multiplier
     'm_Rrate_corner',     # adaptive_R_rate's current-curvature floor multiplier
     'm_Rrate_antihunt',   # steer_rate_anti_hunt's straight/centred/aligned boost multiplier
+    'm_Rrate_reversal',   # reversal_penalty_boost's near-zero-previous-steer boost multiplier
     # Absolute weights handed to the QP after all of the above.
     'Q_ey_eff', 'Q_epsi_eff', 'Q_r_eff', 'R_steer_eff', 'Rrate_steer_eff',
     'R_a_accel_eff', 'R_a_brake_eff',  # a_cmd effort weight, split by sign; R_a_*_eff already includes the heading-error-driven asymmetry (epsi_ra_*)
