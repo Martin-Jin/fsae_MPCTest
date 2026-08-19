@@ -1406,14 +1406,14 @@ class NMPCController:
             S_ey = S[1:, IDX_EY, :]              # (N, n_du)
             ey = X[1:, IDX_EY]
             A_dense[r0:r0 + N, :n_du] = S_ey
-            A_dense[r0:r0 + N, n_du:] = -np.eye(N)
+            A_dense[r0:r0 + N, n_du:n_du + n_slack] = -np.eye(N)
             l[r0:r0 + N] = -np.inf
             u[r0:r0 + N] = hw - ey
             A_dense[r0 + N:r0 + 2 * N, :n_du] = S_ey
-            A_dense[r0 + N:r0 + 2 * N, n_du:] = np.eye(N)
+            A_dense[r0 + N:r0 + 2 * N, n_du:n_du + n_slack] = np.eye(N)
             l[r0 + N:r0 + 2 * N] = -hw - ey
             u[r0 + N:r0 + 2 * N] = np.inf
-            A_dense[r0 + 2 * N:r0 + 3 * N, n_du:] = np.eye(N)
+            A_dense[r0 + 2 * N:r0 + 3 * N, n_du:n_du + n_slack] = np.eye(N)
             l[r0 + 2 * N:r0 + 3 * N] = 0.0
             u[r0 + 2 * N:r0 + 3 * N] = np.inf
 
@@ -1458,11 +1458,11 @@ class NMPCController:
                 v_max = np.full(N, np.inf)
             # (6) v_x_k - slack_v_k <= v_max_k.
             A_dense[rv0:rv0 + N, :n_du] = S_vx
-            A_dense[rv0:rv0 + N, n_du + n_slack:] = -np.eye(N)
+            A_dense[rv0:rv0 + N, n_du + n_slack:nz] = -np.eye(N)
             l[rv0:rv0 + N] = -np.inf
             u[rv0:rv0 + N] = v_max - vx
             # (7) slack_v >= 0.
-            A_dense[rv0 + N:rv0 + 2 * N, n_du + n_slack:] = np.eye(N)
+            A_dense[rv0 + N:rv0 + 2 * N, n_du + n_slack:nz] = np.eye(N)
             l[rv0 + N:rv0 + 2 * N] = 0.0
             u[rv0 + N:rv0 + 2 * N] = np.inf
 
