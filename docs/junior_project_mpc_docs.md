@@ -88,19 +88,24 @@ The trade-off MPC pays for its theoretical advantages is real regardless of the 
     - [2.8 Adding a New Test Track](#28-adding-a-new-test-track)
   - [3. FSDS vs. This Repo's Simulator](#3-fsds-vs-this-repos-simulator)
   - [4. The Two Vehicle Models: MPC's Model vs. the Simulator's Plant](#4-the-two-vehicle-models-mpcs-model-vs-the-simulators-plant)
-    - [Why a linear model, when the real car is nonlinear?](#why-a-linear-model-when-the-real-car-is-nonlinear)
-    - [4.2 A second, separate blindness: the linear model can't see the road bend, and the nonlinear MPC that fixes it](#42-a-second-separate-blindness-the-linear-model-cant-see-the-road-bend--and-the-nonlinear-mpc-that-fixes-it)
-      - [4.2.1 Optional NMPC Refinements](#421-optional-nmpc-refinements)
-  - [5. Vehicle Physics, Explained](#5-vehicle-physics-explained)
-    - [5.1 The 24-State Plant Model](#51-the-24-state-plant-model)
-    - [5.2 Tyres and Slip, Explained](#52-tyres-and-slip-explained)
-    - [5.3 Suspension and Weight Transfer, Explained](#53-suspension-and-weight-transfer-explained)
-    - [5.4 Aerodynamics, Rolling Resistance, and Actuator Lag](#54-aerodynamics-rolling-resistance-and-actuator-lag)
-  - [6. Running the Simulator (GUI)](#6-running-the-simulator-gui)
-  - [7. Manual Drive Mode](#7-manual-drive-mode)
-  - [8. Running Against the Real FSDS Simulator](#8-running-against-the-real-fsds-simulator)
-    - [8.1 Driving a Precomputed Track Instead of the Live Planner](#81-driving-a-precomputed-track-instead-of-the-live-planner)
-  - [9. Module Reference](#9-module-reference)
+    - [4.1 Why a linear model, when the real car is nonlinear?](#41-why-a-linear-model-when-the-real-car-is-nonlinear)
+  - [5. NMPC vs. LMPC: What's the Same, What's Different](#5-nmpc-vs-lmpc-whats-the-same-whats-different)
+    - [5.1 The problem LMPC has: it can't see the road bend](#51-the-problem-lmpc-has-it-cant-see-the-road-bend)
+    - [5.2 The fix: NMPC, a second controller](#52-the-fix-nmpc-a-second-controller)
+    - [5.3 Model differences, at a glance](#53-model-differences-at-a-glance)
+    - [5.4 Feature differences: does NMPC still have everything LMPC has?](#54-feature-differences-does-nmpc-still-have-everything-lmpc-has)
+    - [5.5 How state, error, and cost are calculated differently](#55-how-state-error-and-cost-are-calculated-differently)
+    - [5.6 Optional NMPC Refinements](#56-optional-nmpc-refinements)
+  - [6. Vehicle Physics, Explained](#6-vehicle-physics-explained)
+    - [6.1 The 24-State Plant Model](#61-the-24-state-plant-model)
+    - [6.2 Tyres and Slip, Explained](#62-tyres-and-slip-explained)
+    - [6.3 Suspension and Weight Transfer, Explained](#63-suspension-and-weight-transfer-explained)
+    - [6.4 Aerodynamics, Rolling Resistance, and Actuator Lag](#64-aerodynamics-rolling-resistance-and-actuator-lag)
+  - [7. Running the Simulator (GUI)](#7-running-the-simulator-gui)
+  - [8. Manual Drive Mode](#8-manual-drive-mode)
+  - [9. Running Against the Real FSDS Simulator](#9-running-against-the-real-fsds-simulator)
+    - [9.1 Driving a Precomputed Track Instead of the Live Planner](#91-driving-a-precomputed-track-instead-of-the-live-planner)
+  - [10. Module Reference](#10-module-reference)
 
 ---
 
@@ -639,7 +644,7 @@ graph LR
 - **The MPC's internal model** (Section [1.3](#13-the-prediction-model)) is a simplified, linear 8-state bicycle model. It has to be simple, because the solver evaluates it many times per second inside an optimisation loop.
 - **The plant** (`model/vehicle_physics.py`) is the detailed, nonlinear 24-state "ground truth", real tyre curves, suspension, weight transfer, aerodynamics. This is what the car "actually" does in the simulation.
 
-### Why a linear model, when the real car is nonlinear?
+### 4.1 Why a linear model, when the real car is nonlinear?
 
 Every real vehicle is nonlinear: tyre grip saturates, weight shifts under braking, drag scales with speed squared. None of that is a straight-line relationship, so why does the controller's internal model pretend the car behaves linearly? Because a linear model isn't more *accurate* — it's what makes the optimisation solvable fast enough to be useful at all.
 
@@ -647,7 +652,7 @@ Every real vehicle is nonlinear: tyre grip saturates, weight shifts under brakin
 
 - The MPC's internal prediction model (`Ad`, `Bd` from [Section 1.3](#13-the-prediction-model)) is **linear** because every entry of those matrices is a single fixed number: the next state is always "this state times a fixed multiplier, plus that state times a fixed multiplier, ..." added up.
 - Double the current heading error, and its contribution to the predicted lateral error exactly doubles, no matter what speed or slip angle the car is at.
-- That rigid, fixed-multiplier structure is exactly what a Quadratic Program (QP) solver requires, and exactly what the real plant doesn't have (see [Section 5.2](#52-tyres-and-slip-explained) for the plant's own curved, nonlinear tyre behaviour).
+- That rigid, fixed-multiplier structure is exactly what a Quadratic Program (QP) solver requires, and exactly what the real plant doesn't have (see [Section 6.2](#62-tyres-and-slip-explained) for the plant's own curved, nonlinear tyre behaviour).
 - If the MPC instead planned against equations whose multipliers depend on the current state (e.g. tyre force bending and saturating as slip angle grows), the relationship connecting `x_{i+1}` to `x_i` and `u_i` would no longer be a fixed-multiplier sum. The optimisation would stop being a QP and become a much harder **nonlinear program (NLP)**.
 
 Here's the actual tradeoff this buys:
@@ -673,21 +678,28 @@ Here's the actual tradeoff this buys:
 > actually driving, which shows up as degraded tracking with no obvious cause. See
 > `docs/architecture.md`'s "If you import new tyre data" note.
 
-### 4.2 A second, separate blindness: the linear model can't see the road bend, and the nonlinear MPC that fixes it
+---
 
-Section 4.1 was about tyres being nonlinear (grip saturates, forces bend as slip angle grows). This is a **different** limitation, about the *geometry* of the path itself, and it exists even with perfect, linear tyres.
+## 5. NMPC vs. LMPC: What's the Same, What's Different
 
-**The one-sentence version of the whole section:** the linear MPC predicts how the car's *current* error drifts if nothing changes, with no idea the path itself bends up ahead. The nonlinear MPC predicts how the car's error will evolve **relative to where the path is actually going**, because the path's future bend is baked into its equations of motion, not just its current snapshot. Same "predict forward and optimise" idea both times (Section 1.1) — the difference is *what* gets predicted forward: the linear model only extrapolates the car; the nonlinear model extrapolates the car **against a path that is itself curving**.
+Section 4 was about linear vs. nonlinear **tyre/plant** modelling — a limitation that exists no matter which controller drives the car. This section is about a **second, separate** limitation: the linear MPC's blindness to the road's own geometry, and the second controller (NMPC) this project built specifically to fix it.
 
-**The problem, in one sentence:** the controller's prediction model has no idea the road is about to bend, until the car is already partway around the bend.
+If you only read one paragraph of this section, read this one: the linear MPC (called "LMPC" from here on to distinguish it from NMPC) predicts how the car's *current* error drifts if nothing changes, with no idea the path itself bends up ahead. NMPC predicts how the car's error will evolve **relative to where the path is actually going**, because the path's future bend is baked into its equations of motion, not just its current snapshot.
 
-Here's why. The MPC tracks *errors* relative to the path — how far sideways (`e_y`), how much its heading is off (`e_psi`) — not the car's raw position. That's a good design choice (Section 1.2), but it has a hidden consequence: the model that predicts how those errors evolve (`x_{i+1} = A·x_i + B·u_i`, Section 1.3) only knows how the CAR moves. It has no term for "the reference path itself is turning away from whatever direction the car is currently pointed."
+### 5.1 The problem LMPC has: it can't see the road bend
 
-Put the car exactly on the centreline, heading exactly the right way (`e_y = 0`, `e_psi = 0`), with a sharp corner 10 metres ahead, and ask the model to predict 1.75 seconds ahead assuming the car does nothing. It predicts `e_y = 0`, `e_psi = 0`, forever — nothing in the model represents the path bending.
+LMPC tracks *errors* relative to the path — how far sideways (`e_y`), how much its heading is off (`e_psi`) — not the car's raw position. That's a good design choice (Section 1.2), but it has a hidden consequence:
+
+- The model that predicts how those errors evolve (`x_{i+1} = A·x_i + B·u_i`, Section 1.3) only knows how the **car** moves.
+- It has no term for "the reference path itself is turning away from whatever direction the car is currently pointed."
+
+**Concretely:** put the car exactly on the centreline, heading exactly the right way (`e_y = 0`, `e_psi = 0`), with a sharp corner 10 metres ahead, and ask the model to predict 1.75 seconds ahead assuming the car does nothing. It predicts `e_y = 0`, `e_psi = 0`, forever — nothing in the model represents the path bending.
 
 Doesn't the controller notice the error building up and react? It does, but only *after* the car is already partway into the corner and the error is no longer zero. By then it's playing catch-up on a corner it could, in principle, have seen coming. This shows up as **late turn-in**: the car keeps going straight for too long, then has to crank on a lot of steering all at once to catch up — both slower and harder on the tyres than committing early and turning in smoothly.
 
-**Why not just tell the model about the upcoming corner directly?** Any approach that feeds the path's curvature into the model as an extra input, or shifts the cost function's target ahead of time without changing the dynamics themselves, hits the same failure mode: it tells the solver about a correction it will need to make **later**, at some future step in its plan, while leaving it completely free to choose *when* within that plan to actually make it. Given that freedom, the solver can find it "cheaper" (in total squared-error terms) to steer briefly the **wrong way first**, then swing back — worse than doing nothing extra at all. Bolting a curvature signal onto a model that fundamentally doesn't have a concept of "the path is turning" is a trap, not a fix.
+**Why not just tell the model about the upcoming corner directly?** Any approach that feeds the path's curvature into the model as an extra input, or shifts the cost function's target ahead of time without changing the dynamics themselves, hits the same failure mode: it tells the solver about a correction it will need to make **later**, at some future step in its plan, while leaving it completely free to choose *when* within that plan to actually make it. Given that freedom, the solver can find it "cheaper" (in total squared-error terms) to steer briefly the **wrong way first**, then swing back — worse than doing nothing extra at all. Bolting a curvature signal onto a model that fundamentally doesn't have a concept of "the path is turning" is a trap, not a fix. This was tried in several forms and rejected each time — see [`removed_mechanisms.md`](removed_mechanisms.md) for the full history.
+
+### 5.2 The fix: NMPC, a second controller
 
 **The actual fix needs the path's bend built into the model's equations themselves, not tacked onto the outside of them, which means abandoning the QP.** This project's live ROS 2 side (not this offline repo) has a second controller for exactly this, `nmpc_core.py`'s `NMPCController`, switched on with a flag (`use_nmpc`, off by default). It changes *which quantity the model tracks progress with*: instead of the car's raw x/y position, its state includes **`s`, the distance travelled along the path itself**, and the path's curvature at that distance, `kappa(s)`, is looked up and fed straight into the equation for how heading error evolves:
 
@@ -701,34 +713,71 @@ This is genuinely a **nonlinear** model (that equation multiplies two state-depe
 
 **Does it help?** Yes, both offline and live. Offline (identical cost-function weights, identical simulated vehicle, same track): steering saturation (pinning at the mechanical limit, the classic symptom of "reacting too late") dropped from 12.5% of ticks to 0.8%, and the car started turning into every corner tested earlier than the linear controller did, by 25 metres on average on the harder corners. Live in FSDS, on a matched same-day pair on the same track: steering saturation dropped from 6.45% to 0.58% and lap time improved by about 2.4 seconds — the same direction and a similar-sized improvement as offline (see `docs/planning_control_sync.md` for the full live numbers).
 
-| | **Linear MPC** (Sections 1-4.1, this project's main controller) | **Nonlinear MPC** (`use_nmpc` / `settings.USE_NMPC`) |
+### 5.3 Model differences, at a glance
+
+| | **LMPC** (Sections 1-4, this project's main controller) | **NMPC** (`use_nmpc` / `settings.USE_NMPC`) |
 |---|---|---|
 | What is being predicted forward? | The car's own state drifting from **today's** fixed reference direction/curvature | The car's state relative to the path's **own future bend**, the path is part of the prediction, not a fixed backdrop |
 | Sees the tyre curve bend? | No (Section 4.1) | No, same linear tyre assumption, this is a separate axis |
 | Sees the ROAD bend ahead? | **No**, predicts `e_y`/`e_psi` staying at 0 forever if they start at 0 | **Yes**, `kappa(s)` is part of the equations, not bolted on |
 | Solved as | One convex QP per tick | A sequence of QPs (SQP), re-solved to convergence per tick |
 | Solve time (measured) | ~1-5 ms | ~9 ms mean, ~12 ms p95 |
+| Horizon length | 35 steps (1.75 s) | 20 steps (1.0 s) — an independent tuning choice reflecting the higher per-tick solve cost, not a structural requirement |
 | Where it lives | `model/bicycle_model.py` (this repo) + `mpc_core.py` (live) | `nmpc_core.py` (live) + `controller/nmpc_optimiser.py` (this repo's offline port, `settings.USE_NMPC`) |
 
-#### 4.2.1 Optional NMPC Refinements
+### 5.4 Feature differences: does NMPC still have everything LMPC has?
 
-The nonlinear MPC has three smaller, optional refinements, all affecting only `use_nmpc`/`settings.USE_NMPC` — the linear MPC that's this project's main controller is completely unaffected by any of them:
+This is the question worth asking before touching either controller: if a feature exists on LMPC, does turning on `use_nmpc` keep it, drop it, or replace it with something else? Verified against actual code, not inferred from a flag's name — see [`architecture.md`'s feature-comparison table](architecture.md#feature-comparison-ltv-qp-vs-nmpc-at-a-glance) for the exhaustive version this summarises.
+
+| Feature | LMPC | NMPC | Why |
+|---|---|---|---|
+| Adaptive gain scheduling (Section 1.6 — speed-based steering cost, corner softening, anti-hunt, etc.) | Yes | **No**, inert | Every one of these exists purely to compensate for the blindness Section 5.1 describes. NMPC's model doesn't have that blindness, so reweighting the cost on top would double-count an effect that's now handled structurally. |
+| `steer_rate_anti_hunt` specifically | Yes, on by default | **Opt-in**, off by default | The one exception — it only ever makes steering *more* damped in a narrow case (car centred, aligned, and not curving), which doesn't fight NMPC's fix the way the rest of the gain schedule would. |
+| Precomputed shaped heading-lead profile (Section 1.6) | Yes | **Accepted but ignored** (logs a one-time warning) | Same reasoning as gain scheduling — a workaround for the same blindness, now redundant. |
+| Delay/latency compensation (rolls the tracking error forward through recently-issued commands to account for sensor/actuation lag) | **Yes** | **Yes** | Both need this — it's a *timing* problem, unrelated to which prediction model is used. Implemented differently (NMPC rolls forward through its own nonlinear model instead of the linear one) but gated by the same shared settings. |
+| Tracking-error speed gate, curvature-based speed profile, cone-proximity emergency braking, GO-gating | **Yes** | **Yes** | None of these live inside either controller class — they're computed by the ROS 2 node itself, before either controller's "plan a step" function is even called. Whichever controller is selected receives the same inputs the same way. |
+| FSDS lateral-acceleration ceiling (the car's real, measured cornering limit) | Yes, as a speed-profile input | Yes, **and** inside the prediction itself | NMPC's version is strictly more — it shapes what the solver itself believes is physically achievable, not just the requested speed. Without it, NMPC's linear-tyre assumption believes it can hold any corner at any speed, and the car spins. |
+
+**The short version:** everything that's about *sensing/timing/safety* (delay compensation, the speed gate, e-braking) is shared and unaffected by which controller you pick. Everything that's specifically a *workaround for LMPC's blindness* (the whole adaptive gain-scheduling family, the heading-lead profile) is switched off under NMPC, because NMPC doesn't need the workaround — it fixed the actual problem.
+
+### 5.5 How state, error, and cost are calculated differently
+
+Sections 5.1-5.2 covered the headline difference (NMPC's model knows the path bends). This section is the practical follow-up: if you're reading telemetry or comparing tuned weights between the two controllers, which specific numbers mean something different?
+
+**The state vector itself is a different shape.** LMPC's 8 states are all *error* quantities (Section 1.2): `[e_y, e_y_dot, e_psi, e_psi_dot, e_v, e_a, delta_act, a_act]`. NMPC's 8 states mix error terms with **raw physical quantities**: `[s, e_y, e_psi, v_x, v_y, r, delta_act, a_act]` — notably `v_x`/`v_y` (actual body-frame speed, not a speed *error*) and `r` (actual yaw rate, not a yaw-rate error), plus the new `s` (distance travelled along the path) that Section 5.2 introduced. This isn't a cosmetic difference: NMPC's dynamics need the car's real speed and yaw rate to correctly predict how `s` and the tyre slip angles evolve, so it carries them as states directly rather than only their error relative to a target.
+
+**`e_y` and `e_psi` are measured the same way, against a smoother reference.** Both controllers use the same core idea — project the front axle onto the path, take the perpendicular offset as `e_y`, take the heading difference as `e_psi` (see [`error_state_reference.md`](error_state_reference.md) for the full worked arithmetic). The difference: NMPC measures both against a **smoothed, spline-fitted** path direction, where LMPC measures against the **raw**, straight-line-between-two-waypoints direction. This matters because NMPC's model actually predicts `e_psi` changing due to curvature — if the reference heading and the reference curvature came from two different, inconsistently-smoothed sources, the model's own prediction and the measured error would quietly disagree with each other every tick. Rougher, in practice: measuring `e_psi` off the raw segment tangent caused a real steering oscillation when this was first tried on NMPC (alternating close to the steering limit, tick to tick) — see [`error_state_reference.md` Section 4](error_state_reference.md#4-nmpc-nmpc_corepy-error-calculation-step-by-step) for the full story.
+
+**The cost function's shape is the same, one entry means something different.** Both controllers minimise a weighted sum of squared errors plus control effort plus smoothness (Section 1.4). The weights (`Q`/`R`/`R_rate`) are even shared by default — NMPC starts from LMPC's own tuned values unless a specific `nmpc_*` override is set. The one exception: the entry that penalises yaw-rate-like behaviour.
+
+- On LMPC, this weight (`q_r`) penalises **absolute yaw rate** — literally "how fast is the car's heading spinning."
+- On NMPC, the equivalent weight (`nmpc_q_epsi_dot`) penalises **heading-error rate** instead — `r - kappa(s)*s_dot`, i.e. "how fast is the car's heading spinning *relative to what the corner itself demands*."
+
+Why the change: in a model that knows the path is curving, penalising *absolute* yaw rate would penalise the exact yaw rate the car needs to hold in order to follow the corner at all — actively fighting the corner-following behaviour Section 5.2 was built to enable. Penalising the *error* in that yaw rate instead only discourages spinning faster or slower than the corner actually requires. Same slot in the cost function, same units, genuinely different physical meaning — worth remembering if you ever compare a logged `q_r`/`nmpc_q_epsi_dot` value between the two controllers and expect it to mean the same thing.
+
+**Solving is different in kind, not just in weights.** LMPC solves one convex QP per tick and gets the provably-best answer (Section 1.5). NMPC's cost/dynamics aren't a fixed-multiplier relationship any more (Section 5.2), so it can't do that — instead it takes one Gauss-Newton step per tick (re-linearise around its own last prediction, solve the resulting QP, repeat next tick rather than iterate to convergence within a single tick). This is why NMPC's solve time (~9 ms) is noticeably higher than LMPC's (~1-5 ms), and why NMPC's horizon is shorter (20 steps vs. 35) — a deliberate choice to keep total per-tick cost bounded, not a structural requirement.
+
+For the exact formulas (the full state-derivative equations, the output/cost vector, the finite-difference Jacobian machinery) see [`architecture.md`'s NMPC section](architecture.md#second-controller-nonlinear-mpc-use_nmpc--2026-08-13) and [`error_state_reference.md`](error_state_reference.md) for the from-scratch, worked-by-hand version.
+
+### 5.6 Optional NMPC Refinements
+
+NMPC has three smaller, optional refinements on top of everything above, all affecting only `use_nmpc`/`settings.USE_NMPC` — LMPC is completely unaffected by any of them:
 
 1. **Smoother curvature reading, on by default.** The controller needs the path's curvature at every point along the distance the car might travel. A cruder method (average nearby points, then measure how much direction changes between them) can misread a perfectly smooth corner as having a sudden spike in it. Fitting a proper mathematical curve (a cubic spline) through the waypoints and reading curvature straight off its equation avoids that, and is just a better ruler with no behaviour trade-off — hence on by default.
-2. **Lookahead speed profile, off by default, experimental.** Instead of one single target speed for the whole ~1-second planning window, this looks up the "correct" speed at each point along the plan. It needs careful validation before it should be trusted, since a naively-implemented lookahead signal can produce the same wrong-direction dip described in Section 4.2, applied to speed instead of steering.
-3. **Backup speed-limit check, off by default, unvalidated.** The car already has one safety mechanism preventing the model from believing it can corner arbitrarily hard (Section 4.1's `alat_ceiling`). This adds a second, independent check of the same limit, enforced as a hard rule the solver cannot break rather than a soft cost nudge — a second pair of hands on the same problem, not a replacement for the first mechanism.
+2. **Lookahead speed profile, off by default, experimental.** Instead of one single target speed for the whole ~1-second planning window, this looks up the "correct" speed at each point along the plan. It needs careful validation before it should be trusted, since a naively-implemented lookahead signal can produce the same wrong-direction dip described in Section 5.1, applied to speed instead of steering.
+3. **Backup speed-limit check, off by default, unvalidated.** The car already has one safety mechanism preventing the model from believing it can corner arbitrarily hard (the `alat_ceiling` row in Section 5.4's table). This adds a second, independent check of the same limit, enforced as a hard rule the solver cannot break rather than a soft cost nudge — a second pair of hands on the same problem, not a replacement for the first mechanism.
 
 Full technical detail (exact formulas, which files changed): `planning_control_sync.md`'s "Three MPCC-inspired additions" subsection.
 
-**For a full by-hand derivation of everything in this section** — every formula in both controllers' error calculations, step by step, with worked numeric examples, plus the detailed reasoning for why a per-step re-projection can't just be bolted onto the linear MPC — see [`error_state_reference.md`](error_state_reference.md).
+**For a full by-hand derivation of everything in this section** — every formula in both controllers' error calculations, step by step, with worked numeric examples, plus the detailed reasoning for why a per-step re-projection can't just be bolted onto LMPC — see [`error_state_reference.md`](error_state_reference.md).
 
 ---
 
-## 5. Vehicle Physics, Explained
+## 6. Vehicle Physics, Explained
 
 *(This section summarises `docs/vehicle_physics_guide.md`, read that file for the full version.)*
 
-### 5.1 The 24-State Plant Model
+### 6.1 The 24-State Plant Model
 
 The plant tracks 24 numbers describing the car's complete physical situation at any instant. States 0-7 deliberately match the MPC's own 8 states (position, heading, speed, actuator lag) so other code can read "where is the car / how fast" without any conversion; states 8-23 are extra detail the simple controller model doesn't track at all.
 
@@ -745,9 +794,9 @@ The plant tracks 24 numbers describing the car's complete physical situation at 
 | 22, 23 | `omega_FL`, `omega_FR` | Front wheel spin speeds (free-rolling, not driven) |
 | 10-13 | `z_FL`...`z_RR` | How compressed/extended each corner's suspension currently is |
 | 14-17 | `dz_FL_dt`...`dz_RR_dt` | How fast each corner's suspension is currently moving (what the dampers react to) |
-| 18-21 | `Fy_FL_rlx`...`Fy_RR_rlx` | The actual sideways grip force each tyre is currently producing (see [5.2](#52-tyres-and-slip-explained), this "relaxes" toward a target rather than jumping instantly) |
+| 18-21 | `Fy_FL_rlx`...`Fy_RR_rlx` | The actual sideways grip force each tyre is currently producing (see [6.2](#62-tyres-and-slip-explained), this "relaxes" toward a target rather than jumping instantly) |
 
-### 5.2 Tyres and Slip, Explained
+### 6.2 Tyres and Slip, Explained
 
 A tyre doesn't grip like a rigid block on sandpaper — its rubber contact patch physically deforms before it actually slides. Grip force isn't a simple constant × weight; it depends on **how much the tyre is being asked to slip**, in a curved, nonlinear way.
 
@@ -783,7 +832,7 @@ $\mu$ (peak friction) is further reduced by **load sensitivity**: a heavily load
 
 **The friction ellipse:** a tyre has one shared, finite grip budget, not two separate pools for sideways and forward/backward force. Using grip for braking leaves less available for cornering, and vice versa — this is why braking hard *while* cornering hard is a classic way to lose the car. It's modelled explicitly: whatever fraction of grip is spent on `Fx` directly reduces how much `Fy` is still available that instant.
 
-### 5.3 Suspension and Weight Transfer, Explained
+### 6.3 Suspension and Weight Transfer, Explained
 
 Each corner of the car has a simulated spring + damper + anti-roll bar:
 
@@ -793,7 +842,7 @@ Each corner of the car has a simulated spring + damper + anti-roll bar:
 
 **Why this matters for driving performance:** under braking or hard cornering, weight physically shifts between corners of the car (braking shifts weight forward; cornering shifts it to the outside). Tyre grip depends on how much weight (`Fz`) is on that tyre, so weight transfer directly changes how much grip is available at each corner, moment to moment. That's what makes braking-while-cornering, or trail-braking into a corner, behave realistically, rather than the car having one fixed "turns this well" number.
 
-### 5.4 Aerodynamics, Rolling Resistance, and Actuator Lag
+### 6.4 Aerodynamics, Rolling Resistance, and Actuator Lag
 
 - **Aerodynamic drag** opposes forward motion, scaling with speed squared. This is what caps top speed on a long straight.
 - **Downforce** (front/rear split) pushes the car down into the road at speed, which, via the weight-transfer/grip relationship above, increases available cornering grip at higher speed. Braking pitches the nose down, shifting some of this downforce forward.
@@ -802,7 +851,7 @@ Each corner of the car has a simulated spring + damper + anti-roll bar:
 
 ---
 
-## 6. Running the Simulator (GUI)
+## 7. Running the Simulator (GUI)
 
 `gui/simulation.py` is the interactive matplotlib GUI: draw or load a path, run one closed-loop MPC rollout, then scrub through the result frame by frame (vehicle trail, MPC horizon prediction, live telemetry panel) and score it (**Show Metrics** for the 13-metric breakdown, see [2.4](#24-how-a-run-gets-scored); **Benchmark All Paths** to check a weight set generalises across all 10 synthetic corner shapes rather than only the one you happened to test).
 
@@ -810,7 +859,7 @@ For the full step-by-step (install commands, drawing vs. loading a path, initial
 
 ---
 
-## 7. Manual Drive Mode
+## 8. Manual Drive Mode
 
 `gui/manual_drive.py` lets you drive the same 24-state nonlinear plant directly with a keyboard, no MPC, no scoring, purely open-loop human control. Useful for building intuition for the car's handling limits by feel, sanity-checking a track/cone layout, or generating a "how would a human drive this" reference trace to compare against an MPC run on the same path.
 
@@ -818,7 +867,7 @@ For the run command, controls, and workflow, see [developer_guide.md's Manual Dr
 
 ---
 
-## 8. Running Against the Real FSDS Simulator
+## 9. Running Against the Real FSDS Simulator
 
 The live ROS 2 side of this project lives as a proper ROS 2 package, `fsae_control`, under `fsds_simulator/control/fsae_control/`. It ships three selectable console-script controllers plus a shared bridge node, wired together in `fsds_simulator/common/fsae_bringup/launch/control.launch.py`:
 
@@ -843,7 +892,7 @@ For the full topic map (including the perception to planning chain upstream of t
 
 For the full from-scratch Windows/WSL/Docker setup (cloning FSDS, building the ROS 2 bridge, installing the solver stack inside the container, rebuilding after edits, etc.), see `docs/developer_guide.md#simulator-integration` in the repo. It's a long, mechanical set of steps kept there rather than duplicated here.
 
-### 8.1 Driving a Precomputed Track Instead of the Live Planner
+### 9.1 Driving a Precomputed Track Instead of the Live Planner
 
 `mpc`/`mpc_standalone` can also skip the live planner entirely and track a precomputed path/speed CSV recorded from an earlier lap, useful for isolating controller/plant tracking error from planner-induced path error, or for driving a known track at its (offline-computed) minimum-time line instead of the planner's live centreline. Each such track lives in its own `tracks/<name>/` directory (cone map + two exported CSVs) inside the separate `fsae_planning` repo, so FSDS + `fsae_planning` alone can drive any already-recorded track with no `fsae_MPCTest` checkout needed. Switching which one the car drives is one variable, `TRACK=` near the top of `ros2/launch_all.sh`.
 
@@ -851,7 +900,7 @@ Full record, export, drive steps, the CSV format, and every launch arg involved:
 
 ---
 
-## 9. Module Reference
+## 10. Module Reference
 
 | File | What it's for |
 |---|---|
@@ -862,12 +911,12 @@ Full record, export, drive steps, the CSV format, and every launch arg involved:
 | `sim/speed_profile.py` | Curvature-based target speed for a given path |
 | `sim/sim_track.py` | Cone placement + simulated perception/planning (mirrors the ROS 2 nodes) |
 | `model/bicycle_model.py` | Builds the MPC's linear 8-state internal model (Section [1.3](#13-the-prediction-model)) |
-| `model/vehicle_physics.py` | The 24-state nonlinear "ground truth" plant (Section [5](#5-vehicle-physics-explained)) |
+| `model/vehicle_physics.py` | The 24-state nonlinear "ground truth" plant (Section [6](#6-vehicle-physics-explained)) |
 | `controller/optimiser.py` | The QP formulation and OSQP/Clarabel solve (Section [1.5](#15-the-solver)) |
 | `controller/model_utils.py` | Adaptive gain scheduling, delay/noise-related gain features (Section [1.6](#16-special-features-adaptive-gain-scheduling-delay-compensation-speed-gating)) |
 | `tuner/offline_tuner.py` | The CMA-ES auto-tuner, Optuna pre-search, and synthetic path library (Section [2](#2-tuning-the-controller)) |
 | `tuner/performance_stats.py` | Powers Show Metrics / Benchmark All Paths |
 | `settings.py` | All project-level tuning/scoring/DNF configuration |
 | `planning/*` | Shared cone-sorting/boundary/path-building code (from the `fsae_planning` repo) |
-| `fsds_simulator/control/fsae_control/fsae_control/mpc_core.py`, `control_utils.py`, `mpc_controller.py`, `mpc_controller_standalone.py`, `stanley_controller.py`, `fsds_bridge.py`, `telemetry_logger.py` | The live ROS 2 controller package for FSDS (Section [8](#8-running-against-the-real-fsds-simulator)) |
+| `fsds_simulator/control/fsae_control/fsae_control/mpc_core.py`, `control_utils.py`, `mpc_controller.py`, `mpc_controller_standalone.py`, `stanley_controller.py`, `fsds_bridge.py`, `telemetry_logger.py` | The live ROS 2 controller package for FSDS (Section [9](#9-running-against-the-real-fsds-simulator)) |
 | `fsds_simulator/` (`common/`, `perception/`, `planning/`) | Full staging mirror of the rest of the live ROS 2 workspace (messages, bringup/launch, perception, planning), see [docs/planning_control_sync.md](planning_control_sync.md) |

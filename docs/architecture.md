@@ -1706,6 +1706,27 @@ curvature term), and the telemetry CSV's `m_*` columns are empty while eight
 score, the scoring pipeline, the path/speed-profile plumbing and the delay
 compensation are unchanged.
 
+#### Feature comparison: LTV-QP vs. NMPC, at a glance
+
+Every feature below is verified against actual read-sites in the code, not
+inferred from a docstring or field name — see
+`planning_control_sync.md`'s "Which settings affect which controller" map
+for the exhaustive, field-by-field version this table summarises.
+
+| Feature | LTV-QP (`mpc_core.py`) | NMPC (`nmpc_core.py`) | Why |
+|---|---|---|---|
+| Adaptive gain scheduling (`_corner_factor`, anti-hunt, `adaptive_Q_scaling`, `adaptive_R_scaling`, `adaptive_R_rate`) | **Yes** | **No** (inert — none of these fields have any read site in `nmpc_core.py`) | Every one of these mechanisms exists to compensate for the LTV-QP's blind spot (it can't predict the path curving). NMPC's model has that built in structurally, so reweighting the cost on top would double-count an effect that's now already handled — see [`removed_mechanisms.md` §1](removed_mechanisms.md#1-the-structural-limit-the-argument-that-motivates-nmpc). |
+| `steer_rate_anti_hunt` (steering-rate damping when centred/aligned/uncurving) | **Yes**, on by default | **Opt-in**, off by default (`nmpc_steer_rate_anti_hunt_enabled`) | The one exception to the row above — it only ever makes steering *more* damped in a specific narrow case, the opposite direction from anticipation, so it doesn't fight NMPC's structural fix the way the rest of the gain schedule would. Reuses the LTV-QP's own function verbatim (imported, not reimplemented). |
+| Precomputed corner map (`use_precomputed_corner_map`) | Removed from both (2026-08-13) | Removed from both (2026-08-13) | Served the deleted lookahead gain-scheduling family — gone from both controllers, not an LMPC/NMPC difference. See [`removed_mechanisms.md` §7](removed_mechanisms.md#7-precomputed-corner-segmentation-cornermap). |
+| Precomputed shaped heading-lead profile (`use_precomputed_heading_profile`) | **Yes** | **Accepted but ignored** (`set_heading_profile()` exists so the node needs no branch, logs a one-time warning) | Same reasoning as gain scheduling — the shaped lead is a workaround for the same missing curvature term NMPC closes structurally. Applying both would double-count the anticipation. |
+| Delay/latency compensation (rolling `x0` forward through recently-issued commands) | **Yes** (`predict_ahead()`, linear rollforward) | **Yes** (rolls `x0` forward through the nonlinear model instead) | Both need this — it's about *sensor/actuation lag*, a problem that exists regardless of which prediction model is used. Different implementation, same four gating fields (`delay_compensation_enabled`, `max_delay_compensation_steps`, `pose_age_lp_alpha`, `n_delay_hysteresis`) — shared `MPCParams` fields, read by both. One exception: `predict_epsi_clip` is LTV-QP only (a small-angle bound specific to the *linear* rollforward; NMPC's nonlinear rollforward has no such bound to set). |
+| Tracking-error speed gate (slow down when `e_y`/`e_psi` are large) | **Yes** | **Yes** | This lives in `control_utils.py`, called by the **node** (`mpc_controller.py`/`mpc_controller_standalone.py`) *before* either controller's `.compute()` is invoked — neither `MPCController` nor `NMPCController` is even aware it exists. Controller-agnostic by construction. |
+| Curvature-based speed profile (`curvature_speed()`) | **Yes** | **Yes** | Same reason as the row above — computed by the node, handed to whichever controller is selected as `desired_speed`. |
+| Cone-proximity emergency braking, GO-gating, stale-path fail-safes | **Yes** | **Yes** | All node-level (`mpc_controller_standalone.py`'s `_control_loop` phases), not part of either controller class. `NMPCController` exposes the same `compute()`/`reset()`/`set_static_path()` surface as `MPCController` specifically so the node doesn't need a branch. |
+| FSDS lateral-acceleration ceiling | **Yes**, as a plain speed-profile input (`curvature_speed()`'s friction-circle cap) | **Yes**, AND inside the prediction itself (`tanh` saturation on predicted tyre force) | NMPC's version is strictly more — the ceiling shapes what the *solver itself* believes is achievable, not just the requested speed. Without it, NMPC's linear-tyre model believes it can hold any corner at any speed and the car spins (measured). |
+| Horizon length | 35 steps (1.75 s) | 20 steps (1.0 s) | Independent tuning choices, not a structural requirement — NMPC's shorter horizon reflects its per-tick solve cost (Gauss-Newton SQP is more expensive per step than one convex QP). |
+| Solve method | One convex QP per tick (OSQP) | Real-time-iteration SQP: one Gauss-Newton step per tick, warm-started, condensed dense QP (OSQP) | See [The solver](#the-solver) above for what a QP is; NMPC needs the extra linearize-and-resolve step because its own model is nonlinear (curvature is now a function of a state, not a fixed matrix entry). |
+
 **Three further, NMPC-only additions (2026-08-13)**, assessed against
 Alexander Liniger's Model Predictive Contouring Control (MPCC) but narrower
 than it — full MPCC's progress-maximisation apparatus was considered and
