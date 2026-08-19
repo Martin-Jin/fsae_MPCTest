@@ -364,9 +364,10 @@ U-turn detector, the straight-line `Q`/`R[0,0]` adjustments, and the
 scan (itself only added the day before, see "Precomputed corner
 segmentation" above — both were removed in the same rewrite). See
 `mpc_core.py`'s own "Lookahead gain-scheduling family: removed" comment for
-the exhaustive function-name list. `tuning.md` §4.4/§4.6-§4.8/§4.10 keep
-the original descriptions collapsed for the tuning history; `architecture.md`'s
-"Historical" subsection keeps the mechanism-level detail.
+the exhaustive function-name list. Full mechanism-level detail for the
+whole family now lives in one place: [`removed_mechanisms.md`](removed_mechanisms.md)
+— `tuning.md` §4.4/§4.6/§4.8/§4.10 and `architecture.md`'s "Historical"
+subsection both link there rather than restating it.
 
 **Why.** This MPC formulation already predicts state error against the
 reference at each future horizon step. Reweighting TODAY's (usually

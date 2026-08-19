@@ -260,147 +260,32 @@ tune it separately from the four corner-blend weights above.
 
 ### 4.4 Historical: lookahead corner anticipation (removed 2026-08-13)
 
-<details>
-<summary>None of the fields below exist on <code>MPCParams</code> anymore — kept for the tuning history and the elimination reasoning §4.4's own final paragraph builds toward (the direct motivation for the nonlinear MPC, §5)</summary>
-
-**Purpose**: scans a speed-scaled window of path ahead of the car (not just
-the current point) for the sharpest upcoming curvature, and uses it to:
-
-**Purpose**: scans a speed-scaled window of path ahead of the car (not just
-the current point) for the sharpest upcoming curvature, and uses it to:
-- boost `Q[0,0]`/`Q[2,2]` (lateral/heading error) *approaching* a corner, so
-  steering authority commits before the car drifts off-line, not after;
-- relax `Q[3,3]` (yaw rate) approaching a corner, so a straight-line yaw-rate
-  penalty doesn't itself make turn-in feel slow;
-- keep boosting `Q[2,2]` for a short distance *after* the corner (the exit
-  boost), scaled by how sharp that corner was;
-- on a genuinely clear straight, soften `Q[0,0]` and boost
-  `Q[2,2]`/`Q[3,3]`/`R[0,0]` slightly (see §4.6/§4.7/§4.8).
-
-All boosts are scaled by corner **demand** (`kappa_max_abs / kappa_limit(v)`
-— how much of the car's available grip *at the current speed* this corner
-needs), not raw curvature, when `adaptive_q_demand_normalised` is True. A
-gradual sweeper taken fast and a tight corner taken slow can demand the same
-thing; scoring by raw curvature alone made the configured boost ceilings
-almost unreachable on real corners. Set `adaptive_q_demand_normalised=False`
-to restore the old raw-curvature curve for A/B comparison.
-
-| Field | Purpose |
-|---|---|
-| `adaptive_q_lookahead_time_s` | speed → lookahead distance conversion |
-| `adaptive_q_lookahead_dist_min` / `_dist_max` | clamp floor/ceiling on the lookahead distance |
-| `adaptive_q_lookahead_q_boost_max` | max `Q[0,0]` multiplier approaching a corner |
-| `adaptive_q_lookahead_k_approach` | legacy (non-demand-normalised) approach ramp sharpness |
-| `adaptive_q_lookahead_epsi_boost_max` | max `Q[2,2]` multiplier exiting a corner |
-| `adaptive_q_lookahead_epsi_approach_boost_max` | max `Q[2,2]` multiplier approaching a corner |
-| `adaptive_q_lookahead_k_epsi_approach` | legacy ramp sharpness (epsi approach) |
-| `adaptive_q_lookahead_r_floor` | min `Q[3,3]` multiplier at high lookahead curvature |
-| `adaptive_q_lookahead_k_r_relax` | legacy ramp sharpness (yaw-rate relax) |
-| `adaptive_q_lookahead_steer_relax_floor` (flag: `lookahead_steer_effort_relax_enabled`) | min `R[0,0]` (steering effort) multiplier at high corner demand — added 2026-08-12, mirrors `adaptive_q_lookahead_r_floor`'s shape; see below |
-| `adaptive_q_demand_half` | corner demand at which a demand-normalised boost reaches half its max — lower means boosts saturate on easier corners |
-
-**Known constraints**: not validated against `VALIDATION_SUITE`/recorded-map
-or any live log as a whole mechanism; treat changes here as experimental
-until re-validated. **This whole mechanism only reweights the COST of an
-existing tracking error — it cannot manufacture one.** With `e_y ≈ e_psi ≈
-0` on the approach (car still dead on-line), a bigger `Q[0,0]`/`Q[2,2]`
-multiplier still multiplies a near-zero error by a bigger number. It helps
-the controller react a bit sooner/harder once real error starts appearing
-inside the lookahead window, not before. Do not expect this section's
-knobs to fix genuine before-any-error anticipation — see the
-"curvature-forcing term" postmortem (disabled 2026-08-12, this same file)
-for what was tried for that and why it failed; a working fix needs to
-change what the reference/error itself measures, not reweight costs on it.
-
-**`adaptive_q_lookahead_dist_max` raised 17.0 → 25.0 (2026-08-12)**: at
-typical corner-approach speed (16-17 m/s) the desired lookahead
-(`car_speed * adaptive_q_lookahead_time_s`) is 18.3-19.4 m, which the old
-17.0 m ceiling was silently clamping to under 1 s of lead time regardless
-of how fast the car was going — tighter than `adaptive_q_lookahead_exit_
-decay_dist_max`'s already-25.0 m ceiling on the exit side, for no
-documented reason. Pure QP-cost-scheduling change (widens the window these
-boosts can react within once real error/curvature appears in it) — does
-**not** by itself close the gap described above. Not yet live-tested.
-
-**`adaptive_q_lookahead_steer_relax_floor` specifically (added 2026-08-12)**:
-closes a gap the speed-based steering-effort penalty (`adaptive_R_scaling`,
-§1) and the straight-line steering-effort boost (`steer_effort_straight_boost_max`,
-§4.7) left open — neither ever pushes `R[0,0]` BELOW its baseline for an
-approaching corner, so a car entering a corner hot paid the full speed
-penalty on steering effort exactly when it most needed to commit to turn-in.
-This mirrors `adaptive_q_lookahead_r_floor`'s existing yaw-rate relief
-exactly, applied to steering effort instead. See
-`planning_control_sync.md`'s "Steering-effort relaxation approaching a
-corner" for the full diagnosis. Not yet live-tested in isolation as of this
-writing.
+None of these fields exist on `MPCParams` anymore. Full description,
+reasoning, and the field-by-field purpose table:
+[`removed_mechanisms.md` §3](removed_mechanisms.md#3-lookahead-corner-anticipation)
+(anticipation boosts) and
+[§4](removed_mechanisms.md#4-demand-normalisation) (demand normalisation).
+Kept for the tuning history and the elimination reasoning that's the direct
+motivation for the nonlinear MPC (§5) — **this whole mechanism only
+reweighted the COST of an existing tracking error, it could not manufacture
+one.**
 
 ### 4.5 Exit-boost decay distance
 
-| Field | Purpose |
-|---|---|
-| `adaptive_q_lookahead_exit_decay_dist` | exit-boost taper-distance floor (low-speed corners) |
-| `adaptive_q_lookahead_exit_decay_time_s` | speed → taper distance conversion, mirrors `adaptive_q_lookahead_time_s` |
-| `adaptive_q_lookahead_exit_decay_dist_max` | taper-distance clamp ceiling |
-| `adaptive_q_lookahead_k_exit_norm` | normalises the exit boost by corner sharpness |
-| `adaptive_q_lookahead_peak_hysteresis` | "cleared" threshold that re-arms peak-curvature detection for the next corner |
-
-**Purpose of the speed scaling**: a *fixed* taper distance undershoots at
-speed. Live telemetry showed lateral/heading error peaking well past the
-geometric apex — the car is still sliding wide/yawing back through the exit
-for 1.5–2.7s of travel — so a fixed short window can fully decay before the
-tracking error is actually at its worst, leaving the exit boost inert
-exactly when it would matter most. Scaling the taper distance by current
-speed keeps the boost active through that window at any speed.
-
-**Known constraints**: offline-validated only as of this writing — not yet
-confirmed on the live car. Don't assume it transfers without a live check.
-
-</details>
+Part of the same removed family —
+[`removed_mechanisms.md` §3](removed_mechanisms.md#3-lookahead-corner-anticipation)
+covers the exit-boost decay alongside the approach-side boosts it paired
+with.
 
 ### 4.5b Precomputed corner segmentation (`use_precomputed_corner_map`) — REMOVED
 
 **This mechanism no longer exists.** The corner_factor rewrite deleted
 `use_precomputed_corner_map`, `CornerMap`, and `_segment_corners` along with
-the rest of the lookahead adaptive-gain family below. The description below
-is retained as historical context only — do not expect these fields on
-`MPCParams`/launch args anymore. §4.5d's "everything in section 4 is
-inactive under NMPC" is a different, independent statement (about what the
-_current_ `MPCParams` mechanisms do) and is unaffected by this removal.
-
-<details>
-<summary>Original description (kept for history, no longer accurate)</summary>
-
-#### `use_precomputed_corner_map`, added 2026-08-12
-
-| Field | Purpose |
-|---|---|
-| `use_precomputed_corner_map` | node-level launch parameter (NOT an `MPCParams` field) — segment `path_map_path`'s static path into per-corner metadata once at load, replacing the live `kappa_max_abs` lookahead scan / exit-decay tracker with exact index lookups. Default `false`. Only has an effect when `use_precomputed_path` is ALSO true. |
-| `adaptive_q_lookahead_epsi_hold_thresh_rad` | (IS an `MPCParams` field) hold §4.5's exit-boost decay — don't let it advance toward 1.0 — while `\|e_psi\|` remains above this many radians, blended continuously. Only active when the corner map is built. Default `0.0` = disabled (today's unmodified decay), a second explicit opt-in on top of `use_precomputed_corner_map=True`. |
-
-**Purpose**: §4.5's exit-boost decay is keyed on distance since the local
-curvature peak alone, with no way to know whether the heading-error
-correction it exists to help with has actually finished. A real log showed
-the boost fully decayed (`m_Q_epsi_exit=1.0`) at `t=5.92` while `e_psi` was
-still `-13.96°` and the worst of the correction was still ahead
-(steering saturating repeatedly through `t=6.5-7.3`). With a static,
-precomputed path, corner identity/extent is knowable exactly instead of
-approximated — `use_precomputed_corner_map=True` computes a `CornerMap`
-once at load (see `mpc_core.py`'s `_segment_corners`/`CornerMap`) and looks
-it up by index every tick.
-
-**This is LIVE-ONLY** — not mirrored into `settings.py`/`model_utils.py`/
-`rollout_core.py`, by explicit user choice (asked directly, given this is a
-structural mechanism rather than a weight retune), unlike this codebase's
-usual two-sided parity rule. See `planning_control_sync.md`'s "Precomputed
-corner segmentation" section for the full design, migration table, and
-offline validation evidence (segmentation checked against a real recorded
-track; the disabled-flag path confirmed bit-for-bit identical to today's
-behaviour via a regression replay).
-
-**Status (historical, before removal): implemented, offline-validated, NOT
-YET LIVE-TESTED.**
-
-</details>
+the rest of the lookahead adaptive-gain family. Full description:
+[`removed_mechanisms.md` §7](removed_mechanisms.md#7-precomputed-corner-segmentation-cornermap).
+§4.5d's "everything in section 4 is inactive under NMPC" is a different,
+independent statement (about what the _current_ `MPCParams` mechanisms do)
+and is unaffected by this removal.
 
 ### 4.5c Precomputed shaped heading-lead profile (`use_precomputed_heading_profile`) — LIVE-ONLY, added 2026-08-12
 
@@ -436,72 +321,24 @@ before drawing conclusions from any single result.
 
 ### 4.6 Historical: U-turn detector and straight-line adjustments (removed 2026-08-13)
 
-<details>
-<summary>None of the fields in §4.6-4.7 exist on <code>MPCParams</code> anymore — part of the same lookahead family removed in §4.4</summary>
-
-#### U-turn detector
-
-| Field | Purpose |
-|---|---|
-| `adaptive_q_uturn_heading_thresh_rad` | accumulated heading change at which the detector engages |
-| `adaptive_q_uturn_heading_sat_rad` | accumulated heading change at which the detector is fully saturated |
-| `adaptive_q_uturn_ey_boost_max` | extra `Q[0,0]` multiplier at full U-turn severity |
-| `adaptive_q_uturn_epsi_boost_max` | extra `Q[2,2]` multiplier at full U-turn severity |
-| `adaptive_q_uturn_r_relax_floor` | `Q[3,3]` multiplier at full U-turn severity (relaxes yaw-rate penalty so the car can rotate faster) |
-
-**Purpose**: a peak-curvature signal alone under-boosts long, gradual
-U-turns — a wide U-turn's peak curvature can look like a mild bend even
-though it demands a huge total rotation. This detector instead measures
-*accumulated* heading change over the lookahead window, so severity ramps
-smoothly between the threshold and saturation bounds. Ordinary corners fall
-under the threshold and score nothing, so this cannot disturb
-already-working sudden-corner behavior.
-
-#### Straight-line adjustments
-
-Three independent mechanisms that only activate when the lookahead window is
-genuinely clear of curvature (a straight), each fading back to baseline
-sharply as a corner enters the window:
-
-| Field | Purpose |
-|---|---|
-| `adaptive_q_straight_ey_floor` / `_k` | reduces `Q[0,0]` (lateral cost) on a clear straight — nothing to track hard against — fading back to full authority as a corner appears. `_k` lowered 20.0 → 8.0 on 2026-08-12 (now matching `adaptive_q_straight_k` below) — the old, much sharper fade could leave the car still mid-recovery from the relaxation exactly when turn-in needed full lateral authority, entering the corner already off-line; see `planning_control_sync.md`'s "Straight-line lateral-error snap-back was too sharp" |
-| `adaptive_q_straight_epsi_boost_max` | boosts `Q[2,2]` (heading error) on a straight to keep the car pointed straight |
-| `adaptive_q_straight_r_boost_max` | boosts `Q[3,3]` (yaw rate) on a straight to damp yaw wander |
-| `adaptive_q_straight_k` | shared fade-out sharpness for the epsi/yaw-rate boosts above |
-| `steer_effort_straight_boost_max` / `_k` (flag: `steer_effort_straight_boost_enabled`) | makes steering effort `R[0,0]` (not its rate — see §4.2) expensive on a clear straight |
-
-**Known constraint on `adaptive_q_straight_epsi_boost_max`**: keep this
-deliberately small. A strong straight-line heading weight amplifies the
-QP's reaction to ordinary heading noise, which can itself introduce
-oscillation — the opposite of this mechanism's purpose.
-
-</details>
+None of these fields exist on `MPCParams` anymore — part of the same
+lookahead family removed in §4.4. Full description and field-by-field
+purpose tables:
+[`removed_mechanisms.md` §5](removed_mechanisms.md#5-u-turn-detection)
+(U-turn detector) and
+[§6](removed_mechanisms.md#6-straight-line-adjustments) (straight-line
+adjustments).
 
 ### 4.8 Historical: FSDS lateral-acceleration ceiling law as a lookahead input (removed 2026-08-13)
 
-<details>
-<summary>The ceiling law's THREE FIELDS below no longer exist on <code>MPCParams</code> — the law itself is not gone, it moved to <code>nmpc_core.py</code>'s <code>_Plant</code> (hardcoded there, since only the NMPC path uses it now) — see §5</summary>
-
-| Field | Purpose |
-|---|---|
-| `alat_ceiling_flat` | low-speed floor of FSDS's fitted sustained lateral-acceleration ceiling, `a_lat_max(v) = max(FLAT, SLOPE·|v| + INTERCEPT)` |
-| `alat_ceiling_slope` | ceiling-law slope vs. speed |
-| `alat_ceiling_intercept` | ceiling-law intercept |
-
-**This is a measured property of the simulator, not a free tuning knob** —
-that much is still true of its current home in `nmpc_core.py`'s `_Plant`
-(class-level defaults, not `MPCParams` fields) and `model/vehicle_physics.py`'s
-`alat_ceiling_at()`, both of which must stay in sync with each other and
-with the measurement in CLAUDE.md's "dynamically-enforced
-lateral-acceleration ceiling" section. When these lived on `MPCParams`,
-they also fed `_corner_demand` (part of the deleted lookahead family
-above) — that consumer is gone along with the rest of §4.4-4.8, but the
-ceiling law itself is very much still load-bearing for the NMPC (§5). If
-the ceiling law is wrong, re-measure it with `ros2/run_steering_sysid.sh` /
-`ros2/run_steering_step.sh`, don't guess.
-
-</details>
+The ceiling law's three fields (`alat_ceiling_flat`/`_slope`/`_intercept`)
+no longer exist on `MPCParams` — **the law itself is not gone**, it moved
+to `nmpc_core.py`'s `_Plant` (hardcoded there, since only the NMPC path
+uses it now) and `model/vehicle_physics.py`'s `alat_ceiling_at()` — see §5.
+This is a measured property of the simulator, not a free tuning knob; if
+it's ever suspected wrong, re-measure with `ros2/run_steering_sysid.sh` /
+`ros2/run_steering_step.sh`, don't guess. Full history:
+[`removed_mechanisms.md` §10](removed_mechanisms.md#10-fsds-lateral-acceleration-ceiling-as-a-lookahead-input).
 
 ### 4.9 Low-speed steering-rate boost — DISABLED, do not re-enable without a rework
 
@@ -512,70 +349,25 @@ the ceiling law is wrong, re-measure it with `ros2/run_steering_sysid.sh` /
 | `low_speed_steer_rate_boost_k` | decay sharpness of the boost vs. speed |
 
 **Why this exists but is off**: added to fix a low-speed (3-4 m/s)
-post-corner-exit steering wobble (steering swinging through a large,
-under-damped correction while accelerating) that neither §4.2 nor §4.3
-touched, since both gate on curvature/tracking-error rather than speed.
-Deliberately INVERTED from a Stanley-style `k/(v+eps)` shape — this makes
-fast steering-rate changes MORE expensive at low speed, not cheaper.
-Live-tested the same day it was added and found to also suppress fast
-turn-in (which also needs a fast steering-rate change at low speed) —
-because it only gates on speed, it cannot distinguish "post-exit
-overcorrection" from "turn-in," and taxed both identically. **Do not
-re-enable without first adding a curvature/lookahead gate** so it fires
-only when the car is NOT approaching or inside a corner — see
-`planning_control_sync.md`'s "Low-speed steering-rate boost" section for
-the full incident and the values (`boost_max=2.5, k=0.35`) left in place for
-that future rework.
+post-corner-exit steering wobble that neither §4.2 nor §4.3 touched, since
+both gate on curvature/tracking-error rather than speed. Live-tested the
+same day and found to also suppress fast turn-in, since speed alone can't
+distinguish "post-exit overcorrection" from "turn-in." **Do not re-enable
+without first adding a curvature/lookahead gate.** Full incident and the
+values left in place for a future rework:
+[`removed_mechanisms.md` §9](removed_mechanisms.md#9-low-speed-steering-rate-boost-disabled-not-fully-removed).
 
 ### 4.10 Historical: curvature forcing term — removed, structurally unsound
 
-<details>
-<summary>`curvature_forcing_enabled`/`curvature_forcing_gain` and the code behind them no longer exist — kept for the elimination reasoning, which is the direct motivation for the nonlinear MPC in §5</summary>
-
-**Purpose (the goal §5's NMPC eventually met a different way)**: every
-OTHER mechanism in §4.1-4.8 only reweighted the COST of an existing
-tracking error — none
-of them can make the QP's own predicted trajectory bend, because the
-underlying dynamics model (`Ad`/`Bd`) has no path-curvature term at all.
-With `e_y ≈ e_psi ≈ 0` (car dead on-line approaching a corner), the QP's
-own rollout predicts staying at `≈0` for the whole horizon regardless of
-how sharply the real path bends ahead, so it has no reason to start
-turning early no matter how cheap steering is made. This term tried to
-close that gap by looking up the reference path's curvature at each
-predicted step's arc-length position and adding
-`-v_x·κ(s_k)·dt·curvature_forcing_gain` to the predicted `e_psi` there — a
-physically-motivated forcing term (from `path_yaw_rate = v_x·κ`), not
-another cost reweighting.
-
-**Why it was removed**: an isolated QP test (clean synthetic corner, no
-noise, no other mechanism) found the approach doesn't work at ANY gain.
-At `gain=1.0` (physically exact), the QP's own `e_psi` decay
-(`Ad[2,2]≈0.946`/step) bleeds off the forcing almost as fast as it
-accumulates, so the resulting steering response is under 1° — noise-scale,
-too weak to matter. Raising gain to compensate makes it worse in a new
-way: past `gain≈6`, the QP's cheapest predicted trajectory involves
-steering hard AWAY from the corner first, then reversing — because the
-forcing term is added to the same dynamics recursion the QP minimizes
-total cost over, giving the solver freedom to choose the cheapest way to
-absorb it across the whole horizon, which is not the same as "track the
-bend." Only `gain≈20` restores the correct net direction, by which point
-steering is saturated the entire time anyway. No gain in between is both
-large enough to produce meaningful anticipation and free of the
-wrong-direction transient — this is a structural property of forcing the
-dynamics constraint, not a tuning gap. Full numeric trace (the gain
-sweep, the predicted-trajectory inspection that shows the transient) is in
-`planning_control_sync.md`'s "Curvature-forcing term" section.
-
-**Not re-added by the corner-factor rewrite, and not expected back as-is.**
-The code (`curvature_horizon_profile`, the `w` parameter in
-`_build_qp`/`_solve_qp`/`init_parameterized_mpc`/`solve_mpc`) is fully
-deleted, not just disabled — a future redesign that shifts the *reference*
-the error is measured against (e.g. curving the reference heading `e_psi`
-is compared to), rather than perturbing the QP's own optimization
-recursion, would need to be built from scratch. The NMPC (§5) reached the
-same goal a structurally different way instead.
-
-</details>
+`curvature_forcing_enabled`/`curvature_forcing_gain` and the code behind
+them no longer exist. This was the one attempt in the whole removed family
+that tried to fix the *actual* structural limit (injecting curvature into
+the predicted dynamics, not just reweighting cost) — and the reason it
+still failed (the solver can defer a forcing term added to its own
+dynamics recursion, producing a wrong-direction transient at every gain
+tried) is the direct motivation for the nonlinear MPC in §5. Full gain
+sweep and mechanism:
+[`removed_mechanisms.md` §8](removed_mechanisms.md#8-curvature-forcing-the-closest-attempt-and-why-it-still-failed).
 
 ---
 

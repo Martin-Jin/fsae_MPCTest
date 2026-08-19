@@ -150,6 +150,8 @@ States 6 and 7 exist because a real steering rack or throttle doesn't snap insta
 - It then measures the sideways distance and heading difference from there.
 - This "how far along the path, how far off to the side" framing is called a **Frenet-frame** conversion, the standard approach for any controller whose whole job is staying close to a curve.
 
+> For the full, from-scratch derivation of every one of these formulas, with a worked numeric example you can reproduce by hand, see [`error_state_reference.md`](error_state_reference.md).
+
 ### 1.3 The Prediction Model
 
 The car is modelled as a **bicycle model**: one wheel on the front axle, one on the rear, both on the centreline, instead of four separate wheels. This is the standard simplification in vehicle control. It captures the two things that matter for path tracking (how the front wheel steers, how the whole car rotates/slides) while staying simple enough to solve 20 times a second.
@@ -329,15 +331,12 @@ At higher speed the same steering angle produces much more lateral acceleration 
 **Smoothness penalty relaxes in tight corners** (`adaptive_R_rate`):
 
 $$
-\text{scale} = \min\Big(\underbrace{\max\!\left(0.625,\ \tfrac{1}{1+3|\kappa|}\right)}_{\text{"during" — current curvature}},\ \underbrace{\max\!\left(0.85,\ \tfrac{1}{1+4\,\kappa_{\max}}\right)}_{\text{"entering" — lookahead curvature}}\Big)
+\text{scale} = \max\!\left(0.625,\ \tfrac{1}{1+3|\kappa|}\right)
 $$
 
-On a straight, the full smoothness penalty applies (discourage unnecessary jitter). In a tight corner, the penalty is floored — enough softening to let the controller make the fast steering changes a corner genuinely needs, without letting the rate cost vanish completely (which would allow arbitrarily rapid oscillation).
+On a straight, the full smoothness penalty applies (discourage unnecessary jitter). In a tight corner, the penalty is floored — enough softening to let the controller make the fast steering changes a corner genuinely needs, without letting the rate cost vanish completely (which would allow arbitrarily rapid oscillation). $\kappa$ here is the curvature the car is turning through *right now* (a short, ~1 m preview near the car's own position, not a forward scan — see `curvature_estimate`).
 
-There are two floors here, combined by taking whichever is more aggressive (`min`):
-
-- One driven by the curvature the car is turning through *right now* ($\kappa$, from the car's own yaw rate, see `curvature_estimate`).
-- A shallower one driven by $\kappa_{\max}$, the sharpest curvature seen in a forward scan of the path ahead. This means the cost is already softening slightly *before* the car reaches a corner, not just once it's already turning.
+> An earlier version of this function also floored the scale using $\kappa_{\max}$, the sharpest curvature found by scanning further ahead along the path. That lookahead term (and the whole family of similar forward-scanning mechanisms it belonged to) was removed on 2026-08-13 — a forward scan can only reweight the cost of an error that already exists, it cannot make the controller's own prediction anticipate a corner before real error appears. See [`removed_mechanisms.md`](removed_mechanisms.md) for the full family and why it was replaced by Section 4.2's nonlinear MPC instead.
 
 An `enable_in_corners` flag (on by default) controls whether this curvature-based softening applies at all; leave it on.
 
@@ -720,6 +719,8 @@ The nonlinear MPC has three smaller, optional refinements, all affecting only `u
 3. **Backup speed-limit check, off by default, unvalidated.** The car already has one safety mechanism preventing the model from believing it can corner arbitrarily hard (Section 4.1's `alat_ceiling`). This adds a second, independent check of the same limit, enforced as a hard rule the solver cannot break rather than a soft cost nudge — a second pair of hands on the same problem, not a replacement for the first mechanism.
 
 Full technical detail (exact formulas, which files changed): `planning_control_sync.md`'s "Three MPCC-inspired additions" subsection.
+
+**For a full by-hand derivation of everything in this section** — every formula in both controllers' error calculations, step by step, with worked numeric examples, plus the detailed reasoning for why a per-step re-projection can't just be bolted onto the linear MPC — see [`error_state_reference.md`](error_state_reference.md).
 
 ---
 
