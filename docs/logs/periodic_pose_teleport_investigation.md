@@ -468,6 +468,56 @@ independent question — worth revisiting once the position-teleport
 mechanism itself is understood, since it may turn out to be a separate,
 smaller effect riding on top of whatever that turns out to be.
 
+## Candidate: host/hardware-level cause, not the simulator (2026-08-20 — raised, not investigated)
+
+Everything ruled in/out so far (candidates above, all four captures) has
+assumed the stall originates somewhere in FSDS/AirSim/Unreal or the bridge
+software itself. Worth explicitly recording a different class of candidate
+that hasn't been investigated at all yet: **something at the host OS or
+hardware level, on this specific machine, rather than in the simulator
+stack**. A stall this precise (~34.1 s, tight across repeated measurements)
+and this indiscriminate (blocks every RPC call simultaneously, regardless of
+which AirSim method) is at least as consistent with a periodic host-level
+event as with anything in FSDS/AirSim's own code. Candidates in this class,
+none yet checked:
+
+- **WSL2 networking/vEthernet housekeeping.** This setup bridges a
+  Windows-hosted `FSDS.exe` to a WSL2-hosted ROS2/bridge process across the
+  WSL2 NAT/vEthernet boundary (`launch_all.sh` already does `FSDS_HOST_IP`
+  gateway detection for this). WSL2's virtual switch, NAT table, or DNS
+  cache has known periodic refresh/housekeeping behaviour; if any of it runs
+  on a fixed cycle in the tens-of-seconds range, it could stall the
+  cross-boundary socket every RPC call shares, independent of anything in
+  AirSim.
+- **Windows power/thermal management.** A power-plan-driven CPU
+  parking/turbo-duty-cycle or thermal-throttling event on a fixed period
+  could stall whatever thread(s) service RPC requests inside `FSDS.exe`,
+  without any code-level cause in AirSim/Unreal itself.
+- **GPU driver periodic stalls.** Unreal's main thread (which likely also
+  services or gates AirSim's RPC handling) blocking on a GPU-driver-level
+  periodic event — thermal throttling, a driver housekeeping tick, shader
+  cache maintenance — would produce exactly the "every RPC call stalls
+  together" signature seen so far, sourced from the GPU/driver rather than
+  from FSDS/AirSim application code.
+- **Disk I/O / antivirus interference.** A periodic flush (engine log,
+  telemetry, level-streaming cache) intercepted by Windows Defender
+  real-time scanning or slow disk I/O could stall the process for
+  ~1.5 s on whatever period that flush runs on.
+- **USB/peripheral polling.** Lower-confidence, included for completeness:
+  some USB controllers/wireless peripherals have reconnect or polling
+  cycles in this rough time range.
+
+**Status: logged only, not pursued further per explicit instruction.** None
+of these have been checked against this machine's actual configuration
+(Windows event logs, `perfmon`, WSL2 network diagnostics, GPU driver logs,
+etc.), and none should be assumed more or less likely than the
+AirSim/transport-side candidates above without that evidence. If revisited,
+the natural first check is whether the ~34.1 s period is stable across a
+different host machine or a bare-Windows (non-WSL2) bridge setup — if the
+period changes or disappears entirely on different hardware/OS
+configuration, that would strongly implicate this class of cause over
+anything in the FSDS/AirSim software stack.
+
 ## Related logs
 
 - `sim_to_real_investigation.md` — a different, already-closed gap (the
