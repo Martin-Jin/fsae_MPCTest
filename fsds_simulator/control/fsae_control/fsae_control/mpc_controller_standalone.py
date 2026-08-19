@@ -157,6 +157,16 @@ class MPCControllerStandaloneNode(Node):
                                        # the geometric path tangent for e_psi's
                                        # reference ONLY (e_y is unaffected). Default
                                        # False: land off, prove live before flipping.
+                # EXPERIMENTAL, added 2026-08-19: post-solve output smoothing
+                # on the final `steering` command, NOT a QP weight change --
+                # see the ── Output smoothing ── block in _control_loop below
+                # for the full mechanism.
+                ('output_smoothing_enabled', False),
+                ('output_smoothing_alpha', 0.3),          # EMA coefficient on the
+                                       # smoothed signal; lower = more smoothing/more lag
+                ('output_smoothing_corner_floor', 0.3),   # min smoothing weight
+                                       # retained even at full curvature (corner_frac=1) --
+                                       # smoothing never fully switches off, just weakens
             ],
         )
         # All MPCController tuning (Q/R/R_rate weights, adaptive-gain shape
@@ -182,6 +192,14 @@ class MPCControllerStandaloneNode(Node):
             'dynamic_cap_a_lat_max').get_parameter_value().double_value
         self._dynamic_cap_safety = self.get_parameter(
             'dynamic_cap_safety').get_parameter_value().double_value
+
+        self._output_smoothing_enabled = self.get_parameter(
+            'output_smoothing_enabled').get_parameter_value().bool_value
+        self._output_smoothing_alpha = self.get_parameter(
+            'output_smoothing_alpha').get_parameter_value().double_value
+        self._output_smoothing_corner_floor = self.get_parameter(
+            'output_smoothing_corner_floor').get_parameter_value().double_value
+        self._steer_filtered: float | None = None
 
         self._speed_profile = None  # (path_X, path_Y, path_V) or None
         map_path = self.get_parameter('map_path').get_parameter_value().string_value
@@ -584,6 +602,30 @@ class MPCControllerStandaloneNode(Node):
             pose_age_s=pose_age_s,
             car_vy=self._car_vy,
         )
+
+        # ── Output smoothing (EXPERIMENTAL, default off, added 2026-08-19) ──
+        # Post-solve moving-average filter on the FINAL steering command --
+        # deliberately NOT a QP weight change (the solver's own Q/R/R_rate
+        # stay exactly what they already are), so it can't silently override
+        # separately-tuned weights the way a cost-scheduling mechanism can
+        # (see corner_rrate_blend_enabled's history: enabling that dropped
+        # the NMPC's already-tuned nmpc_r_rate_delta down to the LTV-QP's own
+        # unrelated, lower rrate_steer_straight endpoint). This is a genuine
+        # temporal filter, so it DOES add lag -- unlike every QP-weight-based
+        # mechanism above, which is re-derived fresh from the current state
+        # each tick with no cross-tick memory. Traded off by weighting it
+        # down (never off) as CURRENT curvature rises: full weight on a
+        # clean straight, fading toward output_smoothing_corner_floor (never
+        # below it) as the car actually turns, so a sharp corner still gets
+        # a mostly-instant response while a straight gets a smoothed one.
+        if self._output_smoothing_enabled:
+            if self._steer_filtered is None:
+                self._steer_filtered = steering
+            self._steer_filtered += self._output_smoothing_alpha * (steering - self._steer_filtered)
+            corner_frac = self._mpc.last_telemetry.get('corner_frac', 0.0)
+            w_smoothed = max(self._output_smoothing_corner_floor, 1.0 - corner_frac)
+            steering = (1.0 - w_smoothed) * steering + w_smoothed * self._steer_filtered
+
         cmd.steering, cmd.throttle, cmd.brake = steering, throttle, brake
 
         # ── Phase 4: cone-proximity brake override ──────────────────────

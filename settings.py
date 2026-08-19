@@ -404,6 +404,25 @@ ADAPTIVE_Q_SCALING_ENABLED = True
 # Kept enabled to match the live controller.
 STEER_RATE_ANTI_HUNT_ENABLED = True
 
+# [shared, both controllers, EXPERIMENTAL, added 2026-08-19] Post-solve
+# moving-average filter on the FINAL steering command, applied identically
+# regardless of which controller (LTV-QP or NMPC) produced it -- mirrors
+# ros2/.../mpc_controller_standalone.py's node-level Output smoothing block.
+# Deliberately NOT a QP weight change: the solver's own Q/R/R_rate are
+# untouched, so this can't silently override separately-tuned weights the
+# way a cost-scheduling mechanism can (see NMPC_CORNER_RRATE_BLEND_ENABLED's
+# history -- enabling that dropped an already-tuned NMPC_R_RATE_DELTA down
+# to the LTV-QP's own unrelated, lower RRATE_STEER_STRAIGHT). This IS a
+# genuine temporal filter and DOES add lag, unlike every QP-weight-based
+# mechanism above (re-derived fresh from the current state each tick, no
+# cross-tick memory) -- traded off by weighting it down (never fully off)
+# as CURRENT curvature rises: full weight on a clean straight, fading toward
+# OUTPUT_SMOOTHING_CORNER_FLOOR (never below it) as the car actually turns,
+# so a sharp corner still gets a mostly-instant response.
+OUTPUT_SMOOTHING_ENABLED = False
+OUTPUT_SMOOTHING_ALPHA = 0.3          # EMA coefficient; lower = more smoothing/more lag
+OUTPUT_SMOOTHING_CORNER_FLOOR = 0.3   # min smoothing weight retained even at full curvature
+
 # [LTV-QP only] ADAPTIVE_R_RATE_ENABLE_IN_CORNERS — TEMPORARY/EXPERIMENTAL, fsds sim only.
 # (Renamed from ADAPTIVE_R_RATE_DISABLE_IN_CORNERS, whose True/False
 # polarity was inverted from what the name suggested.) adaptive_R_rate

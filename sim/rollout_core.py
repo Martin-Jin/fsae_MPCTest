@@ -79,6 +79,7 @@ from settings import (
     NMPC_FRICTION_CIRCLE_ENABLED, NMPC_STEER_RATE_ANTI_HUNT_ENABLED,
     NMPC_CORNER_RRATE_BLEND_ENABLED, NMPC_CORNER_FACTOR_K,
     NMPC_RRATE_STEER_STRAIGHT, NMPC_RRATE_STEER_CORNER,
+    OUTPUT_SMOOTHING_ENABLED, OUTPUT_SMOOTHING_ALPHA, OUTPUT_SMOOTHING_CORNER_FLOOR,
 )
 
 
@@ -558,6 +559,7 @@ def run_core_rollout(
 
     command_queue = deque([np.zeros(2) for _ in range(DELAY_STEPS + 1)], maxlen=DELAY_STEPS + 1)
     u_prev = np.zeros(2)
+    steer_filtered = None  # EMA state for OUTPUT_SMOOTHING_ENABLED, see below
 
     # Hard per-step slew-rate limit handed to the MPC, mirroring the live
     # mpc_core.py's du_max so offline-tuned weights transfer. Derived from the
@@ -1008,6 +1010,9 @@ def run_core_rollout(
             solver_failed = False
             inaccurate = False
             x0_mpc = None   # no linear x0 here -- guards the cosmetic block below
+            # OUTPUT_SMOOTHING_ENABLED needs this regardless of branch -- see
+            # nmpc_optimiser.py's compute_step(), which always computes it now.
+            corner_frac = nmpc_diag['corner_frac']
         else:
             # ── Linear time-varying QP path ──────────────────────────────────
             # ── Current-state corner factor ───────────────────────────────────
@@ -1151,6 +1156,19 @@ def run_core_rollout(
                 inaccurate = status in (cp.OPTIMAL_INACCURATE, "optimal_inaccurate")
             if inaccurate:
                 inaccurate_count_total += 1
+
+        # ── Output smoothing (EXPERIMENTAL, default off, added 2026-08-19) ──
+        # Offline mirror of mpc_controller_standalone.py's node-level filter
+        # -- see that file for the full mechanism/reasoning. Applied to
+        # u_opt[0] (steering) AFTER the solve, so it's identical whichever
+        # controller (LTV-QP or NMPC) produced it, same as the live node.
+        if OUTPUT_SMOOTHING_ENABLED:
+            if steer_filtered is None:
+                steer_filtered = u_opt[0]
+            steer_filtered += OUTPUT_SMOOTHING_ALPHA * (u_opt[0] - steer_filtered)
+            w_smoothed = max(OUTPUT_SMOOTHING_CORNER_FLOOR, 1.0 - corner_frac)
+            u_opt = u_opt.copy()
+            u_opt[0] = (1.0 - w_smoothed) * u_opt[0] + w_smoothed * steer_filtered
 
         if want_history:
             history["solver_failed"].append(solver_failed)

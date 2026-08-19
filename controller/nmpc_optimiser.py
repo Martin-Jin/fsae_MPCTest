@@ -1130,6 +1130,7 @@ class NMPCController:
         if ref.total < 1e-3:
             return np.array([self._u_prev[0], self.u_min[1]]), {
                 'iters': 0, 'status': 'no-path', 'cost': float('nan'),
+                'corner_frac': 0.0,
             }
 
         fa = np.asarray(car_pos, dtype=float) + self.lf * np.array(
@@ -1148,16 +1149,19 @@ class NMPCController:
         # UNIFORMLY across the whole horizon for this tick's solve. When both
         # flags are off (default), self._Rr_flat/self._ErE are untouched
         # here, so behaviour is byte-identical to before either existed.
+        # Always computed (not gated behind corner_rrate_blend_enabled) --
+        # rollout_core.py's OUTPUT_SMOOTHING_ENABLED needs this as a general
+        # current-curvature signal via the returned diag dict, independent
+        # of whether the R_rate weight-blend feature itself is active.
+        kappa_now = float(ref.kappa_at(np.array([s0]))[0])
+        corner_frac = _corner_factor(kappa_now, self.corner_factor_k)
         if self.corner_rrate_blend_enabled:
-            kappa_now = float(ref.kappa_at(np.array([s0]))[0])
-            corner_frac = _corner_factor(kappa_now, self.corner_factor_k)
             rrate_blend = _blend(self.rrate_steer_straight, self.rrate_steer_corner, corner_frac)
             r_rate_tick = np.array([rrate_blend, self.r_rate[1]])
             Rr_flat = np.tile(r_rate_tick, self.N)
             self._Rr_flat = Rr_flat
             self._ErE = self._E.T @ (Rr_flat[:, None] * self._E)
         elif self.steer_rate_anti_hunt_enabled:
-            kappa_now = float(ref.kappa_at(np.array([s0]))[0])
             R2 = steer_rate_anti_hunt(
                 kappa_now, e_y, np.diag(self.r_rate), enabled=True, e_psi=e_psi,
             )
@@ -1238,6 +1242,7 @@ class NMPCController:
             'pred_epsi_end': float(X[-1, IDX_EPSI]),
             'pred_ey_max_abs': float(np.abs(X[:, IDX_EY]).max()),
             'solve_ms': (time.perf_counter() - t0) * 1e3,
+            'corner_frac': corner_frac,
         }
         if self.friction_circle_enabled:
             # H's two extra (unweighted) rows -- realized per-axle force at
