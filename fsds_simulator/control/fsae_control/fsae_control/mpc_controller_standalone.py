@@ -431,6 +431,8 @@ class MPCControllerStandaloneNode(Node):
                     'output_smoothing_enabled': self._output_smoothing_enabled,
                     'output_smoothing_alpha': self._output_smoothing_alpha,
                     'output_smoothing_corner_floor': self._output_smoothing_corner_floor,
+                    'output_smoothing_k_ey': self._output_smoothing_k_ey,
+                    'output_smoothing_k_epsi': self._output_smoothing_k_epsi,
                 },
                 mpc_params=mpc_params,
                 nmpc_params=(nmpc_params if nmpc_params.use_nmpc else None),
