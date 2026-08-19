@@ -9,20 +9,20 @@ centreline-curvature-spike defect (`planning_control_sync.md`) — it is a new,
 separate, currently-unexplained failure mode found while triaging a "the car
 randomly steers off" report.
 
-**Status: root cause NOT found, but substantially narrowed.** Three live
-captures (see "Capture result", "Second capture result", and "Third capture
-result" below) have exonerated `sim_perception.py` entirely, shown the
-bridge's raw 250 Hz odom output sustaining only ~22-36 Hz for nearly the
-whole run, shown that **FSDS's own internal simulation clock never drops out
-of lockstep with wall time, including in the exact seconds the position
-teleports**, and then — the third, decisive result — shown that **`/clock`'s
-own *arrival* stalls in lockstep with odom's**, roughly every 33-34 seconds,
-ruling out the leading "it's specific to `getCarState()`" hypothesis. The
-stall is shared across at least two independent RPC-sourced topics
-(`getCarState()`-driven odom and the GSS-sourced `/clock`), which points at
-the RPC/AirSim transport boundary itself rather than anything specific to
-the car-state call. See "Third capture result" for the measurement and what
-it does/doesn't rule out.
+**Status: root cause NOT found, but substantially narrowed.** Four live
+captures (see "Capture result" through "Fourth capture result" below) have
+exonerated `sim_perception.py` entirely, shown the bridge's raw 250 Hz odom
+output sustaining only ~22-36 Hz for nearly the whole run, shown that
+**FSDS's own internal simulation clock never drops out of lockstep with wall
+time, including in the exact seconds the position teleports**, and then —
+the decisive result — shown that **three independent AirSim RPC calls
+(`getCarState()`/odom, `getGroundSpeedSensorData()`/`clock`+`gss`, and
+`getImuData()`/`imu`) all stall together**, on a precise, fixed **~34.1 s**
+period. That rules out both "it's specific to `getCarState()`" and "it's a
+coincidence between two calls" — this is one shared bottleneck somewhere in
+the RPC/AirSim transport boundary, not anything specific to how any one
+sensor's data is fetched or cached. See "Third capture result" and "Fourth
+capture result" for the measurements and what they do/don't rule out.
 
 **Why it exists.** The investigation started as "is this a controller or
 planner bug" and ended by ruling out both — worth recording precisely because
@@ -361,56 +361,102 @@ at random — that periodicity is itself a strong clue (something is running
 on a fixed internal timer/tick — a GC pause, a periodic flush, a polling
 loop with a ~33 s interval) that hasn't been chased down yet.
 
-## Next step (2026-08-20 — /clock question answered; root cause still open)
+## Fourth capture result (2026-08-20, `topic_hz_diagnostics/*_1787170066.*`, ~137 s run)
+
+Added a fifth capture, `ros2 topic hz -w 5 /fsds/imu` (`imu_hz_*.log`), to
+test whether the stall is a shared RPC/AirSim bottleneck (predicts a third,
+unrelated RPC call also stalls) or a coincidence between exactly two calls
+(predicts it doesn't). `/fsds/imu` is backed by `getImuData()`
+(`imu_timer_cb`, `airsim_ros_wrapper.cpp:547`) — a genuinely distinct RPC
+method from both `getCarState()` (odom) and `getGroundSpeedSensorData()`
+(which backs *both* `/clock` and `/fsds/gss`, so `/fsds/gss` would not have
+been an independent third test).
+
+**`/fsds/imu` also stalls, on the exact same cadence as odom and `/clock`.**
+In this one run: `imu_hz`'s average rate collapses from a ~250 Hz baseline
+to ~3 Hz at sample indices [8, 41, 74, 107] — a clean 33-sample period —
+matching `/clock`'s stall indices exactly ([8, 41, 74, 107]) and odom's
+almost exactly ([8, 40, 72, 104], off by ≤2, consistent with three
+independently-polling `ros2 topic hz` processes not starting in lockstep).
+The `clock_drift_check.py` wall-clock timestamps for this same run pin the
+period precisely: stalls at t = 9.38, 43.48, 77.57, 111.68 s, i.e. a period
+of **34.10, 34.09, 34.11 s** — tighter and more consistent than the ~31.7-33.7 s
+range seen across the three earlier captures (likely just measurement
+granularity in the earlier ones; this is the most precise measurement so
+far).
+
+**This answers the question left open after the third capture: it is one
+shared bottleneck, not two calls coincidentally stalling together.** Three
+distinct RPC calls — `getCarState()` (odom), `getGroundSpeedSensorData()`
+(`/clock`/`gss`), and `getImuData()` (`imu`) — all stall in lockstep on a
+fixed ~34.1 s period. Whatever this is, it sits somewhere shared by all RPC
+traffic between the bridge and AirSim: the msgpack-rpc transport itself, a
+lock/queue on the AirSim server side that serialises all client calls, or a
+periodic stall in Unreal/AirSim's own request-handling loop that blocks
+every RPC response simultaneously regardless of which method was called.
+
+## Next step (2026-08-20 — shared-bottleneck question answered; root cause still open)
 
 `ros2/launch_all.sh` launches, right after the bridge comes up (search for
-`TEMPORARY (2026-08-19)`): four background captures — `ros2 topic hz -w 5`
-on `/fsds/testing_only/odom`, `/fsae/slam/car_position`, and `/clock` itself,
-plus `ros2/clock_drift_check.py` subscribing to `/clock` for its value-drift
-check — all logging into `fsae_logs/topic_hz_diagnostics/`, torn down
-alongside the bridge in `cleanup()`. Three sessions have now been captured
-and analysed (see all three "Capture result" sections above) —
-`sim_perception.py`, FSDS's own simulation clock, and "specific to
-`getCarState()`" are all cleared; the open question is now about what's
-shared at the RPC/AirSim transport boundary that stalls on a fixed ~33-34 s
-period.
+`TEMPORARY (2026-08-19)`): five background captures — `ros2 topic hz -w 5`
+on `/fsds/testing_only/odom`, `/fsae/slam/car_position`, `/clock`, and
+`/fsds/imu`, plus `ros2/clock_drift_check.py` subscribing to `/clock` for
+its value-drift check — all logging into `fsae_logs/topic_hz_diagnostics/`,
+torn down alongside the bridge in `cleanup()`. Four sessions have now been
+captured and analysed (see all four "Capture result" sections above) —
+`sim_perception.py`, FSDS's own simulation clock, "specific to
+`getCarState()`", and "two calls coincidentally overlapping" are all
+cleared. The open question is now specifically **what** in the shared
+RPC/AirSim transport stalls on a fixed ~34.1 s period.
 
 **What's answered:** `sim_perception.py` is not the cause (candidate 2, ruled
 out twice); FSDS's own simulation clock is not stalling (the "Unreal frame
 rate" reading of candidate 1 is overturned); the stall is not specific to
-`getCarState()` — it hits the independently-sourced `/clock` RPC on the same
-cadence (Third capture result).
+`getCarState()` — three independent RPC calls (`getCarState()`,
+`getGroundSpeedSensorData()`, `getImuData()`) all stall together on the same
+fixed period (Third and Fourth capture results). The "RPC round-trip timing
+inside the bridge, specific to `getCarState()`'s caching" candidate below is
+now effectively ruled out too, superseded by the shared-bottleneck finding.
 
 **What's still open**, and the most promising next things to try:
 
-- **Does a third, unrelated RPC call stall on the same cadence?** Only two
-  RPC-sourced topics have been checked (`getCarState()`/odom, the GSS-sourced
-  `/clock`). If a third bridge-side polled topic also stalls at the same
-  ~33-34 s period, that confirms a single shared bottleneck (thread, queue,
-  or lock) rather than two calls coincidentally stalling together.
-- **What has a ~33-34 s period?** The stall's precision (not just "under
-  load" but on a fixed cadence) is itself a strong clue. Worth checking for:
-  a GC pause on whatever runs the AirSim RPC server, a periodic
-  flush/checkpoint inside Unreal or AirSim, or a polling/timeout loop with a
-  ~33 s interval somewhere in the RPC transport (msgpack-rpc client or
-  server side). This is a different kind of investigation than the
-  topic-hz captures already in place — likely needs either AirSim/Unreal-side
-  logging or profiling during a run, not another ROS2-side capture.
-- **Instrument `odom_cb` directly** (candidate "RPC round-trip timing
-  inside the bridge" from the options considered when this instrumentation
-  was added — deferred so far because it needs a C++ rebuild): log the wall
-  time immediately before and after each `getCarState()` call, and whether
-  `equalsMessage()` caused that poll to be dropped. This would directly show
-  whether the RPC call itself is slow (compounding: bad network/IPC path) or
-  fast-but-returning-stale-data (compounding: an AirSim-side cache not
-  refreshing at its polled rate) — the clock-drift result rules out "Unreal
-  itself hasn't computed a new state yet" as the reason for a stale
-  response, so a stale-but-fast RPC response would specifically implicate a
-  caching layer between Unreal's true state and what `getCarState()` returns.
-  This candidate is now somewhat weaker than before the third capture, since
-  a caching layer specific to `getCarState()` would not obviously explain why
-  `/clock` also stalls — unless both calls share the same cache/queue
-  mechanism.
+- **What has a ~34.1 s period, and where does it live — bridge, transport,
+  or AirSim/Unreal server?** This is now the central question. Candidates,
+  roughly in order of how directly they'd explain a period this precise and
+  this widely shared:
+  - A periodic stall on the **AirSim/Unreal RPC server side** that blocks
+    all incoming RPC calls simultaneously (e.g. a GC pause in whatever
+    runtime backs the RPC server, a periodic checkpoint/flush, a
+    single-threaded request queue backing up behind some other periodic
+    task). This is the most direct explanation for "every RPC call stalls
+    together" and would need AirSim/Unreal-side logging or profiling during
+    a run to confirm — not another ROS2-side capture.
+  - A shared **client-side** bottleneck in the bridge itself — e.g. all
+    RPC calls funnel through the same `car_control_mutex_` (confirmed shared
+    by odom/imu/gss call sites) or the same underlying `rpc::client`
+    connection, and something else holding that lock/connection for ~1.5 s
+    every ~34 s would produce exactly this symptom without AirSim's own
+    request handling being at fault at all. Worth checking what else in
+    `airsim_ros_wrapper.cpp` acquires `car_control_mutex_` and whether any of
+    it runs on a ~34 s-ish period (or accumulates to trigger something at
+    that interval, e.g. a buffer/counter that wraps or flushes every N
+    calls).
+  - The underlying **msgpack-rpc transport** (TCP-level stall, e.g. a
+    periodic keepalive/reconnect, buffer flush, or OS-level scheduling
+    hiccup affecting the single socket all these calls share) — harder to
+    rule in/out without packet-level capture (e.g. `tcpdump` on the bridge
+    ↔ AirSim port during a run, watching for a ~34 s-periodic gap in traffic
+    itself rather than in ROS2-side topic delivery).
+- **Instrument `odom_cb` directly** (deferred so far because it needs a C++
+  rebuild): log the wall time immediately before and after each
+  `getCarState()` call. Still useful even after the shared-bottleneck
+  finding — it would show whether the RPC *call itself* blocks for ~1.5 s
+  (implicating the transport or server) or returns fast-but-stale
+  (implicating a client-side cache/lock) during a stall window. Extending
+  the same timestamp logging to `imu_timer_cb` and `gss_timer_cb`/
+  `clock_timer_cb` in the same rebuild would directly show whether all three
+  block simultaneously (shared lock/transport) or return staggered-but-stale
+  responses (shared cache).
 
 This block is temporary and should be removed from `launch_all.sh` (the
 launch-time block, its `cleanup()` teardown, and `ros2/clock_drift_check.py`)
