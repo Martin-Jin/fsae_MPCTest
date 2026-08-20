@@ -60,6 +60,9 @@ def generate_launch_description():
     output_smoothing_enabled = LaunchConfiguration('output_smoothing_enabled')
     output_smoothing_alpha = LaunchConfiguration('output_smoothing_alpha')
     output_smoothing_corner_floor = LaunchConfiguration('output_smoothing_corner_floor')
+    output_smoothing_k_ey = LaunchConfiguration('output_smoothing_k_ey')
+    output_smoothing_k_epsi = LaunchConfiguration('output_smoothing_k_epsi')
+    output_smoothing_lookahead_lead_s = LaunchConfiguration('output_smoothing_lookahead_lead_s')
     # Every MPCController tuning field, forwarded to control.launch.py --
     # see that file's own comment on MPC_PARAM_FIELDS for why these are
     # generated instead of hand-written.
@@ -199,6 +202,19 @@ def generate_launch_description():
             'output_smoothing_corner_floor', default_value='0.1',
             description='min smoothing weight retained even at full curvature -- '
                         'passed through to control.launch.py.'),
+        DeclareLaunchArgument(
+            'output_smoothing_k_ey', default_value='0.5',
+            description='EXPERIMENTAL (added 2026-08-20): fade output_smoothing down '
+                        'as CURRENT |e_y| grows -- passed through to control.launch.py.'),
+        DeclareLaunchArgument(
+            'output_smoothing_k_epsi', default_value='0.8',
+            description='EXPERIMENTAL (added 2026-08-20): fade output_smoothing down '
+                        'as CURRENT |e_psi| grows -- passed through to control.launch.py.'),
+        DeclareLaunchArgument(
+            'output_smoothing_lookahead_lead_s', default_value='0.5',
+            description='EXPERIMENTAL (added 2026-08-20): fade output_smoothing down '
+                        'BEFORE a corner already visible in the path -- passed through '
+                        'to control.launch.py.'),
         *(DeclareLaunchArgument(
             name,
             default_value=('true' if default else 'false') if isinstance(default, bool) else str(default),
@@ -223,6 +239,9 @@ def generate_launch_description():
             'output_smoothing_enabled': output_smoothing_enabled,
             'output_smoothing_alpha': output_smoothing_alpha,
             'output_smoothing_corner_floor': output_smoothing_corner_floor,
+            'output_smoothing_k_ey': output_smoothing_k_ey,
+            'output_smoothing_k_epsi': output_smoothing_k_epsi,
+            'output_smoothing_lookahead_lead_s': output_smoothing_lookahead_lead_s,
             **mpc_param_configs,
         }),
         IncludeLaunchDescription(

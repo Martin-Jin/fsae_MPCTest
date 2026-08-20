@@ -902,8 +902,16 @@ def run_core_rollout(
         gate_prev = raw_gate
         gate = raw_gate
         v_target = max(PLANNER_V_MIN, v_target * gate)
-        if v_des_prev is not None:
-            v_target = min(v_target, v_des_prev + SPEED_TARGET_RISE_RATE * DT)
+        # Seed the ramp from the car's ACTUAL speed on the first tick, not
+        # from an unlimited jump straight to v_target -- see mpc_controller.py's
+        # identical fix and CLAUDE.md's standstill steering-saturation note.
+        # Without this, a standing start (vx0=0.0 above) asks the NMPC to
+        # track the full-speed target from tick 0 via its e_v cost term,
+        # which is the actual root cause of the "steers hard at startup"
+        # symptom -- not a plant/tyre-force bug.
+        if v_des_prev is None:
+            v_des_prev = state[3]
+        v_target = min(v_target, v_des_prev + SPEED_TARGET_RISE_RATE * DT)
         v_des_prev = v_target
 
         # ── TRUE tracking error, for scoring only ──────────────────────────

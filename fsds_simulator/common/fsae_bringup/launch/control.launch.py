@@ -59,6 +59,9 @@ def generate_launch_description():
     output_smoothing_enabled = LaunchConfiguration('output_smoothing_enabled')
     output_smoothing_alpha = LaunchConfiguration('output_smoothing_alpha')
     output_smoothing_corner_floor = LaunchConfiguration('output_smoothing_corner_floor')
+    output_smoothing_k_ey = LaunchConfiguration('output_smoothing_k_ey')
+    output_smoothing_k_epsi = LaunchConfiguration('output_smoothing_k_epsi')
+    output_smoothing_lookahead_lead_s = LaunchConfiguration('output_smoothing_lookahead_lead_s')
     # Every MPCController tuning field (Q/R/R_rate weights, adaptive-gain
     # shape constants, feature flags) -- see mpc_params.py's MPCParams for
     # the authoritative field list/defaults/units. Generated from
@@ -352,6 +355,23 @@ def generate_launch_description():
             'output_smoothing_corner_floor', default_value='0.1',
             description='min smoothing weight retained even at full curvature, when '
                         'output_smoothing_enabled is true'),
+        DeclareLaunchArgument(
+            'output_smoothing_k_ey', default_value='0.5',
+            description='EXPERIMENTAL (added 2026-08-20): fade output_smoothing down '
+                        '(never below output_smoothing_corner_floor) as CURRENT |e_y| '
+                        'grows; 1/m, higher = fades out faster per metre'),
+        DeclareLaunchArgument(
+            'output_smoothing_k_epsi', default_value='0.8',
+            description='EXPERIMENTAL (added 2026-08-20): fade output_smoothing down '
+                        '(never below output_smoothing_corner_floor) as CURRENT |e_psi| '
+                        'grows; 1/rad, higher = fades out faster per radian'),
+        DeclareLaunchArgument(
+            'output_smoothing_lookahead_lead_s', default_value='0.5',
+            description='EXPERIMENTAL (added 2026-08-20): fade output_smoothing down '
+                        'BEFORE the car reaches a corner already visible in the path, '
+                        'not only once CURRENT curvature has risen -- a TIME lead '
+                        'converted to a scan distance via current speed each tick. '
+                        '0.0 disables (pure current-curvature corner_frac).'),
         *mpc_launch_args,
         Node(
             package='fsae_control',
@@ -370,6 +390,9 @@ def generate_launch_description():
                 'output_smoothing_enabled': output_smoothing_enabled,
                 'output_smoothing_alpha': output_smoothing_alpha,
                 'output_smoothing_corner_floor': output_smoothing_corner_floor,
+                'output_smoothing_k_ey': output_smoothing_k_ey,
+                'output_smoothing_k_epsi': output_smoothing_k_epsi,
+                'output_smoothing_lookahead_lead_s': output_smoothing_lookahead_lead_s,
                 # stanley_gain deliberately omitted here: neither
                 # mpc_controller.py nor mpc_controller_standalone.py declares
                 # it, so passing it would raise ParameterNotDeclaredException.

@@ -358,6 +358,81 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
     return float(np.clip(v_target, v_min, v_max))
 
 
+def peak_kappa_ahead(waypoints, scan_end=6.0):
+    """
+    Peak |curvature| over the next scan_end metres of the path, using the
+    SAME dense-resample + moving-average denoise as curvature_speed (a
+    single fit-noise triple would otherwise register as a spurious corner —
+    see that function's own comment for why). Deliberately just the peak
+    curvature, not a speed target: for a mechanism that wants to know "is a
+    corner coming soon", not "how fast can I take it".
+
+    waypoints[0] is assumed to be the car's current position, same
+    convention as curvature_speed. Returns 0.0 if there isn't enough path
+    to measure curvature at all (matches curvature_speed's own short-path
+    behaviour of imposing no constraint rather than guessing).
+
+    Used by mpc_controller_standalone.py/mpc_controller.py's output
+    smoothing block to fade OUTPUT_SMOOTHING's corner_frac blend down
+    BEFORE the car reaches a corner already visible in the path, not only
+    once the car's own current curvature has already risen — see that
+    block's own comment for why a purely current-state signal fades too
+    late on a track with short straights between corners.
+    """
+    n = len(waypoints)
+    if n < 3:
+        return 0.0
+
+    segs  = np.linalg.norm(np.diff(waypoints, axis=0), axis=1)
+    arc   = np.concatenate([[0.0], np.cumsum(segs)])
+    total = arc[-1]
+
+    hi = min(scan_end, total)
+    if hi < 1.0:
+        return 0.0
+
+    dense_step = 0.5
+    dense = np.arange(0.0, hi, dense_step)
+    if len(dense) < 7:
+        return 0.0     # too little path to denoise safely — same precedent
+                        # as curvature_speed's own short-scan fallback, but
+                        # this caller has no coarse-sampling fallback since
+                        # it only needs a boolean-ish "corner ahead" signal,
+                        # not a value that must always be produced.
+
+    dx = np.interp(dense, arc, waypoints[:, 0])
+    dy = np.interp(dense, arc, waypoints[:, 1])
+    w  = min(3, len(dense) - 4)
+    ker = np.ones(w) / w
+    sx = np.convolve(dx, ker, mode='valid')
+    sy = np.convolve(dy, ker, mode='valid')
+    pts = np.column_stack([sx, sy])
+    if len(pts) < 3:
+        return 0.0
+
+    kappas = []
+    for i in range(1, len(pts) - 1):
+        p1, p2, p3 = pts[i - 1], pts[i], pts[i + 1]
+        d12 = float(np.linalg.norm(p2 - p1))
+        d23 = float(np.linalg.norm(p3 - p2))
+        d31 = float(np.linalg.norm(p1 - p3))
+        denom = d12 * d23 * d31
+        if denom < 1e-9:
+            continue
+        v1    = p2 - p1
+        v2    = p3 - p1
+        cross = abs(float(v1[0] * v2[1] - v1[1] * v2[0]))
+        kappas.append(2.0 * cross / denom)
+
+    if not kappas:
+        return 0.0
+
+    k = np.asarray(kappas, dtype=float)
+    if len(k) >= 3:
+        k = np.convolve(k, np.ones(3) / 3.0, mode='valid')
+    return float(k.max()) if len(k) else 0.0
+
+
 def dynamic_speed_cap(waypoints, v_max=15.0, v_min=1.5,
                       a_lat_max=3.2, safety=0.9):
     """

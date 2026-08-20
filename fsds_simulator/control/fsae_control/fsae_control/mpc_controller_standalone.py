@@ -79,8 +79,9 @@ from fsae_control.control_utils import (
     curvature_speed, dynamic_speed_cap, load_path_profile_csv,
     load_path_heading_profile_csv,
     load_speed_profile_csv, precomputed_speed_at, tracking_error_speed_gate,
+    peak_kappa_ahead,
 )
-from fsae_control.mpc_core import MAX_STEER_RAD, MPCController
+from fsae_control.mpc_core import MAX_STEER_RAD, MPCController, _corner_factor
 from fsae_control.nmpc_core import NMPCController
 from fsae_control.mpc_params import declare_mpc_params, mpc_params_from_node
 from fsae_control.nmpc_params import declare_nmpc_params, nmpc_params_from_node
@@ -185,6 +186,25 @@ class MPCControllerStandaloneNode(Node):
                 # >~15deg).
                 ('output_smoothing_k_ey', 0.5),     # 1/m; higher = fades out faster per metre of |e_y|
                 ('output_smoothing_k_epsi', 0.8),   # 1/rad; higher = fades out faster per radian of |e_psi|
+                # EXPERIMENTAL, added 2026-08-20: fade smoothing down BEFORE
+                # the car reaches a corner already visible in the path, not
+                # only once the car's own CURRENT curvature has risen.
+                # Motivated by a track (comp_test_map_3) where 61% of
+                # "straights" between corners are under 2s -- shorter than
+                # this filter's own settle time at typical alpha values, so
+                # a purely current-curvature corner_frac only starts fading
+                # smoothing after the straight has mostly already ended,
+                # producing a sustained sway right where two corners are
+                # close together. output_smoothing_lookahead_lead_s is a
+                # TIME lead (converted to a scan distance via the car's own
+                # current speed each tick, so the lead stays consistent
+                # across speed rather than a fixed metres value giving less
+                # warning at high speed exactly when more is needed), sized
+                # to roughly this filter's own ~95% settle time
+                # (3 / (alpha * CONTROL_HZ) seconds) so the fade has time to
+                # complete before the corner arrives. 0.0 disables (pure
+                # current-curvature corner_frac, unchanged behaviour).
+                ('output_smoothing_lookahead_lead_s', 0.5),
             ],
         )
         # All MPCController tuning (Q/R/R_rate weights, adaptive-gain shape
@@ -221,6 +241,8 @@ class MPCControllerStandaloneNode(Node):
             'output_smoothing_k_ey').get_parameter_value().double_value
         self._output_smoothing_k_epsi = self.get_parameter(
             'output_smoothing_k_epsi').get_parameter_value().double_value
+        self._output_smoothing_lookahead_lead_s = self.get_parameter(
+            'output_smoothing_lookahead_lead_s').get_parameter_value().double_value
         self._steer_filtered: float | None = None
 
         self._speed_profile = None  # (path_X, path_Y, path_V) or None
@@ -433,6 +455,7 @@ class MPCControllerStandaloneNode(Node):
                     'output_smoothing_corner_floor': self._output_smoothing_corner_floor,
                     'output_smoothing_k_ey': self._output_smoothing_k_ey,
                     'output_smoothing_k_epsi': self._output_smoothing_k_epsi,
+                    'output_smoothing_lookahead_lead_s': self._output_smoothing_lookahead_lead_s,
                 },
                 mpc_params=mpc_params,
                 nmpc_params=(nmpc_params if nmpc_params.use_nmpc else None),
@@ -612,9 +635,16 @@ class MPCControllerStandaloneNode(Node):
         # frame curvature jitter otherwise swings the target by a measured mean
         # 2.75 m/s (p95 10.7) between snapshots; limiting the rise cuts that to
         # 1.72 (p95 5.4) without capping achievable speed on a real straight.
-        if self._v_des_prev is not None:
-            max_rise = SPEED_TARGET_RISE_RATE / CONTROL_HZ
-            self._desired_speed = min(self._desired_speed, self._v_des_prev + max_rise)
+        # Seed the ramp from the car's ACTUAL speed on the first tick after
+        # startup/a fail-safe reset, not from an unlimited jump straight to
+        # desired_speed -- see mpc_controller.py's identical fix and
+        # CLAUDE.md's standstill steering-saturation note. Without this, a
+        # standing-start run asks the controller (NMPC especially, via its
+        # e_v cost term) to track the full-speed target from tick 0.
+        if self._v_des_prev is None:
+            self._v_des_prev = self._car_speed
+        max_rise = SPEED_TARGET_RISE_RATE / CONTROL_HZ
+        self._desired_speed = min(self._desired_speed, self._v_des_prev + max_rise)
         self._v_des_prev = self._desired_speed
 
         pose_age_s = (self.get_clock().now() - Time.from_msg(self._pose_stamp)).nanoseconds * 1e-9
@@ -661,6 +691,29 @@ class MPCControllerStandaloneNode(Node):
             self._steer_filtered += self._output_smoothing_alpha * (steering - self._steer_filtered)
             tel = self._mpc.last_telemetry
             corner_frac = tel.get('corner_frac', 0.0)
+            if self._output_smoothing_lookahead_lead_s > 0.0:
+                # See output_smoothing_lookahead_lead_s's own declaration
+                # comment: fade smoothing down BEFORE the car reaches a
+                # corner already visible in the path, not only once CURRENT
+                # curvature has risen -- needed on tracks with straights
+                # shorter than this filter's own settle time. Scan distance
+                # is a TIME lead converted via current speed, so a fast car
+                # gets warned further ahead (in metres) than a slow one, the
+                # same amount of time ahead either way. A floor speed avoids
+                # scanning zero metres at a standstill/very low speed.
+                scan_end = max(self._car_speed, 2.0) * self._output_smoothing_lookahead_lead_s
+                path_ahead = self._path_pts
+                if len(path_ahead) > 2:
+                    i_near = int(np.argmin(np.linalg.norm(path_ahead - self._car_pos, axis=1)))
+                    if i_near < len(path_ahead) - 2:
+                        path_ahead = path_ahead[i_near:]
+                kappa_ahead = peak_kappa_ahead(path_ahead, scan_end=scan_end)
+                corner_frac_ahead = _corner_factor(kappa_ahead, self._mpc.params.corner_factor_k)
+                corner_frac = max(corner_frac, corner_frac_ahead)
+                # Written into last_telemetry (not returned) so it flows
+                # into the CSV via ADAPTIVE_COLUMNS with zero extra plumbing
+                # -- same mechanism every other diagnostic column uses.
+                self._mpc.last_telemetry['corner_frac_ahead'] = corner_frac_ahead
             w_smoothed = max(self._output_smoothing_corner_floor, 1.0 - corner_frac)
             fade_ey = 1.0 / (1.0 + self._output_smoothing_k_ey * abs(tel.get('e_y', 0.0)))
             fade_epsi = 1.0 / (1.0 + self._output_smoothing_k_epsi * abs(tel.get('e_psi', 0.0)))
