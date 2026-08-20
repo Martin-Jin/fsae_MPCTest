@@ -452,6 +452,28 @@ OUTPUT_SMOOTHING_CORNER_FLOOR = 0.1   # min smoothing weight retained even at fu
 OUTPUT_SMOOTHING_K_EY = 0.5      # 1/m; higher = fades out faster per metre of |e_y|
 OUTPUT_SMOOTHING_K_EPSI = 0.8    # 1/rad; higher = fades out faster per radian of |e_psi|
 
+# [shared, both controllers, EXPERIMENTAL, added 2026-08-20] Fade smoothing
+# down BEFORE the car reaches a corner already visible in the path, not only
+# once the car's own CURRENT curvature has risen. Motivated by a track
+# (comp_test_map_3) where 61% of "straights" between corners are under 2s --
+# shorter than this filter's own settle time at typical alpha values, so a
+# purely current-curvature corner_frac only starts fading smoothing after
+# the straight has mostly already ended, producing a sustained sway right
+# where two corners are close together.
+# OUTPUT_SMOOTHING_LOOKAHEAD_LEAD_S is a TIME lead (converted to a scan
+# distance via the car's own current speed each tick, so the lead stays
+# consistent across speed rather than a fixed metres value giving less
+# warning at high speed exactly when more is needed), sized to roughly this
+# filter's own ~95% settle time (3 / (alpha * CONTROL_HZ) seconds) so the
+# fade has time to complete before the corner arrives. The scanned peak
+# curvature (speed_profile.peak_kappa_ahead) goes through the SAME
+# _corner_factor curve as the current-curvature signal, and the larger of
+# the two wins -- so whichever fires first drives the fade.
+# 0.0 disables (pure current-curvature corner_frac, unchanged behaviour).
+# Numeric parity: mpc_controller(_standalone).py's
+# 'output_smoothing_lookahead_lead_s' ROS2 parameter.
+OUTPUT_SMOOTHING_LOOKAHEAD_LEAD_S = 0.5   # s of lead; 0.0 disables
+
 # [LTV-QP only] ADAPTIVE_R_RATE_ENABLE_IN_CORNERS — TEMPORARY/EXPERIMENTAL, fsds sim only.
 # (Renamed from ADAPTIVE_R_RATE_DISABLE_IN_CORNERS, whose True/False
 # polarity was inverted from what the name suggested.) adaptive_R_rate

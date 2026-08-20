@@ -87,6 +87,7 @@ from settings import (
     NMPC_REVERSAL_PENALTY_K,
     OUTPUT_SMOOTHING_ENABLED, OUTPUT_SMOOTHING_ALPHA, OUTPUT_SMOOTHING_CORNER_FLOOR,
     OUTPUT_SMOOTHING_K_EY, OUTPUT_SMOOTHING_K_EPSI,
+    OUTPUT_SMOOTHING_LOOKAHEAD_LEAD_S,
 )
 
 
@@ -1196,7 +1197,40 @@ def run_core_rollout(
             if steer_filtered is None:
                 steer_filtered = u_opt[0]
             steer_filtered += OUTPUT_SMOOTHING_ALPHA * (u_opt[0] - steer_filtered)
-            w_smoothed = max(OUTPUT_SMOOTHING_CORNER_FLOOR, 1.0 - corner_frac)
+            corner_frac_smooth = corner_frac
+            if OUTPUT_SMOOTHING_LOOKAHEAD_LEAD_S > 0.0:
+                # See settings.OUTPUT_SMOOTHING_LOOKAHEAD_LEAD_S: fade
+                # smoothing down BEFORE the car reaches a corner already
+                # visible in the path, not only once CURRENT curvature has
+                # risen -- needed on tracks with straights shorter than this
+                # filter's own settle time. Scan distance is a TIME lead
+                # converted via current speed, so a fast car gets warned
+                # further ahead (in metres) than a slow one, the same amount
+                # of time ahead either way. A floor speed avoids scanning
+                # zero metres at a standstill/very low speed.
+                # Mirrors mpc_controller_standalone.py's identical block.
+                scan_end = max(vx_true, 2.0) * OUTPUT_SMOOTHING_LOOKAHEAD_LEAD_S
+                # Same path source e_y/e_psi and (in NMPC mode) the Frenet
+                # reference were built from above: the live planner's
+                # centreline when one is ready, else the oracle path. Sliced
+                # from the car's nearest point forward, the same argmin
+                # pattern the ENABLE_DYNAMIC_SPEED_CAP branch above uses,
+                # since peak_kappa_ahead assumes waypoints[0] is the car.
+                if use_planner and cl is not None and len(cl) >= 2:
+                    path_ahead = cl
+                else:
+                    path_ahead = path_xy
+                if len(path_ahead) > 2:
+                    i_near = int(np.argmin(
+                        np.linalg.norm(path_ahead - car_pos_np, axis=1)))
+                    if i_near < len(path_ahead) - 2:
+                        path_ahead = path_ahead[i_near:]
+                kappa_ahead = sp.peak_kappa_ahead(path_ahead, scan_end=scan_end)
+                corner_frac_ahead = _corner_factor(kappa_ahead, CORNER_FACTOR_K)
+                # Whichever signal (current or lookahead) says "more corner"
+                # wins, so the fade responds to whichever fires first.
+                corner_frac_smooth = max(corner_frac_smooth, corner_frac_ahead)
+            w_smoothed = max(OUTPUT_SMOOTHING_CORNER_FLOOR, 1.0 - corner_frac_smooth)
             fade_ey = 1.0 / (1.0 + OUTPUT_SMOOTHING_K_EY * abs(e_y))
             fade_epsi = 1.0 / (1.0 + OUTPUT_SMOOTHING_K_EPSI * abs(e_psi))
             w_smoothed = max(OUTPUT_SMOOTHING_CORNER_FLOOR, w_smoothed * fade_ey * fade_epsi)
