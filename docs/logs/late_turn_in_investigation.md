@@ -908,6 +908,270 @@ elsewhere. Part 4/5/6 (the corner-segmentation feature, itself later
 deleted by the same rewrite) is summarized in `planning_control_sync.md`'s
 "Precomputed corner segmentation" section.
 
+## Part 6b — Curvature-forcing term: the QP's own prediction was blind to the path bending ahead (2026-08-12)
+
+**Implemented on both sides, offline smoke-tested (no crash), live symptom
+not yet re-confirmed fixed at the time this section was first written.**
+Reported symptom, after the steering-effort relax (Part 0 below) and the
+`ey_k` fix were both live-tested: the car still turned in late on
+sudden/sharp corners.
+
+**Root cause (deeper than either fix above)**: every existing lookahead
+mechanism (`adaptive_Q_lookahead`, `lookahead_steer_effort_relax`, etc.)
+only reweights an *existing* tracking error — it changes how expensive
+being off-line already is, never the QP's own predicted trajectory. The
+QP's internal dynamics model (`Ad`/`Bd`) has *no path-curvature term at
+all*: with `e_y ≈ e_psi ≈ 0` (car dead on-line on the still-straight
+approach, exactly the state before any real corner), the QP's own 35-step
+rollout predicts staying at `≈0` for the whole horizon regardless of how
+sharply the real path bends ahead. No amount of cheaper steering effort
+can fix this, because there is no predicted error yet for a cheaper weight
+to act on — this is why the steering-effort relax fix, while correctly
+implemented and firing, could not fully close the gap on its own.
+Confirmed directly: `m_R_steer_relax` and `Q_ey_eff` moved correctly and
+over a full second early in live telemetry, while `steer_deg` stayed at
+≈0° the whole time, because there was no `e_y`/`e_psi` for those
+reweighted costs to react to.
+
+**Mechanism**: `_curvature_horizon_profile`/`curvature_horizon_profile`
+walks the reference path forward from the car's current position by the
+PREDICTED arc-length at each of the QP's `N` steps (`v_x·k·dt`), returning
+signed curvature at each step (distinct from `_lookahead_curvature_profile`,
+which only returns the single peak value used for the Q/R reweighting in
+Part 0/Part 2). That per-step curvature feeds a new forcing term added
+directly to the dynamics constraint — `x[:,1:] == Ad@x[:,:-1] + Bd@u + w`,
+where `w` is zero everywhere except the `e_psi` row: `w[2,k] =
+-v_x·κ(s_k)·dt·gain`. The sign follows directly from `e_psi = car_yaw -
+path_yaw` and `path_yaw_rate = v_x·κ`: a path curving left (`κ>0`) drives
+`e_psi` negative over the horizon even if the car holds a constant
+heading. `w=None` (the default for any caller that doesn't pass it) sends
+an all-zero array, making this an exact no-op — existing callers are
+unaffected.
+
+**Verified with a synthetic constant-curvature path** before trusting the
+sign: with `curvature_forcing_enabled=False`, commanded steering is
+exactly `0.000°` 24 m before a 20 m-radius left bend with zero tracking
+error (reproducing the diagnosed bug); with it `True`, steering correctly
+leans toward the bend (`+1.5°` at 17 m/s, before any `e_y`/`e_psi` error
+exists) — and mirrored for a right bend (`-1.5°`). A closed-loop
+simulation (the car actually driving toward the bend using its own
+commands, not a single frozen snapshot) confirms the controller commits to
+real, sustained left steering (ramping through `+2°` → `+8.6°`) well
+before reaching the curved section.
+
+**A genuinely confusing artifact was found and ruled out during
+verification**: at the exact instant `x0=0` with no history, the very
+first commanded step can be a tiny (hundredths-of-a-degree), momentarily
+WRONG-SIGN "flinch" before the plan settles into the correct direction —
+e.g. `-0.01°` at the first tick, then correctly positive from the second
+tick onward. This is a real, known linear-MPC phenomenon (the coupled
+`e_y`/`e_psi`/`r` state dynamics briefly trade off a different combination
+of costs at `x0` exactly zero) and is negligible in magnitude compared to
+the real turn-in signal — confirmed via the closed-loop simulation above,
+where it never shows up as a problem once the car is actually driving
+(nonzero `x0` history from the previous tick's plan).
+
+**A second problem was found DURING live testing of this fix**: even with
+the forcing term firing correctly and early (`w_epsi_sum` already
+`-1.0` to `-1.35` more than 2 s before a sharp corner, confirmed in
+telemetry), the car still turned in late. Root cause: `_steer_rate_anti_hunt`
+was tuned before this forcing term existed — it reads "`e_y`/`e_psi`/current
+`kappa` all near zero" as "nothing happening, dampen any steering-rate
+change," which is now exactly the state the forcing term deliberately
+produces on approach. Live telemetry showed steering oscillating ±10° with
+no net commitment while `m_Rrate_antihunt` sat at `1.2×`–`3.3×` throughout
+the approach — anti-hunt was actively cancelling the forcing term's whole
+effect, every tick, right up until real curvature arrived and steering had
+to snap to the 25° stop anyway. Fixed by adding a fourth, `kappa_max_abs`-gated
+factor to `_steer_rate_anti_hunt`/`steer_rate_anti_hunt` (`anti_hunt_k_lookahead`,
+default `60.0`, same `k` as the existing current-curvature term) that
+relaxes the anti-hunt boost once a real corner is detected in the
+lookahead window — not just once the car is already turning through it.
+
+**Implemented in**: live `mpc_core.py`/`mpc_params.py`
+(`curvature_forcing_enabled`, `curvature_forcing_gain`,
+`anti_hunt_k_lookahead`), offline `controller/optimiser.py`'s
+`init_parameterized_mpc`/`solve_mpc` (new `w` parameter) and
+`controller/model_utils.py` (`curvature_horizon_profile`,
+`steer_rate_anti_hunt`'s new `kappa_max_abs`/`k_lookahead` params),
+`sim/rollout_core.py`, `settings.py` (`CURVATURE_FORCING_ENABLED`,
+`CURVATURE_FORCING_GAIN`, `ANTI_HUNT_K_LOOKAHEAD`), `fsae_params.yaml`,
+`launch_all.sh`'s shortlist, and the `fsds_simulator` mirror.
+
+### Re-tested live (2026-08-12) — regression found and fixed: `anti_hunt_k_lookahead=60.0` was itself too aggressive
+
+The combined fix made things *worse*: still no earlier net turn-in, plus a
+new symptom — brief wrong-direction (rightward) steering flicks right
+before some left corners, occasionally costing enough line to miss the
+corner.
+
+Log analysis (`mpc_standalone_control_1786509640.csv`) found the actual
+mechanism has nothing to do with curvature-forcing's sign or magnitude —
+`w_epsi_sum` was firing correctly and its tick-to-tick drift was negligible
+(±0.01–0.02) throughout the approach. Instead, `steer_deg` was swinging
+±9° almost every tick with an exactly-repeating pattern, the signature of a
+**pre-existing, already-documented mechanism**: `predict_ahead()`'s
+rollforward (see `mpc_core.py`'s "Delay compensation" comment) compounds
+pose noise through `n_delay` steps with no ground-truth correction, and
+that noise reaches the steering command directly at small `e_y`/`e_psi` —
+"steer swinging +-5-10 deg per tick... causing late turn-in and running
+wide," exactly as that comment already warned, unrelated to this session's
+work.
+
+What changed this session is how much that pre-existing noise gets damped.
+`boost_lookahead = 1/(1 + k_lookahead·|kappa_max_abs|)` with `k=60` already
+cuts anti-hunt's damping in half at `kappa_max_abs=0.02` — a corner still
+far outside the window curvature-forcing actually needs help fighting
+through (`kappa_max_abs` there is usually 0.06+ by the time forcing's
+correction matters). Comparing the same approach-window statistics before
+vs. after the gate: mean anti-hunt multiplier fell at **every** curvature
+level (e.g. `kappa_max_abs<0.02`: `2.19×→1.50×`), and mean `|Δsteer_deg|`
+per tick rose correspondingly (`2.74→3.46`, `2.63→2.93`, `3.59→4.26`) —
+confirming the gate was relaxing damping broadly, not selectively where
+curvature-forcing's early correction needed room, letting the pre-existing
+noise oscillate more everywhere. Reversal *rate* alone looked unchanged
+(0.171 vs 0.174) precisely because this is amplified-noise, not new noise —
+the amplitude grew, not the frequency, which is why it read as "still late"
+(bigger, noisier swings, no more net commitment) rather than a raw increase
+in direction changes.
+
+**Fix**: lowered `anti_hunt_k_lookahead` from `60.0` to `15.0` on both
+sides (`mpc_params.py`, `settings.py`, `fsae_params.yaml`,
+`launch_all.sh`'s shortlist, `fsds_simulator` mirror). At `k=15`,
+`boost_lookahead` stays close to `1.0` (little relaxation) until
+`kappa_max_abs` is around `0.05`+, and only drops substantially past
+`0.1`–`0.15` — inert during the very early, faint lookahead signal, active
+once a corner is close/sharp enough for curvature-forcing's correction to
+actually need the room. This is the change recorded as Part 2, row 2
+above.
+
+**While investigating this, the `MPC_ANTI_HUNT_K_LOOKAHEAD` comment in
+`launch_all.sh` was found to have the tuning direction backwards** ("Lower
+= relaxes anti-hunt sooner/more" — actually the opposite: higher `k` means
+more relaxation at a given `kappa_max_abs`, since `k` multiplies inside the
+denominator). Fixed alongside this change.
+
+### Re-tested live at `k=15` (2026-08-12) — curvature forcing itself found structurally unsound, disabled
+
+`anti_hunt_k_lookahead=15.0` worked as intended: the same approach-window
+statistics from the regression above returned close to their original
+(pre-`k=60`) values (`mean_antihunt` at low `kappa_max_abs`: `2.19×` →
+(regression) `1.50×` → (fixed) `2.01×`; `mean|Δsteer|`: `2.74` → `3.46` →
+`2.90`). But the user still reported no real improvement in turn-in
+timing, which meant the anti-hunt interaction was never the main story —
+it was a second-order effect on top of a first-order problem in the
+forcing term itself.
+
+**Isolated QP testing (not a live log this time — a controlled synthetic
+test, `x0=0`, no noise, no other adaptive mechanism, using the actual
+`init_parameterized_mpc`/`solve_mpc`/`curvature_horizon_profile` code)
+found the forcing term is unsound at any gain that matters:**
+
+At `curvature_forcing_gain=1.0` (the "physically exact" default) with a
+realistic corner (radius 13 m, 17 m/s, corner start ~15 m / ~0.9 s ahead —
+comparable to the live log's approach windows), the QP's own predicted
+`e_psi` trajectory only deviates a few tenths of a degree from zero across
+the whole horizon, even though `w_epsi_sum` (the accumulated forcing)
+reaches -1.2. The reason: `Ad`'s own `e_psi` decay (`Ad[2,2]≈0.946`/step)
+bleeds off a small per-step forcing almost as fast as it's added, so it
+never builds into a state deviation big enough to be worth paying real
+steering-rate cost to counter. The resulting `delta_cmd` response is
+sub-1° — noise-scale, exactly matching live telemetry's slightly-negative
+mean steer (`-1.05°`) buried in `±4.4°` of pre-existing oscillation during
+this same window. This is the mechanism behind "still doesn't turn early."
+
+**Raising `curvature_forcing_gain` to compensate does not fix this — it
+makes it worse in a new way.** Sweeping gain against the same synthetic
+corner:
+
+| gain | w_epsi_sum | steer_cmd |
+|---|---|---|
+| 1.0 | -1.19 | -0.27° |
+| 3.0 | -3.56 | -0.96° |
+| 6.0 | -7.13 | **-25.00°** (saturated AWAY from the corner) |
+| 9.0–15.0 | -10.7 to -17.8 | **-25.00°** (still saturated away) |
+| 20.0 | -23.8 | +25.00° (finally correct direction, but saturated, 20x the physical value) |
+
+Inspecting the QP's full predicted trajectory at `gain=6.0` shows why:
+`u[0,:]` commits immediately to `-25°` (steering AWAY from the corner) for
+the first several steps, driving predicted `e_psi` to `-24°` and `e_y` to
+`-2.3 m`, before reversing to `+25°` around step 6 onward. This is the
+"drifts right before some left corners" symptom, reproduced exactly in a
+clean, noise-free, single-mechanism test — not a live-noise artifact and
+not an anti-hunt interaction.
+
+**Root cause**: the forcing term is implemented as a disturbance on the
+dynamics constraint itself (`x[:,1:] = A@x[:,:-1] + B@u + w`), which is
+the same recursion the QP is minimizing total quadratic cost over. That
+gives the solver freedom to choose *how* to spend/absorb the disturbance
+across the whole horizon — it is not "tracking a path that bends," it is
+finding the cheapest predicted trajectory subject to an artificial forcing
+term, and nothing in that formulation prevents the cheapest trajectory
+from being a transient swing away before correcting. This is a structural
+property of forcing-via-dynamics-disturbance, not a magnitude/tuning
+question — no gain between the two extremes tested is both large enough
+to matter and free of the wrong-direction transient.
+
+**Fix**: disabled `curvature_forcing_enabled` on both sides (`mpc_params.py`,
+`settings.py`, `fsae_params.yaml`, `launch_all.sh`'s shortlist, `fsds_simulator`
+mirror). This reverts to the pre-2026-08-12 baseline: no early anticipation,
+but also no wrong-direction transient — the better-understood failure mode.
+`anti_hunt_k_lookahead` was left at `15.0` (harmless no-op with forcing off,
+and a real improvement over `60.0` if forcing is ever revisited). This is
+the state recorded as Part 2, row 1 above.
+
+**Code kept in place at the time, not deleted**: `curvature_horizon_profile`
+(both sides), the `w` parameter threaded through `_build_qp`/`_solve_qp`
+(live) and `init_parameterized_mpc`/`solve_mpc` (offline), and the
+`kappa_max_abs`-gated anti-hunt factor. A future redesign should likely
+make curvature shift the *reference*/error definition (e.g. curving the
+reference heading `e_psi` is measured against, so the QP's cost directly
+penalises deviation from a bending reference) rather than perturbing the
+same recursion the QP optimizes trajectories over. Do not re-enable
+`curvature_forcing_enabled` by flipping the flag alone without re-deriving
+the mechanism — the gain sweep above shows the current formulation has no
+safe operating point. (This is exactly the lesson the NMPC formulation in
+Part 16 acts on: curvature as a function of a state the solver is actively
+choosing, not external data it's free to defer absorbing. The mechanism
+itself, along with everything else in this lookahead family, was later
+deleted wholesale in the corner-factor-scheduler rewrite — see
+`removed_mechanisms.md` Section 8.)
+
+**Late turn-in on sudden corners was therefore still an open problem at
+this point in the investigation** — this session's attempted fix was
+reverted, not replaced. The reference-heading-lead mechanism (§12.8 in
+`sim_to_real_investigation.md`, also flagged in CLAUDE.md's "Still open"
+list) was investigated as the next avenue — **but it applies to the
+live-planner branch specifically** (the planner's per-tick, FOV-limited
+centreline rebuild), not to driving against a precomputed
+`map_path`/`path_map_path` raceline, which is the actual live driving
+configuration. On a precomputed path there is no per-tick rebuild to swing
+unpredictably; the reference is fixed in advance. Re-measured anyway out
+of thoroughness (see below) before this scope mismatch was caught — the
+re-measurement itself is real and worth keeping on file, but is not the
+fix for the precomputed-path late-turn-in symptom.
+
+**Re-measurement note (2026-08-12, for the live-planner branch only, scope
+above notwithstanding)**: `tuner/reference_heading_geometry_check.py` and
+`tuner/reference_excess_mechanism_check.py` (§26/§27 of
+`sim_to_real_investigation.md`) were deleted in the same-day `tuner/`
+reorg (`c182a05`) as "concluded one-off investigation scripts," but the
+investigation's own "Open — mechanism confirmed real, first candidate fix
+tried live and FAILED" status (its last recorded state) was never actually
+closed, and — separately — an 2026-08-08 parity bug fix (§31, `SimPlanner`
+never passing live-tuned smoothing/blend params) invalidated every number
+§26/§27 measured, with no re-measurement ever done. Restored both scripts
+from git history (`c182a05^`) and re-ran against the corrected planner: the
+mechanism now measures **larger**, not smaller — planner/geometric
+reference-rate ratio 1.66/1.76/6.91/12.84 (mean/p90/p99/max), correlation
+with true track geometry down to 0.336 (was 1.22/1.87/3.51 and 0.80
+pre-fix), and 110 ticks (of 1045) show >30°/s excess swing, only 9%
+explained by the known seed-jump artifact — unchanged from before, so the
+remaining ~91% is still an unlocalized, distinct planner mechanism. This is
+a real, larger-than-previously-known open item **for the live-planner
+branch** — restored scripts are back in `tuner/` for whoever next drives
+with `use_planner=True` instead of a precomputed path.
+
 ## Part 7 — Design: lead-heading reference (not yet implemented)
 
 User's idea, checked directly rather than assumed: instead of biasing the
@@ -1566,6 +1830,47 @@ still being a net-neutral-or-positive change on average. Re-assess once
 more runs accumulate rather than acting on either Part 12's or this
 section's read alone.
 
+## Part 13b — Lookahead corner-anticipation window widened, approach side
+
+`adaptive_q_lookahead_dist_max` was raised `17.0` → `25.0` (both sides,
+`fsae_params.yaml`, `fsds_simulator` mirror) to match
+`adaptive_q_lookahead_exit_decay_dist_max`, which was already `25.0` — the
+approach-side ceiling was tighter than the exit-side one for no documented
+reason (each field's own git history showed it was only ever set once, at
+`MPCParams` centralization, ported over from whatever value predated that
+with no dedicated tuning record).
+
+At typical corner-approach speed (16-17 m/s, from
+`mpc_standalone_control_1786513486.csv`) the intended lookahead
+(`car_speed * adaptive_q_lookahead_time_s` = 18.3-19.4 m) was being silently
+clamped to 17.0 m — under 1 s of lead time regardless of actual speed.
+
+**This was not expected to fix late turn-in on its own.** `adaptive_
+q_lookahead` (§4.4 in `tuning.md`) only reweights `Q[0,0]`/`Q[2,2]` on an
+*existing* tracking error — with `e_y ≈ e_psi ≈ 0` on approach, a wider
+window lets the boost detect the corner's curvature a little sooner, but
+multiplying a still-near-zero error by a bigger number is still near-zero.
+This is the same "reweighting cannot manufacture an error" ceiling documented
+at length in the curvature-forcing postmortem (Part 6b above) and in
+`junior_project_mpc_docs.md`. Expected effect, if any: the boosts (and
+downstream steering commitment) trigger marginally sooner and larger once
+real error/curvature *does* appear inside the window, not before.
+
+`sim/rollout_core.py`'s hardcoded `(1.13, 3.0, 17.0)` literal was updated to
+`(1.13, 3.0, 25.0)` to match — kept as a plain literal, not sourced from a
+new `settings.py` constant, since `fsae_MPCTest` and `fsae_planning` must
+never share an import dependency in either direction (`fsae_planning`'s
+standing "no settings.py-on-the-car" constraint applies symmetrically here).
+Not live-tested at the time of this change.
+
+A genuine fix for before-any-error anticipation on a precomputed path would
+need to change what the reference/error is measured against — e.g. compute
+`e_psi` against a lookahead point on the path rather than the nearest point —
+not reweight costs on the current-position error. This was left unexplored;
+no design or implementation existed yet at this point. (Part 14, immediately
+below, found that even this widened 25m ceiling is still short of some
+real corner-approach gaps.)
+
 ## Part 14 — Root cause of the mid-track corner, precisely confirmed: gap LENGTH exceeds max lookahead distance, not a signal-quality problem
 
 Traced directly against `comp_test_map_3`'s real `CornerMap` (not assumed):
@@ -2194,3 +2499,690 @@ flagged as the user's decision, not an omission. If it is mirrored later:
 `nmpc_core.py`/`nmpc_params.py` have no offline counterpart at all, and
 `NMPCParams` would then acquire a `settings.py` parity obligation that it
 deliberately does not have today (see `nmpc_params.py`'s module docstring).
+
+### 16.9 Live test: matched same-day LTV-QP vs. NMPC pair
+
+A same-day live pair on `comp_test_map_3` (`mpc_standalone`, identical
+weights: `q_e_y=6.35, q_e_yd=0.5, q_e_psi=1.65, q_r=1.0, q_e_v=5.40,
+r_delta=1.8, r_a_accel=2.25, r_a_brake=0.5, r_rate=[2.5, 2.25]`) was logged in
+`fsae_logs/Linear mpc/mpc_standalone_control_1786568958.csv` (`use_nmpc=0`)
+and `fsae_logs/NMPC/mpc_standalone_control_1786571019.csv` (`use_nmpc=1`):
+
+| | LTV-QP (live) | NMPC (live) |
+|---|---|---|
+| lap time | 54.72 s | 52.35 s |
+| composite score | 0.695 | 0.532 |
+| RMSE (lateral) | 0.455 m | 0.378 m |
+| peak lateral error | 1.636 m | 1.179 m |
+| \|e_psi\| mean / p90 / max | 7.85° / 15.53° / 28.16° | 5.06° / 11.71° / 21.22° |
+| steering saturation | 6.45% | 0.58% |
+| steering reversals | 299 | 226 |
+
+Same direction and similar magnitude as §16.6's offline A/B (steering
+saturation drops sharply, tracking error improves across the board), on a
+single matched pair — not the same n=multiple-runs rigor as the offline
+sweep. NMPC judged live-tested and performing well on the strength of this
+result.
+
+### 16.10 Three MPCC-inspired additions: two rejected on first live test
+
+Prompted by a comparison against Alexander Liniger's Model Predictive
+Contouring Control (MPCC — "C" is Contouring; `https://github.com/alexliniger/MPCC`).
+MPCC's headline idea — treating progress along the track `θ` as a free
+decision variable the solver *maximises*, with a contouring-error/lag-error
+split against a parametric spline — was assessed and not adopted: `θ̇`-
+maximisation is a more aggressive version of exactly the "exogenous,
+schedulable future obligation" failure mode this NMPC's own `kappa(s)`-as-state
+design exists to avoid (§16.1), and adopting it would need the same
+falsification testing (§16.6's dead-on-line synthetic corner approach) before
+being trusted. Three narrower, self-contained ideas survived that filter, all
+NMPC-only (`mpc_core.py` untouched by any of them) and implemented identically
+in both `nmpc_core.py` (live) and `controller/nmpc_optimiser.py` (offline
+port).
+
+**1. Spline-based path reference** (`nmpc_spline_reference_enabled` /
+`NMPC_SPLINE_REFERENCE_ENABLED`, default `true`). `PathReference` fits
+`x(s)`/`y(s)` as two independent `scipy.interpolate.CubicSpline` objects over
+cumulative arc length, deriving `kappa(s)`/`psi_ref(s)` analytically
+(`kappa = (x'y'' - y'x'') / (x'^2+y'^2)^1.5`) instead of the old
+dense-resample + moving-average + finite-difference-headings pipeline. This is
+MPCC's reference-parametrisation mechanism (a continuous spline in arc length)
+adopted on its own, decoupled from the contouring/progress apparatus built on
+top of it in the original paper. Defaults on, unlike the other two: a strict
+numerical-quality improvement with no new coupling to solver dynamics, and it
+directly targets the open "centreline curvature spikes" defect (CLAUDE.md) — a
+proper spline fit was one of that defect's two previously-named-but-unattempted
+remedies. The old moving-average path is kept intact behind the flag for A/B.
+`kappa_at`/`kappa_scalar`/`psi_ref_at`/`project` needed no changes.
+
+**2. Horizon speed profile** (`nmpc_horizon_speed_profile_enabled` /
+`NMPC_HORIZON_SPEED_PROFILE_ENABLED`, default `false`, experimental). Before
+this, `v_ref` (the cost's speed target, `H[:,4] = v_x - v_ref`) was a single
+scalar held constant across the whole horizon — deliberately, so a live A/B of
+feature 1's lateral-model change alone would not be confounded by a
+simultaneous longitudinal change. This flag samples a precomputed per-lap
+speed profile at each horizon stage's own predicted arc length `s_k` via a new
+`PathReference.v_ref_at(s)`, the same way `kappa_at(s)` is already looked up
+against the predicted state rather than scheduled by horizon step — deliberate,
+so the feature would inherit `kappa(s)`'s non-schedulability property instead
+of reproducing the earlier curvature-scheduling failures (§16.1, Parts 2/7/15)
+in longitudinal form. It targets Part 11's still-open braking-lag problem.
+Fully wired in `sim/rollout_core.py`'s NMPC construction/`compute_step()` call
+(offline) and `mpc_controller_standalone.py`'s `set_static_path()` call (live
+mirror); deliberately not wired in `mpc_controller.py` (the LTV-QP-parity
+node). With no speed-profile array supplied, or with the flag off, `v_ref`
+remains the exact same frozen scalar as before.
+
+Live-tested enabled alone (spline reference also on, friction circle off) on
+`comp_test_map_3`, `mpc_standalone_control_1786585464.csv`: showed the exact
+predicted failure mode, worse than the curvature case it was modelled on. At
+t≈58–61s approaching a corner, `v_actual` climbed from ~5.7 to **16.7 m/s**
+while `v_desired` **dropped** to 3.3–5 m/s and stayed there for ~2s — `a_cmd`
+stayed strongly positive (0.6 to 2.5+ m/s²) throughout, i.e. the controller
+was actively accelerating, not merely failing to brake. `e_y` grew to
+**-3.6 m** (car off-track; `nmpc_track_halfwidth` is 3.5 m) before the corner
+geometrically opened back up and it recovered. Mechanism: unlike `kappa(s)`,
+whose obligation only exists once the predicted trajectory's own `s` has
+actually reached it, summing `v_x - v_ref(s_k)` across all 20 horizon stages
+let a high `v_ref` at a later stage (the straight after this corner) offset the
+cost of a low `v_ref` at an earlier stage (the corner itself) in the same
+solve — the QP's net gradient could favour accelerating now against a target
+that was about to rise, even though the current target was low. Same
+"solver pre-pays a future obligation" trap as the curvature-scheduling
+failures (Parts 2/7/15), but surfacing as real off-track excursions rather
+than a self-correcting steering wobble, because a wrong-direction speed
+decision carries real kinetic energy into the corner for the lateral
+controller to then fight. Reverted to `false`. The non-schedulability
+property this feature was designed to inherit from `kappa(s)` does not
+transfer to a summed cost over the horizon — `kappa(s)`'s safety came from the
+state coupling, not from being state-indexed per se, and speed's cost
+structure (a plain sum of squared errors across all stages) breaks that
+coupling in a way curvature's structure did not. Do not re-enable without
+addressing the underlying mechanism (e.g. bounding how far ahead along `s`
+the sampled `v_ref` may rise, or some other per-stage clamp preventing a later
+high-speed stage from outvoting an earlier low-speed one) and revalidating
+offline first.
+
+**3. Friction-circle hard constraint** (`nmpc_friction_circle_enabled` /
+`NMPC_FRICTION_CIRCLE_ENABLED`, default `false`, experimental). Adds a hard
+`|F_yf|, |F_yr| <= F_max` bound to the condensed QP, additional to — not a
+replacement for — the existing soft `tanh` lateral-force saturation already
+inside `_f`/`_f_scalar` (per CLAUDE.md's standing caution against
+re-litigating that soft mechanism without new measurement evidence). `F_max`
+is derived from the same measured ceiling law
+(`alat_ceiling_flat/_slope/_intercept`) via `F_max = m * ceiling(v_x) / 2` per
+axle. Mechanically: `_outputs()` grows two extra, cost-unweighted rows (tyre
+forces, computed post-soft-saturation) that ride through the existing
+`_output_jacobians` finite-differencing for free, reusing the condensing
+step's own `S = dx/dU_flat` rather than needing a second rollout;
+`_build_qp`/`_solve_step` add `2*N` new hard rows only when the flag is on.
+When off, `_build_qp`/`_outputs`/`_output_jacobians`/`_solve_step` are
+identical — same array shapes, same QP dimensions — to before this feature
+existed. Telemetry exposes `nmpc_fyf_max_abs`/`nmpc_fyr_max_abs` only when
+enabled, but see the telemetry gap below — these never actually reached a CSV
+column. Loosely inspired by MPCC's friction-ellipse tyre constraints, adapted
+to bound the same tyre-force quantity this NMPC's plant already computes.
+
+Live-tested enabled alone (spline reference also on, horizon speed profile
+off) on `comp_test_map_3`, `mpc_standalone_control_1786585910.csv`: much more
+severely broken than feature 2. The SQP subproblem failed to solve
+(`nmpc_status=0`) on **77.5% of all 614 ticks**, steering sat at the
+mechanical hard lock (±25°) on **30.8% of ticks** starting as early as
+t=0.65s, and the run ended in a full stall — car stopped (`v_actual≈0`),
+4.94 m off-track, heading error -52°, every column frozen tick-for-tick for
+the final ~1 s of the log. This was enabled with no prior offline A/B (unlike
+features 1/2), against explicit caution given before testing it live; the
+result confirmed that caution was warranted. Reverted to `false` in
+`launch_all.sh` immediately.
+
+Root cause: unlike the soft `tanh` saturation it sits alongside (which only
+engages once beyond the ceiling, and is a smooth penalty the solver can trade
+off against), the new hard `|F_yf|,|F_yr| <= F_max` rows have no slack
+variable — there is nothing for the QP to give up if ordinary cornering
+geometry and the force bound conflict simultaneously, which they evidently do
+under completely normal driving on this track, not just extreme conditions.
+When that happens the subproblem goes infeasible, `_solve_step` correctly
+refuses to act on the resulting garbage direction (per its own documented
+safety logic), and the practical effect is the controller stops updating its
+steering command tick after tick — exactly the "pretty much doesn't work
+anymore" symptom observed, compounding into a spin/stall as the geometry
+degrades further with no correction being applied. This means
+`F_max = m * ceiling(v_x) / 2` per axle is measurably tighter than what normal
+cornering actually needs on this plant/track, not merely a
+conservative-but-workable bound.
+
+**Bug found alongside this rejection** (separate from it, worth fixing
+regardless of whether the feature is ever revisited): `nmpc_fyf_max_abs`/
+`nmpc_fyr_max_abs` never actually appeared in the CSV — `telemetry_logger.py`'s
+`NMPC_COLUMNS` is a hand-maintained tuple, unlike `build_config_lines()`'s
+`dataclasses.asdict()`-based config dump, and nobody added the two new field
+names to it when the feature was implemented. This silently dropped exactly
+the diagnostic that would have shown, tick-by-tick, how close to (or over)
+`F_max` the solve was running — the post-mortem above had to rely on
+`nmpc_status`/steering/stall behaviour alone because of this gap. Fix
+`NMPC_COLUMNS` before ever re-attempting this feature.
+
+Neither feature 2 nor 3 has offline A/B numbers (feature 1 is a numerical
+improvement to an existing mechanism and is default-on; features 2 and 3 are
+default-off, both live-tested-and-rejected in their current form) —
+reproduce a comparison with `python -m tuner.nmpc_offline_check` once one
+exists. Do not re-enable 2 or 3 without first fixing the identified
+mechanism, adding an offline A/B, and (for feature 3) the missing telemetry
+columns above.
+
+### 16.11 Fixed: NMPC steered hard-right at a standstill on every run
+
+**Symptom:** every NMPC run from a standing start — independent of any of the
+three §16.10 features, reproducing with only feature 1 (spline reference,
+default-on) active — commanded a hard, transient right-steer excursion in the
+first ~0.5-0.7s: steering reached the full ±25° mechanical lock by
+t≈0.59-0.65s, `nmpc_pred_ey_end` (the horizon's own predicted terminal
+lateral error) swung to roughly -3.3 m, while `v_actual` was still essentially
+zero. The car recovered once genuinely moving and did not repeat the
+excursion on later laps through the same map location.
+
+**Not the track/spawn geometry.** The car spawns at `(0,0)` facing `+x`; the
+track's first recorded waypoint sits at `x≈1.76, y≈-0.18` with
+`psi≈0.006-0.009` rad — a small, ordinary offset (`e_y≈0.16` m at t=0,
+`nmpc_s0≈-1.06` m, i.e. the Frenet projection lands just behind the path's
+recorded start). Ruled out as the cause by a same-day, same-spawn A/B: both
+the LTV-QP (`mpc_core.py`, `Linear mpc/mpc_standalone_control_1786594804.csv`)
+and Stanley (`stanley_control_1786594710.csv`) see the identical `e_y≈0.16-0.17`
+at t=0 and show no equivalent hard-lock snap — Stanley's initial command is
+-8.9°, converging smoothly; the LTV-QP's is a few degrees, also smooth. Since
+both react to the same starting error without incident, the cause was
+specific to the NMPC's own model, not the track/spawn setup — track padding
+was considered and rejected as a fix for this reason (the same v_x=0 startup
+condition would recur at any new start point).
+
+**Root cause: `_f`/`_f_scalar`'s tyre-slip-angle formula manufactured a
+lateral force from steering alone at `v_x≈0`.** `alpha_f = arctan((v_y +
+lf*r)/v_safe) - d`, where `v_safe = max(|v_x|, v_blend_hi)` floors the
+denominator to avoid a divide-by-zero as `v_x -> 0`. That floor is necessary,
+but its side effect was that at `v_x=0` with `v_y, r` small, `alpha_f ≈ -d` —
+the slip angle tracked the commanded steering angle directly, producing a
+substantial `F_yf` (and `F_yr`) purely from steering, with zero forward speed.
+A real tyre generates ~zero lateral force with no rolling contact velocity,
+regardless of steering angle — this was backwards. The `blend` factor already
+computed for the kinematic/dynamic mix (0 at `v_x <= v_blend_lo`, 1 at
+`v_x >= v_blend_hi`) already excluded `v_y_dot_dyn`/`r_dot_dyn` from the state
+derivative at low speed, but that happened too late: the force itself already
+existed and was available to the SQP's cost/Jacobians before that exclusion,
+and (for `nmpc_friction_circle_enabled`, when re-enabled) would have been
+visible to the friction-circle constraint too.
+
+**Fix:** scale `F_yf`/`F_yr` by the same `blend` factor immediately after
+they're computed (and after the existing `alat_ceiling` soft saturation), in
+all three copies — `nmpc_core.py` (live and mirror) and
+`controller/nmpc_optimiser.py`'s `_f`, `_f_scalar`, and its
+`nmpc_friction_circle_enabled`-only `_tyre_forces()` helper (which computes
+the same force independently for telemetry/constraint rows and must stay a
+line-by-line mirror of `_f`'s own computation per its own docstring). At
+`v_x=0` with any commanded steering, every lateral-dynamics derivative
+(`e_y_dot`, `v_y_dot`, `r_dot`) is now confirmed exactly zero (previously
+`v_y_dot`/`r_dot` were nonzero purely from `d`). Verified: `_f`/`_f_scalar`
+parity holds at 1e-13/1e-14 (both live/mirror and offline, well under the
+1e-12 bar `test_scalar_matches_vectorised` requires), and
+`python -m tuner.nmpc_offline_check`'s full suite (model parity, SQP
+convergence, turn-in/wrong-direction, closed-loop) passed with no regression
+in the closed-loop `|e_y|`/`|e_psi|`/saturation numbers.
+
+**Live-tested and confirmed fixed**, with one intervening false alarm caused by
+a stale build rather than the fix itself. The first live attempt after
+copying the fix to the live checkout (`mpc_standalone_control_1786595389.csv`)
+still showed the hard-lock snap — traced to the ROS 2 workspace not having
+been rebuilt, not a flaw in the fix: this project's `--symlink-install` setup
+symlinks `ros2/build/fsae_control/fsae_control` back to
+`src/fsae_planning/control/fsae_control/fsae_control`, but the running Python
+process had an older module already loaded/cached from before the edit, so
+the source-level edit was invisible until the workspace was rebuilt and the
+nodes restarted. This is exactly the class of issue `ros2/launch_all.sh`'s
+own commented-out `--symlink-install` rebuild step exists to catch (see that
+file: "an edit to `src/` after the last build is silently invisible to
+`ros2 launch` until rebuilt" — this was the third time it had bitten in one
+session, distinct from §52's earlier `zip_safe`-related install-mode
+incident). After rebuilding, `mpc_standalone_control_1786595530.csv` showed
+the fix working exactly as predicted: steering never exceeded ~18° in the
+first two seconds (previously pegged at the full ±25° lock for most of a
+second), and the full run (1107 ticks, a complete lap) posted the best
+numbers of the whole session — `|e_y|` mean 0.195 m, max 0.968 m, steering
+saturation 0.09%.
+
+## Part 0 (background) — how the accel/brake effort split (`r_a_accel`/`r_a_brake`) came about, 2026-08-12
+
+This predates Part 1 above chronologically (same day) and is why Part 1's
+snapshot table already shows the split in place. Recorded here since it was
+never written up elsewhere.
+
+Reported symptom, after the `r_a 0.85 -> 0.77` cut (see
+`planning_control_sync.md`'s history via `sim_to_real_investigation.md`) was
+confirmed live: the same shared weight that freed up acceleration also
+weakened braking by the same amount, since `R_diag[1]` was applied
+symmetrically to `|a_cmd|` regardless of sign. Live telemetry after the
+`r_a` cut showed the resulting asymmetry directly — a corner-entry log
+(`mpc_standalone_control_1786444690.csv`) had the car arriving faster into
+corners (accel side now eager) while `a_cmd` still floored around -1.4 m/s²
+during a sustained 2-second, 3-5 m/s speed deficit (braking side unchanged
+and still weak) — too hot into corners, followed by steering saturation and
+an unstable post-saturation recovery.
+
+Fix: `R_diag[1]`'s single scalar weight was replaced with two independent
+weights, `r_a_accel` (`a_cmd >= 0`) and `r_a_brake` (`a_cmd < 0`), applied
+via `cp.pos(u[1,:])`/`cp.neg(u[1,:])` in the QP cost —
+`R_a_accel * sum(pos(a_cmd)²) + R_a_brake * sum(neg(a_cmd)²)` — rather than
+new slack variables or constraints. A slack-variable design was considered
+first and replaced with this simpler `cp.pos`/`cp.neg` rewrite once it was
+confirmed DCP-valid and numerically identical to the old single-weight cost
+when `r_a_accel == r_a_brake`, since `pos(x)²+neg(x)² == x²` for any real
+`x`. Implemented in both `mpc_core.py`/`mpc_params.py`/`fsae_params.yaml`/
+`launch_all.sh` (live) and `controller/optimiser.py`/`settings.py` (offline)
+— see `planning_control_sync.md`'s "Accel/brake effort weight split"
+section for the current file-by-file mapping.
+
+Checked before implementing: no adaptive gain (`_adaptive_R_scaling`,
+`_adaptive_R_rate`, etc.) touches index 1 of `R`/`R_rate` anywhere in this
+codebase (confirmed by direct grep), so the split composed cleanly with
+every existing adaptive mechanism with no interaction to account for.
+
+Values were adjusted directly during live testing the same day, moving
+0.35/0.2 -> 0.5/0.2 -> 0.5/0.1 -> 1.0/0.6 across one session, before
+settling at the 1.0/0.4 shown in Part 1's snapshot table above (further
+retuned since — see `mpc_params.py`'s actual current defaults).
+
+## Part 0c (background) — how `_lookahead_steer_effort_relax` (R[0,0] approach-side relief) came about, 2026-08-12
+
+Also predates Part 1 chronologically (same day) — Part 1's `R[0,0]`
+walkthrough and Part 3c/3d already describe this mechanism as an existing,
+implemented part of the gain-scheduling family. Recorded here since the
+diagnosis itself was never written up elsewhere. Implemented on both sides
+(live `mpc_core.py`/`mpc_params.py`, offline `model_utils.py`/
+`sim/rollout_core.py`/`settings.py`, and the `fsds_simulator` mirror), not
+live-tested in isolation before Part 1 folded it into the broader
+mechanism inventory.
+
+Reported symptom (a follow-on diagnosis from the same live session that
+produced the `r_a` cut and the accel/brake split above): the car was slow
+to commit to turn-in specifically at higher corner-entry speed.
+
+Root cause: `_adaptive_R_scaling`'s speed-dependent steering-effort penalty
+(`R[0,0] *= 1 + 1.5*vx/(6+vx)`, e.g. ~2.07x at 15 m/s) had no lookahead
+relief at all — it stayed at full strength right through an approaching
+corner regardless of curvature. The only other mechanism touching
+`R[0,0]`, `_steer_effort_straight_boost`, only ever raised it (on a clear
+straight) or relaxed back to the unscaled baseline as a corner was
+detected — neither one ever pushed `R[0,0]` below baseline for an
+approaching corner. A car entering a corner hot therefore paid the full
+speed-based steering-effort penalty at exactly the moment it most needed
+to commit to turn-in. (`_lookahead_yaw_rate_relax` already did the
+equivalent relief for `Q[3,3]`/yaw-rate — its own docstring explicitly
+names "turns late/slowly" as the failure mode it exists to prevent — but
+no `R[0,0]` counterpart existed until this fix.)
+
+Fix: added `_lookahead_steer_effort_relax(kappa_max_abs, car_speed,
+floor=0.5, ...)`, mirroring `_lookahead_yaw_rate_relax`'s shape exactly
+(same demand-normalised corner-severity curve), falling from `1.0` (no
+corner ahead) toward `floor=0.5` as corner demand rises, composing
+multiplicatively with `_adaptive_R_scaling` and
+`_steer_effort_straight_boost`'s existing `R[0,0]` scalings. `floor=0.5`
+was set to match `_lookahead_yaw_rate_relax`'s own default floor (same
+magnitude as the sibling mechanism this was modelled on, not independently
+fitted). Implemented in `mpc_core.py`/`mpc_params.py`
+(`lookahead_steer_effort_relax_enabled`,
+`adaptive_q_lookahead_steer_relax_floor`), mirrored in `model_utils.py`
+(`lookahead_steer_effort_relax`) / `sim/rollout_core.py` / `settings.py`
+(`LOOKAHEAD_STEER_EFFORT_RELAX_ENABLED`,
+`ADAPTIVE_Q_LOOKAHEAD_STEER_RELAX_FLOOR`), and the `fsds_simulator` mirror.
+
+## Addendum (2026-08-11): dynamic speed cap — closing the gap between the oracle profile and live tracking
+
+`precomputed_speed_at()` (the oracle-profile lookup used when a track is
+already mapped — `USE_PRECOMPUTED_SPEED_PROFILE=True` / `map_path` set) is a
+static, position-indexed nearest-point lookup: it has no notion of the car's
+*actual current speed* relative to how much runway is left to brake for the
+upcoming corner.
+
+Combined with the frozen-`e_v`-horizon characteristic described elsewhere in
+this log (the MPC has no internal mechanism to anticipate a corner and ease
+off early — it only ever tracks whatever `desired_speed` scalar it's handed
+*this* tick), a car that enters a fast straight even slightly ahead of the
+oracle profile's own pace has no predictive braking margin: the target speed
+only starts dropping once the car reaches the position the profile
+associates with braking, by which point there may not be enough distance
+left.
+
+This showed up directly in live telemetry
+(`fsae_logs/mpc_standalone_control_*.csv`): at a corner entry, `v_actual`
+was measured at ~9 m/s against a `v_desired` already at ~4.6 m/s, with
+steering saturated at the 25° stop for over a second while speed caught up
+to the target — i.e. the corner was recognised too late to brake for
+smoothly.
+
+Fix: `control_utils.dynamic_speed_cap()`, a thin wrapper over the
+already-existing `curvature_speed()` (see that function's own docstring for
+the full mechanism: it scans ~24 m of live path ahead, converts curvature to
+a lateral-accel-limited corner speed, then propagates a braking-distance
+constraint back from each corner), layered *underneath* the oracle lookup
+rather than replacing it: every tick, when a track is mapped, the controller
+takes `min(precomputed_speed_at(...), dynamic_speed_cap(...))`. The oracle
+profile remains the trusted primary target (it encodes the whole lap's
+raceline optimisation); the dynamic cap only ever pulls the target *down*
+from that, catching the case where live tracking has drifted from the plan
+(e.g. exiting the previous corner faster than expected).
+
+Deliberately **not** a call to `curvature_speed()` with its own default
+`a_lat_max=4.0`/`safety=1.0` (the values already tied to numeric parity with
+the offline `use_planner=True` branch): the dynamic cap uses separate,
+tighter defaults (`DYNAMIC_CAP_A_LAT_MAX=3.2`, `DYNAMIC_CAP_SAFETY=0.9`) so
+it engages a little before the oracle profile would actually be violated,
+rather than exactly at the edge — since it is a safety net under an
+already-tuned profile, not a second opinion on the racing line.
+
+Made tunable on/off (`enable_dynamic_speed_cap` ROS param /
+`ENABLE_DYNAMIC_SPEED_CAP` in `settings.py`, both default `True`) so it
+could be A/B'd against the oracle-profile-only baseline without code
+changes — `ros2/launch_all.sh`'s MPC tuning shortlist got a commented-out
+`ENABLE_DYNAMIC_SPEED_CAP=false` line for a one-off disable. With the flag
+off, behaviour is byte-identical to before this change. Has no effect when
+no track is mapped (the live-`curvature_speed()`-only branch already runs
+predictive lookahead speed control with no separate oracle target to cap).
+
+Downstream of this cap, `tracking_error_speed_gate()` and
+`SPEED_TARGET_RISE_RATE` apply exactly as before — the dynamic cap only
+changes what `v_curv` feeds into that existing pipeline, reusing it rather
+than adding a second gate/rate-limiter.
+
+**Measured offline, mixed result.** `python -m tuner.recorded_map_rollout
+--planner` (the `USE_PLANNER=True` branch this cap actually runs in; the
+default oracle-only `recorded_map_rollout` invocation never reaches this
+code path at all, since it has no live centreline to scan) on
+`comp_test_map_3`, cap default (`a_lat_max=3.2`, `safety=0.9`) vs.
+`ENABLE_DYNAMIC_SPEED_CAP=False`:
+
+| metric | cap off | cap on |
+|---|---|---|
+| steering sat % | 4.37 | **5.54** |
+| `\|e_psi\|` mean / p90 (deg) | 7.04 / 15.94 | **8.01 / 16.82** |
+| a_lat max | 10.06 | **10.61** |
+| a_lat > ceiling % | 2.92 | **0.62** |
+| score (lower better) | 0.503 | **0.520** |
+
+The cap does what it's narrowly designed to do — `a_lat > ceiling %` drops
+4.7x, confirming it's genuinely holding the car below the lateral-accel
+ceiling more often. But steering saturation and heading error both got
+**worse**, and the composite score regressed. This is the opposite of the
+predicted effect on saturation and was not diagnosed at the time — a likely
+candidate is interaction with `SPEED_TARGET_RISE_RATE`/the tracking-error
+gate (braking earlier/harder for one corner may leave the car in a worse
+heading position entering the next one), but this was never confirmed.
+Left enabled by default in code (`enable_dynamic_speed_cap`/
+`ENABLE_DYNAMIC_SPEED_CAP` default `True`) at this point because the
+underlying mechanism (a real-time lookahead cap under a static oracle
+profile with no notion of the car's actual current speed) is the one the
+sim-to-real investigation identifies as structurally missing — but
+`DYNAMIC_CAP_A_LAT_MAX`/`DYNAMIC_CAP_SAFETY` were flagged as unresolved
+tuning, not validated defaults.
+
+**Tested live same day: disabled again.** Subjectively performed worse on
+the live car, consistent with the offline score regression above (0.503 →
+0.520). `ros2/launch_all.sh` was updated to uncomment
+`ENABLE_DYNAMIC_SPEED_CAP=false`, so a plain `launch_all.sh` run has the cap
+off, overriding the code-level `True` default — the mechanism and its
+launch-arg/YAML/settings.py plumbing were left in place (not reverted) for
+whoever picks up the tuning next, but the cap should not be assumed on by
+default in the repo's actual driving configuration; check
+`launch_all.sh`'s shortlist first. Do not re-enable for a live run without
+first understanding why it made steering saturation and heading error
+worse, not just the a_lat ceiling metric it was targeted at.
+
+## Addendum (2026-08-11): exit-heading boost was firing at the wrong time
+
+**Fixed, small measured offline improvement, confirmed performing well on
+the live car same day** (dynamic speed cap left OFF for this run — so this
+result is attributable to the exit-boost fix alone). Reported symptom:
+after exiting a corner, the car is sometimes left pointed slightly off the
+path tangent, and accelerating out of the corner in that state produces
+drift/slip.
+
+Root cause: `_lookahead_exit_boost()`'s 5 m decay window (default
+`MPCParams.adaptive_q_lookahead_exit_decay_dist`) is meant to boost `Q[2,2]`
+(heading-error cost) right after the car passes a corner's peak curvature,
+so the MPC works harder to straighten out on exit. Its decay clock
+(`_dist_since_peak`) was reset by `_update_lookahead_peak()` off
+`kappa_max_abs` — the **lookahead-window** peak curvature, detected the
+moment a corner enters the speed-scaled scan window (10-17 m ahead of the
+car at speed, per `MPCParams.adaptive_q_lookahead_time_s`/`_dist_max`).
+That means the decay clock started counting down 10-17 m before the car
+physically reached the corner. Verified on live telemetry
+(`fsae_logs/mpc_standalone_control_1786436674.csv`): at the corner starting
+around t=3.28s, `dist_since_peak` reset to 2.56 at the moment the lookahead
+first saw rising curvature, then counted up continuously through the car's
+actual apex (t≈5.2s, where current-position `kappa` itself peaked at 0.175
+and heading error was worst) — by then `dist_since_peak` was already past
+28 m, decades beyond the 5 m decay window. The exit-heading boost had
+already decayed to a no-op (`1.0`, i.e. contributing nothing) before the
+car was anywhere near its physical exit. This is not merely "a bit early" —
+on a continuous chain of corners (curvature never drops back to the
+`adaptive_q_lookahead_peak_hysteresis` re-arm threshold between them), the
+detector effectively never gets a chance to fire again mid-sequence either,
+per the `dist_since_peak` trace above.
+
+Fix: `_update_lookahead_peak()` (`mpc_core.py`, mirrored
+`model_utils.update_lookahead_peak()`) is now keyed on **current-position**
+`kappa` (the same near-instantaneous, ~1 m preview curvature
+`_adaptive_R_rate`/`_steer_rate_anti_hunt` already use) instead of
+`kappa_max_abs`. `kappa` peaks at the car's own physical apex by
+construction, so the decay clock — and therefore the exit-heading boost —
+now actually covers the physical exit instead of having already elapsed
+before it. The re-arm/hysteresis check was moved onto the same signal for
+internal consistency (armed once the car itself is on a straight, not just
+once the far lookahead window is clear). `_lookahead_exit_boost()` itself,
+and its `k_exit_norm`/`boost_max` parameters, are unchanged — only the
+timing of when its decay countdown starts.
+
+Measured (`tuner.recorded_map_rollout --planner`, the `USE_PLANNER=True`
+branch where this mechanism is actually exercised — see the dynamic-speed-cap
+discussion elsewhere in this log for why the default oracle-only invocation
+never reaches this code path at all):
+
+| metric | before | after |
+|---|---|---|
+| steering sat % | 5.54 | **5.46** |
+| `\|e_psi\|` mean / p90 (deg) | 8.01 / 16.82 | **7.60 / 15.74** |
+| a_lat max | 10.61 | **10.55** |
+| score (lower better) | 0.520 | **0.517** |
+
+Small but consistently in the right direction on every metric offline
+(unlike the dynamic speed cap and the abandoned heading-misalignment accel
+gate below, both of which improved one metric while regressing others).
+This is a timing bug fix to an existing, previously-inert mechanism, not a
+new tunable — no new `MPCParams`/`settings.py` fields were added.
+
+**Live test, 2026-08-11 (same day): confirmed performing well**, with
+`ENABLE_DYNAMIC_SPEED_CAP=false` (that mechanism stayed disabled for this
+run), so the improvement is attributable to this exit-boost timing fix
+specifically, not a combination. No quantitative before/after live log pair
+was captured for this change specifically (unlike the dynamic-speed-cap
+A/B, which had matched control logs) — "performing well" is
+qualitative/subjective from this run. The residual gap is still expected to
+be non-zero: this fixes one specific mistiming, not the broader
+reference-heading-lead issue flagged as open in the sim-to-real
+investigation — re-read that section before assuming this closes the
+corner-exit-misalignment complaint entirely.
+
+**v2 fix, same day: the 5m decay window was still too short even after the
+timing fix above.** After the `r_a` cut (0.85 → 0.77) made the car
+accelerate harder out of corners, a live log
+(`fsae_logs/mpc_standalone_control_1786443033.csv`) showed 10 stretches of
+`|e_y| > 0.5` m with `m_Q_epsi_exit == 1.00` (i.e. NO boost applied) at
+every single one — `dist_since_peak` at the moment `|e_y|` peaked was
+11.7-20.6 m (mean ~15.7 m, one cluster of outliers at ~45 m attributable to
+a different corner's peak already having re-armed), decades past the
+now-correctly-timed 5 m window. Root cause: even keyed on the true apex,
+`|e_y|`/`|e_psi|` don't peak instantaneously AT the apex — the car is still
+sliding wide/yawing back through the exit for 1.5-2.7 s of travel
+afterward, and at 5-8 m/s that is well over 5 m. The fixed decay window was
+simply too short for how long a real exit disturbance actually takes to
+play out, independent of the timing-origin bug already fixed.
+
+Fix: `adaptive_q_lookahead_exit_decay_dist` is now a FLOOR, not the whole
+story — the actual decay window used is
+`car_speed * adaptive_q_lookahead_exit_decay_time_s` (default `2.5` s, fit
+to the ~15.7 m mean from the cluster above), clamped to
+`[adaptive_q_lookahead_exit_decay_dist, adaptive_q_lookahead_exit_decay_dist_max]`
+(`5`-`25` m default) — same shape as the approach-side `lookahead_dist`
+(`adaptive_q_lookahead_time_s`/`_dist_min`/`_dist_max`). Applied in
+`mpc_core.py`'s `compute()` (computed at the `_lookahead_exit_boost` call
+site, `_lookahead_exit_boost()` itself unchanged) and offline as three new
+`adaptive_Q_lookahead()` kwargs (`exit_decay_dist_floor`/`_time_s`/`_max`)
+threaded from `settings.py`'s new `ADAPTIVE_Q_LOOKAHEAD_EXIT_DECAY_DIST`/
+`_TIME_S`/`_DIST_MAX` constants — mirrored to `fsds_simulator`.
+
+While implementing this, found (but did NOT fix, out of scope) that offline
+`adaptive_Q_lookahead()`'s call to `lookahead_exit_boost()` had never
+threaded `k_exit_norm`/`boost_max` from `settings.py` either — it silently
+used that function's own hardcoded defaults the whole time, unlike every
+other lookahead call in the same function. Pre-existing drift, not
+introduced by this change; flagging for whoever next touches this function.
+
+Measured (`tuner.recorded_map_rollout --planner`, same track/config as the
+v1 table above, now on top of the `r_a=0.77` cut): score 0.499→0.497, lap
+time 55.15s→54.95s, steering sat 4.35%→4.37% (flat). Small further
+improvement, no regression on the oracle-path baseline (0.408→0.409). Not
+tested live.
+
+**Investigated and explicitly rejected as a further fix for the same
+symptom (2026-08-11):** raising `R[1,1]` (acceleration effort) and/or
+relaxing `Q[4,4]` (`e_v`, speed-tracking urgency) when CURRENT `|e_psi|` is
+large, so the MPC is reluctant to accelerate hard while still visibly
+misaligned. Implemented in both `mpc_core.py`/`model_utils.py` as
+`_epsi_misalignment_accel_gate`/`_epsi_misalignment_speed_relax` (`R[1,1]`
+boost) and their `Q[4,4]` counterpart, gated by a new
+`epsi_accel_gate_enabled` flag defaulted off. At the first-tried gains
+(`boost_max=3.0`, `speed_floor=0.4`, `k_epsi=15.0`, half-effect ~3.8° of
+`e_psi`), offline testing showed a clear regression, not an improvement:
+steering sat 5.54%→7.70%, `|e_psi|` mean 8.01°→9.50°, score 0.520→0.660.
+Reverted entirely (no trace of `epsi_accel_gate_*` remains in any file) —
+this was not committed as a disabled feature the way the dynamic speed cap
+was, because unlike that mechanism it showed no redeeming metric at all,
+only a uniform regression. If revisiting a steering/accel exit penalty in
+the future, do not re-derive this same current-|e_psi|-gated `R[1,1]`
+approach without accounting for why it made things worse — a likely
+candidate (never diagnosed) is that relaxing `Q[4,4]` let the car dawdle at
+the wrong speed while the already-existing heading-correction machinery
+(the exit-boost fix above, and the anti-hunt `boost_epsi` term) was doing
+its own uncoordinated thing on the same `e_psi` signal.
+
+(Note: this entire mechanism — `_lookahead_exit_boost`,
+`_update_lookahead_peak`, `dist_since_peak`, and the
+`adaptive_q_lookahead_exit_decay_*` family above — was later removed
+altogether along with the rest of the lookahead gain-scheduling family and
+replaced by the corner-factor scheduler; see
+`planning_control_sync.md`'s "Corner-factor scheduler" section and
+`removed_mechanisms.md`. This addendum is kept for the historical record of
+the bug and its fix while the mechanism was still live.)
+
+## Gradual-corner accel oscillation is genuine track geometry, not a bug
+
+**No fix applied — confirmed correct behaviour.** Reported symptom: through
+mild/gradual turns, the car accelerates, slows, accelerates, slows
+repeatedly rather than holding a smooth speed or steady acceleration.
+
+Traced on the same live log used for the exit-boost v2 fix (see the
+Addendum above, `mpc_standalone_control_1786443033.csv`), t=39.7–42.9s:
+`v_desired` genuinely oscillates (12.62 → 9.79 → 12.94 → 8.91 m/s over ~3s)
+and `a_cmd` faithfully tracks it (+3.0 to −3.4 m/s² swings) — but this is
+NOT the adaptive-gain machinery misbehaving. Cross-referenced against
+`speed_profile.csv` (the precomputed oracle) at the car's actual position
+(`tracks/comp_test_map_3/speed_profile.csv`, idx 656–680): `v_target` rises
+smoothly to a local peak of 13.18 m/s then dips back to 11.79 m/s, tracking
+a real change in the raw path geometry — Menger curvature computed directly
+from the CSV's own `(x, y)` points crosses through ~0 in SIGN (not just
+magnitude) at idx≈662-664, confirmed by checking the signed cross product
+of consecutive segments. This is a genuine S-curve/chicane: a left-hand
+bend straightens briefly, then curves right for the next bend. The
+`kappa_max_abs`-driven lookahead correctly speeds the car up through the
+brief straight and slows it back down anticipating the next corner — the
+oscillation is the plan working as intended on a real varying-radius
+feature, not spurious jitter to be filtered out.
+
+Checked `a_lat_max` (`4.0`, `sim/speed_profile.py`'s
+`compute_speed_profile()` default, well under the car's measured
+~6.45-7.5 m/s² ceiling per the sim-to-real investigation) as a possible
+source of excess conservatism at this specific corner, but did not raise
+it: this would be a track-wide, not corner-specific, change, and the
+sim-to-real investigation explicitly warns the measured ceiling is
+speed-dependent and not to assume a tuning change closes that gap without
+per-corner validation — raising `a_lat_max` broadly was flagged as a
+follow-up to actually test, not applied here.
+
+**Do not attempt to smooth this away via `R_rate_diag[1]`
+(acceleration-rate-of-change cost) or similar** — that would make the MPC
+slower to respond to a real, upcoming tightening corner, trading a
+correctly-anticipated slowdown for a late, harder one. If the oscillation
+"feels wrong" on a specific track, the right lever is the speed profile's
+own generation parameters (`a_lat_max`, scan window) or the path geometry
+itself (smoothing a genuinely spurious kink), never the live adaptive gains
+— but confirm the geometry is actually spurious first, the way this
+investigation did, rather than assuming it.
+
+## Appendix — Low-speed steering-rate boost: full incident (added and disabled same day, 2026-08-12)
+
+Referenced in passing from Part 1, item 3 above ("`_low_speed_steer_rate_boost`
+— DISABLED... No-op currently"); this appendix records the full incident
+that produced that disabled state.
+
+**Added, live-tested, found to have an unwanted side effect, disabled by
+default — code stayed in place at the time for a future rework** (it has
+since been removed entirely along with the rest of the lookahead
+gain-scheduling family — see `planning_control_sync.md`'s "Corner-factor
+scheduler" section). Reported symptom: after exiting a corner at low speed
+(3-4 m/s), steering swung through a large, fast, under-damped correction
+while accelerating — confirmed on `mpc_standalone_control_1786483673.csv`,
+t=6.9-7.7s: `steer_deg` swings +25° → -9° → 0° over ~1.5s while `a_cmd`
+climbs 0 → 2.15 m/s², with `Rrate_steer_eff` essentially flat (~1.8-2.2)
+throughout — neither `_adaptive_R_rate` nor `_steer_rate_anti_hunt` (both
+gated on curvature/tracking-error, not speed) meaningfully reacted, since
+the wobble's `kappa` was already small (car past the apex) by the time it
+happened.
+
+**Mechanism (as implemented)**: `_low_speed_steer_rate_boost(vx, ...)` —
+INVERTED from Stanley's `k/(v+eps)` correction-gain shape (cheap correction
+at low speed): this instead made steering-RATE changes MORE expensive at
+low speed (`R_rate[0,0] *= 1 + (boost_max-1)/(1+k*vx)`, `boost_max=2.5,
+k=0.35` → ~1.73× at 3 m/s, ~1.0× by race speed), on the theory that a fast
+swing matters more when the car has little momentum to resist it. A literal
+Stanley-shaped (cheap-at-low-speed) mechanism was explicitly considered and
+rejected before implementing this one — see the mechanism note that was in
+`mpc_core.py`'s `_low_speed_steer_rate_boost` docstring for why.
+
+**Live-tested same day, found to regress turn-in**: because this gated
+purely on speed with no curvature/lookahead signal, it could not distinguish
+"post-exit overcorrection at low speed" (the case it was built for) from
+"turn-in at low speed" (also low speed, also needs a fast steering-rate
+change, but wanted) — live driving reported the car "struggling to turn
+early in turns" after this was enabled, i.e. it suppressed the two cases
+identically. **Disabled** (`low_speed_steer_rate_boost_enabled=False` in
+both `mpc_params.py` and `settings.py`, plus the `fsds_simulator` mirror and
+`fsae_params.yaml`) the same day. The function, its `MPCParams`/`settings.py`
+fields, and its telemetry column (`m_Rrate_lowspeed`) were initially left in
+place at their designed values (`boost_max=2.5, k=0.35`) rather than
+removed, so a future lookahead-curvature-gated rework (fire only when NOT
+approaching/inside a corner) would not need to re-derive the shape from
+scratch — but the mechanism was ultimately removed outright along with the
+rest of the lookahead gain-scheduling family when the corner-factor
+scheduler replaced it (see `planning_control_sync.md`'s "Corner-factor
+scheduler" section for that later removal and its rationale).
+
+## Part 17 — Straight-line lateral-error snap-back was too sharp
+
+Implemented on both sides (`adaptive_q_straight_ey_k` 20.0 → 8.0), not live-tested in isolation. Reported symptom, raised alongside the turn-in diagnosis in Part 1: the car sometimes enters a corner at the wrong lateral position relative to the planned path, as if it drifted off-line on the approach.
+
+**Root cause**: `_lookahead_straight_lateral_reduce` softens `Q[0,0]` (lateral-error cost) to `ey_floor=0.7` on a clear straight, and previously snapped back to full weight very sharply (`k=20`, deliberately much sharper than the `k=8` shared by the `Q[2,2]`/`Q[3,3]` straight-line boosts) as soon as any curvature entered the lookahead window. That snap-back could still be incomplete by the time the car needed to be precisely positioned for turn-in, so the car could still be mid-recovery from the straight-line relaxation exactly when the corner arrived — entering already offset from the intended line rather than from the intended centreline point.
+
+**Fix**: lowered `adaptive_q_straight_ey_k` from `20.0` to `8.0`, matching `adaptive_q_straight_k` (the `Q[2,2]`/`Q[3,3]` boosts' shared fade sharpness) — the straight-line relaxation benefit itself is unchanged (`ey_floor` still `0.7`), only the speed of the transition back to full lateral weight as a corner approaches.
+
+Two alternative fixes were considered and rejected in favour of this one:
+- Raising `ey_floor` — would reduce the straight-line-hunting benefit this mechanism exists for, and would change behaviour even far from any corner.
+- Leaving `k` alone while addressing this some other way — not pursued.
+
+Untested live in isolation — if straight-line hunting reappears after this change, that is the first thing to re-check, per this section and the `adaptive_q_straight_ey_k` field comment in `mpc_params.py`/`settings.py`.

@@ -1305,6 +1305,112 @@ measurement can substitute for.
 [AirSim `CarPawnApi.cpp`](https://github.com/microsoft/AirSim/blob/main/Unreal/Plugins/AirSim/Source/Vehicles/Car/CarPawnApi.cpp) (no scaling at the AirSim layer) ·
 [FS-Driverless#342](https://github.com/FS-Driverless/Formula-Student-Driverless-Simulator/issues/342) (analogous hidden template nonlinearity, longitudinal axis).
 
+## 18b. The centreline curvature-spike defect: first measurement and the cone-map-clutter hypothesis
+
+The published centreline was found to contain curvature spikes that do not
+correspond to any real feature of the track. Measured on
+`mpc_standalone_path_1785980686.csv`, peak curvature over consecutive ~1 s
+snapshots of the same physical corner:
+
+| t (s) | R_min | implied v (√(a_lat/κ)) |
+|---|---|---|
+| 86.5 | 5.3 m | 4.6 m/s |
+| 88.5 | 32.3 m | 11.4 m/s |
+| 89.5 | 4.2 m | 4.1 m/s |
+| 90.6 | **1.0 m** | 2.0 m/s |
+
+Same track, same 21–24 m path length, one second apart. Worst case on lap 2
+was **R = 0.14 m** — physically impossible for this car (min turn radius at
+25° lock and a 1.55 m wheelbase is ≈ 3.7 m).
+
+It degraded with laps. Peak-κ statistics across snapshots:
+
+| Phase | median κ | max κ |
+|---|---|---|
+| Lap 1 early | 0.189 | 0.793 |
+| Lap 1 mid | 0.120 | 0.444 |
+| **Lap 2** | **0.271** | **7.242** |
+
+This was initially read as consistent with cone-map clutter accumulating
+over a lap and corrupting the centreline fit. The path was otherwise in the
+*right place* — lap-2 geometry matched lap-1 geometry at the same physical
+locations to within 0.12–0.23 m median separation, so the working hypothesis
+was local kinks, not global drift.
+
+Why it mattered for control: `v_target = √(a_lat_max / κ)`, so a spurious κ
+spike collapses the speed target, and its absence next frame lets it jump
+back. Measured `v_desired` volatility reached **250 m/s²** on lap 2 — enough
+on its own to destabilise the longitudinal loop.
+
+Three workarounds were added to the controller to treat the symptom while
+the root cause was investigated (curvature smoothing via a 3-point running
+mean in `curvature_speed()`, the tracking-error speed gate, and the
+speed-target rise limiter — see `planning_control_sync.md`'s "Known planner
+defect" section for the mechanism detail that survived into current-state
+documentation). Combined effect replayed over the failing log: tick-to-tick
+`|Δv_desired|` mean 0.234 → 0.123, p99 2.33 → 0.91; and in the unrecoverable
+`|e_y| > 1.5 m` regime, commanded speed mean 7.44 → 2.80 m/s. Offline,
+worst-case peak lateral error across the 10 synthetic paths fell 1.76 m →
+0.79 m (`PATH_SPIRAL`), for a net composite improvement of −0.267 with small
+regressions on already-clean paths — the expected cost of a safety gate.
+
+The cone-map-clutter hypothesis above is the one §19 (next) set out to test
+directly against a real recorded map and live log, and **found wrong** — see
+§19 for the actual mechanism.
+
+## 18b. The centreline curvature-spike defect: first measurement and the cone-map-clutter hypothesis
+
+The published centreline was found to contain curvature spikes that do not
+correspond to any real feature of the track. Measured on
+`mpc_standalone_path_1785980686.csv`, peak curvature over consecutive ~1 s
+snapshots of the same physical corner:
+
+| t (s) | R_min | implied v (√(a_lat/κ)) |
+|---|---|---|
+| 86.5 | 5.3 m | 4.6 m/s |
+| 88.5 | 32.3 m | 11.4 m/s |
+| 89.5 | 4.2 m | 4.1 m/s |
+| 90.6 | **1.0 m** | 2.0 m/s |
+
+Same track, same 21–24 m path length, one second apart. Worst case on lap 2
+was **R = 0.14 m** — physically impossible for this car (min turn radius at
+25° lock and a 1.55 m wheelbase is ≈ 3.7 m).
+
+It degraded with laps. Peak-κ statistics across snapshots:
+
+| Phase | median κ | max κ |
+|---|---|---|
+| Lap 1 early | 0.189 | 0.793 |
+| Lap 1 mid | 0.120 | 0.444 |
+| **Lap 2** | **0.271** | **7.242** |
+
+This was initially read as consistent with cone-map clutter accumulating
+over a lap and corrupting the centreline fit. The path was otherwise in the
+*right place* — lap-2 geometry matched lap-1 geometry at the same physical
+locations to within 0.12–0.23 m median separation, so the working hypothesis
+was local kinks, not global drift.
+
+Why it mattered for control: `v_target = √(a_lat_max / κ)`, so a spurious κ
+spike collapses the speed target, and its absence next frame lets it jump
+back. Measured `v_desired` volatility reached **250 m/s²** on lap 2 — enough
+on its own to destabilise the longitudinal loop.
+
+Three workarounds were added to the controller to treat the symptom while
+the root cause was investigated (curvature smoothing via a 3-point running
+mean in `curvature_speed()`, the tracking-error speed gate, and the
+speed-target rise limiter — see `planning_control_sync.md`'s "Known planner
+defect" section for the mechanism detail that survived into current-state
+documentation). Combined effect replayed over the failing log: tick-to-tick
+`|Δv_desired|` mean 0.234 → 0.123, p99 2.33 → 0.91; and in the unrecoverable
+`|e_y| > 1.5 m` regime, commanded speed mean 7.44 → 2.80 m/s. Offline,
+worst-case peak lateral error across the 10 synthetic paths fell 1.76 m →
+0.79 m (`PATH_SPIRAL`), for a net composite improvement of −0.267 with small
+regressions on already-clean paths — the expected cost of a safety gate.
+
+The cone-map-clutter hypothesis above is the one §19 (next) set out to test
+directly against a real recorded map and live log, and **found wrong** — see
+§19 for the actual mechanism.
+
 ## 19. Root cause of the curvature-spike defect: a hard `min_ahead` cutoff, not cone-map clutter
 
 *(2026-08-07, continued.)* `planning_control_sync.md`'s "Known planner defect"
@@ -4579,3 +4685,190 @@ pre-existing `gui/simulation.py` identically, so it predates and is
 unrelated to this change. Needs a smoke-test in an environment where the
 GUI already runs (e.g. the WSL/Docker container `launch_all.sh` uses)
 before trusting the interactive part.
+
+## 58. Delay-jitter and slew-rate parity: closing part of the live steering-chatter gap (2026-08-06)
+
+Live telemetry (`mpc_standalone_control_1785976976.csv` — the same source
+log used for the pose-rate-bug measurement in §21) showed the steering
+command pinned exactly on `du_max` for 41% of control steps, reversing sign
+at ~8 Hz, while actual path error stayed small (`e_y` std 0.199 m,
+zero-crossing at 0.42 Hz). That is a rate-limit-induced limit cycle, not a
+weight-tuning problem.
+
+**Slew-rate limit — the root cause found this session.**
+`controller/optimiser.py` had NO slew constraint at all, so the tuner was
+optimising against a plant that could steer arbitrarily fast while the live
+car was clamped to 80 deg/s. Weights could not transfer faithfully,
+independent of any weight choice. Added `du_max`, baked into the cached QP
+alongside `u_min`/`u_max` and covered by the same cache-staleness check.
+
+Raised the limit 80 → 180 deg/s and expressed it as a rate
+(`max_steer_rate * DT`) so it survives a change of `DT`. FSDS's true
+steering rate is not in the repo (the PhysX setup lives in git-LFS
+`.uasset` binaries), so 180 deg/s is a measured lower bound: inverting the
+logged yaw rate through the kinematic bicycle (`delta = atan(L*r/v)`) gives
+an achieved p99 of ~138 deg/s, max ~218 deg/s. `VehicleParams.max_steer_rate`
+is the single source of truth.
+
+**Measured effect.** With `USE_PLANNER=True` (the real configuration),
+raising the slew limit from 80 → 180 deg/s dropped the fraction of steps
+pinned on the limit from 1.6–4.3% to ~0.5% across
+`PATH_MICRO_SLALOM`/`PATH_S_BEND`/`PATH_SUDDEN_TURN`, so the constraint
+became visibly active in the tuner rather than inert.
+
+**Delay realism, added alongside it.** The offline rollout applied a fixed
+lag that `predict_ahead()` compensated exactly, which the real car can
+never do. Added `DELAY_JITTER_STEPS` (default 0.2, matching measured live
+loop jitter of ~0.0092 s) perturbing only the controller's *belief* about
+how many commands are in flight; the plant keeps the true `DELAY_STEPS` lag.
+Seeded so CMA-ES still gets reproducible per-candidate scores. The error is
+deliberately two-sided. Measured impact: delay jitter on its own moves
+composite scores by <0.002 — the slew-rate fix is what actually moves the
+needle; jitter alone does not.
+
+**What this still did not reproduce.** The offline rollout produces ~6–12
+steering reversals per run; the live log has ~1441 (≈8 Hz). Delay jitter
+and the slew limit together did not close that gap. `use_planner` matters
+far more than either: with `use_planner=False` the peak commanded slew is
+88 deg/s, with `use_planner=True` it is 397 deg/s.
+
+**SLAM pose noise, considered and ruled out as the explanation for this
+specific log's gap.** The log came from FSDS, where `sim_perception`
+republishes ground-truth odom, so the pose was exact — just stale.
+Staleness is not noise. `SLAM_NOISE_ENABLED` exists to model the real car's
+localisation error specifically, and this conclusion about *this* FSDS log
+holds regardless of that flag's default.
+
+**Telemetry units bug found while investigating this** (was silently
+corrupt): `mpc_controller_standalone.py` passed the normalised
+`cmd.steering` (`[-1,1]`) into a parameter named `steer_rad`, which the
+logger then ran through `math.degrees()` — inflating `steer_deg` ~2.3×. The
+`±57.296` values that read as degrees were really `±1.0`, i.e. full lock at
+25 deg. This hid the saturation above for an entire tuning cycle.
+`mpc_controller.py` was always correct (it publishes real radians).
+
+**Conclusion at the time**: a clean offline score is necessary but not
+sufficient — the offline sim still didn't reproduce the live reversal rate,
+and SLAM pose noise wasn't yet modelled as a candidate. **Resolved by later
+sections**: the dominant missing factor turned out to be the 10 Hz-pose/20
+Hz-controller mismatch, root-caused and fixed in §21–22 above (not SLAM
+noise) — though re-measuring live after that fix (§17's own table) found
+reversals/s nearly *doubled* (1.62 → 3.15) even as saturation improved, so
+"re-measure after the pose-rate fix" did not simply confirm the gap closed;
+see §17's "mixed result, not a fix" framing for the full picture. Sensor
+noise (`SLAM_NOISE_ENABLED`/`CONE_NOISE_ENABLED`) was investigated
+separately and later in §43.
+
+## 59. MPC underaccelerating on clean straights: `r_a` swept 0.85 → 0.77 (2026-08-11)
+
+**Fixed offline, applied to live default, confirmed live same day, later
+superseded by the accel/brake weight split (§ below in
+`planning_control_sync.md` — "Accel/brake effort weight split").** Reported
+symptom: the MPC leaves lap time on the table in some places, not going as
+fast as it could.
+
+Root cause: the same structural effort/benefit mismatch already documented
+for `R_diag[1]`'s braking-side fix (`a_cmd` is a RATE — one 50ms QP step at
+even |a_cmd|=6 only changes speed by 0.30 m/s, while the effort cost
+`R[1,1]*a_cmd²` is paid immediately, so the QP structurally prefers small,
+cheap accel steps over large ones unless the single-step benefit is large)
+applies symmetrically to ACCELERATION, not just braking, and had never been
+retuned for that side.
+
+Confirmed on live telemetry (`fsae_logs/mpc_standalone_control_1786440962.csv`):
+during t≈67.6-69.2s, the car is cleanly on-line (`e_y` -0.03 to 0.02 m,
+`e_psi` 1-4°, steering ~1°, no competing lateral/heading demand) with a
+3-9 m/s speed deficit (`v_desired` climbing toward 16+ m/s while `v_actual`
+sits at 7-8), yet `a_cmd` peaks at only ~3.1 m/s² and then decays back down
+even as the deficit stays large — well under the 12 m/s² ceiling the same
+lap demonstrably used elsewhere (e.g. from a standing start at t<2s).
+
+Measured acceleration (`dv/dt` from `v_actual`) in the same window actually
+*exceeds* `a_cmd` (6-9 m/s² achieved vs ~2-3 commanded), ruling out
+actuator/throttle capping as the cause — the QP itself is choosing the
+conservative command, the car isn't failing to deliver on it.
+
+Swept `R_diag[1]` (`r_a`) offline via `tuner.recorded_map_rollout --planner`
+on `comp_test_map_3`, holding `R_rate_diag`/`Q_diag` fixed:
+
+| `r_a` | steering sat % | `\|e_psi\|` mean (deg) | score (lower better) | lap time (n_steps×0.05s) |
+|---|---|---|---|---|
+| 0.85 (old default) | 5.46 | 7.60 | 0.517 | 55.85 s |
+| **0.77 (new default)** | **4.35** | **6.74** | **0.499** | **55.15 s** |
+| 0.71 | 5.71 | 7.09 | 0.516 | 55.15 s |
+| 0.65 | 6.90 | 8.76 | 0.551 | 56.55 s |
+
+0.77 was a local optimum on this run, not a point on a monotonic
+"lower-is-better" curve — 0.71 and 0.65 both scored worse. No regression on
+the oracle-path (`USE_PLANNER=False`) baseline (0.408→0.409, within noise).
+`R_rate_diag[1]` (`r_rate_a`) was also tried at 2.2 alongside `r_a=0.77` —
+no additional benefit over `r_a` alone (score 0.501 vs 0.499) — left
+unchanged at 2.6.
+
+Applied to `mpc_params.py`'s `r_a` default (live), `settings.py`'s
+`R_diag[1]` (offline), `fsae_params.yaml`'s `controller.r_a`, the
+`fsds_simulator` mirror, and `ros2/launch_all.sh`'s MPC tuning shortlist
+(`MPC_R_A`, commented out by default like the other shortlist entries).
+
+**Confirmed live, 2026-08-11 (same day):** `lap_time_s` 69.99 s → 59.52 s
+(15% faster) on a like-for-like comparison against the previous live log
+(which already had the exit-boost v1 timing fix but not this `r_a` cut —
+isolating this change's effect). Real trade-off, not a free win: tracking
+got noticeably worse in the same comparison — RMSE 0.199 → 0.336 m, peak
+`|e_y|` 0.84 → 1.26 m, `steering_sat_ratio` 1.4% → 3.0% — so `composite_score`
+was roughly flat (0.638 → 0.641) despite the large time gain, because the
+scoring formula weights both speed and tracking quality. The user confirmed
+the tracking regression was concentrated specifically at corner EXITS (car
+accelerating harder while still not fully realigned) rather than diffuse
+across the lap — this is what motivated the exit-boost v2 fix (see
+`planning_control_sync.md`'s exit-heading-boost history, same log). Only
+tested on one track (`comp_test_map_3`); this single-scalar `r_a` tuning
+was itself superseded within a day by the accel/brake weight split once the
+corner-entry-too-hot side effect of a shared weight was diagnosed — see
+`planning_control_sync.md`'s "Accel/brake effort weight split" section for
+that follow-on.
+
+## 60. Pose-rate mismatch: the detailed measurement behind the two-timer fix
+
+`sim_perception` used to publish pose **and** cones on one shared 10 Hz timer
+while the MPC ran at 20 Hz, so every second control step re-solved against a
+pose that had not changed. Measured in `mpc_standalone_control_1785976976.csv`
+(epoch 1785976976 = 2026-08-06, referenced from §21 above as the best-timed
+candidate for that section's confound): `car_x`/`car_y` were byte-identical to
+the previous row on **50.5%** of control steps (effective pose rate 9.9 Hz),
+and the freeze runs were almost all exactly one tick long (766 of 829) — the
+signature of a 2:1 rate mismatch rather than random dropouts.
+
+This caused real steering oscillation, and is a *different* failure from
+either the slew limit or delay jitter. On a frozen tick the car had actually
+travelled a median 0.33 m (max 0.63 m) and rotated a median 0.84 deg, but
+`e_y` did not move — so the controller read its own correction as having
+failed and pushed harder, then over-corrected when the pose jumped two steps'
+worth at once. 24 steps in that log show `|de_y|` exceeding `v*dt`: lateral
+error changing faster than the car could physically move, i.e. catch-up
+jumps. Reversal rates on fresh-pose (0.792) versus stale-pose (0.810) ticks
+are near-identical, confirming `predict_ahead()` was *not* bridging the gap —
+it compensates actuation lag, not a missing measurement.
+
+Data availability was never the constraint: the FSDS bridge publishes odom at
+250 Hz (`update_odom_every_n_sec: 0.004`). `sim_perception` was the
+bottleneck.
+
+**Fixed** by splitting into two timers — `pose_rate` (default 20 Hz, must be
+>= the controller's `CONTROL_HZ`) and `cone_rate` (default 10 Hz). Cones stay
+slower deliberately: cropping the oracle map and building three messages is
+that node's expensive path, and the planner gains nothing from running it at
+the control rate. The node logs a warning if `pose_rate < 20`. See the
+current-state description in
+[`planning_control_sync.md`](planning_control_sync.md) → "Measurement rate:
+pose must keep up with the controller" for the resulting requirement.
+
+Note the offline rollout never modelled this at all — it calls
+`perception.visible_cones()` and `planner.update()` every step with a fresh
+pose, i.e. it always assumed the 20 Hz behaviour the fix now delivers. So
+this was a live-only defect, and the sim needed no mirrored change. To
+reproduce a slow-pose regime offline, the correct model is a **pose
+zero-order hold at a configurable rate**, not more `DELAY_JITTER_STEPS` —
+jitter models a *varying* delay, whereas this was a *systematically halved
+measurement rate*. Those are different failure modes and the jitter knob
+does not reproduce this one.
