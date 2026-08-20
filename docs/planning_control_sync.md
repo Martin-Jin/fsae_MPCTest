@@ -768,658 +768,158 @@ The weighted-metric component (the 13 metrics × `SCORE_WEIGHTS` — see the
 way; only the bonus/penalty terms differ, and only `offtrack` is
 unconditionally unavailable.
 
-## The sim-to-real gap: CAUSE FOUND, fix not yet applied
+## The sim-to-real gap: a lateral-acceleration ceiling, partly closed
 
 > **Full investigation history** — every hypothesis tried, why each looked
 > right, and how it was eliminated — is in
-> [`docs/logs/sim_to_real_investigation.md`](logs/sim_to_real_investigation.md). Read that
-> before re-testing any candidate that looks unexplored; most already were.
+> [`docs/logs/sim_to_real_investigation.md`](logs/sim_to_real_investigation.md).
+> Read that before re-testing any candidate below; most already were.
 
-Measured on the recorded `comp test map 3`, same tuned gains both sides:
+On the recorded `comp test map 3`, same tuned gains both sides, the live car
+saturates steering far more than the offline sim and carries a much larger
+heading error:
 
 | | offline sim | live car |
 |---|---|---|
-| steering saturation | 3.4% | **21.1%** |
-| \|e_psi\| mean / p90 | 6.0° / 13.8° | **15.9° / 42.0°** |
-| max \|e_y\| | 1.82 m | 1.20 m |
+| steering saturation | 4.8% | **21.1%** |
+| \|e_psi\| mean / p90 | 6.9° / 18.5° | **15.9° / 42.0°** |
+| a_lat max | 11.24 | 12.34 |
 
-The car sits at full steering lock six times more often than the simulator, and
-when it does it is pulling only 4.14 m/s² lateral at 5.74 m/s — it is not
-cornering hard, it is rotating back from a large heading error.
+When the car is at full lock it is pulling only ~4.1 m/s² lateral at ~5.7 m/s
+— it is not cornering hard, it is rotating back from a large heading error.
+Heading error arrives in sustained episodes (median ~0.5 s, up to 2.4 s, 96%
+of energy below 1 Hz) — a stale/wrong reference, not high-frequency chatter.
 
-Heading error arrives in sustained episodes (median 0.47 s, up to 2.44 s, 96% of
-energy below 1 Hz), i.e. a stale/wrong reference rather than high-frequency
-chatter.
+**Candidates eliminated** (see the log for each measurement): plant grip too
+generous, entering corners too fast, planner centreline quality, SLAM pose
+noise, extra actuation delay, planner update rate, pose-feed hold, tyre
+grip/understeer, `MAX_STEER_RAD` command scaling, actuator lag, yaw_rate/speed
+telemetry error, tyre front/rear balance, FSDS's `SteeringCurve` UE4/PhysX
+speed-dependent steering scaling (confirmed flat at 1.0, no scaling at all).
 
-**Candidates tested and eliminated:**
+### Root cause: FSDS enforces a sustained lateral-acceleration ceiling
 
-| candidate | verdict |
+Below ~6 m/s the car delivers the commanded steering angle exactly; above it
+the yaw response collapses, in a cliff rather than a gradual curve. This is
+**not** tyre saturation — a grip limit doesn't depend on speed — and it engages
+far below the ~12–14 m/s² lateral acceleration the same car/plant can reach
+elsewhere. A step-input test shows the ceiling holds lateral acceleration
+(not yaw rate) constant across speeds, and that it overshoots before settling
+— so it is enforced by a term that takes time to build, not a hard clip.
+
+Modelled in `model/vehicle_physics.py` (`alat_ceiling*`) as a restoring yaw
+moment with a first-order lag, using a **leaky integral of the signed
+excess** (not the proportional law first tried, which structurally cannot
+pin the settled value at the ceiling for any gain):
+
+| parameter | value | basis |
+|---|---|---|
+| `alat_ceiling` | 7.5 m/s² | measured settled lateral acceleration |
+| `alat_ceiling_mode` | `'pi'` | leaky-integral law; a proportional law cannot hold a setpoint |
+| `alat_ceiling_gain` | 450 N·m | fitted to measured peak; settled value falls out by structure |
+| `alat_ceiling_tau` | 0.40 s | measured transient time constant |
+| `alat_ceiling_enabled` | `True` | models **FSDS**, not the physical car — disable for real-vehicle work |
+
+This closes part of the gap (the plant's lateral-acceleration distribution
+now matches the car's) but **not the steering-saturation gap** — live still
+saturates roughly 4× more often. The residual is narrowed to the *rate of
+entry* into the high-heading-error state, not steady-state cornering
+capability; the reference-heading lead is the next avenue and is testable
+offline. See the log's §9-§13 for the full derivation, the two false starts
+in the ceiling's control law, and the quantified ledger of what each tested
+factor explains.
+
+**Validated with:**
+
+| tool | answers |
 |---|---|
-| plant grip too generous | No — a_lat mean 3.57 sim vs 3.76 live |
-| entering corners too fast | No — car is *slower* when saturated (5.74 vs 8.03 m/s) |
-| planner centreline quality | No — offline is *worse* in the tail (R=0.16 m vs 1.26 m) |
-| SLAM pose noise | No — overshoots reversals (3.76/s vs 1.62) barely moves saturation |
-| extra actuation delay | No — 2 steps moved saturation 3.4% → 2.3% |
-| planner update rate (1 Hz vs 20 Hz) | No — throttling *improved* the sim |
-| **pose-feed hold** | **No** — model added and verified firing; 3.4% → 4.4% only |
-| **tyre grip / understeer** | **No** — fitted and validated, see below |
-| **`MAX_STEER_RAD` command scaling** | **No** — refuted; deficit is speed-dependent, not constant |
-| **actuator lag** | **No** — `s` does not degrade with command rate |
-| **yaw_rate / speed telemetry error** | **No** — channels validated against pose derivatives |
-| **tyre front/rear balance** | **No** — needs C_f at 10% of physical to reach live K_us |
-| **`SteeringCurve` (UE4/PhysX speed-dependent steering scaling)** | **No** — read directly from `TechnionCarPawn`'s `WheeledVehicleMovementComponent4W` in the UE4 Editor: flat at 1.0 across all 3 keyframes, no speed-dependent scaling at all. See `docs/logs/sim_to_real_investigation.md` §18/§20/§24/§25 for the full mechanism search, the UE 4.27 build process needed to check it, and the read-out |
+| `tuner/checks/steering_sysid_analysis.py`, `tuner/checks/steering_step_analysis.py` | what does FSDS do? |
+| `tuner/checks/plant_openloop_validation.py` | does our plant reproduce it? (`--ab`, `--robustness`) |
+| `tuner/recorded_map_rollout.py` | the closed-loop table above, headless and reproducible |
+| `tuner/checks/live_vs_sim_diagnostics.py` | conditional + reference-heading decomposition of live vs sim |
 
-**ROOT CAUSE** (open-loop system-ID + step test):
-**FSDS enforces a sustained LATERAL-ACCELERATION ceiling of ~7.5 m/s².**
-Below ~6 m/s the car never reaches it and the commanded steering angle is
-delivered exactly (`s` = 1.00–1.01 at 3 and 5 m/s); above it the yaw response
-collapses (`s` = 0.34 at 8 m/s, 0.17 at 14 m/s). It is far below the 12.3 m/s²
-the same car reaches on a lap, so it is **not** tyre saturation — a grip limit
-does not depend on speed.
+Reproduce the closed-loop table with
+`python -m tuner.recorded_map_rollout [--mode p --gain 700 | --tau 0.25 | --no-ceiling]`.
 
-The sweep alone read this as a *yaw-rate* cap (~0.7 rad/s); the step test
-showed **lateral acceleration** is what is held constant (1.07× spread across
-speeds vs 1.56× for yaw rate). The two are indistinguishable at a single speed.
+### The open-loop system-ID experiment (reusable methodology)
 
-**Modelled** in `model/vehicle_physics.py` (`alat_ceiling*`). It moves every
-metric toward the car but closes only part of the gap — live still saturates 3×
-more often. See "MECHANISM: a dynamically-enforced lateral-acceleration
-ceiling" below, and `docs/logs/sim_to_real_investigation.md` for the full history.
+Isolating the plant from the controller — command fixed steering angles at
+fixed speeds on an empty map and record the achieved yaw rate — is what
+found the ceiling above. Reuse this whenever a plant-vs-car discrepancy is
+suspected; a closed-loop lap log cannot separate a plant defect from a
+controller/reference one.
 
-The pose-feed hold is real (see `PoseFeedHold`) and is modelled, but it
-accounts for almost none of the gap.
-
-### The understeer measurement, and why grip is NOT the answer
-
-The most promising lead was that the offline plant simply corners better than
-the car. It does — but fixing that does not close the gap, and the way it fails
-is informative.
-
-**Full-lock steady-state turn** (speed held by throttle, 300 steps to settle).
-Kinematic limit at 25° lock with L=1.55 m is R=3.32 m:
-
-| speed | offline R | understeer | live |
-|---|---|---|---|
-| 4 m/s | 3.76 m | ×1.13 | |
-| 6 m/s | 3.81 m | ×1.15 | **R=6.9 m, ×2.03** |
-| 8 m/s | 4.43 m | ×1.33 | |
-| 10 m/s | 7.09 m | ×2.13 | |
-
-At 6.2 m/s (the live mean *during saturation*) the sim turns essentially at the
-kinematic limit while the car needs nearly double the radius.
-
-**Understeer gradient** `K` from `delta = L/R + K·a_lat`, fitted over
-quasi-steady points (|yaw accel| < 0.5, v > 3, |yaw rate| > 0.05 — 261 points,
-16.5% of the live run):
-
-| | K (rad per m/s²) | deg/g |
-|---|---|---|
-| live | 0.00869 | 4.89 |
-| offline, μ=1.76 (current) | 0.00595 | 3.34 |
-| offline, μ=1.455 (**fitted by bisection**) | 0.00869 | 4.89 |
-
-**The fit succeeds on K and then fails validation.** μ=1.455 reproduces the
-gradient exactly, but still gives ×1.16 understeer at 6 m/s against the live
-×2.03, and in closed loop moves saturation only 4.4% → 4.9% (live: 21.1%).
-
-Two independent measurements of "how much does this car understeer" give
-incompatible answers. That is the signature of a model **structure** problem,
-not a parameter needing a scale factor.
-
-Pushing grip lower does not help either — it produces a *different* failure:
-
-| μ | saturation | \|e_psi\| mean | outcome |
-|---|---|---|---|
-| 1.76 (current) | 4.4% | 6.3° | ok |
-| 1.455 (fitted) | 4.9% | 6.7° | ok |
-| 1.06 | 8.4% | 5.8° | **DNF** |
-| 0.79 | 7.0% | 4.7° | **DNF** |
-| **live** | **21.1%** | **15.9°** | ok |
-
-Lower grip makes the sim car *slide* — heading error goes DOWN and it crashes.
-The car does something else: it holds full lock for sustained periods (21
-episodes, median 0.75 s, up to 2.5 s) at only 4.14 m/s² lateral, which is well
-inside any plausible grip limit.
-
-### MEASURED: the car's yaw response is ~3× weaker than commanded
-
-Measured from `fsae_logs/mpc_standalone_control_1786007642.csv` and
-`…_1786005274.csv` (two independent one-lap runs, same tuned weights) by
-inverting the kinematic bicycle on logged `yaw_rate` and `delta_cmd`:
-
-    delta_achieved = atan(L · yaw_rate / v)      L = 1.55 m
-
-**Headline: at full lock the car delivers well under half the commanded angle.**
-
-| | run 1786007642 | run 1786005274 |
-|---|---|---|
-| samples at full lock (\|δ_cmd\| ≥ 24.9°) | 281 | 313 |
-| mean speed there | 6.82 m/s | 5.97 m/s |
-| mean \|yaw rate\| | 0.739 rad/s | 0.734 rad/s |
-| **implied achieved steer** | **9.54°** | **10.79°** |
-| deficit vs commanded 25° | **×2.62** | **×2.32** |
-
-This happens at ~5 m/s² lateral — nowhere near the ~12 m/s² the same car
-demonstrably reaches — so it is *not* tyre saturation.
-
-#### The deficit is speed-dependent, not a constant scale
-
-Candidate models fitted to achieved yaw rate (common target, so R² is directly
-comparable). `A` is what the offline plant does today:
-
-| model | run 1 R² | run 2 R² |
-|---|---|---|
-| A neutral steer — *the offline plant* | **−1.81** | **−1.02** |
-| B constant command scale (`MAX_STEER_RAD` error) | 0.655 | 0.606 |
-| C understeer, `r = vδ/(L + K_us v²)` | **0.759** | **0.705** |
-| D yaw-rate ceiling, `r_max·tanh(...)` | 0.751 | 0.638 |
-| C+D combined | 0.774 | 0.706 |
-
-Fitted `K_us ≈ 0.038–0.045 s²` → **characteristic speed 5.9–6.4 m/s**. The
-offline plant measures `K_us ≈ 0.0006` → **52 m/s**, i.e. essentially neutral.
-A *negative* R² for A means the offline plant predicts the car's yaw worse than
-guessing the mean. This is the sim-to-real gap in one number.
-
-#### Eliminated by this measurement
-
-- **`MAX_STEER_RAD` scaling (the previous leading hypothesis) — REFUTED.**
-  A constant scale error predicts a flat `s = δ_ach/δ_cmd` across speed. The
-  measured `s` collapses with speed (0.85 → 0.42 → 0.31 → 0.28 across speed
-  quartiles), and model B loses to C decisively.
-- **Actuator lag — REFUTED.** Within a fixed 7–10 m/s band, `s` does *not*
-  degrade as command rate rises (0.30/0.43/0.28 and 0.37/0.40/0.42 across
-  \|δ̇\| terciles); lag requires the opposite. `K_us` is also stable as the
-  quasi-steady filter tightens from 30°/s to 10°/s.
-- **Telemetry error — REFUTED.** `yaw_rate` matches `d(car_yaw)/dt` at
-  slope 0.95 / corr 0.95; logged speed matches position-derived speed
-  (slope 1.08–1.18). The channels are sound.
-- **Tyre front/rear balance — CANNOT REACH IT.** Sweeping front stiffness
-  `B_f` from 16.5 down to 5.0 (an implausibly soft front) moves `K_us` only
-  0.000 → 0.0047 — an order of magnitude short of 0.040. Analytically,
-  `K_us = (m/L)(l_r/C_f − l_f/C_r) = 0.040` requires **C_f at 10% of current**
-  (2 500 N/rad vs 24 390), i.e. 43 N per degree of front slip. Not a physical
-  tyre.
-
-#### What this leaves
-
-Grip and yaw response are **decoupled**: the car reaches ~12 m/s² lateral
-(sim 14.5, so grip is roughly right) yet rotates as if it had almost no front
-axle. No tyre model does that, which is why scaling `mu` never worked — and
-confirms the earlier μ=1.455 fit was fitting the wrong basis (`a_lat` rather
-than `v²`; on a lap the two are confounded, and that fit returned a physically
-backwards *negative* understeer gradient, the tell that it was mis-specified).
-
-Remaining candidates, none yet tested:
-
-1. **Steering geometry / rack ratio inside FSDS** — a nonlinear or
-   speed-scaled rack (some driving sims reduce lock with speed for
-   controllability) would produce exactly this signature. Most likely.
-2. **Wheelbase mismatch** — `VehicleParams` uses L = 1.55 m unverified against
-   the FSDS vehicle. Note this cannot be the whole story: L would have to be
-   ~3.9 m to explain the full-lock number alone.
-3. **A yaw-damping or stability-control term in FSDS** not modelled offline.
-
-FSDS's vehicle configuration lives in git-LFS `.uasset` binaries and is not
-readable from this repo, so these must be separated by **open-loop
-experiment**: command fixed steering angles at fixed speeds on an empty map
-and record the achieved yaw rate. That isolates the plant from the controller,
-which no lap log can do.
-
-#### The open-loop experiment
-
-**Where the three pieces live.** The node and harness are working-tree-only
-files in the live ROS 2 workspace with no mirror here and no upstream
-counterpart (see "Current mirror scope" above); only the analysis script lives
-in this repo.
+**Where the pieces live** (the node and harness are working-tree-only files
+in the live ROS 2 workspace, no mirror in this repo):
 
 | file | repo | role |
 |---|---|---|
 | `control/fsae_control/fsae_control/steering_sysid.py` | `fsae_planning` (live ROS 2 ws) | the node — drives FSDS directly |
 | `ros2/run_steering_sysid.sh` | **FSDS repo root**, next to `launch_all.sh` | one-command harness |
 | `tuner/checks/steering_sysid_analysis.py` | `fsae_MPCTest` | reads the log, names the mechanism |
+| `fsae_control/steering_step.py` / `ros2/run_steering_step.sh` / `tuner/checks/steering_step_analysis.py` | same split | the step-input companion test (50 Hz, isolates the transient) |
 
 **Run it with one command** (starts FSDS, waits for RPC, starts the bridge,
-waits for odom, runs the sweep, analyses the log, tears everything down —
+waits for odom, runs the sweep, analyses the log, tears everything down,
 including on Ctrl+C):
 
     cd <FSDS repo>/ros2 && ./run_steering_sysid.sh
 
 Flags: `--no-sim` (FSDS already running), `--quick` (fewer points), and any
-`-p name:=value` passes through to the node.
+`-p name:=value` passes through to the node. **Run it on an empty map** — it
+circles at up to 14 m/s and does not brake for cones. The harness refuses to
+start if `mpc_controller`, `fsds_bridge`, or `stanley` is already running,
+since two publishers on `/fsds/control_command` would interleave and corrupt
+the log.
 
-The harness **refuses to start** if `mpc_controller`, `fsds_bridge` or
-`stanley` is already running: two publishers on `/fsds/control_command`
-interleave commands and silently corrupt the log.
+**Geometry is bounded automatically.** The node reaches target speed while
+already turning (so it orbits rather than travelling), checks a geofence
+(`home_radius`/`max_radius`) from every phase, and predicts each point's orbit
+size in advance (using a deliberately pessimistic `K_US_ESTIMATE = 0.05`) to
+skip any (speed, steering) pair whose orbit won't fit in the geofence,
+logging what it dropped. Default steering commands
+(`[0.5, 0.65, 0.8, 1.0]`) are biased high since low-angle, high-speed points
+are both the least informative and the least likely to fit.
 
-**Run it on an empty map.** It circles at up to 14 m/s and does not brake for
-cones.
-
-##### Geometry constraints learned the hard way
-
-The first real run drove into a map wall. Three separate design faults, all
-now fixed — worth recording because each is easy to reintroduce:
-
-1. **Straight-line settling does not fit in any bounded area.** The original
-   sequence was settle-straight → turn → recover-straight, which carries the
-   car ~120 m downrange per point at 14 m/s (measured: 103 m of drift before
-   impact). The node now reaches target speed *while already turning*, so it
-   orbits instead of travelling.
-2. **A geofence is necessary but not sufficient.** `home_radius` (40 m,
-   return) and `max_radius` (70 m, hard abort) are checked from every phase.
-   On their own they fired ~126 times per sweep and starved it of time —
-   16/20 points in 40 min.
-3. **Some (speed, steering) pairs cannot be driven in a bounded area at all.**
-   Radius grows as `(L + K_us·v²)/δ`, so high speed with small steering traces
-   an enormous arc — at 14 m/s and 0.5 normalised steering the real orbit is
-   **~86 m across**. Those points are also the least informative (small angle
-   ⇒ small yaw signal). The node now predicts each orbit and skips the ones
-   that will not fit, logging what it dropped.
-
-   The prediction uses a **deliberately pessimistic** `K_US_ESTIMATE = 0.05`,
-   above the ~0.038–0.045 measured on the car. Over-estimating costs one
-   skipped point; under-estimating costs a geofence abort mid-measurement.
-   An earlier near-neutral estimate (0.005) predicted 23 m for that same
-   point and let it through — that is what caused fault 2's symptom.
-
-   With all three fixed: **16/16 points, 2.6 min, zero geofence triggers,**
-   max distance 63 m against the 70 m limit, full 3–14 m/s coverage retained.
-
-Default steering commands are `[0.5, 0.65, 0.8, 1.0]` — biased high for the
-same reason.
-
-##### Reading the log and the verdict
-
-The log records the **raw normalised `cmd.steering`** alongside the roadwheel
-angle we assume it maps to. That assumption is the thing under test, so
-recording only the assumed angle would beg the question.
-
-A falling `s = δ_ach/δ_cmd` is **not** by itself diagnostic — a speed-scaled
-rack, genuine understeer and tyre saturation all produce one. The analyser
-therefore fits all five candidates to achieved yaw rate (common target ⇒
-comparable R²) and reports the margin to the runner-up:
+**Reading the log.** It records the raw normalised `cmd.steering` alongside
+the roadwheel angle it's assumed to map to — recording only the assumed
+angle would beg the question the test exists to answer. A falling
+`s = δ_ach/δ_cmd` is not by itself diagnostic (a speed-scaled rack, genuine
+understeer, and grip saturation all produce one), so the analyser fits all
+five candidate mechanisms to achieved yaw rate and reports the margin to the
+runner-up:
 
 | winning model | meaning |
 |---|---|
 | neutral (s≈1) | steering path is fine; look at the controller/reference |
 | constant scale | `MAX_STEER_RAD` wrong — fix in all three copies |
 | speed-scaled rack | FSDS reduces lock with speed; model it in the plant |
-| understeer (v²) | real vehicle dynamics — but see the C_f note above |
+| understeer (v²) | real vehicle dynamics |
 | grip saturation | yaw capped by lateral grip |
 
-Validated against synthetic logs with each mechanism injected: all five are
-identified correctly and their parameters recovered exactly (scale 0.500,
-c 0.0600, K_us 0.0400, a_lat_max 12.0). The default speed set is **3–14 m/s**
-because speed-scaled rack and understeer are near-degenerate over a narrow
-band — they sat within 0.004 R² over 4–10 m/s, versus a separable 0.018–0.054
-over 3–14 m/s. **If the analyser prints a margin warning, widen the speed
-range and re-run rather than trusting the verdict.**
-
-The analyser also refuses to return a verdict when fewer than 3 RECORD windows
-contain real motion. A car wedged against a wall still emits RECORD rows, but
-they are all zero speed / zero yaw; fitting those gives `R² = nan` for every
-model, and the ranking then reports a confident, meaningless answer. (Observed:
-the first crashed run produced "FSDS delivers the commanded angle" from pure
-zeros.)
-
-##### RESULT (2026-08-06): FSDS caps yaw rate above ~6 m/s
-
-Full clean sweep, 16/16 points, no geofence triggers —
-`fsae_logs/steering_sysid_1786014330.csv`.
-
-**Below ~5 m/s the car delivers the commanded angle exactly. Above it, the
-response collapses.**
-
-| speed | commanded | achieved | `s` |
-|---|---|---|---|
-| 3 m/s | 25° | 25.3° | **1.01** |
-| 5 m/s | 25° | 24.9° | **1.00** |
-| 8 m/s | 25° | **8.5°** | **0.34** |
-| 11 m/s | 25° | 5.8° | 0.23 |
-| 14 m/s | 25° | 4.1° | 0.17 |
-
-Not a gradual understeer curve — a cliff between 5 and 8 m/s. Model fit:
-
-| model | R² |
-|---|---|
-| **grip saturation** (`a_lat` ceiling) | **0.987** |
-| understeer (v²) | 0.898 |
-| speed-scaled rack | 0.893 |
-| constant scale | 0.617 |
-| neutral | −1.226 |
-
-First time the models have separated by a decisive margin (0.089).
-
-**The cap is not tyres.** Fitted ceiling **7.0 m/s²**, against 12.3 m/s²
-measured on the same car during a lap and 14.5 m/s² in the offline plant. A
-tyre limit is speed-independent; this one engages above a threshold speed.
-Lateral acceleration vs steering makes it plain — it rises normally at low
-speed and goes flat once the cap engages:
-
-| v | 0.50 | 0.65 | 0.80 | 1.00 |
-|---|---|---|---|---|
-| 3 m/s | 1.61 | 1.93 | 2.38 | 2.75 |
-| 5 m/s | 4.37 | 5.28 | 6.30 | 7.48 |
-| **8 m/s** | **6.27** | **5.95** | **5.72** | **6.09** |
-| 11 m/s | — | 6.84 | 7.55 | 8.05 |
-
-At 8 m/s more steering produces *less* cornering. The signature — a yaw-rate
-ceiling (~0.7 rad/s) that engages above a threshold speed while commanded
-angles are honoured exactly below it — points at a **stability-control or
-yaw-damping term inside FSDS**, which the offline plant does not model at all.
-
-This closes the loop on the closed-loop symptom: the MPC plans a corner, FSDS
-clamps the yaw, heading error builds, the controller demands more steer and
-hits the 25° stop → the 21% saturation seen on every lap.
-
-> **Not yet acted on.** The fix is to model the cap in the offline plant, not
-> to bend tyre parameters to imitate it (which would also wreck the plant's
-> genuine 14.5 m/s² grip).
-
-##### MECHANISM (2026-08-06): a dynamically-enforced *lateral-acceleration*
-
-##### ceiling, ~7.5 m/s²
-
-Step-input test, 12 trials —
-`fsae_logs/steering_step_1786015706.csv`.
-
-**Two signatures appear together, and neither alone explains it.**
-
-1. **It is a cap.** At 8 m/s, 0.60 and 1.00 steering settle to the *same* yaw
-   rate (0.93–0.96 vs 0.90–0.94 rad/s) despite a 67% larger command. A scaled
-   authority would keep them proportional.
-2. **It overshoots.** Mean **30%** above the settled value before decaying
-   (peaks 10.9 m/s² lateral against a ~7.5 ceiling). A static clip cannot
-   overshoot.
-
-So the ceiling is enforced by a term that **takes time to build**, not by a
-hard clip.
-
-**What is held constant is lateral acceleration, not yaw rate.** This was the
-discriminating measurement, and it needed two capped speeds to answer:
-
-| v | settled yaw | settled a_lat |
-|---|---|---|
-| 8 m/s | 0.949 rad/s | **7.80 m/s²** |
-| 12 m/s | 0.609 rad/s | **7.29 m/s²** |
-| spread | **1.56×** | **1.07×** |
-
-Yaw rate varies 1.56× across speeds while lateral acceleration is flat to
-within 7%. At 4 m/s the car sits at 4.15 m/s², below the ceiling, so it is
-unconstrained there — and yaw duly scales with steering (1.76× spread vs 1.10×
-at 8 m/s). That is why the sweep saw `s ≈ 1.0` below ~6 m/s: **the cap has not
-engaged, not that the steering behaves differently.**
-
-**Modelled 2026-08-06** in `model/vehicle_physics.py` as a restoring yaw moment
-with a first-order lag, *not* a clip (a clip reproduces steady state but
-removes the turn-in transient the MPC reacts to):
-
-| parameter | value | basis |
-|---|---|---|
-| `alat_ceiling` | 7.5 m/s² | measured settled a_lat (7.80 @ 8 m/s, 7.29 @ 12) |
-| `alat_ceiling_mode` | `'pi'` | **corrected 2026-08-07** — see below |
-| `alat_ceiling_gain` | 450 N·m | fitted to measured PEAK only; settled falls out by structure |
-| `alat_ceiling_tau` | 0.40 s | **measured 2026-08-07**, 8 s hold (was 0.25, behavioural) — did NOT close the saturation gap |
-| `alat_ceiling_enabled` | `True` | models **FSDS**, not the physical car — disable for real-vehicle work |
-
-> **CORRECTED 2026-08-07: the law was proportional, and a proportional law
-> cannot hold a setpoint.** With `alat_lim` lagging toward the excess, steady
-> state gives `alat_lim = excess`, so the restoring moment is `excess × gain` —
-> a P controller, whose equilibrium must sit *above* its setpoint. Sweeping the
-> gain shows the trade-off is monotone and unavoidable: at 700 the settled value
-> was **+0.97 high**; reaching the settled value (6000) collapsed the peak
-> **−2.55 low**. The two "false starts" recorded above were the two ends of one
-> structural flaw, not two bad guesses.
->
-> The law is now a **leaky integral of the signed excess**, clamped at zero:
->
->     err      = |a_lat| - ceiling
->     alat_lim = max(0, alat_lim + err * h / tau)
->     M_z     -= sign(r) * alat_lim * gain
->
-> An integral can only stop growing when the error is zero, so the settled value
-> is pinned AT the ceiling **by structure for any gain**, leaving one free
-> parameter for the transient. Both measured targets are now hit at once
-> (settled 7.50 vs 7.68 measured; peak 10.37 vs 10.42), and on the **held-out
-> sweep** the capped-point error improves 5× (mean +1.41 → +0.29, MAE
-> 1.60 → 0.87). Before the fix the sim sustained 8.3–8.9 m/s² where FSDS
-> sustains 6.1–8.1 — a 20–35% surplus centred on the live car's mean speed.
->
-> Reproduce: `python -m tuner.checks.plant_openloop_validation --ab`
->
-> **What this did NOT fix:** steering saturation moved only 6.32 → 6.74% against
-> live's 21.1%. It corrects the plant's *lateral-acceleration distribution*
-> (time-above-ceiling ×1.45 → ×0.91 of live), not its steering behaviour. See
-> `docs/logs/sim_to_real_investigation.md` §12 for what was then eliminated and what the
-> residual gap has been narrowed to.
-
-> **Newly identified, not yet modelled: the ceiling is speed-dependent.**
-> Measured sustained a_lat *rises* with speed — 6.45 @ 8 m/s, 7.54 @ 11,
-> 9.26 @ 14 — while the model pins it flat at 7.5 (residuals +1.0 / ~0 / −1.76).
-> Deliberately not fitted: 16 points from one run. Note also that the step test's
-> 3 s settle (7.5 @ 8 m/s) and the sweep's long orbit (6.45) **disagree**, which
-> a longer `step_s` would resolve at the same time as `tau`.
-
-Verified: below ~6 m/s the plant is untouched (1.84 / 3.46 m/s² at 3 / 4 m/s,
-identical with the ceiling on or off), matching the measurement that the cap
-does not engage there. Peak a_lat on the recorded map falls 14.06 → 9.05 m/s².
-
-> **`tau` was nearly set wrong, and the failure is instructive.** Fitting it to
-> the measured ~30% *overshoot* gave `tau = 1.0 s`, which reproduced the step
-> test well — and then DNF'd the car at 6.3 s on a real lap. Corners arrive in
-> ~0.4 s, so a term that takes ~1 s to build does nothing during turn-in, lets
-> the car overshoot into the corner, and engages only once it is already off
-> line. **A ceiling that acts too late is worse than no ceiling.** `tau = 0.25`
-> matches peak a_lat instead and acts in time.
-
-##### The speed profile is NOT a discrepancy (investigated and closed)
-
-An earlier revision of this section claimed the recorded track's speed profile
-was ~50% faster than the car and blamed it for a DNF. **That was wrong on both
-counts**, and the correction is worth recording because the mistake is easy to
-repeat.
-
-The error was comparing the **stored oracle profile** (`V`, mean 12.08 m/s)
-against the live car's **achieved speed** (8.03 m/s). Those are different
-quantities. `V` comes from `compute_speed_profile()` in `track_io`'s
-`_resample_dense()` and is used only to size the step budget — **it is never
-the runtime target.** Both stacks compute their target per tick instead.
-
-Compared like with like, they agree closely:
-
-| | sim | live |
-|---|---|---|
-| runtime `v_target` mean | 10.50 m/s | 12.53 m/s (first 6 s) |
-| **achieved speed mean** | **8.20 m/s** | **8.03 m/s** |
-| achieved max | 10.86 | 12.50 |
-
-A 2% difference in achieved speed, not 50%. In the first 6 s the live car is
-in fact *faster* (9.98 mean, 13.87 max vs the sim's 8.30 / 10.86), so "the sim
-enters corners too fast" was backwards.
-
-Parity was also verified in the code: the live node
-(`mpc_controller_standalone.py`) computes `curvature_speed(v_max=20, v_min=1.5,
-scan_end=24, a_lat_max=4.0)`, then applies `tracking_error_speed_gate` and a
-rise-rate limit. `sim/rollout_core.py` applies **both** of those at runtime with
-the same constants.
-
-**The actual cause of that DNF was my ceiling being too stiff** — see the gain
-note above. `alat_ceiling_gain = 3000` enforced 7.5 m/s² as a near-absolute
-limit, but 7.5 is a *sustained* ceiling: the live car exceeds it on **9.8% of
-ticks**, peaking at **12.34 m/s²**, in short excursions (median 0.05 s, max
-0.85 s). Refitting the gain to the measured *peak* rather than the settled
-value (700) reproduces that behaviour and completes the lap.
-
-##### Effect of the ceiling, and what remains
-
-Same map, same tuned gains:
-
-| | before (no ceiling) | P law (700) | PI, tau=0.25 (450) | **PI, tau=0.40 (450)** | live |
-|---|---|---|---|---|---|
-| steering saturation | 4.4% | 6.3% | 6.7% | **4.8%** | **21.1%** |
-| reversals/s | 0.84 | 0.82 | 0.93 | 0.80 | 1.62 |
-| \|e_psi\| mean / p90 | 6.3 / 14.2 | 7.3 / 19.2 | 7.5 / 20.0 | 6.9 / 18.5 | **15.9 / 42.0** |
-| a_lat max | 14.06 | 10.53 | 10.80 | 11.24 | 12.34 |
-| a_lat > 7.5 | 14.2% | 14.2% | 8.9% | **10.9%** | 9.8% |
-| composite score | — | 0.675 | 0.700 | 0.627 | — |
-
-Reproduce any column with
-`python -m tuner.recorded_map_rollout [--mode p --gain 700 | --tau 0.25 | --no-ceiling]`.
-`tau=0.40` is the shipped, measured value (see below); saturation moving
-*further* from live under it is expected — it's a plant-fidelity fit to a
-direct FSDS measurement, not a saturation-tuning knob.
-
-Every metric moves toward the car, and peak lateral acceleration is now
-realistic. **But the gap is only partly closed** — live still saturates 4×
-more often and carries 2× the heading error. The yaw cap was a real and
-necessary fix; it is not the whole story.
-
-The PI columns reproduce the car's **lateral-acceleration distribution** well
-(time-above-ceiling within 11–9% of live, vs 45% too high before) while barely
-moving, or moving the wrong way on, **steering saturation**. Those are now
-known to be separate problems: `docs/logs/sim_to_real_investigation.md` §12 eliminates
-cornering capability (§12.6), the `a_cmd` divergence (§12.7), AND
-`alat_ceiling_tau` (§12.12 — measured, refit, still no saturation improvement)
-as causes of the saturation gap, and narrows it to the *rate of entry* into the
-high-heading-error state (2.6×, with matching in-state behaviour). The
-reference-heading lead (§12.8) is next, and is testable **offline**.
-
-**Validation tooling** (added 2026-08-07 — this loop was previously missing, and
-its absence is how a 13% sustained-cornering surplus survived a refit):
-
-| tool | answers |
-|---|---|
-| `tuner/checks/steering_sysid_analysis.py`, `tuner/checks/steering_step_analysis.py` | what does FSDS do? |
-| **`tuner/checks/plant_openloop_validation.py`** | **does our plant reproduce it?** (`--ab`, `--robustness`) |
-| **`tuner/recorded_map_rollout.py`** | the closed-loop table above, headless and reproducible |
-| **`tuner/checks/live_vs_sim_diagnostics.py`** | conditional + reference-heading decomposition of live vs sim |
-
-Caveat carried by `plant_openloop_validation.py`: its **low-speed** comparison is
-a confound, not a finding. At 4 m/s full lock the plant cannot hold speed, so
-a_lat swings 2.50→4.03 across the speed-hold gains; the capped regime (≥7 m/s) is
-robust to ±3.5% over the same range and is exactly timestep-independent.
-
-> **Do not treat the sim as validated yet.** Re-tuning against it now would be
-> better than before but still optimistic. The remaining saturation gap needs
-> its own investigation.
-
-> **MEASURED 2026-08-07** with `step_s=8.0`, `repeats=2` (12 trials,
-> `fsae_logs/steering_step_1786047535.csv`). The original 3 s hold gave a decay
-> too scattered to fit (median 0.08 s over a 0.04–1.06 s range); at 8 s the fit
-> is tight — median **0.35 s**, 11/12 trials within 0.28–0.46 s (one 0.88 s
-> outlier at 5.1 m/s, right at the cap's speed threshold).
->
-> Refit to this run's PEAK alone (settled is pinned by structure regardless of
-> `tau` — confirmed flat at 7.50 across a 0.25–0.45 sweep): **`tau = 0.40`**,
-> taking peak error from −0.45 to −0.04 m/s² against this measurement
-> (10.82 measured, 10.37 old model, 10.78 new model). No DNF on the recorded
-> map. Closed-loop saturation moved the *wrong* way (6.74% → 4.80%, away from
-> live's 21.1%) — expected, since §12.9/§12.12 in
-> `docs/logs/sim_to_real_investigation.md` had already localised the residual gap to the
-> planner/reference, not this parameter. Reproduce with
-> `python -m tuner.checks.plant_openloop_validation`.
->
-> Also checked: does a_lat keep decaying past 3 s into the hold? No — flat
-> within noise at the 3/5/8 s marks across all 12 trials. The step test's
-> short-hold settle (~7.5–7.9) and the sweep's long-orbit sustained value
-> (6.1–8.1, lower at every matched speed) are **not** reconciled by slow decay
-> within a single hold; that disagreement stays open.
->
-> Getting this measurement required fixing a second harness bug beyond the
-> quoting fix above: `"${EXTRA_ARGS[@]}"` was expanding *outside* the quoted
-> `bash -c "..."` string containing the actual command, so the array never
-> reached the inner script — `ros2` saw a bare trailing `-p`. Fixed by passing
-> the array as real positional parameters: `bash -c '...' _ "$@"`.
-
-##### The test that produced this (reusable)
-
-Three mechanisms fit the steady-state data about equally: a **hard yaw-rate
-limit**, a **speed-scaled steering authority**, or **active damping**. They
-differ in the transient after a sudden steering input:
-
-| mechanism | transient signature | how to model it |
-|---|---|---|
-| A hard yaw limit | rises, then **clips**; different angles settle to the *same* yaw rate | clip yaw rate in the plant |
-| B scaled authority | smooth rise to a **lower plateau**, angles stay proportional | scale steering by `f(v)` |
-| C active damping | **overshoots**, then decays | add a yaw-damping torque |
-
-Overshoot is the discriminator: neither A nor B can produce it.
-
-- **Node:** `fsae_control/steering_step.py` — settles straight at zero
-  steering, then steps and holds, sampling at **50 Hz** (20 Hz would smear a
-  rise completing in a few hundred ms). 12 trials, ~2–3 min.
-- **Harness:** `ros2/run_steering_step.sh` (same one-command pattern).
-- **Analysis:** `tuner/checks/steering_step_analysis.py`.
-
-Validated against synthetic logs with each mechanism injected: all three
-identified correctly, A's limit recovered exactly (0.75 rad/s) and B's time
-constant to within 0.01 s.
-
-The sweep's `HOLD_STEER` windows had already hinted at this (15 of 16 showed
-25–75% overshoot), but they did not start from zero steering, and one showed
-243% overshoot from a single 4.533 rad/s telemetry glitch amid ~1.0 rad/s
-neighbours. The dedicated test starts from a genuinely straight car and the
-analyser median-filters before peak-finding.
-
-##### Earlier partial data (superseded by the result above)
-
-The wall-crash run still yielded **11 valid points at 3–5 m/s** before impact,
-and they point somewhere unexpected:
-
-| | measured open-loop | same speeds, from lap logs |
-|---|---|---|
-| `s = δ_ach/δ_cmd` at 3 m/s | **1.09–1.26** | — |
-| `s` at 5 m/s | **1.04–1.21** | ~0.85 at 4 m/s |
-| `s` at 8 m/s (1 point) | 1.05 | ~0.42 at 6 m/s |
-| fitted `K_us` | **0.0000** | 0.038–0.045 |
-
-Open-loop, the car delivers the commanded angle — slightly *more* than
-commanded — with no measurable understeer over the range reached. That is the
-opposite of the lap-log finding.
-
-**Do not conclude from this yet.** The run reached 8 m/s exactly once, and the
-entire gap lives above that speed; the analyser correctly flagged the
-top-two margin as too small to separate. But if the full sweep holds `s ≈ 1`
-out to 14 m/s, the plant is exonerated and the investigation moves to the
-**controller and its reference**, not the vehicle model — a materially
-different search from the one this section has pursued so far.
-
-> **Not yet acted on.** No plant change is recommended from this measurement
-> alone. Reproducing `K_us ≈ 0.04` by bending tyre parameters would match the
-> symptom while keeping the physics wrong, and would corrupt every downstream
-> grip-dependent result. Identify the mechanism first.
-
-### Checked while investigating: the LONGITUDINAL path is not mis-scaled
-
-Prompted by the question "could max throttle / max acceleration / max braking
-differ between the offline model and FSDS?", measured on the same two logs:
-
-| | value |
-|---|---|
-| `a_actual / a_cmd` slope | **1.14–1.18** (car slightly *over*-delivers) |
-| peak achieved accel | 11.2–12.4 m/s² (model: 12.0) |
-| peak achieved braking | −12.2 to −13.0 m/s² (model: −9.0) |
-| throttle saturation | **0.00%** of the run |
-
-So throttle authority, acceleration and braking limits are **not** the problem;
-if anything the car brakes harder than the plant model allows.
-
-**But there is a structural mismatch worth knowing about** (found in
-`fsds_bridge.py`, not yet acted on): the MPC solves for an acceleration
-`a_cmd`, and the bridge **discards it**. It consumes only the target speed and
-re-derives throttle with its own P-controller (`KP_THROTTLE = 0.06`,
-`KP_BRAKE = 0.40`). Offline, `a_cmd` drives the plant directly.
-
-The live longitudinal loop therefore has an extra proportional lag stage the
-offline sim does not model at all. Mean speed error is 0.59 m/s (p90 2.3–2.4),
-consistent with a P-controller that never fully catches up. This cannot cause
-the yaw deficit — a longitudinal path cannot stop the car rotating — but it is
-a genuine sim/live divergence and a candidate explanation for speed-tracking
-differences. Modelling it offline (or feeding `a_cmd` through) is untested.
-
-**Consequence:** offline scores are not yet predictive of live behaviour. A
-tuning run that scores well offline can still produce a car that saturates
-steering a fifth of the time — this has already happened once. Validate on the
-car before trusting any tuned weight set.
+The default speed sweep is **3–14 m/s**, wide enough to separate speed-scaled
+rack from understeer (near-degenerate over a narrow band). If the analyser
+prints a margin warning, widen the speed range and re-run rather than
+trusting the verdict; it also refuses a verdict when fewer than 3 windows
+contain real motion (a car wedged against a wall otherwise reports a
+confident, meaningless answer from all-zero data).
+
+### Checked: the longitudinal path is not mis-scaled
+
+Throttle authority, acceleration, and braking limits match FSDS closely (the
+car if anything brakes harder than the plant model allows; 0% throttle
+saturation). **But `fsds_bridge.py` discards the MPC's own `a_cmd` output**
+and re-derives throttle from a separate P-controller on target speed —
+offline, `a_cmd` drives the plant directly. This is a genuine, unmodelled
+sim/live divergence in the longitudinal loop (mean speed error ~0.6 m/s), but
+it cannot explain the yaw-saturation gap — a longitudinal path cannot stop
+the car rotating. Modelling it offline, or feeding `a_cmd` through live, is
+untested.
+
+**Consequence:** offline scores are not yet fully predictive of live
+behaviour. A tuning run that scores well offline can still produce a car
+that saturates steering a fifth of the time. Always validate on the car
+before trusting a tuned weight set.
 
 ## MPC prediction horizon: frozen target speed
 

@@ -18,12 +18,12 @@ must be applied to **both** `settings.py` and `mpc_params.py`.
 
 **Two controllers, two tuning surfaces.** Sections 1-4.4/4.9 below tune the
 default linear time-varying MPC (LTV-QP). The NMPC (`use_nmpc=true`, see
-[§4.5d](#45d-nonlinear-mpc-use_nmpc--added-2026-08-13-offline-port-added-2026-08-13))
+[§4.5d](#45d-nonlinear-mpc-use_nmpc))
 shares the LTV-QP's base weights (section 1) as its starting point but is
 entirely unaffected by all of section 4's adaptive machinery, and can be
 retuned independently via its own `nmpc_q_*`/`nmpc_r_*` override fields
 without touching the LTV-QP. See
-[architecture.md](architecture.md#second-controller-nonlinear-mpc-use_nmpc--live-only-2026-08-13)
+[architecture.md](architecture.md#second-controller-nonlinear-mpc-use_nmpc)
 for what the NMPC is and why it exists.
 
 ## How to use this doc
@@ -79,16 +79,14 @@ masked or amplified by another, so isolate.
   braking/acceleration looks underused relative to what the car demonstrably
   sustains elsewhere in the same lap, the corresponding one of these is the
   first thing to lower — but sweep around the current value rather than
-  assuming further cuts keep helping; a single shared `r_a` had a measured
-  local optimum (0.77, see the still-`r_a`-named CHANGELOG history in
-  `settings.py`), not a monotonic "lower is better" relationship, before it
-  was split into these two independent weights on 2026-08-12 (see
-  `planning_control_sync.md`'s "Accel/brake effort weight split"). Lowering
-  ONLY `r_a_brake` (leaving `r_a_accel` fixed) is the more targeted lever if
-  the specific symptom is weak braking without also making the car
-  over-eager to accelerate — that used to be impossible with the single
-  shared weight. As of this writing these two are being actively live-tuned;
-  check `mpc_params.py` for the current values rather than trusting a number
+  assuming further cuts keep helping; a single shared weight is not a
+  monotonic "lower is better" relationship, it has a measured local optimum
+  (see `planning_control_sync.md`'s "Accel/brake effort weight split" for
+  the history behind why this is two independent weights rather than one).
+  Lowering ONLY `r_a_brake` (leaving `r_a_accel` fixed) is the more targeted
+  lever if the specific symptom is weak braking without also making the car
+  over-eager to accelerate. These two are actively live-tuned; check
+  `mpc_params.py` for the current values rather than trusting a number
   quoted here.
 - `q_e_v` — has more effect on the corner-approach phase specifically than
   on whole-run averages, since a large fraction of any lap is spent on
@@ -164,7 +162,7 @@ has no effect until you also flip its flag.
 **Two generations, same as `architecture.md`'s "Adaptive gain scheduling"
 section.** §4.1-4.3 below describe mechanisms still active today.
 §4.4-§4.8 describe the forward-scanning "lookahead" family that the
-2026-08-13 corner-factor rewrite deleted wholesale — kept collapsed for the
+corner-factor rewrite deleted wholesale — kept collapsed for the
 tuning history and the reasoning behind what replaced it, not because
 there's anything left in that family to tune. §4.3b documents the
 replacement: the corner-factor scheduler this whole family was replaced
@@ -203,7 +201,7 @@ cannot anticipate a corner before the car is already turning into it. Not
 validated against `VALIDATION_SUITE`/recorded-map or any live log as a
 whole mechanism; treat as experimental. (This section used to also carry
 `anti_hunt_k_lookahead`, a lookahead-curvature fade gate — removed along
-with the rest of the lookahead family in the 2026-08-13 rewrite; see §4.4.)
+with the rest of the lookahead family in the corner-factor rewrite; see §4.4.)
 
 ### 4.3 Adaptive R-rate corner softening (`adaptive_r_rate_enable_in_corners`)
 
@@ -225,9 +223,9 @@ reintroduces steering sign-reversal chatter mid-corner — this is the
 mechanism that keeps that in check, not just a free knob. (This section
 used to also carry a second, lookahead-driven floor —
 `adaptive_r_rate_entering_floor`/`_k_entering` — removed along with the
-rest of the lookahead family in the 2026-08-13 rewrite; see §4.4.)
+rest of the lookahead family in the corner-factor rewrite; see §4.4.)
 
-### 4.3b Corner-factor scheduler (current, since 2026-08-13)
+### 4.3b Corner-factor scheduler
 
 **Purpose**: replaces the entire forward-scanning lookahead family in §4.4
 below with one continuous, CURRENT-curvature-only fraction
@@ -258,7 +256,7 @@ the lookahead family it replaced carried before its own removal. The
 `epsi_ra_*` asymmetry is independent of `corner_frac` and always active —
 tune it separately from the four corner-blend weights above.
 
-### 4.4 Historical: lookahead corner anticipation (removed 2026-08-13)
+### 4.4 Historical: lookahead corner anticipation (removed)
 
 None of these fields exist on `MPCParams` anymore. Full description,
 reasoning, and the field-by-field purpose table:
@@ -287,7 +285,7 @@ the rest of the lookahead adaptive-gain family. Full description:
 independent statement (about what the _current_ `MPCParams` mechanisms do)
 and is unaffected by this removal.
 
-### 4.5c Precomputed shaped heading-lead profile (`use_precomputed_heading_profile`) — LIVE-ONLY, added 2026-08-12
+### 4.5c Precomputed shaped heading-lead profile (`use_precomputed_heading_profile`) — LIVE-ONLY
 
 | Field | Purpose |
 |---|---|
@@ -309,9 +307,10 @@ result** — four live runs at the default `authority_frac=0.5` ranged from
 the single best run recorded all session (zero steering saturation) to
 some of the worst, against a baseline that itself varied nearly as much
 run-to-run; not enough runs to call it a net win or a net loss. Currently
-shipped **ON** (`USE_PRECOMPUTED_HEADING_PROFILE=true` in
-`ros2/launch_all.sh`) pending more data, not because it's confirmed to
-help. `comp_test_map_3` has few true straights, so the lead is active
+shipped **OFF** (`USE_PRECOMPUTED_HEADING_PROFILE=false` in
+`ros2/launch_all.sh`) pending more data, not because it's confirmed not to
+help — check that file's shortlist before assuming either default.
+`comp_test_map_3` has few true straights, so the lead is active
 almost everywhere on that track at the default `authority_frac` — a
 plausible explanation for the variance (the lead can't selectively target
 the approach phase on this track) that further runs haven't yet confirmed
@@ -319,7 +318,7 @@ or ruled out. See `planning_control_sync.md`'s caveat and
 `late_turn_in_investigation.md` Parts 12-13 for the full run-by-run data
 before drawing conclusions from any single result.
 
-### 4.6 Historical: U-turn detector and straight-line adjustments (removed 2026-08-13)
+### 4.6 Historical: U-turn detector and straight-line adjustments (removed)
 
 None of these fields exist on `MPCParams` anymore — part of the same
 lookahead family removed in §4.4. Full description and field-by-field
@@ -329,7 +328,7 @@ purpose tables:
 [§6](removed_mechanisms.md#6-straight-line-adjustments) (straight-line
 adjustments).
 
-### 4.8 Historical: FSDS lateral-acceleration ceiling law as a lookahead input (removed 2026-08-13)
+### 4.8 Historical: FSDS lateral-acceleration ceiling law as a lookahead input (removed)
 
 The ceiling law's three fields (`alat_ceiling_flat`/`_slope`/`_intercept`)
 no longer exist on `MPCParams` — **the law itself is not gone**, it moved
@@ -340,22 +339,18 @@ it's ever suspected wrong, re-measure with `ros2/run_steering_sysid.sh` /
 `ros2/run_steering_step.sh`, don't guess. Full history:
 [`removed_mechanisms.md` §10](removed_mechanisms.md#10-fsds-lateral-acceleration-ceiling-as-a-lookahead-input).
 
-### 4.9 Low-speed steering-rate boost — DISABLED, do not re-enable without a rework
+### 4.9 Historical: low-speed steering-rate boost (removed)
 
-| Field | Purpose |
-|---|---|
-| `low_speed_steer_rate_boost_enabled` | extra `R_rate[0,0]` penalty at low speed. **`False` — disabled 2026-08-12.** |
-| `low_speed_steer_rate_boost_max` | `R_rate[0,0]` multiplier at `vx=0`, decaying toward 1.0 as speed rises |
-| `low_speed_steer_rate_boost_k` | decay sharpness of the boost vs. speed |
-
-**Why this exists but is off**: added to fix a low-speed (3-4 m/s)
-post-corner-exit steering wobble that neither §4.2 nor §4.3 touched, since
-both gate on curvature/tracking-error rather than speed. Live-tested the
-same day and found to also suppress fast turn-in, since speed alone can't
-distinguish "post-exit overcorrection" from "turn-in." **Do not re-enable
-without first adding a curvature/lookahead gate.** Full incident and the
-values left in place for a future rework:
-[`removed_mechanisms.md` §9](removed_mechanisms.md#9-low-speed-steering-rate-boost-disabled-not-fully-removed).
+No fields remain on either side (`mpc_params.py`, `settings.py`) — this
+mechanism, which made `R_rate[0,0]` more expensive at low speed to damp a
+post-corner-exit wobble, was tried, live-tested, disabled, and has since
+been removed entirely along with the rest of the lookahead gain-scheduling
+family. It gated purely on speed with no curvature/lookahead signal, so it
+could not distinguish "post-exit overcorrection at low speed" (the case it
+was built for) from "turn-in at low speed" (also low speed, but wanted) —
+it suppressed both identically. Full incident and the tuned values it used
+(kept on record in case a future curvature-gated rework wants a starting
+point): [`removed_mechanisms.md` §9](removed_mechanisms.md#9-low-speed-steering-rate-boost-removed).
 
 ### 4.10 Historical: curvature forcing term — removed, structurally unsound
 
@@ -371,7 +366,7 @@ sweep and mechanism:
 
 ---
 
-### 4.5d Nonlinear MPC (`use_nmpc`) — added 2026-08-13; offline port added 2026-08-13
+### 4.5d Nonlinear MPC (`use_nmpc`)
 
 `use_nmpc=true` swaps `mpc_core.MPCController` (linear time-varying QP) for
 `nmpc_core.NMPCController` (Frenet-frame nonlinear MPC, Gauss-Newton SQP).
@@ -403,8 +398,8 @@ default false) — see `planning_control_sync.md`'s "Nonlinear MPC
   curvature-aware model would fight cornering. Same number, different
   regressor: **re-sweep this one first**.
 - **To retune the NMPC without touching the LTV-QP's own weights**, use the
-  `nmpc_q_*` / `nmpc_r_*` override fields, which now live IN `MPCParams`
-  itself (moved there 2026-08-13 from a separate `NMPCParams`, alongside the
+  `nmpc_q_*` / `nmpc_r_*` override fields, which live IN `MPCParams`
+  itself (not a separate `NMPCParams`), alongside the
   base weights they inherit from at their `-1.0` sentinel — see
   `mpc_params.py`'s own "NMPC weight overrides" section). Both the base
   weights and these overrides carry the same `settings.py`
@@ -428,7 +423,7 @@ default false) — see `planning_control_sync.md`'s "Nonlinear MPC
   `nmpc_curvature_dense_step=0.5` / `nmpc_curvature_smooth_w=3` are
   `control_utils.curvature_speed()`'s existing denoise precedent — none of the
   four is a new constant to tune.
-- **Three MPCC-inspired flags, all NMPC-only (2026-08-13)**:
+- **Three MPCC-inspired flags, all NMPC-only**:
   `nmpc_spline_reference_enabled` (default true — not really "tunable", a
   numerical-quality fix; set false only to A/B against the old moving-average
   path), `nmpc_horizon_speed_profile_enabled` and

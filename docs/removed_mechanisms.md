@@ -29,7 +29,7 @@ you're looking for what tuning knobs currently exist, see
 - [6. Straight-line adjustments](#6-straight-line-adjustments)
 - [7. Precomputed corner segmentation (`CornerMap`)](#7-precomputed-corner-segmentation-cornermap)
 - [8. Curvature forcing: the closest attempt, and why it still failed](#8-curvature-forcing-the-closest-attempt-and-why-it-still-failed)
-- [9. Low-speed steering-rate boost](#9-low-speed-steering-rate-boost-disabled-not-fully-removed)
+- [9. Low-speed steering-rate boost](#9-low-speed-steering-rate-boost-removed)
 - [10. FSDS lateral-acceleration ceiling as a lookahead input](#10-fsds-lateral-acceleration-ceiling-as-a-lookahead-input)
 - [11. What replaced all of this](#11-what-replaced-all-of-this)
 
@@ -72,7 +72,7 @@ real state error.
 cheaper cost on a road that already bent.** That's what the nonlinear MPC
 (`nmpc_core.py`, `use_nmpc`) does — see
 [`architecture.md`'s "Second controller: nonlinear MPC"
-section](architecture.md#second-controller-nonlinear-mpc-use_nmpc--2026-08-13)
+section](architecture.md#second-controller-nonlinear-mpc-use_nmpc)
 or, for the full derivation with worked numbers,
 [`error_state_reference.md`](error_state_reference.md).
 
@@ -299,34 +299,32 @@ term"](planning_control_sync.md) section.
 
 ---
 
-## 9. Low-speed steering-rate boost — disabled, not fully removed
+## 9. Low-speed steering-rate boost — removed
 
-**`low_speed_steer_rate_boost`, added and disabled the same day, 2026-08-12**
-
-Unlike everything else in this doc, this one is **still present in the
-code but disabled** (`low_speed_steer_rate_boost_enabled = False`) rather
-than deleted — kept for a future rework rather than removed outright.
+`low_speed_steer_rate_boost` no longer exists in either codebase — the
+function, its `MPCParams`/`settings.py` fields, and its telemetry column
+have all been deleted along with the rest of the lookahead
+gain-scheduling family.
 
 - **Purpose:** damp a low-speed (3-4 m/s) post-corner-exit steering wobble
   that neither the anti-hunt nor corner-softening mechanisms touched, since
   both gate on curvature/tracking-error rather than speed.
 - **Shape:** deliberately inverted from a Stanley-style `k/(v+eps)` curve —
-  it makes *fast* steering-rate changes **more** expensive at low speed,
+  it made *fast* steering-rate changes **more** expensive at low speed,
   not cheaper.
-- **Why it's off:** live-tested the same day and found to also suppress
-  fast turn-in, which also needs a fast steering-rate change at low speed.
-  Speed alone can't distinguish "post-exit overcorrection" from "turn-in,"
-  so it taxed both identically.
-- **Do not re-enable without first adding a curvature/lookahead gate** so
-  it only fires when the car is *not* approaching or inside a corner. The
-  tuned values left in place for that future rework:
-  `boost_max = 2.5, k = 0.35`.
+- **Why it was disabled, then removed:** live-tested and found to also
+  suppress fast turn-in, which also needs a fast steering-rate change at
+  low speed. Speed alone can't distinguish "post-exit overcorrection" from
+  "turn-in," so it taxed both identically.
+- **If a future rework revisits this idea, it needs a curvature/lookahead
+  gate** so it only fires when the car is *not* approaching or inside a
+  corner. The tuned values from the original attempt, kept here as a
+  starting point: `boost_max = 2.5, k = 0.35`.
 
-See [`tuning.md` §4.9](tuning.md#49-low-speed-steering-rate-boost--disabled-do-not-re-enable-without-a-rework)
-for the current tuning-surface entry (kept there since this is still a live
-flag, just defaulted off) and
+See `docs/logs/late_turn_in_investigation.md`'s "Appendix — Low-speed
+steering-rate boost" for the full incident, and
 [`planning_control_sync.md`'s "Low-speed steering-rate boost"](planning_control_sync.md)
-for the full incident.
+for the current-state pointer.
 
 ---
 
@@ -363,5 +361,5 @@ around it with current-state-only logic instead, and left the *actual* fix
 (seeing the corner in the prediction itself) to the NMPC.
 
 Full formulas: [`architecture.md`'s "Corner-factor
-scheduler"](architecture.md#corner-factor-scheduler-current-since-2026-08-13)
-section. Tuning-surface reference: [`tuning.md` §4.3b](tuning.md#43b-corner-factor-scheduler-current-since-2026-08-13).
+scheduler"](architecture.md#corner-factor-scheduler)
+section. Tuning-surface reference: [`tuning.md` §4.3b](tuning.md#43b-corner-factor-scheduler).

@@ -775,7 +775,7 @@ Why the change: in a model that knows the path is curving, penalising *absolute*
 
 **Solving is different in kind, not just in weights.** LMPC solves one convex QP per tick and gets the provably-best answer (Section 1.5). NMPC's cost/dynamics aren't a fixed-multiplier relationship any more (Section 5.2), so it can't do that — instead it takes one Gauss-Newton step per tick (re-linearise around its own last prediction, solve the resulting QP, repeat next tick rather than iterate to convergence within a single tick). This is why NMPC's solve time (~9 ms) is noticeably higher than LMPC's (~1-5 ms), and why NMPC's horizon is shorter (20 steps vs. 35) — a deliberate choice to keep total per-tick cost bounded, not a structural requirement.
 
-For the exact formulas (the full state-derivative equations, the output/cost vector, the finite-difference Jacobian machinery) see [`architecture.md`'s NMPC section](architecture.md#second-controller-nonlinear-mpc-use_nmpc--2026-08-13) and [`error_state_reference.md`](error_state_reference.md) for the from-scratch, worked-by-hand version.
+For the exact formulas (the full state-derivative equations, the output/cost vector, the finite-difference Jacobian machinery) see [`architecture.md`'s NMPC section](architecture.md#second-controller-nonlinear-mpc-use_nmpc) and [`error_state_reference.md`](error_state_reference.md) for the from-scratch, worked-by-hand version.
 
 ### 5.6 Optional NMPC Refinements
 
