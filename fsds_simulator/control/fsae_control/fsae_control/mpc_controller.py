@@ -111,13 +111,13 @@ class MPCControllerNode(Node):
                 # "Post-solve output smoothing" section for the tuning
                 # surface.
                 ('output_smoothing_enabled', False),
-                ('output_smoothing_alpha', 0.3),
+                ('output_smoothing_alpha', 0.425),
                 ('output_smoothing_corner_floor', 0.1),
                 # Fades smoothing down, never off, as CURRENT tracking error
                 # grows, on top of the curvature-based fade -- see
                 # mpc_controller_standalone.py's identical params.
-                ('output_smoothing_k_ey', 0.5),
-                ('output_smoothing_k_epsi', 0.8),
+                ('output_smoothing_k_ey', 0.8),
+                ('output_smoothing_k_epsi', 1.115),
                 # Fades smoothing down BEFORE the car reaches a corner
                 # already visible in the path -- see
                 # mpc_controller_standalone.py's identical param.

@@ -164,7 +164,7 @@ class MPCControllerStandaloneNode(Node):
                 # full mechanism, and planning_control_sync.md's "Post-solve
                 # output smoothing" section for the tuning surface.
                 ('output_smoothing_enabled', False),
-                ('output_smoothing_alpha', 0.3),          # EMA coefficient on the
+                ('output_smoothing_alpha', 0.425),        # EMA coefficient on the
                                        # smoothed signal; lower = more smoothing/more lag
                 ('output_smoothing_corner_floor', 0.1),   # min smoothing weight
                                        # retained even at full curvature (corner_frac=1) --
@@ -175,14 +175,13 @@ class MPCControllerStandaloneNode(Node):
                 # command NOW, same rationale as the corner_floor fade but
                 # keyed on tracking error instead of curvature. 0.0 disables
                 # the corresponding factor (saturates at 1.0, i.e. no extra
-                # fade from that term). CAUTION: values much above ~1.0 are
-                # sensitive enough that ordinary tracking noise (not an
-                # actual disturbance) already fades smoothing most of the
-                # way out, undoing the jitter-suppression this feature
-                # exists for -- see planning_control_sync.md before raising
-                # these past their current defaults.
-                ('output_smoothing_k_ey', 0.5),     # 1/m; higher = fades out faster per metre of |e_y|
-                ('output_smoothing_k_epsi', 0.8),   # 1/rad; higher = fades out faster per radian of |e_psi|
+                # fade from that term). CAUTION: raising these much further
+                # makes this too sensitive -- ordinary tracking noise (not an
+                # actual disturbance) starts fading smoothing most of the way
+                # out, undoing the jitter-suppression this feature exists for
+                # -- see planning_control_sync.md before retuning further.
+                ('output_smoothing_k_ey', 0.8),     # 1/m; higher = fades out faster per metre of |e_y|
+                ('output_smoothing_k_epsi', 1.115), # 1/rad; higher = fades out faster per radian of |e_psi|
                 # Fades smoothing down BEFORE the car reaches a corner
                 # already visible in the path, not only once the car's own
                 # CURRENT curvature has risen -- needed on tracks whose

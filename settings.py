@@ -432,7 +432,7 @@ REVERSAL_PENALTY_K = 8.0           # 1/rad; half-boost at ~7.2deg of previous st
 # OUTPUT_SMOOTHING_CORNER_FLOOR (never below it) as the car actually turns,
 # so a sharp corner still gets a mostly-instant response.
 OUTPUT_SMOOTHING_ENABLED = False
-OUTPUT_SMOOTHING_ALPHA = 0.3          # EMA coefficient; lower = more smoothing/more lag
+OUTPUT_SMOOTHING_ALPHA = 0.425        # EMA coefficient; lower = more smoothing/more lag
 # CAUTION: this is the live-validated value. A lower alpha (heavier
 # smoothing) can look strictly better on an offline reversals/s sweep, but
 # the offline recorded-map rollout has almost no genuine disturbance to
@@ -452,8 +452,8 @@ OUTPUT_SMOOTHING_CORNER_FLOOR = 0.1   # min smoothing weight retained even at fu
 # (1/(1+k*|x|), independent per input, multiplied together), just fading the
 # OUTPUT weight down instead of boosting a QP cost up. 0.0 disables the
 # corresponding factor (saturates at 1.0, i.e. no extra fade from that term).
-OUTPUT_SMOOTHING_K_EY = 0.5      # 1/m; higher = fades out faster per metre of |e_y|
-OUTPUT_SMOOTHING_K_EPSI = 0.8    # 1/rad; higher = fades out faster per radian of |e_psi|
+OUTPUT_SMOOTHING_K_EY = 0.8      # 1/m; higher = fades out faster per metre of |e_y|
+OUTPUT_SMOOTHING_K_EPSI = 1.115  # 1/rad; higher = fades out faster per radian of |e_psi|
 
 # [shared, both controllers, EXPERIMENTAL] Fade smoothing
 # down BEFORE the car reaches a corner already visible in the path, not only
