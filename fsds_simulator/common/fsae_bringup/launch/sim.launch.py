@@ -190,7 +190,7 @@ def generate_launch_description():
                         '(overrides fsae_params.yaml controller.dynamic_cap_safety)'),
         DeclareLaunchArgument(
             'output_smoothing_enabled', default_value='false',
-            description='EXPERIMENTAL (added 2026-08-19): post-solve moving-average '
+            description='EXPERIMENTAL: post-solve moving-average '
                         'filter on the final steering command, NOT a QP weight change '
                         '-- passed through to control.launch.py, see that file\'s own '
                         'description.'),
@@ -204,15 +204,15 @@ def generate_launch_description():
                         'passed through to control.launch.py.'),
         DeclareLaunchArgument(
             'output_smoothing_k_ey', default_value='0.5',
-            description='EXPERIMENTAL (added 2026-08-20): fade output_smoothing down '
+            description='EXPERIMENTAL: fade output_smoothing down '
                         'as CURRENT |e_y| grows -- passed through to control.launch.py.'),
         DeclareLaunchArgument(
             'output_smoothing_k_epsi', default_value='0.8',
-            description='EXPERIMENTAL (added 2026-08-20): fade output_smoothing down '
+            description='EXPERIMENTAL: fade output_smoothing down '
                         'as CURRENT |e_psi| grows -- passed through to control.launch.py.'),
         DeclareLaunchArgument(
             'output_smoothing_lookahead_lead_s', default_value='0.5',
-            description='EXPERIMENTAL (added 2026-08-20): fade output_smoothing down '
+            description='EXPERIMENTAL: fade output_smoothing down '
                         'BEFORE a corner already visible in the path -- passed through '
                         'to control.launch.py.'),
         *(DeclareLaunchArgument(

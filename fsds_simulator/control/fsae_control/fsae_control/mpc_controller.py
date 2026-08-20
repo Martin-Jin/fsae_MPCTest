@@ -104,23 +104,23 @@ class MPCControllerNode(Node):
                                        # mpc_controller_standalone.py's identical param
                                        # for the full rationale — only has an effect
                                        # when path_map_path is ALSO set.
-                # EXPERIMENTAL, added 2026-08-19 — see
-                # mpc_controller_standalone.py's identical params for the
-                # full mechanism (post-solve moving-average filter on the
-                # final steering command, NOT a QP weight change).
+                # EXPERIMENTAL -- see mpc_controller_standalone.py's
+                # identical params for the full mechanism (post-solve
+                # moving-average filter on the final steering command, NOT a
+                # QP weight change), and planning_control_sync.md's
+                # "Post-solve output smoothing" section for the tuning
+                # surface.
                 ('output_smoothing_enabled', False),
                 ('output_smoothing_alpha', 0.3),
                 ('output_smoothing_corner_floor', 0.1),
-                # EXPERIMENTAL, added 2026-08-20 — see
-                # mpc_controller_standalone.py's identical params for the
-                # full mechanism (fade smoothing down, never off, as CURRENT
-                # tracking error grows, on top of the curvature-based fade).
+                # Fades smoothing down, never off, as CURRENT tracking error
+                # grows, on top of the curvature-based fade -- see
+                # mpc_controller_standalone.py's identical params.
                 ('output_smoothing_k_ey', 0.5),
                 ('output_smoothing_k_epsi', 0.8),
-                # EXPERIMENTAL, added 2026-08-20 — see
-                # mpc_controller_standalone.py's identical param for the
-                # full mechanism (fade smoothing down BEFORE the car reaches
-                # a corner already visible in the path).
+                # Fades smoothing down BEFORE the car reaches a corner
+                # already visible in the path -- see
+                # mpc_controller_standalone.py's identical param.
                 ('output_smoothing_lookahead_lead_s', 0.5),
             ],
         )
@@ -494,7 +494,7 @@ class MPCControllerNode(Node):
             self._delta_filt += self._steer_lp * (steering - self._delta_filt)
         steering = self._delta_filt
 
-        # ── Output smoothing (EXPERIMENTAL, default off, added 2026-08-19) ──
+        # ── Output smoothing (EXPERIMENTAL, default off) ──
         # See mpc_controller_standalone.py's identical block for the full
         # mechanism/reasoning. Applied ON TOP of steer_lp above (which this
         # node already had and mpc_controller_standalone.py does not) --

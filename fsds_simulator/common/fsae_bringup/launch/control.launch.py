@@ -344,7 +344,7 @@ def generate_launch_description():
                         '(overrides fsae_params.yaml controller.dynamic_cap_safety)'),
         DeclareLaunchArgument(
             'output_smoothing_enabled', default_value='false',
-            description='EXPERIMENTAL (added 2026-08-19): post-solve moving-average '
+            description='EXPERIMENTAL: post-solve moving-average '
                         'filter on the final steering command, NOT a QP weight change '
                         '-- see mpc_controller_standalone.py\'s Output smoothing block.'),
         DeclareLaunchArgument(
@@ -357,17 +357,17 @@ def generate_launch_description():
                         'output_smoothing_enabled is true'),
         DeclareLaunchArgument(
             'output_smoothing_k_ey', default_value='0.5',
-            description='EXPERIMENTAL (added 2026-08-20): fade output_smoothing down '
+            description='EXPERIMENTAL: fade output_smoothing down '
                         '(never below output_smoothing_corner_floor) as CURRENT |e_y| '
                         'grows; 1/m, higher = fades out faster per metre'),
         DeclareLaunchArgument(
             'output_smoothing_k_epsi', default_value='0.8',
-            description='EXPERIMENTAL (added 2026-08-20): fade output_smoothing down '
+            description='EXPERIMENTAL: fade output_smoothing down '
                         '(never below output_smoothing_corner_floor) as CURRENT |e_psi| '
                         'grows; 1/rad, higher = fades out faster per radian'),
         DeclareLaunchArgument(
             'output_smoothing_lookahead_lead_s', default_value='0.5',
-            description='EXPERIMENTAL (added 2026-08-20): fade output_smoothing down '
+            description='EXPERIMENTAL: fade output_smoothing down '
                         'BEFORE the car reaches a corner already visible in the path, '
                         'not only once CURRENT curvature has risen -- a TIME lead '
                         'converted to a scan distance via current speed each tick. '

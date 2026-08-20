@@ -204,7 +204,7 @@ writing — re-confirm before relying on them, since a resync can move them.
 | Steering slew-rate limit (`du_max[0]`) | `model/vehicle_physics.py` (`VehicleParams.max_steer_rate`), applied as `max_steer_rate * DT` in `sim/rollout_core.py` and passed to `controller/optimiser.py`'s `du_max` | `fsds_simulator/control/fsae_control/fsae_control/mpc_core.py` (`MAX_STEER_RATE_RAD_S`, applied as `* self.dt`) | `radians(180.0)` rad/s |
 | Accel slew-rate limit (`du_max[1]`) | `sim/rollout_core.py` (`du_max` second element) | `fsds_simulator/control/fsae_control/fsae_control/mpc_core.py` (`self.du_max` second element) | `0.6` per step |
 | `tracking_error_speed_gate()` thresholds | `sim/speed_profile.py` | `fsds_simulator/.../control_utils.py` | `ey_lo/hi` 0.5/2.0 m, `epsi_lo/hi` 20/60 deg, `floor` 0.3 |
-| Speed-target rise limit | `sim/rollout_core.py` (`SPEED_TARGET_RISE_RATE`) | `fsds_simulator/.../mpc_controller.py` and `mpc_controller_standalone.py` (same name) | `2.0` m/s² |
+| Speed-target rise limit | `sim/rollout_core.py` (`SPEED_TARGET_RISE_RATE`) | `fsds_simulator/.../mpc_controller.py` and `mpc_controller_standalone.py` (same name) | `7.0` m/s² |
 | `curvature_speed()` κ reduction | `sim/speed_profile.py` | `fsds_simulator/.../control_utils.py` | max of 3-point running mean |
 | Score weights / bonuses / penalties | `settings.py` (`SCORE_WEIGHTS`, `COMPLETION_BONUS_WEIGHT`, `TIME_BONUS_WEIGHT`, `DNF_PENALTY`, `DNF_OFFTRACK_PENALTY`) | `fsds_simulator/control/fsae_control/fsae_control/scoring.py` (inlined as module constants) | weights sum to `1.0`; `0.5` / `0.25` / `3.0` / `3.0` |
 | Metric normalisation scales | `settings.py` (`METRIC_SCALES`) | `fsds_simulator/control/fsae_control/fsae_control/scoring.py` (inlined as module constant) | 13 entries, `[0.40, 0.45, 0.30, 0.18, 1.50, 0.40, 0.02, 0.30, 1.00, 0.015, 0.70, 2.30, 0.08]` |
@@ -267,7 +267,7 @@ longer exist on either side.
 | `q_e_y` | `Q_diag[0]` | `6.35` live / `6.0` offline — not yet re-synced |
 | `q_e_yd` | `Q_diag[1]` | `0.5` live / `0.8` offline — not yet re-synced |
 | `q_e_psi` | `Q_diag[2]` | `2.0` live / `1.6` offline — not yet re-synced |
-| `q_r` | `Q_diag[3]` | `1.0` live / `0.70` offline — not yet re-synced |
+| `q_r` | `Q_diag[3]` | `1.20` both sides — synced |
 | `q_e_v` | `Q_diag[4]` | `5.45` live / `5.55` offline — close, not yet re-synced |
 | `r_delta` | `R_diag[0]` | `1.8` (matched) |
 | `r_a_accel` | `R_diag`/`R_A_ACCEL` | `2.5` live / `1.8` offline (`R_diag[0]` doubles as the offline accel-effort slot) — not yet re-synced; see "Accel/brake effort weight split" below |
@@ -343,6 +343,39 @@ manufacturing anticipation. Repeated piecemeal retuning of it never produced
 a clear net win. This is the same structural argument, one level up, that
 motivates the nonlinear MPC below: reweighting an existing error's cost is not
 the same as making the *prediction itself* see the road bend.
+
+## Soft steering-reversal penalty (`reversal_penalty_*` / `nmpc_reversal_penalty_*`)
+
+**Default off, experimental on both controllers.** Boosts `R_rate[0,0]`
+(steering rate-of-change cost) whenever LAST tick's steering command was
+already close to zero — the one state a sign-flip reversal must pass
+through. A reversal itself can't be penalised directly inside one solve
+(it depends on THIS tick's own decision, the thing being optimised, which
+would make the cost non-convex); this penalises the precondition instead,
+via a saturating curve `1/(1 + k*|u_prev_steer|)` keyed on `u_prev` (a known
+constant by solve time, not the solve's own variable). Same shape as
+`_steer_rate_anti_hunt`/`_corner_factor`, and composes multiplicatively with
+whichever of those is active rather than replacing it.
+
+**Implemented in:**
+- **Live**: `mpc_core.py`'s `_reversal_penalty_boost` (LTV-QP), mirrored in
+  `nmpc_core.py` (NMPC path, tracked through a running `rrate_steer_current`
+  value alongside the corner-blend/anti-hunt branches so the penalty
+  compounds onto whichever of those ran rather than the pre-branch base).
+  Fields: `mpc_params.py`'s `reversal_penalty_enabled`/`_boost_max`/`_k`
+  (LTV-QP-only) and `nmpc_reversal_penalty_enabled`/`_boost_max`/`_k`
+  (NMPC-only overrides, `-1.0` = inherit the LTV-QP value).
+- **Offline**: `controller/model_utils.py`'s `reversal_penalty_boost` (same
+  function, both controllers call it), wired into `sim/rollout_core.py`'s
+  LTV-QP and NMPC branches; `settings.py`'s `REVERSAL_PENALTY_*` /
+  `NMPC_REVERSAL_PENALTY_*` constants (same `-1.0`-inherit convention).
+
+**Validated on the LTV-QP path only.** Offline A/B on `comp_test_map_3`
+showed a genuine ~20% reversal-count reduction at negligible cost, no DNF.
+The NMPC path's own reversal penalty regressed the composite score
+offline (reversals dropped only ~5.6% while score worsened) — leave
+`nmpc_reversal_penalty_enabled` off unless a live A/B says otherwise; it is
+wired and functional, just not currently worth enabling.
 
 ## Slew-rate limit (`du_max`): on both sides, at 180 deg/s
 
@@ -440,7 +473,7 @@ removed without re-measuring against a repaired planner:
    applying it unsmoothed let a fast-changing tracking error compound with an
    already-falling curvature-based target into a single-tick `v_desired`
    cliff.
-3. **Speed-target rise limiter** — `SPEED_TARGET_RISE_RATE = 2.0` m/s², applied
+3. **Speed-target rise limiter** — `SPEED_TARGET_RISE_RATE = 7.0` m/s², applied
    in both controller nodes and `sim/rollout_core.py`. Increases only;
    decreases pass through instantly so a genuine brake request is never
    delayed.
@@ -998,41 +1031,6 @@ preceding single-scalar `r_a` cut this split superseded.
 
 A mechanism that scaled `R_rate[0,0]` up at low speed (`_low_speed_steer_rate_boost`, `boost_max=2.5, k=0.35`) was tried, live-tested, and disabled the same day for regressing turn-in; it no longer exists in either codebase at all, having been removed along with the rest of the lookahead gain-scheduling family when the corner-factor scheduler replaced it. See "Corner-factor scheduler" above for what replaced it and the current mechanism, and `docs/logs/late_turn_in_investigation.md`'s "Appendix — Low-speed steering-rate boost: full incident" for the full incident history.
 
-## Steering-effort relaxation approaching a corner
-
-`_adaptive_R_scaling`'s speed-dependent steering-effort penalty (`R[0,0] *=
-1 + 1.5*vx/(6+vx)`, e.g. ~2.07x at 15 m/s) has no lookahead relief built
-into it — it stays at full strength through an approaching corner
-regardless of curvature. `_steer_effort_straight_boost`, the only other
-mechanism touching `R[0,0]`, only ever raises it on a clear straight or
-relaxes back to the unscaled baseline as a corner is detected; neither
-pushes `R[0,0]` below baseline for an approaching corner. Without a third
-mechanism, a car entering a corner hot pays the full speed-based
-steering-effort penalty at exactly the moment it most needs to commit to
-turn-in. (`_lookahead_yaw_rate_relax` is the equivalent relief for
-`Q[3,3]`/yaw-rate — its docstring names "turns late/slowly" as the failure
-mode it guards against.)
-
-`_lookahead_steer_effort_relax(kappa_max_abs, car_speed, floor=0.5, ...)`
-is the `R[0,0]` counterpart: it mirrors `_lookahead_yaw_rate_relax`'s shape
-exactly (same demand-normalised corner-severity curve), falling from `1.0`
-(no corner ahead) toward `floor=0.5` as corner demand rises, composing
-multiplicatively with `_adaptive_R_scaling` and
-`_steer_effort_straight_boost`'s existing `R[0,0]` scalings — the only
-mechanism in the `R[0,0]` chain that pushes below baseline approaching a
-corner. `floor=0.5` matches `_lookahead_yaw_rate_relax`'s own default floor
-(same magnitude as the sibling mechanism it's modelled on).
-
-Fields: `mpc_core.py`/`mpc_params.py`
-(`lookahead_steer_effort_relax_enabled`,
-`adaptive_q_lookahead_steer_relax_floor`); mirrored in `model_utils.py`
-(`lookahead_steer_effort_relax`) / `sim/rollout_core.py` / `settings.py`
-(`LOOKAHEAD_STEER_EFFORT_RELAX_ENABLED`,
-`ADAPTIVE_Q_LOOKAHEAD_STEER_RELAX_FLOOR`), and the `fsds_simulator` mirror.
-See `docs/logs/late_turn_in_investigation.md`'s "Part 0c" for the original
-diagnosis and the full `R[0,0]`/`R_rate[0,0]` mechanism inventory it sits
-within.
-
 ## Curvature-forcing term: a rejected approach to blind path-bending prediction
 
 The QP's dynamics model (`Ad`/`Bd`) has no path-curvature term, so with
@@ -1092,6 +1090,73 @@ not reweight costs on the current-position error. No design or
 implementation exists for this. See `docs/logs/late_turn_in_investigation.md`
 Part 14 for why even the 25m ceiling is still short of some corner-approach
 gaps on real tracks, and for the candidate fixes considered.
+
+## Post-solve output smoothing (`output_smoothing_*`)
+
+**A genuinely different kind of mechanism from every other adaptive-gain
+feature above.** Every `Q`/`R`/`R_rate` gain-scheduling mechanism
+(`adaptive_R_rate`, corner-factor scheduler, reversal penalty, etc.)
+reshapes the QP's COST before solving, fresh each tick with no memory
+across ticks. Output smoothing instead low-pass-filters the SOLVED
+steering command afterward: `filtered += alpha*(raw - filtered)`, then
+blends `steering = (1-w)*raw + w*filtered`. Because `filtered` persists
+tick to tick, this is a genuine temporal filter and adds lag — the
+one mechanism in this family that does.
+
+That lag is bounded by fading `w` toward (never fully to) a floor as the
+car needs a fast, accurate response, via four independent, multiplicative
+`1/(1+k*|x|)`-shaped factors (the same saturating-curve style used
+throughout this codebase):
+
+1. **Current curvature** — `w = max(corner_floor, 1 - corner_frac)`, using
+   the existing `_corner_factor`. Full smoothing on a clean straight, fading
+   toward `corner_floor` as the car actually turns.
+2. **Current tracking error** (`k_ey`, `k_epsi`) — fades further as
+   `|e_y|`/`|e_psi|` grow, independent of curvature, so a disturbance
+   recovery on a straight (where curvature alone would keep smoothing at
+   full strength) still gets a fast response.
+3. **Lookahead curvature** (`lookahead_lead_s`) — fades smoothing down
+   BEFORE a corner already visible in the path arrives, not only once the
+   car's own current curvature has risen. Needed because a purely
+   current-curvature fade only starts acting after a short straight has
+   mostly already ended on tracks where straights are shorter than the
+   filter's own settle time. Implemented via `peak_kappa_ahead()` (mirrors
+   `curvature_speed()`'s dense-resample/denoise pipeline, returning peak
+   curvature over a scan window instead of a speed target) scanning a
+   speed-scaled distance (`scan_end = max(car_speed, 2.0) * lookahead_lead_s`
+   — a TIME lead converted to a DISTANCE via current speed, so the warning
+   lead time stays constant across speed rather than a fixed-metres window
+   giving less warning exactly when a fast car needs more) ahead of the
+   car's nearest point on the path; `corner_frac = max(current, lookahead)`.
+4. **`corner_floor`** — the hard floor factors 1-3 can never fade below,
+   so smoothing never fully disengages even at maximum corner severity.
+
+**Implemented in:**
+- **Live**: `mpc_controller.py`/`mpc_controller_standalone.py`'s
+  post-solve block (search "Output smoothing"); `peak_kappa_ahead()` in
+  `control_utils.py`. Params: `output_smoothing_enabled`, `_alpha`,
+  `_corner_floor`, `_k_ey`, `_k_epsi`, `_lookahead_lead_s` — node-declared
+  parameters, NOT `MPCParams`/`NMPCParams` fields, so (unlike most tunables
+  in this codebase) they need EXPLICIT `DeclareLaunchArgument`/parameters-dict
+  wiring in `control.launch.py`/`sim.launch.py` rather than picking up
+  auto-generated launch args; `launch_all.sh`'s `OUTPUT_SMOOTHING_*`
+  variables forward into that wiring via `_append_mpc_arg`.
+- **Offline**: `sim/speed_profile.py`'s `peak_kappa_ahead()`, wired into
+  `sim/rollout_core.py`'s `if OUTPUT_SMOOTHING_ENABLED:` block (a local
+  `corner_frac_smooth` variable, not reassigning `corner_frac`, which is
+  read elsewhere in that function); `settings.py`'s `OUTPUT_SMOOTHING_*`
+  constants.
+
+**Caution:** the underlying EMA filter's own settle time
+(`~3/(alpha*CONTROL_HZ)` seconds to ~95%) sets the scale for tuning both
+`corner_floor` and `lookahead_lead_s` — a `lookahead_lead_s` much shorter
+than that settle time gives the fade too little time to complete before a
+corner arrives. `alpha` itself needs a genuine disturbance-recovery test
+to tune, not just an oracle-path rollout: a near-perfect reference path
+never exercises the recovery speed a real disturbance demands, so an
+offline sweep on that metric alone can select an `alpha` that looks better
+but drifts badly live. Re-tuning any of these four factors without a live
+test is not sufficient validation.
 
 ## Straight-line lateral-error snap-back sharpness
 
@@ -1468,16 +1533,21 @@ rollforward.
 `q_ey_straight`/`q_ey_corner`, `q_epsi_straight`/`q_epsi_corner`,
 `q_r_straight`/`q_r_corner`, `rrate_steer_straight`/`rrate_steer_corner`,
 `r_steer_corner_mid`, `low_speed_corner_boost_v_half`/`_max_extra`,
-`epsi_ra_half_rad`/`_accel_boost_max`/`_brake_floor` — none have any read
-site in `nmpc_core.py`.
+`epsi_ra_half_rad`/`_accel_boost_max`/`_brake_floor`, `reversal_penalty_enabled`/
+`_boost_max`/`_k` (soft steering-reversal penalty, see its own section below)
+— none have any read site in `nmpc_core.py`.
 
-**NMPC-only overrides** (`mpc_params.py:189-205, 222-223`): `nmpc_q_e_y`,
-`nmpc_q_e_yd`, `nmpc_q_e_psi`, `nmpc_q_epsi_dot` (overrides `q_r`, different
-regressor), `nmpc_q_e_v`, `nmpc_r_delta`, `nmpc_r_a_accel`, `nmpc_r_a_brake`,
-`nmpc_r_rate_delta`, `nmpc_r_rate_a`, `nmpc_terminal_scale`,
-`nmpc_steer_rate_anti_hunt_enabled`, `nmpc_anti_hunt_boost_max` — each read
-solely by `nmpc_core.py`'s `_pick()` calls; `mpc_core.py` never references any
-of them.
+**NMPC-only overrides** (`mpc_params.py:189-205, 222-223, 238-240, 253-256`):
+`nmpc_q_e_y`, `nmpc_q_e_yd`, `nmpc_q_e_psi`, `nmpc_q_epsi_dot` (overrides
+`q_r`, different regressor), `nmpc_q_e_v`, `nmpc_r_delta`, `nmpc_r_a_accel`,
+`nmpc_r_a_brake`, `nmpc_r_rate_delta`, `nmpc_r_rate_a`, `nmpc_terminal_scale`,
+`nmpc_steer_rate_anti_hunt_enabled`, `nmpc_anti_hunt_boost_max`,
+`nmpc_reversal_penalty_enabled`/`_boost_max`/`_k` (see the reversal-penalty
+section below), `nmpc_corner_rrate_blend_enabled`, `nmpc_corner_factor_k`,
+`nmpc_rrate_steer_straight`/`_corner` (blends `R_rate[0,0]` by current
+curvature; takes priority over `nmpc_steer_rate_anti_hunt_enabled` if both
+are set — use one or the other, not both) — each read solely by
+`nmpc_core.py`'s `_pick()` calls; `mpc_core.py` never references any of them.
 
 **`NMPCParams`** (`nmpc_params.py`) — all 20 fields NMPC-only by the file's
 own design (module docstring, lines 9-19); `mpc_core.py` never imports or
@@ -1500,9 +1570,13 @@ Structural/solver constants (`NMPC_HORIZON`, `NMPC_SQP_ITERS`, etc.) live in
 `settings.py`'s "Nonlinear MPC (NMPC)" section, kept numerically identical to
 `NMPCParams` by hand. See `docs/tuning.md`'s NMPC section for the tuning
 surface, and `late_turn_in_investigation.md` Part 16 for the full research,
-implementation, and validation history, extended by §16.9-16.11 with the
-live-test results, the MPCC-feature live tests, and the standstill-steering
-bug and fix. Reproduce the offline closed-loop comparison with
+implementation, and validation history, extended by §16.9-16.12 with the
+live-test results, the MPCC-feature live tests, and two DISTINCT
+standstill-steering bugs/fixes (§16.11: a manufactured tyre force at
+`v_x=0`; §16.12: the NMPC's own speed-tracking cost term leaking into
+steering — see this doc's "Post-solve output smoothing" section's
+neighbour, the speed-target rise limiter, for the fix's other half).
+Reproduce the offline closed-loop comparison with
 `python3 ros2/src/fsae_planning/control/fsae_control/test/nmpc_offline_check.py`
 (no ROS/FSDS session needed; the closed-loop section self-skips without an
 `fsae_MPCTest` sibling checkout) or `python -m tuner.nmpc_offline_check`.

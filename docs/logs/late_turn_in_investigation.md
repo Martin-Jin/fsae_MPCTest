@@ -2748,6 +2748,82 @@ second), and the full run (1107 ticks, a complete lap) posted the best
 numbers of the whole session — `|e_y|` mean 0.195 m, max 0.968 m, steering
 saturation 0.09%.
 
+### 16.12 Fixed (partially): NMPC standstill steering via speed-cost leaking into the steering channel
+
+**A DIFFERENT bug from §16.11 above** — same top-level symptom (large
+steering excursion from a standing start, small tracking error), different
+mechanism, found independently on 2026-08-20 during a live test that still
+showed steering saturation on liftoff despite §16.11's fix already being in
+place. Do not conflate the two: §16.11 was a manufactured tyre force in the
+plant model at `v_x=0`; this one is a coupling in the NMPC's own cost
+function that exists regardless of the plant model.
+
+**Symptom:** `v_desired` jumped straight to the raw target speed (the full
+track speed, e.g. 18 m/s) on the very first control tick, because the
+speed-target rise limiter's own state variable (`v_des_prev` live,
+`v_des_prev` offline) started as `None` and the limiter's guard
+(`if v_des_prev is not None:`) skipped applying the limit entirely on that
+first tick — the one tick where the gap between `v_x=0` and the raw target
+is largest and the limiter matters most. The same `None`-guard pattern also
+gated `nmpc_core.py`'s own internal `_v_des_filtered`, so it provided zero
+smoothing on its first use too.
+
+**Root cause of why this leaks into STEERING specifically, not just
+throttle:** the NMPC's per-stage cost includes `e_v = v_x - v_ref`
+(`w_out[4]`, `q_e_v`/`nmpc_q_e_v`). At a standing start with the raw target
+applied, `e_v` is 1-2 orders of magnitude larger than `e_y`/`e_psi`,
+becoming the dominant residual in the Gauss-Newton least-squares cost.
+Steering has no DIRECT effect on `v_x`'s dynamics, but the sensitivity
+matrix `S = dx/dU` (built via finite-difference `A_k`/`B_k` Jacobians) does
+carry a real, if numerically small per-stage, coupling — the kinematic
+branch's `r_dot_kin` depends on steering, which feeds `v_y`/`r` into
+`v_x_dot` at subsequent stages. A large enough `e_v` residual, projected
+through that coupling by `grad = G.T @ g`, is enough to move the steering
+control even though steering cannot actually reduce that residual.
+Confirmed directly: with `e_v` active, a single SQP step from a state with
+`e_y=0.15 m`/`e_psi=-1.0°` commanded a `-9°` steering change; with `q_e_v`
+zeroed, the same state gave `-0.004°`.
+
+**Fix:** seed `v_des_prev`/`_v_des_filtered` from the car's actual current
+speed the first time each is used, instead of leaving the rate limiter
+disabled for that first tick. Applied to both controller nodes
+(`mpc_controller.py`, `mpc_controller_standalone.py`) and
+`sim/rollout_core.py`. This closes the WORST case (a full jump to the raw
+target) but does not fully close the underlying `e_v`→steering coupling —
+see below.
+
+**Residual, NOT fully fixed:** even with the rise limiter correctly seeded,
+a smaller version of the same coupling can still occur during the ramp
+itself, if achieved acceleration lags the ramped target. Observed live: a
+brief window (2 ticks, max ~22°, well under the 25° mechanical lock) where
+steering built up smoothly while `e_y`/`e_psi` were still small, driven by
+the same `e_v` mechanism at a smaller magnitude. Three fixes for this
+residual were tried and rejected, in order:
+
+1. **Capping the horizon's speed target using the controller's OWN previous
+   acceleration output**, projected forward. Created a feedback loop: low
+   achieved accel → low cap → weaker incentive to accelerate → accel stays
+   low. Produced a permanent low-speed stall (~2 m/s) rather than fixing
+   anything. Any fix for this residual must not depend on the controller's
+   own prior output.
+2. **Soft-saturating the `e_v` residual itself** (`tanh`) inside `_outputs()`.
+   Flattens the cost GRADIENT everywhere past the saturation knee, not just
+   in the extreme case, which weakened real acceleration authority even at
+   moderate, legitimate speed gaps.
+3. **Boosting `r_delta` (steering effort) when the speed gap is large.**
+   Ineffective: the SQP's trust-region step-size limit (`trust_delta_rad`,
+   9°) was the actual binding constraint in both boosted and unboosted
+   cases, so reweighting `r_delta` shifted the gradient's direction but not
+   the trust-region-clipped magnitude of the resulting step.
+
+All three were reverted; none are present in the shipped code. The
+residual is small enough (well under the mechanical limit, brief) that it
+was left as an open, documented gap rather than risk shipping a fix with a
+worse side effect. A durable fix likely needs to change how the cost
+couples steering and speed-tracking (e.g. a genuinely decoupled residual
+weighting, or restructuring which stages carry `e_v`), not a scalar
+scaling of one existing term — worth exploring, not yet attempted.
+
 ## Part 0 (background) — how the accel/brake effort split (`r_a_accel`/`r_a_brake`) came about, 2026-08-12
 
 This predates Part 1 above chronologically (same day) and is why Part 1's

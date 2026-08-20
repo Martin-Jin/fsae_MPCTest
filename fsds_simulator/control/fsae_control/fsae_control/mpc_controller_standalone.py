@@ -158,52 +158,46 @@ class MPCControllerStandaloneNode(Node):
                                        # the geometric path tangent for e_psi's
                                        # reference ONLY (e_y is unaffected). Default
                                        # False: land off, prove live before flipping.
-                # EXPERIMENTAL, added 2026-08-19: post-solve output smoothing
-                # on the final `steering` command, NOT a QP weight change --
-                # see the ── Output smoothing ── block in _control_loop below
-                # for the full mechanism.
+                # EXPERIMENTAL: post-solve output smoothing on the final
+                # `steering` command, NOT a QP weight change -- see the
+                # ── Output smoothing ── block in _control_loop below for the
+                # full mechanism, and planning_control_sync.md's "Post-solve
+                # output smoothing" section for the tuning surface.
                 ('output_smoothing_enabled', False),
                 ('output_smoothing_alpha', 0.3),          # EMA coefficient on the
                                        # smoothed signal; lower = more smoothing/more lag
                 ('output_smoothing_corner_floor', 0.1),   # min smoothing weight
                                        # retained even at full curvature (corner_frac=1) --
                                        # smoothing never fully switches off, just weakens
-                # EXPERIMENTAL, added 2026-08-20: fade smoothing down (never
-                # off) as CURRENT tracking error grows, on top of the
-                # curvature-based fade above -- large e_y/e_psi means the car
-                # needs its raw, fast-reacting command NOW, same rationale as
-                # the corner_floor fade but keyed on tracking error instead
-                # of curvature. 0.0 disables the corresponding factor
-                # (saturates at 1.0, i.e. no extra fade from that term).
-                # Initial guesses of 3.0/5.0 were too sensitive: on
-                # comp_test_map_3 (recorded, NMPC) ordinary tracking noise
-                # (mean |e_y|~0.25m, |e_psi|~4.5deg) already faded smoothing
-                # to ~0.4-0.7, undoing most of the jitter-suppression benefit
-                # (offline score 0.639 vs 0.623 with the fade OFF). Lowered
-                # to 0.5/0.8 (offline score 0.598, saturation 2.74%->0.19%)
-                # so the fade stays near 1.0 for normal driving and only
-                # meaningfully engages at disturbance-scale errors (>~1m /
-                # >~15deg).
+                # Fades smoothing down (never off) as CURRENT tracking error
+                # grows, on top of the curvature-based fade above -- large
+                # e_y/e_psi means the car needs its raw, fast-reacting
+                # command NOW, same rationale as the corner_floor fade but
+                # keyed on tracking error instead of curvature. 0.0 disables
+                # the corresponding factor (saturates at 1.0, i.e. no extra
+                # fade from that term). CAUTION: values much above ~1.0 are
+                # sensitive enough that ordinary tracking noise (not an
+                # actual disturbance) already fades smoothing most of the
+                # way out, undoing the jitter-suppression this feature
+                # exists for -- see planning_control_sync.md before raising
+                # these past their current defaults.
                 ('output_smoothing_k_ey', 0.5),     # 1/m; higher = fades out faster per metre of |e_y|
                 ('output_smoothing_k_epsi', 0.8),   # 1/rad; higher = fades out faster per radian of |e_psi|
-                # EXPERIMENTAL, added 2026-08-20: fade smoothing down BEFORE
-                # the car reaches a corner already visible in the path, not
-                # only once the car's own CURRENT curvature has risen.
-                # Motivated by a track (comp_test_map_3) where 61% of
-                # "straights" between corners are under 2s -- shorter than
-                # this filter's own settle time at typical alpha values, so
-                # a purely current-curvature corner_frac only starts fading
-                # smoothing after the straight has mostly already ended,
-                # producing a sustained sway right where two corners are
-                # close together. output_smoothing_lookahead_lead_s is a
-                # TIME lead (converted to a scan distance via the car's own
-                # current speed each tick, so the lead stays consistent
-                # across speed rather than a fixed metres value giving less
-                # warning at high speed exactly when more is needed), sized
-                # to roughly this filter's own ~95% settle time
-                # (3 / (alpha * CONTROL_HZ) seconds) so the fade has time to
-                # complete before the corner arrives. 0.0 disables (pure
-                # current-curvature corner_frac, unchanged behaviour).
+                # Fades smoothing down BEFORE the car reaches a corner
+                # already visible in the path, not only once the car's own
+                # CURRENT curvature has risen -- needed on tracks whose
+                # straights are shorter than this filter's own settle time,
+                # where a purely current-curvature fade only starts acting
+                # after the straight has mostly already ended.
+                # output_smoothing_lookahead_lead_s is a TIME lead (converted
+                # to a scan distance via the car's own current speed each
+                # tick, so the lead stays consistent across speed rather than
+                # a fixed metres value giving less warning at high speed
+                # exactly when more is needed). Size it to roughly this
+                # filter's own ~95% settle time (3 / (alpha * CONTROL_HZ)
+                # seconds) so the fade has time to complete before the corner
+                # arrives. 0.0 disables (pure current-curvature corner_frac,
+                # unchanged behaviour).
                 ('output_smoothing_lookahead_lead_s', 0.5),
             ],
         )
@@ -660,7 +654,7 @@ class MPCControllerStandaloneNode(Node):
             car_vy=self._car_vy,
         )
 
-        # ── Output smoothing (EXPERIMENTAL, default off, added 2026-08-19) ──
+        # ── Output smoothing (EXPERIMENTAL, default off) ──
         # Post-solve moving-average filter on the FINAL steering command --
         # deliberately NOT a QP weight change (the solver's own Q/R/R_rate
         # stay exactly what they already are), so it can't silently override
@@ -676,8 +670,8 @@ class MPCControllerStandaloneNode(Node):
         # below it) as the car actually turns, so a sharp corner still gets
         # a mostly-instant response while a straight gets a smoothed one.
         #
-        # EXPERIMENTAL, added 2026-08-20: ALSO fade smoothing down (never
-        # off, same floor) as CURRENT tracking error grows -- large |e_y| or
+        # ALSO fades smoothing down (never off, same floor) as CURRENT
+        # tracking error grows -- large |e_y| or
         # |e_psi| means the car needs its raw, fast-reacting command right
         # now regardless of curvature (e.g. recovering from a disturbance on
         # a straight, where corner_frac alone would keep smoothing at full

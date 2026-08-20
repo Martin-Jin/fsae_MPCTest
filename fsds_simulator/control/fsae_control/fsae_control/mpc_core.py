@@ -1334,20 +1334,15 @@ class MPCController:
         adapt["Q_epsi_base"] = float(Q_base[2, 2])
         adapt["Q_r_base"]    = float(Q_base[3, 3])
 
-        # Fixed 2026-08-19: this used to OVERWRITE R_rate_scaled[0,0] outright,
-        # discarding whatever _adaptive_R_rate/_steer_rate_anti_hunt (above)
-        # had just computed for that same entry -- adapt["m_Rrate_antihunt"]
-        # logged the ratio anti-hunt WOULD have applied, but it never reached
-        # the QP. The blend below now sets the BASE value (current-curvature
-        # straight/corner schedule), and anti-hunt's already-computed ratio
-        # is reapplied multiplicatively on top -- so on a genuine clean
-        # straight (corner_frac~0 AND centred/aligned/uncurving) the two
-        # compose instead of the second silently discarding the first.
-        # m_Rrate_reversal (added 2026-08-20) is reapplied the SAME way, for
-        # the SAME reason -- this overwrite point is exactly where
-        # m_Rrate_antihunt's own effect was previously getting silently
-        # dropped, so any future multiplier computed before this line must
-        # be threaded through here too, not just at the point it's computed.
+        # CAUTION: this line sets R_rate_scaled[0,0]'s BASE value (the
+        # current-curvature straight/corner schedule), so every multiplier
+        # computed above (m_Rrate_antihunt, m_Rrate_reversal, and any future
+        # one added before this point) must be explicitly reapplied here too
+        # -- an assignment that doesn't multiply in all of them silently
+        # discards whichever one it omits, even though that multiplier's own
+        # value is still correctly logged to adapt[...]. This exact class of
+        # bug has recurred more than once; do not add a new R_rate[0,0]
+        # multiplier without threading it through this line.
         R_rate_scaled = R_rate_scaled.copy()
         R_rate_scaled[0, 0] = _blend(
             self.params.rrate_steer_straight, self.params.rrate_steer_corner,

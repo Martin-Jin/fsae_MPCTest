@@ -404,7 +404,7 @@ ADAPTIVE_Q_SCALING_ENABLED = True
 # Kept enabled to match the live controller.
 STEER_RATE_ANTI_HUNT_ENABLED = True
 
-# [LTV-QP only, EXPERIMENTAL, added 2026-08-20] Soft constraint against
+# [LTV-QP only, EXPERIMENTAL] Soft constraint against
 # steering REVERSALS (tick-to-tick sign flip), approximated by boosting
 # R_rate[0,0] whenever LAST tick's steering was already close to zero -- see
 # controller/model_utils.py::reversal_penalty_boost's docstring for why a
@@ -416,7 +416,7 @@ REVERSAL_PENALTY_ENABLED = False
 REVERSAL_PENALTY_BOOST_MAX = 4.0   # ceiling multiplier, applied when u_prev steer == 0
 REVERSAL_PENALTY_K = 8.0           # 1/rad; half-boost at ~7.2deg of previous steering
 
-# [shared, both controllers, EXPERIMENTAL, added 2026-08-19] Post-solve
+# [shared, both controllers, EXPERIMENTAL] Post-solve
 # moving-average filter on the FINAL steering command, applied identically
 # regardless of which controller (LTV-QP or NMPC) produced it -- mirrors
 # ros2/.../mpc_controller_standalone.py's node-level Output smoothing block.
@@ -433,13 +433,16 @@ REVERSAL_PENALTY_K = 8.0           # 1/rad; half-boost at ~7.2deg of previous st
 # so a sharp corner still gets a mostly-instant response.
 OUTPUT_SMOOTHING_ENABLED = False
 OUTPUT_SMOOTHING_ALPHA = 0.3          # EMA coefficient; lower = more smoothing/more lag
-# lowered 0.3->0.1 on 2026-08-19: at 0.3 the filter's own lag showed up as a
-# ~2.5s delayed correction at corner entry/exit (e_y overshot then swung back
-# well after corner_frac had already dropped), a slow "sway" distinct from
-# the high-frequency jitter this filter was built to remove.
+# CAUTION: this is the live-validated value. A lower alpha (heavier
+# smoothing) can look strictly better on an offline reversals/s sweep, but
+# the offline recorded-map rollout has almost no genuine disturbance to
+# correct -- a slow filter reads as pure improvement there while live it
+# produces a real sustained lateral drift once the EMA's own settle time
+# (~3/(alpha*CONTROL_HZ) seconds) is too slow to track an actual
+# correction. Re-tune only against a live A/B, not this offline metric.
 OUTPUT_SMOOTHING_CORNER_FLOOR = 0.1   # min smoothing weight retained even at full curvature
 
-# [shared, both controllers, EXPERIMENTAL, added 2026-08-20] ALSO fade
+# [shared, both controllers, EXPERIMENTAL] ALSO fade
 # smoothing down (never below OUTPUT_SMOOTHING_CORNER_FLOOR) as CURRENT
 # tracking error grows, on top of the curvature-based fade above -- large
 # |e_y| or |e_psi| means the car needs its raw, fast-reacting command right
@@ -452,7 +455,7 @@ OUTPUT_SMOOTHING_CORNER_FLOOR = 0.1   # min smoothing weight retained even at fu
 OUTPUT_SMOOTHING_K_EY = 0.5      # 1/m; higher = fades out faster per metre of |e_y|
 OUTPUT_SMOOTHING_K_EPSI = 0.8    # 1/rad; higher = fades out faster per radian of |e_psi|
 
-# [shared, both controllers, EXPERIMENTAL, added 2026-08-20] Fade smoothing
+# [shared, both controllers, EXPERIMENTAL] Fade smoothing
 # down BEFORE the car reaches a corner already visible in the path, not only
 # once the car's own CURRENT curvature has risen. Motivated by a track
 # (comp_test_map_3) where 61% of "straights" between corners are under 2s --
@@ -605,7 +608,7 @@ EPSI_RA_BRAKE_FLOOR = 0.5
 # straights, where a speed-error weight does little. Compare on the approach
 # phase when re-tuning this.
 # Mirrors mpc_params.py's Q_diag.
-Q_diag      = [6.0, 0.8, 1.65, 0.70, 5.40, 0.0, 0.0, 0.0]
+Q_diag      = [6.0, 0.8, 1.65, 1.20, 5.40, 0.0, 0.0, 0.0]
 # [shared] R_diag index -> input penalised:
 #   [0] delta_cmd  steering command effort (rad)
 #   [1] a_cmd      acceleration command effort (m/s^2)
@@ -722,7 +725,7 @@ NMPC_R_RATE_DELTA = -1.0
 NMPC_R_RATE_A    = -1.0
 NMPC_TERMINAL_SCALE = -1.0
 
-# [NMPC only, EXPERIMENTAL, added 2026-08-19] Reuses model_utils.steer_rate_anti_hunt
+# [NMPC only, EXPERIMENTAL] Reuses model_utils.steer_rate_anti_hunt
 # (the same function STEER_RATE_ANTI_HUNT_ENABLED above already gates for the
 # LTV-QP) on the NMPC too -- independent flag, not inherited, since the live
 # nmpc_core.py module docstring documents a deliberate decision NOT to port
@@ -736,7 +739,7 @@ NMPC_TERMINAL_SCALE = -1.0
 # offline-side constant to parameterise this with yet.
 NMPC_STEER_RATE_ANTI_HUNT_ENABLED = False
 
-# [NMPC only, EXPERIMENTAL, added 2026-08-19] A narrower, ALTERNATIVE port of
+# [NMPC only, EXPERIMENTAL] A narrower, ALTERNATIVE port of
 # the LTV-QP's corner_factor family -- blends R_rate[0,0] between
 # NMPC_RRATE_STEER_STRAIGHT/_CORNER by CURRENT curvature alone
 # (model_utils._corner_factor/_blend, imported not reimplemented). Unlike the
@@ -750,7 +753,7 @@ NMPC_CORNER_FACTOR_K = -1.0        # -1 = inherit CORNER_FACTOR_K
 NMPC_RRATE_STEER_STRAIGHT = -1.0   # -1 = inherit RRATE_STEER_STRAIGHT
 NMPC_RRATE_STEER_CORNER = -1.0     # -1 = inherit RRATE_STEER_CORNER
 
-# [NMPC only, EXPERIMENTAL, added 2026-08-20] Applies
+# [NMPC only, EXPERIMENTAL] Applies
 # model_utils.reversal_penalty_boost (the same function
 # REVERSAL_PENALTY_ENABLED above already gates for the LTV-QP) to the NMPC too
 # -- gain-scheduled per tick from LAST tick's steering command and applied

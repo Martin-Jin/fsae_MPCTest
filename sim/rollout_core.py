@@ -1103,11 +1103,13 @@ def run_core_rollout(
             Q_base[2, 2] = _blend(Q_EPSI_STRAIGHT, Q_EPSI_CORNER, corner_frac)
             Q_base[3, 3] = _blend(Q_R_STRAIGHT, Q_R_CORNER, corner_frac)
 
-            # Fixed 2026-08-19: this used to OVERWRITE R_rate_scaled[0,0]
-            # outright, discarding whatever adaptive_R_rate/steer_rate_anti_hunt
-            # (above) had just computed -- see mpc_core.py's matching fix for
-            # the full reasoning. Blend sets the BASE value, anti-hunt's
-            # already-computed ratio is reapplied multiplicatively on top.
+            # CAUTION: this line sets R_rate_scaled[0,0]'s BASE value, so
+            # every multiplier computed above (m_rrate_antihunt,
+            # m_rrate_reversal, and any future one) must be explicitly
+            # reapplied here too -- an assignment that omits one silently
+            # discards its effect even though the multiplier's own value is
+            # still correctly logged elsewhere. See mpc_core.py's matching
+            # comment; this exact class of bug has recurred more than once.
             R_rate_scaled = R_rate_scaled.copy()
             R_rate_scaled[0, 0] = _blend(
                 RRATE_STEER_STRAIGHT, RRATE_STEER_CORNER, corner_frac
@@ -1189,18 +1191,17 @@ def run_core_rollout(
             if inaccurate:
                 inaccurate_count_total += 1
 
-        # ── Output smoothing (EXPERIMENTAL, default off, added 2026-08-19) ──
+        # ── Output smoothing (EXPERIMENTAL, default off) ──
         # Offline mirror of mpc_controller_standalone.py's node-level filter
-        # -- see that file for the full mechanism/reasoning. Applied to
+        # -- see that file (and planning_control_sync.md's "Post-solve output
+        # smoothing" section) for the full mechanism/reasoning. Applied to
         # u_opt[0] (steering) AFTER the solve, so it's identical whichever
         # controller (LTV-QP or NMPC) produced it, same as the live node.
         #
-        # EXPERIMENTAL, added 2026-08-20: ALSO fade smoothing down (never
-        # off, same floor) as CURRENT tracking error grows -- e_y/e_psi are
-        # already in scope above (used to build x0_mpc before the branch
-        # split), identical for both controllers. See
-        # mpc_controller_standalone.py's identical block for the full
-        # mechanism/reasoning.
+        # ALSO fades smoothing down (never off, same floor) as CURRENT
+        # tracking error grows -- e_y/e_psi are already in scope above (used
+        # to build x0_mpc before the branch split), identical for both
+        # controllers. See mpc_controller_standalone.py's identical block.
         if OUTPUT_SMOOTHING_ENABLED:
             if steer_filtered is None:
                 steer_filtered = u_opt[0]

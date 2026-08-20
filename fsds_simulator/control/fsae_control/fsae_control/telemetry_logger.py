@@ -137,15 +137,14 @@ ADAPTIVE_COLUMNS = (
     'nmpc_pred_epsi_end',      # predicted e_psi at the end of the horizon (rad)
     'nmpc_pred_ey_max_abs',    # peak predicted |e_y| anywhere in the horizon (m)
     # nmpc_friction_circle_enabled only (empty otherwise, same convention as
-    # every other column above) -- added 2026-08-13, missing here for one
-    # live test (mpc_standalone_control_1786585910.csv) that could have used
-    # them to confirm how close to F_max the solve was running; see
-    # planning_control_sync.md's "Three MPCC-inspired additions" section.
+    # every other column above); see planning_control_sync.md's "Three
+    # MPCC-inspired additions" section.
     'nmpc_fyf_max_abs',        # peak |front-axle lateral tyre force| anywhere in the horizon (N)
     'nmpc_fyr_max_abs',        # peak |rear-axle lateral tyre force| anywhere in the horizon (N)
-    # nmpc_speed_limit_enabled only (empty otherwise) -- added 2026-08-19,
-    # registered here up front per the fyf/fyr lesson above (that column was
-    # missing from this tuple for one whole live test before being caught).
+    # nmpc_speed_limit_enabled only (empty otherwise). CAUTION: a new
+    # feature-gated telemetry column needs adding to this tuple explicitly
+    # before it's live-tested, or last_telemetry silently drops it from the
+    # CSV -- this has happened more than once.
     'nmpc_speed_limit_over_max',  # peak predicted v_x above v_max(s)+margin anywhere in the horizon (m/s); 0 = bound never active
 )
 
