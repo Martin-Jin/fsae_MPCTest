@@ -107,6 +107,25 @@ NMPC_RRATE_STEER_CORNER=20.0     # try 15-25
   `corner_frac` is small and the softening barely engages — precisely the
   case that is broken. Likely insufficient alone, but nearly free to check.
 
+### Measured before the first run: `corner_factor_k` must be raised too
+
+`corner_frac = 1 - 1/(1 + k*|kappa|)`. Measured on the good `r_rate=52.5`
+live run, `corner_frac` **never exceeded 0.63** (p50 0.31, p90 0.49) at the
+default `k=8.0`. Because `_blend` is a plain lerp, the blend can therefore
+only travel ~2/3 of the way to its corner endpoint - even a corner endpoint
+of 2.0 leaves **~32** where the jerks actually occur (mean `corner_frac`
+0.40 on slew-limited ticks), i.e. only a 25% cut from 52.5. Far too weak.
+
+Raising `k` fixes the reach. Curvature seen on this track maps as
+`corner_frac` 0.40 -> R~12 m, 0.63 -> R~4.7 m, 0.03 -> R~250 m. At `k=20`
+the 12 m jerk zone reaches 0.63 while a 250 m near-straight stays at 0.07.
+
+**Config now set in `launch_all.sh`** (`k=20`, straight 52.5, corner 8.0),
+giving ~49 near-straight, ~34 at R=18 m, ~25 at R=12 m, ~16 at R=4.7 m.
+Awaiting live test. If chatter returns on straights, raise the corner
+endpoint rather than lowering `k` - `k` sets *where* the softening applies,
+the endpoint sets *how much*.
+
 ## Option 3 — Lookahead-curvature scheduling
 
 **Idea.** As Option 2 but keyed on **peak curvature ahead** rather than
