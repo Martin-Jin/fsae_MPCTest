@@ -269,12 +269,33 @@ class LapProgressTracker:
         self._end_wall: float | None = None
         self._reached_end = False
 
-    def update(self, car_pos, now: float) -> None:
-        """Advance the forward-bounded nearest-index search by one sample."""
+    # Speed (m/s) above which the car counts as having launched, for the
+    # lap-timer start. The clock MUST NOT start on the first control tick:
+    # the node logs from the moment it comes up, which is before the GO
+    # signal and before the car physically moves, so a first-tick start
+    # silently folds the whole standstill into lap_time_s. Measured ~0.95 s
+    # of dead time on a normal run -- enough to make lap times
+    # non-comparable between runs (a longer hold looks like slower driving)
+    # and to deflate time_bonus, and hence the composite score, by ~2%.
+    # 0.5 m/s is well clear of pose noise at a standstill while still
+    # triggering within one or two ticks of a real launch.
+    LAUNCH_SPEED_MPS = 0.5
+
+    def update(self, car_pos, now: float, car_speed: float | None = None) -> None:
+        """
+        Advance the forward-bounded nearest-index search by one sample.
+
+        `car_speed` (m/s) gates the lap-timer start: the clock begins on the
+        first sample where the car is actually moving (see
+        LAUNCH_SPEED_MPS), not on the first tick. Omitted (None) falls back
+        to starting on the first call, preserving the old behaviour for any
+        caller that has no speed to hand.
+        """
         if self._reached_end or len(self._path_X) < 2:
             return
         if self._start_wall is None:
-            self._start_wall = now
+            if car_speed is None or abs(car_speed) >= self.LAUNCH_SPEED_MPS:
+                self._start_wall = now
 
         # Forward-bounded: only search from the current index onward, same
         # rationale as rollout_core.py's find_closest_reference_bounded — it

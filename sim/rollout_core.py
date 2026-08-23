@@ -741,6 +741,14 @@ def run_core_rollout(
             history["planner_Y"] = []
 
     n_ran = max_steps
+    # Step at which the car first exceeds LAUNCH_SPEED_MPS, so sim_time (and
+    # therefore time_bonus) is measured from LAUNCH rather than from tick 0.
+    # Mirrors telemetry_logger.LapProgressTracker.LAUNCH_SPEED_MPS on the live
+    # side -- keep the two equal. Without this the standstill before the car
+    # gets moving is folded into the lap time, deflating time_bonus and making
+    # runs with different pre-launch holds non-comparable.
+    LAUNCH_SPEED_MPS = 0.5
+    launch_step = None
 
     for step in range(max_steps):
         X_g, Y_g, psi_g = state[0], state[1], state[2]
@@ -978,6 +986,8 @@ def run_core_rollout(
 
         # ── MPC state vector ────────────────────────────────────────────────
         vx_true = state[3]
+        if launch_step is None and abs(vx_true) >= LAUNCH_SPEED_MPS:
+            launch_step = step
         vx = max(vx_true, 0.5)
         e_y_dot = vx_true * np.sin(e_psi) + state[4] * np.cos(e_psi)
         x0_mpc = np.array([
@@ -1383,7 +1393,10 @@ def run_core_rollout(
     progress = cumulative_distance / path_length if path_length > 0 else 0.0
     progress = float(np.clip(progress, 0.0, 1.0))
 
-    sim_time = n_ran * DT
+    # Timed from LAUNCH, not from tick 0 -- see launch_step's comment above.
+    # Falls back to the full count if the car never moved, so a stalled run
+    # still reports the whole elapsed time rather than 0.
+    sim_time = (n_ran - (launch_step or 0)) * DT
     if reached_end:
         # Anchor the time bonus to the path's PHYSICAL optimum where available.
         #

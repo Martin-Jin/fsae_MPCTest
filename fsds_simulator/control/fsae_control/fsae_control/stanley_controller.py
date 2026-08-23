@@ -211,7 +211,7 @@ class StanleyControllerNode(Node):
             )
             self._telemetry.log_path(t, self._path)
             if self._lap_tracker is not None:
-                self._lap_tracker.update(self._car_pos, t)
+                self._lap_tracker.update(self._car_pos, t, self._car_speed)
 
         self.get_logger().info(
             f'cmd_vel: speed={speed:.2f} m/s  steer={steering:.3f} rad  '

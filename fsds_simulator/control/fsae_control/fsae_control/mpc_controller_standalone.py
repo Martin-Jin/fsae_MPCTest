@@ -777,7 +777,7 @@ class MPCControllerStandaloneNode(Node):
                 adaptive=tel)
             self._telemetry.log_path(t, self._path_pts)
             if self._lap_tracker is not None:
-                self._lap_tracker.update(self._car_pos, t)
+                self._lap_tracker.update(self._car_pos, t, self._car_speed)
 
         # ── Phase 5: publish ─────────────────────────────────────────────
         self._publish(cmd)
