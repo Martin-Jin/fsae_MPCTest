@@ -1580,3 +1580,17 @@ Reproduce the offline closed-loop comparison with
 `python3 ros2/src/fsae_planning/control/fsae_control/test/nmpc_offline_check.py`
 (no ROS/FSDS session needed; the closed-loop section self-skips without an
 `fsae_MPCTest` sibling checkout) or `python -m tuner.nmpc_offline_check`.
+
+**Open, separate issue: NMPC steering chatter while cornering** (magnitude
+hunting tick-to-tick, not a sign-flip reversal — distinct from both the
+reversal-penalty feature above and the two standstill bugs). Root cause not
+yet found; confirmed NMPC-specific (~7x noisier than the LTV-QP under
+matched conditions) and reproducible offline with zero sensor noise, so it
+is not purely a live sensor-noise artifact, though a live-only contributor
+also appears to stack on top of the offline-reproducible baseline. See
+`docs/logs/steering_chatter_investigation.md` for the full investigation —
+what's been ruled out (single cost-weight retunes, SQP iteration count,
+trust-region size in isolation, FD-Jacobian coarseness, reference-spline
+noise, Frenet-projection instability, terminal cost scale) and what hasn't
+been tried yet, before repeating any of that work. Reproduce/extend with
+`python -m tuner.steering_chatter_check`.
