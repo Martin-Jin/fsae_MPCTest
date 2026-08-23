@@ -199,7 +199,7 @@ writing — re-confirm before relying on them, since a resync can move them.
 
 | Constant | Offline copy | Live copy | Current value |
 |---|---|---|---|
-| `curvature_speed()`'s `a_lat_max` | `sim/speed_profile.py:499` (function default) | `fsds_simulator/control/fsae_control/fsae_control/control_utils.py:194` (function default) | `4.0` |
+| `curvature_speed()`'s `a_lat_max` | `sim/speed_profile.py` (`CURVATURE_SPEED_A_LAT_MAX` + function default) | `fsds_simulator/control/fsae_control/fsae_control/control_utils.py:194` (function default) | `5.5` |
 | Planner top/bottom speed clamp | `sim/rollout_core.py:67-68` (`PLANNER_V_MAX`, `PLANNER_V_MIN`) | `fsds_simulator/control/fsae_control/fsae_control/mpc_controller_standalone.py` (declared as the `v_max`/`v_min` ROS parameters, default `20.0`/`1.5`) | `20.0` / `1.5` |
 | Steering slew-rate limit (`du_max[0]`) | `model/vehicle_physics.py` (`VehicleParams.max_steer_rate`), applied as `max_steer_rate * DT` in `sim/rollout_core.py` and passed to `controller/optimiser.py`'s `du_max` | `fsds_simulator/control/fsae_control/fsae_control/mpc_core.py` (`MAX_STEER_RATE_RAD_S`, applied as `* self.dt`) | `radians(180.0)` rad/s |
 | Accel slew-rate limit (`du_max[1]`) | `sim/rollout_core.py` (`du_max` second element) | `fsds_simulator/control/fsae_control/fsae_control/mpc_core.py` (`self.du_max` second element) | `0.6` per step |
@@ -231,7 +231,7 @@ Notes on how these are actually used:
   `v_max`/`v_min` ROS params), not the functions' own default parameter
   values, that must be kept matched — the function defaults themselves are
   never hit in either the offline or live path.
-- `a_lat_max=4.0` is the value actually used (as each function's default,
+- `a_lat_max=5.5` is the value actually used (as each function's default,
   not overridden at either call site) and must stay identical between
   `sim/speed_profile.py`'s and `control_utils.py`'s `curvature_speed()` — see
   the explicit callout in `sim/speed_profile.py`'s `curvature_speed()`
@@ -1206,6 +1206,36 @@ either lever; see `late_turn_in_investigation.md`'s "Gradual-corner accel
 oscillation" section for the full worked example of how to distinguish the
 two.
 
+## Speed-profile aggressiveness: `CURVATURE_SPEED_A_LAT_MAX`
+
+Corner speed in the oracle profile comes from `v = √(a_lat_max / κ)`, so
+`CURVATURE_SPEED_A_LAT_MAX` (`sim/speed_profile.py`) is the single knob that
+sets how hard the car is willing to corner. `v_max`/`V_MAX` do NOT affect
+corner speed at all — they are a flat top-speed clip that only ever binds on
+the fastest straights, and on the precomputed-speed path they are not applied
+at all (the CSV's own values are the target, see `launch_all.sh`'s
+`SPEED_CSV` comment).
+
+**It is not a launch arg.** The value is baked into
+`tracks/<name>/speed_profile.csv` at export time. Changing it requires
+editing `sim/speed_profile.py`, re-running
+`python -m tuner.tools.export_speed_profile <map>`, and relaunching. It is
+ALSO the live `control_utils.curvature_speed()` default (used when no
+precomputed profile is loaded), so both sides must be changed together —
+see the numeric-parity table above.
+
+Scale reference: FSDS's measured sustained lateral-acceleration ceiling is
+~7.5 m/s² (with bursts to ~12.3 observed on a lap), so this planning value
+sits deliberately below the physical limit to leave margin for combined
+slip, model-plant mismatch and actuation lag. Raising it makes every corner
+faster proportionally to `√(a_lat_max)`; straights are unaffected once they
+are already at the `v_max` ceiling.
+
+**Caution when raising it:** the precomputed-speed branch applies no `v_max`
+clip, so the exported CSV's values are commanded directly with nothing above
+them to catch an over-aggressive profile. Step it up and measure rather than
+jumping to the measured physical ceiling.
+
 ## Dynamic speed cap
 
 `control_utils.dynamic_speed_cap()` is a thin wrapper over
@@ -1222,7 +1252,7 @@ and pull the target speed down before a corner is reached, never up.
 
 It uses its own, tighter constants than the live-`curvature_speed()`-only
 branch's numeric-parity defaults: `DYNAMIC_CAP_A_LAT_MAX=3.2` and
-`DYNAMIC_CAP_SAFETY=0.9` (vs. `a_lat_max=4.0`/`safety=1.0` elsewhere), so it
+`DYNAMIC_CAP_SAFETY=0.9` (vs. `a_lat_max=5.5`/`safety=1.0` elsewhere), so it
 engages a little before the oracle profile would actually be violated.
 Downstream, `tracking_error_speed_gate()` and `SPEED_TARGET_RISE_RATE` apply
 exactly as before — the cap only changes what `v_curv` feeds into that

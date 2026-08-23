@@ -98,8 +98,8 @@ controller:
     r_delta: 1.8               # steering command effort (1/rad^2)
     r_a_accel: 2.25            # acceleration command effort, a_cmd >= 0 (1/(m/s^2)^2)
     r_a_brake: 0.5             # acceleration command effort, a_cmd < 0 -- braking (1/(m/s^2)^2)
-    r_rate_delta: 2.5          # steering rate of change (1/(rad/s)^2)
-    r_rate_a: 2.25             # acceleration rate of change (1/(m/s^3)^2)
+    r_rate_delta: 52.5         # steering rate of change (1/(rad/s)^2)
+    r_rate_a: 5.0              # acceleration rate of change (1/(m/s^3)^2)
     terminal_q_scale: 1.0      # extra weight on terminal predicted state; 1.0 = no-op
 
     # Feature enable/disable flags

@@ -1,7 +1,177 @@
 # Steering chatter investigation (NMPC, live + offline)
 
-**Status: OPEN.** Root cause not yet found. This doc exists so a future
-session can resume without re-deriving what's already been ruled out.
+**Status: RESOLVED — `r_rate_delta` was simply far too low.** Raising the
+QP's own steering-rate cost from 2.8 to ~50 (live-tested) more than halved
+the chatter. Everything below is retained because most of it is still valid
+as ruled-out ground, but read this section first — one of the "ruled out"
+entries was WRONG, and the mistake is instructive.
+
+## Resolution
+
+Live A/B on `comp_test_map_3` (t>5s, NMPC, output_smoothing off unless noted):
+
+| `r_rate_delta` | std_d | mean\|d\| | sign-flip | \|e_y\| | \|e_psi\| |
+|---|---|---|---|---|---|
+| 2.8 (shipped) | 3.145° | 2.538° | 66.1% | 0.177 | 5.37° |
+| 20 | 2.685° | 1.913° | 65.0% | 0.204 | 4.99° |
+| **50** | **1.855°** | **1.173°** | **55.5%** | 0.211 | 4.60° |
+
+`mean|d_steer|` per tick more than halved (2.54 → 1.17°), std_d down 41%,
+and the sign-flip rate finally moved (66% → 55.5%) after being pinned near
+65% through every other intervention tried. Cost is a modest `|e_y|` rise
+(0.177 → 0.211 m); `|e_psi|` actually improved.
+
+Caveats on those numbers: `r_rate_a` also moved (2.25 → 5.0) in the same
+runs, so the longitudinal weight is a confound for the `|e_psi|`/speed
+columns (the steering result is attributable to `r_rate_delta`); and the
+20/50 runs are shorter (42-62 s vs 90 s), so they may not cover identical
+corners — the per-tick chatter metric is robust to that, `|e_y|` less so.
+
+### Follow-up sweep and the shipped value (52.5)
+
+Later live runs, on the faster speed profile (`CURVATURE_SPEED_A_LAT_MAX`
+4.0 → 5.5) and with `output_smoothing` off:
+
+| `r_rate_delta` | mean\|d\| | flip% | \|e_y\| | \|e_psi\| | v | sat% |
+|---|---|---|---|---|---|---|
+| 0.0 (control) | 4.724° | 70.9% | 0.465 | 7.49° | 9.40 | 1.09 |
+| 52.5 | **1.919°** | 59.7% | 0.288 | 5.84° | 10.29 | 0.03 |
+| 70.0 | 1.786° | 60.7% | 0.306 | 5.96° | 10.33 | 0.04 |
+
+The `r_rate_delta=0.0` run is the cleanest confirmation of the diagnosis:
+with the rate cost fully off, chatter is 4.72°/tick vs 1.92° at 52.5.
+**52.5 is shipped** — it beats 70 on `|e_y|` and `|e_psi|` while the chatter
+difference is small. Persisted in `mpc_params.py`, `fsae_params.yaml` and
+`settings.py` (`R_rate_diag[0]`).
+
+Versus the pre-investigation baseline (`r_rate_delta` 2.8, `a_lat_max` 4.0,
+`output_smoothing` ON): chatter 2.538 → 1.919°, speed 9.74 → 10.29 m/s,
+saturation 0.00 → 0.03%, but `|e_y|` 0.177 → 0.288 m (+62%). That `|e_y|`
+rise is shared between the rate damping and the faster speed profile and has
+NOT been attributed between them — one run at `a_lat_max=4.0` with
+`r_rate_delta=52.5` would separate them.
+
+### The offline harness now DNFs on the shipped defaults — READ THIS FIRST
+
+With `a_lat_max=5.5` + `r_rate_delta=52.5` (both shipped),
+`python -m tuner.nmpc_offline_check` **DNFs** the NMPC closed-loop section
+(`|e_y|` mean ~0.50, offtrack, ~450 of ~1000 ticks). The same config runs
+**cleanly live** — the fourth time offline has mispredicted this stack.
+
+Isolated offline (via `tuner/steering_chatter_check.py --set`):
+
+| a_lat_max | r_rate_delta | offline result |
+|---|---|---|
+| 4.0 | 2.5 | OK (flip 48.8%, \|e_y\| 0.295) |
+| 4.0 | 50 | OK (flip 34.2%, \|e_y\| 0.376) |
+| 5.5 | 2.5 | OK (flip 50.4%, \|e_y\| 0.424) |
+| **5.5** | **50** | **DNF / offtrack** |
+
+Each change is survivable alone; the combination is not, offline only. The
+plausible mechanism is that a heavily rate-damped controller cannot turn the
+wheel fast enough for corners entered ~14% quicker — which is the SAME
+physical story as the open shallow-corner turn-in problem below, just
+expressed as an outright failure because the offline plant is less forgiving.
+
+**Consequence for future work: `nmpc_offline_check`'s closed-loop pass is
+currently a FAILING gate and cannot be used as a regression check as-is.**
+Do not read a fresh DNF there as "my change broke something" without first
+confirming it also DNFs on an unmodified tree. Either fix the underlying
+turn-in problem (which may clear it), or re-baseline the check — do not
+simply relax the assertion.
+
+## TRAP: enabling `nmpc_corner_rrate_blend_enabled` silently discards `r_rate_delta`
+
+Live-tested and it broke the controller. The blend does NOT scale
+`r_rate_delta` — it **overwrites** `R_rate[0,0]` outright:
+
+```python
+R_rate[0,0] = _blend(rrate_steer_straight, rrate_steer_corner, corner_frac)
+```
+
+With `nmpc_rrate_steer_straight`/`_corner` left at their `-1.0` ("inherit")
+defaults they resolve to the **LTV-QP's** `rrate_steer_straight=2.0` /
+`rrate_steer_corner=1.25` — values never tuned for the NMPC. Measured
+result: the controller ran at `Rrate_steer` 1.53-2.00 (mean 1.78) instead of
+52.5, a ~30x cut, giving **20.95% steering saturation**, `|e_y|` **1.18 m**,
+`|e_psi|` **12.1°**, chatter 3.51°/tick — worse than the `r_rate_delta=0.0`
+control run on several axes.
+
+**If re-enabling, set BOTH endpoints explicitly**, scaled to the current
+`r_rate_delta` (e.g. 52.5 straight / ~25 corner). Never leave them at `-1`.
+The blend is still a promising shape for the open problem below — heavy
+damping on straights, softer in corners — but only with explicit endpoints.
+
+## OPEN: late/jerky turn-in on shallow corners
+
+Reported after the `r_rate_delta=52.5` fix shipped. The high rate gain
+suppresses hunting, but on **shallow** corners — where `e_y`/`e_psi` stay
+small enough not to overcome the rate cost — the controller does not want to
+turn. It holds smooth, then jerks once the NMPC's predicted errors grow
+enough to overpower the damping, then resumes smooth tracking. So the fix
+traded high-frequency hunting for a low-frequency turn-in discontinuity.
+
+This is the direct consequence of a FLAT rate cost: one weight cannot be
+simultaneously stiff enough to kill straight-line hunting and compliant
+enough for a gentle corner's small, early steering input. See
+`docs/steering_turn_in_upgrade_options.md` for the full option analysis.
+
+### Why this was missed for a whole investigation
+
+The `r_rate_delta` sweep below only went to **4x** (2.5 → 10) and showed a
+small effect, which was then written up as "not the dominant lever." That
+inference was wrong: it was evidence about the *magnitude tried*, not about
+the *mechanism*. The fix needed ~18x. Compounding it, the sweep was run
+OFFLINE, where chatter is a different regime (std_d ~5.7° vs live ~3.1°),
+and the offline flatness was allowed to stand in for a live answer.
+
+**Lesson for future work in this file: before concluding a knob is not the
+lever, push it until something breaks, not just until the first sweep looks
+flat — and confirm on the live car when the symptom was reported live.**
+
+## Superseded: output_smoothing
+
+`OUTPUT_SMOOTHING_ENABLED` is now **false** in `launch_all.sh`. Raising
+`r_rate_delta` addresses the same jitter at its source — the solver stops
+*choosing* chattery commands — so it adds no lag and needs none of the
+output filter's curvature/error/lookahead fade machinery to avoid slowing
+the response. The filter's whole design existed to buy smoothness back
+without lag; a correctly-weighted rate cost gets that for free. Re-enable
+only if a rate-cost-only setup turns out to need extra output damping for a
+reason that is understood.
+
+## Also reverted: the curvature-relative rate target
+
+`NMPC_CURV_RATE_REF_ENABLED` / `_du_ref` / `PathReference.dkappa_at` were
+built during this investigation, live-tested, found ineffective, and have
+been **fully reverted** from both repos (offline commit reverted; live and
+mirror files restored). Kept here as a finding, not as code:
+
+- Mechanism: retarget the rate cost off zero onto the path-justified rate
+  `du_ref ≈ gain·L·(dκ/ds)·ṡ·dt`, so a constant-radius corner still
+  penalises wiggle but a corner entry/S-bend is not penalised for the
+  steering change it needs.
+- **Why it failed: the path-justified rate is ~5-10x too small to matter.**
+  Measured `du_ref` = 0.48°/step mean (live), 0.44°/step (offline), against
+  ~2.5°/step of actual chatter. Retargeting by that much shifts the rate
+  cost only ~±20%.
+- An S-bend falsification test PASSED (|e_y| 0.0496 → 0.0497), so the idea
+  was sound and correctly permissive — just irrelevant at real magnitudes.
+- **The durable finding:** the chatter is almost entirely steering motion
+  the path never asked for, and the existing `r_rate` cost was already
+  penalising it correctly — it was just weighted ~18x too weakly. This
+  retires the "the cost wrongly punishes necessary steering" hypothesis
+  that motivated the feature.
+- Implementation note worth remembering if anything similar is attempted:
+  `e_rate` in `_solve_step` feeds BOTH the rate-cost gradient AND the
+  slew-rate CONSTRAINT bounds. Retargeting must use a separate variable;
+  shifting `e_rate` itself lets the solver command a physically impossible
+  slew.
+
+---
+
+*Everything below predates the resolution above.* This doc exists so a
+future session can resume without re-deriving what was already ruled out.
 
 ## Symptom (as reported by the user, 2026-08-20)
 
@@ -464,16 +634,16 @@ chatter symptom.
 - **SQP iteration count (1/2/3)**: no meaningful effect on chatter metrics.
 - **Finite-difference Jacobian substeps (1/2/4)**: no effect at all (pure
   noise across the sweep).
-- **Any single cost weight in isolation** (`q_r`, `r_rate_delta` up to 4x,
-  `r_delta` up to 8x, `nmpc_trust_delta_rad` down to 2deg,
-  `nmpc_terminal_scale`/`TERMINAL_Q_SCALE` up to 20x): each produces only a
-  modest reduction in chatter (or none at all, for terminal_scale), always
-  at a real `|e_y|`/score cost, never approaching the LTV-QP's baseline
-  noise level even at the most aggressive setting tried. Do not expect a
-  single-weight retune to be a clean fix based on the pattern established
-  here -- if a future session finds one weight that DOES cleanly fix it,
-  treat that as a surprising result worth double-checking, not a
-  confirmation of the existing pattern.
+- ~~**Any single cost weight in isolation**~~ — **THIS ENTRY WAS WRONG. See
+  the Resolution section at the top of this file.** It originally read: "each
+  produces only a modest reduction... do not expect a single-weight retune to
+  be a clean fix." `r_rate_delta` IS the fix; the sweep behind this claim only
+  went to 4x (2.5 → 10) and offline, where the chatter is a different regime.
+  At ~18x (2.8 → 50), live, chatter more than halves. The other weights in
+  the original sweep (`q_r`, `r_delta` to 8x, `nmpc_trust_delta_rad` to 2deg,
+  `nmpc_terminal_scale` to 20x) are still fairly regarded as non-levers at
+  the ranges tried, but the blanket generalisation drawn from them was not
+  supported.
 - **`NMPC_HORIZON` in the budget-feasible range (10-28 steps)**: no
   consistent trend (values bounce 5.22-5.78 deg std_d with no monotonic
   relationship to horizon length). The apparent improvement at

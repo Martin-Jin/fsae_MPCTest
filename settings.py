@@ -643,7 +643,7 @@ R_diag      = [1.8, 0.77]
 #   [0] delta_cmd  steering rate of change
 #   [1] a_cmd      acceleration rate of change
 # Mirrors mpc_params.py's R_rate_diag.
-R_rate_diag = [2.5, 2.25]
+R_rate_diag = [52.5, 5.0]
 
 # [shared] R_A_ACCEL / R_A_BRAKE — separate effort weights for acceleration and
 # braking. solve_mpc()'s a_cmd effort cost is r_a_accel*pos(a_cmd)^2 +

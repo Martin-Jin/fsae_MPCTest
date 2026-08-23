@@ -109,7 +109,7 @@ import math
 # removes that dead zone.
 CURVATURE_SPEED_V_MAX = 18.0
 CURVATURE_SPEED_V_MIN = 1.5
-CURVATURE_SPEED_A_LAT_MAX = 4.0
+CURVATURE_SPEED_A_LAT_MAX = 5.5
 CURVATURE_SPEED_SCAN_START = 0.0
 CURVATURE_SPEED_SCAN_END = 24.0
 CURVATURE_SPEED_STEP = 2.0
@@ -210,14 +210,13 @@ def compute_path_curvature(path_X, path_Y):
 # PARITY: pass 0 below DELEGATES to curvature_speed() — the numeric-parity
 # port of the live control_utils.curvature_speed() — evaluated at every path
 # point, rather than re-implementing the same heuristic with different
-# defaults. Before this, the oracle profile used scan_end=14 m,
-# a_lat_max=mu*g=5.886 and v_max=20, while the car runs scan_end=24 m,
-# a_lat_max=4.0 and v_max=15, and skipped the live function's dense-resample
-# denoising entirely. Measured on a 60 m straight into a 5 m hairpin, the
-# oracle profile commanded 2.45 m/s faster on average and 5 m/s faster on
-# straights than the car will ever drive — so weights tuned against it were
-# tuned for a faster car than exists. Delegating makes that class of drift
-# structurally impossible: there is now exactly one curvature heuristic.
+# defaults. This is deliberate and load-bearing: a second copy of the
+# heuristic with its own scan_end/a_lat_max/v_max defaults (or without the
+# live function's dense-resample denoising) would command a systematically
+# faster oracle profile than the car can achieve, so weights tuned against it
+# would be tuned for a faster car than exists. Delegating makes that class of
+# drift structurally impossible — there is exactly one curvature heuristic.
+# See docs/logs/ for the measured incident that motivated this.
 def compute_speed_profile(
     path_X, path_Y,
     v_max=CURVATURE_SPEED_V_MAX,
@@ -249,8 +248,8 @@ def compute_speed_profile(
     plant's true bounds (VehicleParams.max_accel=12.0,
     max_accel_brake=-9.0). Planning at the true limits would leave the
     controller no margin for combined slip or model-plant mismatch, and would
-    make the passes nearly non-binding — the same rationale as planning at
-    a_lat_max=4.0 against a plant whose peak mu is 1.76.
+    make the passes nearly non-binding — the same rationale that keeps
+    CURVATURE_SPEED_A_LAT_MAX well below the plant's own peak grip.
 
     `mu` and `g` are retained for signature compatibility with older callers
     but no longer set the lateral limit — a_lat_max does, matching the live
@@ -407,7 +406,7 @@ def tracking_error_speed_gate(e_y, e_psi,
     return float(np.clip(min(gy, gp), floor, 1.0))
 
 
-def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.0,
+def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=5.5,
                     scan_start=0.0, scan_end=24.0, step=2.0, safety=1.0):
     """
     Curvature-limited target speed over the next scan_end metres of the path.
