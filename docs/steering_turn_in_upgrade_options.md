@@ -111,6 +111,27 @@ compliance -- it just pays for it in exactly the currency we were trying to
 save. Same failure shape as Option 2: more compliance, less damping, worse
 on both chatter and catch-up.
 
+### LIVE-TESTED AND ALSO REJECTED
+
+| | flat 52.5 | stage ramp 0.30 |
+|---|---|---|
+| slew% (the target) | 1.75 | **5.10** |
+| mean\|d_steer\| | 1.919 deg | 2.804 deg |
+| \|e_y\| | 0.288 | **0.434** |
+| max \|e_psi\| | 29.4 deg | **42.3 deg** |
+| saturation | 0.03% | 0.27% |
+
+Live agrees with offline, and is worse than offline predicted: slew-limited
+ticks nearly TRIPLED. The user's report was unchanged ("still has late
+turns"). **Option 1 is rejected on both fronts.**
+
+Worth noting as a methodology point: this is the FIRST time in this
+investigation that offline and live agreed. Offline's four earlier
+mispredictions were all on the `a_lat_max` x `r_rate_delta` interaction
+specifically (where it DNFs and live drives fine), not a general
+unreliability -- so offline remains usable for mechanism questions like
+this one, just not for that particular pairing.
+
 **Kept in the code behind a default-off flag** (it is the only thing found
 so far that clears the offline DNF, which may matter for restoring
 `nmpc_offline_check` as a usable gate) but it is NOT a fix for the jerk.
@@ -290,9 +311,10 @@ it re-opens a problem already solved. Keep as a retreat if the others fail.
    curvature or error signal at all one second out, and Option 2's actual
    failure was giving back chatter rather than being too late, shifting the
    same signal forward is unlikely to help. Not worth the noise risk.
-3. ~~Option 1~~ — **implemented, offline-rejected.** Slew-limited ticks rose
-   8.43% -> 12-15%, chatter rose with them. Kept default-off because it is
-   the only change so far that clears the offline DNF.
+3. ~~Option 1~~ — **implemented, rejected OFFLINE AND LIVE.** Live slew%
+   1.75 -> 5.10 (nearly tripled), |e_y| 0.288 -> 0.434, max|e_psi| 29.4 ->
+   42.3 deg. Kept default-off only because it is the one change that clears
+   the offline DNF.
 4. **Option 4** (steering-acceleration penalty) — **the only remaining
    candidate, and the one with the strongest evidence** (4.31x separation on
    |d2| vs ~1.9x on |d1|; 96% of slew events are reversals not ramps).
