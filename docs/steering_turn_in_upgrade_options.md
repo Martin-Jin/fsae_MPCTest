@@ -122,11 +122,48 @@ Raising `k` fixes the reach. Curvature seen on this track maps as
 `corner_frac` 0.40 -> R~12 m, 0.63 -> R~4.7 m, 0.03 -> R~250 m. At `k=20`
 the 12 m jerk zone reaches 0.63 while a 250 m near-straight stays at 0.07.
 
-**Config now set in `launch_all.sh`** (`k=20`, straight 52.5, corner 8.0),
-giving ~49 near-straight, ~34 at R=18 m, ~25 at R=12 m, ~16 at R=4.7 m.
-Awaiting live test. If chatter returns on straights, raise the corner
-endpoint rather than lowering `k` - `k` sets *where* the softening applies,
-the endpoint sets *how much*.
+### LIVE-TESTED AND REJECTED
+
+Ran with `k=20`, straight 52.5, corner 8.0. The schedule delivered exactly
+as designed (`Rrate_steer` applied: min 16.5, p10 21.1, p50 29.2, p90 49.7,
+max 52.5), so this is a fair test of the idea, not a misconfiguration.
+
+**It was worse on every single metric:**
+
+| | flat 52.5 | blend |
+|---|---|---|
+| slew-limited % (the target) | 1.75% | **2.54%** |
+| mean\|d_steer\| | 1.919 deg | 2.269 deg |
+| \|e_y\| | 0.288 | **0.467** |
+| max \|e_psi\| | 29.4 deg | **36.8 deg** |
+| saturation | 0.03% | **1.52%** |
+
+Softening in corners did not buy earlier turn-in; it simply gave back the
+chatter suppression, and the resulting worse tracking then produced MORE
+slew-limited catch-up, not less. **Option 2 is falsified. Do not retry it,
+and by extension be very sceptical of Option 3** (same signal, shifted
+earlier) -- see the next section for why.
+
+### Why curvature scheduling cannot work here (the measurement that matters)
+
+Checked what the signals looked like **1 second before** each of the 51
+slew-limited jerks in the flat-52.5 run:
+
+- `corner_frac` median **0.360**, `|e_psi|` median **3.42 deg** -- and
+- **14 of 51 events (27%)** had BOTH `corner_frac` < 0.15 AND
+  `|e_psi|` < 3 deg one second earlier. At t=10.61 and t=28.45 the
+  one-second-prior state was `corner_frac` 0.029/0.049 with `|e_psi|`
+  0.10/-1.60 deg -- indistinguishable from a straight.
+
+**Roughly a quarter of the jerks are invisible to any current-state
+curvature or error signal until the corner is already on top of the car.**
+No amount of retuning a schedule keyed on those signals can reach them.
+
+But the information DOES exist: `nmpc_kappa_horizon_end` one second before a
+jerk has median **0.0908** versus **0.0569** overall. **The horizon already
+knows.** The cost function just is not using what the prediction can see.
+That points away from state-keyed scheduling entirely and toward Option 1
+(per-stage, i.e. keyed on horizon position) or Option 4.
 
 ## Option 3 — Lookahead-curvature scheduling
 
@@ -153,6 +190,22 @@ second difference and is nearly free; an alternating wiggle has a huge one.
 **Why this is the most principled option.** It targets the actual defect
 directly. Chatter *is* high second-difference; turn-in *is* low. This
 separates them structurally rather than by scheduling a compromise.
+
+**MEASURED CONFIRMATION** (flat-52.5 live run, 2910 ticks classified by
+whether steering reversed direction or continued the same way):
+
+| behaviour | n | mean\|d1\| | mean\|d2\| |
+|---|---|---|---|
+| reversals (chatter) | 1739 | 2.375 deg | **4.669** |
+| same-direction (ramp) | 1171 | 1.247 deg | **1.083** |
+
+`|d2|` separates the two by **4.31x**, versus only ~1.9x for `|d1|` -- so
+penalising steering ACCELERATION discriminates chatter from legitimate
+turn-in roughly twice as sharply as penalising rate does. Additionally, 96%
+of slew-limited ticks are direction REVERSALS rather than continuations,
+i.e. even the big catch-up events are mostly the tail of an oscillation, not
+clean ramps. This is the strongest quantitative support any option in this
+document has.
 
 **Implementation.** Needs a second-difference operator `E2` alongside `E`,
 and `Hess += E2' diag(R_jerk) E2`. `E` is built once in `_build_qp`
@@ -191,17 +244,29 @@ it re-opens a problem already solved. Keep as a retreat if the others fail.
 
 ---
 
-## Recommended sequence
+## Recommended sequence (REVISED after Option 2's live rejection)
 
-1. **Option 2 as a config-only probe** (zero effort). Establishes whether
-   curvature scheduling helps at all, and how much softening is tolerable
-   before chatter returns. Expect partial help at best.
-2. **Option 1** (per-stage ramp). Best effort-to-payoff; directly targets
-   the sustained-vs-oscillating distinction; low risk.
-3. **Option 4** (steering-jerk penalty) if 1+2 leave residual jerk. The
-   principled fix, and worth the refactor if it lets `r_rate_delta` come
-   back down.
-4. **Option 3** only once a live-planner path matters, given the noise risk.
+1. ~~Option 2~~ — **done, rejected.** Worse on every metric; see above.
+2. ~~Option 3~~ — **deprioritised to near-dead.** It keys on the same
+   curvature signal as Option 2, merely earlier. Since 27% of jerks show no
+   curvature or error signal at all one second out, and Option 2's actual
+   failure was giving back chatter rather than being too late, shifting the
+   same signal forward is unlikely to help. Not worth the noise risk.
+3. **Option 1** (per-stage rate ramp) — **now the first thing to try.** It
+   is keyed on horizon POSITION rather than measured state, so it is immune
+   to the "no signal one second out" problem that killed Option 2. Low
+   effort, low risk, and the `_Rr_flat`/`_ErE` per-tick rebuild hook already
+   exists.
+4. **Option 4** (steering-acceleration penalty) — **now has the strongest
+   evidence of any option** (4.31x separation, 96% of slew events are
+   reversals). If Option 1 leaves residual jerk, do this; it is likely the
+   correct long-term formulation and would let `r_rate_delta` fall back
+   toward its original value.
+
+Options 1 and 4 are complementary: 1 says *when in the horizon* damping
+applies, 4 changes *what is being damped*. Neither depends on a
+measured-state schedule, which is the property that matters given the
+measurements above.
 
 Options 1, 2 and 3 are mutually composable — 1 schedules *when* in the
 horizon, 2/3 schedule *where* on the track. Option 4 could eventually
