@@ -767,6 +767,24 @@ NMPC_REVERSAL_PENALTY_ENABLED = False
 NMPC_REVERSAL_PENALTY_BOOST_MAX = -1.0  # -1 = inherit REVERSAL_PENALTY_BOOST_MAX
 NMPC_REVERSAL_PENALTY_K = -1.0          # -1 = inherit REVERSAL_PENALTY_K
 
+# [NMPC only, EXPERIMENTAL] Retarget the steering-RATE cost from zero onto
+# the rate the reference path's own curvature change justifies, instead of
+# penalising all steering motion equally -- see
+# controller/nmpc_optimiser.py::_du_ref's docstring for the mechanism, and
+# docs/logs/steering_chatter_investigation.md for the symptom this targets
+# (same-sign steering magnitude chatter through ordinary cornering).
+# A constant-radius corner still penalises every wiggle as before
+# (dkappa/ds ~ 0 there); a corner entry or S-bend does not get penalised for
+# the steering change it genuinely needs.
+# CAUTION: dkappa/ds AMPLIFIES curvature noise. Safe on a smooth static
+# raceline; a live planner centreline carries the known open curvature-spike
+# defect and could make this counterproductive -- validate with
+# USE_PLANNER=True before trusting it live. GAIN scales the target (1.0 =
+# full small-angle kinematic prediction, lower = less benefit-of-the-doubt
+# given to the path).
+NMPC_CURV_RATE_REF_ENABLED = False
+NMPC_CURV_RATE_REF_GAIN = 1.0
+
 # ── Structural / solver settings ─────────────────────────────────────────
 # [NMPC only] No LTV-QP counterpart to inherit from (there's no "linear horizon length"
 # concept these could default to) -- these are genuine NMPC-only constants,

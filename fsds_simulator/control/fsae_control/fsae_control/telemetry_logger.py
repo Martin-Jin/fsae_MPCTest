@@ -146,6 +146,11 @@ ADAPTIVE_COLUMNS = (
     # before it's live-tested, or last_telemetry silently drops it from the
     # CSV -- this has happened more than once.
     'nmpc_speed_limit_over_max',  # peak predicted v_x above v_max(s)+margin anywhere in the horizon (m/s); 0 = bound never active
+    # nmpc_curv_rate_ref_enabled only (0.0 otherwise): peak |path-justified
+    # steering rate| across the horizon this tick (rad/step). See
+    # nmpc_core._du_ref -- large values mean the reference itself is asking
+    # for fast steering here, so the rate cost is deliberately not resisting it.
+    'du_ref_steer_max',
 )
 
 

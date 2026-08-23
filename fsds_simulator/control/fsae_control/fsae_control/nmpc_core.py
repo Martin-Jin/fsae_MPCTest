@@ -258,6 +258,24 @@ class PathReference:
         self._k_ds = float(dense_step)
         self._k_uniform = self._k_n >= 3
 
+        # d(kappa)/ds on the SAME grid as kappa, for the curvature-relative
+        # steering-rate target (NMPCController.curv_rate_ref_enabled). Built
+        # here, once per PathReference, rather than per tick -- and since
+        # _path_reference() signature-caches this object, that is once per
+        # path change (i.e. once per rollout for a static precomputed path).
+        #
+        # CAUTION: differentiating kappa AMPLIFIES whatever noise kappa
+        # already carries. On a smooth static raceline this is harmless, but
+        # a live planner centreline is rebuilt every tick and carries the
+        # known open curvature-spike defect (see planning_control_sync.md's
+        # planner section) -- dkappa there can be far noisier than kappa
+        # itself. Consumers must be gain-limited/clipped accordingly.
+        _kap = np.atleast_1d(kappa)
+        if len(_kap) >= 2:
+            self.dkappa = np.gradient(_kap, self._k_ds)
+        else:
+            self.dkappa = np.zeros_like(_kap)
+
         # Reference heading psi_ref(s) on the SAME grid as kappa (see above).
         # When the path was too short to smooth, fall back to the raw
         # per-waypoint tangent so this is always populated.
@@ -339,6 +357,17 @@ class PathReference:
         stopping.
         """
         return np.interp(s, self.s_kappa, self.kappa)
+
+    def dkappa_at(self, s):
+        """
+        d(kappa)/ds (1/m^2) at arc length(s) `s`, end-clamped exactly like
+        kappa_at (np.interp's default edge behaviour) so a horizon running
+        off the end of the path holds the last known curvature RATE rather
+        than snapping to zero -- the same conservative choice kappa_at makes
+        for curvature itself. See __init__'s dkappa comment for the
+        noise-amplification caveat.
+        """
+        return np.interp(s, self.s_kappa, self.dkappa)
 
     def v_ref_at(self, s):
         """
@@ -804,6 +833,73 @@ def _outputs(X, ref, p, v_ref, horizon_speed_profile_enabled=False,
     return H
 
 
+def _du_ref(X, ref, p, dt, gain, du_max_steer):
+    """
+    Per-stage steering-RATE target justified by the reference path's own
+    curvature change: the steering-rate the path is asking for, as opposed
+    to zero (which is what the plain R_rate cost implicitly targets).
+
+    Returns (N, NU); only the steering channel is nonzero (the accel
+    channel keeps a zero target, i.e. unchanged behaviour).
+
+    WHY: the plain rate cost `sum(r_rate * du^2)` is minimised at du = 0, so
+    it penalises ALL steering motion equally -- including the steering
+    motion a corner genuinely requires. Retargeting it at
+    `du_ref = d(delta_ref)/dt` means a constant-radius corner (dkappa/ds ~ 0,
+    so du_ref ~ 0) still penalises every wiggle exactly as before, while a
+    corner entry or S-bend (dkappa/ds large, sign-flipping at the S) does
+    NOT get penalised for the steering change it actually needs.
+
+    NOT a reversal counter. This is a smooth per-stage residual; the number
+    of sign flips appears nowhere in it. It correlates with reversal
+    frequency only because repeated wiggles accumulate through the
+    sum-of-squares (N deviations of size x cost N*x^2, one costs x^2). An
+    exact sign-flip count is non-differentiable and cannot enter this
+    Gauss-Newton QP at all.
+
+    MEASURED OFFLINE AND FOUND INEFFECTIVE for the steering-chatter symptom
+    it was built for: on comp_test_map_3 the path-justified rate this
+    produces is ~0.44 deg/step mean (2.2 peak) against ~4.8 deg/step of
+    observed chatter -- an order of magnitude too small to account for it,
+    so retargeting shifts the rate cost by only ~+-20% and offline A/Bs came
+    back flat-to-slightly-worse at every gain tried. Kept default-off and
+    live-testable because live chatter has a different character from
+    offline (see docs/logs/steering_chatter_investigation.md). Do not assume
+    it helps without a live A/B.
+
+    Steady-state kinematic bicycle: delta_ref = atan(L*kappa) ~= L*kappa for
+    small angles (~7% low at the 25 deg lock, absorbed by `gain`). Chain rule
+    to a per-stage rate: d(delta_ref)/dt = L * dkappa/ds * s_dot * dt.
+
+    The result is clipped to the actuator's own per-step slew limit: a
+    reference-justified rate the actuator physically cannot deliver must not
+    be demanded, or the cost would pull toward a rate the slew CONSTRAINT
+    forbids and the two would fight.
+    """
+    N = X.shape[0] - 1 if X.shape[0] > 1 else X.shape[0]
+    s = X[:N, IDX_S]
+    e_y = X[:N, IDX_EY]
+    e_psi = X[:N, IDX_EPSI]
+    v_x = X[:N, IDX_VX]
+    v_y = X[:N, IDX_VY]
+
+    # Same s_dot arithmetic as _outputs()/_f (including the _DENOM_FLOOR
+    # guard) so the target and the cost's own state prediction cannot
+    # disagree about how fast the car is advancing along the path.
+    kap = ref.kappa_at(s)
+    denom = 1.0 - kap * e_y
+    denom = np.where(denom >= 0.0,
+                     np.maximum(denom, _DENOM_FLOOR),
+                     np.minimum(denom, -_DENOM_FLOOR))
+    s_dot = (v_x * np.cos(e_psi) - v_y * np.sin(e_psi)) / denom
+
+    L = p.lf + p.lr
+    out = np.zeros((N, NU))
+    out[:, 0] = np.clip(gain * L * ref.dkappa_at(s) * s_dot * dt,
+                        -du_max_steer, du_max_steer)
+    return out
+
+
 def _csc_pattern(mask):
     """
     Build a CSC matrix with an explicit, fixed sparsity pattern from a boolean
@@ -947,6 +1043,17 @@ class NMPCController:
         self.reversal_penalty_boost_max = _pick(
             pm.nmpc_reversal_penalty_boost_max, pm.reversal_penalty_boost_max)
         self.reversal_penalty_k = _pick(pm.nmpc_reversal_penalty_k, pm.reversal_penalty_k)
+
+        # EXPERIMENTAL, default off. Retargets the steering-RATE cost from
+        # zero onto the path's own curvature-driven rate -- see _du_ref's
+        # docstring for the mechanism AND for the offline measurement showing
+        # it is an order of magnitude too small to explain the chatter it was
+        # built for. Unlike the three flags above (which all scale the rate
+        # WEIGHT r_rate[0]), this changes the rate cost's TARGET, so it
+        # composes with them in principle -- but those combinations are
+        # UNVALIDATED; validate this one alone first.
+        self.curv_rate_ref_enabled = bool(pm.nmpc_curv_rate_ref_enabled)
+        self.curv_rate_ref_gain = float(pm.nmpc_curv_rate_ref_gain)
 
         # Alternative to the above, not a composition with it -- see
         # mpc_params.py's nmpc_corner_rrate_blend_enabled field comment.
@@ -1278,7 +1385,7 @@ class NMPCController:
             C[:, :, j] = (Hp - H0) / _FD_EPS_X[j]
         return H0, C
 
-    def _cost(self, X, U, H, ref=None):
+    def _cost(self, X, U, H, ref=None, du_ref=None):
         """
         True (nonlinear) cost of a candidate trajectory — used only by the
         backtracking test, so it must match the QP's objective term for term:
@@ -1307,6 +1414,11 @@ class NMPCController:
                     + self.r_a_accel * np.sum(np.maximum(a, 0.0) ** 2)
                     + self.r_a_brake * np.sum(np.minimum(a, 0.0) ** 2))
         du = np.vstack([U[0] - self._u_prev, np.diff(U, axis=0)])
+        if du_ref is not None:
+            # Retarget the rate cost onto the path-justified rate rather than
+            # zero (curv_rate_ref_enabled) -- see _du_ref. None (the default)
+            # leaves this arithmetic byte-identical to before the feature.
+            du = du - du_ref
         rate = float(np.sum(self.r_rate * du ** 2))
         slack = 0.0
         if self._use_slack:
@@ -1320,7 +1432,7 @@ class NMPCController:
             vslack = float(self.speed_limit_slack_weight * np.sum(over_v ** 2))
         return stage + eff + rate + slack + vslack
 
-    def _solve_step(self, X, U, ref, v_ref):
+    def _solve_step(self, X, U, ref, v_ref, du_ref=None):
         """
         One Gauss-Newton SQP iteration: condense, solve the QP, return the
         input-deviation trajectory dU (N, NU) and the OSQP status string.
@@ -1334,6 +1446,14 @@ class NMPCController:
         (unweighted) rows (see _outputs) -- G/g below are built from ONLY
         the first NH rows (the cost), and the friction rows are sliced out
         separately further down to build the hard QP constraint.
+
+        `du_ref` (curv_rate_ref_enabled, None = off) retargets the
+        steering-rate cost off zero onto the path-justified rate. It enters
+        the GRADIENT only: the rate cost's quadratic form is
+        ||E u - du_ref||^2_Rr, whose Hessian E' diag(Rr) E is independent of
+        the target, so self._ErE and the whole OSQP sparsity pattern/P
+        matrix are untouched. That is what makes this cheap enough to run
+        every tick.
         """
         N = self.N
         qp = self._qp
@@ -1370,11 +1490,22 @@ class NMPCController:
         u_flat = U.reshape(-1)
 
         # Input rate: diff = E dU + e, e = E u_flat - [u_prev, 0, ...].
+        # e_rate is the TRUE per-step du sequence (E u, with u_prev folded
+        # into step 0). It feeds TWO different things below, which must not
+        # be conflated:
+        #   * the slew-rate CONSTRAINT rows (|du| <= du_max) -- a physical
+        #     actuator limit, always anchored on the true du;
+        #   * the rate COST gradient -- which curv_rate_ref_enabled retargets
+        #     off zero onto du_ref.
+        # Keep them as separate variables: shifting e_rate itself would
+        # silently move the actuator constraint too, which would let the
+        # solver command a physically impossible slew.
         e_rate = self._E @ u_flat
         e_rate[:NU] -= self._u_prev
+        e_rate_cost = e_rate if du_ref is None else e_rate - du_ref.reshape(-1)
 
         Hess = G.T @ G + np.diag(ru_flat) + self._ErE
-        grad = G.T @ g + ru_flat * u_flat + self._E.T @ (self._Rr_flat * e_rate)
+        grad = G.T @ g + ru_flat * u_flat + self._E.T @ (self._Rr_flat * e_rate_cost)
 
         P_dense = np.zeros((nz, nz))
         P_dense[:n_du, :n_du] = 2.0 * Hess
@@ -1653,17 +1784,31 @@ class NMPCController:
         # ── Gauss-Newton SQP ───────────────────────────────────────────
         budget_s = self.nmpc.nmpc_solve_budget_ms * 1e-3
         X = self._rollout(x0, U, ref)
+        # Curvature-relative steering-rate target (curv_rate_ref_enabled).
+        # Computed ONCE per tick from the initial rollout, then held fixed
+        # for this tick's whole SQP loop -- the same convention the
+        # corner-blend / anti-hunt / reversal multipliers above use ("computed
+        # once per compute() call, applied uniformly across the horizon"). It
+        # depends on the predicted X, which the SQP does refine as it
+        # iterates, but recomputing it mid-loop would move the cost's own
+        # target between the line search's comparisons -- so cost_try <= cost
+        # would no longer be comparing like with like. At the shipped
+        # nmpc_sqp_iters=1 the distinction is moot anyway.
+        du_ref = None
+        if self.curv_rate_ref_enabled:
+            du_ref = _du_ref(X, ref, self.plant, self.dt,
+                             self.curv_rate_ref_gain, float(self.du_max[0]))
         H = _outputs(X, ref, self.plant, v_ref,
                      horizon_speed_profile_enabled=self.horizon_speed_profile_enabled,
                      friction_circle_enabled=self.friction_circle_enabled)
-        cost = self._cost(X, U, H, ref)
+        cost = self._cost(X, U, H, ref, du_ref=du_ref)
         iters = 0
         status = 'warm-start-only'
         for _ in range(max(1, int(self.nmpc.nmpc_sqp_iters))):
             if time.perf_counter() - t0 > budget_s:
                 status = 'budget'
                 break
-            dU, status = self._solve_step(X, U, ref, v_ref)
+            dU, status = self._solve_step(X, U, ref, v_ref, du_ref=du_ref)
             if dU is None:
                 break
             step = 1.0
@@ -1674,7 +1819,7 @@ class NMPCController:
                 H_try = _outputs(X_try, ref, self.plant, v_ref,
                                  horizon_speed_profile_enabled=self.horizon_speed_profile_enabled,
                                  friction_circle_enabled=self.friction_circle_enabled)
-                cost_try = self._cost(X_try, U_try, H_try, ref)
+                cost_try = self._cost(X_try, U_try, H_try, ref, du_ref=du_ref)
                 # ONLY a genuine improvement is accepted. Accepting the
                 # smallest trial regardless (an earlier version of this loop
                 # did, "so a tick always makes progress") means a bad search
@@ -1748,6 +1893,13 @@ class NMPCController:
             # column (post corner-blend AND anti-hunt AND reversal-penalty),
             # not just the corner-blend stage in isolation.
             'Rrate_steer_corner_blend': rrate_steer_current,
+            # Peak |path-justified steering rate| across the horizon this
+            # tick (rad/step), 0.0 when curv_rate_ref_enabled is off. Large
+            # values mean the reference itself is demanding fast steering
+            # here (corner entry / S-bend), so the rate cost is deliberately
+            # NOT resisting it -- see _du_ref.
+            'du_ref_steer_max': (0.0 if du_ref is None
+                                 else float(np.abs(du_ref[:, 0]).max())),
             'pose_age_s': float(pose_age_s),
             'n_delay': int(n_delay),
             'solve_ms': float(solve_ms),
