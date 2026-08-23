@@ -18,6 +18,20 @@ exported through the existing tuner/tools/export_speed_profile.py CSV mechanism,
 so the live car needs no changes: it already just tracks whatever
 (x, y, psi, v_target) rows that CSV contains.
 
+TWO MODES (--mode)
+------------------
+raceline (default) — everything described above: the line is reshaped
+laterally for lap time.
+
+centerline — pins the lateral offset to zero, so the exported path is the
+reconstructed centreline and only the SPEED profile is optimised. Slower by
+construction. Its purpose is diagnostic: on a raceline a large logged |e_y|
+is ambiguous, because the line intentionally runs near a boundary at an apex,
+so "1.8 m from the path" could be a tracking failure or the line doing its
+job. On the centreline, |e_y| is unambiguously distance from the middle of
+the track, which makes "did the car actually go where it should" answerable
+from the log alone. Writes centerline.csv, never overwriting raceline.csv.
+
 METHOD — iterative curvature-minimisation raceline (Kegel-style)
 ------------------------------------------------------------------
 This is the standard, simple racing-line algorithm used by e.g. TUM's
@@ -108,7 +122,8 @@ from sim.track_io import load_cone_map, _reconstruct_centreline  # noqa: E402
 from sim.track_io import _resample_dense  # noqa: E402
 import sim.speed_profile as speed_profile  # noqa: E402
 from tracks import (  # noqa: E402
-    DEFAULT_TRACK, RACELINE_NAME, default_out_for, list_tracks, resolve_map_arg,
+    CENTERLINE_NAME, DEFAULT_TRACK, RACELINE_NAME, default_out_for, list_tracks,
+    resolve_map_arg,
 )
 
 # Margin kept clear of each boundary cone (m), measured from the cone centre
@@ -481,6 +496,7 @@ def optimize_raceline(
     iters=DEFAULT_ITERS,
     margin=DEFAULT_MARGIN,
     params=None,
+    lateral_offsets=True,
 ):
     """
     Compute a minimum-time racing line + speed profile from a recorded cone
@@ -493,6 +509,10 @@ def optimize_raceline(
     margin : float  Clearance (m) kept from each boundary, see DEFAULT_MARGIN.
     params : VehicleParams, optional  Source of alat_ceiling_at()/max_accel/
              max_accel_brake. A fresh VehicleParams() if not given.
+    lateral_offsets : bool  True (default) runs the curvature-reduction search
+             described in the module docstring. False pins alpha to 0 at every
+             station, so the returned path IS the reconstructed centreline and
+             only the speed profile is optimised -- see CENTRELINE MODE below.
 
     Returns
     -------
@@ -525,6 +545,28 @@ def optimize_raceline(
     # Keep clear of the boundary itself.
     w_left = np.maximum(w_left - margin, 0.0)
     w_right = np.maximum(w_right - margin, 0.0)
+
+    if not lateral_offsets:
+        # CENTRELINE MODE. alpha stays 0, so no curvature-reduction search and
+        # no final smoothing pass run: there is nothing to smooth, since the
+        # line is whatever _reconstruct_centreline produced and moving it is
+        # the very thing this mode exists to not do. The width bounds above
+        # are still computed -- export()'s clearance check consumes them, and
+        # a centreline that is itself too close to a cone is a map-quality
+        # problem the caller must still be told about.
+        #
+        # Note this inherits the planner's centreline warts verbatim,
+        # including the curvature spikes documented in
+        # planning_control_sync.md ("Known planner defect"). That is
+        # deliberate: this path is a DIAGNOSTIC reference whose whole value
+        # is being the geometric middle of the track, so silently smoothing
+        # it would destroy the property being measured.
+        kappa = _curvature(centre_xy)
+        lap_time, v_profile = _lap_time_and_speed(centre_xy, kappa, params)
+        dx = np.gradient(centre_xy[:, 0])
+        dy = np.gradient(centre_xy[:, 1])
+        return (centre_xy[:, 0], centre_xy[:, 1], np.arctan2(dy, dx),
+                v_profile, blue, yellow, lap_time)
 
     alpha = np.zeros(len(centre_xy))
     best_alpha = alpha.copy()
@@ -817,7 +859,7 @@ def _assert_clearance(path_xy, blue, yellow, margin):
     n_bad = int((d < MIN_CONE_CLEARANCE).sum())
     if n_bad:
         raise RuntimeError(
-            f"raceline passes within {worst:.3f} m of a cone at {n_bad} of "
+            f"path passes within {worst:.3f} m of a cone at {n_bad} of "
             f"{len(path_xy)} stations (floor {MIN_CONE_CLEARANCE:.3f} m = half "
             f"the front track). The line is not drivable as exported.\n"
             f"  margin used: {margin:.2f} m -- raise --margin and re-run.\n"
@@ -826,7 +868,20 @@ def _assert_clearance(path_xy, blue, yellow, margin):
     return worst
 
 
-def export(map_path: str, out_path: str, iters=DEFAULT_ITERS, margin=DEFAULT_MARGIN):
+def export(map_path: str, out_path: str, iters=DEFAULT_ITERS, margin=DEFAULT_MARGIN,
+           lateral_offsets=True):
+    """
+    Optimise and write a path CSV.
+
+    lateral_offsets=False exports the CENTRELINE instead of a racing line: the
+    same 5-column format, the same speed/heading profiling and the same
+    clearance check, but the line itself is left on the geometric centre of
+    the track. Use it when a lateral error has to mean "distance from the
+    middle of the track" -- on a raceline it does not, because the raceline
+    deliberately sits near a boundary at an apex, so a large e_y there can be
+    either a tracking failure or the line working as intended, and the log
+    cannot distinguish them.
+    """
     blue, yellow = load_cone_map(map_path)
     params = VehicleParams()
 
@@ -837,8 +892,10 @@ def export(map_path: str, out_path: str, iters=DEFAULT_ITERS, margin=DEFAULT_MAR
     centre_time, _ = _lap_time_and_speed(np.column_stack([cx, cy]), centre_kappa, params)
 
     path_X, path_Y, path_Psi, path_v, _blue, _yellow, race_time = optimize_raceline(
-        blue, yellow, iters=iters, margin=margin, params=params
+        blue, yellow, iters=iters, margin=margin, params=params,
+        lateral_offsets=lateral_offsets,
     )
+    kind = "racing line" if lateral_offsets else "centreline"
 
     # Verify BEFORE opening the output file: a failed check must leave the
     # previous, known-good export in place rather than truncating it.
@@ -860,11 +917,18 @@ def export(map_path: str, out_path: str, iters=DEFAULT_ITERS, margin=DEFAULT_MAR
     slip_flags, beta_r = check_slip(kappa_final, path_v, params)
 
     with open(out_path, "w") as f:
-        f.write("# x,y,psi,psi_target,v_target -- minimum-time racing line exported by "
+        f.write(f"# x,y,psi,psi_target,v_target -- speed-optimised {kind} exported by "
                 "tuner.tools.raceline_optimizer from a cone_recorder map.\n")
         f.write(f"# source_map={os.path.abspath(map_path)}\n")
-        f.write(f"# centreline_lap_time_s={centre_time:.3f} raceline_lap_time_s={race_time:.3f} "
-                f"improvement_pct={100.0 * (centre_time - race_time) / centre_time:.2f}\n")
+        f.write(f"# lateral_offsets={lateral_offsets}\n")
+        if lateral_offsets:
+            f.write(f"# centreline_lap_time_s={centre_time:.3f} raceline_lap_time_s={race_time:.3f} "
+                    f"improvement_pct={100.0 * (centre_time - race_time) / centre_time:.2f}\n")
+        else:
+            # No improvement_pct: this line IS the centreline, so the two lap
+            # times above would be the same number compared against itself.
+            f.write(f"# centreline_lap_time_s={race_time:.3f} "
+                    "(no lateral optimisation -- diagnostic centreline)\n")
         f.write("# psi_target: shaped heading-lead reference (see "
                 "late_turn_in_investigation.md Part 8/9), NOT the geometric "
                 "path tangent (psi). Backward-compatible: a loader reading "
@@ -873,10 +937,14 @@ def export(map_path: str, out_path: str, iters=DEFAULT_ITERS, margin=DEFAULT_MAR
         for x, y, psi, psit, v in zip(path_X, path_Y, path_Psi, psi_target, path_v):
             f.write(f"{x:.4f},{y:.4f},{psi:.5f},{psit:.5f},{v:.4f}\n")
 
-    print(f"Wrote {len(path_X)} points -> {out_path}")
-    print(f"centreline lap time (alat_ceiling-limited): {centre_time:.3f} s")
-    print(f"raceline   lap time (alat_ceiling-limited): {race_time:.3f} s "
-          f"({100.0 * (centre_time - race_time) / centre_time:.2f}% faster)")
+    print(f"Wrote {len(path_X)} points -> {out_path}  [{kind}]")
+    if lateral_offsets:
+        print(f"centreline lap time (alat_ceiling-limited): {centre_time:.3f} s")
+        print(f"raceline   lap time (alat_ceiling-limited): {race_time:.3f} s "
+              f"({100.0 * (centre_time - race_time) / centre_time:.2f}% faster)")
+    else:
+        print(f"centreline lap time (alat_ceiling-limited): {race_time:.3f} s "
+              "(lateral optimisation disabled)")
     print(f"v_target range: {path_v.min():.2f} - {path_v.max():.2f} m/s")
     print(f"min cone clearance: {worst_clearance:.3f} m "
           f"(floor {MIN_CONE_CLEARANCE:.3f}, margin {margin:.2f})")
@@ -909,6 +977,12 @@ def main():
                      help="curvature-reduction iterations (default: %(default)s)")
     ap.add_argument("--margin", type=float, default=DEFAULT_MARGIN,
                      help="clearance kept from each boundary cone, metres (default: %(default)s)")
+    ap.add_argument("--mode", choices=("raceline", "centerline"), default="raceline",
+                     help="raceline: optimise the line laterally for lap time. "
+                          "centerline: keep the geometric centre of the track and "
+                          "optimise only speed, so a logged lateral error reads "
+                          "directly as distance from the middle "
+                          "(default: %(default)s)")
     args = ap.parse_args()
 
     if args.list:
@@ -920,8 +994,13 @@ def main():
         map_path = resolve_map_arg(args.map)
     except ValueError as e:
         ap.error(str(e))
-    out_path = args.out_path or default_out_for(map_path, RACELINE_NAME)
-    export(map_path, out_path, iters=args.iters, margin=args.margin)
+    lateral_offsets = args.mode == "raceline"
+    # Default output name follows the mode, so exporting a centreline can never
+    # silently overwrite the raceline the car is currently driving.
+    default_name = RACELINE_NAME if lateral_offsets else CENTERLINE_NAME
+    out_path = args.out_path or default_out_for(map_path, default_name)
+    export(map_path, out_path, iters=args.iters, margin=args.margin,
+           lateral_offsets=lateral_offsets)
 
 
 if __name__ == "__main__":

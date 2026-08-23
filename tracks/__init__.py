@@ -57,6 +57,11 @@ TRACKS_DIR = os.path.abspath(
 CONE_MAP_NAME = "cone_map.json"
 SPEED_PROFILE_NAME = "speed_profile.csv"
 RACELINE_NAME = "raceline.csv"
+#: Centreline variant of RACELINE_NAME, same 5-column format. A path that
+#: stays on the geometric centre of the track instead of cutting corners --
+#: slower, but its lateral error is directly readable as "how far off the
+#: middle of the track am I", which a cornering-optimised raceline's is not.
+CENTERLINE_NAME = "centerline.csv"
 
 #: Track used when a tool is run with no track argument. Matches the
 #: `TRACK=` default in `ros2/launch_all.sh` — keep the two in sync so the
@@ -79,6 +84,10 @@ def speed_profile_path(name=DEFAULT_TRACK):
 
 def raceline_path(name=DEFAULT_TRACK):
     return os.path.join(track_dir(name), RACELINE_NAME)
+
+
+def centerline_path(name=DEFAULT_TRACK):
+    return os.path.join(track_dir(name), CENTERLINE_NAME)
 
 
 def list_tracks():

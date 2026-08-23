@@ -1,10 +1,15 @@
 # Steering chatter investigation (NMPC, live + offline)
 
-**Status: RESOLVED — `r_rate_delta` was simply far too low.** Raising the
-QP's own steering-rate cost from 2.8 to ~50 (live-tested) more than halved
-the chatter. Everything below is retained because most of it is still valid
-as ruled-out ground, but read this section first — one of the "ruled out"
-entries was WRONG, and the mistake is instructive.
+**Status: RESOLVED, in two parts.** (1) `r_rate_delta` was far too low —
+raising the QP's steering-rate cost from 2.8 to ~50 (live-tested) more than
+halved the chatter. (2) **The reference line was a confound for all of it**
+— switching from `raceline.csv` to `centerline.csv` with every weight held
+fixed took steering reversals 13 → 1 and both saturation and slew-limited
+ticks to exactly 0. See "Session N (2026-08-24)" at the END of this file
+before trusting any absolute number in between; a figure measured on the
+raceline includes excursion-recovery that is not attributable to the weight
+under test. Everything below is retained as ruled-out ground, but note that
+one of the "ruled out" entries was WRONG, and the mistake is instructive.
 
 ## Resolution
 
@@ -653,3 +658,80 @@ chatter symptom.
   presumably anything near/above it) as a chatter fix without first fixing
   the underlying SQP-rejection problem at that horizon length, which is
   unsolved and out of this doc's scope.
+
+---
+
+## Session N (2026-08-24): the reference line was a confound throughout
+
+**A large part of what this document measures as "chatter" was the car
+failing to track a reference it could not follow — not the cost weights.**
+Switching `path_map_path` from `raceline.csv` to a newly-added
+`centerline.csv` (`raceline_optimizer.py --mode centerline`), with **every
+weight held fixed**, produced:
+
+| | raceline | centreline |
+|---|---|---|
+| composite score | 0.752 | **0.488** |
+| lap time | 54.50 s | **51.34 s** |
+| RMSE | 0.506 | **0.366 m** |
+| peak \|e_y\| | 1.804 | **1.004 m** |
+| max \|e_psi\| | 37.6° | **22.0°** |
+| steering saturation | 0.18% | **0.00%** |
+| slew-limited ticks | 0.07% | **0.00%** |
+| steering reversals (scoring) | 13 | **1** |
+| \|e_y\| > 1.0 m | 4.00% | **0.14%** |
+
+Both runs: NMPC, `r_rate_delta=52.5`, `nmpc_rjerk_delta=150.0`,
+`q_e_y=6.35`, smoothing off, zone off, same `speed_profile.csv`, 3 laps.
+
+Mechanism is documented in `planning_control_sync.md`'s "Reference line:
+raceline vs centreline": the raceline's offset is small (0.13 m mean, 0.48 m
+max) but it perturbs the curvature of the track's tightest corner
+(`|κ|`=0.209, ~70% of the full-lock kinematic floor) where there is no width
+to gain time with. The car under-turns, washes 1.8 m wide, and recovers —
+and the recovery is what the chatter metrics were partly counting.
+
+### What this invalidates, and what it does not
+
+- **Does not invalidate the `r_rate_delta` resolution above.** That A/B was
+  run on the raceline for all three arms, so the comparison is internally
+  consistent; `r_rate_delta` really is a strong lever.
+- **Does cast doubt on the absolute magnitudes** in every table in this
+  document. A chatter figure measured on the raceline includes an
+  excursion-recovery component that has nothing to do with the weight under
+  test. Do not compare a number measured before this date against one
+  measured after without checking which reference each used.
+- **Explains why `flip%` was so stubborn.** It sat near 55-66% through every
+  intervention. On the centreline the scoring reversal count is 1 (from 13)
+  and slew-limited ticks are exactly 0 — a floor that no weight retune
+  reached on the raceline.
+
+### Corrected reading of the `rjerk=150` live result
+
+An earlier live run of `nmpc_rjerk_delta=150.0` on the raceline showed 4.49%
+steering saturation and was provisionally read as the jerk penalty trading
+smoothness for saturation. **That reading was wrong** — the same weight on
+the centreline saturates 0.00% of ticks. The saturation belonged to the
+reference. (That run also contained a genuine, separate clock anomaly:
+timestamps went backwards 0.399 s twice, with a 6.29 → 2.71 m/s speed step —
+see `periodic_pose_teleport_investigation.md`, another session's work.)
+
+### Method note
+
+Two runs earlier in this investigation were diagnosed from an ambiguous
+`|e_y|`, because on a raceline a large lateral error can be either a
+tracking failure or the line intentionally apexing near a boundary. The
+centreline mode exists specifically to remove that ambiguity, and it should
+be the reference for any future chatter or turn-in measurement; switch back
+to the raceline only for timed runs.
+
+### Next
+
+`NMPC_RRATE_ZONE_ENABLED=true` (2.0 / 0.35 / 0.15) enabled for the first
+time live, on top of the centreline baseline (score 0.488). It composes
+multiplicatively with `nmpc_rjerk_delta=150.0`, which is already on, so a
+regression could be either — disable the zone first.
+
+Still untested live: the offline low-rate variant `r_rate_delta=5.0` +
+`nmpc_rjerk_delta=250.0`, which beats the flat-52.5 baseline on every
+offline metric.

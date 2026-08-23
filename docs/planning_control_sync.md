@@ -1206,6 +1206,78 @@ either lever; see `late_turn_in_investigation.md`'s "Gradual-corner accel
 oscillation" section for the full worked example of how to distinguish the
 two.
 
+## Reference line: raceline vs centreline
+
+`tuner/tools/raceline_optimizer.py` has two modes, selected by `--mode`, and
+both write a 5-column `x,y,psi,psi_target,v_target` CSV that the live
+controller consumes identically through `path_map_path`:
+
+| mode | output | lateral offsets | use |
+|---|---|---|---|
+| `raceline` (default) | `raceline.csv` | curvature-minimising search | timed runs |
+| `centerline` | `centerline.csv` | pinned to zero | diagnosis, and currently the better line on `comp_test_map_3` |
+
+Centreline mode short-circuits the optimisation loop (`optimize_raceline`'s
+`lateral_offsets=False`): no curvature-reduction search, no final smoothing
+pass. The speed profile, heading shaping and cone-clearance check are the
+same code in both modes. It writes a **different filename on purpose**, so
+exporting a diagnostic line can never overwrite the raceline a timed run
+depends on.
+
+**Why a centreline is worth having at all.** On a raceline a large logged
+`|e_y|` is ambiguous: the line deliberately sits near a boundary at an apex,
+so "1.8 m from the path" is either a tracking failure or the line working as
+designed, and the telemetry cannot distinguish them. On the centreline `|e_y|`
+is unambiguously distance from the middle of the track, which is what makes a
+"drove too close to the cones" report answerable from the log alone.
+
+**On `comp_test_map_3` the centreline is not merely more legible — it is
+faster.** Same controller settings, same `speed_profile.csv`, 3 laps each:
+
+| | raceline | centreline |
+|---|---|---|
+| composite score | 0.752 | **0.488** |
+| lap time | 54.50 s | **51.34 s** |
+| RMSE | 0.506 | **0.366 m** |
+| peak \|e_y\| | 1.804 | **1.004 m** |
+| max \|e_psi\| | 37.6° | **22.0°** |
+| steering saturation | 0.18% | **0.00%** |
+| \|e_y\| > 1.0 m | 4.00% | **0.14%** |
+| steering reversals | 13 | **1** |
+
+At the corner that motivated this (`nmpc_s0` 170–195, the tightest on the
+track) the raceline produced a 1.8 m excursion on two of three laps with the
+car bogging to 2.19 m/s; the centreline holds 4.96 m/s minimum and peaks at
+1.004 m. Faster overall **despite being 5.1 m longer** (470.6 vs 465.5 m),
+because no lap is spent recovering from the excursion.
+
+**The mechanism, and why it is a real optimiser bug.** The raceline's offset
+from the centreline is tiny — mean 0.13 m, max 0.48 m over the whole lap, and
+only 0.35 m through the failing corner. At that corner `|κ|` is 0.209, the
+global maximum for this track and ~70% of the car's full-lock kinematic floor
+(1/3.32 m = 0.30). There is no width left to cut with, so the search bought
+no lap time; but the offset it did apply still perturbed the curvature of a
+corner already at the edge of what the plant can deliver. Worst of both — a
+marginally harder corner for no gain. `_candidate_score`'s
+`CURVATURE_SOFT_MAX` penalty does not catch this, because it thresholds
+**absolute** curvature (0.22) rather than curvature against the
+`alat_ceiling` the planned speed at that station actually permits.
+
+Consequences:
+
+- **Do not read the small mean offset as "the raceline is basically the
+  centreline, so the choice cannot matter."** It was measured as 0.13 m mean
+  and still cost 0.26 composite score. The offsets that matter are local to
+  the one or two corners nearest the plant's limit.
+- **The steering-quality metrics move with the reference, not only with the
+  cost weights.** Reversals 13 → 1 and saturation → 0 came from changing the
+  line, with every weight held fixed. A chatter or turn-in result measured on
+  a reference the car cannot track is not attributable to the weight under
+  test — see `docs/logs/steering_chatter_investigation.md`.
+- Fixing the optimiser means constraining a candidate's `κ·v²` against
+  `alat_ceiling_at(v)` per station, not `|κ|` against a flat constant. Not
+  done.
+
 ## Speed-profile aggressiveness: `CURVATURE_SPEED_A_LAT_MAX`
 
 Corner speed in the oracle profile comes from `v = √(a_lat_max / κ)`, so

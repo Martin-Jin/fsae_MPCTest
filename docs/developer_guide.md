@@ -367,6 +367,8 @@ tracks/<name>/
     cone_map.json      the cone_recorder capture (the source of truth)
     speed_profile.csv  tuner.tools.export_speed_profile output (centreline + oracle speed)
     raceline.csv       tuner.tools.raceline_optimizer output (minimum-time line)
+    centerline.csv     tuner.tools.raceline_optimizer --mode centerline output
+                       (geometric centre, speed-optimised only)
 ```
 
 **The physical directory is `ros2/src/fsae_planning/tracks/<name>/` — inside
@@ -459,7 +461,17 @@ the live controller can read. Run from `fsae_MPCTest/`:
 ```bash
 python -m tuner.tools.export_speed_profile <name>   # -> ../ros2/src/fsae_planning/tracks/<name>/speed_profile.csv
 python -m tuner.tools.raceline_optimizer   <name>    # -> ../ros2/src/fsae_planning/tracks/<name>/raceline.csv
+python -m tuner.tools.raceline_optimizer   <name> --mode centerline   # -> .../centerline.csv
 ```
+
+`--mode centerline` pins the lateral offset to zero, so the exported path is
+the reconstructed centreline with only its speed profile optimised. Slower by
+construction, and it writes a separate filename so it can never overwrite the
+raceline. Use it whenever a logged `|e_y|` needs to mean "distance from the
+middle of the track" — on a raceline it does not, because the line
+intentionally apexes near a boundary. On `comp_test_map_3` it currently also
+drives *better* than the raceline; see `planning_control_sync.md`'s
+"Reference line: raceline vs centreline".
 
 (the output lands in `fsae_planning`'s `tracks/`, not this repo's — see
 "Where a track lives" above)
@@ -634,7 +646,7 @@ sim-to-real investigation scripts. Three tiers:
 |---|---|
 | `plot_playback.py` | Time-scrubbing map/telemetry viewer — see [Plotting and scrubbing exported CSV telemetry](#plotting-and-scrubbing-exported-csv-telemetry) below. |
 | `export_speed_profile.py` | Exports a recorded cone map's oracle path + speed profile to CSV — see [Export the speed profile and raceline](#2-export-the-speed-profile-and-raceline) above. |
-| `raceline_optimizer.py` | Minimum-time racing line optimiser, same CSV output — see the same section above. |
+| `raceline_optimizer.py` | Minimum-time racing line optimiser, same CSV output — see the same section above. `--mode centerline` exports the centreline instead. |
 
 **`tuner/checks/` — one-off and reusable investigation scripts from
 sim-to-real debugging.** These came out of the saturation-gap investigation
