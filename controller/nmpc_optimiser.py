@@ -622,6 +622,44 @@ def _outputs(X, ref, p, v_ref, horizon_speed_profile_enabled=False,
     return H
 
 
+def _rrate_zone_scale(kappa_now, kappa_ahead, k, boost_straight, ease_approach,
+                      floor_corner):
+    """
+    Continuous three-zone multiplier on the steering-rate cost, driven by
+    CURRENT curvature and the peak curvature the HORIZON predicts ahead:
+
+        straight  (nothing now, nothing ahead)  -> boost_straight  (>= 1)
+        approach  (nothing now, corner ahead)   -> ease_approach
+        corner    (turning now)                 -> floor_corner    (<= 1)
+
+    Both inputs go through the same saturating `_corner_factor` curve, so
+    this is a smooth surface with no thresholds or hysteresis -- it degrades
+    gracefully on a continuously-winding road (where `now` and `ahead` are
+    both high, giving the corner value throughout) and on a lone kink
+    (where `ahead` leads `now` by a tick or two, giving a brief approach
+    ease).
+
+    Blend order matters: the approach ease is applied FIRST against the
+    straight boost, then the corner floor takes over as `now` rises. That
+    ordering means a corner entered from a straight passes
+    boost -> ease -> floor in that sequence, which is the intended
+    "release the brake before you need to turn" behaviour.
+
+    CAUTION on `kappa_ahead`: this is the peak |kappa| the horizon predicts,
+    which leads current curvature by roughly the horizon length. Against a
+    static raceline that is a clean signal. Against a LIVE planner path it
+    inherits the open centreline curvature-spike defect, and unlike a speed
+    target there is no rate limiter downstream to absorb a spurious spike --
+    re-validate before trusting this with use_planner=True.
+    """
+    now = _corner_factor(abs(kappa_now), k)
+    ahead = _corner_factor(abs(kappa_ahead), k)
+    # Lead-only component: how much more corner is COMING than is here now.
+    lead = max(0.0, ahead - now)
+    s = boost_straight + (ease_approach - boost_straight) * lead
+    return s + (floor_corner - s) * now
+
+
 def _rrate_stage_ramp(N, near):
     """
     Per-stage multiplier on the steering-rate cost: `near` at horizon stage 0,
@@ -710,6 +748,12 @@ class NMPCController:
         reversal_penalty_k=8.0,
         rrate_stage_ramp_enabled=False,
         rrate_stage_near=0.15,
+        rrate_zone_enabled=False,
+        rrate_zone_boost_straight=2.0,
+        rrate_zone_ease_approach=0.35,
+        rrate_zone_floor_corner=0.15,
+        rjerk_delta=0.0,
+        rjerk_a=0.0,
     ):
         if osqp is None:      # pragma: no cover - dependency guard
             raise ImportError(
@@ -757,6 +801,22 @@ class NMPCController:
         # they set the rate weight's MAGNITUDE, this shapes it across STAGES.
         self.rrate_stage_ramp_enabled = bool(rrate_stage_ramp_enabled)
         self.rrate_stage_near = float(rrate_stage_near)
+        # EXPERIMENTAL, default off. Continuous three-zone schedule on the
+        # steering-rate cost: boost on a true straight, ease on the approach
+        # to a corner the HORIZON can see, floor through the corner itself.
+        # See _rrate_zone_scale. Unlike the corner blend it uses the
+        # horizon's predicted curvature as well as the current value, so the
+        # ease can lead turn-in rather than arriving with it.
+        self.rrate_zone_enabled = bool(rrate_zone_enabled)
+        self.rrate_zone_boost_straight = float(rrate_zone_boost_straight)
+        self.rrate_zone_ease_approach = float(rrate_zone_ease_approach)
+        self.rrate_zone_floor_corner = float(rrate_zone_floor_corner)
+        # Steering/accel JERK weights (second difference of the input). 0.0
+        # (default) disables the term entirely -- _E2rE2 is left None and
+        # nothing is added to the Hessian, so the flag-off path is exactly
+        # the pre-feature QP. See _build_qp's _E2 comment.
+        self.rjerk_delta = float(rjerk_delta)
+        self.rjerk_a = float(rjerk_a)
         if self.friction_circle_enabled:
             # F_max = m * ceiling(v_x) / 2 per axle: the measured ceiling law
             # bounds TOTAL lateral force (F_yf*cos(d) + F_yr) / m, split
@@ -804,6 +864,7 @@ class NMPCController:
         self._delta_act = 0.0
         self._a_act = 0.0
         self._u_prev = np.zeros(NU)
+        self._u_prev2 = np.zeros(NU)  # command two ticks ago, for the jerk anchor
         self._U = np.zeros((self.N, NU))
         self._have_warm_start = False
 
@@ -851,6 +912,7 @@ class NMPCController:
         self._delta_act = 0.0
         self._a_act = 0.0
         self._u_prev = np.zeros(NU)
+        self._u_prev2 = np.zeros(NU)  # command two ticks ago, for the jerk anchor
         self._U = np.zeros((self.N, NU))
         self._have_warm_start = False
 
@@ -899,6 +961,25 @@ class NMPCController:
         self._E = E
         self._Rr_flat = np.tile(self.r_rate, N)
         self._ErE = E.T @ (self._Rr_flat[:, None] * E)
+        # Second-difference operator for the steering-JERK penalty
+        # (rjerk_delta > 0). E2 = E @ E: applying the first-difference
+        # operator twice gives du_k - du_{k-1}, i.e. steering ACCELERATION.
+        #
+        # WHY this term exists: the plain rate cost charges by |du|, which is
+        # the same for a sustained ramp into a corner as for one leg of an
+        # oscillation, so it cannot suppress hunting without also resisting
+        # turn-in. Measured on live data, direction REVERSALS carry ~4.3x the
+        # |d2| of same-direction ramps versus only ~1.9x the |d1|, so |d2|
+        # separates the two roughly twice as sharply. A steady ramp scores
+        # near zero here and is nearly free; an alternating wiggle is
+        # expensive. See docs/steering_turn_in_upgrade_options.md (Option 4).
+        #
+        # No OSQP sparsity change: p_mask[:n_du,:n_du] is already a dense
+        # upper triangle, so E2'RE2 adds no new nonzeros to the pattern.
+        self._E2 = E @ E
+        rj = np.tile(np.array([self.rjerk_delta, self.rjerk_a]), N)
+        self._E2rE2 = (self._E2.T @ (rj[:, None] * self._E2)
+                       if (self.rjerk_delta or self.rjerk_a) else None)
 
         p_mask = np.zeros((nz, nz), dtype=bool)
         p_mask[:n_du, :n_du] = np.triu(np.ones((n_du, n_du), dtype=bool))
@@ -1055,6 +1136,16 @@ class NMPCController:
             rate = float(np.sum(self.r_rate * du ** 2))
         else:
             rate = float(np.sum(_rr * du.reshape(-1) ** 2))
+        jerk = 0.0
+        if self._E2rE2 is not None:
+            # Same objective the QP minimises (see _solve_step's jerk block),
+            # so the backtracking line search cannot reject a step the QP
+            # considers improving.
+            d2 = np.vstack([
+                du[0] - (self._u_prev - self._u_prev2),
+                np.diff(du, axis=0),
+            ])
+            jerk = float(np.sum(np.array([self.rjerk_delta, self.rjerk_a]) * d2 ** 2))
         slack = 0.0
         if self._use_slack:
             over = np.maximum(np.abs(X[1:, IDX_EY]) - self.track_halfwidth, 0.0)
@@ -1064,7 +1155,7 @@ class NMPCController:
             v_max = ref.v_ref_at(X[1:, IDX_S]) + self.speed_limit_margin
             over_v = np.maximum(X[1:, IDX_VX] - v_max, 0.0)
             vslack = float(self.speed_limit_slack_weight * np.sum(over_v ** 2))
-        return stage + eff + rate + slack + vslack
+        return stage + eff + rate + jerk + slack + vslack
 
     def _project_feasible(self, U):
         """Project onto input bounds + per-step slew feasibility from
@@ -1124,6 +1215,20 @@ class NMPCController:
 
         Hess = G.T @ G + np.diag(ru_flat) + self._ErE
         grad = G.T @ g + ru_flat * u_flat + self._E.T @ (self._Rr_flat * e_rate)
+        if self._E2rE2 is not None:
+            # Steering-JERK term: ||E2 u - d2_anchor||^2_Rj contributes
+            # E2'RjE2 to the Hessian and E2'Rj(E2 u - d2_anchor) to the
+            # gradient. The anchor carries the LAST TWO commands into step 0's
+            # second difference, the same way _u_prev anchors the first
+            # difference -- without it the term is blind to a reversal that
+            # spans the tick boundary, which is exactly what it exists to
+            # catch.
+            e_jerk = self._E2 @ u_flat
+            e_jerk[:NU] -= (2.0 * self._u_prev - self._u_prev2)
+            e_jerk[NU:2 * NU] += self._u_prev
+            rj = np.tile(np.array([self.rjerk_delta, self.rjerk_a]), N)
+            Hess = Hess + self._E2rE2
+            grad = grad + self._E2.T @ (rj * e_jerk)
 
         P_dense = np.zeros((nz, nz))
         P_dense[:n_du, :n_du] = 2.0 * Hess
@@ -1338,7 +1443,8 @@ class NMPCController:
             rrate_steer_current = float(R3[0, 0])
 
         if (self.corner_rrate_blend_enabled or self.steer_rate_anti_hunt_enabled
-                or self.reversal_penalty_enabled or self.rrate_stage_ramp_enabled):
+                or self.reversal_penalty_enabled or self.rrate_stage_ramp_enabled
+                or self.rrate_zone_enabled):
             r_rate_tick = np.array([rrate_steer_current, self.r_rate[1]])
             Rr_flat = np.tile(r_rate_tick, self.N)
             if self.rrate_stage_ramp_enabled:
@@ -1362,6 +1468,22 @@ class NMPCController:
 
         budget_s = self.solve_budget_ms * 1e-3
         X = self._rollout(x0, U, ref)
+
+        # Three-zone rate schedule (rrate_zone_enabled). Applied HERE rather
+        # than in the block above because it needs kappa across the PREDICTED
+        # horizon, which only exists once X has been rolled out. Recomputing
+        # _ErE costs one (n_du x n_du) product per tick, the same cost the
+        # other rate-reshaping flags already pay.
+        m_rrate_zone = 1.0
+        if self.rrate_zone_enabled:
+            kap_h = ref.kappa_at(X[:, IDX_S])
+            m_rrate_zone = _rrate_zone_scale(
+                kappa_now, float(np.abs(kap_h).max()), self.corner_factor_k,
+                self.rrate_zone_boost_straight, self.rrate_zone_ease_approach,
+                self.rrate_zone_floor_corner)
+            self._Rr_flat = self._Rr_flat * np.tile(
+                np.array([m_rrate_zone, 1.0]), self.N)
+            self._ErE = self._E.T @ (self._Rr_flat[:, None] * self._E)
         H = _outputs(X, ref, self.plant, desired_speed,
                      horizon_speed_profile_enabled=self.horizon_speed_profile_enabled,
                      friction_circle_enabled=self.friction_circle_enabled)
@@ -1404,6 +1526,7 @@ class NMPCController:
         exp_a = math.exp(-self.dt / self.plant.tau_a)
         self._delta_act = self._delta_act * exp_delta + u_opt[0] * (1.0 - exp_delta)
         self._a_act = self._a_act * exp_a + u_opt[1] * (1.0 - exp_a)
+        self._u_prev2 = self._u_prev.copy()
         self._u_prev = u_opt.copy()
 
         diag = {
@@ -1427,6 +1550,7 @@ class NMPCController:
             # anti-hunt AND reversal-penalty), not just one stage in isolation.
             'm_Rrate_antihunt': m_rrate_antihunt,
             'm_Rrate_reversal': m_rrate_reversal,
+            'm_Rrate_zone': m_rrate_zone,
             'Rrate_steer_corner_blend': rrate_steer_current,
         }
         if self.friction_circle_enabled:

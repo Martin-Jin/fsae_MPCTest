@@ -772,6 +772,32 @@ NMPC_RRATE_STEER_CORNER = -1.0     # -1 = inherit RRATE_STEER_CORNER
 # on horizon POSITION rather than measured curvature/error.
 # NEAR = 1.0 is an exact no-op. Composes with the three flags below (they set
 # the rate weight's magnitude; this shapes it across stages).
+# [NMPC only, EXPERIMENTAL] Continuous three-zone schedule on the
+# steering-RATE cost, driven by CURRENT curvature and the peak curvature the
+# HORIZON predicts ahead: boost on a true straight, ease on the approach to a
+# corner the horizon can see, floor through the corner itself. Smooth surface,
+# no thresholds -- degrades to the corner value on a continuously-winding
+# road. See controller/nmpc_optimiser.py::_rrate_zone_scale.
+# Multiplies whatever r_rate_delta is (unlike NMPC_CORNER_RRATE_BLEND_ENABLED,
+# which OVERWRITES it), so it composes with the shipped 52.5 rather than
+# discarding it.
+# [NMPC only, EXPERIMENTAL] Steering-JERK weight: penalises the SECOND
+# difference of the steering command (steering acceleration) instead of only
+# the first. A steady ramp into a corner has near-zero second difference and
+# is nearly free; an alternating wiggle is expensive. Measured on live data,
+# reversals carry ~4.3x the |d2| of same-direction ramps vs only ~1.9x the
+# |d1|, so this separates chatter from turn-in about twice as sharply as the
+# rate cost can. 0.0 disables the term entirely (no Hessian contribution).
+# Intended to eventually let R_rate_diag[0] come back down from 52.5.
+# See controller/nmpc_optimiser.py::_build_qp's _E2 comment.
+NMPC_RJERK_DELTA = 0.0
+NMPC_RJERK_A = 0.0
+
+NMPC_RRATE_ZONE_ENABLED = False
+NMPC_RRATE_ZONE_BOOST_STRAIGHT = 2.0    # x r_rate on a true straight
+NMPC_RRATE_ZONE_EASE_APPROACH = 0.35    # x r_rate when a corner is AHEAD but not here yet
+NMPC_RRATE_ZONE_FLOOR_CORNER = 0.15     # x r_rate mid-corner
+
 NMPC_RRATE_STAGE_RAMP_ENABLED = False
 NMPC_RRATE_STAGE_NEAR = 0.15
 

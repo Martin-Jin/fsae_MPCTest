@@ -86,6 +86,9 @@ from settings import (
     NMPC_REVERSAL_PENALTY_ENABLED, NMPC_REVERSAL_PENALTY_BOOST_MAX,
     NMPC_REVERSAL_PENALTY_K,
     NMPC_RRATE_STAGE_RAMP_ENABLED, NMPC_RRATE_STAGE_NEAR,
+    NMPC_RJERK_DELTA, NMPC_RJERK_A,
+    NMPC_RRATE_ZONE_ENABLED, NMPC_RRATE_ZONE_BOOST_STRAIGHT,
+    NMPC_RRATE_ZONE_EASE_APPROACH, NMPC_RRATE_ZONE_FLOOR_CORNER,
     OUTPUT_SMOOTHING_ENABLED, OUTPUT_SMOOTHING_ALPHA, OUTPUT_SMOOTHING_CORNER_FLOOR,
     OUTPUT_SMOOTHING_K_EY, OUTPUT_SMOOTHING_K_EPSI,
     OUTPUT_SMOOTHING_LOOKAHEAD_LEAD_S,
@@ -687,6 +690,12 @@ def run_core_rollout(
             reversal_penalty_k=_nmpc_pick(NMPC_REVERSAL_PENALTY_K, REVERSAL_PENALTY_K),
             rrate_stage_ramp_enabled=NMPC_RRATE_STAGE_RAMP_ENABLED,
             rrate_stage_near=NMPC_RRATE_STAGE_NEAR,
+            rrate_zone_enabled=NMPC_RRATE_ZONE_ENABLED,
+            rrate_zone_boost_straight=NMPC_RRATE_ZONE_BOOST_STRAIGHT,
+            rrate_zone_ease_approach=NMPC_RRATE_ZONE_EASE_APPROACH,
+            rrate_zone_floor_corner=NMPC_RRATE_ZONE_FLOOR_CORNER,
+            rjerk_delta=NMPC_RJERK_DELTA,
+            rjerk_a=NMPC_RJERK_A,
         )
 
     metrics = RolloutMetrics()
