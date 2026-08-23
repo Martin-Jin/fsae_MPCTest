@@ -827,6 +827,16 @@ def _rrate_zone_scale(kappa_now, kappa_ahead, k, boost_straight, ease_approach,
     boost -> ease -> floor in that sequence, which is the intended
     "release the brake before you need to turn" behaviour.
 
+    CAUTION on `k`: the ease/floor endpoints are only REACHED as
+    `_corner_factor` approaches 1, so this schedule is only as strong as `k`
+    lets it saturate over the TRACK's curvature range. At the LTV-QP's
+    inherited k=8.0 a track whose tightest corner is |kappa|~0.2 tops
+    `_corner_factor` out near 0.63, which silently degrades this from a
+    three-zone schedule into a mild global rate boost -- the multiplier never
+    leaves the boost band. Check a run's `m_Rrate_zone` column against
+    `floor_corner` before concluding the endpoints did anything; if it never
+    approaches the floor, raise `k` rather than lowering the endpoints
+    (k ~= target/((1 - target) * kappa_max)).
     CAUTION on `kappa_ahead`: this is the peak |kappa| the horizon predicts,
     which leads current curvature by roughly the horizon length. Against a
     static raceline that is a clean signal. Against a LIVE planner path it

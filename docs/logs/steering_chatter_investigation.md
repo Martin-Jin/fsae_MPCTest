@@ -725,12 +725,69 @@ centreline mode exists specifically to remove that ambiguity, and it should
 be the reference for any future chatter or turn-in measurement; switch back
 to the raceline only for timed runs.
 
+### Zone schedule, first live run: it never engaged
+
+`NMPC_RRATE_ZONE_ENABLED=true` (2.0 / 0.35 / 0.15) on the centreline
+baseline, `k` left at its inherited `-1` (= LTV-QP `8.0`):
+
+| | zone off | zone on |
+|---|---|---|
+| composite score | **0.488** | 0.522 |
+| lap time | **51.34** | 52.40 s |
+| \|e_y\| p90 | 0.581 | **0.524** |
+| \|e_y\| max | **1.004** | 1.170 |
+| flip% | 42.1 | **39.0** |
+| mean\|d\| | **0.628** | 0.674 |
+| sat% / slew% | 0.00 / 0.00 | 0.00 / 0.00 |
+
+A wash — **because the mechanism never actually ran.** `m_Rrate_zone` spanned
+0.829–1.962 with **0% of ticks in either the ease or the floor band**. What
+executed was a mild global rate *boost* on straights, not a three-zone
+schedule.
+
+Cause is a calibration coupling, not a design fault:
+`_corner_factor(|κ|, k=8)` needs `|κ|`=1.125 to reach 0.9, but this track's
+tightest corner is 0.209, so `corner_frac` tops out at 0.626 and the
+multiplier bottoms at 0.84 instead of its 0.15 floor. Full derivation and the
+`k ≈ target/((1−target)·κ_max)` rule are in `planning_control_sync.md`'s
+"Three-zone rate schedule".
+
+`nmpc_corner_factor_k=27.0` (0.209 → `corner_frac` 0.85) fixes the
+saturation, so **the zone's endpoints have still not been tested**; do not
+record the table above as evidence about 2.0/0.35/0.15.
+
+**But `k=27` with `ease_approach`=0.35 DNFs offline**, off-track at the
+track's tightest corner with full-lock steering and `|e_y|` growing to
+2.53 m — a late-turn-in failure, the opposite of the intended effect. It is
+not a monotonic tuning effect: `boost_straight`=0.8, which makes the
+multiplier ≤1 everywhere (uniformly *weaker* than no zone), also DNFs.
+Compounding is ruled out (`_Rr_flat` is rebuilt each tick — `rrate_zone_enabled`
+is in the rebuild guard). Full elimination list in
+`planning_control_sync.md`'s "Three-zone rate schedule"; the cause is **open**,
+with a not-yet-confirmed suspicion about the zone being applied after the
+rollout (it needs horizon curvature) interacting with the warm start.
+
+Shipped instead: `ease_approach`=**0.80**, the value at which the offline
+rollout completes and modestly beats baseline (score 0.796 vs 0.822,
+`|e_y|` 0.476 vs 0.496, p90 0.976 vs 1.044).
+
+Method note, second occurrence this session: `k=27` was derived from the
+saturation arithmetic and set as the live config *before* running
+`tuner.steering_chatter_check`. The check then showed it DNFs. Run the
+offline rollout before shipping a weight-shaping change, not after.
+
+Method note: this is the second time in this investigation that a null result
+turned out to be "the mechanism did not engage" rather than "the mechanism
+does not help" (the first was `NMPC_HORIZON=35`, which was SQP failure).
+Check the mechanism's own telemetry column before writing a null into the
+ruled-out list.
+
 ### Next
 
-`NMPC_RRATE_ZONE_ENABLED=true` (2.0 / 0.35 / 0.15) enabled for the first
-time live, on top of the centreline baseline (score 0.488). It composes
-multiplicatively with `nmpc_rjerk_delta=150.0`, which is already on, so a
-regression could be either — disable the zone first.
+Re-run the zone at `k=27` / `ease_approach`=0.80, against the centreline
+baseline (score 0.488).
+It composes multiplicatively with `nmpc_rjerk_delta=150.0`, which is already
+on, so a regression could be either — disable the zone first.
 
 Still untested live: the offline low-rate variant `r_rate_delta=5.0` +
 `nmpc_rjerk_delta=250.0`, which beats the flat-52.5 baseline on every

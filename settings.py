@@ -749,7 +749,20 @@ NMPC_STEER_RATE_ANTI_HUNT_ENABLED = False
 # NMPC_STEER_RATE_ANTI_HUNT_ENABLED -- takes priority over it when both are
 # set; use one or the other, not both. UNVALIDATED for the NMPC.
 NMPC_CORNER_RRATE_BLEND_ENABLED = False
-NMPC_CORNER_FACTOR_K = -1.0        # -1 = inherit CORNER_FACTOR_K
+# Saturation rate of _corner_factor = 1 - 1/(1 + k*|kappa|), shared by the
+# corner blend above and NMPC_RRATE_ZONE_* below. CORNER_FACTOR_K's 8.0 is
+# calibrated for the LTV-QP's soft Q-blending, where partial engagement is
+# fine. The zone schedule instead NEEDS this to saturate, because its corner
+# floor is only reached as corner_frac -> 1, and at k=8 that is unreachable
+# on a track whose tightest corner is |kappa|~0.2: corner_frac needs
+# |kappa|=1.125 to reach 0.9, so it tops out near 0.63 and the zone
+# degenerates into a mild global rate boost.
+#
+# Scale this with the TRACK's max curvature, not by feel:
+#   k ~= target_corner_frac / ((1 - target_corner_frac) * kappa_max)
+# 27.0 puts |kappa|=0.209 (comp_test_map_3's tightest) at corner_frac 0.85.
+# Re-derive it for a track with a different curvature range.
+NMPC_CORNER_FACTOR_K = 27.0
 NMPC_RRATE_STEER_STRAIGHT = -1.0   # -1 = inherit RRATE_STEER_STRAIGHT
 NMPC_RRATE_STEER_CORNER = -1.0     # -1 = inherit RRATE_STEER_CORNER
 
@@ -788,14 +801,22 @@ NMPC_RRATE_STEER_CORNER = -1.0     # -1 = inherit RRATE_STEER_CORNER
 # reversals carry ~4.3x the |d2| of same-direction ramps vs only ~1.9x the
 # |d1|, so this separates chatter from turn-in about twice as sharply as the
 # rate cost can. 0.0 disables the term entirely (no Hessian contribution).
-# Intended to eventually let R_rate_diag[0] come back down from 52.5.
 # See controller/nmpc_optimiser.py::_build_qp's _E2 comment.
-NMPC_RJERK_DELTA = 0.0
+NMPC_RJERK_DELTA = 150.0
 NMPC_RJERK_A = 0.0
 
-NMPC_RRATE_ZONE_ENABLED = False
+# Three-zone steering-rate schedule: boost on straights, ease when a corner
+# is visible ahead (the turn-in release), floor mid-corner. MULTIPLIES
+# R_rate_diag[0] rather than overwriting it, so it composes with the tuned
+# 52.5 instead of discarding it.
+#
+# CAUTION: the endpoints below are only REACHED if NMPC_CORNER_FACTOR_K
+# saturates over the track's curvature range -- see its comment above. Read
+# a run's m_Rrate_zone column before concluding these values did anything;
+# if it never approaches FLOOR_CORNER, k is the thing to fix, not these.
+NMPC_RRATE_ZONE_ENABLED = True
 NMPC_RRATE_ZONE_BOOST_STRAIGHT = 2.0    # x r_rate on a true straight
-NMPC_RRATE_ZONE_EASE_APPROACH = 0.35    # x r_rate when a corner is AHEAD but not here yet
+NMPC_RRATE_ZONE_EASE_APPROACH = 0.80    # x r_rate when a corner is AHEAD but not here yet (0.35 DNFs offline -- see planning_control_sync.md)
 NMPC_RRATE_ZONE_FLOOR_CORNER = 0.15     # x r_rate mid-corner
 
 NMPC_RRATE_STAGE_RAMP_ENABLED = False
@@ -906,7 +927,7 @@ NMPC_FRICTION_CIRCLE_ENABLED = False
 # docs/planning_control_sync.md), so this one always carries slack and can
 # never make the subproblem infeasible.
 #
-# Added 2026-08-19 because NMPC_HORIZON_SPEED_PROFILE_ENABLED's COST term
+# This exists as a CONSTRAINT because NMPC_HORIZON_SPEED_PROFILE_ENABLED's COST term
 # alone was live-tested and REJECTED: the QP just SUMS (v_x - v_ref)^2 across
 # stages with no ordering constraint, so the solver can trade a bad early
 # (in-corner) residual against a good late (post-corner) one in the SAME

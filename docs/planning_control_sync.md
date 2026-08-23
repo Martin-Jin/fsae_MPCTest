@@ -214,6 +214,7 @@ writing — re-confirm before relying on them, since a resync can move them.
 | Latency telemetry columns | — (offline has no equivalent) | `fsds_simulator/.../telemetry_logger.py` | `pose_age_s`, `path_age_s`, `n_delay`, `solve_ms`, `cmd_latency_ms` |
 | Pose-feed hold model | `settings.py` (`POSE_HOLD_*`) + `sim/rollout_core.PoseFeedHold` | — (offline-only; models a live fault) | `PROB 0.05`, `MEAN_TICKS 2.1`, `MAX_TICKS 5` |
 | Accel/brake effort split (`R[1,1]`) | `settings.py` (`R_A_ACCEL`, `R_A_BRAKE`), read by `controller/optimiser.py`'s `solve_mpc(r_a_accel=, r_a_brake=)` | `mpc_params.py` (`r_a_accel`, `r_a_brake`), read by `mpc_core.py`'s `_solve_qp` | actively being live-tuned — re-check both sides' current values before trusting this row; see "Accel/brake effort weight split" below |
+| NMPC rate-shaping family (zone / jerk / stage ramp / `k`) | `settings.py` (`NMPC_RRATE_ZONE_*`, `NMPC_RJERK_DELTA`/`_A`, `NMPC_RRATE_STAGE_*`, `NMPC_CORNER_FACTOR_K`), threaded through `sim/rollout_core.py` into `controller/nmpc_optimiser.py` | `mpc_params.py` (same names, lowercase), read by `nmpc_core.py` | zone `True` @ `2.0`/`0.35`/`0.15`, `rjerk_delta` `150.0`, stage ramp `False`, `nmpc_corner_factor_k` `27.0` — **`k` is load-bearing for the zone, not cosmetic**: at the inherited `8.0` the ease/floor bands are unreachable on a track with `κ_max`~0.2, so a divergence here silently disables the schedule offline while leaving it on live. See "Three-zone rate schedule" below |
 | Corner-factor scheduler + heading-error accel/brake asymmetry | `settings.py` (`CORNER_FACTOR_K`, `Q_EY_*`/`Q_EPSI_*`/`Q_R_*`/`RRATE_STEER_*`/`R_STEER_CORNER_MID`, `LOW_SPEED_CORNER_BOOST_*`, `EPSI_RA_*`) | `mpc_params.py` (same names, lowercase) | see the "MPC weight/gain parity" table above for the full current field list. The lookahead gain-scheduling family this row replaces (exit-boost decay distance/peak-tracker, low-speed steering-rate boost, steering-effort relaxation, curvature forcing, anti-hunt lookahead gate, exit-boost `\|e_psi\|` hold threshold) no longer exists on either side — see "Corner-factor scheduler" below |
 
 Notes on how these are actually used:
@@ -1206,6 +1207,106 @@ either lever; see `late_turn_in_investigation.md`'s "Gradual-corner accel
 oscillation" section for the full worked example of how to distinguish the
 two.
 
+## Three-zone rate schedule (`nmpc_rrate_zone_*`) — and why `k` gates it
+
+A continuous multiplier on the NMPC's steering-rate cost, driven by current
+curvature and the peak curvature the horizon predicts ahead:
+
+| zone | condition | multiplier |
+|---|---|---|
+| straight | nothing now, nothing ahead | `boost_straight` (2.0) |
+| approach | nothing now, corner ahead | `ease_approach` (0.35) |
+| corner | turning now | `floor_corner` (0.15) |
+
+It **multiplies** `r_rate_delta` rather than overwriting it, so it composes
+with the tuned 52.5 — unlike `nmpc_corner_rrate_blend_enabled`, which
+overwrites `R_rate[0,0]` and silently discards it.
+
+**The endpoints are gated by `nmpc_corner_factor_k`, and this is easy to miss.**
+Both `now` and `ahead` pass through
+`_corner_factor(|κ|, k) = 1 − 1/(1 + k|κ|)`, and the corner floor is only
+reached as that approaches 1. So the schedule is only as strong as `k` lets it
+saturate **over the track's own curvature range**:
+
+| `\|κ\|` | `_corner_factor` at k=8 | at k=27 |
+|---|---|---|
+| 0.00 | 0.000 | 0.000 |
+| 0.06 | 0.390 | 0.618 |
+| 0.209 (this track's tightest) | **0.626** | **0.850** |
+| 1.125 | 0.900 | 0.968 |
+
+At the LTV-QP's inherited `k=8.0`, reaching `_corner_factor`=0.9 needs
+`|κ|`=1.125, but `comp_test_map_3`'s tightest corner is 0.209. Measured live
+with the zone enabled at 2.0/0.35/0.15 and `k` inherited, `m_Rrate_zone`
+ranged **0.829–1.962 with 0% of ticks in either the ease or floor band** — the
+multiplier never left the boost band, so what actually ran was a mild global
+rate *boost*, not a three-zone schedule. Scores were a wash against the
+zone-off baseline (0.522 vs 0.488), which is the expected result of a
+mechanism that never engaged.
+
+`k=27.0` puts 0.209 at `_corner_factor`=0.85, giving a real swing rather than
+the 2.4× the inherited `k=8` allowed. Derive it from the track, not by feel:
+
+```
+k ≈ target_corner_frac / ((1 − target_corner_frac) · κ_max)
+```
+
+**OPEN: the schedule DNFs offline at the intended endpoints, unexplained.**
+With `k=27` and `ease_approach`=0.35 the offline rollout goes off-track at the
+track's tightest corner (x≈41.4, y≈49.6 — the same corner as the live
+raceline excursion), full-lock steering with `|e_y|` growing monotonically to
+2.53 m. That is a late-turn-in failure, i.e. the *opposite* of what releasing
+the rate weight on approach should do. The obvious readings are all
+contradicted by measurement:
+
+- Not "too much release": raising `floor_corner` to 0.5 or 0.7 still DNFs.
+- **Not a monotonic tuning effect at all:** `boost_straight`=0.8 — which makes
+  the multiplier ≤1 everywhere, i.e. uniformly *weaker* than no zone — also
+  DNFs, at step 289. A configuration strictly gentler than the baseline
+  cannot cause worse turn-in than the baseline through the rate weight alone.
+- Not the speed profile: matching the harness's `v_max` to the driven
+  centreline's 16.70 changes nothing.
+- Not `k`: with the zone disabled, k=15/27/40 are all identical to baseline
+  (the field is inert without the zone), and k=15/40 with the zone on
+  complete.
+- Not weight compounding: `_Rr_flat` is rebuilt fresh from `r_rate_tick` each
+  tick, because `rrate_zone_enabled` is in the rebuild guard's condition —
+  so the scaling does not accumulate across ticks.
+
+The DNF runs also carry high non-`solved` SQP rates (42% at
+`boost_straight`=0.8 vs 14% at baseline), so the leading hypothesis is that
+rescaling `_Rr_flat` *after* the rollout — the zone is applied later than
+every other rate-reshaping flag, because it needs horizon curvature —
+interacts badly with the warm start or line search. **Not confirmed.**
+
+`ease_approach` is therefore set to **0.80**, the value at which the offline
+rollout completes (score 0.796 vs 0.822 baseline, `|e_y|` 0.476 vs 0.496,
+p90 0.976 vs 1.044 — a modest genuine improvement). **The intended
+0.35 turn-in release remains untested**, live and offline.
+
+Note the sim and the car disagree here: the same zone at `k=8`/0.35 completed
+two clean laps live (score 0.522) while DNFing offline at step 274. Given the
+documented sim-to-real gap, that is not proof either side is right, but it
+does mean an offline DNF here is not automatically a live DNF.
+
+Consequences:
+
+- **Read `m_Rrate_zone` before believing an A/B of the endpoints.** If it
+  never approaches `floor_corner`, the endpoints are not what was tested and
+  `k` is the thing to change. A null result here means "did not engage" at
+  least as often as it means "does not help."
+- **Run `tuner.steering_chatter_check` before shipping a zone/`k` change.**
+  The `k=27`/0.35 combination was set from the saturation arithmetic alone
+  and would have gone to the car as an offline DNF had the check not been
+  run afterwards.
+- **`nmpc_corner_factor_k` is shared** with `nmpc_corner_rrate_blend_enabled`.
+  Raising it for the zone also sharpens that blend — harmless while the blend
+  is off, but not independent.
+- `corner_frac` is published in telemetry and read by the node-level output
+  smoothing, but through `params.corner_factor_k` (the LTV-QP field), **not**
+  the NMPC override — so raising `nmpc_corner_factor_k` does not perturb
+  smoothing even when it is enabled.
+
 ## Reference line: raceline vs centreline
 
 `tuner/tools/raceline_optimizer.py` has two modes, selected by `--mode`, and
@@ -1648,7 +1749,13 @@ rollforward.
 section below), `nmpc_corner_rrate_blend_enabled`, `nmpc_corner_factor_k`,
 `nmpc_rrate_steer_straight`/`_corner` (blends `R_rate[0,0]` by current
 curvature; takes priority over `nmpc_steer_rate_anti_hunt_enabled` if both
-are set — use one or the other, not both) — each read solely by
+are set — use one or the other, not both),
+`nmpc_rrate_zone_enabled`/`_boost_straight`/`_ease_approach`/`_floor_corner`
+(the three-zone rate schedule — see "Three-zone rate schedule" below; note it
+also reads `nmpc_corner_factor_k`, so that field is NOT exclusive to the
+corner blend),
+`nmpc_rjerk_delta`/`_a` (second-difference input cost),
+`nmpc_rrate_stage_ramp_enabled`/`_near` — each read solely by
 `nmpc_core.py`'s `_pick()` calls; `mpc_core.py` never references any of them.
 
 **`NMPCParams`** (`nmpc_params.py`) — all 20 fields NMPC-only by the file's
