@@ -94,7 +94,7 @@ controller:
     q_e_yd: 0.5                # rate of change of lateral deviation (1/(m/s)^2)
     q_e_psi: 1.65              # heading error relative to path tangent (1/rad^2)
     q_r: 1.20                  # yaw rate (1/(rad/s)^2)
-    q_e_v: 5.40                # speed error: car_speed - desired_speed (1/(m/s)^2)
+    q_e_v: 5.5                 # speed error: car_speed - desired_speed (1/(m/s)^2)
     r_delta: 1.8               # steering command effort (1/rad^2)
     r_a_accel: 2.25            # acceleration command effort, a_cmd >= 0 (1/(m/s^2)^2)
     r_a_brake: 0.5             # acceleration command effort, a_cmd < 0 -- braking (1/(m/s^2)^2)

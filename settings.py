@@ -608,7 +608,7 @@ EPSI_RA_BRAKE_FLOOR = 0.5
 # straights, where a speed-error weight does little. Compare on the approach
 # phase when re-tuning this.
 # Mirrors mpc_params.py's Q_diag.
-Q_diag      = [6.0, 0.8, 1.65, 1.20, 5.40, 0.0, 0.0, 0.0]
+Q_diag      = [6.0, 0.8, 1.65, 1.20, 5.5, 0.0, 0.0, 0.0]
 # [shared] R_diag index -> input penalised:
 #   [0] delta_cmd  steering command effort (rad)
 #   [1] a_cmd      acceleration command effort (m/s^2)
@@ -763,6 +763,18 @@ NMPC_RRATE_STEER_CORNER = -1.0     # -1 = inherit RRATE_STEER_CORNER
 # the same R_rate[0,0] (see nmpc_optimiser.compute_step's rrate_steer_current).
 # Mirrors the live MPCParams.nmpc_reversal_penalty_* override fields.
 # UNVALIDATED on the car; offline-A/B'd only.
+# [NMPC only, EXPERIMENTAL] Discount the steering-RATE cost at the NEAR
+# horizon stages (a linear ramp from NMPC_RRATE_STAGE_NEAR at stage 0 to 1.0
+# at the last stage), so a first turn-in input is cheap while a sustained
+# oscillation still pays close to full price -- see
+# controller/nmpc_optimiser.py::_rrate_stage_ramp for the reasoning, and
+# docs/steering_turn_in_upgrade_options.md (Option 1) for why this is keyed
+# on horizon POSITION rather than measured curvature/error.
+# NEAR = 1.0 is an exact no-op. Composes with the three flags below (they set
+# the rate weight's magnitude; this shapes it across stages).
+NMPC_RRATE_STAGE_RAMP_ENABLED = False
+NMPC_RRATE_STAGE_NEAR = 0.15
+
 NMPC_REVERSAL_PENALTY_ENABLED = False
 NMPC_REVERSAL_PENALTY_BOOST_MAX = -1.0  # -1 = inherit REVERSAL_PENALTY_BOOST_MAX
 NMPC_REVERSAL_PENALTY_K = -1.0          # -1 = inherit REVERSAL_PENALTY_K

@@ -804,6 +804,38 @@ def _outputs(X, ref, p, v_ref, horizon_speed_profile_enabled=False,
     return H
 
 
+def _rrate_stage_ramp(N, near):
+    """
+    Per-stage multiplier on the steering-rate cost: `near` at horizon stage 0,
+    rising linearly to 1.0 at the last stage. Returns shape (N,).
+
+    WHY: the plain rate cost is uniform across the horizon
+    (`np.tile(self.r_rate, N)`), so it charges the same price for a steering
+    change whether that change is the FIRST move into a corner or the tenth
+    tick of an oscillation. One weight cannot be both stiff enough to kill
+    tick-to-tick hunting and compliant enough for a gentle corner's small
+    early input, which is why a high flat weight makes the solver defer
+    turn-in until it must catch up at the actuator slew limit.
+
+    Ramping by STAGE is keyed on horizon POSITION, not measured state -- a
+    measured-state schedule (curvature/error) was live-tested and failed
+    because ~27% of jerk events show no curvature or heading-error signal at
+    all one second beforehand, while the horizon already predicts the corner.
+
+    CAUTION: offline-rejected as a fix for that jerk -- it moved
+    slew-limited ticks the WRONG way (8.4% -> 12-15%) because a cheaper
+    near-stage rate simply spends more of the slew budget every tick. It IS
+    the only change found so far that clears the offline nmpc_offline_check
+    DNF, which is why it is kept. See
+    fsae_MPCTest/docs/steering_turn_in_upgrade_options.md (Option 1).
+
+    `near` = 1.0 is an exact no-op, so the flag-off path is byte-identical.
+    """
+    if N <= 1:
+        return np.ones(max(N, 1))
+    return np.linspace(float(near), 1.0, N)
+
+
 def _csc_pattern(mask):
     """
     Build a CSC matrix with an explicit, fixed sparsity pattern from a boolean
@@ -947,6 +979,14 @@ class NMPCController:
         self.reversal_penalty_boost_max = _pick(
             pm.nmpc_reversal_penalty_boost_max, pm.reversal_penalty_boost_max)
         self.reversal_penalty_k = _pick(pm.nmpc_reversal_penalty_k, pm.reversal_penalty_k)
+
+        # EXPERIMENTAL, default off. Discounts the steering-rate cost at the
+        # NEAR horizon stages -- see _rrate_stage_ramp's docstring, including
+        # why it is NOT a fix for the shallow-corner jerk. Composes with the
+        # flags above: they set the rate weight's MAGNITUDE, this shapes it
+        # across STAGES.
+        self.rrate_stage_ramp_enabled = bool(pm.nmpc_rrate_stage_ramp_enabled)
+        self.rrate_stage_near = float(pm.nmpc_rrate_stage_near)
 
         # Alternative to the above, not a composition with it -- see
         # mpc_params.py's nmpc_corner_rrate_blend_enabled field comment.
@@ -1307,7 +1347,18 @@ class NMPCController:
                     + self.r_a_accel * np.sum(np.maximum(a, 0.0) ** 2)
                     + self.r_a_brake * np.sum(np.minimum(a, 0.0) ** 2))
         du = np.vstack([U[0] - self._u_prev, np.diff(U, axis=0)])
-        rate = float(np.sum(self.r_rate * du ** 2))
+        # Score the rate term with self._Rr_flat -- the SAME per-stage weight
+        # vector the QP's Hessian (_ErE) is built from -- not the flat
+        # self.r_rate. Any mechanism that reshapes the rate weight (corner
+        # blend, anti-hunt, reversal penalty, stage ramp) writes _Rr_flat; if
+        # this used self.r_rate the backtracking line search would score a
+        # DIFFERENT objective from the one the QP minimised and could reject
+        # genuinely improving steps. Falls back to the flat tile if absent.
+        _rr = getattr(self, '_Rr_flat', None)
+        if _rr is None or _rr.shape[0] != du.size:
+            rate = float(np.sum(self.r_rate * du ** 2))
+        else:
+            rate = float(np.sum(_rr * du.reshape(-1) ** 2))
         slack = 0.0
         if self._use_slack:
             over = np.maximum(np.abs(X[1:, IDX_EY]) - self.nmpc.nmpc_track_halfwidth,
@@ -1621,9 +1672,13 @@ class NMPCController:
             rrate_steer_current = float(R3[0, 0])
 
         if (self.corner_rrate_blend_enabled or self.steer_rate_anti_hunt_enabled
-                or self.reversal_penalty_enabled):
+                or self.reversal_penalty_enabled or self.rrate_stage_ramp_enabled):
             r_rate_tick = np.array([rrate_steer_current, self.r_rate[1]])
             Rr_flat = np.tile(r_rate_tick, self.N)
+            if self.rrate_stage_ramp_enabled:
+                Rr_flat = (Rr_flat.reshape(self.N, NU)
+                           * _rrate_stage_ramp(self.N, self.rrate_stage_near)[:, None]
+                           ).reshape(-1)
             self._Rr_flat = Rr_flat
             self._ErE = self._E.T @ (Rr_flat[:, None] * self._E)
 

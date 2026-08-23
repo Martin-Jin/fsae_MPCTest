@@ -622,6 +622,43 @@ def _outputs(X, ref, p, v_ref, horizon_speed_profile_enabled=False,
     return H
 
 
+def _rrate_stage_ramp(N, near):
+    """
+    Per-stage multiplier on the steering-rate cost: `near` at horizon stage 0,
+    rising linearly to 1.0 at the last stage. Returns shape (N,).
+
+    WHY: the plain rate cost is uniform across the horizon
+    (`np.tile(self.r_rate, N)`), so it charges the same price for a steering
+    change whether that change is the FIRST move into a corner or the tenth
+    tick of an oscillation. That single weight has to be stiff enough to kill
+    tick-to-tick hunting and compliant enough for a gentle corner's small
+    early input, and it cannot be both -- measured, the cost's resistance to
+    the first input swings ~100x with corner severity, which is why a high
+    flat weight makes the solver defer turn-in until it has to catch up at
+    the actuator slew limit.
+
+    Ramping by STAGE separates the two behaviours the flat weight conflates:
+      * turn-in is ONE sustained input, felt mostly at the near stages ->
+        cheap under this ramp, so the solver will commit to it immediately;
+      * chatter is an ALTERNATING sequence spread across many stages ->
+        still pays close to full price, because most of its cost lands at
+        the later, un-discounted stages.
+
+    Keyed on horizon POSITION, not measured state. That is the point: a
+    measured-state schedule (curvature/error) was live-tested and failed
+    because ~27% of the jerk events show no curvature or heading-error signal
+    at all one second beforehand -- the corner is invisible to current state
+    until it arrives, while the HORIZON already predicts it. Stage position is
+    always available and needs no signal.
+
+    `near` = 1.0 is an exact no-op (returns all ones), so the flag-off path is
+    byte-identical.
+    """
+    if N <= 1:
+        return np.ones(max(N, 1))
+    return np.linspace(float(near), 1.0, N)
+
+
 def _csc_pattern(mask):
     """Fixed-sparsity-pattern CSC matrix + (row,col) index arrays for
     writing into its .data in CSC order (OSQP requires a stable pattern
@@ -671,6 +708,8 @@ class NMPCController:
         reversal_penalty_enabled=False,
         reversal_penalty_boost_max=4.0,
         reversal_penalty_k=8.0,
+        rrate_stage_ramp_enabled=False,
+        rrate_stage_near=0.15,
     ):
         if osqp is None:      # pragma: no cover - dependency guard
             raise ImportError(
@@ -711,6 +750,13 @@ class NMPCController:
         self.reversal_penalty_enabled = bool(reversal_penalty_enabled)
         self.reversal_penalty_boost_max = float(reversal_penalty_boost_max)
         self.reversal_penalty_k = float(reversal_penalty_k)
+        # EXPERIMENTAL, default off. Discounts the steering-rate cost at the
+        # NEAR horizon stages so a first turn-in input is cheap while a
+        # sustained oscillation still pays full price -- see
+        # _rrate_stage_ramp's docstring. Composes with all three flags above:
+        # they set the rate weight's MAGNITUDE, this shapes it across STAGES.
+        self.rrate_stage_ramp_enabled = bool(rrate_stage_ramp_enabled)
+        self.rrate_stage_near = float(rrate_stage_near)
         if self.friction_circle_enabled:
             # F_max = m * ceiling(v_x) / 2 per axle: the measured ceiling law
             # bounds TOTAL lateral force (F_yf*cos(d) + F_yr) / m, split
@@ -996,7 +1042,19 @@ class NMPCController:
                     + self.r_a_accel * np.sum(np.maximum(a, 0.0) ** 2)
                     + self.r_a_brake * np.sum(np.minimum(a, 0.0) ** 2))
         du = np.vstack([U[0] - self._u_prev, np.diff(U, axis=0)])
-        rate = float(np.sum(self.r_rate * du ** 2))
+        # Score the rate term with self._Rr_flat -- the SAME per-stage weight
+        # vector the QP's own Hessian (_ErE) is built from -- not the flat
+        # self.r_rate. Any mechanism that reshapes the rate weight (the
+        # corner blend, anti-hunt, the reversal penalty, or the per-stage
+        # ramp) writes _Rr_flat; if this line used self.r_rate instead, the
+        # backtracking line search would be scoring a DIFFERENT objective
+        # from the one the QP minimised and could reject genuinely improving
+        # steps. Falls back to the flat tile when _Rr_flat is absent.
+        _rr = getattr(self, '_Rr_flat', None)
+        if _rr is None or _rr.shape[0] != du.size:
+            rate = float(np.sum(self.r_rate * du ** 2))
+        else:
+            rate = float(np.sum(_rr * du.reshape(-1) ** 2))
         slack = 0.0
         if self._use_slack:
             over = np.maximum(np.abs(X[1:, IDX_EY]) - self.track_halfwidth, 0.0)
@@ -1280,9 +1338,13 @@ class NMPCController:
             rrate_steer_current = float(R3[0, 0])
 
         if (self.corner_rrate_blend_enabled or self.steer_rate_anti_hunt_enabled
-                or self.reversal_penalty_enabled):
+                or self.reversal_penalty_enabled or self.rrate_stage_ramp_enabled):
             r_rate_tick = np.array([rrate_steer_current, self.r_rate[1]])
             Rr_flat = np.tile(r_rate_tick, self.N)
+            if self.rrate_stage_ramp_enabled:
+                Rr_flat = (Rr_flat.reshape(self.N, NU)
+                           * _rrate_stage_ramp(self.N, self.rrate_stage_near)[:, None]
+                           ).reshape(-1)
             self._Rr_flat = Rr_flat
             self._ErE = self._E.T @ (Rr_flat[:, None] * self._E)
 

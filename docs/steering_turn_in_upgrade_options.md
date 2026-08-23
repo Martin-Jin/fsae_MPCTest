@@ -82,9 +82,47 @@ Two new params: `nmpc_rrate_stage_ramp_enabled`, `nmpc_rrate_stage_near`.
 
 - **Effort:** low (~40 lines + params + mirror).
 - **Risk:** low. Hessian sparsity unchanged; flag-off is byte-identical.
-- **Verify:** offline chatter metric must hold near 1.9°/tick equivalent
-  while slew-limit ticks drop from 1.75% toward 0. If chatter returns,
-  `rate_w_near` is too low.
+
+### IMPLEMENTED AND OFFLINE-REJECTED
+
+Built as `nmpc_rrate_stage_ramp_enabled` / `nmpc_rrate_stage_near`
+(`_rrate_stage_ramp()` in `nmpc_optimiser.py`/`nmpc_core.py`). Flag-off
+verified byte-identical. Offline on `comp_test_map_3`
+(a_lat_max 5.5, r_rate_delta 52.5):
+
+| config | n | slew% | mean\|d\| | \|e_y\| | dnf |
+|---|---|---|---|---|---|
+| flat (shipped) | 452 | **8.43** | 2.230 | 0.497 | **yes** |
+| ramp near=0.40 | 1213 | 12.38 | 3.207 | 0.452 | no |
+| ramp near=0.30 | 1168 | 15.42 | 3.367 | 0.428 | no |
+| ramp near=0.20 | 1167 | — | 3.989 | 0.442 | no |
+
+**It moves the target metric the WRONG way: slew-limited ticks rise from
+8.43% to 12-15%.** The reasoning was that discounting near stages would let
+the solver commit early and therefore never need to catch up. What actually
+happens is simpler: a cheaper near-stage rate means the solver spends MORE
+of the slew budget, every tick, so it hits the limit more often, and chatter
+rises with it (mean|d| 2.23 -> 3.2-4.0).
+
+Genuinely useful side effect worth keeping in mind: **the ramp clears the
+offline DNF** that the shipped flat config produces (452 ticks -> full lap)
+and improves `|e_y|` (0.497 -> 0.428). So it does buy real corner
+compliance -- it just pays for it in exactly the currency we were trying to
+save. Same failure shape as Option 2: more compliance, less damping, worse
+on both chatter and catch-up.
+
+**Kept in the code behind a default-off flag** (it is the only thing found
+so far that clears the offline DNF, which may matter for restoring
+`nmpc_offline_check` as a usable gate) but it is NOT a fix for the jerk.
+
+### What the two rejections together imply
+
+Options 1 and 2 attacked the problem from opposite directions -- soften by
+horizon position, soften by track position -- and both traded chatter for
+compliance at roughly 1:1. That is strong evidence the rate cost cannot be
+*scheduled* into solving this at all: any weakening that lets turn-in happen
+early also lets oscillation happen. The quantity being penalised is wrong,
+not its schedule. That leaves Option 4.
 
 ## Option 2 — Curvature-scheduled rate weight, done properly
 
@@ -252,16 +290,16 @@ it re-opens a problem already solved. Keep as a retreat if the others fail.
    curvature or error signal at all one second out, and Option 2's actual
    failure was giving back chatter rather than being too late, shifting the
    same signal forward is unlikely to help. Not worth the noise risk.
-3. **Option 1** (per-stage rate ramp) — **now the first thing to try.** It
-   is keyed on horizon POSITION rather than measured state, so it is immune
-   to the "no signal one second out" problem that killed Option 2. Low
-   effort, low risk, and the `_Rr_flat`/`_ErE` per-tick rebuild hook already
-   exists.
-4. **Option 4** (steering-acceleration penalty) — **now has the strongest
-   evidence of any option** (4.31x separation, 96% of slew events are
-   reversals). If Option 1 leaves residual jerk, do this; it is likely the
-   correct long-term formulation and would let `r_rate_delta` fall back
-   toward its original value.
+3. ~~Option 1~~ — **implemented, offline-rejected.** Slew-limited ticks rose
+   8.43% -> 12-15%, chatter rose with them. Kept default-off because it is
+   the only change so far that clears the offline DNF.
+4. **Option 4** (steering-acceleration penalty) — **the only remaining
+   candidate, and the one with the strongest evidence** (4.31x separation on
+   |d2| vs ~1.9x on |d1|; 96% of slew events are reversals not ramps).
+   Options 1 and 2 both failed the same way -- trading chatter for
+   compliance ~1:1 -- which says the rate cost cannot be scheduled into
+   solving this. Option 4 changes WHAT is penalised rather than when/where,
+   so it is not subject to that trade. Do this next.
 
 Options 1 and 4 are complementary: 1 says *when in the horizon* damping
 applies, 4 changes *what is being damped*. Neither depends on a
