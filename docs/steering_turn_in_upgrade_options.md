@@ -1,6 +1,8 @@
 # Late / jerky turn-in on shallow corners — upgrade options
 
-**Status: analysis only. Nothing here is implemented.**
+**Status: Option 2 is CONFIGURED and awaiting a live test** (config only,
+no code change -- see that section). Options 1, 3 and 4 remain analysis
+only, nothing implemented.
 
 ## The problem
 
