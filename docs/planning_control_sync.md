@@ -199,7 +199,7 @@ writing — re-confirm before relying on them, since a resync can move them.
 
 | Constant | Offline copy | Live copy | Current value |
 |---|---|---|---|
-| `curvature_speed()`'s `a_lat_max` | `sim/speed_profile.py` (`CURVATURE_SPEED_A_LAT_MAX` + function default) | `fsds_simulator/control/fsae_control/fsae_control/control_utils.py:194` (function default) | `5.5` |
+| `curvature_speed()`'s `a_lat_max` | `sim/speed_profile.py` (`CURVATURE_SPEED_A_LAT_MAX` + function default) | `fsds_simulator/control/fsae_control/fsae_control/control_utils.py:194` (function default) | `4.75` |
 | Planner top/bottom speed clamp | `sim/rollout_core.py:67-68` (`PLANNER_V_MAX`, `PLANNER_V_MIN`) | `fsds_simulator/control/fsae_control/fsae_control/mpc_controller_standalone.py` (declared as the `v_max`/`v_min` ROS parameters, default `20.0`/`1.5`) | `20.0` / `1.5` |
 | Steering slew-rate limit (`du_max[0]`) | `model/vehicle_physics.py` (`VehicleParams.max_steer_rate`), applied as `max_steer_rate * DT` in `sim/rollout_core.py` and passed to `controller/optimiser.py`'s `du_max` | `fsds_simulator/control/fsae_control/fsae_control/mpc_core.py` (`MAX_STEER_RATE_RAD_S`, applied as `* self.dt`) | `radians(180.0)` rad/s |
 | Accel slew-rate limit (`du_max[1]`) | `sim/rollout_core.py` (`du_max` second element) | `fsds_simulator/control/fsae_control/fsae_control/mpc_core.py` (`self.du_max` second element) | `0.6` per step |
@@ -232,7 +232,7 @@ Notes on how these are actually used:
   `v_max`/`v_min` ROS params), not the functions' own default parameter
   values, that must be kept matched — the function defaults themselves are
   never hit in either the offline or live path.
-- `a_lat_max=5.5` is the value actually used (as each function's default,
+- `a_lat_max=4.75` is the value actually used (as each function's default,
   not overridden at either call site) and must stay identical between
   `sim/speed_profile.py`'s and `control_utils.py`'s `curvature_speed()` — see
   the explicit callout in `sim/speed_profile.py`'s `curvature_speed()`
@@ -1207,6 +1207,69 @@ either lever; see `late_turn_in_investigation.md`'s "Gradual-corner accel
 oscillation" section for the full worked example of how to distinguish the
 two.
 
+## Input-jerk cost (`nmpc_rjerk_delta` / `nmpc_rjerk_a`) — NMPC only
+
+A **second-difference** penalty on the control inputs, alongside the existing
+first-difference rate cost. `nmpc_rjerk_delta` weights steering
+*acceleration*; `nmpc_rjerk_a` does the same for the longitudinal input. Both
+default to `0.0`, which removes the term from the QP entirely (no Hessian
+contribution). Live/offline defaults today: **150.0 / 0.0**.
+
+**Why it exists.** The plain rate cost charges by `|du|`, which is identical
+for a sustained ramp into a corner and for one leg of an oscillation — so it
+cannot suppress hunting without also resisting turn-in. That is the trade the
+whole steering-chatter investigation kept running into. Measured on live data,
+direction **reversals** carry ~4.3× the `|d2|` of same-direction ramps versus
+only ~1.9× the `|d1|`, so the second difference separates the two about twice
+as sharply. A steady ramp scores near zero here and is nearly free; an
+alternating wiggle is expensive.
+
+**How it enters the QP.** `E` is the first-difference operator already built
+for the rate cost; the jerk term reuses it as `E2 = E @ E`, so
+`du_k − du_{k−1}` is the discrete input acceleration:
+
+```
+Hess += E2ᵀ · diag(rj) · E2          rj = tile([rjerk_delta, rjerk_a], N)
+grad += E2ᵀ · (rj · e_jerk)
+```
+
+Two implementation points that matter if you touch this:
+
+- **It is anchored to the two previous applied inputs, not just one.** A
+  second difference spanning the tick boundary needs `u_prev` *and*
+  `u_prev2`, hence the corrections `e_jerk[:NU] -= (2·u_prev − u_prev2)` and
+  `e_jerk[NU:2NU] += u_prev`. Without them the term is blind to a reversal
+  that straddles the boundary — exactly the case it exists to catch. The
+  controller therefore carries `_u_prev2` state, which must be updated
+  before `_u_prev`.
+- **No OSQP sparsity change.** `p_mask[:n_du,:n_du]` is already a dense upper
+  triangle, so `E2ᵀ·R·E2` adds no new nonzeros and the solver's pattern is
+  unchanged — the term can be enabled/disabled between runs without
+  rebuilding the problem structure.
+
+`_cost()` carries a matching `jerk` term. **This must stay in step with the
+QP**: the SQP line search scores candidate steps with `_cost()`, so a term
+present in the Hessian but absent from `_cost()` means the search is
+optimising a different objective than the one being solved. That exact bug
+existed for the rate cost (it used the flat `self.r_rate` while the QP used
+`_Rr_flat`) and affected every rate-reshaping flag.
+
+**Measured effect (live, `centerline.csv`).** At `rjerk_delta=150` with
+`r_rate_delta=52.5`: 0 saturated ticks, 0 slew-limited ticks and 1 steering
+reversal over three laps. Offline at the same pair, slew-limited ticks fall
+7.80% → 2.77% and chatter 2.825 → 1.686 °/tick.
+
+**Caution on attributing a saturation figure to this term.** An earlier live
+run showed ~4.5% steering saturation with `rjerk=150` and it was initially
+read as the jerk penalty trading smoothness for saturation. That was the
+*reference line*, not this weight — the same weight on the centreline
+saturates 0.00%. See "Reference line: raceline vs centreline" below.
+
+**Untested:** the offline low-rate pairing `r_rate_delta=5.0` with
+`rjerk_delta=250.0`, which beats the flat-52.5 baseline on every offline
+metric. Set both together if trying it. `nmpc_rjerk_a` has never been
+exercised at a nonzero value on either side.
+
 ## Three-zone rate schedule (`nmpc_rrate_zone_*`) — and why `k` gates it
 
 A continuous multiplier on the NMPC's steering-rate cost, driven by current
@@ -1454,6 +1517,46 @@ clip, so the exported CSV's values are commanded directly with nothing above
 them to catch an over-aggressive profile. Step it up and measure rather than
 jumping to the measured physical ceiling.
 
+**This value is a steering-smoothness parameter, not only a lap-time one.**
+Currently **4.75**, reduced from 5.5 after 5.5 was traced to a specific
+sudden-steering-jump symptom. At 5.5 the car arrived at the track's hardest
+curvature ramp (s0≈43→46, where the geometrically-required angle climbs
+8.5°→15.2° in 2.7 m) carrying ~3 m/s more than its own target, which needs
+roughly 15 m/s² of lateral acceleration — twice the plant's ~7.5 ceiling.
+No steering policy can track that, so the command stalls near 9° and `e_psi`
+runs away to −18°.
+
+Live effect of 5.5 → 4.75, same controller settings:
+
+| | 5.5 | 4.75 |
+|---|---|---|
+| stutters/min (sign flip, both \|d\|>1.5°) | 33.3 | **9.8** |
+| \|d_steer\| > 5° events | 20 | **1** |
+| max \|d_steer\| | 7.92° | **5.20°** |
+| mean \|d2\| (jerk) | 0.904 | **0.604** |
+| peak \|e_y\| | 1.250 | **1.008 m** |
+| `a_lat` above 7.5 | 4.69% | **2.67%** |
+| gain at the problem corner | 0.746 | **0.843** |
+
+**Why this matters for tuning order:** four controller-side weight changes
+(`r_rate_delta`, `nmpc_corner_factor_k`, `nmpc_q_e_y`, `NMPC_SQP_ITERS`) were
+each tried against this symptom first and none of them moved it — see "Turn-in
+timing" above. The steering command was already *early* (leading the geometric
+requirement by 0.15 s) and at ~94% of the required magnitude; the binding
+problem was the speed the car brought to the corner. **A "won't turn / jerks
+at tight corners" report should be checked against `a_lat` demand and speed
+overshoot before any steering weight is touched.**
+
+Note the mechanism is not "the car brakes better" — speed overshoot relative
+to target barely changed (hot ticks 13.31% → 13.14%). What changed is that the
+target itself is lower, so the absolute speed and the required angle at the
+curvature ramp are both smaller.
+
+Also note `a_brake_max` (the `compute_speed_profile` braking pass) looked even
+better on per-tick metrics at 3.5 — hot ticks to 0.00%, saturation 0.65% — but
+**DNF'd in every offline variant tried**. Do not ship it without understanding
+that failure.
+
 ## Dynamic speed cap
 
 `control_utils.dynamic_speed_cap()` is a thin wrapper over
@@ -1470,7 +1573,7 @@ and pull the target speed down before a corner is reached, never up.
 
 It uses its own, tighter constants than the live-`curvature_speed()`-only
 branch's numeric-parity defaults: `DYNAMIC_CAP_A_LAT_MAX=3.2` and
-`DYNAMIC_CAP_SAFETY=0.9` (vs. `a_lat_max=5.5`/`safety=1.0` elsewhere), so it
+`DYNAMIC_CAP_SAFETY=0.9` (vs. `a_lat_max=4.75`/`safety=1.0` elsewhere), so it
 engages a little before the oracle profile would actually be violated.
 Downstream, `tracking_error_speed_gate()` and `SPEED_TARGET_RISE_RATE` apply
 exactly as before — the cap only changes what `v_curv` feeds into that

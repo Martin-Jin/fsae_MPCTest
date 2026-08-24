@@ -797,17 +797,17 @@ offline metric.
 
 ## Session N+1: late turn-in / "won't turn enough" — six hypotheses falsified
 
-Symptom as reported: the car turns in slightly late, carries lateral error
-through the corner before correcting back, sticks close to the boundary, and
-occasionally the steering command jumps suddenly at a tight corner. Reported
-as likely caused by the high steering-rate weight.
+**Symptom as reported:** turns in slightly late; carries lateral error
+through the corner before correcting back; sticks close to the boundary;
+steering command occasionally jumps at a tight corner. Attributed by the
+operator to the high steering-rate weight.
 
-**The reference is a precomputed path (`centerline.csv`), not the live
-planner**, so every planner-side mechanism in `sim_to_real_investigation.md`
-§12.8/§14/§26 is out of scope by construction. Verified rather than assumed:
-with `use_planner=False` the controller's reference and the scoring spline are
-identical, so §26's planner-added heading-rate excess is exactly **0.0** on
-every tick.
+**Scope — planner mechanisms are excluded by construction.** The reference is
+a precomputed path (`centerline.csv`), not the live planner, so
+`sim_to_real_investigation.md` §12.8/§14/§26 do not apply. Verified, not
+assumed: with `use_planner=False` the controller's reference and the scoring
+spline are identical, so §26's planner-added heading-rate excess is exactly
+**0.0** on every tick.
 
 ### What was measured (live, 3 runs, `centerline.csv`)
 
@@ -819,8 +819,9 @@ every tick.
 | `a_lat` above the ~7.5 ceiling | 4.69% of ticks, peak 10.21 |
 | drift episodes, rate-normalised | ~31.5 /min, **invariant across every config tried** |
 
-The controller commands ~94% of the geometrically-required angle and does so
-*early*, and nothing between the solver and the actuator alters it.
+**Conclusion from the table:** the controller commands ~94% of the required
+angle, does so *early*, and nothing between the solver and the actuator alters
+it. Whatever causes the symptom is not the command's timing or magnitude.
 
 ### Falsified, with evidence — do not retry without new information
 
@@ -880,3 +881,56 @@ ceiling model — and that the command itself leads and is ~94% of required.
 The next measurement worth doing is per-corner-event, not aggregate: isolate
 corner-entry windows and compare commanded steering, achieved yaw and lateral
 error tick by tick inside them.
+
+---
+
+## Resolution summary: two distinct faults, similar symptoms
+
+Worth reading before re-opening any of this. What presented as one complaint
+("jerky steering, won't turn enough, turns in late") was **two independent
+problems**, which is why single-lever sweeps kept returning null results.
+
+### Fault 1 — tick-to-tick chatter: a controller-cost problem
+
+Fixed by, in order of measured impact:
+
+1. **`r_rate_delta` 2.8 → 52.5.** The dominant lever. Live chatter 2.538 →
+   1.919 °/tick, and the first thing to move the sign-flip rate off ~65%.
+2. **Input-jerk term `nmpc_rjerk_delta=150`** (second difference of steering).
+   Separates a sustained ramp from an oscillation in a way `|du|` cannot; on
+   the centreline it holds 0 saturated ticks, 0 slew-limited ticks and 1
+   reversal over three laps. See `planning_control_sync.md`'s "Input-jerk
+   cost".
+3. **Post-solve output LPF disabled** (`output_smoothing_enabled=false`),
+   made redundant by 1–2.
+4. **Three-zone `R_rate` schedule** — the smallest contributor of the four,
+   and only after `nmpc_corner_factor_k` 8 → 27; at 8 it never left its boost
+   band. Running at `ease_approach=0.80`, not the intended 0.35, which DNFs
+   offline.
+
+Also load-bearing but not a weight: the **reference line** (raceline →
+`centerline.csv`, score 0.752 → 0.488), which by itself took steering
+reversals 13 → 1.
+
+### Fault 2 — sudden steering jumps at tight corners: a SPEED problem
+
+Not a controller fault at all. `CURVATURE_SPEED_A_LAT_MAX` **5.5 → 4.75** took
+stutters 33.3 → 9.8 /min and `|d_steer|>5°` events 20 → 1. Mechanism and the
+full table are in `planning_control_sync.md`'s "Speed-profile aggressiveness".
+
+**This is the diagnostic lesson of the whole investigation.** Six
+controller-side hypotheses were tested against Fault 2 and all six failed,
+because the steering command was already leading the geometric requirement by
+0.15 s at ~94% of the required magnitude. The car was simply arriving at the
+hardest curvature ramp needing ~15 m/s² of lateral acceleration against a
+~7.5 ceiling. **Check `a_lat` demand and speed overshoot before touching a
+steering weight.**
+
+### What remains
+
+~9.8 stutters/min, amplitude 1.5–3.2° (was 5.9–7.9°), clustered at corner
+**exits** — the signature is large `|e_psi|` (13–16°) with small and shrinking
+`|e_y|` (0.03–0.28 m), i.e. the car is back on the line but still rotating,
+and the solver makes small alternating corrections while heading unwinds.
+Distinct from Fault 2's entry-side jumps. Judged not worth chasing further at
+this amplitude; the next lever would be `q_e_psi`/`q_r` at exit.

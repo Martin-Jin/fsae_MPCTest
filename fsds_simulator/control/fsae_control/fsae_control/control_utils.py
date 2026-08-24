@@ -191,7 +191,7 @@ def tracking_error_speed_gate(e_y, e_psi,
     return float(np.clip(min(gy, gp), floor, 1.0))
 
 
-def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=5.5,
+def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.75,
                     scan_start=0.0, scan_end=24.0, step=2.0, safety=1.0):
     """
     Curvature-limited target speed over the next scan_end metres of the path.
