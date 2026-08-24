@@ -1,4 +1,4 @@
-# Change log: 2026-08-13 (nonlinear MPC only)
+# NMPC introduction: 2026-08-13 (nonlinear MPC only)
 
 **Scope note, read first:** this entry covers only the nonlinear-MPC (NMPC)
 work described below. It does **not** continue from
