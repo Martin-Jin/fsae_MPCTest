@@ -385,6 +385,11 @@ class Playback:
         # the slider can always reach the start/end of the longest run.
         self.t_min = min(run.t[0] for run in self.runs)
         self.t_max = max(run.t[-1] for run in self.runs)
+        # Signal plots, though, are clipped to the SHORTEST run's end (e.g.
+        # a two-lap run next to a one-lap run) -- past that point only one
+        # run has data left, which reads as a comparison when it no longer
+        # is one, and dwarfs the interesting (overlapping) part of the plot.
+        self.t_max_common = min(run.t[-1] for run in self.runs)
 
         self.focus_idx = 0  # index into self.runs the zoom view tracks
 
@@ -420,7 +425,7 @@ class Playback:
         # how tall the right column's two stacked panels are.
         outer = self.fig.add_gridspec(
             1, 2, width_ratios=[1.15, 1.0], wspace=0.28,
-            left=0.13, right=0.98, top=0.93, bottom=0.08,
+            left=0.16, right=0.98, top=0.93, bottom=0.08,
         )
         n_rows = len(self.signals)
         left = outer[0].subgridspec(
@@ -441,6 +446,7 @@ class Playback:
     def _draw_static(self):
         for ax, sig in zip(self.signal_axes, self.signals):
             self._plot_signal(ax, sig)
+            ax.set_xlim(self.t_min, self.t_max_common)
         self.signal_axes[-1].set_xlabel('t (s)', fontsize=9)
 
         # Fixed-overflow y-axis labels: rotate to horizontal and give the
@@ -505,6 +511,35 @@ class Playback:
         self._build_checkboxes()
         self._build_focus_selector()
 
+    # Widget column occupies x=[0, WIDGET_RIGHT_X]; the main gridspec's own
+    # left margin (_build_figure's `left=`) starts just after it, so widening
+    # this must stay in sync with that value or the two overlap.
+    WIDGET_RIGHT_X = 0.12
+
+    @staticmethod
+    def _widget_label(label, max_chars=18):
+        """Shorten a run label for the narrow checkbox/radio column.
+
+        Long filename-tag labels (e.g. 'mpc_standalone_postjitterfix_best')
+        overflow CheckButtons/RadioButtons' label text well past their axis
+        box -- matplotlib doesn't wrap or clip it -- so it bleeds into the
+        signal plot to the right. Truncating with an ellipsis here is enough
+        to stop the overlap; the legend/title/zoom-view text elsewhere in the
+        figure still use the full label.
+
+        Elides the MIDDLE, not the tail: these labels share a long common
+        prefix far more often than a common suffix (e.g. two
+        'mpc_standalone_<descriptor>' runs), so keeping the tail is what
+        actually keeps two labels visually distinguishable. Lookups still go
+        by list index (not this text), so a collision here is a display
+        nuisance, not a correctness bug.
+        """
+        if len(label) <= max_chars:
+            return label
+        head_len = (max_chars - 1) // 2
+        tail_len = max_chars - 1 - head_len
+        return f'{label[:head_len]}…{label[-tail_len:]}'
+
     def _build_focus_selector(self):
         """Radio buttons choosing which run the zoom view (bottom right)
         tracks. Only useful with 2+ runs -- with one run there's nothing to
@@ -513,21 +548,24 @@ class Playback:
         if len(self.runs) < 2:
             return
         height = 0.1 * len(self.runs)
-        radio_ax = self.fig.add_axes([0.005, 0.06, 0.08, height])
+        radio_ax = self.fig.add_axes([0.005, 0.06, self.WIDGET_RIGHT_X - 0.01, height])
         radio_ax.set_xticks([])
         radio_ax.set_yticks([])
         radio_ax.patch.set_alpha(0)
         for spine in radio_ax.spines.values():
             spine.set_visible(False)
         radio_ax.set_title('Zoom focus', fontsize=7)
-        labels = [run.label for run in self.runs]
+        labels = [self._widget_label(run.label) for run in self.runs]
         self.focus_radio = RadioButtons(radio_ax, labels, active=self.focus_idx)
         colors = [run.color for run in self.runs]
         for label, color in zip(self.focus_radio.labels, colors):
             label.set_color(color)
+            label.set_fontsize(7)
 
+        # Indexed by position, not the (possibly-truncated, possibly
+        # colliding) widget label text -- see _build_checkboxes' _on_click.
         def _on_focus(label):
-            self.focus_idx = next(i for i, r in enumerate(self.runs) if r.label == label)
+            self.focus_idx = labels.index(label)
             self._update(self.slider.val)
             self.fig.canvas.draw_idle()
 
@@ -539,22 +577,25 @@ class Playback:
         radio_height = 0.1 * len(self.runs)
         check_height = 0.12 * len(self.runs)
         check_ax = self.fig.add_axes(
-            [0.005, 0.06 + radio_height + 0.06, 0.08, check_height])
+            [0.005, 0.06 + radio_height + 0.06, self.WIDGET_RIGHT_X - 0.01, check_height])
         check_ax.set_xticks([])
         check_ax.set_yticks([])
         check_ax.patch.set_alpha(0)
         for spine in check_ax.spines.values():
             spine.set_visible(False)
         check_ax.set_title('Show/hide', fontsize=7)
-        labels = [run.label for run in self.runs]
+        labels = [self._widget_label(run.label) for run in self.runs]
         self.checks = CheckButtons(check_ax, labels, [True] * len(labels))
         colors = [run.color for run in self.runs]
         self.checks.set_check_props(dict(facecolor=colors))
-        self.checks.set_label_props(dict(color=colors))
+        self.checks.set_label_props(dict(color=colors, fontsize=[7] * len(labels)))
 
+        # Indexed by position, not the (possibly-truncated, possibly
+        # colliding) widget label text, since two long labels can truncate
+        # to the same displayed string.
         def _on_click(label):
-            run = next(r for r in self.runs if r.label == label)
-            run.set_visible(not run.visible)
+            idx = labels.index(label)
+            self.runs[idx].set_visible(not self.runs[idx].visible)
             self.fig.canvas.draw_idle()
 
         self.checks.on_clicked(_on_click)

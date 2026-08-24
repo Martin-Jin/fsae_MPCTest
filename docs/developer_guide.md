@@ -811,7 +811,12 @@ time, not an interpolation between two snapshots. Runs may have different
 `t` sampling or length (e.g. an 80-sample Stanley log next to a 50-sample
 MPC log) — the slider drives one shared time value, and each run
 independently looks up its own nearest sample, so mismatched logs still
-overlay correctly.
+overlay correctly. The slider itself still scrubs the full range up to the
+**longest** run's end (so the map/zoom views can follow it to completion),
+but the left-hand signal plots' x-axis is clipped to the **shortest** run's
+end — past that point only one run has data left, which would otherwise
+dwarf the overlapping (comparable) part of the plot with a stretch that
+isn't a comparison anymore.
 
 **Auto-search folder: `fsds_simulator/recorded_runs/`.** Running the script
 with no CSV argument searches this folder **recursively** for
