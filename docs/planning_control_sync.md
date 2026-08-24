@@ -1548,6 +1548,32 @@ clip, so the exported CSV's values are commanded directly with nothing above
 them to catch an over-aggressive profile. Step it up and measure rather than
 jumping to the measured physical ceiling.
 
+**Only `speed_profile.csv` responds to this constant. `raceline.csv` and
+`centerline.csv` do not.** The two exporters plan corner speed from different
+limits:
+
+| exported file | exporter | corner-speed limit |
+|---|---|---|
+| `speed_profile.csv` | `tuner.tools.export_speed_profile` | `CURVATURE_SPEED_A_LAT_MAX` (this constant) |
+| `raceline.csv`, `centerline.csv` | `tuner.tools.raceline_optimizer` | `alat_ceiling_at(v) × ALAT_MARGIN` (0.85) from `model/vehicle_physics.py` |
+
+*Plain version:* the file that decides how fast to go and the file that decides
+where to drive are produced by two different tools, and they work out safe
+corner speeds in two different ways. Changing this constant and re-exporting
+updates the first but silently leaves the second alone.
+
+Consequence: after changing this constant, re-run **`export_speed_profile`**.
+Re-running `raceline_optimizer --mode centerline` will report an unchanged
+`v_target` range and that is correct, not a failed export — on
+`comp_test_map_3` the current files read 6.00–18.00 (`speed_profile.csv`) and
+5.54–16.70 (`centerline.csv`).
+
+Which one actually reaches the car depends on `launch_all.sh`: `SPEED_CSV`
+supplies the speed target and `PATH_CSV` supplies the geometry, and they
+deliberately point at different files (see that script's own comment). With the
+default pairing the speed the car tracks comes from `speed_profile.csv`, so
+this constant is live-relevant even while the car drives `centerline.csv`.
+
 **This value is a steering-smoothness parameter, not only a lap-time one.**
 
 *Plain version:* this number decides how fast the car is allowed to plan to go

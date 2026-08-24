@@ -464,6 +464,15 @@ python -m tuner.tools.raceline_optimizer   <name>    # -> ../ros2/src/fsae_plann
 python -m tuner.tools.raceline_optimizer   <name> --mode centerline   # -> .../centerline.csv
 ```
 
+**The two exporters do not share a corner-speed limit.**
+`export_speed_profile` plans from `CURVATURE_SPEED_A_LAT_MAX`
+(`sim/speed_profile.py`); `raceline_optimizer` — both modes — plans from
+`alat_ceiling_at(v) × ALAT_MARGIN` in `model/vehicle_physics.py`. So changing
+`CURVATURE_SPEED_A_LAT_MAX` changes `speed_profile.csv` only, and re-running
+the raceline/centreline export afterwards legitimately reports an unchanged
+`v_target` range. See `planning_control_sync.md`'s "Speed-profile
+aggressiveness".
+
 `--mode centerline` pins the lateral offset to zero, so the exported path is
 the reconstructed centreline with only its speed profile optimised. Slower by
 construction, and it writes a separate filename so it can never overwrite the

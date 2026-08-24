@@ -112,6 +112,7 @@ from scipy.interpolate import CubicSpline
 import signal
 from sim.rollout_core import run_core_rollout, compute_step_budget
 import subprocess
+import settings  # module handle, for the NMPC tail's shipped x0 seed
 from settings import (
     SCORE_WEIGHTS,
     METRIC_SCALES,
@@ -184,6 +185,48 @@ R_RATE_BOUNDS = {
     1: (0.1, 10.0),
 }
 
+# ── NMPC rate-shaping fields (searched only when use_nmpc is on) ───────────
+# These are NOT diagonal entries of Q/R/R_rate, so they cannot ride the
+# multiplicative template mechanism above; they are searched as ABSOLUTE
+# values and passed straight through run_core_rollout's nmpc_overrides.
+#
+# Why they need to be here at all: they materially change closed-loop
+# behaviour, and at least one is load-bearing rather than a refinement --
+# rjerk_delta=0 DNFs the recorded-map rollout where the shipped 150 completes.
+# A weight set tuned with these held at their defaults is only valid for those
+# defaults.
+#
+# TUNABLE_NMPC is a list, not a dict, so the parameter vector's order is
+# fixed and reproducible across runs. Empty it to restore the 9-parameter
+# search exactly.
+#
+# GATE: these only do anything when the rollout runs the NMPC. settings.USE_NMPC
+# is False by default, and under the LTV-QP the controller ignores every field
+# here -- the search still explores those five dimensions but every candidate
+# scores identically in them, which wastes the population. Set USE_NMPC=True
+# (before importing this module -- settings constants bind by name at import
+# time) when tuning the NMPC, or empty this list when tuning the LTV-QP.
+#
+# Verified by smoke test with USE_NMPC=True on PATH_SUDDEN_TURN: moving each
+# field alone from the shipped x0 to its far bound changes the score in all
+# five cases (rjerk_delta 1.007->1.293, corner_factor_k ->1.044,
+# boost_straight ->1.043, ease_approach ->10.156 (a DNF), floor_corner
+# ->1.002). Re-run that check after editing this list -- a typo'd kwarg name
+# is silently ignored by nmpc_overrides and would look like a dead dimension.
+TUNABLE_NMPC = [
+    # (kwarg name for nmpc_overrides, (low, high))
+    # Low bound is 1.0, not 0.0: the CMA-ES step size is scaled by
+    # log(upper/lower) per dimension, which is infinite at 0. Setting the
+    # term to exactly 0 (disabling it) is therefore not reachable by the
+    # search -- test that with an explicit rollout instead. It DNFs the
+    # recorded map anyway.
+    ("rjerk_delta",               (1.0, 400.0)),
+    ("corner_factor_k",           (8.0, 60.0)),
+    ("rrate_zone_boost_straight", (1.0, 4.0)),
+    ("rrate_zone_ease_approach",  (0.1, 1.5)),
+    ("rrate_zone_floor_corner",   (0.05, 1.0)),
+]
+
 # Graceful shutdown flag: set by SIGINT handler; checked each CMA generation.
 _stop_requested = False
 
@@ -196,6 +239,11 @@ for idx in TUNABLE_R_IDX:
     bounds.append(R_BOUNDS.get(idx))
 for idx in TUNABLE_R_RATE_IDX:
     bounds.append(R_RATE_BOUNDS.get(idx))
+# NMPC rate-shaping tail (absolute values, appended after the 9 multipliers).
+# Only meaningful when the rollout runs the NMPC; with the LTV-QP these are
+# ignored by the controller, so the search wastes dimensions but stays correct.
+for _name, _b in TUNABLE_NMPC:
+    bounds.append(_b)
 
 # Sanity check: weights must sum to 1 so the composite score is interpretable
 assert (
@@ -338,6 +386,26 @@ def _make_arc(cx, cy, radius, theta_start_deg, theta_end_deg, n=20):
     """
     angles = np.linspace(np.radians(theta_start_deg), np.radians(theta_end_deg), n)
     return cx + radius * np.cos(angles), cy + radius * np.sin(angles)
+
+
+def vector_to_nmpc_overrides(vec):
+    """
+    Split the NMPC rate-shaping tail off a CMA-ES candidate vector.
+
+    The vector is [9 multiplicative Q/R/R_rate scales..., len(TUNABLE_NMPC)
+    absolute NMPC values...]. Returns a dict suitable for
+    run_core_rollout(nmpc_overrides=...), or None when TUNABLE_NMPC is empty
+    (which restores the original 9-parameter behaviour exactly, including
+    passing None rather than an empty dict).
+
+    Absolute, not multiplicative: these fields have no template to scale and
+    their useful ranges are not centred on 1.0 (rjerk_delta's is 0-400).
+    """
+    if not TUNABLE_NMPC:
+        return None
+    n_head = len(TUNABLE_Q_IDX) + len(TUNABLE_R_IDX) + len(TUNABLE_R_RATE_IDX)
+    tail = vec[n_head:n_head + len(TUNABLE_NMPC)]
+    return {name: float(v) for (name, _b), v in zip(TUNABLE_NMPC, tail)}
 
 
 def vector_to_weights(vec, Q_template, R_template, R_rate_template):
@@ -737,6 +805,7 @@ def run_headless_rollout(
     R_rate_init = _init_context["R_rate"]
 
     Q, R, R_rate = vector_to_weights(weights_vector, Q_init, R_init, R_rate_init)
+    nmpc_ov = vector_to_nmpc_overrides(weights_vector)
 
     p = _init_context["vehicle_params"]
 
@@ -759,6 +828,7 @@ def run_headless_rollout(
         n_horizon=N_HORIZON, eps=ROLLOUT_EPS, max_iter=ROLLOUT_MAX_ITER,
         want_history=False,
         optimal_time=PATH_OPTIMAL_TIMES.get(path_name),
+        nmpc_overrides=nmpc_ov,
     )
     return rollout["composite_score"]
 
@@ -1222,6 +1292,28 @@ if __name__ == "__main__":
     # pre-pass result if USE_OPTUNA_PRESEARCH is True; otherwise this fixed
     # midpoint is exactly the original (pre-Optuna) behaviour.
     x0 = np.sqrt(lower * upper)
+    # The Q/R/R_rate head is multiplicative, so sqrt(lower*upper)=1.0 means
+    # "template unscaled" and is the right neutral start. The NMPC tail is
+    # ABSOLUTE, and its geometric midpoint is an arbitrary configuration -- for
+    # those dimensions start from the shipped settings.py value so generation 0
+    # evaluates the current car, not a random one.
+    if TUNABLE_NMPC:
+        _n_head = len(TUNABLE_Q_IDX) + len(TUNABLE_R_IDX) + len(TUNABLE_R_RATE_IDX)
+        _shipped = {
+            "rjerk_delta": settings.NMPC_RJERK_DELTA,
+            "rjerk_a": settings.NMPC_RJERK_A,
+            "corner_factor_k": (settings.NMPC_CORNER_FACTOR_K
+                                if settings.NMPC_CORNER_FACTOR_K > 0
+                                else settings.CORNER_FACTOR_K),
+            "rrate_zone_boost_straight": settings.NMPC_RRATE_ZONE_BOOST_STRAIGHT,
+            "rrate_zone_ease_approach": settings.NMPC_RRATE_ZONE_EASE_APPROACH,
+            "rrate_zone_floor_corner": settings.NMPC_RRATE_ZONE_FLOOR_CORNER,
+            "rrate_stage_near": settings.NMPC_RRATE_STAGE_NEAR,
+        }
+        for _i, (_name, (_lo, _hi)) in enumerate(TUNABLE_NMPC):
+            if _name in _shipped:
+                x0[_n_head + _i] = float(np.clip(_shipped[_name], _lo, _hi))
+
     optuna_info = None  # Populated below if the pre-pass runs; logged to history.txt
 
     # sigma0: initial CMA-ES step size.

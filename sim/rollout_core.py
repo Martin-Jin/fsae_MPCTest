@@ -457,6 +457,7 @@ def run_core_rollout(
     want_history=False, want_horizon_pred=False,
     optimal_time=None, continue_after_dnf=False,
     use_nmpc=USE_NMPC,
+    nmpc_overrides=None,
 ):
     """
     Run one closed-loop MPC rollout: nonlinear plant + MPC controller.
@@ -516,6 +517,20 @@ def run_core_rollout(
     want_horizon_pred : bool
         If True (and want_history=True), also compute the cosmetic N-step
         horizon prediction used by the GUI's cyan prediction line.
+    nmpc_overrides : dict, optional
+        Per-call overrides for the NMPC rate-shaping fields, by the controller's
+        own kwarg name (e.g. {'rjerk_delta': 250.0, 'rrate_zone_ease_approach':
+        0.35}). Anything absent falls back to the settings.py constant.
+
+        This exists because settings.py's constants are imported into this
+        module BY NAME at import time, so a caller that mutates
+        settings.NMPC_* after this module is imported has no effect -- the
+        usual workaround is a fresh subprocess per configuration. Passing a
+        dict here lets one process evaluate many configurations, which is what
+        an optimiser sweeping these fields needs. Keys are not validated
+        against the controller's signature; a typo is silently ignored, so
+        check a swept field actually moves before trusting a null result.
+
     continue_after_dnf : bool
         If True, a DNF trigger (solver-fail streak, stall, or off-track) sets
         the dnf/offtrack flags and history["fail_reason"] as usual but does
@@ -540,6 +555,15 @@ def run_core_rollout(
         "time_bonus"      : float
         "history"         : dict or None — populated iff want_history=True
     """
+    # Per-call NMPC field overrides. settings.py constants are bound into this
+    # module by name at import time, so mutating settings after import cannot
+    # reach them; this dict is the supported way to evaluate several
+    # configurations from one process. See the nmpc_overrides docstring entry.
+    _nmpc_ov = nmpc_overrides or {}
+
+    def _ov(name, default):
+        return _nmpc_ov.get(name, default)
+
     if model_lookup is None:
         raise ValueError("model_lookup must be provided (e.g. offline_tuner.get_cached_model)")
     if dynamic_max_steps is None:
@@ -681,21 +705,22 @@ def run_core_rollout(
             speed_limit_slack_weight=NMPC_SPEED_LIMIT_SLACK_WEIGHT,
             steer_rate_anti_hunt_enabled=NMPC_STEER_RATE_ANTI_HUNT_ENABLED,
             corner_rrate_blend_enabled=NMPC_CORNER_RRATE_BLEND_ENABLED,
-            corner_factor_k=_nmpc_pick(NMPC_CORNER_FACTOR_K, CORNER_FACTOR_K),
+            corner_factor_k=_ov('corner_factor_k',
+                                _nmpc_pick(NMPC_CORNER_FACTOR_K, CORNER_FACTOR_K)),
             rrate_steer_straight=_nmpc_pick(NMPC_RRATE_STEER_STRAIGHT, RRATE_STEER_STRAIGHT),
             rrate_steer_corner=_nmpc_pick(NMPC_RRATE_STEER_CORNER, RRATE_STEER_CORNER),
             reversal_penalty_enabled=NMPC_REVERSAL_PENALTY_ENABLED,
             reversal_penalty_boost_max=_nmpc_pick(
                 NMPC_REVERSAL_PENALTY_BOOST_MAX, REVERSAL_PENALTY_BOOST_MAX),
             reversal_penalty_k=_nmpc_pick(NMPC_REVERSAL_PENALTY_K, REVERSAL_PENALTY_K),
-            rrate_stage_ramp_enabled=NMPC_RRATE_STAGE_RAMP_ENABLED,
-            rrate_stage_near=NMPC_RRATE_STAGE_NEAR,
-            rrate_zone_enabled=NMPC_RRATE_ZONE_ENABLED,
-            rrate_zone_boost_straight=NMPC_RRATE_ZONE_BOOST_STRAIGHT,
-            rrate_zone_ease_approach=NMPC_RRATE_ZONE_EASE_APPROACH,
-            rrate_zone_floor_corner=NMPC_RRATE_ZONE_FLOOR_CORNER,
-            rjerk_delta=NMPC_RJERK_DELTA,
-            rjerk_a=NMPC_RJERK_A,
+            rrate_stage_ramp_enabled=_ov('rrate_stage_ramp_enabled', NMPC_RRATE_STAGE_RAMP_ENABLED),
+            rrate_stage_near=_ov('rrate_stage_near', NMPC_RRATE_STAGE_NEAR),
+            rrate_zone_enabled=_ov('rrate_zone_enabled', NMPC_RRATE_ZONE_ENABLED),
+            rrate_zone_boost_straight=_ov('rrate_zone_boost_straight', NMPC_RRATE_ZONE_BOOST_STRAIGHT),
+            rrate_zone_ease_approach=_ov('rrate_zone_ease_approach', NMPC_RRATE_ZONE_EASE_APPROACH),
+            rrate_zone_floor_corner=_ov('rrate_zone_floor_corner', NMPC_RRATE_ZONE_FLOOR_CORNER),
+            rjerk_delta=_ov('rjerk_delta', NMPC_RJERK_DELTA),
+            rjerk_a=_ov('rjerk_a', NMPC_RJERK_A),
         )
 
     metrics = RolloutMetrics()

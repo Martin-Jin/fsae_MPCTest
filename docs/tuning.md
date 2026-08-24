@@ -434,6 +434,123 @@ default false) — see `planning_control_sync.md`'s "Nonlinear MPC
   complete field-by-field controller-scope map (which settings are LTV-QP-only,
   NMPC-only, or shared).
 
+## 4b. Steering smoothness: the three levers that actually worked
+
+Chatter (the wheel twitching instead of holding an angle) and jerks at tight
+corners are **two different faults**. Diagnose which one before tuning, because
+each is deaf to the other's controls.
+
+### Chatter — a cost-function problem
+
+Tune in this order; the first item dominates.
+
+| setting | value | effect |
+|---|---|---|
+| `R_rate_diag[0]` / `r_rate_delta` | **52.5** (from 2.8) | halves chatter. Biggest single lever by far. |
+| `NMPC_RJERK_DELTA` | **150.0** | prices the *change in* steering rate, so a wobble is expensive but a steady turn stays cheap |
+| `OUTPUT_SMOOTHING_ENABLED` | **false** | a post-solve low-pass filter, made redundant by the two above |
+
+`NMPC_RJERK_DELTA` is the one to reach for when raising `r_rate_delta` starts
+making the car reluctant to turn. A plain rate cost charges the same for a
+steady ramp into a corner and for one leg of an oscillation, so it cannot
+suppress one without resisting the other; the jerk term separates them (live
+data: reversals carry ~4.3× the second difference of ramps, versus only ~1.9×
+the first). Mechanism in `planning_control_sync.md`'s "Input-jerk cost".
+
+Untested pairing worth trying: `r_rate_delta=5.0` with `NMPC_RJERK_DELTA=250.0`
+beats the flat-52.5 baseline on every offline metric.
+
+### Corner-dependent rate weight (`NMPC_RRATE_ZONE_*`)
+
+Slides the steering-rate price between three levels — high on straights, lower
+approaching a corner, lowest mid-corner — continuously, with no thresholds.
+
+| field | value |
+|---|---|
+| `NMPC_RRATE_ZONE_ENABLED` | true |
+| `_BOOST_STRAIGHT` / `_EASE_APPROACH` / `_FLOOR_CORNER` | 2.0 / **0.80** / 0.15 |
+| `NMPC_CORNER_FACTOR_K` | **27.0** |
+
+**`NMPC_CORNER_FACTOR_K` gates this entirely and is not cosmetic.** At the
+inherited 8.0 the ease and floor levels are unreachable on a track whose
+tightest corner is |κ|≈0.2, so the mechanism silently degrades to a mild
+global rate boost — measured live, it never left its boost band and the A/B
+was a wash. Size it from the track: `k ≈ target/((1−target)·κ_max)`.
+
+Two cautions:
+
+- **Check the `m_Rrate_zone` telemetry column** before believing any A/B of
+  the endpoints. If it never approaches `_FLOOR_CORNER`, the endpoints are not
+  what was tested.
+- `_EASE_APPROACH=0.35` is the intended value and **DNFs offline**; 0.80 ships
+  instead. Raising `k` past 27 does *not* help — k=60 measured worse live.
+
+### Jerks at tight corners — a SPEED problem, not a steering one
+
+If the car turns in late, runs wide and the steering slams over at the
+tightest corners, **check the speed before touching any steering weight.**
+
+`CURVATURE_SPEED_A_LAT_MAX` **5.5 → 4.75** took stutters from 33.3 to
+9.8 per minute and `|d_steer|>5°` events from 20 to 1. Four steering-side
+weights (`r_rate_delta`, `NMPC_CORNER_FACTOR_K`, `NMPC_Q_E_Y`,
+`NMPC_SQP_ITERS`) were each tried first and none moved it, because the
+steering command was already arriving *early* and at ~94% of the required
+angle. The car was simply reaching the hardest curvature ramp needing ~15 m/s²
+of lateral acceleration against the plant's ~7.5 ceiling.
+
+Note this constant only affects `speed_profile.csv` — see section 7 and
+`planning_control_sync.md`'s "Speed-profile aggressiveness".
+
+---
+
+## 4c. What the offline tuner searches (and the NMPC gate)
+
+`tuner/offline_tuner.py` searches **14** parameters:
+
+| block | count | form | fields |
+|---|---|---|---|
+| `Q_diag` | 5 | multiplier on the template | `e_y`, `e_y_dot`, `e_psi`, `e_psi_dot`, `e_v` |
+| `R_diag` | 2 | multiplier | `delta_cmd`, `a_cmd` |
+| `R_rate_diag` | 2 | multiplier | steering rate, accel rate |
+| `TUNABLE_NMPC` | 5 | **absolute value** | `rjerk_delta`, `corner_factor_k`, `rrate_zone_boost_straight`, `_ease_approach`, `_floor_corner` |
+
+The NMPC block is absolute rather than multiplicative because those fields
+have no template to scale and their useful ranges are not centred on 1.0
+(`rjerk_delta` spans 1–400). Generation 0's `x0` is seeded from the shipped
+`settings.py` values for these dimensions, so the first thing evaluated is the
+current car rather than an arbitrary midpoint.
+
+**Gate: the NMPC block only does anything when `settings.USE_NMPC` is True**,
+and it defaults to False. Under the LTV-QP the controller ignores all five
+fields, so every candidate scores identically in those dimensions and the
+search wastes five dimensions of its population. Either set `USE_NMPC=True`
+before importing the tuner, or empty `TUNABLE_NMPC` when tuning the LTV-QP.
+
+**Why these are searched at all rather than held fixed:** `rjerk_delta=0`
+DNFs the recorded-map rollout where the shipped 150 completes. These are
+load-bearing, not refinements, so a weight set tuned with them pinned is only
+valid at those pinned values.
+
+**Mechanism note.** `settings.py` constants are imported into
+`sim/rollout_core.py` **by name at import time**, so mutating `settings.NMPC_*`
+after that module loads has no effect — historically this forced a fresh
+subprocess per configuration. `run_core_rollout` now takes an
+`nmpc_overrides` dict for exactly this reason, which is what lets one process
+evaluate many configurations. Keys are not validated against the controller's
+signature: **a mistyped field name is silently ignored**, so confirm a swept
+field actually moves the score before trusting a null result.
+
+Smoke-test the wiring after editing `TUNABLE_NMPC` (a full CMA-ES run is not
+needed and takes far too long):
+
+```python
+# with USE_NMPC=True set before importing the tuner
+score = run_headless_rollout(x0, "PATH_SUDDEN_TURN", 400, 0.0, 0.0)
+# then move one field to its far bound and confirm the score changes
+```
+
+---
+
 ## 5. Dynamic speed cap — disabled, do not re-enable without re-diagnosis
 
 `enable_dynamic_speed_cap` / `dynamic_cap_a_lat_max` / `dynamic_cap_safety`

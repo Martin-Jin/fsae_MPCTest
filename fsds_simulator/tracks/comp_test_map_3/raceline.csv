@@ -1,5 +1,6 @@
-# x,y,psi,psi_target,v_target -- minimum-time racing line exported by tuner.tools.raceline_optimizer from a cone_recorder map.
+# x,y,psi,psi_target,v_target -- speed-optimised racing line exported by tuner.tools.raceline_optimizer from a cone_recorder map.
 # source_map=/home/Formula-Student-Driverless-Simulator/ros2/src/fsae_planning/tracks/comp_test_map_3/cone_map.json
+# lateral_offsets=True
 # centreline_lap_time_s=41.181 raceline_lap_time_s=40.356 improvement_pct=2.00
 # psi_target: shaped heading-lead reference (see late_turn_in_investigation.md Part 8/9), NOT the geometric path tangent (psi). Backward-compatible: a loader reading only 4 columns (x,y,psi,v_target) still parses this file.
 x,y,psi,psi_target,v_target
