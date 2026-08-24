@@ -103,7 +103,7 @@ for how to run the CMA-ES weight tuner instead.
 | [`docs/reference/`](`docs/reference/`) | Reference for re-syncing `planning/` and `fsds_simulator/` against a newer `fsae_planning` upstream clone: file mapping, deliberate non-mirrors, numeric-parity constants, and the resync procedure. |
 | [docs/junior_project_mpc_docs.md](docs/junior_project_mpc_docs.md) | Standalone high-level wiki page introducing MPC/NMPC/tuning to a newcomer with no prior control-theory background — self-contained by design, so it overlaps other docs rather than just linking to them. |
 | [docs/fsae_planning_pending_pr.md](docs/fsae_planning_pending_pr.md) | Running summary of uncommitted changes in the live `fsae_planning` checkout, for PR purposes — mirrors that repo's own `CHANGES.md`. |
-| [docs/logs/](docs/logs/) | Append-only research/investigation logs (sim-to-real gap, late-turn/lookahead history, dated change logs) — historical record, not current-state reference; see each file's own header for scope. |
+| [docs/logs/](docs/logs/) | Append-only research/investigation logs (sim-to-real gap, late-turn/lookahead history, NMPC introduction) — historical record, not current-state reference; see each file's own header for scope. |
 | [fsds_simulator/README.md](fsds_simulator/README.md) | How to build and run the full ROS 2 stack (Stanley / MPC / MPC-standalone) from `fsds_simulator/` alone, plus FSDS — no separate `fsae_planning` checkout needed. |
 
 ---
