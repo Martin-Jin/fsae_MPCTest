@@ -1209,11 +1209,19 @@ two.
 
 ## Input-jerk cost (`nmpc_rjerk_delta` / `nmpc_rjerk_a`) — NMPC only
 
-A **second-difference** penalty on the control inputs, alongside the existing
-first-difference rate cost. `nmpc_rjerk_delta` weights steering
-*acceleration*; `nmpc_rjerk_a` does the same for the longitudinal input. Both
-default to `0.0`, which removes the term from the QP entirely (no Hessian
-contribution). Live/offline defaults today: **150.0 / 0.0**.
+**Plain version:** the controller already pays a price for *moving* the
+steering wheel. That price is the same whether it is turning steadily into a
+corner or wobbling back and forth, so raising it to stop the wobble also makes
+the car reluctant to turn. This term prices something different — how much the
+*rate* of steering changes — which is small for a steady turn and large for a
+wobble. It lets the wobble be penalised without penalising turning in.
+
+Technically: a **second-difference** penalty on the control inputs, alongside
+the existing first-difference rate cost. `nmpc_rjerk_delta` weights steering
+*acceleration* (the change in the change); `nmpc_rjerk_a` does the same for
+the longitudinal input. Both default to `0.0`, which removes the term from the
+QP entirely (no Hessian contribution). Live/offline defaults today:
+**150.0 / 0.0**.
 
 **Why it exists.** The plain rate cost charges by `|du|`, which is identical
 for a sustained ramp into a corner and for one leg of an oscillation — so it
@@ -1233,7 +1241,7 @@ Hess += E2ᵀ · diag(rj) · E2          rj = tile([rjerk_delta, rjerk_a], N)
 grad += E2ᵀ · (rj · e_jerk)
 ```
 
-Two implementation points that matter if you touch this:
+Two implementation points that matter before modifying this term:
 
 - **It is anchored to the two previous applied inputs, not just one.** A
   second difference spanning the tick boundary needs `u_prev` *and*
@@ -1272,8 +1280,15 @@ exercised at a nonzero value on either side.
 
 ## Three-zone rate schedule (`nmpc_rrate_zone_*`) — and why `k` gates it
 
-A continuous multiplier on the NMPC's steering-rate cost, driven by current
-curvature and the peak curvature the horizon predicts ahead:
+**Plain version:** the price the controller pays for moving the steering wheel
+should not be the same everywhere. On a straight it should be high, so the car
+holds still instead of hunting. Approaching a corner it should drop, so the car
+is willing to start turning. Through the corner it should be lowest. This
+mechanism slides that price continuously between three levels based on how much
+the road is bending now and how much it will bend just ahead.
+
+Technically: a continuous multiplier on the NMPC's steering-rate cost, driven
+by current curvature and the peak curvature the horizon predicts ahead:
 
 | zone | condition | multiplier |
 |---|---|---|
@@ -1372,9 +1387,16 @@ Consequences:
 
 ## Turn-in timing: the command leads, and six levers do not move it
 
+**Plain version:** when the car seems to turn in late, the steering command
+itself is not late. Comparing what the wheel was told to do against what the
+corner geometrically required shows the command arriving about 0.15 s *early*
+and at roughly 94% of the needed angle. So a "turns in late" complaint is
+about what happens after the command, not about the controller's timing.
+
 Measured live on `centerline.csv` (3 runs, correlation 0.93): the commanded
 steering **leads** the geometrically-required angle (`atan(L·κ)` at the car's
-own station) by **0.15 s**, and delivers **0.936** of it in corners.
+own station — the steering angle a simple bicycle model needs for that
+curvature) by **0.15 s**, and delivers **0.936** of it in corners.
 `delta_cmd` and the applied `steer_deg` are identical to 0.0005°.
 
 So a "turns in late" report is not the controller deciding late. Whatever
@@ -1416,6 +1438,15 @@ conclusion before being caught:
   derivative. Read feasibility off the exported file, not off a rollout.
 
 ## Reference line: raceline vs centreline
+
+**Plain version:** there are two ways to decide the line the car drives. A
+*racing line* cuts corners for speed, running wide on entry and clipping the
+apex. A *centreline* just follows the middle of the track. The racing line is
+faster in principle, but it is harder to follow, and when something goes wrong
+it is impossible to tell from the logs whether a large error means the car
+missed the line or the line deliberately went near the edge. The centreline
+removes that ambiguity — and on this track it is currently also faster in
+practice.
 
 `tuner/tools/raceline_optimizer.py` has two modes, selected by `--mode`, and
 both write a 5-column `x,y,psi,psi_target,v_target` CSV that the live
@@ -1518,6 +1549,13 @@ them to catch an over-aggressive profile. Step it up and measure rather than
 jumping to the measured physical ceiling.
 
 **This value is a steering-smoothness parameter, not only a lap-time one.**
+
+*Plain version:* this number decides how fast the car is allowed to plan to go
+through corners. Set too high, the car arrives at the tightest corner faster
+than it can physically turn — so the steering slams over, the car runs wide,
+and it feels like a sudden jerk. Lowering it slightly made the steering much
+smoother at a small cost in lap time.
+
 Currently **4.75**, reduced from 5.5 after 5.5 was traced to a specific
 sudden-steering-jump symptom. At 5.5 the car arrived at the track's hardest
 curvature ramp (s0≈43→46, where the geometrically-required angle climbs

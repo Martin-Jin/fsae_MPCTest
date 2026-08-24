@@ -1,15 +1,45 @@
 # Steering chatter investigation (NMPC, live + offline)
 
-**Status: RESOLVED, in two parts.** (1) `r_rate_delta` was far too low —
-raising the QP's steering-rate cost from 2.8 to ~50 (live-tested) more than
-halved the chatter. (2) **The reference line was a confound for all of it**
-— switching from `raceline.csv` to `centerline.csv` with every weight held
-fixed took steering reversals 13 → 1 and both saturation and slew-limited
-ticks to exactly 0. See "Session N (2026-08-24)" at the END of this file
-before trusting any absolute number in between; a figure measured on the
-raceline includes excursion-recovery that is not attributable to the weight
-under test. Everything below is retained as ruled-out ground, but note that
-one of the "ruled out" entries was WRONG, and the mistake is instructive.
+## In plain terms
+
+The car's steering wheel was twitching instead of holding a smooth angle
+through a corner, and it also seemed reluctant to turn in. Two separate causes,
+both now fixed:
+
+1. **The controller was not charged enough for moving the wheel.** Its cost
+   function had a term meant to discourage rapid steering changes, but the
+   price was set roughly 18× too low, so constant small corrections were
+   nearly free. Raising it removed most of the twitching.
+2. **The line the car was told to follow was one it could not drive.** The
+   "racing line" cut corners in a way that demanded more grip than the
+   simulator provides. Following the middle of the track instead removed the
+   rest — with no change to any controller setting.
+
+A third, separate problem (sudden jumps in steering at the tightest corners)
+turned out not to be a steering problem at all, but the car arriving at those
+corners too fast. See "Fault 2" at the end.
+
+---
+
+**Status: RESOLVED, in two parts.**
+
+- **`r_rate_delta` was far too low.** Raising the steering-rate cost in the
+  optimiser's objective from 2.8 to ~50 (live-tested) more than halved the
+  chatter. *(`r_rate_delta` prices each unit of change in the steering command
+  between one 50 ms control tick and the next.)*
+- **The reference line was a confound for all of it.** Switching from
+  `raceline.csv` to `centerline.csv`, with every weight held fixed, took
+  steering reversals 13 → 1 and both saturation and slew-limited ticks to
+  exactly 0.
+
+**Before trusting any absolute number in the sections below**, check which
+reference line it was measured against — see "The reference line was a
+confound". A figure measured on the raceline includes the cost of recovering
+from excursions the line itself caused, which is not attributable to the weight
+under test.
+
+Everything below is retained as ruled-out ground. Note that one of the "ruled
+out" entries is **wrong**, and the reason is instructive.
 
 ## Resolution
 
@@ -661,7 +691,7 @@ chatter symptom.
 
 ---
 
-## Session N (2026-08-24): the reference line was a confound throughout
+## The reference line was a confound for every chatter measurement
 
 **A large part of what this document measures as "chatter" was the car
 failing to track a reference it could not follow — not the cost weights.**
@@ -708,18 +738,17 @@ and the recovery is what the chatter metrics were partly counting.
 
 ### Corrected reading of the `rjerk=150` live result
 
-An earlier live run of `nmpc_rjerk_delta=150.0` on the raceline showed 4.49%
-steering saturation and was provisionally read as the jerk penalty trading
-smoothness for saturation. **That reading was wrong** — the same weight on
+A live run of `nmpc_rjerk_delta=150.0` on the raceline shows 4.49% steering
+saturation, which reads as the jerk penalty trading smoothness for saturation.
+**That reading is wrong** — the same weight on
 the centreline saturates 0.00% of ticks. The saturation belonged to the
-reference. (That run also contained a genuine, separate clock anomaly:
+reference. (That run also contains a separate clock anomaly:
 timestamps went backwards 0.399 s twice, with a 6.29 → 2.71 m/s speed step —
-see `periodic_pose_teleport_investigation.md`, another session's work.)
+see `periodic_pose_teleport_investigation.md`.)
 
-### Method note
+### Ambiguous lateral error is why centreline mode exists
 
-Two runs earlier in this investigation were diagnosed from an ambiguous
-`|e_y|`, because on a raceline a large lateral error can be either a
+A lateral error measured against a raceline is ambiguous, because a large lateral error can be either a
 tracking failure or the line intentionally apexing near a boundary. The
 centreline mode exists specifically to remove that ambiguity, and it should
 be the reference for any future chatter or turn-in measurement; switch back
@@ -771,13 +800,13 @@ Shipped instead: `ease_approach`=**0.80**, the value at which the offline
 rollout completes and modestly beats baseline (score 0.796 vs 0.822,
 `|e_y|` 0.476 vs 0.496, p90 0.976 vs 1.044).
 
-Method note, second occurrence this session: `k=27` was derived from the
+Ordering matters here: `k=27` was derived from the
 saturation arithmetic and set as the live config *before* running
 `tuner.steering_chatter_check`. The check then showed it DNFs. Run the
 offline rollout before shipping a weight-shaping change, not after.
 
-Method note: this is the second time in this investigation that a null result
-turned out to be "the mechanism did not engage" rather than "the mechanism
+A null result in this area more often means "the mechanism did not engage"
+than "the mechanism does not help". Twice now a null has turned out to be "the mechanism did not engage" rather than "the mechanism
 does not help" (the first was `NMPC_HORIZON=35`, which was SQP failure).
 Check the mechanism's own telemetry column before writing a null into the
 ruled-out list.
@@ -795,12 +824,12 @@ offline metric.
 
 ---
 
-## Session N+1: late turn-in / "won't turn enough" — six hypotheses falsified
+## Late turn-in and "won't turn enough": six causes ruled out
 
-**Symptom as reported:** turns in slightly late; carries lateral error
+**Symptom:** turns in slightly late; carries lateral error
 through the corner before correcting back; sticks close to the boundary;
-steering command occasionally jumps at a tight corner. Attributed by the
-operator to the high steering-rate weight.
+steering command occasionally jumps at a tight corner. Initially attributed to the high
+steering-rate weight.
 
 **Scope — planner mechanisms are excluded by construction.** The reference is
 a precomputed path (`centerline.csv`), not the live planner, so
@@ -857,7 +886,7 @@ it. Whatever causes the symptom is not the command's timing or magnitude.
   (by 0.5–1.4 m/s²). The model is conservative there, not optimistic; only
   3.88% of ticks exceed it. No mismatch to fix.
 
-### Two measurement errors made here, both worth avoiding
+### Two measurement traps that each produced a wrong conclusion
 
 1. **Aggregate ratios over a full lap are dominated by straights.** A "plant
    yaw gain" of 0.42 at p10 looked like severe understeer; binned by speed it
@@ -886,9 +915,9 @@ error tick by tick inside them.
 
 ## Resolution summary: two distinct faults, similar symptoms
 
-Worth reading before re-opening any of this. What presented as one complaint
-("jerky steering, won't turn enough, turns in late") was **two independent
-problems**, which is why single-lever sweeps kept returning null results.
+What presents as a single complaint — "jerky steering, won't turn enough,
+turns in late" — is **two independent problems**. That is why sweeping any one
+weight kept returning a null result: each sweep addressed at most one of them.
 
 ### Fault 1 — tick-to-tick chatter: a controller-cost problem
 
@@ -932,5 +961,5 @@ steering weight.**
 **exits** — the signature is large `|e_psi|` (13–16°) with small and shrinking
 `|e_y|` (0.03–0.28 m), i.e. the car is back on the line but still rotating,
 and the solver makes small alternating corrections while heading unwinds.
-Distinct from Fault 2's entry-side jumps. Judged not worth chasing further at
-this amplitude; the next lever would be `q_e_psi`/`q_r` at exit.
+Distinct from Fault 2's entry-side jumps. Not worth chasing at this amplitude; the
+next lever would be `q_e_psi`/`q_r` at corner exit.
