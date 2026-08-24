@@ -713,7 +713,17 @@ USE_NMPC = False
 # hold to follow a corner (r = kappa*v) -- the exact opposite of what's
 # wanted. Same slot, different regressor: expect this one to need its own
 # sweep rather than inheriting Q_diag[3] unchanged.
-NMPC_Q_E_Y       = -1.0
+# 7.5 (above the inherited 6.35) is the live-tested value and the current
+# live default: score-neutral-to-better (0.454-0.486 across three runs) with a
+# lower peak lateral error. Keep in step with launch_all.sh's NMPC_Q_E_Y.
+#
+# CAUTION on measuring this: raw drift-episode COUNTS across runs of different
+# length are misleading (a 89.9 s run shows ~48 episodes where a 53 s run
+# shows ~29 for the SAME config). Rate-normalised, every configuration tried
+# on this track sits at ~31.5 drift episodes/min. Normalise by duration, and
+# treat one run's lap time as noisy -- the same config gave 53.29 s and
+# 47.99 s.
+NMPC_Q_E_Y       = 7.5
 NMPC_Q_E_YD      = -1.0
 NMPC_Q_E_PSI     = -1.0
 NMPC_Q_EPSI_DOT  = -1.0
@@ -760,8 +770,12 @@ NMPC_CORNER_RRATE_BLEND_ENABLED = False
 #
 # Scale this with the TRACK's max curvature, not by feel:
 #   k ~= target_corner_frac / ((1 - target_corner_frac) * kappa_max)
+# CAUTION: raising this past 27 does not fix mid-corner lateral drift --
+# k=60 was live-tested WORSE (see planning_control_sync.md's "Three-zone rate
+# schedule"). It lowers the corner weight as intended but drift barely moves,
+# which is the evidence that the steering-RATE cost is not what limits
+# turn-in on this track.
 # 27.0 puts |kappa|=0.209 (comp_test_map_3's tightest) at corner_frac 0.85.
-# Re-derive it for a track with a different curvature range.
 NMPC_CORNER_FACTOR_K = 27.0
 NMPC_RRATE_STEER_STRAIGHT = -1.0   # -1 = inherit RRATE_STEER_STRAIGHT
 NMPC_RRATE_STEER_CORNER = -1.0     # -1 = inherit RRATE_STEER_CORNER

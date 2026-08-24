@@ -1307,6 +1307,51 @@ Consequences:
   the NMPC override — so raising `nmpc_corner_factor_k` does not perturb
   smoothing even when it is enabled.
 
+## Turn-in timing: the command leads, and six levers do not move it
+
+Measured live on `centerline.csv` (3 runs, correlation 0.93): the commanded
+steering **leads** the geometrically-required angle (`atan(L·κ)` at the car's
+own station) by **0.15 s**, and delivers **0.936** of it in corners.
+`delta_cmd` and the applied `steer_deg` are identical to 0.0005°.
+
+So a "turns in late" report is not the controller deciding late. Whatever
+produces the residual symptom, it is downstream of a command that is early
+and close to the right magnitude.
+
+**Six candidate causes were tested and falsified** — full evidence in
+`docs/logs/steering_chatter_investigation.md` ("Session N+1"):
+`r_rate_delta` (52.5 is the *best* value tried; lower is wider and DNFs),
+`nmpc_corner_factor_k` past 27 (k=60 measurably worse live),
+`nmpc_q_e_y` (kept at 7.5 but does not change the drift rate),
+`NMPC_SQP_ITERS` (slew-limited tick fraction flat across 1/2/3),
+speed-profile braking feasibility (exported profiles are feasible; 0.00% of
+stations exceed −7.0 m/s²), delay compensation (same lag in high- and
+low-latency halves of the same run), and the `alat_ceiling` model (it is
+*conservative* in the 6–14 m/s band, not optimistic).
+
+**A drift-rate invariant worth knowing before tuning this again:** across
+every configuration tried on this track — `r_rate` 5→52.5, `k` 8→60,
+`q_e_y` 6.35→7.5 — the rate-normalised count of sustained lateral-error-growth
+episodes sits at **~31.5 per minute**. A cost-weight change redistributes
+episode size, not episode rate. Treat a raw episode count as uninterpretable
+unless divided by run duration: the same config gave 29 episodes in 55 s and
+48 in 90 s, which was briefly mis-read as a regression.
+
+**Two metric traps found here**, both of which produced a plausible wrong
+conclusion before being caught:
+
+- **Lap-wide ratios are dominated by straights.** "Plant yaw gain" (achieved
+  yaw rate ÷ `v/L·tan(δ)`) reads 0.42 at p10, which looks like severe
+  understeer. Binned by speed it is an artefact: the low-gain ticks are fast
+  and nearly straight, where the denominator is near zero. The gain *rises*
+  with `a_lat` (0.13 at 0–2 m/s² → 1.10 at 6–8), the opposite of a grip
+  limit. The same applies to a steering-vs-yaw-rate cross-correlation over a
+  full lap — it measures the phase of the straights.
+- **`dv_target/dt` along a rollout is not the profile's gradient.** It reads
+  −26.9 m/s² (apparently infeasible) where the exported CSV's own spatial
+  gradient is −5.03; the car crossing stations faster inflates the time
+  derivative. Read feasibility off the exported file, not off a rollout.
+
 ## Reference line: raceline vs centreline
 
 `tuner/tools/raceline_optimizer.py` has two modes, selected by `--mode`, and

@@ -792,3 +792,91 @@ on, so a regression could be either — disable the zone first.
 Still untested live: the offline low-rate variant `r_rate_delta=5.0` +
 `nmpc_rjerk_delta=250.0`, which beats the flat-52.5 baseline on every
 offline metric.
+
+---
+
+## Session N+1: late turn-in / "won't turn enough" — six hypotheses falsified
+
+Symptom as reported: the car turns in slightly late, carries lateral error
+through the corner before correcting back, sticks close to the boundary, and
+occasionally the steering command jumps suddenly at a tight corner. Reported
+as likely caused by the high steering-rate weight.
+
+**The reference is a precomputed path (`centerline.csv`), not the live
+planner**, so every planner-side mechanism in `sim_to_real_investigation.md`
+§12.8/§14/§26 is out of scope by construction. Verified rather than assumed:
+with `use_planner=False` the controller's reference and the scoring spline are
+identical, so §26's planner-added heading-rate excess is exactly **0.0** on
+every tick.
+
+### What was measured (live, 3 runs, `centerline.csv`)
+
+| quantity | value |
+|---|---|
+| commanded steering vs geometric requirement | **leads by 0.15 s**, corr 0.93 |
+| controller gain (commanded / required, in corners) | **0.936** |
+| `delta_cmd` vs applied `steer_deg` | identical (max diff 0.0005°) |
+| `a_lat` above the ~7.5 ceiling | 4.69% of ticks, peak 10.21 |
+| drift episodes, rate-normalised | ~31.5 /min, **invariant across every config tried** |
+
+The controller commands ~94% of the geometrically-required angle and does so
+*early*, and nothing between the solver and the actuator alters it.
+
+### Falsified, with evidence — do not retry without new information
+
+- **Steering-rate weight `r_rate_delta`.** Swept 52.5 / 30 / 20 / 10 / 5
+  offline: 52.5 is the BEST on every lateral-error measure (`|e_y|` mean
+  0.476, p90 0.976) and two lower values DNF. Lowering it makes the car go
+  *wider*, not earlier. The high rate weight is what keeps it on the line.
+- **`nmpc_corner_factor_k` beyond 27.** k=60 live: score 0.497 vs 0.454,
+  flip% 39.0 vs 36.0. It does lower the corner weight as designed (effective
+  r_rate 38.7 -> 29.2 in drift zones) and drift barely moves (10.86 ->
+  10.45 m) — which is itself the evidence that the rate cost is not the limit.
+- **`nmpc_q_e_y` as a drift fix.** 7.5 is kept (score-neutral, lower peak
+  error) but it does NOT remove the drift: the rate-normalised episode count
+  is unchanged. 8.5 and 9.0 DNF offline.
+- **`NMPC_SQP_ITERS`.** Offline 1/2/3: the ticks actually pinned at the slew
+  limit are FLAT (|d|>8.9° = 2.29 / 2.22 / 2.33 %) and max|d| sits at the
+  9.00°/tick ceiling in all three. Extra iterations trim only mid-range
+  activity while `|e_y|` and score degrade; `solve_ms` max reaches 52.8 ms
+  (over the 50 ms tick) at iters=2 and iters=3 DNFs.
+- **Speed-profile braking feasibility.** Both exported profiles are feasible:
+  worst implied decel −5.03 (`speed_profile.csv`) / −5.95 (`centerline.csv`)
+  against a −7.0 limit, **0.00%** of stations exceeding it. `u_accel` never
+  reaches the brake limit in the rollout (min −5.88, 0.00% at limit). The
+  backward brake pass is working.
+- **Delay compensation under-estimating.** `n_delay` is 1 on every tick,
+  derived from `pose_age_s` only, while `solve_ms` and `cmd_latency_ms` are
+  sampled after it — a real accounting gap, but NOT the cause: splitting each
+  run at its median total latency gives the **same** 0.15 s lag in both
+  halves, and a run with nearly double the pose age (44.5 vs 26.1 ms median)
+  shows the same lag.
+- **`alat_ceiling` model mismatch.** Checked per speed bin: in the 6–14 m/s
+  band the car ACHIEVES MORE `a_lat` than `max(7.5, 0.47v + 2.46)` predicts
+  (by 0.5–1.4 m/s²). The model is conservative there, not optimistic; only
+  3.88% of ticks exceed it. No mismatch to fix.
+
+### Two measurement errors made here, both worth avoiding
+
+1. **Aggregate ratios over a full lap are dominated by straights.** A "plant
+   yaw gain" of 0.42 at p10 looked like severe understeer; binned by speed it
+   is an artefact — the low-gain ticks are fast and nearly straight (median
+   v 10.96, `|steer|` 6.83°, `a_lat` 3.52, `|e_y|` 0.151 — *better* than
+   average), where `v/L·tan(δ)` divides by a near-zero denominator. Gain
+   actually RISES with `a_lat` (0.131 at 0–2 → 1.102 at 6–8), the opposite of
+   a grip limit. Bin before believing a tail statistic.
+2. **`dv_target/dt` per tick is not the profile's gradient.** Measuring the
+   speed target's time derivative along a rollout gave −26.9 m/s² and looked
+   like an infeasible reference; the profile's own spatial gradient is
+   −5.03 m/s². The car crossing stations faster inflates the time
+   derivative. Check the exported CSV directly.
+
+### Still open
+
+No confirmed cause for the residual late turn-in. What is established is that
+it is **not** the steering-rate cost, the error weight, the solver iteration
+count, the speed profile's feasibility, the delay compensation, or the
+ceiling model — and that the command itself leads and is ~94% of required.
+The next measurement worth doing is per-corner-event, not aggregate: isolate
+corner-entry windows and compare commanded steering, achieved yaw and lateral
+error tick by tick inside them.
