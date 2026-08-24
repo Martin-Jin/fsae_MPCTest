@@ -1,4 +1,4 @@
-# Change log: 2026-08-04 to 2026-08-07
+# fsae_planning sim-to-real investigation, part 1: 2026-08-04 to 2026-08-07
 
 Covers 61 commits (`41309fc` → `3b1bedd`) in `fsae_MPCTest`, the offline
 driving simulator/tuner. Preceded by a five-day gap (last commit before this
@@ -24,7 +24,7 @@ a resolution — see [Stage 6](#stage-6-2026-08-06-the-real-vs-offline-driving-g
 ceiling) confirmed and modelled, several plausible causes ruled out by direct
 measurement, several unrelated bugs fixed — but at least 75% of the
 real-vs-offline gap was still unexplained. Continued in
-[`changes_2026-08-07_to_2026-08-09.md`](changes_2026-08-07_to_2026-08-09.md).
+[`fsae_planning_sim_to_real_investigation_pt2.md`](fsae_planning_sim_to_real_investigation_pt2.md).
 
 ---
 
@@ -326,4 +326,4 @@ run isn't trustworthy evidence.
 
 ---
 
-**Continued in** [`changes_2026-08-07_to_2026-08-09.md`](changes_2026-08-07_to_2026-08-09.md).
+**Continued in** [`fsae_planning_sim_to_real_investigation_pt2.md`](fsae_planning_sim_to_real_investigation_pt2.md).

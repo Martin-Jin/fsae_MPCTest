@@ -86,6 +86,12 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(os.path.dirname(_HERE))
 RECORDED_RUNS_DIR = os.path.join(_REPO_ROOT, 'fsds_simulator', 'recorded_runs')
 
+# Curated drop zone: if this holds any `*_control_*.csv` (directly, not in a
+# further subfolder), auto-load uses ONLY this folder instead of scanning
+# every controller subfolder of RECORDED_RUNS_DIR. Lets you pick "the run(s)
+# to look at" by moving files here rather than passing a CLI path each time.
+GRAPH_DIR = os.path.join(RECORDED_RUNS_DIR, 'graph')
+
 
 def _find_control_csvs(log_dir):
     """Return every `*_control_<stamp>.csv` directly in or under `log_dir`.
@@ -628,7 +634,8 @@ def main():
                      help='control telemetry CSV(s). Omit to auto-load the newest run '
                           f'from each subfolder of {RECORDED_RUNS_DIR} (e.g. one from '
                           'LMPC/, one from NMPC/, one from Stanley/ -- see --all/'
-                          '--latest-only for other auto-load modes)')
+                          '--latest-only for other auto-load modes), or -- if '
+                          f'{GRAPH_DIR} has any runs in it -- only from there')
     ap.add_argument('--signals', default=None,
                      help=f'comma-separated column names for the left panel '
                           f'(default: {",".join(DEFAULT_SIGNALS)})')
@@ -645,19 +652,25 @@ def main():
 
     logs = args.logs
     if not logs:
+        search_dir = args.recorded_runs
+        # Curated graph/ folder takes over the auto-search entirely when it
+        # has runs in it -- that's the point of moving files there instead of
+        # leaving them in LMPC/NMPC/Stanley.
+        if search_dir == RECORDED_RUNS_DIR and _find_control_csvs(GRAPH_DIR):
+            search_dir = GRAPH_DIR
         if args.latest_only:
-            latest = find_latest_log(args.recorded_runs)
+            latest = find_latest_log(search_dir)
             logs = [latest] if latest is not None else []
         elif args.all:
-            logs = find_all_logs(args.recorded_runs)
+            logs = find_all_logs(search_dir)
         else:
-            logs = find_latest_per_folder(args.recorded_runs)
+            logs = find_latest_per_folder(search_dir)
         if not logs:
-            sys.exit(f'No *_control_*.csv found in {args.recorded_runs} and no CSV '
+            sys.exit(f'No *_control_*.csv found in {search_dir} and no CSV '
                       'path was given. Copy a log there, or pass one explicitly:\n'
                       '  python -m tuner.tools.plot_playback <control_csv>')
         noun = 'run' if len(logs) == 1 else f'{len(logs)} runs'
-        print(f'No CSV given -- auto-loaded {noun} from {args.recorded_runs}:')
+        print(f'No CSV given -- auto-loaded {noun} from {search_dir}:')
         for log in logs:
             print(f'  {log}')
 

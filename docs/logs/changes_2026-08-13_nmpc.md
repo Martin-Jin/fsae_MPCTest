@@ -2,7 +2,7 @@
 
 **Scope note, read first:** this entry covers only the nonlinear-MPC (NMPC)
 work described below. It does **not** continue from
-[`changes_2026-08-07_to_2026-08-09.md`](changes_2026-08-07_to_2026-08-09.md)
+[`fsae_planning_sim_to_real_investigation_pt2.md`](fsae_planning_sim_to_real_investigation_pt2.md)
 (which ends at Stage 27, 2026-08-09) — there is an unlogged gap from
 2026-08-10 through 2026-08-12 covering the precomputed corner-map feature,
 the shaped heading-lead profile, and a base-weight retune, none of which this

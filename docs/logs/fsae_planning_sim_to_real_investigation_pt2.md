@@ -1,7 +1,7 @@
-# Change log: 2026-08-07 to 2026-08-09
+# fsae_planning sim-to-real investigation, part 2: 2026-08-07 to 2026-08-09
 
 Continues directly from
-[`changes_2026-08-04_to_2026-08-07.md`](changes_2026-08-04_to_2026-08-07.md),
+[`fsae_planning_sim_to_real_investigation_pt1.md`](fsae_planning_sim_to_real_investigation_pt1.md),
 which ended on an open note: even after finding and modelling a real FSDS
 cornering-force ceiling and rebuilding the scoring system, roughly 75% of the
 gap between offline predictions and real-car driving was still unexplained.

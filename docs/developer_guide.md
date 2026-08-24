@@ -810,9 +810,29 @@ cp ~/fsae_logs/mpc_standalone_control_<ts>.csv \
 python -m tuner.tools.plot_playback       # picks up the one you just copied in
 ```
 
+**Curated drop zone: `recorded_runs/graph/`.** If this folder contains any
+`*_control_*.csv` files (directly — it's not scanned for further
+subfolders), auto-load uses **only** what's in `graph/` instead of scanning
+`LMPC/`/`NMPC/`/`Stanley/`/etc. This is the easiest way to control exactly
+what a plain `python -m tuner.tools.plot_playback` shows: move (or copy) the
+specific run(s) you want to look at into `graph/`, without deleting them
+from their controller subfolder or passing a path on the command line each
+time. `--all`/`--latest-only` apply within `graph/` the same way they do for
+the full tree. It's empty by default (tracked via `.gitkeep`) — drop files
+in, run the command, and it just works:
+
+```bash
+cp fsds_simulator/recorded_runs/NMPC/mpc_standalone_control_<ts>.csv \
+   fsds_simulator/recorded_runs/NMPC/mpc_standalone_path_<ts>.csv \
+   fsds_simulator/recorded_runs/graph/
+python -m tuner.tools.plot_playback       # loads only what's in graph/
+```
+
 Point the search elsewhere with `--recorded-runs <dir>` (e.g. to auto-load
 straight out of `~/fsae_logs` without copying, or to compare two specific
-takes you keep in their own directories). When two or more runs are loaded,
+takes you keep in their own directories) — this bypasses the `graph/`
+override too, since it changes the root being searched. When two or more
+runs are loaded,
 a **"Zoom focus"** radio-button widget appears bottom-left of the figure —
 pick a run there to change which one the bottom-right zoomed view tracks
 (it defaults to the first-loaded run). The separate **"Show/hide"**
