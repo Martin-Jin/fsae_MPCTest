@@ -300,7 +300,7 @@ Full derivation (the open-loop measurements this was fitted to, why the
 integral law replaced an earlier proportional one, and what's still
 unresolved) lives in
 [planning_control_sync.md](planning_control_sync.md)'s "MECHANISM: a
-dynamically-enforced lateral-acceleration ceiling" section and CLAUDE.md's
+dynamically-enforced lateral-acceleration ceiling" section and `planning_control_sync.md`'s
 sim-to-real summary — not repeated here.
 
 ---

@@ -13,7 +13,7 @@ resync procedure).
 (live). This doc explains *what each one does and how to tune it*; it
 deliberately does not restate every current numeric value, since those drift
 as tuning continues and a second copy of the numbers here would just be one
-more place to fall out of sync. See CLAUDE.md's parity rule: any change here
+more place to fall out of sync. See `planning_control_sync.md`'s parity rule: any change here
 must be applied to **both** `settings.py` and `mpc_params.py`.
 
 **Two controllers, two tuning surfaces.** Sections 1-4.4/4.9 below tune the
@@ -37,8 +37,8 @@ for what the NMPC is and why it exists.
 5. Re-validate: `python -m tuner.recorded_map_rollout` (offline, ~2 min) at
    minimum; for anything touching adaptive gains or delay handling, also run
    `VALIDATION_SUITE`. Never trust an offline-only score for a change that
-   affects saturation or heading error — see CLAUDE.md's "offline sim does
-   not yet fully predict the car" section.
+   affects saturation or heading error — see `planning_control_sync.md`'s project rule 3, "the offline
+   simulator does not fully predict the car".
 
 ---
 
@@ -134,7 +134,7 @@ oscillation doesn't reappear.
 | `ref_heading_rise_rate_deg_s` | the cap, in deg/s, when enabled |
 
 This exists because the planner's reference heading can swing faster than
-either the sim or the real car can ever physically yaw — see CLAUDE.md's
+either the sim or the real car can ever physically yaw — see `planning_control_sync.md`'s
 "reference-heading lead" discussion. The limiter only ever slows down how
 fast the *target* is allowed to change; it never reverses a correction's
 sign.
@@ -573,7 +573,7 @@ These two arrays define what the tuner is actually trying to optimize.
 `sim/scoring.py` is the single source of truth for the composite-score
 formula; the live copy at
 `ros2/src/fsae_planning/control/fsae_control/fsae_control/scoring.py` must
-stay a verbatim numeric copy (see CLAUDE.md's "Scoring parity" section).
+stay a verbatim numeric copy (see `planning_control_sync.md`'s "Live/offline score parity" section).
 
 - **`METRIC_SCALES`** — a typical/reference magnitude for each of the 13
   scored metrics, used to normalise them onto a comparable scale before

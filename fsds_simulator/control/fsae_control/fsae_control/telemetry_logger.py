@@ -350,7 +350,18 @@ class ControlLogger:
                  config_lines: list[str] | None = None):
         log_dir = os.path.expanduser(log_dir) if log_dir else os.path.expanduser('~/fsae_logs')
         os.makedirs(log_dir, exist_ok=True)
-        stamp = int(time.time())
+        # Local wall-clock stamp, YYYYmmdd-HHMMSS. Chosen over the epoch
+        # seconds this used to write because a log's filename is the only
+        # thing that identifies it in a directory listing, and an operator
+        # comparing "the run before lunch" against "the one after" cannot do
+        # that from 1787532892.
+        #
+        # Format is deliberately lexicographically sortable, so a plain `ls`
+        # or a filename sort puts runs in chronological order — which the
+        # epoch form also gave, and which readers (see
+        # tuner/tools/plot_playback.py's _stamp) still rely on. Local time,
+        # not UTC: it is read by a person standing next to the car.
+        stamp = time.strftime('%Y%m%d-%H%M%S', time.localtime())
         self._tag = tag
         self._ctrl_path = os.path.join(log_dir, f'{tag}_control_{stamp}.csv')
         self._path_path = os.path.join(log_dir, f'{tag}_path_{stamp}.csv')

@@ -8,6 +8,46 @@ mirror which upstream files, which pieces are deliberately *not* mirrored (and
 why), and the numeric-parity constants that must stay matched across the
 offline/live boundary.
 
+## Project rules this document is the authority for
+
+Four standing rules govern edits to the planning/control stack. They are stated
+here because several other documents refer to them; this section is the
+canonical wording.
+
+**1. Parity rule — the stack exists in two places and both must change.**
+Planning/control logic lives in the live ROS 2 nodes
+(`ros2/src/fsae_planning/control/fsae_control/`) *and* in this repo's offline
+simulator (`sim/rollout_core.py`, `settings.py`, `controller/`). Weights tuned
+offline are only valid on the car if the live code matches numerically.
+A one-sided edit to either copy is an incomplete change. The
+authoritative field-by-field mapping is the "Numeric-parity constants" and
+"MPC weight/gain parity" tables below.
+
+**2. Scoring parity — one formula, copied verbatim.** `sim/scoring.py` is the
+single source of truth for the composite score;
+`control/fsae_control/fsae_control/scoring.py` is a verbatim copy so a score
+logged on the car is directly comparable to an offline one. Change the offline
+file first, then re-copy. The one intentional difference is that the live copy
+inlines the weight constants (there is no `settings.py` on the car), and those
+must be kept numerically identical. See "Live/offline score parity" below.
+
+**3. The offline simulator does not fully predict the car.** Same map and same
+gains, the live car saturates its steering far more often than the offline
+rollout and carries roughly twice the heading error. **An offline score alone
+is not evidence.** Always validate on the car before accepting a tuning
+result. The measured cause and how much of the gap is closed are in
+`docs/logs/sim_to_real_investigation.md`.
+
+**4. Do not imitate the simulator's lateral-acceleration ceiling with tyre
+parameters.** FSDS enforces a sustained lateral-acceleration ceiling of about
+7.5 m/s² that is *speed-dependent*, so it is not a grip limit. Reproducing it
+by scaling `mu` or the cornering stiffnesses was tried and fails — it matches
+one measurement while wrecking the plant's genuine grip and failing the
+full-lock and closed-loop checks. The `alat_ceiling*` model in
+`model/vehicle_physics.py` is the correct mechanism; tune that, not the tyres.
+Details in "The sim-to-real gap" below and
+`docs/logs/sim_to_real_investigation.md`.
+
 **`fsds_simulator/` is a staging area, not a live module.** It mirrors
 `fsae_planning`'s own ROS 2 workspace hierarchy exactly — every package
 (`common/fsae_interfaces`, `common/fsae_bringup`, `perception/
@@ -84,7 +124,7 @@ offline tuner cares about:
 | `common/fsae_bringup/` (whole package) | `common/fsae_bringup/` | Direct mirror. `config/fsae_params.yaml` (central tunables), all 5 launch files (`sim.launch.py`, `control.launch.py`, `planning.launch.py`, `perception.launch.py`, `cone_recorder.launch.py`). |
 | `perception/fsae_sim_perception/` (whole package) | `perception/fsae_sim_perception/` | `sim_perception.py` is a direct mirror (FSDS oracle+odom → `/fsae/*`). `cone_recorder.py` and `common/fsae_bringup/launch/cone_recorder.launch.py` have **never existed in upstream `fsae_planning`'s git history** — despite the "Direct mirror" label this table used to give the whole package, these two files are this repo's own addition, staged here to be upstreamed later, not copied from an existing upstream file. |
 | `planning/fsae_planning/` (whole package) | `planning/fsae_planning/` | Direct mirror. `centerline_planner.py` (the actual ROS 2 node — see the row above for why the root `planning/` folder doesn't have this), `boundary.py`, `cone_map.py`, `cone_sorting.py`, `path_utils.py`, `special_utils/` (skidpad). |
-| `control/fsae_control/fsae_control/mpc_core.py` | `control/fsae_control/fsae_control/mpc_core.py` | Direct mirror. The `MPCController` class — QP-based MPC, kept in byte-for-byte parity with `sim/rollout_core.py`/`controller/optimiser.py` per this repo's own numeric-parity rule (see `CLAUDE.md`). |
+| `control/fsae_control/fsae_control/mpc_core.py` | `control/fsae_control/fsae_control/mpc_core.py` | Direct mirror. The `MPCController` class — QP-based MPC, kept in byte-for-byte parity with `sim/rollout_core.py`/`controller/optimiser.py` per the parity rule and numeric-parity tables in this document. |
 | `control/fsae_control/fsae_control/control_utils.py` | `control/fsae_control/fsae_control/control_utils.py` | Direct mirror — includes both `curvature_speed()` and `StanleyController`. |
 | `control/fsae_control/fsae_control/stanley_controller.py` | `control/fsae_control/fsae_control/stanley_controller.py` | Direct mirror. The actual current `controller:=stanley` node (publishes `cmd_vel`, routes through `fsds_bridge`). Replaces the old frozen reference implementation — see "Current mirror scope" above. |
 | `control/fsae_control/fsae_control/mpc_controller.py` | `control/fsae_control/fsae_control/mpc_controller.py` | Direct mirror. Upstream's default `controller:=mpc` node — steering only through `cmd_vel`/`fsds_bridge`, discards the MPC's own throttle/brake. See "Two MPC-controller nodes" below. |
@@ -246,7 +286,7 @@ the same change and re-grep this table's line numbers.
 ## MPC weight/gain parity: `MPCParams` ↔ `settings.py`
 
 Every MPC cost weight, adaptive-gain shape constant, and feature flag is
-centralized one place per side (see the outer repo's `CLAUDE.md`, "Single
+centralized one place per side (see "Single
 source of truth for MPC tuning, per side"):
 
 - **Live**: `ros2/src/fsae_planning/control/fsae_control/fsae_control/mpc_params.py`'s
@@ -1017,7 +1057,7 @@ whenever `R_diag[1]` is retuned.
 `R_A_ACCEL`/`R_A_BRAKE` for the current numeric defaults before relying on
 any value quoted elsewhere** — these two remain the most frequently
 live-retuned weights in the whole `MPCParams` set. Keep `settings.py`
-synced to `mpc_params.py`'s live values per CLAUDE.md's parity rule whenever
+synced to `mpc_params.py`'s live values per this document's parity rule whenever
 either changes.
 
 For the full diagnosis history (the corner-entry-too-hot symptom that
@@ -1560,17 +1600,19 @@ car bogging to 2.19 m/s; the centreline holds 4.96 m/s minimum and peaks at
 1.004 m. Faster overall **despite being 5.1 m longer** (470.6 vs 465.5 m),
 because no lap is spent recovering from the excursion.
 
-**The mechanism, and why it is a real optimiser bug.** The raceline's offset
-from the centreline is tiny — mean 0.13 m, max 0.48 m over the whole lap, and
-only 0.35 m through the failing corner. At that corner `|κ|` is 0.209, the
-global maximum for this track and ~70% of the car's full-lock kinematic floor
-(1/3.32 m = 0.30). There is no width left to cut with, so the search bought
-no lap time; but the offset it did apply still perturbed the curvature of a
-corner already at the edge of what the plant can deliver. Worst of both — a
-marginally harder corner for no gain. `_candidate_score`'s
-`CURVATURE_SOFT_MAX` penalty does not catch this, because it thresholds
-**absolute** curvature (0.22) rather than curvature against the
-`alat_ceiling` the planned speed at that station actually permits.
+**The mechanism, and why it is a real optimiser bug.**
+
+- The raceline's offset from the centreline is tiny: mean 0.13 m, max 0.48 m
+  over the whole lap, and only 0.35 m through the failing corner.
+- At that corner `|κ|` is 0.209 — the global maximum for this track, and about
+  70% of the car's full-lock kinematic floor (1/3.32 m = 0.30).
+- There is no width left to cut with, so the search bought no lap time. But
+  the offset it did apply still perturbed the curvature of a corner already at
+  the edge of what the plant can deliver: a marginally harder corner for no
+  gain.
+- `_candidate_score`'s `CURVATURE_SOFT_MAX` penalty does not catch this. It
+  thresholds **absolute** curvature (0.22) rather than curvature against the
+  `alat_ceiling` that the planned speed at that station actually permits.
 
 Consequences:
 
@@ -1586,6 +1628,92 @@ Consequences:
 - Fixing the optimiser means constraining a candidate's `κ·v²` against
   `alat_ceiling_at(v)` per station, not `|κ|` against a flat constant. Not
   done.
+
+## How the speed profile and the precomputed path are calculated
+
+**Plain version.** Before the car drives a track, two files are produced from
+the recorded cone map: one saying *where* to drive, one saying *how fast*.
+
+The speed file is built in three sweeps:
+
+1. Look at each point on the path and work out the fastest speed that corner
+   can be taken at without exceeding the grip budget.
+2. Sweep forwards, cutting any speed the car could not have accelerated up to
+   from the point behind it.
+3. Sweep backwards, cutting any speed the car could not brake down from in
+   time for the corner ahead.
+
+The result is a speed at every point that is both cornering-safe and
+reachable by a real car. Without sweeps 2 and 3 the file can demand
+impossible braking — measured at ~273 m/s² before they were added.
+
+### The speed profile: `compute_speed_profile()` in `sim/speed_profile.py`
+
+| pass | what it enforces | formula |
+|---|---|---|
+| 0 | corner speed from curvature | delegated to `curvature_speed()` at every point |
+| 1 | forward, acceleration limit | `v[i] ≤ √(v[i−1]² + 2·a_accel_max·ds)` |
+| 2 | backward, braking limit | `v[i] ≤ √(v[i+1]² + 2·|a_brake_max|·ds)` |
+
+Points worth knowing:
+
+- **Pass 0 is not a copy.** `compute_speed_profile()` calls the same
+  `curvature_speed()` the live car uses, so the offline oracle and the live
+  per-tick target cannot drift apart. `curvature_speed()` itself scans the
+  next 24 m of path, takes the peak curvature in that window, and returns
+  `safety·√(a_lat_max / κ_peak)` clamped to `[v_min, v_max]`.
+- **`a_accel_max`/`a_brake_max` are planning values, not the plant's limits**
+  (7.0 / −5.0 against the plant's 12.0 / −9.0). Planning at the true limits
+  leaves the controller no margin for combined slip or model error and makes
+  passes 1–2 nearly non-binding.
+- **Passes 1–2 have no live counterpart.** The car relies on
+  `curvature_speed()`'s 24 m look-ahead to see a corner early enough to brake.
+  The passes exist offline so `speed_rmse` does not penalise the controller
+  for failing to track an unreachable reference.
+- **Closed-loop wrapping.** With `closed_loop=True` (the default, correct for
+  a recorded lap) point *n−1* is treated as adjacent to point 0 and passes 1–2
+  run twice in each direction, so a constraint crossing the start/finish seam
+  propagates all the way round. Without it the car met an artificial slowdown
+  at the line once per lap. Set `False` only for a genuinely open path, such
+  as an acceleration event ending at a stop.
+
+### The path geometry: `tuner/tools/raceline_optimizer.py`
+
+Both modes start from a centreline reconstructed from the cone map, resampled
+to even arc-length spacing.
+
+- **`--mode raceline`** parameterises the line as a per-station lateral offset
+  `alpha[i]` within the track's own width budget, then iteratively nudges each
+  station toward lower curvature (a Kegel-style minimum-curvature search),
+  re-profiling speed each round. Candidates are ranked by lap time *plus* a
+  curvature penalty, so a kinked line cannot win on lap time alone. A final
+  smoothing pass removes residual per-station noise.
+- **`--mode centerline`** pins `alpha` to zero: no search, no smoothing. The
+  exported path is the reconstructed centreline and only its speed profile is
+  optimised.
+
+Both modes then run the same cone-clearance check *before* writing anything,
+so a line that passes too close to a cone fails the export rather than
+silently shipping.
+
+### Which file the car actually reads
+
+`launch_all.sh` passes two separate paths, and they deliberately point at
+different files:
+
+| launch arg | variable | supplies |
+|---|---|---|
+| `map_path` | `SPEED_CSV` | the speed target |
+| `path_map_path` | `PATH_CSV` | the path geometry |
+
+Both are only consulted when `USE_PRECOMPUTED_SPEED` / `USE_PRECOMPUTED_PATH`
+are true; otherwise the car falls back to the live planner and to
+`curvature_speed()` computed per tick.
+
+**The precomputed-speed branch applies no `v_max` clip**, so whatever
+`SPEED_CSV` contains is commanded directly. That makes the choice of file a
+speed-cap decision as much as a profile decision — check both files' ranges
+before swapping either.
 
 ## Speed-profile aggressiveness: `CURVATURE_SPEED_A_LAT_MAX`
 
@@ -1748,7 +1876,7 @@ reasons never diagnosed.
    mirrors `mpc_controller.py`, `mpc_controller_standalone.py`, and
    `stanley_controller.py` — all three current nodes, not just one — see
    "Two MPC-controller nodes, plus Stanley" above.
-4. If the change touches `planning/` or `mpc_core.py`, check per `CLAUDE.md`'s
+4. If the change touches `planning/` or `mpc_core.py`, check per this document's
    numeric-parity rule whether `sim/rollout_core.py` needs a mirrored change —
    `rollout_core.run_core_rollout()` and `mpc_core.MPCController` are two
    implementations of the same control loop kept in deliberate numeric
@@ -1759,7 +1887,7 @@ reasons never diagnosed.
    the offline (`sim/speed_profile.py`, `sim/rollout_core.py`) and live
    (`control_utils.py`, `mpc_controller_standalone.py`) copies need the same
    update.
-6. Run the smoke-test pattern from `CLAUDE.md`'s Testing section: confirm
+6. Run the smoke-test pattern from `docs/developer_guide.md`'s testing section: confirm
    changed files import cleanly, then run `python -m gui.simulation` (or a
    short `python -m tuner.offline_tuner` run with `FAST_TEST_MODE = True` in
    `settings.py`) against one synthetic path and check the rollout still
@@ -1948,7 +2076,7 @@ all NMPC-only and implemented identically in `nmpc_core.py` (live) and
    dense-resample + moving-average + finite-difference pipeline. A strict
    numerical-quality improvement with no new solver coupling — the old
    moving-average path is kept behind the flag for A/B if needed. Directly
-   targets the open "centreline curvature spikes" defect noted in CLAUDE.md.
+   targets the open "centreline curvature spikes" defect described below.
 2. **Horizon speed profile** — `nmpc_horizon_speed_profile_enabled` /
    `NMPC_HORIZON_SPEED_PROFILE_ENABLED`, default **false**. Would sample a
    precomputed per-lap speed profile at each horizon stage's own predicted

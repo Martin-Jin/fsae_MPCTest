@@ -262,7 +262,7 @@ symptom of the solver failing to converge.
 This run used a STATIC precomputed path (`path_map_path=.../raceline.csv`,
 `path_age_s=0.0000` throughout — confirmed no live planner in the loop).
 `nmpc_kappa_horizon_end` is smooth and monotonic in the checked window. The
-known open planner defect (CLAUDE.md's "centreline curvature spikes") cannot
+known open planner defect (`planning_control_sync.md`'s "Known planner defect: centreline curvature spikes") cannot
 be the cause here since there is no live planner path being consumed.
 
 ### NOT output_smoothing amplifying/causing it
@@ -352,11 +352,10 @@ a much larger multiplier is the answer, but not conclusively ruled out).
 **Committed**: `tuner/steering_chatter_check.py` (run with
 `python -m tuner.steering_chatter_check [--controller nmpc|ltv]
 [--set NAME=VALUE ...]`) — supersedes the session-local, uncommitted
-scratchpad scripts used to gather every number in this doc (those lived
-under `/tmp/claude-1000/.../scratchpad/` and do not persist between
-sessions). Use this script for any future sweep in this investigation;
-extend it rather than writing a new one-off script, so the next session
-doesn't have to re-derive the harness boilerplate again. It already prints
+scratchpad scripts used to gather every number in this doc (those lived in
+a temporary directory and were not retained). Use this script for any future
+sweep in this investigation; extend it rather than writing a new one-off
+script, so the harness boilerplate does not have to be re-derived. It already prints
 a warning if any tick had a non-`'solved'` `nmpc_status`, specifically to
 catch the horizon=35-style trap (a low chatter number that's actually a
 frozen/failing solver, not a real fix) before it's misread again.
@@ -627,7 +626,7 @@ chatter symptom.
   cost-landscape hypothesis above), rather than inferring it indirectly
   from cost values and warm-start deltas the way Session 2 did. Not
   attempted -- would need a `nmpc_core.py`/`nmpc_optimiser.py` change plus
-  a `rollout_core.py` wiring change; keep both sides in sync per CLAUDE.md.
+  a `rollout_core.py` wiring change; keep both sides in sync per `planning_control_sync.md`.
 - **Whether the warm-start's own noise (std 6.38 deg, found in Session 2)
   reproduces even with a MUCH larger trust region + more SQP iterations
   together** (as opposed to each swept independently, as Session 2 did).

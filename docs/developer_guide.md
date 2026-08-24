@@ -6,6 +6,32 @@ project (new synthetic paths, debugging solver failures). For the deep
 technical explanation of *why* the system is built this way, see
 [Architecture](architecture.md).
 
+## Documentation conventions
+
+Docs and logs in this repo follow three conventions, checkable with
+`python -m tuner.tools.doc_lint`:
+
+1. **No prose block longer than ~12 lines.** Break it into bullets, a table,
+   or several short paragraphs. Lists, tables, headings and fenced code are
+   exempt — they are already structured.
+2. **Plain-English summary first, then the mechanism and the numbers.** Assume
+   a reader who does not know the control-theory vocabulary. Do not drop the
+   technical detail to achieve this; a doc that reads easily but is no longer
+   sufficient to act on has failed differently.
+3. **Standalone-document voice.** No first or second person, no session
+   scaffolding, no narrative of what was tried in what order unless the order
+   is itself the finding. State findings in the present tense as properties of
+   the system, and attribute measurements to the measurement.
+
+The linter reports rather than fails by default. At the time it was added the
+baseline was **112** oversized prose blocks and **169** transcript-voice lines,
+nearly all of them in `docs/logs/late_turn_in_investigation.md` and
+`docs/logs/sim_to_real_investigation.md`, which predate the conventions. Those
+were deliberately left alone: their measurement records are worth more than
+their formatting, and a mechanical rewrite risks corrupting numbers that cannot
+be re-derived. Apply the conventions to new and edited sections, and use
+`--strict` in a hook if the baseline is ever cleared.
+
 ## Table of Contents
 
 1. [Running the Simulator](#running-the-simulator)
@@ -354,7 +380,7 @@ drives the precomputed line/speed on it" — recording, the two export tools,
 the on-disk layout they share, and the one switch that puts a track on the
 car. Each stage used to be documented (or not) in a different file; this
 section is now the single place that chains them. If you only need the
-concept, not the steps: **CLAUDE.md**'s planning/control-parity note and
+concept, not the steps: **`planning_control_sync.md`'s parity rule and
 `tracks/__init__.py`'s module docstring cover *why* the layout looks like
 this; this section covers *how* to use it.
 
@@ -381,11 +407,11 @@ all, so the track data itself (not just the code that reads it) ships with
 etc.) reads and writes there transparently when both repos are checked out
 side by side — you still type `tracks/<name>/`-shaped commands from
 `fsae_MPCTest/`, they just land across the repo boundary. `fsae_planning` is
-a separate git repo with its own remote (see this project's CLAUDE.md);
+a separate git repo with its own remote (see this project's `planning_control_sync.md`);
 changes under that path are local edits to that checkout only.
 
 `comp_test_map_3` is the track every baseline number in this repo's docs
-(`docs/logs/sim_to_real_investigation.md`, this guide, CLAUDE.md) is quoted against —
+(`docs/logs/sim_to_real_investigation.md`, this guide, `planning_control_sync.md`) is quoted against —
 don't overwrite it; give a new recording its own name. List what exists with
 `python -m tuner.tools.export_speed_profile --list` (from `fsae_MPCTest/`), or
 `ls ../ros2/src/fsae_planning/tracks/` (from `fsae_MPCTest/`).
@@ -502,7 +528,7 @@ that isn't under `tracks/` yet), and `--list` prints what's available.
   genuinely isn't a lap.
 - `raceline_optimizer.py` takes the same reconstruction and iteratively
   reshapes it within the track width for minimum lap time (widen-entry,
-  clip-apex), respecting the physical model's `alat_ceiling` (see CLAUDE.md)
+  clip-apex), respecting the physical model's `alat_ceiling` (see `planning_control_sync.md`)
   rather than a flat friction limit. Same CSV format/columns, different
   geometry and generally higher `v_target`.
 

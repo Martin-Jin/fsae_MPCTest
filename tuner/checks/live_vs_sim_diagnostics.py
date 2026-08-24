@@ -159,7 +159,14 @@ def reference_quality(label, t, car_yaw, e_psi_rad, yaw_rate, v):
 
 
 def live_report():
-    paths = sorted(glob.glob(os.path.join(LOG_DIR, "mpc_standalone_control_*.csv")))
+    # Sorted on the filename stamp, not lexicographically: log names carry
+    # either a local `%Y%m%d-%H%M%S` stamp (current) or epoch seconds (older
+    # runs), and a plain string sort puts every 10-digit epoch name before
+    # every '2026…' name regardless of when the run happened. plot_playback's
+    # _stamp handles both forms.
+    from tuner.tools.plot_playback import _stamp
+    paths = sorted(glob.glob(os.path.join(LOG_DIR, "mpc_standalone_control_*.csv")),
+                   key=_stamp)
     print(f"=== LIVE logs ({len(paths)}) ===\n")
     picked = None
     for p in paths:

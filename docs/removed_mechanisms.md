@@ -340,7 +340,7 @@ Only its role as a *lookahead-scan input* is gone, along with the rest of
 this family.
 
 This is a measured property of the simulator, not a tuning knob — see
-CLAUDE.md's "dynamically-enforced lateral-acceleration ceiling" section for
+`planning_control_sync.md`'s "The sim-to-real gap" section for
 the measurement, and re-measure with `ros2/run_steering_sysid.sh` /
 `ros2/run_steering_step.sh` if it's ever suspected wrong, rather than
 guessing.

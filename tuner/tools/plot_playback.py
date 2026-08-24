@@ -43,8 +43,8 @@ Usage
     # overlay two explicit runs -- each gets its own colour, signal lines,
     # marker, trajectory, and path overlay, plus a checkbox to hide/show it
     python -m tuner.tools.plot_playback \\
-        ~/fsae_logs/mpc_standalone_control_<ts>.csv \\
-        ~/fsae_logs/stanley_control_<ts>.csv
+        ~/fsae_logs/mpc_standalone_control_<stamp>.csv \\
+        ~/fsae_logs/stanley_control_<stamp>.csv
 
     # explicit signal set for the left-hand metrics panel
     python -m tuner.tools.plot_playback run.csv --signals e_y,e_psi_deg,yaw_rate
@@ -59,6 +59,7 @@ single shared time value, and each run independently looks up its own
 nearest sample.
 """
 import argparse
+import datetime
 import glob
 import os
 import sys
@@ -87,7 +88,7 @@ RECORDED_RUNS_DIR = os.path.join(_REPO_ROOT, 'fsds_simulator', 'recorded_runs')
 
 
 def _find_control_csvs(log_dir):
-    """Return every `*_control_<epoch>.csv` directly in or under `log_dir`.
+    """Return every `*_control_<stamp>.csv` directly in or under `log_dir`.
 
     Recurses one or more levels so per-controller subfolders (e.g.
     `recorded_runs/LMPC/`, `recorded_runs/NMPC/`, `recorded_runs/Stanley/`)
@@ -97,20 +98,47 @@ def _find_control_csvs(log_dir):
 
 
 def _stamp(path):
+    """Sort key for a control CSV: seconds since the epoch, or -1 if unparseable.
+
+    Handles BOTH filename stamp formats, so a directory holding runs recorded
+    either side of the change sorts correctly as one set:
+
+      `<tag>_control_20260824-134232.csv`  local `%Y%m%d-%H%M%S` (current)
+      `<tag>_control_1787532892.csv`       epoch seconds (older runs)
+
+    The datetime form is parsed with `mktime` rather than compared as a string
+    because the two forms have to be ordered against EACH OTHER; a lexicographic
+    key would sort every 10-digit epoch name before every '2026…' name
+    regardless of when the runs actually happened.
+
+    Interpreted as LOCAL time, matching how `ControlLogger` writes it. A run
+    recorded in a different timezone therefore sorts by its wall-clock reading
+    rather than its true instant — harmless for ordering runs from one machine,
+    which is all this is used for.
+    """
     name = os.path.splitext(os.path.basename(path))[0]
     try:
-        return int(name.rsplit('_control_', 1)[1])
-    except (IndexError, ValueError):
+        suffix = name.rsplit('_control_', 1)[1]
+    except IndexError:
+        return -1
+    try:
+        return int(datetime.datetime.strptime(suffix, '%Y%m%d-%H%M%S').timestamp())
+    except ValueError:
+        pass
+    try:
+        return int(suffix)
+    except ValueError:
         return -1
 
 
 def find_latest_log(log_dir=RECORDED_RUNS_DIR):
-    """Return the most recently recorded `*_control_<epoch>.csv` under `log_dir`.
+    """Return the most recently recorded `*_control_<stamp>.csv` under `log_dir`.
 
-    Sorts on the numeric epoch-seconds suffix ControlLogger stamps each
-    filename with (see telemetry_logger.py's `stamp = int(time.time())`),
-    not lexicographic filename order, so it's correct even if `tag` differs
-    in length between runs (e.g. 'mpc_standalone' vs 'stanley').
+    Sorts on the filename stamp decoded by `_stamp` (which accepts both the
+    current `%Y%m%d-%H%M%S` form and the older epoch-seconds form), not
+    lexicographic filename order — so it stays correct both when `tag` differs
+    in length between runs ('mpc_standalone' vs 'stanley') and when a directory
+    holds runs recorded either side of the stamp-format change.
     """
     candidates = _find_control_csvs(log_dir)
     if not candidates:
@@ -119,7 +147,7 @@ def find_latest_log(log_dir=RECORDED_RUNS_DIR):
 
 
 def find_latest_per_folder(log_dir=RECORDED_RUNS_DIR):
-    """Return the newest `*_control_<epoch>.csv` from each immediate
+    """Return the newest `*_control_<stamp>.csv` from each immediate
     subfolder of `log_dir` (e.g. one from `LMPC/`, one from `NMPC/`, one
     from `Stanley/`), oldest-newest first. Runs left flat directly in
     `log_dir` (not in any subfolder) are grouped together as one "folder".

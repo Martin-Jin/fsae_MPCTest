@@ -591,7 +591,7 @@ mirror each other today and must keep doing so):
 this" instruction that's been in effect all session for the adaptive-gain
 work, this design does NOT propose touching `fsae_MPCTest`/`settings.py`/
 `model_utils.py`/`rollout_core.py` yet. Flag this explicitly as a decision
-point, not an oversight: CLAUDE.md's parity rule normally requires every
+point, not an oversight: `planning_control_sync.md`'s parity rule normally requires every
 planning/control change on both sides, but this investigation has been
 entirely live-only by explicit user instruction throughout. **Before
 implementing**, confirm whether this specific feature should break that
@@ -601,7 +601,7 @@ assume either way without asking.
 
 ### 5c. Docs that need updating (checklist, once implemented)
 
-All in `fsae_MPCTest/docs/` (the authoritative docs per CLAUDE.md, even
+All in `fsae_MPCTest/docs/` (the authoritative docs per `planning_control_sync.md`, even
 though the CODE changes are live-only for now — the docs describe the
 live mechanism and must stay accurate regardless of which side changed):
 
@@ -625,7 +625,7 @@ live mechanism and must stay accurate regardless of which side changed):
     references changes shape.
 - **`architecture.md`**: the existing lookahead-mechanism summary sections
   (added when curvature forcing / steer-effort-relax were built, per
-  CLAUDE.md's own log of this session) need a new subsection describing
+  `docs/logs/sim_to_real_investigation.md`) need a new subsection describing
   the corner-segmentation layer and updating the "structural limit" callout
   if this closes any part of the gap it describes.
 - **`tuning.md`**: new field-reference entry for
@@ -699,7 +699,7 @@ implemented, then delete it, per its own header note.
    `launch_all.sh`'s `USE_PRECOMPUTED_CORNER_MAP` variable and its two
    `ros2 launch` call-site additions.
 5. Docs (5c) updates, in the same change, not deferred — this session's
-   own CLAUDE.md-documented history of yaml/`fsds_simulator` drift
+   own `planning_control_sync.md`-documented history of yaml/`fsds_simulator` drift
    happened specifically because doc/config updates were treated as a
    follow-up rather than part of the same commit.
 6. Offline validation (4e steps 1-2), THEN live A/B (4e step 3) once lag
@@ -1140,7 +1140,7 @@ deleted wholesale in the corner-factor-scheduler rewrite — see
 **Late turn-in on sudden corners was therefore still an open problem at
 this point in the investigation** — this session's attempted fix was
 reverted, not replaced. The reference-heading-lead mechanism (§12.8 in
-`sim_to_real_investigation.md`, also flagged in CLAUDE.md's "Still open"
+`sim_to_real_investigation.md`, also flagged in `planning_control_sync.md`'s "Still open"
 list) was investigated as the next avenue — **but it applies to the
 live-planner branch specifically** (the planner's per-tick, FOV-limited
 centreline rebuild), not to driving against a precomputed
@@ -2103,7 +2103,7 @@ the reference stays the raceline the team already tunes offline.
 *Cons*: `1 - kappa*e_y` singular at `e_y = 1/kappa` (irrelevant here: 3.5 m
 track half-width vs the tightest corner's `1/0.21 = 4.8 m`, and it is guarded);
 needs a curvature array that is not spike-ridden (a known open planner defect,
-CLAUDE.md) — handled in §16.3.
+`planning_control_sync.md`) — handled in §16.3.
 
 **B. Model Predictive Contouring Control (MPCC).** Progress-maximising: the
 cost trades contouring/lag error against `+ progress`, with track boundaries as
@@ -2226,7 +2226,7 @@ moving-averaging with a 3-wide kernel and then differencing headings — the
 *existing* denoise precedent from `control_utils.curvature_speed()`
 (`dense_step = 0.5`, `w = 3`), not a new smoothing constant. This matters more
 for NMPC than for the QP: with `kappa` inside the prediction, a spurious
-centreline spike (the known open planner defect, CLAUDE.md) would be predicted
+centreline spike (the known open planner defect, `planning_control_sync.md`) would be predicted
 as a real bend and steered for.
 
 **Solver.** Gauss-Newton SQP, each iteration: (1) roll the nonlinear model
@@ -2254,7 +2254,7 @@ github.com/alexliniger/MPCC (MPCC reference implementation), arXiv:1901.08184
 | `control/fsae_control/fsae_control/nmpc_params.py` | **NEW.** `NMPCParams` + `declare_nmpc_params`/`nmpc_params_from_node`/`NMPC_PARAM_FIELDS`, mirroring `mpc_params.py`'s pattern exactly. 24 fields. |
 | `control/fsae_control/fsae_control/mpc_controller.py`, `..._standalone.py` | Declare `NMPCParams`; construct `NMPCController` instead of `MPCController` iff `use_nmpc`. Nothing else changed — every downstream call site (`compute`, `reset`, `set_static_path`, `set_heading_profile`, `last_telemetry`, `a_max_brake`) is satisfied by both classes. |
 | `common/fsae_bringup/launch/control.launch.py`, `sim.launch.py` | `NMPC_PARAM_FIELDS` fed through the SAME generated-launch-arg mechanism `MPC_PARAM_FIELDS` already uses (no hand-written blocks). |
-| `common/fsae_bringup/config/fsae_params.yaml` | 24 new `controller:` keys, defaults identical to `NMPCParams`. Explicitly marked as NOT part of CLAUDE.md's numeric-parity table (no `settings.py` counterpart exists yet). |
+| `common/fsae_bringup/config/fsae_params.yaml` | 24 new `controller:` keys, defaults identical to `NMPCParams`. Explicitly marked as NOT part of `planning_control_sync.md`'s numeric-parity table (no `settings.py` counterpart exists yet). |
 | `ros2/launch_all.sh` | `USE_NMPC=false` + a commented-out NMPC shortlist, forwarded via the existing `_append_mpc_arg` helper; startup echo says which controller is running. |
 | `control/fsae_control/fsae_control/telemetry_logger.py` | 8 `nmpc_*` columns APPENDED to `ADAPTIVE_COLUMNS` (empty cells on LTV-QP runs, so no existing parser changes). |
 | `control/fsae_control/test/nmpc_offline_check.py` | **NEW.** The whole validation suite below, runnable in one command with no ROS/FSDS session. |
@@ -2550,7 +2550,7 @@ MPCC's reference-parametrisation mechanism (a continuous spline in arc length)
 adopted on its own, decoupled from the contouring/progress apparatus built on
 top of it in the original paper. Defaults on, unlike the other two: a strict
 numerical-quality improvement with no new coupling to solver dynamics, and it
-directly targets the open "centreline curvature spikes" defect (CLAUDE.md) — a
+directly targets the open "centreline curvature spikes" defect (`planning_control_sync.md`) — a
 proper spline fit was one of that defect's two previously-named-but-unattempted
 remedies. The old moving-average path is kept intact behind the flag for A/B.
 `kappa_at`/`kappa_scalar`/`psi_ref_at`/`project` needed no changes.
@@ -2607,7 +2607,7 @@ offline first.
 `NMPC_FRICTION_CIRCLE_ENABLED`, default `false`, experimental). Adds a hard
 `|F_yf|, |F_yr| <= F_max` bound to the condensed QP, additional to — not a
 replacement for — the existing soft `tanh` lateral-force saturation already
-inside `_f`/`_f_scalar` (per CLAUDE.md's standing caution against
+inside `_f`/`_f_scalar` (per `planning_control_sync.md`'s standing caution against
 re-litigating that soft mechanism without new measurement evidence). `F_max`
 is derived from the same measured ceiling law
 (`alat_ceiling_flat/_slope/_intercept`) via `F_max = m * ceiling(v_x) / 2` per

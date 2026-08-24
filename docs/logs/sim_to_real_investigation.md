@@ -208,7 +208,7 @@ other. The tell was there and initially missed: a later joint fit returned
 `K = −4.75 deg/g`, a *physically backwards negative* understeer gradient — the
 signature of a model contorting to absorb an effect it has no term for.
 
-> **This is why `CLAUDE.md` says do not "fix" the plant by scaling `mu`.**
+> **This is why `planning_control_sync.md`'s project rule 4 says do not "fix" the plant by scaling `mu`.**
 
 ---
 
@@ -1065,7 +1065,7 @@ investigation.
 `ros2/src/fsae_planning/planning/fsae_planning/fsae_planning/cone_map.py`
 (the live copy), `fsae_MPCTest/planning/cone_map.py` (offline), and
 `fsae_MPCTest/fsds_simulator/planning/fsae_planning/fsae_planning/cone_map.py`
-(the PR-staging mirror, which already had this file — per CLAUDE.md, an
+(the PR-staging mirror, which already had this file — per `planning_control_sync.md`, an
 existing shared file gets the same change, not just the two "parity" copies).
 The `ConeNoise` half of this change (`settings.py`, `sim/rollout_core.py`) is
 `fsae_MPCTest`-only by design — it is an offline testing-harness fidelity
@@ -2266,7 +2266,7 @@ small, independent effects compound when stacked — untested until now.
 
 **Three factors, chosen to target different subsystems (not redundant with
 each other, and not re-deriving the ceiling via tyre grip — the mechanism
-CLAUDE.md's standing warning is specifically about):**
+`planning_control_sync.md`'s project rule 4 is specifically about):**
 1. Ceiling level lowered to 6.5 (§13's factor E; already individually
    measured at 4.80%→6.90% recorded-map, no DNF there).
 2. `SLAM_NOISE_ENABLED=True` at documented defaults — models real
@@ -2409,7 +2409,7 @@ question this bug fix creates, not one it answers.
 
 **What generalises, immediately:** the exact question that found this
 ("did you ever check X matches between the two copies?") is precisely
-CLAUDE.md's standing parity rule, applied to a piece of code
+`planning_control_sync.md`'s parity rule, applied to a piece of code
 (`SimPlanner`'s call sites) that is not itself one of the two "kept in
 sync" file copies — it's a *third*, independently-written harness that
 *calls* the shared logic, and nothing had ever verified it called that
@@ -2563,7 +2563,7 @@ disproportionately costly compared to the same discontinuity on a straight.
 
 **Not attempted:** a fix to the planner itself (the `min_ahead` cutoff /
 pin-start chain-anchor behaviour in `boundary.py`/`path_utils.py`). Per
-CLAUDE.md's standing instruction on this family of defects, root-causing it
+`planning_control_sync.md`'s project rules on this family of defects, root-causing it
 further and fixing it needs the full context in this document's §19 and the
 "Known planner defect" section of `planning_control_sync.md`, applied to
 `fsae_MPCTest` and the live `fsae_planning`/`fsds_simulator` copies
@@ -2864,7 +2864,7 @@ Below that the model is byte-identical in behaviour to the flat one.
 
 **Validated two ways before shipping:**
 1. `tuner/plant_openloop_validation` (both open-loop replays, the same
-   check CLAUDE.md requires before trusting a refit): CAPPED sweep MAE
+   check `planning_control_sync.md` requires before trusting a refit): CAPPED sweep MAE
    improves 0.87→0.72 m/s² vs the flat model, driven almost entirely by the
    v=14 m/s point (err −1.75 flat → −0.49 speed-dependent). STEP replay
    settled values also move correctly (e.g. 11 m/s: 7.50→7.62, matching the
@@ -3825,7 +3825,7 @@ final `v_max`/`v_min` clip, and the short-path fallback branch are
 unchanged in logic — only sampling/smoothing resolution changed.
 
 **Rollout validation** (`python3 -m tuner.recorded_map_rollout`, template
-Q/R weights, ceiling mode=pi/gain=450/tau=0.4, unchanged from CLAUDE.md's
+Q/R weights, ceiling mode=pi/gain=450/tau=0.4, unchanged from `planning_control_sync.md`'s
 existing table):
 
 | metric | sim (before) | sim (after) | live |
@@ -3873,7 +3873,7 @@ writing. It has now (`mpc_standalone_control_1786158245.csv`, confirmed
 
 A large, real improvement — steering saturation roughly halved to a third of
 its pre-feature value, RMSE nearly halved. **Not a full fix**: still ~4× the
-offline sim's ~4.8% saturation target (CLAUDE.md's headline table), and the
+offline sim's ~4.8% saturation target (`docs/logs/sim_to_real_investigation.md`'s headline table), and the
 log has a genuine remaining problem, not just residual noise: `max|e_psi|` =
 107.2° at t=42.66s, `max|e_y|` = 1.534 m at t=39.01s, and 59 distinct
 saturation episodes concentrated around t≈39–43s, the longest running 48
