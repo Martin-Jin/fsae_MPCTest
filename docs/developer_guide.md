@@ -817,8 +817,11 @@ overlay correctly.
 with no CSV argument searches this folder **recursively** for
 `*_control_*.csv` files — including one level of per-controller subfolders,
 e.g. `recorded_runs/LMPC/`, `recorded_runs/NMPC/`, `recorded_runs/Stanley/`
-— by the epoch-seconds timestamp `ControlLogger` stamps into the filename
-(not file mtime). By default it loads just the **newest run from each
+— by the timestamp `ControlLogger` stamps into the filename (not file mtime).
+That stamp is either the current local `%Y%m%d-%H%M%S` form or the older
+epoch-seconds form — `plot_playback.py`'s `_stamp()` decodes both to epoch
+seconds so a folder holding runs from either era sorts correctly as one set.
+By default it loads just the **newest run from each
 subfolder** (one representative LMPC run, one NMPC run, one Stanley run,
 ...; runs left flat directly in `recorded_runs/` are grouped as one
 "folder" for this purpose) — pass `--all` to overlay every run in every
@@ -838,11 +841,18 @@ modified by this feature), so after a run, copy or move the CSV pair into
 the right controller subfolder yourself:
 
 ```bash
-cp ~/fsae_logs/mpc_standalone_control_<ts>.csv \
-   ~/fsae_logs/mpc_standalone_path_<ts>.csv \
+cp ~/fsae_logs/mpc_standalone_control_<stamp>.csv \
+   ~/fsae_logs/mpc_standalone_path_<stamp>.csv \
    fsds_simulator/recorded_runs/LMPC/
 python -m tuner.tools.plot_playback       # picks up the one you just copied in
 ```
+
+The recorded filenames under `recorded_runs/` may also carry a descriptive
+topic segment between the tag and the stamp (e.g.
+`mpc_standalone_postjitterfix_best_control_1787527398.csv`), added by hand
+when a run is stored specifically for later comparison — `plot_playback.py`
+only looks for `_control_`/`_path_` and the trailing stamp, so an inserted
+topic segment does not affect discovery or sibling pairing.
 
 **Curated drop zone: `recorded_runs/graph/`.** If this folder contains any
 `*_control_*.csv` files (directly — it's not scanned for further

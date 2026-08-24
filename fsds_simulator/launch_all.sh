@@ -982,7 +982,7 @@ if [ ! -d "$TRACK_DIR" ]; then
 fi
 echo "[3/3] Launching Autonomous Stack (Perception, Planner, Control, Cone Recorder)..."
 echo "      track: $TRACK  (precomputed speed=$USE_PRECOMPUTED_SPEED path=$USE_PRECOMPUTED_PATH heading_profile=$USE_PRECOMPUTED_HEADING_PROFILE)"
-echo "      controller: $( [ "$USE_NMPC" = true ] && echo 'NMPC (nonlinear, nmpc_core.py)' || echo 'LTV-QP (mpc_core.py)' )"
+echo "      controller: $CONTROLLER$( [ "$CONTROLLER" != stanley ] && echo "  [$( [ "$USE_NMPC" = true ] && echo 'NMPC (nonlinear, nmpc_core.py)' || echo 'LTV-QP (mpc_core.py)' )]" )"
 mkdir -p "$TRACK_DIR"
 if [ "$USE_DOCKER" = true ]; then
     # Container-side paths: the container mounts the repo at a different
