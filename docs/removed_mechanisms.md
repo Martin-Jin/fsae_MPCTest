@@ -237,7 +237,7 @@ served was deleted in the corner-factor rewrite.
 
 Offline-validated (regression-checked bit-for-bit identical when disabled,
 measurably different when enabled), never live-tested before removal. See
-[`planning_control_sync.md`](planning_control_sync.md) for what replaced
+[`docs/reference/`](`docs/reference/`) for what replaced
 it.
 
 ---
@@ -294,8 +294,8 @@ so there's no separate slot to schedule around — see
 for the direct comparison.
 
 Full numeric gain-sweep trace and the anti-hunt interaction found alongside
-this: [`planning_control_sync.md`'s "Curvature-forcing
-term"](planning_control_sync.md) section.
+this: [`docs/reference/README.md`'s "Curvature-forcing
+term"](`docs/reference/`) section.
 
 ---
 
@@ -323,7 +323,7 @@ gain-scheduling family.
 
 See `docs/logs/late_turn_in_investigation.md`'s "Appendix — Low-speed
 steering-rate boost" for the full incident, and
-[`planning_control_sync.md`'s "Low-speed steering-rate boost"](planning_control_sync.md)
+[`docs/reference/superseded_mechanisms.md`'s "Low-speed steering-rate boost"](`docs/reference/`)
 for the current-state pointer.
 
 ---
@@ -340,7 +340,7 @@ Only its role as a *lookahead-scan input* is gone, along with the rest of
 this family.
 
 This is a measured property of the simulator, not a tuning knob — see
-`planning_control_sync.md`'s "The sim-to-real gap" section for
+`docs/reference/simulator_fidelity.md`'s "The sim-to-real gap" section for
 the measurement, and re-measure with `ros2/run_steering_sysid.sh` /
 `ros2/run_steering_step.sh` if it's ever suspected wrong, rather than
 guessing.

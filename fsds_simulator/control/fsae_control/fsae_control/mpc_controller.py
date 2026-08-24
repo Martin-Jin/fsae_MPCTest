@@ -107,7 +107,7 @@ class MPCControllerNode(Node):
                 # EXPERIMENTAL -- see mpc_controller_standalone.py's
                 # identical params for the full mechanism (post-solve
                 # moving-average filter on the final steering command, NOT a
-                # QP weight change), and planning_control_sync.md's
+                # QP weight change), and `docs/reference/control_mechanisms.md`'s
                 # "Post-solve output smoothing" section for the tuning
                 # surface.
                 ('output_smoothing_enabled', False),

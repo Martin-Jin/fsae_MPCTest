@@ -11,7 +11,7 @@ numerical match and was still wrong). Anyone revisiting this — or tempted to
 re-try a candidate that looks unexplored — needs the reasoning, not the diffs.
 
 For the current state and what to do about it, read
-[`planning_control_sync.md`](planning_control_sync.md) → "MECHANISM: a
+[`docs/reference/`](`docs/reference/`) → "MECHANISM: a
 dynamically-enforced lateral-acceleration ceiling". This file is the *history*.
 
 ---
@@ -208,7 +208,7 @@ other. The tell was there and initially missed: a later joint fit returned
 `K = −4.75 deg/g`, a *physically backwards negative* understeer gradient — the
 signature of a model contorting to absorb an effect it has no term for.
 
-> **This is why `planning_control_sync.md`'s project rule 4 says do not "fix" the plant by scaling `mu`.**
+> **This is why `docs/reference/offline_live_parity.md`'s project rule 4 says do not "fix" the plant by scaling `mu`.**
 
 ---
 
@@ -681,7 +681,7 @@ unchanged (it measures only steady state, which `tau` cannot affect).
 the 3 s/5 s/8 s marks across all 12 trials. The step test's short-hold settle
 (~7.5–7.9) and the sweep's long-orbit sustained value (6.1–8.1, lower at every
 matched speed) are **not** reconciled by slow decay inside a single hold. That
-disagreement stays open — see the table in `planning_control_sync.md`.
+disagreement stays open — see the table in `docs/reference/`.
 
 **Closed-loop check (recorded map, `tau=0.40`):** no DNF, saturation actually
 **dropped** slightly (6.74% → 4.80%) rather than rising toward live's 21.1%.
@@ -804,7 +804,7 @@ entered) and that both stacks chase a reference heading swinging faster than
 either car can yaw. §13's ledger then ruled out every *plant/ceiling*
 parameter as the explanation. This section tests the next candidate — the
 *planner* — without touching any planner file, per the standing caution in
-`planning_control_sync.md` ("Known planner defect: centreline curvature
+`docs/reference/` ("Known planner defect: centreline curvature
 spikes").
 
 **The mechanism.** `planning/path_utils.py`'s `blend_paths()` exists
@@ -919,7 +919,7 @@ blended-magnitude correlation here) and cleared each time.
 *(2026-08-07, continued.)* §14.1 pointed the reference-heading lead back at
 the planner's spatial fit, specifically at *why* the documented
 curvature-spike defect gets worse lap-over-lap ("consistent with cone-map
-clutter accumulating," `planning_control_sync.md`'s "Known planner defect"
+clutter accumulating," `docs/reference/simulator_fidelity.md`'s "Known planner defect"
 section). Reading `planning/cone_map.py::ConeMap._absorb()` (identical in
 both `ros2/src/fsae_planning` and `fsae_MPCTest`) found a candidate mechanism:
 
@@ -953,7 +953,7 @@ only cropped by range/FOV — confirmed by reading `visible_cones()`: the
 returned array is `cones[mask]`, a slice of the stored ground truth, never
 perturbed. `SlamNoise` corrupts the *pose* used to compute the FOV mask, not
 cone coordinates, so even with `SLAM_NOISE_ENABLED=True` a visible cone always
-reports at its exact true position. Per `planning_control_sync.md`'s own
+reports at its exact true position. Per `docs/reference/README.md`'s own
 "Simulator fidelity limits" table: **"Cone map... Not modelled anywhere."**
 With zero detection noise, two detections of one cone can never land on
 opposite sides of `MERGE_DIST` from each other — the `_absorb()` gap cannot
@@ -1065,7 +1065,7 @@ investigation.
 `ros2/src/fsae_planning/planning/fsae_planning/fsae_planning/cone_map.py`
 (the live copy), `fsae_MPCTest/planning/cone_map.py` (offline), and
 `fsae_MPCTest/fsds_simulator/planning/fsae_planning/fsae_planning/cone_map.py`
-(the PR-staging mirror, which already had this file — per `planning_control_sync.md`, an
+(the PR-staging mirror, which already had this file — per `docs/reference/`, an
 existing shared file gets the same change, not just the two "parity" copies).
 The `ConeNoise` half of this change (`settings.py`, `sim/rollout_core.py`) is
 `fsae_MPCTest`-only by design — it is an offline testing-harness fidelity
@@ -1345,7 +1345,7 @@ on its own to destabilise the longitudinal loop.
 Three workarounds were added to the controller to treat the symptom while
 the root cause was investigated (curvature smoothing via a 3-point running
 mean in `curvature_speed()`, the tracking-error speed gate, and the
-speed-target rise limiter — see `planning_control_sync.md`'s "Known planner
+speed-target rise limiter — see `docs/reference/README.md`'s "Known planner
 defect" section for the mechanism detail that survived into current-state
 documentation). Combined effect replayed over the failing log: tick-to-tick
 `|Δv_desired|` mean 0.234 → 0.123, p99 2.33 → 0.91; and in the unrecoverable
@@ -1398,7 +1398,7 @@ on its own to destabilise the longitudinal loop.
 Three workarounds were added to the controller to treat the symptom while
 the root cause was investigated (curvature smoothing via a 3-point running
 mean in `curvature_speed()`, the tracking-error speed gate, and the
-speed-target rise limiter — see `planning_control_sync.md`'s "Known planner
+speed-target rise limiter — see `docs/reference/README.md`'s "Known planner
 defect" section for the mechanism detail that survived into current-state
 documentation). Combined effect replayed over the failing log: tick-to-tick
 `|Δv_desired|` mean 0.234 → 0.123, p99 2.33 → 0.91; and in the unrecoverable
@@ -1413,7 +1413,7 @@ directly against a real recorded map and live log, and **found wrong** — see
 
 ## 19. Root cause of the curvature-spike defect: a hard `min_ahead` cutoff, not cone-map clutter
 
-*(2026-08-07, continued.)* `planning_control_sync.md`'s "Known planner defect"
+*(2026-08-07, continued.)* `docs/reference/simulator_fidelity.md`'s "Known planner defect"
 section named cone-map clutter accumulating over a lap as the likely cause,
 and suggested investigating "why lap 2 is worse than lap 1" first. This
 section does that, directly on today's actual recorded cone map
@@ -1450,7 +1450,7 @@ segment (`pin_start`/`_ANCHOR_WEIGHT=100.0` in `smooth_centreline`) must now
 reach the *next* midpoint instead — 4.0 m away, at a different bearing, while
 the car itself moved only 0.87 m. The spline bends hard to make that
 connection, producing exactly the transient tight-radius artifact measured
-here and in the original `planning_control_sync.md` table (R down to 0.45–1.0
+here and in the original `docs/reference/` table (R down to 0.45–1.0
 m). This is a **near-field discretisation/windowing artifact of the
 anchor-to-nearest-midpoint distance**, not degrading cone-map quality — it
 is reproducible from a single, static, already-fully-built cone map with no
@@ -1485,7 +1485,7 @@ defect, on real recorded data, without touching any planner file. It does
 accounts for — that needs a rollout comparison with the windowing fixed
 (e.g. hysteresis on the `min_ahead` cutoff, or excluding the single nearest
 midpoint from the anchor-distance jump) against one without, which has not
-been done. Per the standing caution in `planning_control_sync.md`, no
+been done. Per the standing caution in `docs/reference/`, no
 planner file has been edited to test this — this section is read-only
 instrumentation (see reproduction script below) against the existing
 committed/uncommitted code exactly as it stands.
@@ -1614,7 +1614,7 @@ was almost certainly still active when 21.1% was measured, and fixed by the
 time the new 15.2% run happened. This has no offline counterpart to
 isolate it against: the offline rollout has no concept of a separate pose
 timer at all (it always gives the controller a fresh pose every step, per
-the fidelity table in `planning_control_sync.md`), so unlike the MPC
+the fidelity table in `docs/reference/`), so unlike the MPC
 weights this cannot be tested by a settings toggle.
 
 **Status: plausible and well-timed, not proven.** This is inference from
@@ -1680,7 +1680,7 @@ worst, t=7.0–8.0 s, is a sustained ~1s excursion with `steer_deg` pinned at
 the 25° stop the entire time, `e_y` growing from −1.3 m to −2.17 m while
 `e_psi` swings out to −91.7° before slowly recovering back under 1.5 m by
 t≈8.1 s. This is the catch-up-jump mechanism from
-`planning_control_sync.md`'s "Measurement rate" section operating exactly as
+`docs/reference/simulator_fidelity.md`'s "Measurement rate" section operating exactly as
 documented: the car saturates steering trying to correct against a partly
 stale reference, cannot turn any harder once at the 25° stop, and drifts
 wide until the controller's belief catches up.
@@ -2025,7 +2025,7 @@ establish that fixing this excess would close the ≥75%-unexplained gap
 from §13 — 5.8% of ticks is a small fraction of the run, and correlation
 (even this strong) is not yet a demonstrated closed-loop fix: no planner
 change has been attempted, per the standing caution in
-`planning_control_sync.md`. It also does not yet identify *which* part of
+`docs/reference/`. It also does not yet identify *which* part of
 `centerline_planner.py`/`boundary.py` produces these specific
 sign-reversal/excess events — §19's `min_ahead` mechanism is a candidate
 (it produces exactly this kind of discontinuous tangent change) but has not
@@ -2176,7 +2176,7 @@ of that: fast, sequential direction reversals with little time between them.
 Holding the reference back on entry to reversal N means the controller is
 still lagging when reversal N+1 arrives, compounding rather than resolving —
 the exact mechanism the "modest, occasional... but disproportionate at the
-tail" framing in `planning_control_sync.md` warned would need this kind of
+tail" framing in `docs/reference/` warned would need this kind of
 check before trusting a fix.
 
 **What this does and does not establish.** A validated, real, suite-safe
@@ -2266,7 +2266,7 @@ small, independent effects compound when stacked — untested until now.
 
 **Three factors, chosen to target different subsystems (not redundant with
 each other, and not re-deriving the ceiling via tyre grip — the mechanism
-`planning_control_sync.md`'s project rule 4 is specifically about):**
+`docs/reference/offline_live_parity.md`'s project rule 4 is specifically about):**
 1. Ceiling level lowered to 6.5 (§13's factor E; already individually
    measured at 4.80%→6.90% recorded-map, no DNF there).
 2. `SLAM_NOISE_ENABLED=True` at documented defaults — models real
@@ -2409,7 +2409,7 @@ question this bug fix creates, not one it answers.
 
 **What generalises, immediately:** the exact question that found this
 ("did you ever check X matches between the two copies?") is precisely
-`planning_control_sync.md`'s parity rule, applied to a piece of code
+`docs/reference/offline_live_parity.md`'s parity rule, applied to a piece of code
 (`SimPlanner`'s call sites) that is not itself one of the two "kept in
 sync" file copies — it's a *third*, independently-written harness that
 *calls* the shared logic, and nothing had ever verified it called that
@@ -2563,9 +2563,9 @@ disproportionately costly compared to the same discontinuity on a straight.
 
 **Not attempted:** a fix to the planner itself (the `min_ahead` cutoff /
 pin-start chain-anchor behaviour in `boundary.py`/`path_utils.py`). Per
-`planning_control_sync.md`'s project rules on this family of defects, root-causing it
+`docs/reference/offline_live_parity.md`'s project rules on this family of defects, root-causing it
 further and fixing it needs the full context in this document's §19 and the
-"Known planner defect" section of `planning_control_sync.md`, applied to
+"Known planner defect" section of `docs/reference/`, applied to
 `fsae_MPCTest` and the live `fsae_planning`/`fsds_simulator` copies
 together, with the existing workarounds re-checked afterward rather than
 assumed still correctly tuned. A `curvature_speed`-level fix (the direction
@@ -2864,7 +2864,7 @@ Below that the model is byte-identical in behaviour to the flat one.
 
 **Validated two ways before shipping:**
 1. `tuner/plant_openloop_validation` (both open-loop replays, the same
-   check `planning_control_sync.md` requires before trusting a refit): CAPPED sweep MAE
+   check `docs/reference/` requires before trusting a refit): CAPPED sweep MAE
    improves 0.87→0.72 m/s² vs the flat model, driven almost entirely by the
    v=14 m/s point (err −1.75 flat → −0.49 speed-dependent). STEP replay
    settled values also move correctly (e.g. 11 m/s: 7.50→7.62, matching the
@@ -3825,7 +3825,7 @@ final `v_max`/`v_min` clip, and the short-path fallback branch are
 unchanged in logic — only sampling/smoothing resolution changed.
 
 **Rollout validation** (`python3 -m tuner.recorded_map_rollout`, template
-Q/R weights, ceiling mode=pi/gain=450/tau=0.4, unchanged from `planning_control_sync.md`'s
+Q/R weights, ceiling mode=pi/gain=450/tau=0.4, unchanged from `docs/reference/offline_live_parity.md`'s
 existing table):
 
 | metric | sim (before) | sim (after) | live |
@@ -4158,7 +4158,7 @@ This matters *because* it has no offline counterpart at all: the offline
 plant has one single, internally-consistent state at every instant, which is
 exactly why check (3) above could not reproduce it. This is the same family
 of bug as this document's
-`planning_control_sync.md` "Measurement rate: pose must keep up with the
+`docs/reference/simulator_fidelity.md` "Measurement rate: pose must keep up with the
 controller" entry (a prior pose/cone timer-rate mismatch, fixed by splitting
 timers) — same root cause class (`sim_perception.py`'s publish timing not
 actually delivering what a consumer assumes), different specific mechanism
@@ -4277,7 +4277,7 @@ live).
     is a substitute for opening the asset and reading the curve. A strong
     circumstantial case is still zero measurements.
 21. **A documented "likely cause" is a hypothesis, not a finding — re-derive
-    it from data before propagating it further.** `planning_control_sync.md`
+    it from data before propagating it further.** `docs/reference/`
     named cone-map clutter as the probable driver of the curvature-spike
     defect, reasonably, from a lap-1-vs-lap-2 correlation. §19 found the
     actual mechanism (a `min_ahead` window-edge cutoff) reproduces on a
@@ -4674,7 +4674,7 @@ plot; all are console-report-only (confirmed by grepping the whole repo for
 loads N control CSVs via the existing `tuner/csv_log.load_columns` helper,
 plots a chosen signal set (default `e_y, e_psi_deg, kappa, steer_deg, v`) on
 stacked time-aligned axes, one colour per file, with a `CheckButtons` panel
-to toggle any individual line — see `docs/developer_guide.md`'s "Plotting
+to toggle any individual line — see `docs/developer_guide.md`'s "Plotting and scrubbing
 exported CSV telemetry" section for usage. Column-parsing logic was smoke-
 tested against the real `mpc_standalone_control_1786436674.csv` (all six
 default-signal columns present and finite, header metadata parses); the
@@ -4763,7 +4763,7 @@ separately and later in §43.
 
 **Fixed offline, applied to live default, confirmed live same day, later
 superseded by the accel/brake weight split (§ below in
-`planning_control_sync.md` — "Accel/brake effort weight split").** Reported
+`docs/reference/` — "Accel/brake effort weight split").** Reported
 symptom: the MPC leaves lap time on the table in some places, not going as
 fast as it could.
 
@@ -4821,11 +4821,11 @@ scoring formula weights both speed and tracking quality. The user confirmed
 the tracking regression was concentrated specifically at corner EXITS (car
 accelerating harder while still not fully realigned) rather than diffuse
 across the lap — this is what motivated the exit-boost v2 fix (see
-`planning_control_sync.md`'s exit-heading-boost history, same log). Only
+`docs/reference/README.md`'s exit-heading-boost history, same log). Only
 tested on one track (`comp_test_map_3`); this single-scalar `r_a` tuning
 was itself superseded within a day by the accel/brake weight split once the
 corner-entry-too-hot side effect of a shared weight was diagnosed — see
-`planning_control_sync.md`'s "Accel/brake effort weight split" section for
+`docs/reference/control_mechanisms.md`'s "Accel/brake effort weight split" section for
 that follow-on.
 
 ## 60. Pose-rate mismatch: the detailed measurement behind the two-timer fix
@@ -4860,7 +4860,7 @@ slower deliberately: cropping the oracle map and building three messages is
 that node's expensive path, and the planner gains nothing from running it at
 the control rate. The node logs a warning if `pose_rate < 20`. See the
 current-state description in
-[`planning_control_sync.md`](planning_control_sync.md) → "Measurement rate:
+[`docs/reference/`](`docs/reference/`) → "Measurement rate:
 pose must keep up with the controller" for the resulting requirement.
 
 Note the offline rollout never modelled this at all — it calls

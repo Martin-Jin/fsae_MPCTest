@@ -215,7 +215,7 @@ controller:
     nmpc_alat_ceiling_enabled: true   # include FSDS's measured sustained lateral-acceleration ceiling (MPCParams.alat_ceiling_flat/_slope/_intercept, the same law mpc_core._alat_ceiling_at uses) as a smooth saturation of the prediction'...
     # [NMPC only] MPCC-inspired additions (2026-08-13) -- see mpc_params.py's
     # own field metadata (controller: "nmpc_only") and
-    # fsae_MPCTest/docs/planning_control_sync.md's "Three MPCC-inspired
+    # fsae_MPCTest/`docs/reference/README.md`'s "Three MPCC-inspired
     # additions" / "Which settings affect which controller" sections.
     nmpc_spline_reference_enabled: true   # [NMPC only] true (default) -> PathReference builds kappa(s)/psi_ref(s) from an analytic CubicSpline fit to the raw waypoints instead of the dense-resample + moving-average + finite-difference pipeline. Numerical-quality fix, no new solver coupling, defaults on unlike every other flag in this block. False restores the old moving-average path exactly, for A/B comparison (bool)
     nmpc_horizon_speed_profile_enabled: false   # [NMPC only, EXPERIMENTAL] true -> sample a precomputed per-lap speed profile v(s) at each horizon stage's own PREDICTED arc length s_k instead of holding v_ref constant across the horizon. Mirrors kappa(s)'s state-keyed, non-schedulable lookup on purpose. No-op unless a speed-profile array is supplied at PathReference construction time. Default false: unvalidated, do not enable for a live run without an offline A/B first (bool)

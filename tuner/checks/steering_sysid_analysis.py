@@ -3,7 +3,7 @@
 Companion to the `steering_sysid` ROS node
 (`ros2/src/fsae_planning/control/fsae_control/fsae_control/steering_sysid.py`),
 which drives FSDS directly with fixed steering at fixed speeds, bypassing the
-MPC.  See `docs/planning_control_sync.md` -> "MEASURED: the car's yaw response
+MPC.  See `docs/reference/` -> "MEASURED: the car's yaw response
 is ~3x weaker than commanded" for why.
 
 Reports, for each (speed, steering) test point, the achieved steering ratio

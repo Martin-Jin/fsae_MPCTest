@@ -195,7 +195,7 @@ class VehicleParams:
         # than a hard clip — it overshoots ~30% before settling, which a clip
         # cannot reproduce. See docs/vehicle_physics_guide.md §5 "The FSDS
         # lateral-acceleration ceiling" for the plain-English explanation and
-        # docs/planning_control_sync.md's "MECHANISM" section for the full
+        # `docs/reference/README.md`'s "MECHANISM" section for the full
         # measurement/derivation this is fitted to — not repeated here.
         # Set alat_ceiling_enabled=False to recover the unconstrained plant
         # (e.g. for real-vehicle work; this models FSDS, not the physical car).
@@ -982,7 +982,7 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
         # Restoring yaw moment for FSDS's lateral-accel ceiling (modelled as
         # lagged, not a hard clip, to reproduce the measured ~30% overshoot a
         # clip cannot). See VehicleParams.alat_ceiling* fields above and
-        # docs/planning_control_sync.md's "MECHANISM" section for the
+        # `docs/reference/README.md`'s "MECHANISM" section for the
         # measurement and full derivation.
         #
         # alat_lim is a STATE that accumulates over time (not a function of

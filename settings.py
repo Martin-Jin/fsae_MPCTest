@@ -107,7 +107,7 @@ USE_PRECOMPUTED_SPEED_PROFILE = True
 # own plan and the corner being too close to brake down to the profile's
 # target in time. That mismatch is what shows up as late, hard braking and
 # steering saturation right at corner entry — see
-# fsae_MPCTest/docs/planning_control_sync.md's speed-governor section for
+# fsae_MPCTest/`docs/reference/README.md`'s speed-governor section for
 # the log evidence.
 #
 # True  = also compute speed_profile.curvature_speed() (renamed at the call
@@ -272,7 +272,7 @@ SLAM_NOISE_SEED = 24680
 # ── Cone-detection noise ────────────────────────────────────────────────
 # FSDS's cone map is a latched ORACLE: sim_track.SimPerception returns exact
 # ground-truth cone positions, cropped only by range/FOV (see
-# docs/planning_control_sync.md, "Simulator fidelity limits" — "Cone map...
+# `docs/reference/simulator_fidelity.md`, "Simulator fidelity limits" — "Cone map...
 # Not modelled anywhere" until this was added). Real cone detection has
 # per-detection position error from the vision pipeline, which this models as
 # jitter applied at the SimPerception boundary, independently per cone per
@@ -654,7 +654,7 @@ R_rate_diag = [52.5, 5.0]
 # also weakens braking by the same amount, and live telemetry has shown the
 # resulting asymmetry -- corners entered hot, steering saturating, unstable
 # post-exit recovery -- because the same weight that frees up acceleration
-# also caps how hard the QP is willing to brake. See planning_control_sync.md's
+# also caps how hard the QP is willing to brake. See `docs/reference/control_mechanisms.md`'s
 # "Accel/brake effort weight split" for the diagnosis and retuning history.
 # Mirrors mpc_params.py's R_A_ACCEL/R_A_BRAKE. R_A_ACCEL being large is a
 # big change from the diagnosis above (which argued for CHEAPER accel
@@ -771,7 +771,7 @@ NMPC_CORNER_RRATE_BLEND_ENABLED = False
 # Scale this with the TRACK's max curvature, not by feel:
 #   k ~= target_corner_frac / ((1 - target_corner_frac) * kappa_max)
 # CAUTION: raising this past 27 does not fix mid-corner lateral drift --
-# k=60 was live-tested WORSE (see planning_control_sync.md's "Three-zone rate
+# k=60 was live-tested WORSE (see `docs/reference/README.md`'s "Three-zone rate
 # schedule"). It lowers the corner weight as intended but drift barely moves,
 # which is the evidence that the steering-RATE cost is not what limits
 # turn-in on this track.
@@ -830,7 +830,7 @@ NMPC_RJERK_A = 0.0
 # if it never approaches FLOOR_CORNER, k is the thing to fix, not these.
 NMPC_RRATE_ZONE_ENABLED = True
 NMPC_RRATE_ZONE_BOOST_STRAIGHT = 2.0    # x r_rate on a true straight
-NMPC_RRATE_ZONE_EASE_APPROACH = 0.80    # x r_rate when a corner is AHEAD but not here yet (0.35 DNFs offline -- see planning_control_sync.md)
+NMPC_RRATE_ZONE_EASE_APPROACH = 0.80    # x r_rate when a corner is AHEAD but not here yet (0.35 DNFs offline -- see `docs/reference/`)
 NMPC_RRATE_ZONE_FLOOR_CORNER = 0.15     # x r_rate mid-corner
 
 NMPC_RRATE_STAGE_RAMP_ENABLED = False
@@ -938,7 +938,7 @@ NMPC_FRICTION_CIRCLE_ENABLED = False
 # the existing soft track-bound rows. Never a HARD bound like
 # NMPC_FRICTION_CIRCLE_ENABLED -- that one's zero-slack hard bound went
 # infeasible under ordinary cornering and stalled the car (see
-# docs/planning_control_sync.md), so this one always carries slack and can
+# `docs/reference/`), so this one always carries slack and can
 # never make the subproblem infeasible.
 #
 # This exists as a CONSTRAINT because NMPC_HORIZON_SPEED_PROFILE_ENABLED's COST term

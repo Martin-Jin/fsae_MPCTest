@@ -6,7 +6,7 @@ work described below. It does **not** continue from
 (which ends at Stage 27, 2026-08-09) — there is an unlogged gap from
 2026-08-10 through 2026-08-12 covering the precomputed corner-map feature,
 the shaped heading-lead profile, and a base-weight retune, none of which this
-entry describes. Those are documented in `planning_control_sync.md`'s own
+entry describes. Those are documented in `docs/reference/README.md`'s own
 dated sections ("Precomputed corner segmentation", "Precomputed shaped
 heading-lead profile") rather than in this changelog series. Numbering below
 restarts at Stage 1 rather than continuing at 28, to avoid implying this
@@ -190,5 +190,5 @@ multi-step transient that killed the three earlier attempts in Stage 2.
   **Superseded later the same day:** an offline port,
   `controller/nmpc_optimiser.py`, was added (`settings.USE_NMPC`), giving the
   NMPC structural/solver constants a real `settings.py` parity obligation —
-  see `planning_control_sync.md`'s "Nonlinear MPC (`use_nmpc`)" section for
+  see `docs/reference/control_mechanisms.md`'s "Nonlinear MPC (`use_nmpc`)" section for
   the current, authoritative description.

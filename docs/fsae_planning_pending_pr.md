@@ -94,7 +94,7 @@ working-tree-only.
 - `control.launch.py`/`sim.launch.py` generate their `MPCParams` launch args
   mechanically from the dataclass instead of by hand; `fsae_params.yaml`
   gained matching YAML defaults.
-- See `planning_control_sync.md`'s "MPC weight/gain parity: `MPCParams` ↔
+- See `docs/reference/README.md`'s "MPC weight/gain parity: `MPCParams` ↔
   `settings.py`" table for the current field-by-field mapping against the
   offline `settings.py` constants this must stay numerically identical to.
 

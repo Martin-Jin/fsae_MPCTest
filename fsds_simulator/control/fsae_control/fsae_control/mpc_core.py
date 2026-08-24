@@ -161,7 +161,7 @@ MAX_BRAKE: float = 7.0
 # today's Q/R cost based on a corner not yet reached (approach/exit boosts,
 # demand normalisation, U-turn detector, straight-line adjustments, curvature
 # forcing, the precomputed CornerMap fast path — full list in
-# planning_control_sync.md's "Corner-factor scheduler rewrite" section)
+# `docs/reference/README.md`'s "Corner-factor scheduler rewrite" section)
 # because this MPC formulation already predicts state error at each future
 # horizon step; reweighting TODAY's near-zero cost based on a forward scan
 # doesn't change what the horizon predicts once the car gets there. Replaced
@@ -605,7 +605,7 @@ class MPCController:
         # per-step angle, so the physical meaning survives a change of dt.
         # 180 deg/s was set just under the plant's measured achievable
         # roadwheel rate (~200 deg/s, via system-ID) — see
-        # fsae_MPCTest/docs/planning_control_sync.md's "Slew-rate limit
+        # fsae_MPCTest/`docs/reference/README.md`'s "Slew-rate limit
         # (du_max)" section for the full history.
         #
         # Do not raise without re-measuring; a higher value previously
@@ -792,7 +792,7 @@ class MPCController:
         # x) -- so r_a_accel==r_a_brake reproduces the old single-r_a cost
         # bit-for-bit. This lets braking be tuned independently from
         # acceleration without new QP variables or constraints: see
-        # planning_control_sync.md's "Accel/brake effort weight split".
+        # `docs/reference/control_mechanisms.md`'s "Accel/brake effort weight split".
         cost += cp.sum_squares(cp.multiply(sqrtR_param[0, 0], u[0, :]))
         cost += r_a_accel_param * cp.sum_squares(cp.pos(u[1, :]))
         cost += r_a_brake_param * cp.sum_squares(cp.neg(u[1, :]))

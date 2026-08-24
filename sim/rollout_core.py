@@ -263,7 +263,7 @@ class ConeNoise:
     Why this exists
     ---------------
     sim_track.SimPerception.visible_cones() returns exact ground-truth cone
-    coordinates, only cropped by range/FOV — see docs/planning_control_sync.md,
+    coordinates, only cropped by range/FOV — see `docs/reference/simulator_fidelity.md`,
     "Simulator fidelity limits": the cone map was, until this class existed,
     the one aspect of the sim/real gap with literally no model at all. This
     adds the minimum needed to make perception-side hypotheses testable
@@ -1240,7 +1240,7 @@ def run_core_rollout(
 
         # ── Output smoothing (EXPERIMENTAL, default off) ──
         # Offline mirror of mpc_controller_standalone.py's node-level filter
-        # -- see that file (and planning_control_sync.md's "Post-solve output
+        # -- see that file (and `docs/reference/README.md`'s "Post-solve output
         # smoothing" section) for the full mechanism/reasoning. Applied to
         # u_opt[0] (steering) AFTER the solve, so it's identical whichever
         # controller (LTV-QP or NMPC) produced it, same as the live node.

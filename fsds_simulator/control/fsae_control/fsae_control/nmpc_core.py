@@ -22,7 +22,7 @@ attempts to inject curvature as exogenous horizon data (all producing a
 wrong-direction transient, see below), the obligation isn't schedulable.
 Full derivation, the model equations, the cost construction, and the
 real-time SQP structure (roll-forward feasibility, condensing, warm-start,
-solve-time budget): `planning_control_sync.md`'s "Nonlinear MPC (use_nmpc)"
+solve-time budget): `docs/reference/README.md`'s "Nonlinear MPC (use_nmpc)"
 section and `late_turn_in_investigation.md` Part 16 (§16.1 gap, §16.3 model,
 §16.5 correctness checks, §16.7 solve time/horizon-iteration sweep).
 

@@ -7,7 +7,7 @@ FSDS itself and the two message repos below) is enough to build and run the full
 autonomous stack: `centerline_planner`, and either the `stanley` or `mpc`/`mpc_standalone`
 controller. Every node/package file is byte-for-byte identical to its live counterpart;
 `launch_all.sh` is the one exception — see "What's here but adapted" below. See the parent
-repo's [docs/planning_control_sync.md](../docs/planning_control_sync.md)
+repo's [`docs/reference/`](../`docs/reference/`)
 for the exact file-by-file mapping, what is deliberately *not* mirrored, and the resync
 procedure.
 
@@ -31,7 +31,7 @@ fsds_simulator/
 └── control/
     └── fsae_control/           # stanley_controller / mpc_controller / mpc_controller_standalone
                                  # + fsds_bridge (cmd_vel → FSDS) + mpc_core (shared MPC QP)
-                                 # + scoring.py (live/offline score parity, see planning_control_sync.md)
+                                 # + scoring.py (live/offline score parity, see `docs/reference/`)
 ```
 
 ## Building it into a workspace

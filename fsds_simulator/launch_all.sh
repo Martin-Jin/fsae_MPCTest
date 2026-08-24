@@ -88,7 +88,7 @@ TRACK_DIR="$HOST_ROS2_DIR/src/fsae_planning/tracks/$TRACK"
 #   * speed_profile.csv is generated against CURVATURE_SPEED_A_LAT_MAX (see
 #     sim/speed_profile.py), deliberately under the measured FSDS lateral
 #     ceiling, so its conservatism does real work in keeping corner demand
-#     inside the plant's limits -- see planning_control_sync.md's
+#     inside the plant's limits -- see docs/reference/reference_path_and_speed.md's
 #     "Speed-profile aggressiveness" section before raising it.
 # Revisit only after the precomputed branch clips to v_max; until then this
 # pairing is load-bearing, not an oversight.
@@ -185,7 +185,7 @@ V_MIN=1.5
 # 0.69 m and finished the lap 1.1 s faster -- see Part 16 §16.6/§16.7.
 # LIVE-TESTED 2026-08-13 (matched same-day pair, comp_test_map_3, same
 # weights): steering saturation 6.45% -> 0.58%, lap 54.72s -> 52.35s -- see
-# fsae_MPCTest/docs/planning_control_sync.md's "Nonlinear MPC (use_nmpc)"
+# docs/reference/control_mechanisms.md's "Nonlinear MPC"
 # section for the full live A/B.
 #
 # Notes when true:
@@ -255,14 +255,14 @@ NMPC_Q_E_Y=7.5
 # NMPC_R_DELTA=-1.0                   # [NMPC only] -1 = inherit r_delta
 # NMPC_R_RATE_DELTA=-1.0              # [NMPC only] -1 = inherit r_rate_delta
 # NMPC_ALAT_CEILING_ENABLED=true      # [NMPC only] model FSDS's measured sustained a_lat ceiling inside the prediction. true is correct for FSDS; without it the NMPC oscillated and eventually spun offline (Part 16 §16.6)
-# NMPC_SPLINE_REFERENCE_ENABLED=true         # [NMPC only] default true; analytic-spline kappa(s)/psi_ref(s) instead of moving-average+finite-difference. Numerical-quality fix, not a tuning knob -- see planning_control_sync.md's "Three MPCC-inspired additions" (2026-08-13)
+# NMPC_SPLINE_REFERENCE_ENABLED=true         # [NMPC only] default true; analytic-spline kappa(s)/psi_ref(s) instead of moving-average+finite-difference. Numerical-quality fix, not a tuning knob -- see docs/reference/control_mechanisms.md's "Three MPCC-inspired additions" (2026-08-13)
 # LIVE-TESTED 2026-08-13 and REJECTED: v_actual reached ~16.7 m/s against a
 # v_desired of ~3.3-5 m/s for nearly 2s mid-corner, and the car went off-track
 # by up to 3.6 m (mpc_standalone_control_1786585464.csv, t~58-61s) -- the
 # solver pre-pays a future higher speed target the same way the three earlier
 # curvature-scheduling attempts pre-paid a future turn, except the cost here
 # is real off-track excursions, not just a steering wobble. See
-# planning_control_sync.md's "Three MPCC-inspired additions" section for the
+# docs/reference/control_mechanisms.md's "Three MPCC-inspired additions" section for the
 # full writeup. Do not re-enable without a fix to the underlying mechanism
 # (e.g. bounding how far ahead the sampled v_ref is allowed to rise) and a
 # fresh offline A/B first.
@@ -375,7 +375,7 @@ NMPC_RRATE_ZONE_BOOST_STRAIGHT=2.0    # x r_rate on a true straight
 # corner) and so does every value below ~0.7, INCLUDING settings that make
 # the zone uniformly weaker than no zone at all -- so this is not a simple
 # "too much release" effect and is not yet explained. Until it is, keep this
-# at a value the offline rollout completes; see planning_control_sync.md's
+# at a value the offline rollout completes; see docs/tuning.md's
 # "Three-zone rate schedule".
 NMPC_RRATE_ZONE_EASE_APPROACH=0.80    # x r_rate when a corner is AHEAD -- the turn-in release
 NMPC_RRATE_ZONE_FLOOR_CORNER=0.15     # x r_rate mid-corner
@@ -391,7 +391,7 @@ NMPC_RRATE_ZONE_FLOOR_CORNER=0.15     # x r_rate mid-corner
 # steering reversal over 3 laps. CAUTION when judging it on a raceline
 # reference instead: the same weight there shows ~4.5% saturation, which
 # belongs to the reference and not to this term -- see
-# planning_control_sync.md's "Reference line: raceline vs centreline" before
+# docs/reference/'s "Reference line: raceline vs centreline" before
 # attributing a saturation figure to this weight.
 #
 # Untested live: the low-r_rate variant (MPC_R_RATE_DELTA=5.0 with
@@ -417,7 +417,7 @@ NMPC_RJERK_DELTA=150.0
 # Offline A/B (comp_test_map_3, recorded-map rollout): |e_psi| mean 4.2->3.1
 # deg, steering saturation 1.7%->0.8%, ticks >0.5 m/s over target 16.6%->0.8%,
 # no DNF either way. LIVE-TESTED 2026-08-19 AND REJECTED: "didn't work" --
-# reverted to false. Not yet root-caused; see planning_control_sync.md before
+# reverted to false. Not yet root-caused; see docs/reference/ before
 # re-attempting rather than re-enabling blind.
 NMPC_SPEED_LIMIT_ENABLED=false
 # NMPC_SPEED_LIMIT_MARGIN=0.5                  # m/s added on top of the profile before the bound engages
@@ -431,7 +431,7 @@ NMPC_SPEED_LIMIT_ENABLED=false
 # approximates it. Composes multiplicatively with steer_rate_anti_hunt/the
 # corner blend, does not replace them -- keyed on a different signal
 # (u_prev, not curvature/e_y/e_psi), so no double-count risk.
-# Offline-validated on the LTV-QP path (see planning_control_sync.md's
+# Offline-validated on the LTV-QP path (see docs/reference/'s
 # "Soft steering-reversal penalty" section); not yet live-tested.
 REVERSAL_PENALTY_ENABLED=true
 # REVERSAL_PENALTY_BOOST_MAX=4.0                # ceiling multiplier, applied when previous steering == 0
@@ -459,7 +459,7 @@ NMPC_REVERSAL_PENALTY_ENABLED=false
 # straight (unlike every QP-weight-based mechanism above, which is
 # re-derived fresh from the current state each tick with no cross-tick
 # memory) -- that's the deliberate trade being made here. See
-# planning_control_sync.md's "Post-solve output smoothing" section for the
+# docs/reference/'s "Post-solve output smoothing" section for the
 # full mechanism and tuning surface.
 #
 # DISABLED: superseded by the QP's own steering-rate cost (r_rate_delta),
@@ -500,7 +500,7 @@ OUTPUT_SMOOTHING_K_EPSI=1.115         # 1/rad; higher = fades out faster per rad
 # mostly already ended. TIME lead (converted to a scan distance via current
 # speed each tick), sized to roughly this filter's own ~95% settle time.
 # 0.0 disables (pure current-curvature corner_frac, previous behaviour).
-# Live-tested and working; see planning_control_sync.md.
+# Live-tested and working; see docs/reference/.
 OUTPUT_SMOOTHING_LOOKAHEAD_LEAD_S=0.5
 
 # MPC tuning shortlist -- optional one-off overrides for the handful of

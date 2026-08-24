@@ -239,7 +239,7 @@ Copy the values into **both**:
 Both must stay in sync manually — the tuner was designed against the same
 plant and horizon used by both, but there is currently no single shared
 import between them (the live ROS 2 node has no simulator dependencies). See
-[planning_control_sync.md](planning_control_sync.md)'s "MPC weight/gain
+[`docs/reference/`](`docs/reference/`)'s "MPC weight/gain
 parity" table for the full field-by-field mapping.
 
 ### 6. Log the result
@@ -288,7 +288,7 @@ inside a `fsae_planning` checkout. There are two ways to use it:
   repos it depends on) is enough to build a working workspace from scratch —
   see [fsds_simulator/README.md](../fsds_simulator/README.md).
 
-See [docs/planning_control_sync.md](planning_control_sync.md) for the full
+See [`docs/reference/`](`docs/reference/`) for the full
 file mapping and what's a deliberate non-mirror.
 (If you already have the simulator set up with the `fsae_planning` repo. Scroll down for installing from scratch on windows.)
 
@@ -380,7 +380,7 @@ drives the precomputed line/speed on it" — recording, the two export tools,
 the on-disk layout they share, and the one switch that puts a track on the
 car. Each stage used to be documented (or not) in a different file; this
 section is now the single place that chains them. If you only need the
-concept, not the steps: **`planning_control_sync.md`'s parity rule and
+concept, not the steps: **`docs/reference/offline_live_parity.md`'s parity rule and
 `tracks/__init__.py`'s module docstring cover *why* the layout looks like
 this; this section covers *how* to use it.
 
@@ -407,11 +407,11 @@ all, so the track data itself (not just the code that reads it) ships with
 etc.) reads and writes there transparently when both repos are checked out
 side by side — you still type `tracks/<name>/`-shaped commands from
 `fsae_MPCTest/`, they just land across the repo boundary. `fsae_planning` is
-a separate git repo with its own remote (see this project's `planning_control_sync.md`);
+a separate git repo with its own remote (see this project's `docs/reference/`);
 changes under that path are local edits to that checkout only.
 
 `comp_test_map_3` is the track every baseline number in this repo's docs
-(`docs/logs/sim_to_real_investigation.md`, this guide, `planning_control_sync.md`) is quoted against —
+(`docs/logs/sim_to_real_investigation.md`, this guide, `docs/reference/`) is quoted against —
 don't overwrite it; give a new recording its own name. List what exists with
 `python -m tuner.tools.export_speed_profile --list` (from `fsae_MPCTest/`), or
 `ls ../ros2/src/fsae_planning/tracks/` (from `fsae_MPCTest/`).
@@ -496,7 +496,7 @@ python -m tuner.tools.raceline_optimizer   <name> --mode centerline   # -> .../c
 `alat_ceiling_at(v) × ALAT_MARGIN` in `model/vehicle_physics.py`. So changing
 `CURVATURE_SPEED_A_LAT_MAX` changes `speed_profile.csv` only, and re-running
 the raceline/centreline export afterwards legitimately reports an unchanged
-`v_target` range. See `docs/reference_path_and_speed.md`'s "Speed-profile
+`v_target` range. See `docs/reference/reference_path_and_speed.md`'s "Speed-profile
 aggressiveness".
 
 `--mode centerline` pins the lateral offset to zero, so the exported path is
@@ -505,7 +505,7 @@ construction, and it writes a separate filename so it can never overwrite the
 raceline. Use it whenever a logged `|e_y|` needs to mean "distance from the
 middle of the track" — on a raceline it does not, because the line
 intentionally apexes near a boundary. On `comp_test_map_3` it currently also
-drives *better* than the raceline; see `planning_control_sync.md`'s
+drives *better* than the raceline; see `docs/reference/reference_path_and_speed.md`'s
 "Reference line: raceline vs centreline".
 
 (the output lands in `fsae_planning`'s `tracks/`, not this repo's — see
@@ -528,7 +528,7 @@ that isn't under `tracks/` yet), and `--list` prints what's available.
   genuinely isn't a lap.
 - `raceline_optimizer.py` takes the same reconstruction and iteratively
   reshapes it within the track width for minimum lap time (widen-entry,
-  clip-apex), respecting the physical model's `alat_ceiling` (see `planning_control_sync.md`)
+  clip-apex), respecting the physical model's `alat_ceiling` (see `docs/reference/`)
   rather than a flat friction limit. Same CSV format/columns, different
   geometry and generally higher `v_target`.
 
@@ -552,7 +552,7 @@ Two independent ROS launch args, both consumed by `mpc`/`mpc_standalone`
 |------|---------|--------|
 | `map_path` + `use_precomputed_speed` | `fsae_planning`'s `tracks/comp_test_map_3/speed_profile.csv` | Look up target speed from the CSV's oracle profile instead of live `curvature_speed()` per tick |
 | `path_map_path` + `use_precomputed_path` | `fsae_planning`'s `tracks/comp_test_map_3/raceline.csv` | Track the CSV's geometry instead of subscribing to `centerline_planner.py`'s `/fsae/planning/selected_trajectory` — removes the live planner from the control loop entirely |
-| `use_nmpc` | `false` | Swap `MPCController` (linear QP) for `nmpc_core.NMPCController` (Frenet-frame nonlinear MPC) entirely. See `planning_control_sync.md`'s "Nonlinear MPC (`use_nmpc`)" section and `architecture.md`'s "Second controller" section — not covered further here since it's a whole separate controller, not a launch-time data source like the two rows above. |
+| `use_nmpc` | `false` | Swap `MPCController` (linear QP) for `nmpc_core.NMPCController` (Frenet-frame nonlinear MPC) entirely. See `docs/reference/control_mechanisms.md`'s "Nonlinear MPC (`use_nmpc`)" section and `architecture.md`'s "Second controller" section — not covered further here since it's a whole separate controller, not a launch-time data source like the two rows above. |
 
 Both `use_precomputed_speed`/`use_precomputed_path` default `true`, so a bare `ros2 launch fsae_bringup sim.launch.py`
 already drives the default track's precomputed line and speed with the
@@ -647,7 +647,7 @@ also includes `lap_time_s`/`optimal_time_s`: `telemetry_logger.LapProgressTracke
 derives real `progress`/`reached_end`/`time_bonus` from the car's position
 against the precomputed track path, fixing a bug (2026-08-11) where every live
 run's composite score was permanently pinned at the DNF floor regardless of how
-the car drove — see `planning_control_sync.md`'s "Live/offline score parity"
+the car drove — see `docs/reference/offline_live_parity.md`'s "Live/offline score parity"
 section. `stanley_controller.py` gained `map_path` support (2026-08-11, see
 `docs/logs/sim_to_real_investigation.md` §57) alongside the two MPC nodes, so a Stanley
 run with a precomputed profile scores fully too. Any run against the live
@@ -685,7 +685,7 @@ sim-to-real investigation scripts. Three tiers:
 
 **`tuner/checks/` — one-off and reusable investigation scripts from
 sim-to-real debugging.** These came out of the saturation-gap investigation
-in [docs/planning_control_sync.md](planning_control_sync.md) and
+in [`docs/reference/`](`docs/reference/`) and
 [docs/logs/sim_to_real_investigation.md](logs/sim_to_real_investigation.md) —
 see those docs for the investigation narrative behind any of them rather than
 duplicating it here:
@@ -926,7 +926,7 @@ Copy everything under `fsds_simulator/control/`, `fsds_simulator/perception/`,
 `fsds_simulator/common/`, and `fsds_simulator/planning/` (in this repo) over
 the matching paths inside the freshly-cloned `fsae_planning` checkout — the
 hierarchy already matches, so this is a straight directory copy (see
-[docs/planning_control_sync.md](planning_control_sync.md) for the exact file
+[`docs/reference/`](`docs/reference/`) for the exact file
 mapping if you want to copy file-by-file instead), then resolve dependencies
 and build:
 
@@ -1149,6 +1149,6 @@ usual suspects are the same as the LTV-QP's solver failures above, plus two
 NMPC-specific ones: `nmpc_solve_budget_ms`/`nmpc_sqp_iters` too tight for the
 horizon, or a weight override (`NMPC_Q_E_Y` etc. in `settings.py`, `-1`
 inherits from the base weight) pushing the cost badly out of scale. See
-`planning_control_sync.md`'s "Nonlinear MPC (`use_nmpc`)" section for the
+`docs/reference/control_mechanisms.md`'s "Nonlinear MPC (`use_nmpc`)" section for the
 model and weight-mapping details, and `tuning.md` §4.5d for the tuning
 surface.

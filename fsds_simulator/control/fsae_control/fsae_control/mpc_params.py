@@ -55,7 +55,7 @@ class MPCParams:
     # instead of one weight applied symmetrically to |a_cmd| -- a single
     # shared weight cannot be tuned for acceleration and braking
     # independently. See mpc_core.py's _build_qp/_solve_qp for the
-    # cp.pos/cp.neg split and planning_control_sync.md's "Accel/brake
+    # cp.pos/cp.neg split and `docs/reference/README.md`'s "Accel/brake
     # effort weight split" section for the diagnosis.
     r_a_accel: float = field(default=2.25, metadata={"unit": "1/(m/s^2)^2", "desc": "acceleration command effort, a_cmd >= 0", "controller": "both"})
     r_a_brake: float = field(default=0.5, metadata={"unit": "1/(m/s^2)^2", "desc": "acceleration command effort, a_cmd < 0 (braking)", "controller": "both"})

@@ -254,7 +254,7 @@ class NMPCParams:
                 "pattern as the existing soft track-bound rows (never a hard "
                 "bound like nmpc_friction_circle_enabled -- that one's zero-"
                 "slack hard bound went infeasible under ordinary cornering "
-                "and stalled the car; see planning_control_sync.md). Added "
+                "and stalled the car; see `docs/reference/`). Added "
                 "2026-08-19 because nmpc_horizon_speed_profile_enabled's cost "
                 "term alone was live-tested and rejected: the QP just SUMS "
                 "(v_x-v_ref)^2 across stages with no ordering, so the solver "

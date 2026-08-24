@@ -24,7 +24,7 @@ same MPC live inside the
 [FSDS](https://github.com/FS-Driverless/Formula-Student-Driverless-Simulator)
 simulator, by pasting it into the matching file in the
 [fsae_planning](https://github.com/UOA-FSAE/fsae_planning) repo (see
-[docs/planning_control_sync.md](docs/planning_control_sync.md) for the exact
+[`docs/reference/`](`docs/reference/`) for the exact
 file mapping — `mpc_controller_standalone.py` is a distinct node from
 upstream's default `mpc_controller.py`). Weights tuned offline in this
 project transfer directly to that live controller, because both preserve the
@@ -98,9 +98,9 @@ for how to run the CMA-ES weight tuner instead.
 | [docs/architecture.md](docs/architecture.md) | How the system works: the closed-loop architecture, `settings.py`/`model/vehicle_physics.py` configuration reference, the full MPC and NMPC formulations (state vector, cost function, solver), how the offline CMA-ES tuner works, the composite scoring function, and a per-file module reference. |
 | [docs/tuning.md](docs/tuning.md) | Practical tuning reference: what each `Q`/`R`/`R_rate` weight and adaptive-gain constant actually does, the corner-factor scheduler's fields, and how to change/validate a weight set — the "which knob, and why" companion to architecture.md's "how it works." |
 | [docs/developer_guide.md](docs/developer_guide.md) | How to use and extend the project: running the simulator and offline tuner, FSDS/ROS 2 integration (including Windows/WSL/Docker setup from scratch), manual drive mode, dependencies, adding a new synthetic path, recording/exporting a track, and debugging solver failures. |
-| [docs/reference_path_and_speed.md](docs/reference_path_and_speed.md) | Where the car drives and how fast: the three-pass speed profile, the raceline/centreline exporters, which exported file supplies speed vs geometry, and how to switch either. |
+| [docs/reference/reference_path_and_speed.md](docs/reference/reference_path_and_speed.md) | Where the car drives and how fast: the three-pass speed profile, the raceline/centreline exporters, which exported file supplies speed vs geometry, and how to switch either. |
 | [docs/vehicle_physics_guide.md](docs/vehicle_physics_guide.md) | Plain-English walkthrough of the 24-state nonlinear plant in `model/vehicle_physics.py` (tyres, suspension, weight transfer, aero) for readers who don't already know vehicle dynamics. |
-| [docs/planning_control_sync.md](docs/planning_control_sync.md) | Reference for re-syncing `planning/` and `fsds_simulator/` against a newer `fsae_planning` upstream clone: file mapping, deliberate non-mirrors, numeric-parity constants, and the resync procedure. |
+| [`docs/reference/`](`docs/reference/`) | Reference for re-syncing `planning/` and `fsds_simulator/` against a newer `fsae_planning` upstream clone: file mapping, deliberate non-mirrors, numeric-parity constants, and the resync procedure. |
 | [docs/junior_project_mpc_docs.md](docs/junior_project_mpc_docs.md) | Standalone high-level wiki page introducing MPC/NMPC/tuning to a newcomer with no prior control-theory background — self-contained by design, so it overlaps other docs rather than just linking to them. |
 | [docs/fsae_planning_pending_pr.md](docs/fsae_planning_pending_pr.md) | Running summary of uncommitted changes in the live `fsae_planning` checkout, for PR purposes — mirrors that repo's own `CHANGES.md`. |
 | [docs/logs/](docs/logs/) | Append-only research/investigation logs (sim-to-real gap, late-turn/lookahead history, dated change logs) — historical record, not current-state reference; see each file's own header for scope. |

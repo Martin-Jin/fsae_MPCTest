@@ -5,7 +5,7 @@ found by comparing two live logs: the car's reported position discontinuously
 jumps several metres in a single 50 ms tick, roughly every ~31.7 s, on both
 the NMPC and the Stanley controller. This is **not** the known `a_lat`
 ceiling issue (`sim_to_real_investigation.md`) and **not** the open
-centreline-curvature-spike defect (`planning_control_sync.md`) — it is a new,
+centreline-curvature-spike defect (`docs/reference/`) — it is a new,
 separate, currently-unexplained failure mode found while triaging a "the car
 randomly steers off" report.
 
@@ -525,7 +525,7 @@ anything in the FSDS/AirSim software stack.
 - `late_turn_in_investigation.md` — the NMPC's turn-in-timing work. Not this
   bug (this failure mode reproduces on Stanley too, which that file's NMPC
   work never touches).
-- `planning_control_sync.md`'s "Known planner defect: centreline curvature
+- `docs/reference/simulator_fidelity.md`'s "Known planner defect: centreline curvature
   spikes" — a real, separate, already-documented issue. Ruled out here
   because this bug reproduces with a *precomputed, static* path where the
   planner isn't even running.

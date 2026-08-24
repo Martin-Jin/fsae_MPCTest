@@ -557,7 +557,7 @@ def optimize_raceline(
         #
         # Note this inherits the planner's centreline warts verbatim,
         # including the curvature spikes documented in
-        # planning_control_sync.md ("Known planner defect"). That is
+        # `docs/reference/` ("Known planner defect"). That is
         # deliberate: this path is a DIAGNOSTIC reference whose whole value
         # is being the geometric middle of the track, so silently smoothing
         # it would destroy the property being measured.

@@ -262,7 +262,7 @@ symptom of the solver failing to converge.
 This run used a STATIC precomputed path (`path_map_path=.../raceline.csv`,
 `path_age_s=0.0000` throughout — confirmed no live planner in the loop).
 `nmpc_kappa_horizon_end` is smooth and monotonic in the checked window. The
-known open planner defect (`planning_control_sync.md`'s "Known planner defect: centreline curvature spikes") cannot
+known open planner defect (`docs/reference/simulator_fidelity.md`'s "Known planner defect: centreline curvature spikes") cannot
 be the cause here since there is no live planner path being consumed.
 
 ### NOT output_smoothing amplifying/causing it
@@ -626,7 +626,7 @@ chatter symptom.
   cost-landscape hypothesis above), rather than inferring it indirectly
   from cost values and warm-start deltas the way Session 2 did. Not
   attempted -- would need a `nmpc_core.py`/`nmpc_optimiser.py` change plus
-  a `rollout_core.py` wiring change; keep both sides in sync per `planning_control_sync.md`.
+  a `rollout_core.py` wiring change; keep both sides in sync per `docs/reference/`.
 - **Whether the warm-start's own noise (std 6.38 deg, found in Session 2)
   reproduces even with a MUCH larger trust region + more SQP iterations
   together** (as opposed to each swept independently, as Session 2 did).
@@ -723,7 +723,7 @@ weight held fixed**, produced:
 Both runs: NMPC, `r_rate_delta=52.5`, `nmpc_rjerk_delta=150.0`,
 `q_e_y=6.35`, smoothing off, zone off, same `speed_profile.csv`, 3 laps.
 
-Mechanism is documented in `docs/reference_path_and_speed.md`'s "Reference line:
+Mechanism is documented in `docs/reference/reference_path_and_speed.md`'s "Reference line:
 raceline vs centreline": the raceline's offset is small (0.13 m mean, 0.48 m
 max) but it perturbs the curvature of the track's tightest corner
 (`|κ|`=0.209, ~70% of the full-lock kinematic floor) where there is no width
@@ -787,7 +787,7 @@ Cause is a calibration coupling, not a design fault:
 `_corner_factor(|κ|, k=8)` needs `|κ|`=1.125 to reach 0.9, but this track's
 tightest corner is 0.209, so `corner_frac` tops out at 0.626 and the
 multiplier bottoms at 0.84 instead of its 0.15 floor. Full derivation and the
-`k ≈ target/((1−target)·κ_max)` rule are in `planning_control_sync.md`'s
+`k ≈ target/((1−target)·κ_max)` rule are in `docs/tuning.md`'s
 "Three-zone rate schedule".
 
 `nmpc_corner_factor_k=27.0` (0.209 → `corner_frac` 0.85) fixes the
@@ -954,7 +954,7 @@ reversals 13 → 1.
 
 Not a controller fault at all. `CURVATURE_SPEED_A_LAT_MAX` **5.5 → 4.75** took
 stutters 33.3 → 9.8 /min and `|d_steer|>5°` events 20 → 1. Mechanism and the
-full table are in `docs/reference_path_and_speed.md`'s "Speed-profile aggressiveness".
+full table are in `docs/reference/reference_path_and_speed.md`'s "Speed-profile aggressiveness".
 
 **This is the diagnostic lesson of the whole investigation.** Six
 controller-side hypotheses were tested against Fault 2 and all six failed,

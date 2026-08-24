@@ -2,10 +2,10 @@
 
 Working notes: an append-only research log, in the same spirit as
 `sim_to_real_investigation.md` in this same directory. Cited by name from
-`architecture.md`, `tuning.md`, `planning_control_sync.md`,
+`architecture.md`, `tuning.md`, `docs/reference/`,
 `junior_project_mpc_docs.md`, and the live `fsae_planning/CHANGES.md` as the
 detailed source for specific Parts — do not delete. Conclusions that matter
-for day-to-day tuning are summarized in `planning_control_sync.md` and
+for day-to-day tuning are summarized in `docs/reference/` and
 `tuning.md`; read this file when a citation points here for the full
 derivation, the live-test data behind a conclusion, or the reasoning behind
 an idea that was tried and rejected.
@@ -591,7 +591,7 @@ mirror each other today and must keep doing so):
 this" instruction that's been in effect all session for the adaptive-gain
 work, this design does NOT propose touching `fsae_MPCTest`/`settings.py`/
 `model_utils.py`/`rollout_core.py` yet. Flag this explicitly as a decision
-point, not an oversight: `planning_control_sync.md`'s parity rule normally requires every
+point, not an oversight: `docs/reference/offline_live_parity.md`'s parity rule normally requires every
 planning/control change on both sides, but this investigation has been
 entirely live-only by explicit user instruction throughout. **Before
 implementing**, confirm whether this specific feature should break that
@@ -601,11 +601,11 @@ assume either way without asking.
 
 ### 5c. Docs that need updating (checklist, once implemented)
 
-All in `fsae_MPCTest/docs/` (the authoritative docs per `planning_control_sync.md`, even
+All in `fsae_MPCTest/docs/` (the authoritative docs per `docs/reference/`, even
 though the CODE changes are live-only for now — the docs describe the
 live mechanism and must stay accurate regardless of which side changed):
 
-- **`planning_control_sync.md`**:
+- **`docs/reference/`**:
   - `use_precomputed_corner_map` is a node-level launch parameter (5a),
     NOT an `MPCParams` field like every other flag in the existing
     numeric-parity table — it does not belong in that table as-is. Either
@@ -699,7 +699,7 @@ implemented, then delete it, per its own header note.
    `launch_all.sh`'s `USE_PRECOMPUTED_CORNER_MAP` variable and its two
    `ros2 launch` call-site additions.
 5. Docs (5c) updates, in the same change, not deferred — this session's
-   own `planning_control_sync.md`-documented history of yaml/`fsds_simulator` drift
+   own `docs/reference/`-documented history of yaml/`fsds_simulator` drift
    happened specifically because doc/config updates were treated as a
    follow-up rather than part of the same commit.
 6. Offline validation (4e steps 1-2), THEN live A/B (4e step 3) once lag
@@ -878,7 +878,7 @@ in `fsae_MPCTest` first).
    `control.launch.py` (plain forward, no `IfElseSubstitution`, per 5a),
    `USE_PRECOMPUTED_CORNER_MAP=false` + both `ros2 launch` call sites in
    `launch_all.sh`.
-5. Docs updated same-session: `planning_control_sync.md` (new dated
+5. Docs updated same-session: `docs/reference/` (new dated
    section + numeric-parity table row, explicitly flagged NOT MIRRORED),
    `architecture.md`, `tuning.md` (§4.5b), `junior_project_mpc_docs.md`.
 6. **3f-pre's exit-boost bug fix validated offline against the real log**
@@ -905,7 +905,7 @@ deleted wholesale (see those files' own "removed" comments) — of limited
 practical use now that the mechanism is gone, but the methodological
 lesson (disable-and-compare over raise-the-ceiling) isn't recorded
 elsewhere. Part 4/5/6 (the corner-segmentation feature, itself later
-deleted by the same rewrite) is summarized in `planning_control_sync.md`'s
+deleted by the same rewrite) is summarized in `docs/reference/superseded_mechanisms.md`'s
 "Precomputed corner segmentation" section.
 
 ## Part 6b — Curvature-forcing term: the QP's own prediction was blind to the path bending ahead (2026-08-12)
@@ -1140,7 +1140,7 @@ deleted wholesale in the corner-factor-scheduler rewrite — see
 **Late turn-in on sudden corners was therefore still an open problem at
 this point in the investigation** — this session's attempted fix was
 reverted, not replaced. The reference-heading-lead mechanism (§12.8 in
-`sim_to_real_investigation.md`, also flagged in `planning_control_sync.md`'s "Still open"
+`sim_to_real_investigation.md`, also flagged in `docs/reference/README.md`'s "Still open"
 list) was investigated as the next avenue — **but it applies to the
 live-planner branch specifically** (the planner's per-tick, FOV-limited
 centreline rebuild), not to driving against a precomputed
@@ -2103,7 +2103,7 @@ the reference stays the raceline the team already tunes offline.
 *Cons*: `1 - kappa*e_y` singular at `e_y = 1/kappa` (irrelevant here: 3.5 m
 track half-width vs the tightest corner's `1/0.21 = 4.8 m`, and it is guarded);
 needs a curvature array that is not spike-ridden (a known open planner defect,
-`planning_control_sync.md`) — handled in §16.3.
+`docs/reference/`) — handled in §16.3.
 
 **B. Model Predictive Contouring Control (MPCC).** Progress-maximising: the
 cost trades contouring/lag error against `+ progress`, with track boundaries as
@@ -2226,7 +2226,7 @@ moving-averaging with a 3-wide kernel and then differencing headings — the
 *existing* denoise precedent from `control_utils.curvature_speed()`
 (`dense_step = 0.5`, `w = 3`), not a new smoothing constant. This matters more
 for NMPC than for the QP: with `kappa` inside the prediction, a spurious
-centreline spike (the known open planner defect, `planning_control_sync.md`) would be predicted
+centreline spike (the known open planner defect, `docs/reference/`) would be predicted
 as a real bend and steered for.
 
 **Solver.** Gauss-Newton SQP, each iteration: (1) roll the nonlinear model
@@ -2254,7 +2254,7 @@ github.com/alexliniger/MPCC (MPCC reference implementation), arXiv:1901.08184
 | `control/fsae_control/fsae_control/nmpc_params.py` | **NEW.** `NMPCParams` + `declare_nmpc_params`/`nmpc_params_from_node`/`NMPC_PARAM_FIELDS`, mirroring `mpc_params.py`'s pattern exactly. 24 fields. |
 | `control/fsae_control/fsae_control/mpc_controller.py`, `..._standalone.py` | Declare `NMPCParams`; construct `NMPCController` instead of `MPCController` iff `use_nmpc`. Nothing else changed — every downstream call site (`compute`, `reset`, `set_static_path`, `set_heading_profile`, `last_telemetry`, `a_max_brake`) is satisfied by both classes. |
 | `common/fsae_bringup/launch/control.launch.py`, `sim.launch.py` | `NMPC_PARAM_FIELDS` fed through the SAME generated-launch-arg mechanism `MPC_PARAM_FIELDS` already uses (no hand-written blocks). |
-| `common/fsae_bringup/config/fsae_params.yaml` | 24 new `controller:` keys, defaults identical to `NMPCParams`. Explicitly marked as NOT part of `planning_control_sync.md`'s numeric-parity table (no `settings.py` counterpart exists yet). |
+| `common/fsae_bringup/config/fsae_params.yaml` | 24 new `controller:` keys, defaults identical to `NMPCParams`. Explicitly marked as NOT part of `docs/reference/offline_live_parity.md`'s numeric-parity table (no `settings.py` counterpart exists yet). |
 | `ros2/launch_all.sh` | `USE_NMPC=false` + a commented-out NMPC shortlist, forwarded via the existing `_append_mpc_arg` helper; startup echo says which controller is running. |
 | `control/fsae_control/fsae_control/telemetry_logger.py` | 8 `nmpc_*` columns APPENDED to `ADAPTIVE_COLUMNS` (empty cells on LTV-QP runs, so no existing parser changes). |
 | `control/fsae_control/test/nmpc_offline_check.py` | **NEW.** The whole validation suite below, runnable in one command with no ROS/FSDS session. |
@@ -2410,7 +2410,7 @@ in closed loop:**
    [^alat-moved]: True when written. The corner_factor rewrite later the same
    day removed these from `MPCParams`; `nmpc_core.py`'s `_Plant` now hardcodes
    the same numbers (7.5/0.47/2.46) as its own class defaults instead. See
-   `planning_control_sync.md`'s "Nonlinear MPC (`use_nmpc`)" section.
+   `docs/reference/control_mechanisms.md`'s "Nonlinear MPC (`use_nmpc`)" section.
 
 ### 16.7 Solve time, and how the defaults were chosen
 
@@ -2490,7 +2490,7 @@ wired into `sim/rollout_core.py`'s `run_core_rollout(..., use_nmpc=...)`),
 and the NMPC weight overrides were moved from a separate `NMPCParams` onto
 `MPCParams` itself (`nmpc_q_e_y` etc., `-1.0` = inherit), removing the parity
 obligation this section originally anticipated. See
-`planning_control_sync.md`'s "Nonlinear MPC (`use_nmpc`)" section for the
+`docs/reference/control_mechanisms.md`'s "Nonlinear MPC (`use_nmpc`)" section for the
 current, authoritative description of both sides.
 
 **Original note (superseded by the addendum above):** not mirrored into
@@ -2550,7 +2550,7 @@ MPCC's reference-parametrisation mechanism (a continuous spline in arc length)
 adopted on its own, decoupled from the contouring/progress apparatus built on
 top of it in the original paper. Defaults on, unlike the other two: a strict
 numerical-quality improvement with no new coupling to solver dynamics, and it
-directly targets the open "centreline curvature spikes" defect (`planning_control_sync.md`) — a
+directly targets the open "centreline curvature spikes" defect (`docs/reference/`) — a
 proper spline fit was one of that defect's two previously-named-but-unattempted
 remedies. The old moving-average path is kept intact behind the flag for A/B.
 `kappa_at`/`kappa_scalar`/`psi_ref_at`/`project` needed no changes.
@@ -2607,7 +2607,7 @@ offline first.
 `NMPC_FRICTION_CIRCLE_ENABLED`, default `false`, experimental). Adds a hard
 `|F_yf|, |F_yr| <= F_max` bound to the condensed QP, additional to — not a
 replacement for — the existing soft `tanh` lateral-force saturation already
-inside `_f`/`_f_scalar` (per `planning_control_sync.md`'s standing caution against
+inside `_f`/`_f_scalar` (per `docs/reference/README.md`'s standing caution against
 re-litigating that soft mechanism without new measurement evidence). `F_max`
 is derived from the same measured ceiling law
 (`alat_ceiling_flat/_slope/_intercept`) via `F_max = m * ceiling(v_x) / 2` per
@@ -2831,7 +2831,7 @@ snapshot table already shows the split in place. Recorded here since it was
 never written up elsewhere.
 
 Reported symptom, after the `r_a 0.85 -> 0.77` cut (see
-`planning_control_sync.md`'s history via `sim_to_real_investigation.md`) was
+`docs/reference/README.md`'s history via `sim_to_real_investigation.md`) was
 confirmed live: the same shared weight that freed up acceleration also
 weakened braking by the same amount, since `R_diag[1]` was applied
 symmetrically to `|a_cmd|` regardless of sign. Live telemetry after the
@@ -2852,7 +2852,7 @@ confirmed DCP-valid and numerically identical to the old single-weight cost
 when `r_a_accel == r_a_brake`, since `pos(x)²+neg(x)² == x²` for any real
 `x`. Implemented in both `mpc_core.py`/`mpc_params.py`/`fsae_params.yaml`/
 `launch_all.sh` (live) and `controller/optimiser.py`/`settings.py` (offline)
-— see `planning_control_sync.md`'s "Accel/brake effort weight split"
+— see `docs/reference/control_mechanisms.md`'s "Accel/brake effort weight split"
 section for the current file-by-file mapping.
 
 Checked before implementing: no adaptive gain (`_adaptive_R_scaling`,
@@ -3153,7 +3153,7 @@ its own uncoordinated thing on the same `e_psi` signal.
 `adaptive_q_lookahead_exit_decay_*` family above — was later removed
 altogether along with the rest of the lookahead gain-scheduling family and
 replaced by the corner-factor scheduler; see
-`planning_control_sync.md`'s "Corner-factor scheduler" section and
+`docs/reference/control_mechanisms.md`'s "Corner-factor scheduler" section and
 `removed_mechanisms.md`. This addendum is kept for the historical record of
 the bug and its fix while the mechanism was still live.)
 
@@ -3210,7 +3210,7 @@ that produced that disabled state.
 **Added, live-tested, found to have an unwanted side effect, disabled by
 default — code stayed in place at the time for a future rework** (it has
 since been removed entirely along with the rest of the lookahead
-gain-scheduling family — see `planning_control_sync.md`'s "Corner-factor
+gain-scheduling family — see `docs/reference/README.md`'s "Corner-factor
 scheduler" section). Reported symptom: after exiting a corner at low speed
 (3-4 m/s), steering swung through a large, fast, under-damped correction
 while accelerating — confirmed on `mpc_standalone_control_1786483673.csv`,
@@ -3246,7 +3246,7 @@ removed, so a future lookahead-curvature-gated rework (fire only when NOT
 approaching/inside a corner) would not need to re-derive the shape from
 scratch — but the mechanism was ultimately removed outright along with the
 rest of the lookahead gain-scheduling family when the corner-factor
-scheduler replaced it (see `planning_control_sync.md`'s "Corner-factor
+scheduler replaced it (see `docs/reference/README.md`'s "Corner-factor
 scheduler" section for that later removal and its rationale).
 
 ## Part 17 — Straight-line lateral-error snap-back was too sharp

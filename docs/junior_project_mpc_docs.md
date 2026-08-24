@@ -395,7 +395,7 @@ See [architecture.md's delay-compensation section](architecture.md#adaptive-gain
 - **Why this avoids the wrong-direction trap other lookahead ideas hit:** it changes what $e_\psi$ *already equals* the moment the QP starts solving — the car's current heading compared against a target already looking a little further down the track — rather than adding a future obligation to the horizon dynamics. That's different from a plain lookahead disturbance, which the solver is free to "pay for" whenever is cheapest (see Section 1.3's misconception note).
 - **Limitation:** only works for a track that's fully known offline. A car exploring a new track live, off the planner's own SLAM-built centreline, has no future path to precompute a lead into.
 
-See `planning_control_sync.md`'s "Precomputed shaped heading-lead profile" section for the full mechanism and current live-test status.
+See `docs/reference/control_mechanisms.md`'s "Precomputed shaped heading-lead profile" section for the full mechanism and current live-test status.
 
 **Slowing down when the car isn't tracking well** (`tracking_error_speed_gate`, both live controller nodes): `curvature_speed()` only looks at the *shape* of the road ahead — it has no idea whether the car is actually near that road right now. This gate watches the lateral and heading tracking error and scales the target speed down (with a floor, so the car never loses so much speed it can't steer itself back) once either error grows large. It's paired with a limiter on how fast the speed target is allowed to *rise* (braking requests are never delayed, only "speed up" is capped), so a momentary bad reading can't spike the target back up the very next tick.
 
@@ -467,9 +467,9 @@ Every rollout, whether from the tuner, or from **Show Metrics**/**Benchmark All 
 
 This extends to the **real car** too. The ROS 2 control package carries a verbatim copy of `sim/scoring.py` (`fsae_control/scoring.py`), and `telemetry_logger.py` accumulates the same 13 metrics every control step, writing the finished score as a `#`-commented header on top of the run's CSV. So a number off the car is directly comparable to a number out of the tuner.
 
-When a precomputed speed profile is loaded (the normal live-driving setup), `telemetry_logger.py`'s `LapProgressTracker` derives real `progress`/`reached_end`/`time_bonus` from the car's position against that path, so a finished run is scored properly. See [`planning_control_sync.md`](planning_control_sync.md)'s "Live/offline score parity" section for the mechanism.
+When a precomputed speed profile is loaded (the normal live-driving setup), `telemetry_logger.py`'s `LapProgressTracker` derives real `progress`/`reached_end`/`time_bonus` from the car's position against that path, so a finished run is scored properly. See [`docs/reference/`](`docs/reference/`)'s "Live/offline score parity" section for the mechanism.
 
-One caveat remains: the car still can't measure `offtrack` (needs ground-truth track edges), and a run against the live planner topic instead of a precomputed profile has no known path end either. Either case leaves `score_is_partial=1` in the header. See [`planning_control_sync.md`](planning_control_sync.md) for the delay/perception differences that still make the simulator easier than reality.
+One caveat remains: the car still can't measure `offtrack` (needs ground-truth track edges), and a run against the live planner topic instead of a precomputed profile has no known path end either. Either case leaves `score_is_partial=1` in the header. See [`docs/reference/`](`docs/reference/`) for the delay/perception differences that still make the simulator easier than reality.
 
 **The 13 raw metrics**, accumulated every simulation step:
 
@@ -639,7 +639,7 @@ These are **two different simulators** used for two different jobs, easy to conf
 | How the controller connects | Directly, in-process (`sim/rollout_core.py`) | Over ROS 2 topics, via the `fsae_control` package's controller nodes talking to the rest of the `fsae_planning` stack |
 | Cone data | Statically placed along the path (`sim_track.place_cones()`) or perfect reference path | Comes from FSDS's own simulated perception/track layout |
 
-The important guarantee: both the 2D simulator and the live FSDS-connected controller run through **numerically matched implementations** (`sim/rollout_core.py` and `control_utils.MPCController`/`mpc_core.MPCController` are kept in deliberate parity, see `docs/planning_control_sync.md`). This is *why* weights tuned offline in the fast 2D simulator transfer directly to FSDS without needing to be re-tuned there.
+The important guarantee: both the 2D simulator and the live FSDS-connected controller run through **numerically matched implementations** (`sim/rollout_core.py` and `control_utils.MPCController`/`mpc_core.MPCController` are kept in deliberate parity, see `docs/reference/`). This is *why* weights tuned offline in the fast 2D simulator transfer directly to FSDS without needing to be re-tuned there.
 
 ---
 
@@ -729,7 +729,7 @@ Because `s` is now something the model predicts forward (via the car's own predi
 
 This is genuinely a **nonlinear** model (that equation multiplies two state-dependent quantities, `kappa(s)` and `s_dot`, together — no longer "state times fixed number"), so it can't be solved as one convex QP the way Section 1.5 describes. Instead it's solved by repeatedly re-linearising around the model's own predicted trajectory and solving a sequence of QPs that converge toward the true nonlinear optimum — **Sequential Quadratic Programming (SQP)**. This is more expensive per tick than one convex QP, but still fast enough: measured around 9 ms per tick on this project's hardware, comfortably inside the 50 ms budget, versus a linear QP's roughly 1-5 ms.
 
-**Does it help?** Yes, both offline and live. Offline (identical cost-function weights, identical simulated vehicle, same track): steering saturation (pinning at the mechanical limit, the classic symptom of "reacting too late") dropped from 12.5% of ticks to 0.8%, and the car started turning into every corner tested earlier than the linear controller did, by 25 metres on average on the harder corners. Live in FSDS, on a matched same-day pair on the same track: steering saturation dropped from 6.45% to 0.58% and lap time improved by about 2.4 seconds — the same direction and a similar-sized improvement as offline (see `docs/planning_control_sync.md` for the full live numbers).
+**Does it help?** Yes, both offline and live. Offline (identical cost-function weights, identical simulated vehicle, same track): steering saturation (pinning at the mechanical limit, the classic symptom of "reacting too late") dropped from 12.5% of ticks to 0.8%, and the car started turning into every corner tested earlier than the linear controller did, by 25 metres on average on the harder corners. Live in FSDS, on a matched same-day pair on the same track: steering saturation dropped from 6.45% to 0.58% and lap time improved by about 2.4 seconds — the same direction and a similar-sized improvement as offline (see `docs/reference/` for the full live numbers).
 
 ### 5.3 Model differences, at a glance
 
@@ -785,7 +785,7 @@ NMPC has three smaller, optional refinements on top of everything above, all aff
 2. **Lookahead speed profile, off by default, experimental.** Instead of one single target speed for the whole ~1-second planning window, this looks up the "correct" speed at each point along the plan. It needs careful validation before it should be trusted, since a naively-implemented lookahead signal can produce the same wrong-direction dip described in Section 5.1, applied to speed instead of steering.
 3. **Backup speed-limit check, off by default, unvalidated.** The car already has one safety mechanism preventing the model from believing it can corner arbitrarily hard (the `alat_ceiling` row in Section 5.4's table). This adds a second, independent check of the same limit, enforced as a hard rule the solver cannot break rather than a soft cost nudge — a second pair of hands on the same problem, not a replacement for the first mechanism.
 
-Full technical detail (exact formulas, which files changed): `planning_control_sync.md`'s "Three MPCC-inspired additions" subsection.
+Full technical detail (exact formulas, which files changed): `docs/reference/README.md`'s "Three MPCC-inspired additions" subsection.
 
 **For a full by-hand derivation of everything in this section** — every formula in both controllers' error calculations, step by step, with worked numeric examples, plus the detailed reasoning for why a per-step re-projection can't just be bolted onto LMPC — see [`error_state_reference.md`](error_state_reference.md).
 
@@ -937,4 +937,4 @@ Full record, export, drive steps, the CSV format, and every launch arg involved:
 | `settings.py` | All project-level tuning/scoring/DNF configuration |
 | `planning/*` | Shared cone-sorting/boundary/path-building code (from the `fsae_planning` repo) |
 | `fsds_simulator/control/fsae_control/fsae_control/mpc_core.py`, `control_utils.py`, `mpc_controller.py`, `mpc_controller_standalone.py`, `stanley_controller.py`, `fsds_bridge.py`, `telemetry_logger.py` | The live ROS 2 controller package for FSDS (Section [9](#9-running-against-the-real-fsds-simulator)) |
-| `fsds_simulator/` (`common/`, `perception/`, `planning/`) | Full staging mirror of the rest of the live ROS 2 workspace (messages, bringup/launch, perception, planning), see [docs/planning_control_sync.md](planning_control_sync.md) |
+| `fsds_simulator/` (`common/`, `perception/`, `planning/`) | Full staging mirror of the rest of the live ROS 2 workspace (messages, bringup/launch, perception, planning), see [`docs/reference/`](`docs/reference/`) |

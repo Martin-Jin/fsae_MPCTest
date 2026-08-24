@@ -3,7 +3,7 @@
 Diagnostic for the open sim-to-real gap: the live car's yaw response to a
 steering command is ~3x weaker than commanded and weakens with speed, while
 the offline plant is near neutral-steer.  See
-`docs/planning_control_sync.md` -> "MEASURED: the car's yaw response is ~3x
+`docs/reference/` -> "MEASURED: the car's yaw response is ~3x
 weaker than commanded" for the findings this script produced.
 
 Method — invert the kinematic bicycle on logged yaw rate:

@@ -287,7 +287,7 @@ here that touches solver plumbing rather than just weights.
 **Assessment: reject as a fix.** This treats the symptom — the controller
 would still turn in late, just catch up more violently. Worse, 180°/s is a
 *measured lower-bound estimate* of the real FSDS actuator (see
-`planning_control_sync.md`'s slew-rate section); raising it past the real
+`docs/reference/README.md`'s slew-rate section); raising it past the real
 limit means commanding motion the plant cannot deliver, reintroducing the
 saturation-driven instability the limit exists to prevent. Only revisit
 alongside a fresh system-ID of the true rate.

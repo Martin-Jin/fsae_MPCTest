@@ -161,7 +161,7 @@ class MPCControllerStandaloneNode(Node):
                 # EXPERIMENTAL: post-solve output smoothing on the final
                 # `steering` command, NOT a QP weight change -- see the
                 # ── Output smoothing ── block in _control_loop below for the
-                # full mechanism, and planning_control_sync.md's "Post-solve
+                # full mechanism, and `docs/reference/README.md`'s "Post-solve
                 # output smoothing" section for the tuning surface.
                 ('output_smoothing_enabled', False),
                 ('output_smoothing_alpha', 0.425),        # EMA coefficient on the
@@ -179,7 +179,7 @@ class MPCControllerStandaloneNode(Node):
                 # makes this too sensitive -- ordinary tracking noise (not an
                 # actual disturbance) starts fading smoothing most of the way
                 # out, undoing the jitter-suppression this feature exists for
-                # -- see planning_control_sync.md before retuning further.
+                # -- see `docs/reference/` before retuning further.
                 ('output_smoothing_k_ey', 0.8),     # 1/m; higher = fades out faster per metre of |e_y|
                 ('output_smoothing_k_epsi', 1.115), # 1/rad; higher = fades out faster per radian of |e_psi|
                 # Fades smoothing down BEFORE the car reaches a corner

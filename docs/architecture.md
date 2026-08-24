@@ -33,7 +33,7 @@ This is the closed loop the simulator runs at 20 Hz. It's the same loop
 `tuner/offline_tuner.py` runs headless (no plotting) thousands of times
 during tuning, and the same loop `mpc_controller_standalone.py` (staged
 under `fsds_simulator/`, pasted into `fsae_planning` — see
-[docs/planning_control_sync.md](planning_control_sync.md)) runs live against
+[`docs/reference/`](`docs/reference/`)) runs live against
 the real/FSDS vehicle. All three share one implementation
 (`sim/rollout_core.run_core_rollout()` for the first two;
 `mpc_core.MPCController` for the live node, kept in numeric parity with
@@ -145,14 +145,14 @@ boundary.py                     │  planning/boundary.py             (shared)
 path_utils.py                   │  planning/path_utils.py           (shared)
 cone_sorting.py                 │  planning/cone_sorting.py         (shared)
 mpc_core.py                     │  gui/simulation.py / mpc_core.py               (shared)
-mpc_controller_standalone.py    │  gui/simulation.py's rollout loop              (shared design — see docs/planning_control_sync.md)
+mpc_controller_standalone.py    │  gui/simulation.py's rollout loop              (shared design — see `docs/reference/`)
 cone_recorder.py                │  sim/track_io.py + gui/simulation.py's Load Recorded Track  (recorder writes what the loader reads)
 ```
 
 `fsds_simulator/control/fsae_control/fsae_control/stanley_controller.py` is
 the actual current Stanley controller (mirrored from upstream, kept in sync
 like everything else under `fsds_simulator/` — see
-[docs/planning_control_sync.md](planning_control_sync.md)), not just a
+[`docs/reference/`](`docs/reference/`)), not just a
 structural reference. This project's tuner and offline simulator only ever
 drive against the MPC (`mpc_controller_standalone.py` / `mpc_core.py`,
 same directory) — Stanley is mirrored purely so `fsds_simulator/` can stand
@@ -1239,7 +1239,7 @@ curvature-forcing above: it changes what's true at `k=0` (a real, current
 error) rather than telling the QP about a future obligation it's free to
 satisfy however is cheapest — synthetic testing found this avoids
 curvature-forcing's wrong-direction transient entirely. See
-`planning_control_sync.md`'s "Precomputed shaped heading-lead profile"
+`docs/reference/control_mechanisms.md`'s "Precomputed shaped heading-lead profile"
 section for the full design, the fixed-lookahead version that was tried and
 rejected first (immediate full-lock steering), and an important caveat
 about this track's lack of true straights. Live-tested with a
@@ -1297,7 +1297,7 @@ weight choice.
 the cached QP alongside `u_min`/`u_max`, and participating in the same
 cache-staleness check), and `sim/rollout_core.py` derives it from
 `VehicleParams.max_steer_rate * DT` so both sides agree. See
-[`planning_control_sync.md`](planning_control_sync.md)'s "Slew-rate limit"
+[`docs/reference/`](`docs/reference/`)'s "Slew-rate limit"
 section for the measurement behind the current 180 deg/s value and why the
 previous 80 deg/s was the direct cause of live steering chatter.
 
@@ -1614,7 +1614,7 @@ on the dominant term.
   run infeasible. `COMPLETION_THRESHOLD` remains only as a fallback for callers
   that cannot supply `reached_end` — that no longer includes
   the live car when it's running against a precomputed speed profile (see
-  `LapProgressTracker` in `planning_control_sync.md`'s "Live/offline score
+  `LapProgressTracker` in `docs/reference/README.md`'s "Live/offline score
   parity" section); a run against the live planner topic instead still has no
   known path end and falls back to this threshold.
 - `COMPLETION_BONUS_WEIGHT` is now unused by the score — completion is a
@@ -1679,7 +1679,7 @@ not here.
 | `gui/manual_drive.py` | Standalone WASD/mouse drive mode against the 24-state nonlinear plant — no MPC, no scoring, purely open-loop human control for building intuition or sanity-checking a track. See [Manual Drive Mode](developer_guide.md#manual-drive-mode). |
 | `settings.py` | All project-level tuning/scoring/DNF configuration. See [Configuring the Project](#configuring-the-project-settingspy). |
 | `mpc_controller_standalone.py` / `mpc_core.py` / `control_utils.py` (staged under `fsds_simulator/control/fsae_control/fsae_control/`) | The live ROS 2 MPC controller for FSDS. See [Simulator Integration](developer_guide.md#simulator-integration). |
-| `fsds_simulator/` (whole tree) | Full staging mirror of upstream's ROS 2 workspace — every package, not just control — so a clone of this repo plus FSDS can build and run the complete stack (`stanley`, `mpc`, or `mpc_standalone`) with no separate `fsae_planning` checkout. See [docs/planning_control_sync.md](planning_control_sync.md) and [fsds_simulator/README.md](../fsds_simulator/README.md). |
+| `fsds_simulator/` (whole tree) | Full staging mirror of upstream's ROS 2 workspace — every package, not just control — so a clone of this repo plus FSDS can build and run the complete stack (`stanley`, `mpc`, or `mpc_standalone`) with no separate `fsae_planning` checkout. See [`docs/reference/`](`docs/reference/`) and [fsds_simulator/README.md](../fsds_simulator/README.md). |
 
 
 <a id="second-controller-nonlinear-mpc-use_nmpc"></a>
@@ -1691,7 +1691,7 @@ live workspace carries a **second, separately selectable** controller,
 `nmpc_core.NMPCController`, chosen by the node parameter `use_nmpc` (default
 false). This repo has its own offline port, `controller/nmpc_optimiser.py`,
 selected by `settings.USE_NMPC`; this section is a pointer to the live design,
-not a mirror of the offline code — see `planning_control_sync.md`'s "Nonlinear
+not a mirror of the offline code — see `docs/reference/README.md`'s "Nonlinear
 MPC (`use_nmpc`)" section for the offline port's specifics.
 
 **The structural difference, in one line.** The LTV-QP predicts how the car's
@@ -1756,7 +1756,7 @@ compensation are unchanged.
 
 Every feature below is verified against actual read-sites in the code, not
 inferred from a docstring or field name — see
-`planning_control_sync.md`'s "Which settings affect which controller" map
+`docs/reference/README.md`'s "Which settings affect which controller" map
 for the exhaustive, field-by-field version this table summarises.
 
 | Feature | LTV-QP (`mpc_core.py`) | NMPC (`nmpc_core.py`) | Why |
@@ -1777,7 +1777,7 @@ for the exhaustive, field-by-field version this table summarises.
 Alexander Liniger's Model Predictive Contouring Control (MPCC) but narrower
 than it — full MPCC's progress-maximisation apparatus was considered and
 rejected as too close to a failure mode already eliminated here (see
-`planning_control_sync.md`'s writeup for why). One is on by default, two are
+`docs/reference/README.md`'s writeup for why). One is on by default, two are
 off:
 
 - `nmpc_spline_reference_enabled` (default **true**) — `PathReference`'s
@@ -1795,7 +1795,7 @@ off:
 All three are implemented identically in `nmpc_core.py` and the offline
 `controller/nmpc_optimiser.py`; none touch `mpc_core.py` (the LTV-QP).
 
-Full detail: `planning_control_sync.md`'s "Nonlinear MPC (`use_nmpc`)" section
+Full detail: `docs/reference/control_mechanisms.md`'s "Nonlinear MPC (`use_nmpc`)" section
 (what it is, what it reuses, what is inactive, offline A/B numbers, the offline
 port, a matched same-day LIVE A/B — steering saturation 6.45% → 0.58%,
 lap 54.72s → 52.35s — and the "Which settings affect which controller" map

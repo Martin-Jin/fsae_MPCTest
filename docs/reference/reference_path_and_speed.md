@@ -13,7 +13,7 @@ the live planner and a per-tick curvature speed estimate.
 - `docs/developer_guide.md`, "Recording, exporting and driving a track" — the
   step-by-step workflow for producing these files.
 - `docs/tuning.md` — the controller weights that track the reference.
-- `docs/planning_control_sync.md` — the offline/live parity rules the numbers
+- `docs/reference/offline_live_parity.md` — the offline/live parity rules the numbers
   here are subject to.
 
 ## The two files, and which does what

@@ -630,7 +630,7 @@ Directly contrasting with Section 3.2:
 | `PathReference` (spline `kappa(s)`/`psi_ref(s)`) | `nmpc_core.PathReference` | `controller/nmpc_optimiser.py`'s port |
 | NMPC dynamics (`_f`, includes `e_psi_dot = r - kappa*s_dot`) | `nmpc_core._f()` / `_f_scalar()` | `controller/nmpc_optimiser.py`'s port |
 | NMPC cost-facing outputs (`_outputs`) | `nmpc_core._outputs()` | `controller/nmpc_optimiser.py`'s port |
-| The rejected curvature-forcing attempt (Section 3.2) | historical, see `planning_control_sync.md`'s "Curvature-forcing term" section | `controller/model_utils.curvature_horizon_profile()` (historical) |
+| The rejected curvature-forcing attempt (Section 3.2) | historical, see `docs/reference/superseded_mechanisms.md`'s "Curvature-forcing term" section | `controller/model_utils.curvature_horizon_profile()` (historical) |
 
 For the cost function itself (`Q`/`R`/`R_rate`, how these error terms turn
 into a single number to minimise), see

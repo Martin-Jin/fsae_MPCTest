@@ -3,7 +3,7 @@
 This is the single canonical reference for tuning the MPC: every weight,
 adaptive-gain shape constant, and feature flag, what it does, how to adjust
 it, and anything specific to keep in mind when changing it. Other docs
-(`architecture.md`, `developer_guide.md`, `planning_control_sync.md`) link
+(`architecture.md`, `developer_guide.md`, `docs/reference/`) link
 here instead of repeating this material — check those docs only for things
 tuning doesn't cover (system architecture, how to run the tuner, live/offline
 resync procedure).
@@ -13,7 +13,7 @@ resync procedure).
 (live). This doc explains *what each one does and how to tune it*; it
 deliberately does not restate every current numeric value, since those drift
 as tuning continues and a second copy of the numbers here would just be one
-more place to fall out of sync. See `planning_control_sync.md`'s parity rule: any change here
+more place to fall out of sync. See `docs/reference/offline_live_parity.md`'s parity rule: any change here
 must be applied to **both** `settings.py` and `mpc_params.py`.
 
 **Two controllers, two tuning surfaces.** Sections 1-4.4/4.9 below tune the
@@ -37,7 +37,7 @@ for what the NMPC is and why it exists.
 5. Re-validate: `python -m tuner.recorded_map_rollout` (offline, ~2 min) at
    minimum; for anything touching adaptive gains or delay handling, also run
    `VALIDATION_SUITE`. Never trust an offline-only score for a change that
-   affects saturation or heading error — see `planning_control_sync.md`'s project rule 3, "the offline
+   affects saturation or heading error — see `docs/reference/offline_live_parity.md`'s project rule 3, "the offline
    simulator does not fully predict the car".
 
 ---
@@ -81,7 +81,7 @@ masked or amplified by another, so isolate.
   first thing to lower — but sweep around the current value rather than
   assuming further cuts keep helping; a single shared weight is not a
   monotonic "lower is better" relationship, it has a measured local optimum
-  (see `planning_control_sync.md`'s "Accel/brake effort weight split" for
+  (see `docs/reference/control_mechanisms.md`'s "Accel/brake effort weight split" for
   the history behind why this is two independent weights rather than one).
   Lowering ONLY `r_a_brake` (leaving `r_a_accel` fixed) is the more targeted
   lever if the specific symptom is weak braking without also making the car
@@ -134,8 +134,8 @@ oscillation doesn't reappear.
 | `ref_heading_rise_rate_deg_s` | the cap, in deg/s, when enabled |
 
 This exists because the planner's reference heading can swing faster than
-either the sim or the real car can ever physically yaw — see `planning_control_sync.md`'s
-"reference-heading lead" discussion. The limiter only ever slows down how
+either the sim or the real car can ever physically yaw — see `docs/logs/sim_to_real_investigation.md`'s
+reference-heading-lead sections (§12.8, §26). The limiter only ever slows down how
 fast the *target* is allowed to change; it never reverses a correction's
 sign.
 
@@ -297,7 +297,7 @@ and is unaffected by this removal.
 geometric path tangent by however much yaw is achievable at the planned
 speed, so `e_psi` carries a real, current error approaching a corner
 instead of relying on Q/R reweighting of an error that doesn't exist yet.
-See `planning_control_sync.md`'s "Precomputed shaped heading-lead profile"
+See `docs/reference/control_mechanisms.md`'s "Precomputed shaped heading-lead profile"
 section for the full design and why this avoids curvature-forcing's
 wrong-direction-transient failure.
 
@@ -314,7 +314,7 @@ help — check that file's shortlist before assuming either default.
 almost everywhere on that track at the default `authority_frac` — a
 plausible explanation for the variance (the lead can't selectively target
 the approach phase on this track) that further runs haven't yet confirmed
-or ruled out. See `planning_control_sync.md`'s caveat and
+or ruled out. See `docs/reference/README.md`'s caveat and
 `late_turn_in_investigation.md` Parts 12-13 for the full run-by-run data
 before drawing conclusions from any single result.
 
@@ -372,7 +372,7 @@ sweep and mechanism:
 `nmpc_core.NMPCController` (Frenet-frame nonlinear MPC, Gauss-Newton SQP).
 Default **false**. This repo now has its own offline port too
 (`controller/nmpc_optimiser.py`, selected by `settings.USE_NMPC`, same
-default false) — see `planning_control_sync.md`'s "Nonlinear MPC
+default false) — see `docs/reference/README.md`'s "Nonlinear MPC
 (`use_nmpc`)" section for the full description, and
 `tuner/nmpc_offline_check.py` for the reproducible validation suite
 (`python -m tuner.nmpc_offline_check`, no ROS/FSDS session needed).
@@ -429,7 +429,7 @@ default false) — see `planning_control_sync.md`'s "Nonlinear MPC
   path), `nmpc_horizon_speed_profile_enabled` and
   `nmpc_friction_circle_enabled` (both default false, genuine unvalidated
   experiments — do not enable for a live run without an offline A/B first).
-  See `planning_control_sync.md`'s "Three MPCC-inspired additions" subsection
+  See `docs/reference/README.md`'s "Three MPCC-inspired additions" subsection
   for the mechanism and "Which settings affect which controller" for the
   complete field-by-field controller-scope map (which settings are LTV-QP-only,
   NMPC-only, or shared).
@@ -499,7 +499,7 @@ angle. The car was simply reaching the hardest curvature ramp needing ~15 m/s²
 of lateral acceleration against the plant's ~7.5 ceiling.
 
 Note this constant only affects `speed_profile.csv` — see section 7 and
-`docs/reference_path_and_speed.md`'s "Speed-profile aggressiveness".
+`docs/reference/reference_path_and_speed.md`'s "Speed-profile aggressiveness".
 
 ---
 
@@ -803,7 +803,7 @@ These two arrays define what the tuner is actually trying to optimize.
 `sim/scoring.py` is the single source of truth for the composite-score
 formula; the live copy at
 `ros2/src/fsae_planning/control/fsae_control/fsae_control/scoring.py` must
-stay a verbatim numeric copy (see `planning_control_sync.md`'s "Live/offline score parity" section).
+stay a verbatim numeric copy (see `docs/reference/offline_live_parity.md`'s "Live/offline score parity" section).
 
 - **`METRIC_SCALES`** — a typical/reference magnitude for each of the 13
   scored metrics, used to normalise them onto a comparable scale before
@@ -858,7 +858,7 @@ link here for anything about what to change and why:
   for weight/gain guidance.
 - `developer_guide.md` — how to run the tuner and simulator; points here for
   what the tuner is actually optimizing.
-- `planning_control_sync.md` — the live/offline field-mapping table (which
+- `docs/reference/` — the live/offline field-mapping table (which
   `settings.py` constant matches which `MPCParams` field) and the
   upstream-resync procedure; not a tuning-values guide.
 - `docs/logs/sim_to_real_investigation.md` — the full chronological

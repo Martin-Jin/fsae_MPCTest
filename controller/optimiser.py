@@ -175,7 +175,7 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max, du_max=None, terminal_scale=
     # r_a_accel==r_a_brake reproduces the old single-R[1,1] cost
     # bit-for-bit. This lets braking be tuned independently from
     # acceleration without new QP variables or constraints: see
-    # planning_control_sync.md's "Accel/brake effort weight split".
+    # `docs/reference/control_mechanisms.md`'s "Accel/brake effort weight split".
     cost += cp.sum_squares(cp.multiply(sqrtR_param[0, 0], u[0, :]))
     cost += r_a_accel_param * cp.sum_squares(cp.pos(u[1, :]))
     cost += r_a_brake_param * cp.sum_squares(cp.neg(u[1, :]))
@@ -330,7 +330,7 @@ def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max, R_rate=None, u_prev=None,
         is NOT used for a_cmd -- only R[0,0], delta_cmd, is read from it).
         Defaults to R[1,1] for both when omitted, exactly reproducing the
         pre-split single-R[1,1] behaviour. See settings.py's
-        R_A_ACCEL/R_A_BRAKE and planning_control_sync.md's "Accel/brake
+        R_A_ACCEL/R_A_BRAKE and `docs/reference/README.md`'s "Accel/brake
         effort weight split".
     u_prev : array-like, shape (2,), optional
         Previously applied control input. Used as anchor for the step-0
