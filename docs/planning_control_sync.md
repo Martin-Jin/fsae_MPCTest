@@ -1,12 +1,33 @@
 # Planning/Control Upstream Sync
 
-Reference for re-syncing this repo's `planning/` package and `fsds_simulator/`
-staging files against a newer clone of the upstream
-[`fsae_planning`](https://github.com/UOA-FSAE/fsae_planning) repo. Read this
-before touching either directory during a resync — it records which files
-mirror which upstream files, which pieces are deliberately *not* mirrored (and
-why), and the numeric-parity constants that must stay matched across the
-offline/live boundary.
+**Scope: the offline/live boundary.** This document covers what must stay
+matched between this repo and the live `fsae_planning` nodes, and how to
+re-sync them:
+
+- The project rules governing that boundary (below).
+- Which files mirror which upstream files, and which are deliberately *not*
+  mirrored.
+- The numeric-parity constants that must stay identical across the boundary.
+- The resync procedure itself.
+
+**Known scope creep.** The file also carries roughly 30 sections describing
+individual control mechanisms, simulator-fidelity limits, and removed
+features. Those accumulated here because a mechanism's *parity* obligation and
+its *explanation* were written in the same place. Better homes exist and
+should be preferred for anything new:
+
+| content | belongs in |
+|---|---|
+| a weight, gain or feature flag and how to tune it | `docs/tuning.md` |
+| how a subsystem is built | `docs/architecture.md` |
+| how to run or export something | `docs/developer_guide.md` |
+| the reference path and speed profile | `docs/reference_path_and_speed.md` |
+| a mechanism that no longer exists | `docs/removed_mechanisms.md` |
+| an investigation's history and measurements | `docs/logs/` |
+
+Add a section here only when its subject really is the offline/live boundary.
+When a mechanism needs both, describe it in the doc above and record only its
+parity obligation here, in the numeric-parity table.
 
 ## Project rules this document is the authority for
 
@@ -842,6 +863,39 @@ The weighted-metric component (the 13 metrics × `SCORE_WEIGHTS` — see the
 way; only the bonus/penalty terms differ, and only `offtrack` is
 unconditionally unavailable.
 
+## Lap timing starts at 0.5 m/s, not at the first tick
+
+**Plain version:** a run's clock used to start the moment the software began,
+which included about a second of the car sitting still before it moved. Every
+lap time was that much too slow, and the offline and live numbers were not
+measuring the same thing. The clock now starts when the car actually starts
+moving.
+
+`LAUNCH_SPEED_MPS = 0.5` is the threshold, defined on both sides:
+
+| side | location |
+|---|---|
+| live | `telemetry_logger.py`'s `LapProgressTracker.LAUNCH_SPEED_MPS` |
+| offline | `sim/rollout_core.py`'s `LAUNCH_SPEED_MPS` + `launch_step` |
+
+- **Live**: `LapProgressTracker.update()` takes `car_speed` and defers
+  `_start_wall` until `abs(car_speed) >= LAUNCH_SPEED_MPS`. Passing
+  `car_speed=None` falls back to the old first-tick behaviour, so an older
+  caller still works.
+- **Offline**: `sim_time = (n_ran - launch_step) * DT`, where `launch_step` is
+  the first step above the threshold.
+
+**Consequence for comparing numbers:** a lap time recorded before this change
+includes the standstill and is roughly 0.95 s slower than the same drive
+measured after it. The two are not directly comparable. This also cleared a
+spurious DNF in `nmpc_offline_check`, where the standstill was consuming step
+budget.
+
+**Both callers must pass `car_speed`** — `mpc_controller.py` and
+`mpc_controller_standalone.py` both call
+`self._lap_tracker.update(self._car_pos, t, self._car_speed)`. A caller that
+omits it silently reverts to timing from tick 0.
+
 ## The sim-to-real gap: a lateral-acceleration ceiling, partly closed
 
 > **Full investigation history** — every hypothesis tried, why each looked
@@ -1246,577 +1300,6 @@ geometry is genuinely spurious (not real track shape) before touching
 either lever; see `late_turn_in_investigation.md`'s "Gradual-corner accel
 oscillation" section for the full worked example of how to distinguish the
 two.
-
-## Lap timing starts at 0.5 m/s, not at the first tick
-
-**Plain version:** a run's clock used to start the moment the software began,
-which included about a second of the car sitting still before it moved. Every
-lap time was that much too slow, and the offline and live numbers were not
-measuring the same thing. The clock now starts when the car actually starts
-moving.
-
-`LAUNCH_SPEED_MPS = 0.5` is the threshold, defined on both sides:
-
-| side | location |
-|---|---|
-| live | `telemetry_logger.py`'s `LapProgressTracker.LAUNCH_SPEED_MPS` |
-| offline | `sim/rollout_core.py`'s `LAUNCH_SPEED_MPS` + `launch_step` |
-
-- **Live**: `LapProgressTracker.update()` takes `car_speed` and defers
-  `_start_wall` until `abs(car_speed) >= LAUNCH_SPEED_MPS`. Passing
-  `car_speed=None` falls back to the old first-tick behaviour, so an older
-  caller still works.
-- **Offline**: `sim_time = (n_ran - launch_step) * DT`, where `launch_step` is
-  the first step above the threshold.
-
-**Consequence for comparing numbers:** a lap time recorded before this change
-includes the standstill and is roughly 0.95 s slower than the same drive
-measured after it. The two are not directly comparable. This also cleared a
-spurious DNF in `nmpc_offline_check`, where the standstill was consuming step
-budget.
-
-**Both callers must pass `car_speed`** — `mpc_controller.py` and
-`mpc_controller_standalone.py` both call
-`self._lap_tracker.update(self._car_pos, t, self._car_speed)`. A caller that
-omits it silently reverts to timing from tick 0.
-
-## Input-jerk cost (`nmpc_rjerk_delta` / `nmpc_rjerk_a`) — NMPC only
-
-**Plain version:** the controller already pays a price for *moving* the
-steering wheel. That price is the same whether it is turning steadily into a
-corner or wobbling back and forth, so raising it to stop the wobble also makes
-the car reluctant to turn. This term prices something different — how much the
-*rate* of steering changes — which is small for a steady turn and large for a
-wobble. It lets the wobble be penalised without penalising turning in.
-
-Technically: a **second-difference** penalty on the control inputs, alongside
-the existing first-difference rate cost. `nmpc_rjerk_delta` weights steering
-*acceleration* (the change in the change); `nmpc_rjerk_a` does the same for
-the longitudinal input. Both default to `0.0`, which removes the term from the
-QP entirely (no Hessian contribution). Live/offline defaults today:
-**150.0 / 0.0**.
-
-**Why it exists.** The plain rate cost charges by `|du|`, which is identical
-for a sustained ramp into a corner and for one leg of an oscillation — so it
-cannot suppress hunting without also resisting turn-in. That is the trade the
-whole steering-chatter investigation kept running into. Measured on live data,
-direction **reversals** carry ~4.3× the `|d2|` of same-direction ramps versus
-only ~1.9× the `|d1|`, so the second difference separates the two about twice
-as sharply. A steady ramp scores near zero here and is nearly free; an
-alternating wiggle is expensive.
-
-**How it enters the QP.** `E` is the first-difference operator already built
-for the rate cost; the jerk term reuses it as `E2 = E @ E`, so
-`du_k − du_{k−1}` is the discrete input acceleration:
-
-```
-Hess += E2ᵀ · diag(rj) · E2          rj = tile([rjerk_delta, rjerk_a], N)
-grad += E2ᵀ · (rj · e_jerk)
-```
-
-Two implementation points that matter before modifying this term:
-
-- **It is anchored to the two previous applied inputs, not just one.** A
-  second difference spanning the tick boundary needs `u_prev` *and*
-  `u_prev2`, hence the corrections `e_jerk[:NU] -= (2·u_prev − u_prev2)` and
-  `e_jerk[NU:2NU] += u_prev`. Without them the term is blind to a reversal
-  that straddles the boundary — exactly the case it exists to catch. The
-  controller therefore carries `_u_prev2` state, which must be updated
-  before `_u_prev`.
-- **No OSQP sparsity change.** `p_mask[:n_du,:n_du]` is already a dense upper
-  triangle, so `E2ᵀ·R·E2` adds no new nonzeros and the solver's pattern is
-  unchanged — the term can be enabled/disabled between runs without
-  rebuilding the problem structure.
-
-`_cost()` carries a matching `jerk` term. **This must stay in step with the
-QP**: the SQP line search scores candidate steps with `_cost()`, so a term
-present in the Hessian but absent from `_cost()` means the search is
-optimising a different objective than the one being solved. That exact bug
-existed for the rate cost (it used the flat `self.r_rate` while the QP used
-`_Rr_flat`) and affected every rate-reshaping flag.
-
-**Measured effect (live, `centerline.csv`).** At `rjerk_delta=150` with
-`r_rate_delta=52.5`: 0 saturated ticks, 0 slew-limited ticks and 1 steering
-reversal over three laps. Offline at the same pair, slew-limited ticks fall
-7.80% → 2.77% and chatter 2.825 → 1.686 °/tick.
-
-**Caution on attributing a saturation figure to this term.** An earlier live
-run showed ~4.5% steering saturation with `rjerk=150` and it was initially
-read as the jerk penalty trading smoothness for saturation. That was the
-*reference line*, not this weight — the same weight on the centreline
-saturates 0.00%. See "Reference line: raceline vs centreline" below.
-
-**Untested:** the offline low-rate pairing `r_rate_delta=5.0` with
-`rjerk_delta=250.0`, which beats the flat-52.5 baseline on every offline
-metric. Set both together if trying it. `nmpc_rjerk_a` has never been
-exercised at a nonzero value on either side.
-
-## Three-zone rate schedule (`nmpc_rrate_zone_*`) — and why `k` gates it
-
-**Plain version:** the price the controller pays for moving the steering wheel
-should not be the same everywhere. On a straight it should be high, so the car
-holds still instead of hunting. Approaching a corner it should drop, so the car
-is willing to start turning. Through the corner it should be lowest. This
-mechanism slides that price continuously between three levels based on how much
-the road is bending now and how much it will bend just ahead.
-
-Technically: a continuous multiplier on the NMPC's steering-rate cost, driven
-by current curvature and the peak curvature the horizon predicts ahead:
-
-| zone | condition | multiplier |
-|---|---|---|
-| straight | nothing now, nothing ahead | `boost_straight` (2.0) |
-| approach | nothing now, corner ahead | `ease_approach` (0.35) |
-| corner | turning now | `floor_corner` (0.15) |
-
-It **multiplies** `r_rate_delta` rather than overwriting it, so it composes
-with the tuned 52.5 — unlike `nmpc_corner_rrate_blend_enabled`, which
-overwrites `R_rate[0,0]` and silently discards it.
-
-**The endpoints are gated by `nmpc_corner_factor_k`, and this is easy to miss.**
-Both `now` and `ahead` pass through
-`_corner_factor(|κ|, k) = 1 − 1/(1 + k|κ|)`, and the corner floor is only
-reached as that approaches 1. So the schedule is only as strong as `k` lets it
-saturate **over the track's own curvature range**:
-
-| `\|κ\|` | `_corner_factor` at k=8 | at k=27 |
-|---|---|---|
-| 0.00 | 0.000 | 0.000 |
-| 0.06 | 0.390 | 0.618 |
-| 0.209 (this track's tightest) | **0.626** | **0.850** |
-| 1.125 | 0.900 | 0.968 |
-
-At the LTV-QP's inherited `k=8.0`, reaching `_corner_factor`=0.9 needs
-`|κ|`=1.125, but `comp_test_map_3`'s tightest corner is 0.209. Measured live
-with the zone enabled at 2.0/0.35/0.15 and `k` inherited, `m_Rrate_zone`
-ranged **0.829–1.962 with 0% of ticks in either the ease or floor band** — the
-multiplier never left the boost band, so what actually ran was a mild global
-rate *boost*, not a three-zone schedule. Scores were a wash against the
-zone-off baseline (0.522 vs 0.488), which is the expected result of a
-mechanism that never engaged.
-
-`k=27.0` puts 0.209 at `_corner_factor`=0.85, giving a real swing rather than
-the 2.4× the inherited `k=8` allowed. Derive it from the track, not by feel:
-
-```
-k ≈ target_corner_frac / ((1 − target_corner_frac) · κ_max)
-```
-
-**OPEN: the schedule DNFs offline at the intended endpoints, unexplained.**
-With `k=27` and `ease_approach`=0.35 the offline rollout goes off-track at the
-track's tightest corner (x≈41.4, y≈49.6 — the same corner as the live
-raceline excursion), full-lock steering with `|e_y|` growing monotonically to
-2.53 m. That is a late-turn-in failure, i.e. the *opposite* of what releasing
-the rate weight on approach should do. The obvious readings are all
-contradicted by measurement:
-
-- Not "too much release": raising `floor_corner` to 0.5 or 0.7 still DNFs.
-- **Not a monotonic tuning effect at all:** `boost_straight`=0.8 — which makes
-  the multiplier ≤1 everywhere, i.e. uniformly *weaker* than no zone — also
-  DNFs, at step 289. A configuration strictly gentler than the baseline
-  cannot cause worse turn-in than the baseline through the rate weight alone.
-- Not the speed profile: matching the harness's `v_max` to the driven
-  centreline's 16.70 changes nothing.
-- Not `k`: with the zone disabled, k=15/27/40 are all identical to baseline
-  (the field is inert without the zone), and k=15/40 with the zone on
-  complete.
-- Not weight compounding: `_Rr_flat` is rebuilt fresh from `r_rate_tick` each
-  tick, because `rrate_zone_enabled` is in the rebuild guard's condition —
-  so the scaling does not accumulate across ticks.
-
-The DNF runs also carry high non-`solved` SQP rates (42% at
-`boost_straight`=0.8 vs 14% at baseline), so the leading hypothesis is that
-rescaling `_Rr_flat` *after* the rollout — the zone is applied later than
-every other rate-reshaping flag, because it needs horizon curvature —
-interacts badly with the warm start or line search. **Not confirmed.**
-
-`ease_approach` is therefore set to **0.80**, the value at which the offline
-rollout completes (score 0.796 vs 0.822 baseline, `|e_y|` 0.476 vs 0.496,
-p90 0.976 vs 1.044 — a modest genuine improvement). **The intended
-0.35 turn-in release remains untested**, live and offline.
-
-Note the sim and the car disagree here: the same zone at `k=8`/0.35 completed
-two clean laps live (score 0.522) while DNFing offline at step 274. Given the
-documented sim-to-real gap, that is not proof either side is right, but it
-does mean an offline DNF here is not automatically a live DNF.
-
-Consequences:
-
-- **Read `m_Rrate_zone` before believing an A/B of the endpoints.** If it
-  never approaches `floor_corner`, the endpoints are not what was tested and
-  `k` is the thing to change. A null result here means "did not engage" at
-  least as often as it means "does not help."
-- **Run `tuner.steering_chatter_check` before shipping a zone/`k` change.**
-  The `k=27`/0.35 combination was set from the saturation arithmetic alone
-  and would have gone to the car as an offline DNF had the check not been
-  run afterwards.
-- **`nmpc_corner_factor_k` is shared** with `nmpc_corner_rrate_blend_enabled`.
-  Raising it for the zone also sharpens that blend — harmless while the blend
-  is off, but not independent.
-- `corner_frac` is published in telemetry and read by the node-level output
-  smoothing, but through `params.corner_factor_k` (the LTV-QP field), **not**
-  the NMPC override — so raising `nmpc_corner_factor_k` does not perturb
-  smoothing even when it is enabled.
-
-## Turn-in timing: the command leads, and six levers do not move it
-
-**Plain version:** when the car seems to turn in late, the steering command
-itself is not late. Comparing what the wheel was told to do against what the
-corner geometrically required shows the command arriving about 0.15 s *early*
-and at roughly 94% of the needed angle. So a "turns in late" complaint is
-about what happens after the command, not about the controller's timing.
-
-Measured live on `centerline.csv` (3 runs, correlation 0.93): the commanded
-steering **leads** the geometrically-required angle (`atan(L·κ)` at the car's
-own station — the steering angle a simple bicycle model needs for that
-curvature) by **0.15 s**, and delivers **0.936** of it in corners.
-`delta_cmd` and the applied `steer_deg` are identical to 0.0005°.
-
-So a "turns in late" report is not the controller deciding late. Whatever
-produces the residual symptom, it is downstream of a command that is early
-and close to the right magnitude.
-
-**Six candidate causes were tested and falsified** — full evidence in
-`docs/logs/steering_chatter_investigation.md` ("Session N+1"):
-`r_rate_delta` (52.5 is the *best* value tried; lower is wider and DNFs),
-`nmpc_corner_factor_k` past 27 (k=60 measurably worse live),
-`nmpc_q_e_y` (kept at 7.5 but does not change the drift rate),
-`NMPC_SQP_ITERS` (slew-limited tick fraction flat across 1/2/3),
-speed-profile braking feasibility (exported profiles are feasible; 0.00% of
-stations exceed −7.0 m/s²), delay compensation (same lag in high- and
-low-latency halves of the same run), and the `alat_ceiling` model (it is
-*conservative* in the 6–14 m/s band, not optimistic).
-
-**A drift-rate invariant worth knowing before tuning this again:** across
-every configuration tried on this track — `r_rate` 5→52.5, `k` 8→60,
-`q_e_y` 6.35→7.5 — the rate-normalised count of sustained lateral-error-growth
-episodes sits at **~31.5 per minute**. A cost-weight change redistributes
-episode size, not episode rate. Treat a raw episode count as uninterpretable
-unless divided by run duration: the same config gave 29 episodes in 55 s and
-48 in 90 s, which was briefly mis-read as a regression.
-
-**Two metric traps found here**, both of which produced a plausible wrong
-conclusion before being caught:
-
-- **Lap-wide ratios are dominated by straights.** "Plant yaw gain" (achieved
-  yaw rate ÷ `v/L·tan(δ)`) reads 0.42 at p10, which looks like severe
-  understeer. Binned by speed it is an artefact: the low-gain ticks are fast
-  and nearly straight, where the denominator is near zero. The gain *rises*
-  with `a_lat` (0.13 at 0–2 m/s² → 1.10 at 6–8), the opposite of a grip
-  limit. The same applies to a steering-vs-yaw-rate cross-correlation over a
-  full lap — it measures the phase of the straights.
-- **`dv_target/dt` along a rollout is not the profile's gradient.** It reads
-  −26.9 m/s² (apparently infeasible) where the exported CSV's own spatial
-  gradient is −5.03; the car crossing stations faster inflates the time
-  derivative. Read feasibility off the exported file, not off a rollout.
-
-## `launch_all.sh` has two launch branches; both must honour `SPEED_CSV`/`PATH_CSV`
-
-**Plain version:** the launch script can start the software in two ways
-depending on whether it is running inside a container. One of those two ways
-used to ignore the setting that chooses which path file to drive, so changing
-that setting appeared to do nothing.
-
-`launch_all.sh` ends in an `if [ "$USE_DOCKER" = true ]` split, and
-`USE_DOCKER` is **auto-detected**, not set by hand — so which branch runs is
-not obvious from reading the config at the top of the file.
-
-The Docker branch previously hard-coded the filenames:
-
-```bash
-map_path:=$CONTAINER_TRACK_DIR/speed_profile.csv
-path_map_path:=$CONTAINER_TRACK_DIR/raceline.csv      # ignored PATH_CSV
-```
-
-It now derives them, matching the non-Docker branch:
-
-```bash
-map_path:=$CONTAINER_TRACK_DIR/$(basename "$SPEED_CSV")
-path_map_path:=$CONTAINER_TRACK_DIR/$(basename "$PATH_CSV")
-```
-
-The container mounts the repo at a different root, so the host-side
-`$SPEED_CSV`/`$PATH_CSV` paths cannot be passed through verbatim — only their
-basenames, re-rooted at `$CONTAINER_TRACK_DIR`.
-
-**Why this matters beyond the one-line fix:** with the old code, switching
-`PATH_CSV` to `centerline.csv` silently drove the raceline on any Docker run,
-and the telemetry header would have reported the raceline correctly while the
-operator believed otherwise. **When a config change appears to have no effect,
-check the launch header in the telemetry CSV** — `launch.path_map_path` and
-`launch.map_path` record what the controller actually received.
-
-## Reference line: raceline vs centreline
-
-**Plain version:** there are two ways to decide the line the car drives. A
-*racing line* cuts corners for speed, running wide on entry and clipping the
-apex. A *centreline* just follows the middle of the track. The racing line is
-faster in principle, but it is harder to follow, and when something goes wrong
-it is impossible to tell from the logs whether a large error means the car
-missed the line or the line deliberately went near the edge. The centreline
-removes that ambiguity — and on this track it is currently also faster in
-practice.
-
-`tuner/tools/raceline_optimizer.py` has two modes, selected by `--mode`, and
-both write a 5-column `x,y,psi,psi_target,v_target` CSV that the live
-controller consumes identically through `path_map_path`:
-
-| mode | output | lateral offsets | use |
-|---|---|---|---|
-| `raceline` (default) | `raceline.csv` | curvature-minimising search | timed runs |
-| `centerline` | `centerline.csv` | pinned to zero | diagnosis, and currently the better line on `comp_test_map_3` |
-
-Centreline mode short-circuits the optimisation loop (`optimize_raceline`'s
-`lateral_offsets=False`): no curvature-reduction search, no final smoothing
-pass. The speed profile, heading shaping and cone-clearance check are the
-same code in both modes. It writes a **different filename on purpose**, so
-exporting a diagnostic line can never overwrite the raceline a timed run
-depends on.
-
-**Why a centreline is worth having at all.** On a raceline a large logged
-`|e_y|` is ambiguous: the line deliberately sits near a boundary at an apex,
-so "1.8 m from the path" is either a tracking failure or the line working as
-designed, and the telemetry cannot distinguish them. On the centreline `|e_y|`
-is unambiguously distance from the middle of the track, which is what makes a
-"drove too close to the cones" report answerable from the log alone.
-
-**On `comp_test_map_3` the centreline is not merely more legible — it is
-faster.** Same controller settings, same `speed_profile.csv`, 3 laps each:
-
-| | raceline | centreline |
-|---|---|---|
-| composite score | 0.752 | **0.488** |
-| lap time | 54.50 s | **51.34 s** |
-| RMSE | 0.506 | **0.366 m** |
-| peak \|e_y\| | 1.804 | **1.004 m** |
-| max \|e_psi\| | 37.6° | **22.0°** |
-| steering saturation | 0.18% | **0.00%** |
-| \|e_y\| > 1.0 m | 4.00% | **0.14%** |
-| steering reversals | 13 | **1** |
-
-At the corner that motivated this (`nmpc_s0` 170–195, the tightest on the
-track) the raceline produced a 1.8 m excursion on two of three laps with the
-car bogging to 2.19 m/s; the centreline holds 4.96 m/s minimum and peaks at
-1.004 m. Faster overall **despite being 5.1 m longer** (470.6 vs 465.5 m),
-because no lap is spent recovering from the excursion.
-
-**The mechanism, and why it is a real optimiser bug.**
-
-- The raceline's offset from the centreline is tiny: mean 0.13 m, max 0.48 m
-  over the whole lap, and only 0.35 m through the failing corner.
-- At that corner `|κ|` is 0.209 — the global maximum for this track, and about
-  70% of the car's full-lock kinematic floor (1/3.32 m = 0.30).
-- There is no width left to cut with, so the search bought no lap time. But
-  the offset it did apply still perturbed the curvature of a corner already at
-  the edge of what the plant can deliver: a marginally harder corner for no
-  gain.
-- `_candidate_score`'s `CURVATURE_SOFT_MAX` penalty does not catch this. It
-  thresholds **absolute** curvature (0.22) rather than curvature against the
-  `alat_ceiling` that the planned speed at that station actually permits.
-
-Consequences:
-
-- **Do not read the small mean offset as "the raceline is basically the
-  centreline, so the choice cannot matter."** It was measured as 0.13 m mean
-  and still cost 0.26 composite score. The offsets that matter are local to
-  the one or two corners nearest the plant's limit.
-- **The steering-quality metrics move with the reference, not only with the
-  cost weights.** Reversals 13 → 1 and saturation → 0 came from changing the
-  line, with every weight held fixed. A chatter or turn-in result measured on
-  a reference the car cannot track is not attributable to the weight under
-  test — see `docs/logs/steering_chatter_investigation.md`.
-- Fixing the optimiser means constraining a candidate's `κ·v²` against
-  `alat_ceiling_at(v)` per station, not `|κ|` against a flat constant. Not
-  done.
-
-## How the speed profile and the precomputed path are calculated
-
-**Plain version.** Before the car drives a track, two files are produced from
-the recorded cone map: one saying *where* to drive, one saying *how fast*.
-
-The speed file is built in three sweeps:
-
-1. Look at each point on the path and work out the fastest speed that corner
-   can be taken at without exceeding the grip budget.
-2. Sweep forwards, cutting any speed the car could not have accelerated up to
-   from the point behind it.
-3. Sweep backwards, cutting any speed the car could not brake down from in
-   time for the corner ahead.
-
-The result is a speed at every point that is both cornering-safe and
-reachable by a real car. Without sweeps 2 and 3 the file can demand
-impossible braking — measured at ~273 m/s² before they were added.
-
-### The speed profile: `compute_speed_profile()` in `sim/speed_profile.py`
-
-| pass | what it enforces | formula |
-|---|---|---|
-| 0 | corner speed from curvature | delegated to `curvature_speed()` at every point |
-| 1 | forward, acceleration limit | `v[i] ≤ √(v[i−1]² + 2·a_accel_max·ds)` |
-| 2 | backward, braking limit | `v[i] ≤ √(v[i+1]² + 2·|a_brake_max|·ds)` |
-
-Points worth knowing:
-
-- **Pass 0 is not a copy.** `compute_speed_profile()` calls the same
-  `curvature_speed()` the live car uses, so the offline oracle and the live
-  per-tick target cannot drift apart. `curvature_speed()` itself scans the
-  next 24 m of path, takes the peak curvature in that window, and returns
-  `safety·√(a_lat_max / κ_peak)` clamped to `[v_min, v_max]`.
-- **`a_accel_max`/`a_brake_max` are planning values, not the plant's limits**
-  (7.0 / −5.0 against the plant's 12.0 / −9.0). Planning at the true limits
-  leaves the controller no margin for combined slip or model error and makes
-  passes 1–2 nearly non-binding.
-- **Passes 1–2 have no live counterpart.** The car relies on
-  `curvature_speed()`'s 24 m look-ahead to see a corner early enough to brake.
-  The passes exist offline so `speed_rmse` does not penalise the controller
-  for failing to track an unreachable reference.
-- **Closed-loop wrapping.** With `closed_loop=True` (the default, correct for
-  a recorded lap) point *n−1* is treated as adjacent to point 0 and passes 1–2
-  run twice in each direction, so a constraint crossing the start/finish seam
-  propagates all the way round. Without it the car met an artificial slowdown
-  at the line once per lap. Set `False` only for a genuinely open path, such
-  as an acceleration event ending at a stop.
-
-### The path geometry: `tuner/tools/raceline_optimizer.py`
-
-Both modes start from a centreline reconstructed from the cone map, resampled
-to even arc-length spacing.
-
-- **`--mode raceline`** parameterises the line as a per-station lateral offset
-  `alpha[i]` within the track's own width budget, then iteratively nudges each
-  station toward lower curvature (a Kegel-style minimum-curvature search),
-  re-profiling speed each round. Candidates are ranked by lap time *plus* a
-  curvature penalty, so a kinked line cannot win on lap time alone. A final
-  smoothing pass removes residual per-station noise.
-- **`--mode centerline`** pins `alpha` to zero: no search, no smoothing. The
-  exported path is the reconstructed centreline and only its speed profile is
-  optimised.
-
-Both modes then run the same cone-clearance check *before* writing anything,
-so a line that passes too close to a cone fails the export rather than
-silently shipping.
-
-### Which file the car actually reads
-
-`launch_all.sh` passes two separate paths, and they deliberately point at
-different files:
-
-| launch arg | variable | supplies |
-|---|---|---|
-| `map_path` | `SPEED_CSV` | the speed target |
-| `path_map_path` | `PATH_CSV` | the path geometry |
-
-Both are only consulted when `USE_PRECOMPUTED_SPEED` / `USE_PRECOMPUTED_PATH`
-are true; otherwise the car falls back to the live planner and to
-`curvature_speed()` computed per tick.
-
-**The precomputed-speed branch applies no `v_max` clip**, so whatever
-`SPEED_CSV` contains is commanded directly. That makes the choice of file a
-speed-cap decision as much as a profile decision — check both files' ranges
-before swapping either.
-
-## Speed-profile aggressiveness: `CURVATURE_SPEED_A_LAT_MAX`
-
-Corner speed in the oracle profile comes from `v = √(a_lat_max / κ)`, so
-`CURVATURE_SPEED_A_LAT_MAX` (`sim/speed_profile.py`) is the single knob that
-sets how hard the car is willing to corner. `v_max`/`V_MAX` do NOT affect
-corner speed at all — they are a flat top-speed clip that only ever binds on
-the fastest straights, and on the precomputed-speed path they are not applied
-at all (the CSV's own values are the target, see `launch_all.sh`'s
-`SPEED_CSV` comment).
-
-**It is not a launch arg.** The value is baked into
-`tracks/<name>/speed_profile.csv` at export time. Changing it requires
-editing `sim/speed_profile.py`, re-running
-`python -m tuner.tools.export_speed_profile <map>`, and relaunching. It is
-ALSO the live `control_utils.curvature_speed()` default (used when no
-precomputed profile is loaded), so both sides must be changed together —
-see the numeric-parity table above.
-
-Scale reference: FSDS's measured sustained lateral-acceleration ceiling is
-~7.5 m/s² (with bursts to ~12.3 observed on a lap), so this planning value
-sits deliberately below the physical limit to leave margin for combined
-slip, model-plant mismatch and actuation lag. Raising it makes every corner
-faster proportionally to `√(a_lat_max)`; straights are unaffected once they
-are already at the `v_max` ceiling.
-
-**Caution when raising it:** the precomputed-speed branch applies no `v_max`
-clip, so the exported CSV's values are commanded directly with nothing above
-them to catch an over-aggressive profile. Step it up and measure rather than
-jumping to the measured physical ceiling.
-
-**Only `speed_profile.csv` responds to this constant. `raceline.csv` and
-`centerline.csv` do not.** The two exporters plan corner speed from different
-limits:
-
-| exported file | exporter | corner-speed limit |
-|---|---|---|
-| `speed_profile.csv` | `tuner.tools.export_speed_profile` | `CURVATURE_SPEED_A_LAT_MAX` (this constant) |
-| `raceline.csv`, `centerline.csv` | `tuner.tools.raceline_optimizer` | `alat_ceiling_at(v) × ALAT_MARGIN` (0.85) from `model/vehicle_physics.py` |
-
-*Plain version:* the file that decides how fast to go and the file that decides
-where to drive are produced by two different tools, and they work out safe
-corner speeds in two different ways. Changing this constant and re-exporting
-updates the first but silently leaves the second alone.
-
-Consequence: after changing this constant, re-run **`export_speed_profile`**.
-Re-running `raceline_optimizer --mode centerline` will report an unchanged
-`v_target` range and that is correct, not a failed export — on
-`comp_test_map_3` the current files read 6.00–18.00 (`speed_profile.csv`) and
-5.54–16.70 (`centerline.csv`).
-
-Which one actually reaches the car depends on `launch_all.sh`: `SPEED_CSV`
-supplies the speed target and `PATH_CSV` supplies the geometry, and they
-deliberately point at different files (see that script's own comment). With the
-default pairing the speed the car tracks comes from `speed_profile.csv`, so
-this constant is live-relevant even while the car drives `centerline.csv`.
-
-**This value is a steering-smoothness parameter, not only a lap-time one.**
-
-*Plain version:* this number decides how fast the car is allowed to plan to go
-through corners. Set too high, the car arrives at the tightest corner faster
-than it can physically turn — so the steering slams over, the car runs wide,
-and it feels like a sudden jerk. Lowering it slightly made the steering much
-smoother at a small cost in lap time.
-
-Currently **4.75**, reduced from 5.5 after 5.5 was traced to a specific
-sudden-steering-jump symptom. At 5.5 the car arrived at the track's hardest
-curvature ramp (s0≈43→46, where the geometrically-required angle climbs
-8.5°→15.2° in 2.7 m) carrying ~3 m/s more than its own target, which needs
-roughly 15 m/s² of lateral acceleration — twice the plant's ~7.5 ceiling.
-No steering policy can track that, so the command stalls near 9° and `e_psi`
-runs away to −18°.
-
-Live effect of 5.5 → 4.75, same controller settings:
-
-| | 5.5 | 4.75 |
-|---|---|---|
-| stutters/min (sign flip, both \|d\|>1.5°) | 33.3 | **9.8** |
-| \|d_steer\| > 5° events | 20 | **1** |
-| max \|d_steer\| | 7.92° | **5.20°** |
-| mean \|d2\| (jerk) | 0.904 | **0.604** |
-| peak \|e_y\| | 1.250 | **1.008 m** |
-| `a_lat` above 7.5 | 4.69% | **2.67%** |
-| gain at the problem corner | 0.746 | **0.843** |
-
-**Why this matters for tuning order:** four controller-side weight changes
-(`r_rate_delta`, `nmpc_corner_factor_k`, `nmpc_q_e_y`, `NMPC_SQP_ITERS`) were
-each tried against this symptom first and none of them moved it — see "Turn-in
-timing" above. The steering command was already *early* (leading the geometric
-requirement by 0.15 s) and at ~94% of the required magnitude; the binding
-problem was the speed the car brought to the corner. **A "won't turn / jerks
-at tight corners" report should be checked against `a_lat` demand and speed
-overshoot before any steering weight is touched.**
-
-Note the mechanism is not "the car brakes better" — speed overshoot relative
-to target barely changed (hot ticks 13.31% → 13.14%). What changed is that the
-target itself is lower, so the absolute speed and the required angle at the
-curvature ramp are both smaller.
-
-Also note `a_brake_max` (the `compute_speed_profile` braking pass) looked even
-better on per-tick metrics at 3.5 — hot ticks to 0.00%, saturation 0.65% — but
-**DNF'd in every offline variant tried**. Do not ship it without understanding
-that failure.
 
 ## Dynamic speed cap
 

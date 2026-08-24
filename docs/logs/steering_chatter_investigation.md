@@ -723,7 +723,7 @@ weight held fixed**, produced:
 Both runs: NMPC, `r_rate_delta=52.5`, `nmpc_rjerk_delta=150.0`,
 `q_e_y=6.35`, smoothing off, zone off, same `speed_profile.csv`, 3 laps.
 
-Mechanism is documented in `planning_control_sync.md`'s "Reference line:
+Mechanism is documented in `docs/reference_path_and_speed.md`'s "Reference line:
 raceline vs centreline": the raceline's offset is small (0.13 m mean, 0.48 m
 max) but it perturbs the curvature of the track's tightest corner
 (`|κ|`=0.209, ~70% of the full-lock kinematic floor) where there is no width
@@ -801,7 +801,7 @@ not a monotonic tuning effect: `boost_straight`=0.8, which makes the
 multiplier ≤1 everywhere (uniformly *weaker* than no zone), also DNFs.
 Compounding is ruled out (`_Rr_flat` is rebuilt each tick — `rrate_zone_enabled`
 is in the rebuild guard). Full elimination list in
-`planning_control_sync.md`'s "Three-zone rate schedule"; the cause is **open**,
+`docs/tuning.md`'s "Three-zone rate schedule"; the cause is **open**,
 with a not-yet-confirmed suspicion about the zone being applied after the
 rollout (it needs horizon curvature) interacting with the warm start.
 
@@ -937,7 +937,7 @@ Fixed by, in order of measured impact:
 2. **Input-jerk term `nmpc_rjerk_delta=150`** (second difference of steering).
    Separates a sustained ramp from an oscillation in a way `|du|` cannot; on
    the centreline it holds 0 saturated ticks, 0 slew-limited ticks and 1
-   reversal over three laps. See `planning_control_sync.md`'s "Input-jerk
+   reversal over three laps. See `docs/tuning.md`'s "Input-jerk
    cost".
 3. **Post-solve output LPF disabled** (`output_smoothing_enabled=false`),
    made redundant by 1–2.
@@ -954,7 +954,7 @@ reversals 13 → 1.
 
 Not a controller fault at all. `CURVATURE_SPEED_A_LAT_MAX` **5.5 → 4.75** took
 stutters 33.3 → 9.8 /min and `|d_steer|>5°` events 20 → 1. Mechanism and the
-full table are in `planning_control_sync.md`'s "Speed-profile aggressiveness".
+full table are in `docs/reference_path_and_speed.md`'s "Speed-profile aggressiveness".
 
 **This is the diagnostic lesson of the whole investigation.** Six
 controller-side hypotheses were tested against Fault 2 and all six failed,

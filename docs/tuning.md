@@ -455,7 +455,7 @@ making the car reluctant to turn. A plain rate cost charges the same for a
 steady ramp into a corner and for one leg of an oscillation, so it cannot
 suppress one without resisting the other; the jerk term separates them (live
 data: reversals carry ~4.3× the second difference of ramps, versus only ~1.9×
-the first). Mechanism in `planning_control_sync.md`'s "Input-jerk cost".
+the first). Mechanism in `docs/tuning.md`'s "Input-jerk cost".
 
 Untested pairing worth trying: `r_rate_delta=5.0` with `NMPC_RJERK_DELTA=250.0`
 beats the flat-52.5 baseline on every offline metric.
@@ -499,9 +499,239 @@ angle. The car was simply reaching the hardest curvature ramp needing ~15 m/s²
 of lateral acceleration against the plant's ~7.5 ceiling.
 
 Note this constant only affects `speed_profile.csv` — see section 7 and
-`planning_control_sync.md`'s "Speed-profile aggressiveness".
+`docs/reference_path_and_speed.md`'s "Speed-profile aggressiveness".
 
 ---
+
+### Input-jerk cost (`nmpc_rjerk_delta` / `nmpc_rjerk_a`) — NMPC only
+
+**Plain version:** the controller already pays a price for *moving* the
+steering wheel. That price is the same whether it is turning steadily into a
+corner or wobbling back and forth, so raising it to stop the wobble also makes
+the car reluctant to turn. This term prices something different — how much the
+*rate* of steering changes — which is small for a steady turn and large for a
+wobble. It lets the wobble be penalised without penalising turning in.
+
+Technically: a **second-difference** penalty on the control inputs, alongside
+the existing first-difference rate cost. `nmpc_rjerk_delta` weights steering
+*acceleration* (the change in the change); `nmpc_rjerk_a` does the same for
+the longitudinal input. Both default to `0.0`, which removes the term from the
+QP entirely (no Hessian contribution). Live/offline defaults today:
+**150.0 / 0.0**.
+
+**Why it exists.** The plain rate cost charges by `|du|`, which is identical
+for a sustained ramp into a corner and for one leg of an oscillation — so it
+cannot suppress hunting without also resisting turn-in. That is the trade the
+whole steering-chatter investigation kept running into. Measured on live data,
+direction **reversals** carry ~4.3× the `|d2|` of same-direction ramps versus
+only ~1.9× the `|d1|`, so the second difference separates the two about twice
+as sharply. A steady ramp scores near zero here and is nearly free; an
+alternating wiggle is expensive.
+
+**How it enters the QP.** `E` is the first-difference operator already built
+for the rate cost; the jerk term reuses it as `E2 = E @ E`, so
+`du_k − du_{k−1}` is the discrete input acceleration:
+
+```
+Hess += E2ᵀ · diag(rj) · E2          rj = tile([rjerk_delta, rjerk_a], N)
+grad += E2ᵀ · (rj · e_jerk)
+```
+
+Two implementation points that matter before modifying this term:
+
+- **It is anchored to the two previous applied inputs, not just one.** A
+  second difference spanning the tick boundary needs `u_prev` *and*
+  `u_prev2`, hence the corrections `e_jerk[:NU] -= (2·u_prev − u_prev2)` and
+  `e_jerk[NU:2NU] += u_prev`. Without them the term is blind to a reversal
+  that straddles the boundary — exactly the case it exists to catch. The
+  controller therefore carries `_u_prev2` state, which must be updated
+  before `_u_prev`.
+- **No OSQP sparsity change.** `p_mask[:n_du,:n_du]` is already a dense upper
+  triangle, so `E2ᵀ·R·E2` adds no new nonzeros and the solver's pattern is
+  unchanged — the term can be enabled/disabled between runs without
+  rebuilding the problem structure.
+
+`_cost()` carries a matching `jerk` term. **This must stay in step with the
+QP**: the SQP line search scores candidate steps with `_cost()`, so a term
+present in the Hessian but absent from `_cost()` means the search is
+optimising a different objective than the one being solved. That exact bug
+existed for the rate cost (it used the flat `self.r_rate` while the QP used
+`_Rr_flat`) and affected every rate-reshaping flag.
+
+**Measured effect (live, `centerline.csv`).** At `rjerk_delta=150` with
+`r_rate_delta=52.5`: 0 saturated ticks, 0 slew-limited ticks and 1 steering
+reversal over three laps. Offline at the same pair, slew-limited ticks fall
+7.80% → 2.77% and chatter 2.825 → 1.686 °/tick.
+
+**Caution on attributing a saturation figure to this term.** An earlier live
+run showed ~4.5% steering saturation with `rjerk=150` and it was initially
+read as the jerk penalty trading smoothness for saturation. That was the
+*reference line*, not this weight — the same weight on the centreline
+saturates 0.00%. See "Reference line: raceline vs centreline" below.
+
+**Untested:** the offline low-rate pairing `r_rate_delta=5.0` with
+`rjerk_delta=250.0`, which beats the flat-52.5 baseline on every offline
+metric. Set both together if trying it. `nmpc_rjerk_a` has never been
+exercised at a nonzero value on either side.
+
+### Three-zone rate schedule (`nmpc_rrate_zone_*`) — and why `k` gates it
+
+**Plain version:** the price the controller pays for moving the steering wheel
+should not be the same everywhere. On a straight it should be high, so the car
+holds still instead of hunting. Approaching a corner it should drop, so the car
+is willing to start turning. Through the corner it should be lowest. This
+mechanism slides that price continuously between three levels based on how much
+the road is bending now and how much it will bend just ahead.
+
+Technically: a continuous multiplier on the NMPC's steering-rate cost, driven
+by current curvature and the peak curvature the horizon predicts ahead:
+
+| zone | condition | multiplier |
+|---|---|---|
+| straight | nothing now, nothing ahead | `boost_straight` (2.0) |
+| approach | nothing now, corner ahead | `ease_approach` (0.35) |
+| corner | turning now | `floor_corner` (0.15) |
+
+It **multiplies** `r_rate_delta` rather than overwriting it, so it composes
+with the tuned 52.5 — unlike `nmpc_corner_rrate_blend_enabled`, which
+overwrites `R_rate[0,0]` and silently discards it.
+
+**The endpoints are gated by `nmpc_corner_factor_k`, and this is easy to miss.**
+Both `now` and `ahead` pass through
+`_corner_factor(|κ|, k) = 1 − 1/(1 + k|κ|)`, and the corner floor is only
+reached as that approaches 1. So the schedule is only as strong as `k` lets it
+saturate **over the track's own curvature range**:
+
+| `\|κ\|` | `_corner_factor` at k=8 | at k=27 |
+|---|---|---|
+| 0.00 | 0.000 | 0.000 |
+| 0.06 | 0.390 | 0.618 |
+| 0.209 (this track's tightest) | **0.626** | **0.850** |
+| 1.125 | 0.900 | 0.968 |
+
+At the LTV-QP's inherited `k=8.0`, reaching `_corner_factor`=0.9 needs
+`|κ|`=1.125, but `comp_test_map_3`'s tightest corner is 0.209. Measured live
+with the zone enabled at 2.0/0.35/0.15 and `k` inherited, `m_Rrate_zone`
+ranged **0.829–1.962 with 0% of ticks in either the ease or floor band** — the
+multiplier never left the boost band, so what actually ran was a mild global
+rate *boost*, not a three-zone schedule. Scores were a wash against the
+zone-off baseline (0.522 vs 0.488), which is the expected result of a
+mechanism that never engaged.
+
+`k=27.0` puts 0.209 at `_corner_factor`=0.85, giving a real swing rather than
+the 2.4× the inherited `k=8` allowed. Derive it from the track, not by feel:
+
+```
+k ≈ target_corner_frac / ((1 − target_corner_frac) · κ_max)
+```
+
+**OPEN: the schedule DNFs offline at the intended endpoints, unexplained.**
+With `k=27` and `ease_approach`=0.35 the offline rollout goes off-track at the
+track's tightest corner (x≈41.4, y≈49.6 — the same corner as the live
+raceline excursion), full-lock steering with `|e_y|` growing monotonically to
+2.53 m. That is a late-turn-in failure, i.e. the *opposite* of what releasing
+the rate weight on approach should do. The obvious readings are all
+contradicted by measurement:
+
+- Not "too much release": raising `floor_corner` to 0.5 or 0.7 still DNFs.
+- **Not a monotonic tuning effect at all:** `boost_straight`=0.8 — which makes
+  the multiplier ≤1 everywhere, i.e. uniformly *weaker* than no zone — also
+  DNFs, at step 289. A configuration strictly gentler than the baseline
+  cannot cause worse turn-in than the baseline through the rate weight alone.
+- Not the speed profile: matching the harness's `v_max` to the driven
+  centreline's 16.70 changes nothing.
+- Not `k`: with the zone disabled, k=15/27/40 are all identical to baseline
+  (the field is inert without the zone), and k=15/40 with the zone on
+  complete.
+- Not weight compounding: `_Rr_flat` is rebuilt fresh from `r_rate_tick` each
+  tick, because `rrate_zone_enabled` is in the rebuild guard's condition —
+  so the scaling does not accumulate across ticks.
+
+The DNF runs also carry high non-`solved` SQP rates (42% at
+`boost_straight`=0.8 vs 14% at baseline), so the leading hypothesis is that
+rescaling `_Rr_flat` *after* the rollout — the zone is applied later than
+every other rate-reshaping flag, because it needs horizon curvature —
+interacts badly with the warm start or line search. **Not confirmed.**
+
+`ease_approach` is therefore set to **0.80**, the value at which the offline
+rollout completes (score 0.796 vs 0.822 baseline, `|e_y|` 0.476 vs 0.496,
+p90 0.976 vs 1.044 — a modest genuine improvement). **The intended
+0.35 turn-in release remains untested**, live and offline.
+
+Note the sim and the car disagree here: the same zone at `k=8`/0.35 completed
+two clean laps live (score 0.522) while DNFing offline at step 274. Given the
+documented sim-to-real gap, that is not proof either side is right, but it
+does mean an offline DNF here is not automatically a live DNF.
+
+Consequences:
+
+- **Read `m_Rrate_zone` before believing an A/B of the endpoints.** If it
+  never approaches `floor_corner`, the endpoints are not what was tested and
+  `k` is the thing to change. A null result here means "did not engage" at
+  least as often as it means "does not help."
+- **Run `tuner.steering_chatter_check` before shipping a zone/`k` change.**
+  The `k=27`/0.35 combination was set from the saturation arithmetic alone
+  and would have gone to the car as an offline DNF had the check not been
+  run afterwards.
+- **`nmpc_corner_factor_k` is shared** with `nmpc_corner_rrate_blend_enabled`.
+  Raising it for the zone also sharpens that blend — harmless while the blend
+  is off, but not independent.
+- `corner_frac` is published in telemetry and read by the node-level output
+  smoothing, but through `params.corner_factor_k` (the LTV-QP field), **not**
+  the NMPC override — so raising `nmpc_corner_factor_k` does not perturb
+  smoothing even when it is enabled.
+
+### Turn-in timing: the command leads, and six levers do not move it
+
+**Plain version:** when the car seems to turn in late, the steering command
+itself is not late. Comparing what the wheel was told to do against what the
+corner geometrically required shows the command arriving about 0.15 s *early*
+and at roughly 94% of the needed angle. So a "turns in late" complaint is
+about what happens after the command, not about the controller's timing.
+
+Measured live on `centerline.csv` (3 runs, correlation 0.93): the commanded
+steering **leads** the geometrically-required angle (`atan(L·κ)` at the car's
+own station — the steering angle a simple bicycle model needs for that
+curvature) by **0.15 s**, and delivers **0.936** of it in corners.
+`delta_cmd` and the applied `steer_deg` are identical to 0.0005°.
+
+So a "turns in late" report is not the controller deciding late. Whatever
+produces the residual symptom, it is downstream of a command that is early
+and close to the right magnitude.
+
+**Six candidate causes were tested and falsified** — full evidence in
+`docs/logs/steering_chatter_investigation.md` ("Session N+1"):
+`r_rate_delta` (52.5 is the *best* value tried; lower is wider and DNFs),
+`nmpc_corner_factor_k` past 27 (k=60 measurably worse live),
+`nmpc_q_e_y` (kept at 7.5 but does not change the drift rate),
+`NMPC_SQP_ITERS` (slew-limited tick fraction flat across 1/2/3),
+speed-profile braking feasibility (exported profiles are feasible; 0.00% of
+stations exceed −7.0 m/s²), delay compensation (same lag in high- and
+low-latency halves of the same run), and the `alat_ceiling` model (it is
+*conservative* in the 6–14 m/s band, not optimistic).
+
+**A drift-rate invariant worth knowing before tuning this again:** across
+every configuration tried on this track — `r_rate` 5→52.5, `k` 8→60,
+`q_e_y` 6.35→7.5 — the rate-normalised count of sustained lateral-error-growth
+episodes sits at **~31.5 per minute**. A cost-weight change redistributes
+episode size, not episode rate. Treat a raw episode count as uninterpretable
+unless divided by run duration: the same config gave 29 episodes in 55 s and
+48 in 90 s, which was briefly mis-read as a regression.
+
+**Two metric traps found here**, both of which produced a plausible wrong
+conclusion before being caught:
+
+- **Lap-wide ratios are dominated by straights.** "Plant yaw gain" (achieved
+  yaw rate ÷ `v/L·tan(δ)`) reads 0.42 at p10, which looks like severe
+  understeer. Binned by speed it is an artefact: the low-gain ticks are fast
+  and nearly straight, where the denominator is near zero. The gain *rises*
+  with `a_lat` (0.13 at 0–2 m/s² → 1.10 at 6–8), the opposite of a grip
+  limit. The same applies to a steering-vs-yaw-rate cross-correlation over a
+  full lap — it measures the phase of the straights.
+- **`dv_target/dt` along a rollout is not the profile's gradient.** It reads
+  −26.9 m/s² (apparently infeasible) where the exported CSV's own spatial
+  gradient is −5.03; the car crossing stations faster inflates the time
+  derivative. Read feasibility off the exported file, not off a rollout.
 
 ## 4c. What the offline tuner searches (and the NMPC gate)
 

@@ -496,7 +496,7 @@ python -m tuner.tools.raceline_optimizer   <name> --mode centerline   # -> .../c
 `alat_ceiling_at(v) × ALAT_MARGIN` in `model/vehicle_physics.py`. So changing
 `CURVATURE_SPEED_A_LAT_MAX` changes `speed_profile.csv` only, and re-running
 the raceline/centreline export afterwards legitimately reports an unchanged
-`v_target` range. See `planning_control_sync.md`'s "Speed-profile
+`v_target` range. See `docs/reference_path_and_speed.md`'s "Speed-profile
 aggressiveness".
 
 `--mode centerline` pins the lateral offset to zero, so the exported path is
