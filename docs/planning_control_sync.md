@@ -1207,6 +1207,39 @@ either lever; see `late_turn_in_investigation.md`'s "Gradual-corner accel
 oscillation" section for the full worked example of how to distinguish the
 two.
 
+## Lap timing starts at 0.5 m/s, not at the first tick
+
+**Plain version:** a run's clock used to start the moment the software began,
+which included about a second of the car sitting still before it moved. Every
+lap time was that much too slow, and the offline and live numbers were not
+measuring the same thing. The clock now starts when the car actually starts
+moving.
+
+`LAUNCH_SPEED_MPS = 0.5` is the threshold, defined on both sides:
+
+| side | location |
+|---|---|
+| live | `telemetry_logger.py`'s `LapProgressTracker.LAUNCH_SPEED_MPS` |
+| offline | `sim/rollout_core.py`'s `LAUNCH_SPEED_MPS` + `launch_step` |
+
+- **Live**: `LapProgressTracker.update()` takes `car_speed` and defers
+  `_start_wall` until `abs(car_speed) >= LAUNCH_SPEED_MPS`. Passing
+  `car_speed=None` falls back to the old first-tick behaviour, so an older
+  caller still works.
+- **Offline**: `sim_time = (n_ran - launch_step) * DT`, where `launch_step` is
+  the first step above the threshold.
+
+**Consequence for comparing numbers:** a lap time recorded before this change
+includes the standstill and is roughly 0.95 s slower than the same drive
+measured after it. The two are not directly comparable. This also cleared a
+spurious DNF in `nmpc_offline_check`, where the standstill was consuming step
+budget.
+
+**Both callers must pass `car_speed`** — `mpc_controller.py` and
+`mpc_controller_standalone.py` both call
+`self._lap_tracker.update(self._car_pos, t, self._car_speed)`. A caller that
+omits it silently reverts to timing from tick 0.
+
 ## Input-jerk cost (`nmpc_rjerk_delta` / `nmpc_rjerk_a`) — NMPC only
 
 **Plain version:** the controller already pays a price for *moving* the
@@ -1436,6 +1469,42 @@ conclusion before being caught:
   −26.9 m/s² (apparently infeasible) where the exported CSV's own spatial
   gradient is −5.03; the car crossing stations faster inflates the time
   derivative. Read feasibility off the exported file, not off a rollout.
+
+## `launch_all.sh` has two launch branches; both must honour `SPEED_CSV`/`PATH_CSV`
+
+**Plain version:** the launch script can start the software in two ways
+depending on whether it is running inside a container. One of those two ways
+used to ignore the setting that chooses which path file to drive, so changing
+that setting appeared to do nothing.
+
+`launch_all.sh` ends in an `if [ "$USE_DOCKER" = true ]` split, and
+`USE_DOCKER` is **auto-detected**, not set by hand — so which branch runs is
+not obvious from reading the config at the top of the file.
+
+The Docker branch previously hard-coded the filenames:
+
+```bash
+map_path:=$CONTAINER_TRACK_DIR/speed_profile.csv
+path_map_path:=$CONTAINER_TRACK_DIR/raceline.csv      # ignored PATH_CSV
+```
+
+It now derives them, matching the non-Docker branch:
+
+```bash
+map_path:=$CONTAINER_TRACK_DIR/$(basename "$SPEED_CSV")
+path_map_path:=$CONTAINER_TRACK_DIR/$(basename "$PATH_CSV")
+```
+
+The container mounts the repo at a different root, so the host-side
+`$SPEED_CSV`/`$PATH_CSV` paths cannot be passed through verbatim — only their
+basenames, re-rooted at `$CONTAINER_TRACK_DIR`.
+
+**Why this matters beyond the one-line fix:** with the old code, switching
+`PATH_CSV` to `centerline.csv` silently drove the raceline on any Docker run,
+and the telemetry header would have reported the raceline correctly while the
+operator believed otherwise. **When a config change appears to have no effect,
+check the launch header in the telemetry CSV** — `launch.path_map_path` and
+`launch.map_path` record what the controller actually received.
 
 ## Reference line: raceline vs centreline
 
