@@ -42,6 +42,64 @@ which regressed the car badly and was reverted. See "Speed-profile
 aggressiveness" below and `launch_all.sh`'s own comment before changing the
 pairing.
 
+## Which file the car actually loads at launch — there is no auto-discovery
+
+**Plain version:** the car does not look for "the most recent export" or scan
+the tracks folder for anything. `launch_all.sh` names one exact folder and two
+exact filenames as plain strings. Re-exporting a file overwrites the one
+already there — there is no versioning, so "the newest one" and "the only one
+that exists" are always the same file.
+
+```bash
+TRACK=comp_test_map_3
+TRACK_DIR="$HOST_ROS2_DIR/src/fsae_planning/tracks/$TRACK"
+SPEED_CSV="$TRACK_DIR/speed_profile.csv"
+PATH_CSV="$TRACK_DIR/centerline.csv"
+```
+
+Consequences:
+
+- **Switching tracks** means editing `TRACK=` in `launch_all.sh` to a
+  different subfolder name under `ros2/src/fsae_planning/tracks/`. Nothing
+  scans for "the most recently recorded track" — forgetting to change `TRACK=`
+  drives whatever track that name still points at.
+- **Switching reference line** (raceline vs centreline) means editing
+  `PATH_CSV=` to the other filename in the same folder — see "The two files"
+  above.
+- **Re-running an exporter overwrites its output file in place.** There is no
+  `_v2` suffix, no timestamp, no backup. Comparing an old export against a new
+  one requires copying the old file aside first (or checking it into git — the
+  `fsae_planning` tracks folder is a separate repo, see
+  `docs/developer_guide.md`) before re-exporting.
+- **The three variables are read once, at the top of `launch_all.sh`, before
+  the launch command runs.** Editing them mid-run has no effect on an already-
+  launched node; relaunch to pick up a change.
+
+## `USE_PRECOMPUTED_SPEED`/`_PATH` are resolved in the launch file, identically for all three controllers
+
+**Plain version:** whether the precomputed files get used at all is decided
+once, in `control.launch.py`, before any controller node starts — not inside
+each controller's own code. All three controllers (Stanley, MPC, MPC-
+standalone) are handed the exact same result, so a Stanley run and an MPC run
+on the same track are guaranteed to share the identical speed target and/or
+path if that is what the toggles say.
+
+Mechanism: `control.launch.py` computes `effective_map_path` and
+`effective_path_map_path` with an `IfElseSubstitution` —
+`USE_PRECOMPUTED_SPEED=true` passes `map_path` through as given,
+`USE_PRECOMPUTED_SPEED=false` passes an empty string instead (regardless of
+what `map_path` was set to), and the same for the path toggle. That
+*resolved* value, not the raw `SPEED_CSV`/`PATH_CSV`, is what every
+controller's `map_path`/`path_map_path` ROS parameter actually receives.
+
+Consequence for reading the controller source: `stanley_controller.py` has no
+`use_precomputed_speed`/`use_precomputed_path` parameter and never checks
+either toggle — nor do the two MPC nodes. Reading only the node's own code
+therefore looks like the toggles are ignored; they are not, they are applied
+one layer up. All three nodes only ever see "load this file" (a non-empty
+string) or "there is no file" (empty string), and treat those two cases
+identically to each other.
+
 ## How the speed profile and the precomputed path are calculated
 
 **Plain version.** Before the car drives a track, two files are produced from
