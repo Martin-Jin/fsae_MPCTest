@@ -86,12 +86,22 @@ rise is shared between the rate damping and the faster speed profile and has
 NOT been attributed between them — one run at `a_lat_max=4.0` with
 `r_rate_delta=52.5` would separate them.
 
-### The offline harness now DNFs on the shipped defaults — READ THIS FIRST
+### RESOLVED: the offline harness DNF was caused by `a_lat_max=5.5`
 
-With `a_lat_max=5.5` + `r_rate_delta=52.5` (both shipped),
-`python -m tuner.nmpc_offline_check` **DNFs** the NMPC closed-loop section
-(`|e_y|` mean ~0.50, offtrack, ~450 of ~1000 ticks). The same config runs
-**cleanly live** — the fourth time offline has mispredicted this stack.
+At `a_lat_max=5.5` + `r_rate_delta=52.5`, `python -m tuner.nmpc_offline_check`
+**DNF'd** the NMPC closed-loop section (`|e_y|` mean ~0.50, offtrack, ~450 of
+~1000 ticks) while the same config ran cleanly live.
+
+**Fixed by `a_lat_max` 5.5 → 4.75** (the current shipped value). The harness
+now passes every check, NMPC included: `|e_y|` mean 0.459, p90 0.990,
+saturation 4.3%, `reached_end=True`, `dnf=False`.
+
+The offline/live disagreement was therefore real but not a harness artefact —
+the offline plant was simply less tolerant of a corner speed that the live car
+survived, and lowering the planned cornering acceleration removed the failure
+on both sides. Retained here because the same signature (offline DNF, live
+clean) recurred repeatedly during this investigation and this is the one case
+where the cause was found.
 
 Isolated offline (via `tuner/steering_chatter_check.py --set`):
 
