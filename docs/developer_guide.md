@@ -380,7 +380,7 @@ drives the precomputed line/speed on it" — recording, the two export tools,
 the on-disk layout they share, and the one switch that puts a track on the
 car. Each stage used to be documented (or not) in a different file; this
 section is now the single place that chains them. If you only need the
-concept, not the steps: **`docs/reference/offline_live_parity.md`'s parity rule and
+concept, not the steps: `docs/reference/offline_live_parity.md`'s parity rule and
 `tracks/__init__.py`'s module docstring cover *why* the layout looks like
 this; this section covers *how* to use it.
 
@@ -411,10 +411,29 @@ a separate git repo with its own remote (see this project's `docs/reference/`);
 changes under that path are local edits to that checkout only.
 
 `comp_test_map_3` is the track every baseline number in this repo's docs
-(`docs/logs/sim_to_real_investigation.md`, this guide, `docs/reference/`) is quoted against —
-don't overwrite it; give a new recording its own name. List what exists with
+(`docs/logs/sim_to_real_investigation.md`, this guide, `docs/reference/`) is
+quoted against — a new recording should get its own name rather than
+overwriting it. List what exists with
 `python -m tuner.tools.export_speed_profile --list` (from `fsae_MPCTest/`), or
 `ls ../ros2/src/fsae_planning/tracks/` (from `fsae_MPCTest/`).
+
+**A brand-new track name gets today's date appended automatically** —
+`<name>_<YYYYmmdd>` — whether created via `ros2/launch_all.sh` (its own
+`_newest_track`/date-suffix logic, triggered the moment `TRACK_DIR` does not
+exist yet) or via `tracks.dated_track_name()` from Python. Re-recording an
+EXISTING track (refreshing its cone map in place, same directory) does not
+get dated again — only first creation does. This means two recordings under
+the same base name on different days land in separate directories instead of
+one silently overwriting the other.
+
+**`ros2/launch_all.sh`'s `TRACK=` defaults to the most recently recorded
+track** (by the mtime of its `cone_map.json`, not by parsing a date out of
+the name), so a fresh recording is driven automatically with no `TRACK=` edit
+needed. Set `TRACK=<name>` explicitly to pin a specific one instead — see
+`docs/reference/reference_path_and_speed.md`'s "Which file the car actually
+loads at launch" for the full resolution mechanism, including how the
+geometry file (`PATH_CSV`) is chosen the same way, preferring
+`centerline.csv` over `raceline.csv`.
 
 #### 1. Record a lap
 
@@ -511,9 +530,13 @@ drives *better* than the raceline; see `docs/reference/reference_path_and_speed.
 (the output lands in `fsae_planning`'s `tracks/`, not this repo's — see
 "Where a track lives" above)
 
-Omitting `<name>` targets the default track (`comp_test_map_3`). Both also
-accept an explicit `cone_map.json` path in place of a name (for a capture
-that isn't under `tracks/` yet), and `--list` prints what's available.
+Omitting `<name>` targets the newest recorded track (by the mtime of its
+`cone_map.json` — see `tracks.newest_track()`), not a fixed name. Both tools
+also accept an explicit `cone_map.json` path in place of a name (for a
+capture that isn't under `tracks/` yet), `--list` prints what's available,
+and `--no-overwrite` refuses to replace an existing output file instead of
+silently overwriting a previous export (overwrite stays the default, since
+re-exporting after retuning the same track is the common case).
 
 - `export_speed_profile.py` reconstructs the centreline the same way
   `sim/track_io.load_recorded_track()` does (scipy `CubicSpline` +
@@ -548,11 +571,22 @@ docstring for the full reasoning.
 Two independent ROS launch args, both consumed by `mpc`/`mpc_standalone`
 (not `stanley`):
 
-| Launch arg | Default | Effect |
+| Launch arg | Default (via `launch_all.sh`) | Effect |
 |------|---------|--------|
-| `map_path` + `use_precomputed_speed` | `fsae_planning`'s `tracks/comp_test_map_3/speed_profile.csv` | Look up target speed from the CSV's oracle profile instead of live `curvature_speed()` per tick |
-| `path_map_path` + `use_precomputed_path` | `fsae_planning`'s `tracks/comp_test_map_3/raceline.csv` | Track the CSV's geometry instead of subscribing to `centerline_planner.py`'s `/fsae/planning/selected_trajectory` — removes the live planner from the control loop entirely |
-| `use_nmpc` | `false` | Swap `MPCController` (linear QP) for `nmpc_core.NMPCController` (Frenet-frame nonlinear MPC) entirely. See `docs/reference/control_mechanisms.md`'s "Nonlinear MPC (`use_nmpc`)" section and `architecture.md`'s "Second controller" section — not covered further here since it's a whole separate controller, not a launch-time data source like the two rows above. |
+| `map_path` + `use_precomputed_speed` | newest track's `speed_profile.csv` | Look up target speed from the CSV's oracle profile instead of live `curvature_speed()` per tick |
+| `path_map_path` + `use_precomputed_path` | newest track's `centerline.csv` (else `raceline.csv`) | Track the CSV's geometry instead of subscribing to `centerline_planner.py`'s `/fsae/planning/selected_trajectory` — removes the live planner from the control loop entirely |
+| `use_nmpc` | `false` | Swap `MPCController` (linear QP) for `nmpc_core.NMPCController` (Frenet-frame nonlinear MPC) entirely. `mpc`/`mpc_standalone` only, no effect on `stanley`. See `docs/reference/control_mechanisms.md`'s "Nonlinear MPC (`use_nmpc`)" section and `architecture.md`'s "Second controller" section — not covered further here since it's a whole separate controller, not a launch-time data source like the two rows above. |
+
+**`map_path`/`path_map_path` are consumed by all three controllers, not only
+`mpc`/`mpc_standalone`.** `stanley_controller.py` declares and reads both
+parameters exactly like the two MPC nodes do, and `control.launch.py` hands
+all three the identical resolved value (see
+`docs/reference/reference_path_and_speed.md`'s "`USE_PRECOMPUTED_SPEED`/`_PATH`
+are resolved in the launch file" for the mechanism) — this is what lets a
+Stanley run and an MPC run on the same track share the identical speed
+target and/or path for a directly comparable telemetry CSV. `use_nmpc` is the
+one row in this table that genuinely is MPC-only, since Stanley has no NMPC
+mode to switch into.
 
 Both `use_precomputed_speed`/`use_precomputed_path` default `true`, so a bare `ros2 launch fsae_bringup sim.launch.py`
 already drives the default track's precomputed line and speed with the

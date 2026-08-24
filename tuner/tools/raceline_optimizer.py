@@ -122,7 +122,7 @@ from sim.track_io import load_cone_map, _reconstruct_centreline  # noqa: E402
 from sim.track_io import _resample_dense  # noqa: E402
 import sim.speed_profile as speed_profile  # noqa: E402
 from tracks import (  # noqa: E402
-    CENTERLINE_NAME, DEFAULT_TRACK, RACELINE_NAME, default_out_for, list_tracks,
+    CENTERLINE_NAME, RACELINE_NAME, default_out_for, list_tracks, newest_track,
     resolve_map_arg,
 )
 
@@ -966,8 +966,9 @@ def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument(
         "map", nargs="?", default=None,
-        help=f"Track name under tracks/ (default: {DEFAULT_TRACK}), or an "
-             "explicit path to a cone_map.json.")
+        help="Track name under tracks/ (default: the most recently recorded "
+             f"track, currently {newest_track()!r}), or an explicit path to "
+             "a cone_map.json.")
     ap.add_argument(
         "out_path", nargs="?", default=None,
         help="Output CSV (default: raceline.csv beside the source map).")
@@ -983,6 +984,10 @@ def main():
                           "optimise only speed, so a logged lateral error reads "
                           "directly as distance from the middle "
                           "(default: %(default)s)")
+    ap.add_argument(
+        "--no-overwrite", dest="allow_overwrite", action="store_false", default=True,
+        help="Refuse to replace an existing output file; error instead of "
+             "silently overwriting a previous export of the same track/mode.")
     args = ap.parse_args()
 
     if args.list:
@@ -998,7 +1003,11 @@ def main():
     # Default output name follows the mode, so exporting a centreline can never
     # silently overwrite the raceline the car is currently driving.
     default_name = RACELINE_NAME if lateral_offsets else CENTERLINE_NAME
-    out_path = args.out_path or default_out_for(map_path, default_name)
+    try:
+        out_path = args.out_path or default_out_for(
+            map_path, default_name, allow_overwrite=args.allow_overwrite)
+    except FileExistsError as e:
+        ap.error(str(e))
     export(map_path, out_path, iters=args.iters, margin=args.margin,
            lateral_offsets=lateral_offsets)
 

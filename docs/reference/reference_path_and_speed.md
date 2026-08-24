@@ -42,38 +42,70 @@ which regressed the car badly and was reverted. See "Speed-profile
 aggressiveness" below and `launch_all.sh`'s own comment before changing the
 pairing.
 
-## Which file the car actually loads at launch — there is no auto-discovery
+## Which file the car actually loads at launch — auto-discovery, newest by default
 
-**Plain version:** the car does not look for "the most recent export" or scan
-the tracks folder for anything. `launch_all.sh` names one exact folder and two
-exact filenames as plain strings. Re-exporting a file overwrites the one
-already there — there is no versioning, so "the newest one" and "the only one
-that exists" are always the same file.
+**Plain version:** by default the car drives the most recently recorded
+track, and the most recently exported geometry file for it (preferring the
+centreline over the raceline if both exist). Nothing has to be typed to pick
+these up. `TRACK=` can still be set explicitly to pin a specific track
+instead — e.g. while comparing two recordings — but that is now an override,
+not a requirement.
 
 ```bash
-TRACK=comp_test_map_3
+# TRACK=comp_test_map_3   # uncomment to pin a track; default is newest
 TRACK_DIR="$HOST_ROS2_DIR/src/fsae_planning/tracks/$TRACK"
 SPEED_CSV="$TRACK_DIR/speed_profile.csv"
-PATH_CSV="$TRACK_DIR/centerline.csv"
+PATH_CSV="$TRACK_DIR/$_TRACK_GEOMETRY_NAME"   # centerline.csv, else raceline.csv
 ```
 
-Consequences:
+Resolution mechanism:
 
-- **Switching tracks** means editing `TRACK=` in `launch_all.sh` to a
-  different subfolder name under `ros2/src/fsae_planning/tracks/`. Nothing
-  scans for "the most recently recorded track" — forgetting to change `TRACK=`
-  drives whatever track that name still points at.
-- **Switching reference line** (raceline vs centreline) means editing
-  `PATH_CSV=` to the other filename in the same folder — see "The two files"
-  above.
-- **Re-running an exporter overwrites its output file in place.** There is no
-  `_v2` suffix, no timestamp, no backup. Comparing an old export against a new
-  one requires copying the old file aside first (or checking it into git — the
-  `fsae_planning` tracks folder is a separate repo, see
-  `docs/developer_guide.md`) before re-exporting.
-- **The three variables are read once, at the top of `launch_all.sh`, before
-  the launch command runs.** Editing them mid-run has no effect on an already-
-  launched node; relaunch to pick up a change.
+- **`TRACK` defaults to the newest track directory**, picked by the mtime of
+  its `cone_map.json` — not by parsing a date out of the directory name. This
+  means an undated legacy track (recorded before the dating scheme existed)
+  and a re-recorded track (which refreshes the existing directory's mtime
+  without renaming it) both resolve correctly as "newest" the moment they
+  actually are. The selection logic lives in `launch_all.sh` itself
+  (`_newest_track`), reimplemented in bash rather than shelled out to the
+  Python `tracks` module's `newest_track()` — this script must stay runnable
+  with no `fsae_MPCTest` checkout present, see the file-mapping note above.
+- **`PATH_CSV` defaults to the newest export within that track**, preferring
+  `centerline.csv` over `raceline.csv` when both exist (`_track_geometry_name`
+  in `launch_all.sh`, matching `tracks.geometry_path()`'s preference exactly).
+  Set `PATH_CSV=` explicitly (e.g. to `"$TRACK_DIR/raceline.csv"`) to override
+  the preference for a timed run — see "Reference line: raceline vs
+  centreline" above.
+- **`SPEED_CSV` is NOT resolved this way** — it always points at
+  `speed_profile.csv`, the one file that name can mean. The "newest export,
+  prefer centreline" logic only applies to the geometry file, because there
+  is only one speed-profile exporter and one filename for its output.
+
+Recording a brand-new track:
+
+- **A genuinely new `TRACK=` name is dated automatically** —
+  `<name>_<YYYYmmdd>` — the moment `launch_all.sh` notices the directory does
+  not exist yet, matching `tracks.dated_track_name()` exactly. Two recordings
+  under the same base name on different days land in separate directories
+  instead of overwriting each other.
+- **Re-recording an EXISTING track (refreshing its cone map in place) is NOT
+  dated again.** If `TRACK_DIR` already exists, `launch_all.sh` keeps writing
+  into it — this is the documented "refresh a cone map in place" workflow
+  and remains unchanged; only first creation gets a date suffix.
+
+Overwrite protection at export time: `tuner.tools.export_speed_profile` and
+`tuner.tools.raceline_optimizer` both accept `--no-overwrite`, which raises an
+error instead of silently replacing an existing CSV. Overwrite stays the
+default behaviour (re-exporting after retuning the same track is the common
+case), so this is opt-in per invocation, not a default that changed.
+
+Other consequences worth knowing:
+
+- **The launch-time variables are still read once, at the top of
+  `launch_all.sh`, before the launch command runs.** Editing them mid-run has
+  no effect on an already-launched node; relaunch to pick up a change.
+- **`ls "$HOST_ROS2_DIR/src/fsae_planning/tracks"` still shows every track**,
+  dated or not — auto-discovery does not hide or delete anything, it only
+  changes which one is picked with no `TRACK=` override.
 
 ## `USE_PRECOMPUTED_SPEED`/`_PATH` are resolved in the launch file, identically for all three controllers
 

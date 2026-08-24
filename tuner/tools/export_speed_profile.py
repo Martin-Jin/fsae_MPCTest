@@ -55,7 +55,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(_HERE)))
 
 from sim.track_io import load_recorded_track  # noqa: E402
 from tracks import (  # noqa: E402
-    DEFAULT_TRACK, SPEED_PROFILE_NAME, default_out_for, list_tracks,
+    SPEED_PROFILE_NAME, default_out_for, list_tracks, newest_track,
     resolve_map_arg,
 )
 
@@ -80,8 +80,9 @@ def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument(
         "map", nargs="?", default=None,
-        help=f"Track name under tracks/ (default: {DEFAULT_TRACK}), or an "
-             "explicit path to a cone_map.json.")
+        help="Track name under tracks/ (default: the most recently recorded "
+             f"track, currently {newest_track()!r}), or an explicit path to "
+             "a cone_map.json.")
     ap.add_argument(
         "out_path", nargs="?", default=None,
         help="Output CSV (default: speed_profile.csv beside the source map).")
@@ -93,6 +94,10 @@ def main():
              "profile brakes to a stop at the last point instead of staying "
              "connected across the start/finish seam. Default is closed-loop "
              "(continuous lap), which is correct for a recorded track.")
+    ap.add_argument(
+        "--no-overwrite", dest="allow_overwrite", action="store_false", default=True,
+        help="Refuse to replace an existing output file; error instead of "
+             "silently overwriting a previous export of the same track.")
     args = ap.parse_args()
 
     if args.list:
@@ -106,7 +111,11 @@ def main():
         # A mistyped track name is operator error, not a bug -- a one-line
         # message naming the available tracks is more useful than a traceback.
         ap.error(str(e))
-    out_path = args.out_path or default_out_for(map_path, SPEED_PROFILE_NAME)
+    try:
+        out_path = args.out_path or default_out_for(
+            map_path, SPEED_PROFILE_NAME, allow_overwrite=args.allow_overwrite)
+    except FileExistsError as e:
+        ap.error(str(e))
     export(map_path, out_path, closed_loop=args.closed_loop)
 
 

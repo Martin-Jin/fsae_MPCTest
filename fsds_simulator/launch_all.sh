@@ -45,13 +45,13 @@ CONTAINER_REPO_ROOT="$(dirname "$CONTAINER_ROS2_DIR")"
 
 # Which recorded track the car drives. Selects BOTH precomputed CSVs at once
 # from fsae_planning's own ros2/src/fsae_planning/tracks/<TRACK>/ --
-# speed_profile.csv (the centreline + oracle speed) and raceline.csv (the
-# minimum-time line). This is the ONLY place to change to switch tracks;
-# don't edit the defaults in sim.launch.py / control.launch.py.
+# speed_profile.csv (the centreline + oracle speed) and the geometry file
+# (centerline.csv if the track has one, else raceline.csv -- see
+# _newest_track/_track_geometry_name below).
 #
 # tracks/ is committed data inside fsae_planning (not gitignored, not
 # generated at runtime), so a fresh clone of FSDS + fsae_planning alone can
-# drive comp_test_map_3 immediately -- no fsae_MPCTest checkout needed to
+# drive its newest track immediately -- no fsae_MPCTest checkout needed to
 # READ an existing track. fsae_MPCTest is only where NEW tracks get produced
 # (recording + the two exporters); its output is then copied into
 # fsae_planning's tracks/<name>/ so it ships with that repo going forward.
@@ -63,7 +63,53 @@ CONTAINER_REPO_ROOT="$(dirname "$CONTAINER_ROS2_DIR")"
 #                           ("Recording, exporting and driving a track") --
 #                           then copy the resulting tracks/<name>/ directory
 #                           into ros2/src/fsae_planning/tracks/<name>/.
-TRACK=comp_test_map_3
+#
+# TRACK defaults to the MOST RECENTLY RECORDED track, resolved below by
+# _newest_track -- a pure-bash reimplementation of
+# fsae_MPCTest/tracks/newest_track() (mtime of cone_map.json, not a
+# name-embedded date, so it is correct for an undated legacy track and for a
+# re-recorded one -- see that function's own docstring for why). This launch
+# script must not depend on the fsae_MPCTest checkout existing (see the repo
+# layout note above), so the logic is duplicated in bash rather than shelled
+# out to Python; keep the two in sync if the selection rule ever changes.
+#
+# Set TRACK= explicitly (uncomment below) to pin a specific track instead of
+# always using the newest one -- e.g. while comparing two recordings, or if
+# a newer, still-being-tuned track should not yet become the default.
+# TRACK=comp_test_map_3
+_newest_track() {
+    local tracks_dir="$1" best="" best_mtime=-1 d mtime
+    [ -d "$tracks_dir" ] || return 1
+    for d in "$tracks_dir"/*/; do
+        d="${d%/}"
+        [ -f "$d/cone_map.json" ] || continue
+        mtime=$(stat -c '%Y' "$d/cone_map.json" 2>/dev/null || stat -f '%m' "$d/cone_map.json" 2>/dev/null)
+        [ -n "$mtime" ] || continue
+        if [ "$mtime" -gt "$best_mtime" ]; then
+            best_mtime="$mtime"
+            best="$(basename "$d")"
+        fi
+    done
+    [ -n "$best" ] || return 1
+    echo "$best"
+}
+# Which geometry file a track prefers: centerline.csv if it has one exported,
+# else raceline.csv, else empty (only a cone map, nothing exported yet).
+# Mirrors fsae_MPCTest/tracks/geometry_path()'s preference exactly.
+_track_geometry_name() {
+    local track_dir="$1"
+    if [ -f "$track_dir/centerline.csv" ]; then echo "centerline.csv";
+    elif [ -f "$track_dir/raceline.csv" ]; then echo "raceline.csv";
+    fi
+}
+if [ -z "${TRACK:-}" ]; then
+    TRACK="$(_newest_track "$HOST_ROS2_DIR/src/fsae_planning/tracks")" || {
+        echo "ERROR: no track found under $HOST_ROS2_DIR/src/fsae_planning/tracks" \
+             "(each needs at least a cone_map.json). Record one, or set TRACK=" \
+             "explicitly above." >&2
+        exit 1
+    }
+fi
 
 # Absolute paths handed to the launch files. Absolute (not derived from the
 # launch file's own location) because colcon copies those files into
@@ -93,16 +139,28 @@ TRACK_DIR="$HOST_ROS2_DIR/src/fsae_planning/tracks/$TRACK"
 # Revisit only after the precomputed branch clips to v_max; until then this
 # pairing is load-bearing, not an oversight.
 SPEED_CSV="$TRACK_DIR/speed_profile.csv"
-# GEOMETRY source. centerline.csv is the DIAGNOSTIC line (raceline_optimizer
-# --mode centerline): the geometric middle of the track, speed-optimised but
-# never shifted laterally. Swap back to raceline.csv for a timed run.
+# GEOMETRY source. Defaults to the NEWEST export within $TRACK, preferring
+# centerline.csv over raceline.csv when both exist (see _track_geometry_name
+# above) -- centerline.csv is the DIAGNOSTIC line (raceline_optimizer --mode
+# centerline): the geometric middle of the track, speed-optimised but never
+# shifted laterally. Set PATH_CSV explicitly below (e.g. back to
+# "$TRACK_DIR/raceline.csv") for a timed run.
 #
-# Why drive it: on raceline.csv a large logged |e_y| is ambiguous, because the
-# line intentionally sits near a boundary at an apex, so "1.8 m off the path"
-# can be a tracking failure OR the line doing its job. On the centreline |e_y|
-# is unambiguously distance from the middle of the track, which is what makes
-# a "drove too close to the cones" report answerable from the log alone.
-PATH_CSV="$TRACK_DIR/centerline.csv"
+# Why drive the centreline by default: on raceline.csv a large logged |e_y|
+# is ambiguous, because the line intentionally sits near a boundary at an
+# apex, so "1.8 m off the path" can be a tracking failure OR the line doing
+# its job. On the centreline |e_y| is unambiguously distance from the middle
+# of the track, which is what makes a "drove too close to the cones" report
+# answerable from the log alone.
+# Left empty (not hard-errored here) when the track has no geometry export
+# yet -- e.g. a brand-new track that is about to be RECORDED, where nothing
+# under TRACK_DIR exists and USE_PRECOMPUTED_PATH=false is the documented
+# setting precisely so this is never read. The "fail early and loudly" guard
+# below already checks PATH_CSV's existence, but only when
+# USE_PRECOMPUTED_PATH=true actually needs it -- erroring unconditionally
+# here would break that recording workflow before it can even start.
+_TRACK_GEOMETRY_NAME="$(_track_geometry_name "$TRACK_DIR")"
+PATH_CSV="$TRACK_DIR/$_TRACK_GEOMETRY_NAME"
 
 # Precomputed-map toggles for the mpc/mpc_standalone controller (see
 # fsae_planning's README.md "Precomputed-map launch args" and sim.launch.py's
@@ -159,7 +217,7 @@ done
 # Path-tracking controller to launch (stanley | mpc | mpc_standalone — see
 # sim.launch.py's own 'controller' DeclareLaunchArgument). Matches
 # sim.launch.py's default (mpc_standalone) unless overridden here.
-CONTROLLER=mpc_standalone
+CONTROLLER=stanley
 
 # Speed caps passed to the controller node (see sim.launch.py's v_max/v_min
 # DeclareLaunchArgument -- overrides fsae_params.yaml's controller.v_max/
@@ -898,10 +956,30 @@ fi
 # `python3 -m tuner.export_speed_profile $TRACK` (run from fsae_MPCTest, then
 # copy the result back into ros2/src/fsae_planning/tracks/$TRACK/) with no
 # extra file shuffling. Recording a NEW track: point TRACK at the new name
-# first (the directory is created on demand), and set both precomputed
-# toggles false so the car drives off the live planner instead of replaying
-# the old line. The guard above is skipped in that case precisely because
-# the CSVs don't exist yet.
+# first, and set both precomputed toggles false so the car drives off the
+# live planner instead of replaying the old line. The guard above is skipped
+# in that case precisely because the CSVs don't exist yet.
+#
+# If TRACK_DIR does not exist yet, this IS a brand-new recording, and the
+# directory actually created is dated -- "<TRACK>_<YYYYmmdd>" -- matching
+# fsae_MPCTest/tracks/dated_track_name() exactly, so two recordings under the
+# same TRACK= on different days never collide. A RE-record of an existing
+# track (TRACK_DIR already there) is NOT dated again -- it keeps refreshing
+# the same directory, which is the documented "refresh a cone map in place"
+# workflow above; only first creation gets a date.
+if [ ! -d "$TRACK_DIR" ]; then
+    TRACK="${TRACK}_$(date +%Y%m%d)"
+    TRACK_DIR="$HOST_ROS2_DIR/src/fsae_planning/tracks/$TRACK"
+    # Re-derive SPEED_CSV/PATH_CSV too (computed earlier, from the
+    # pre-date TRACK_DIR) so they stay consistent with the directory this
+    # recording actually lands in -- in case the operator left
+    # USE_PRECOMPUTED_SPEED/_PATH at true by mistake while recording a new
+    # track (the documented workflow above says set both false; this is the
+    # fallback for when that is not done, not the intended path).
+    SPEED_CSV="$TRACK_DIR/speed_profile.csv"
+    PATH_CSV="$TRACK_DIR/$(_track_geometry_name "$TRACK_DIR")"
+    echo "      new track — recording into: $TRACK_DIR"
+fi
 echo "[3/3] Launching Autonomous Stack (Perception, Planner, Control, Cone Recorder)..."
 echo "      track: $TRACK  (precomputed speed=$USE_PRECOMPUTED_SPEED path=$USE_PRECOMPUTED_PATH heading_profile=$USE_PRECOMPUTED_HEADING_PROFILE)"
 echo "      controller: $( [ "$USE_NMPC" = true ] && echo 'NMPC (nonlinear, nmpc_core.py)' || echo 'LTV-QP (mpc_core.py)' )"
