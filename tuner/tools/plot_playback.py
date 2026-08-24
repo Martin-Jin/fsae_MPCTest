@@ -225,9 +225,17 @@ def _label_for(path, meta):
     e.g. both LMPC and NMPC logs use 'mpc_standalone'), else the filename
     tag. Kept short deliberately (no score/lap suffix) since it's reused
     verbatim as a checkbox/radio-button/legend label.
+
+    `graph/` is excluded from the "use the folder name" rule the same way
+    `recorded_runs/` itself is: it's a flat curated drop zone that can hold
+    several different controllers' runs side by side, so "graph" for every
+    label would be worse than useless -- fall back to the filename tag,
+    same as a run left loose directly in `recorded_runs/`.
     """
-    parent = os.path.basename(os.path.dirname(os.path.abspath(path)))
-    if parent and parent != os.path.basename(os.path.abspath(RECORDED_RUNS_DIR)):
+    parent_dir = os.path.dirname(os.path.abspath(path))
+    parent = os.path.basename(parent_dir)
+    is_flat = parent_dir in (os.path.abspath(RECORDED_RUNS_DIR), os.path.abspath(GRAPH_DIR))
+    if parent and not is_flat:
         return parent
     return os.path.basename(path).split('_control_')[0]
 
@@ -635,7 +643,8 @@ def main():
                           f'from each subfolder of {RECORDED_RUNS_DIR} (e.g. one from '
                           'LMPC/, one from NMPC/, one from Stanley/ -- see --all/'
                           '--latest-only for other auto-load modes), or -- if '
-                          f'{GRAPH_DIR} has any runs in it -- only from there')
+                          f'{GRAPH_DIR} has any runs in it -- every run in there '
+                          'instead, overlaid')
     ap.add_argument('--signals', default=None,
                      help=f'comma-separated column names for the left panel '
                           f'(default: {",".join(DEFAULT_SIGNALS)})')
@@ -656,12 +665,17 @@ def main():
         # Curated graph/ folder takes over the auto-search entirely when it
         # has runs in it -- that's the point of moving files there instead of
         # leaving them in LMPC/NMPC/Stanley.
-        if search_dir == RECORDED_RUNS_DIR and _find_control_csvs(GRAPH_DIR):
+        using_graph_dir = search_dir == RECORDED_RUNS_DIR and _find_control_csvs(GRAPH_DIR)
+        if using_graph_dir:
             search_dir = GRAPH_DIR
         if args.latest_only:
             latest = find_latest_log(search_dir)
             logs = [latest] if latest is not None else []
-        elif args.all:
+        elif args.all or using_graph_dir:
+            # graph/ is flat (no per-controller subfolders), so
+            # find_latest_per_folder would treat it as ONE folder and keep
+            # only its single newest run -- load everything dropped in it
+            # instead, same as --all does for the full tree.
             logs = find_all_logs(search_dir)
         else:
             logs = find_latest_per_folder(search_dir)

@@ -861,16 +861,26 @@ subfolders), auto-load uses **only** what's in `graph/` instead of scanning
 what a plain `python -m tuner.tools.plot_playback` shows: move (or copy) the
 specific run(s) you want to look at into `graph/`, without deleting them
 from their controller subfolder or passing a path on the command line each
-time. `--all`/`--latest-only` apply within `graph/` the same way they do for
-the full tree. It's empty by default (tracked via `.gitkeep`) — drop files
-in, run the command, and it just works:
+time. It's empty by default (tracked via `.gitkeep`) — drop files in, run
+the command, and it just works:
 
 ```bash
 cp fsds_simulator/recorded_runs/NMPC/mpc_standalone_control_<ts>.csv \
    fsds_simulator/recorded_runs/NMPC/mpc_standalone_path_<ts>.csv \
    fsds_simulator/recorded_runs/graph/
-python -m tuner.tools.plot_playback       # loads only what's in graph/
+python -m tuner.tools.plot_playback       # loads every run in graph/, overlaid
 ```
+
+`graph/` is flat by design (no per-controller subfolders of its own), so
+**every** run dropped into it loads and overlays — unlike the full-tree
+default, which keeps only the newest run per controller subfolder. This is
+what makes it useful for comparing runs across different controllers (e.g.
+an NMPC run against a Stanley run) without `--all`. `--latest-only` still
+narrows a populated `graph/` down to its single newest run if that's what
+you want instead. Each run's label falls back to its filename tag rather
+than the folder name `graph` (which would be true of every run in it and so
+useless for telling them apart) — same rule as a run left loose directly in
+`recorded_runs/` itself.
 
 Point the search elsewhere with `--recorded-runs <dir>` (e.g. to auto-load
 straight out of `~/fsae_logs` without copying, or to compare two specific
