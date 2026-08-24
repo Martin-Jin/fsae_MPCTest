@@ -361,7 +361,13 @@ class ControlLogger:
         # epoch form also gave, and which readers (see
         # tuner/tools/plot_playback.py's _stamp) still rely on. Local time,
         # not UTC: it is read by a person standing next to the car.
-        stamp = time.strftime('%Y%m%d-%H%M%S', time.localtime())
+        # Two separate values, deliberately: `stamp` names the FILE and is for
+        # a human reading a directory listing; `now_epoch` is the numeric time
+        # origin written into the CSV header and must stay a float. They were
+        # briefly the same variable, which crashed the node at startup once the
+        # filename form stopped being numeric.
+        now_epoch = time.time()
+        stamp = time.strftime('%Y%m%d-%H%M%S', time.localtime(now_epoch))
         self._tag = tag
         self._ctrl_path = os.path.join(log_dir, f'{tag}_control_{stamp}.csv')
         self._path_path = os.path.join(log_dir, f'{tag}_path_{stamp}.csv')
@@ -394,7 +400,7 @@ class ControlLogger:
         # Run-relative time origin — set from the first sample of either
         # stream so both CSVs share one t=0. See "TIME" in the module docstring.
         self._t0: float | None = None
-        self._t0_epoch: float = float(stamp)
+        self._t0_epoch: float = now_epoch
 
         # Live scoring accumulator (fsae_control.scoring == offline scoring).
         self._metrics = RolloutMetrics()
