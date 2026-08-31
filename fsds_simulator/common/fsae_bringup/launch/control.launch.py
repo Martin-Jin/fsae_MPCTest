@@ -63,12 +63,6 @@ def generate_launch_description():
     enable_dynamic_speed_cap = LaunchConfiguration('enable_dynamic_speed_cap')
     dynamic_cap_a_lat_max = LaunchConfiguration('dynamic_cap_a_lat_max')
     dynamic_cap_safety = LaunchConfiguration('dynamic_cap_safety')
-    output_smoothing_enabled = LaunchConfiguration('output_smoothing_enabled')
-    output_smoothing_alpha = LaunchConfiguration('output_smoothing_alpha')
-    output_smoothing_corner_floor = LaunchConfiguration('output_smoothing_corner_floor')
-    output_smoothing_k_ey = LaunchConfiguration('output_smoothing_k_ey')
-    output_smoothing_k_epsi = LaunchConfiguration('output_smoothing_k_epsi')
-    output_smoothing_lookahead_lead_s = LaunchConfiguration('output_smoothing_lookahead_lead_s')
     # Every MPCController tuning field (Q/R/R_rate weights, adaptive-gain
     # shape constants, feature flags) -- see mpc_params.py's MPCParams for
     # the authoritative field list/defaults/units. Generated from
@@ -356,36 +350,6 @@ def generate_launch_description():
             'dynamic_cap_safety', default_value='0.9',
             description='safety margin for the dynamic speed cap only '
                         '(overrides fsae_params.yaml controller.dynamic_cap_safety)'),
-        DeclareLaunchArgument(
-            'output_smoothing_enabled', default_value='false',
-            description='EXPERIMENTAL: post-solve moving-average '
-                        'filter on the final steering command, NOT a QP weight change '
-                        '-- see mpc/mpc_controller.py\'s Output smoothing block.'),
-        DeclareLaunchArgument(
-            'output_smoothing_alpha', default_value='0.3',
-            description='EMA coefficient for output_smoothing_enabled; lower = more '
-                        'smoothing/more lag'),
-        DeclareLaunchArgument(
-            'output_smoothing_corner_floor', default_value='0.1',
-            description='min smoothing weight retained even at full curvature, when '
-                        'output_smoothing_enabled is true'),
-        DeclareLaunchArgument(
-            'output_smoothing_k_ey', default_value='0.5',
-            description='EXPERIMENTAL: fade output_smoothing down '
-                        '(never below output_smoothing_corner_floor) as CURRENT |e_y| '
-                        'grows; 1/m, higher = fades out faster per metre'),
-        DeclareLaunchArgument(
-            'output_smoothing_k_epsi', default_value='0.8',
-            description='EXPERIMENTAL: fade output_smoothing down '
-                        '(never below output_smoothing_corner_floor) as CURRENT |e_psi| '
-                        'grows; 1/rad, higher = fades out faster per radian'),
-        DeclareLaunchArgument(
-            'output_smoothing_lookahead_lead_s', default_value='0.5',
-            description='EXPERIMENTAL: fade output_smoothing down '
-                        'BEFORE the car reaches a corner already visible in the path, '
-                        'not only once CURRENT curvature has risen -- a TIME lead '
-                        'converted to a scan distance via current speed each tick. '
-                        '0.0 disables (pure current-curvature corner_frac).'),
         *mpc_launch_args,
         Node(
             package='fsae_control',
@@ -402,12 +366,6 @@ def generate_launch_description():
                 'enable_dynamic_speed_cap': enable_dynamic_speed_cap,
                 'dynamic_cap_a_lat_max': dynamic_cap_a_lat_max,
                 'dynamic_cap_safety': dynamic_cap_safety,
-                'output_smoothing_enabled': output_smoothing_enabled,
-                'output_smoothing_alpha': output_smoothing_alpha,
-                'output_smoothing_corner_floor': output_smoothing_corner_floor,
-                'output_smoothing_k_ey': output_smoothing_k_ey,
-                'output_smoothing_k_epsi': output_smoothing_k_epsi,
-                'output_smoothing_lookahead_lead_s': output_smoothing_lookahead_lead_s,
                 # stanley_gain deliberately omitted here: mpc_controller.py
                 # doesn't declare it, so passing it would raise
                 # ParameterNotDeclaredException. Every MPCParams field IS

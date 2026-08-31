@@ -229,11 +229,15 @@ That points away from state-keyed scheduling entirely and toward Option 1
 **Idea.** As Option 2 but keyed on **peak curvature ahead** rather than
 current, so the weight softens *before* the corner arrives.
 
-**Prior art in-repo.** `peak_kappa_ahead()` already exists in both
-`control_utils.py` and `sim/speed_profile.py`, built for the (now-disabled)
-output-smoothing lookahead fade. It is tested and can be reused directly.
+**Prior art in-repo.** `peak_kappa_ahead()` was built for the post-solve
+output-smoothing lookahead fade, which has since been removed (it never
+improved on the QP's own rate cost — see the removed feature's history in
+`fsae_planning`'s `CHANGES.md`); the helper itself was removed along with it.
+Reimplementing it from scratch is straightforward — same dense-resample +
+moving-average denoise as `curvature_speed()`, just returning peak |κ|
+instead of a speed target.
 
-- **Effort:** low-medium. Reuses an existing, working helper.
+- **Effort:** low-medium. Straightforward to reimplement from the pattern above.
 - **Risk:** medium. `dκ/ds`-style lookahead signals amplify planner
   curvature noise — the documented open centreline-spike defect. Fine
   against the static raceline in use now; re-validate before any live
@@ -295,8 +299,10 @@ alongside a fresh system-ID of the true rate.
 ## Option 6 — Reduce `r_rate_delta` and re-attack chatter differently
 
 **Idea.** Accept 52.5 is too blunt; drop toward ~15-20 and suppress the
-residual chatter another way (Option 4, or output smoothing re-enabled but
-*only* on straights).
+residual chatter another way (Option 4, or a post-solve smoothing filter
+reimplemented but scoped *only* to straights — the removed output-smoothing
+mechanism attempted the general case and didn't improve on `r_rate_delta`
+alone).
 
 **Assessment:** a reasonable fallback, but strictly worse than Options 1/4 —
 it re-opens a problem already solved. Keep as a retreat if the others fail.

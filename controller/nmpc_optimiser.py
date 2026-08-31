@@ -1417,9 +1417,9 @@ class NMPCController:
         # flags are off (default), self._Rr_flat/self._ErE are untouched
         # here, so behaviour is byte-identical to before either existed.
         # Always computed (not gated behind corner_rrate_blend_enabled) --
-        # rollout_core.py's OUTPUT_SMOOTHING_ENABLED needs this as a general
-        # current-curvature signal via the returned diag dict, independent
-        # of whether the R_rate weight-blend feature itself is active.
+        # this is a general current-curvature signal other mechanisms key
+        # off via the returned diag dict, independent of whether the R_rate
+        # weight-blend feature itself is active.
         kappa_now = float(ref.kappa_at(np.array([s0]))[0])
         corner_frac = _corner_factor(kappa_now, self.corner_factor_k)
         m_rrate_antihunt = 1.0

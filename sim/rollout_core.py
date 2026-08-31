@@ -89,9 +89,6 @@ from settings import (
     NMPC_RJERK_DELTA, NMPC_RJERK_A,
     NMPC_RRATE_ZONE_ENABLED, NMPC_RRATE_ZONE_BOOST_STRAIGHT,
     NMPC_RRATE_ZONE_EASE_APPROACH, NMPC_RRATE_ZONE_FLOOR_CORNER,
-    OUTPUT_SMOOTHING_ENABLED, OUTPUT_SMOOTHING_ALPHA, OUTPUT_SMOOTHING_CORNER_FLOOR,
-    OUTPUT_SMOOTHING_K_EY, OUTPUT_SMOOTHING_K_EPSI,
-    OUTPUT_SMOOTHING_LOOKAHEAD_LEAD_S,
 )
 
 
@@ -595,7 +592,6 @@ def run_core_rollout(
 
     command_queue = deque([np.zeros(2) for _ in range(DELAY_STEPS + 1)], maxlen=DELAY_STEPS + 1)
     u_prev = np.zeros(2)
-    steer_filtered = None  # EMA state for OUTPUT_SMOOTHING_ENABLED, see below
 
     # Hard per-step slew-rate limit handed to the MPC, mirroring the live
     # mpc_core.py's du_max so offline-tuned weights transfer. Derived from the
@@ -1080,8 +1076,6 @@ def run_core_rollout(
             solver_failed = False
             inaccurate = False
             x0_mpc = None   # no linear x0 here -- guards the cosmetic block below
-            # OUTPUT_SMOOTHING_ENABLED needs this regardless of branch -- see
-            # nmpc_optimiser.py's compute_step(), which always computes it now.
             corner_frac = nmpc_diag['corner_frac']
         else:
             # ── Linear time-varying QP path ──────────────────────────────────
@@ -1237,61 +1231,6 @@ def run_core_rollout(
                 inaccurate = status in (cp.OPTIMAL_INACCURATE, "optimal_inaccurate")
             if inaccurate:
                 inaccurate_count_total += 1
-
-        # ── Output smoothing (EXPERIMENTAL, default off) ──
-        # Offline mirror of mpc_controller.py's node-level filter
-        # -- see that file (and `docs/reference/README.md`'s "Post-solve output
-        # smoothing" section) for the full mechanism/reasoning. Applied to
-        # u_opt[0] (steering) AFTER the solve, so it's identical whichever
-        # controller (LTV-QP or NMPC) produced it, same as the live node.
-        #
-        # ALSO fades smoothing down (never off, same floor) as CURRENT
-        # tracking error grows -- e_y/e_psi are already in scope above (used
-        # to build x0_mpc before the branch split), identical for both
-        # controllers. See mpc_controller.py's identical block.
-        if OUTPUT_SMOOTHING_ENABLED:
-            if steer_filtered is None:
-                steer_filtered = u_opt[0]
-            steer_filtered += OUTPUT_SMOOTHING_ALPHA * (u_opt[0] - steer_filtered)
-            corner_frac_smooth = corner_frac
-            if OUTPUT_SMOOTHING_LOOKAHEAD_LEAD_S > 0.0:
-                # See settings.OUTPUT_SMOOTHING_LOOKAHEAD_LEAD_S: fade
-                # smoothing down BEFORE the car reaches a corner already
-                # visible in the path, not only once CURRENT curvature has
-                # risen -- needed on tracks with straights shorter than this
-                # filter's own settle time. Scan distance is a TIME lead
-                # converted via current speed, so a fast car gets warned
-                # further ahead (in metres) than a slow one, the same amount
-                # of time ahead either way. A floor speed avoids scanning
-                # zero metres at a standstill/very low speed.
-                # Mirrors mpc_controller.py's identical block.
-                scan_end = max(vx_true, 2.0) * OUTPUT_SMOOTHING_LOOKAHEAD_LEAD_S
-                # Same path source e_y/e_psi and (in NMPC mode) the Frenet
-                # reference were built from above: the live planner's
-                # centreline when one is ready, else the oracle path. Sliced
-                # from the car's nearest point forward, the same argmin
-                # pattern the ENABLE_DYNAMIC_SPEED_CAP branch above uses,
-                # since peak_kappa_ahead assumes waypoints[0] is the car.
-                if use_planner and cl is not None and len(cl) >= 2:
-                    path_ahead = cl
-                else:
-                    path_ahead = path_xy
-                if len(path_ahead) > 2:
-                    i_near = int(np.argmin(
-                        np.linalg.norm(path_ahead - car_pos_np, axis=1)))
-                    if i_near < len(path_ahead) - 2:
-                        path_ahead = path_ahead[i_near:]
-                kappa_ahead = sp.peak_kappa_ahead(path_ahead, scan_end=scan_end)
-                corner_frac_ahead = _corner_factor(kappa_ahead, CORNER_FACTOR_K)
-                # Whichever signal (current or lookahead) says "more corner"
-                # wins, so the fade responds to whichever fires first.
-                corner_frac_smooth = max(corner_frac_smooth, corner_frac_ahead)
-            w_smoothed = max(OUTPUT_SMOOTHING_CORNER_FLOOR, 1.0 - corner_frac_smooth)
-            fade_ey = 1.0 / (1.0 + OUTPUT_SMOOTHING_K_EY * abs(e_y))
-            fade_epsi = 1.0 / (1.0 + OUTPUT_SMOOTHING_K_EPSI * abs(e_psi))
-            w_smoothed = max(OUTPUT_SMOOTHING_CORNER_FLOOR, w_smoothed * fade_ey * fade_epsi)
-            u_opt = u_opt.copy()
-            u_opt[0] = (1.0 - w_smoothed) * u_opt[0] + w_smoothed * steer_filtered
 
         if want_history:
             history["solver_failed"].append(solver_failed)

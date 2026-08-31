@@ -448,7 +448,6 @@ Tune in this order; the first item dominates.
 |---|---|---|
 | `R_rate_diag[0]` / `r_rate_delta` | **52.5** (from 2.8) | halves chatter. Biggest single lever by far. |
 | `NMPC_RJERK_DELTA` | **150.0** | prices the *change in* steering rate, so a wobble is expensive but a steady turn stays cheap |
-| `OUTPUT_SMOOTHING_ENABLED` | **false** | a post-solve low-pass filter, made redundant by the two above |
 
 `NMPC_RJERK_DELTA` is the one to reach for when raising `r_rate_delta` starts
 making the car reluctant to turn. A plain rate cost charges the same for a

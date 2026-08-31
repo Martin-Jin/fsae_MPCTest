@@ -333,13 +333,11 @@ NMPC_Q_E_Y=7.5
 # NMPC_FRICTION_CIRCLE_ENABLED=false         # [NMPC only, EXPERIMENTAL] default false; hard per-axle tyre-force bound in the QP, additional to the existing soft alat-ceiling saturation. REJECTED 2026-08-13 -- see note above.
 # NMPC_STEER_RATE_ANTI_HUNT_ENABLED=false    # [NMPC only, EXPERIMENTAL] default false; reuses the LTV-QP's steer_rate_anti_hunt penalty (extra R_rate[0,0] cost when centred/aligned/uncurving) on the NMPC too, independent of MPC_STEER_RATE_ANTI_HUNT_ENABLED above. Mutually exclusive with NMPC_CORNER_RRATE_BLEND_ENABLED below -- blend takes priority if both are set. NOT YET LIVE-TESTED -- offline A/B first (tuner.nmpc_offline_check or equivalent).
 # NMPC_ANTI_HUNT_BOOST_MAX=-1.0               # [NMPC only] -1 = inherit anti_hunt_boost_max; only read when NMPC_STEER_RATE_ANTI_HUNT_ENABLED=true
-# DEPRIORITIZED 2026-08-19 in favour of OUTPUT_SMOOTHING_ENABLED below: this
-# changes the QP's own R_rate[steer] weight, which measurably made jitter
-# WORSE (std 4.4 -> 5.5 deg) by silently overwriting an already-tuned
-# NMPC_R_RATE_DELTA=4.0 with the LTV-QP's own unrelated, lower
-# rrate_steer_straight/_corner endpoints (2.0/1.25) the moment it was
-# enabled -- see OUTPUT_SMOOTHING_ENABLED's comment for why a post-solve
-# filter (leaves weights untouched entirely) was used instead.
+# DEPRIORITIZED 2026-08-19: this changes the QP's own R_rate[steer] weight,
+# which measurably made jitter WORSE (std 4.4 -> 5.5 deg) by silently
+# overwriting an already-tuned NMPC_R_RATE_DELTA=4.0 with the LTV-QP's own
+# unrelated, lower rrate_steer_straight/_corner endpoints (2.0/1.25) the
+# moment it was enabled.
 # CAUTION: enabling this OVERWRITES R_rate[steer] outright -- it does NOT scale
 # r_rate_delta. With the two endpoints below left at -1 (inherit) they resolve to
 # the LTV-QP's own rrate_steer_straight/_corner (2.0/1.25), which silently
@@ -506,61 +504,6 @@ NMPC_REVERSAL_PENALTY_ENABLED=false
 # NMPC_REVERSAL_PENALTY_BOOST_MAX=-1.0
 # NMPC_REVERSAL_PENALTY_K=-1.0
 
-# [shared, both controllers, EXPERIMENTAL] Post-solve moving-average filter
-# on the FINAL steering command -- leaves the QP's own Q/R/R_rate weights
-# completely untouched (unlike NMPC_CORNER_RRATE_BLEND_ENABLED above), so it
-# can't silently override separately-tuned weights the same way. Weighted
-# down (never fully off) as CURRENT curvature rises: full smoothing on a
-# clean straight, fading toward OUTPUT_SMOOTHING_CORNER_FLOOR (never below
-# it) as the car actually turns, so a sharp corner still gets a mostly-
-# instant response. This IS a genuine temporal filter and DOES add lag on a
-# straight (unlike every QP-weight-based mechanism above, which is
-# re-derived fresh from the current state each tick with no cross-tick
-# memory) -- that's the deliberate trade being made here. See
-# docs/reference/'s "Post-solve output smoothing" section for the
-# full mechanism and tuning surface.
-#
-# DISABLED: superseded by the QP's own steering-rate cost (r_rate_delta),
-# which attacks the same jitter at its source -- the solver stops CHOOSING
-# chattery commands -- instead of filtering a chattery command after the fact.
-# That adds no lag, so none of this feature's curvature/error/lookahead fade
-# machinery is needed to keep the response quick. Re-enable only if a
-# rate-cost-only setup turns out to need extra output damping for a reason
-# that is understood -- not as a default. See
-# fsae_MPCTest/docs/logs/steering_chatter_investigation.md for the measurements.
-OUTPUT_SMOOTHING_ENABLED=false
-# Retained for reference; inert while OUTPUT_SMOOTHING_ENABLED=false.
-# CAUTION if ever re-enabled: alpha is the lever that actually matters here
-# (corner_floor and the k_ey/k_epsi fade below barely move the effective
-# weight compared to alpha itself). Do NOT re-tune alpha from an offline
-# reversals/s sweep on a near-perfect recorded-map rollout alone -- a low
-# alpha (heavier smoothing) looks strictly better on that metric because the
-# rollout has almost no genuine disturbance to correct, but live it produces
-# a real sustained lateral drift the offline test cannot see (the EMA's own
-# settle time, ~3/(alpha*CONTROL_HZ) seconds, becomes too slow to track a
-# real correction).
-OUTPUT_SMOOTHING_ALPHA=0.7            # EMA coefficient; lower = more smoothing/more lag
-OUTPUT_SMOOTHING_CORNER_FLOOR=0.1
-# Fades smoothing down (never below the corner floor above) as CURRENT
-# tracking error grows, on top of the curvature-based fade -- large e_y/e_psi
-# means the car needs its raw command NOW regardless of curvature (e.g.
-# recovering from a disturbance on a straight). Same saturating-curve style
-# as steer_rate_anti_hunt. CAUTION: values much above the current defaults
-# make this too sensitive -- ordinary tracking noise (not an actual
-# disturbance) already fades smoothing most of the way out at that
-# sensitivity, undoing the jitter-suppression this feature exists for.
-OUTPUT_SMOOTHING_K_EY=0.8              # 1/m; higher = fades out faster per metre of |e_y|
-OUTPUT_SMOOTHING_K_EPSI=1.115         # 1/rad; higher = fades out faster per radian of |e_psi|
-# Fades smoothing down BEFORE the car reaches a corner already visible in
-# the path, not only once CURRENT curvature has risen -- needed on tracks
-# whose straights are shorter than this filter's own settle time, where a
-# purely current-curvature fade only starts acting after the straight has
-# mostly already ended. TIME lead (converted to a scan distance via current
-# speed each tick), sized to roughly this filter's own ~95% settle time.
-# 0.0 disables (pure current-curvature corner_frac, previous behaviour).
-# Live-tested and working; see docs/reference/.
-OUTPUT_SMOOTHING_LOOKAHEAD_LEAD_S=0.5
-
 # MPC tuning shortlist -- optional one-off overrides for the handful of
 # MPCController weights/gains most likely to be tuned interactively, without
 # editing fsae_params.yaml. The FULL set of ~56 tunables (every field in
@@ -665,12 +608,6 @@ _append_mpc_arg nmpc_reversal_penalty_k "$NMPC_REVERSAL_PENALTY_K"
 _append_mpc_arg enable_dynamic_speed_cap "$ENABLE_DYNAMIC_SPEED_CAP"
 _append_mpc_arg dynamic_cap_a_lat_max "$DYNAMIC_CAP_A_LAT_MAX"
 _append_mpc_arg dynamic_cap_safety "$DYNAMIC_CAP_SAFETY"
-_append_mpc_arg output_smoothing_enabled "$OUTPUT_SMOOTHING_ENABLED"
-_append_mpc_arg output_smoothing_alpha "$OUTPUT_SMOOTHING_ALPHA"
-_append_mpc_arg output_smoothing_corner_floor "$OUTPUT_SMOOTHING_CORNER_FLOOR"
-_append_mpc_arg output_smoothing_k_ey "$OUTPUT_SMOOTHING_K_EY"
-_append_mpc_arg output_smoothing_k_epsi "$OUTPUT_SMOOTHING_K_EPSI"
-_append_mpc_arg output_smoothing_lookahead_lead_s "$OUTPUT_SMOOTHING_LOOKAHEAD_LEAD_S"
 
 # Use the host's native ROS 2 install when available; otherwise fall back to Docker.
 if command -v ros2 >/dev/null 2>&1 && [ -f "$HOST_ROS2_DIR/install/local_setup.bash" ]; then

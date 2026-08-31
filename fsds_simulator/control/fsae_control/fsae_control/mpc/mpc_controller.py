@@ -95,9 +95,8 @@ from fsae_control.control_utils import (
     curvature_speed, dynamic_speed_cap, load_path_profile_csv,
     load_path_heading_profile_csv,
     load_speed_profile_csv, precomputed_speed_at, tracking_error_speed_gate,
-    peak_kappa_ahead,
 )
-from fsae_control.mpc.mpc_core import MAX_STEER_RAD, MPCController, _corner_factor
+from fsae_control.mpc.mpc_core import MAX_STEER_RAD, MPCController
 from fsae_control.mpc.nmpc_core import NMPCController
 from fsae_control.mpc.mpc_params import declare_mpc_params, mpc_params_from_node
 from fsae_control.mpc.nmpc_params import declare_nmpc_params, nmpc_params_from_node
@@ -150,8 +149,7 @@ class MPCControllerNode(Node):
                 ('v_max', 20.0),      # m/s — top speed on straights
                 ('v_min', 1.5),       # m/s — minimum speed through tight corners
                 # Output steering low-pass (EMA); 1.0 disables. Only applied
-                # when standalone_output=false — see the output-smoothing
-                # block in _control_step for why stacking both compounds lag.
+                # when standalone_output=false.
                 ('steer_lp', 0.3),
                 # Real-time curvature-lookahead speed cap layered under the
                 # precomputed speed profile (map_path) — see
@@ -186,46 +184,6 @@ class MPCControllerNode(Node):
                                        # the geometric path tangent for e_psi's
                                        # reference ONLY (e_y is unaffected). Default
                                        # False: land off, prove live before flipping.
-                # EXPERIMENTAL: post-solve output smoothing on the final
-                # `steering` command, NOT a QP weight change -- see the
-                # ── Output smoothing ── block in _control_step below for the
-                # full mechanism, and `docs/reference/`'s "Post-solve output
-                # smoothing" section for the tuning surface.
-                ('output_smoothing_enabled', False),
-                ('output_smoothing_alpha', 0.425),        # EMA coefficient on the
-                                       # smoothed signal; lower = more smoothing/more lag
-                ('output_smoothing_corner_floor', 0.1),   # min smoothing weight
-                                       # retained even at full curvature (corner_frac=1) --
-                                       # smoothing never fully switches off, just weakens
-                # Fades smoothing down (never off) as CURRENT tracking error
-                # grows, on top of the curvature-based fade above -- large
-                # e_y/e_psi means the car needs its raw, fast-reacting
-                # command NOW, same rationale as the corner_floor fade but
-                # keyed on tracking error instead of curvature. 0.0 disables
-                # the corresponding factor (saturates at 1.0, i.e. no extra
-                # fade from that term). CAUTION: raising these much further
-                # makes this too sensitive -- ordinary tracking noise (not an
-                # actual disturbance) starts fading smoothing most of the way
-                # out, undoing the jitter-suppression this feature exists for
-                # -- see `docs/reference/` before retuning further.
-                ('output_smoothing_k_ey', 0.8),     # 1/m; higher = fades out faster per metre of |e_y|
-                ('output_smoothing_k_epsi', 1.115), # 1/rad; higher = fades out faster per radian of |e_psi|
-                # Fades smoothing down BEFORE the car reaches a corner
-                # already visible in the path, not only once the car's own
-                # CURRENT curvature has risen -- needed on tracks whose
-                # straights are shorter than this filter's own settle time,
-                # where a purely current-curvature fade only starts acting
-                # after the straight has mostly already ended.
-                # output_smoothing_lookahead_lead_s is a TIME lead (converted
-                # to a scan distance via the car's own current speed each
-                # tick, so the lead stays consistent across speed rather than
-                # a fixed metres value giving less warning at high speed
-                # exactly when more is needed). Size it to roughly this
-                # filter's own ~95% settle time (3 / (alpha * CONTROL_HZ)
-                # seconds) so the fade has time to complete before the corner
-                # arrives. 0.0 disables (pure current-curvature corner_frac,
-                # unchanged behaviour).
-                ('output_smoothing_lookahead_lead_s', 0.5),
             ],
         )
         self._standalone_output = self.get_parameter(
@@ -255,20 +213,6 @@ class MPCControllerNode(Node):
             'dynamic_cap_a_lat_max').get_parameter_value().double_value
         self._dynamic_cap_safety = self.get_parameter(
             'dynamic_cap_safety').get_parameter_value().double_value
-
-        self._output_smoothing_enabled = self.get_parameter(
-            'output_smoothing_enabled').get_parameter_value().bool_value
-        self._output_smoothing_alpha = self.get_parameter(
-            'output_smoothing_alpha').get_parameter_value().double_value
-        self._output_smoothing_corner_floor = self.get_parameter(
-            'output_smoothing_corner_floor').get_parameter_value().double_value
-        self._output_smoothing_k_ey = self.get_parameter(
-            'output_smoothing_k_ey').get_parameter_value().double_value
-        self._output_smoothing_k_epsi = self.get_parameter(
-            'output_smoothing_k_epsi').get_parameter_value().double_value
-        self._output_smoothing_lookahead_lead_s = self.get_parameter(
-            'output_smoothing_lookahead_lead_s').get_parameter_value().double_value
-        self._steer_filtered: float | None = None
 
         self._speed_profile = None  # (path_X, path_Y, path_V) or None
         map_path = self.get_parameter('map_path').get_parameter_value().string_value
@@ -475,12 +419,6 @@ class MPCControllerNode(Node):
                     'dynamic_cap_a_lat_max': self._dynamic_cap_a_lat_max,
                     'dynamic_cap_safety': self._dynamic_cap_safety,
                     'v_max': self._v_max, 'v_min': self._v_min,
-                    'output_smoothing_enabled': self._output_smoothing_enabled,
-                    'output_smoothing_alpha': self._output_smoothing_alpha,
-                    'output_smoothing_corner_floor': self._output_smoothing_corner_floor,
-                    'output_smoothing_k_ey': self._output_smoothing_k_ey,
-                    'output_smoothing_k_epsi': self._output_smoothing_k_epsi,
-                    'output_smoothing_lookahead_lead_s': self._output_smoothing_lookahead_lead_s,
                 },
                 mpc_params=mpc_params,
                 nmpc_params=(nmpc_params if nmpc_params.use_nmpc else None),
@@ -688,76 +626,12 @@ class MPCControllerNode(Node):
 
             # Low-pass the steering command across ticks (matches the
             # Stanley node) so rapid left-right jitter never reaches the
-            # servo. 1.0 disables. Only applied in this mode — standalone
-            # mode never had this stage, relying on output smoothing below
-            # (and its own tuned weights) instead.
+            # servo. 1.0 disables. Only applied in this mode.
             if self._delta_filt is None or self._steer_lp >= 1.0:
                 self._delta_filt = steering
             else:
                 self._delta_filt += self._steer_lp * (steering - self._delta_filt)
             steering = self._delta_filt
-
-        # ── Output smoothing (EXPERIMENTAL, default off) ──
-        # Post-solve moving-average filter on the FINAL steering command --
-        # deliberately NOT a QP weight change (the solver's own Q/R/R_rate
-        # stay exactly what they already are), so it can't silently override
-        # separately-tuned weights the way a cost-scheduling mechanism can
-        # (see corner_rrate_blend_enabled's history: enabling that dropped
-        # the NMPC's already-tuned nmpc_r_rate_delta down to the LTV-QP's own
-        # unrelated, lower rrate_steer_straight endpoint). This is a genuine
-        # temporal filter, so it DOES add lag -- unlike every QP-weight-based
-        # mechanism above, which is re-derived fresh from the current state
-        # each tick with no cross-tick memory. Traded off by weighting it
-        # down (never off) as CURRENT curvature rises: full weight on a
-        # clean straight, fading toward output_smoothing_corner_floor (never
-        # below it) as the car actually turns, so a sharp corner still gets
-        # a mostly-instant response while a straight gets a smoothed one.
-        # Also fades down (never off, same floor) as CURRENT tracking error
-        # grows -- large |e_y|/|e_psi| means the car needs its raw,
-        # fast-reacting command right now regardless of curvature.
-        #
-        # In standalone_output=false mode this stacks on top of steer_lp
-        # above (which that mode already had) -- when off (default),
-        # steer_lp's existing behaviour is completely unchanged; leave this
-        # off there unless specifically testing the curvature-aware floor
-        # behaviour on that mode too, since stacking both when non-trivial
-        # compounds lag. Note the units of `steering` this operates on
-        # differ by mode (radians in false mode, FSDS-normalised [-1, 1] in
-        # standalone_output=true mode) -- the smoothing constants below are
-        # tuned per-mode independently for that reason.
-        if self._output_smoothing_enabled:
-            if self._steer_filtered is None:
-                self._steer_filtered = steering
-            self._steer_filtered += self._output_smoothing_alpha * (steering - self._steer_filtered)
-            tel = self._mpc.last_telemetry
-            corner_frac = tel.get('corner_frac', 0.0)
-            if self._output_smoothing_lookahead_lead_s > 0.0:
-                # Fade smoothing down BEFORE the car reaches a corner already
-                # visible in the path, not only once CURRENT curvature has
-                # risen -- needed on tracks with straights shorter than this
-                # filter's own settle time. Scan distance is a TIME lead
-                # converted via current speed, so a fast car is warned
-                # further ahead (in metres) than a slow one, the same amount
-                # of time ahead either way. A floor speed avoids scanning
-                # zero metres at a standstill/very low speed.
-                scan_end = max(self._car_speed, 2.0) * self._output_smoothing_lookahead_lead_s
-                path_ahead = self._path
-                if len(path_ahead) > 2:
-                    i_near = int(np.argmin(np.linalg.norm(path_ahead - self._car_pos, axis=1)))
-                    if i_near < len(path_ahead) - 2:
-                        path_ahead = path_ahead[i_near:]
-                kappa_ahead = peak_kappa_ahead(path_ahead, scan_end=scan_end)
-                corner_frac_ahead = _corner_factor(kappa_ahead, self._mpc.params.corner_factor_k)
-                corner_frac = max(corner_frac, corner_frac_ahead)
-                # Written into last_telemetry (not returned) so it flows into
-                # the CSV via ADAPTIVE_COLUMNS with zero extra plumbing --
-                # same mechanism every other diagnostic column uses.
-                self._mpc.last_telemetry['corner_frac_ahead'] = corner_frac_ahead
-            w_smoothed = max(self._output_smoothing_corner_floor, 1.0 - corner_frac)
-            fade_ey = 1.0 / (1.0 + self._output_smoothing_k_ey * abs(tel.get('e_y', 0.0)))
-            fade_epsi = 1.0 / (1.0 + self._output_smoothing_k_epsi * abs(tel.get('e_psi', 0.0)))
-            w_smoothed = max(self._output_smoothing_corner_floor, w_smoothed * fade_ey * fade_epsi)
-            steering = (1.0 - w_smoothed) * steering + w_smoothed * self._steer_filtered
 
         if self._standalone_output:
             cmd = ControlCommand()

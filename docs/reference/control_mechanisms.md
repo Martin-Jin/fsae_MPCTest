@@ -209,72 +209,24 @@ implementation exists for this. See `docs/logs/late_turn_in_investigation.md`
 Part 14 for why even the 25m ceiling is still short of some corner-approach
 gaps on real tracks, and for the candidate fixes considered.
 
-## Post-solve output smoothing (`output_smoothing_*`)
+## Post-solve output smoothing — removed
 
-**A genuinely different kind of mechanism from every other adaptive-gain
-feature above.** Every `Q`/`R`/`R_rate` gain-scheduling mechanism
-(`adaptive_R_rate`, corner-factor scheduler, reversal penalty, etc.)
-reshapes the QP's COST before solving, fresh each tick with no memory
-across ticks. Output smoothing instead low-pass-filters the SOLVED
-steering command afterward: `filtered += alpha*(raw - filtered)`, then
-blends `steering = (1-w)*raw + w*filtered`. Because `filtered` persists
-tick to tick, this is a genuine temporal filter and adds lag — the
-one mechanism in this family that does.
+**A post-solve low-pass filter on the SOLVED steering command
+(`filtered += alpha*(raw - filtered)`, then
+`steering = (1-w)*raw + w*filtered`), distinct from every `Q`/`R`/`R_rate`
+gain-scheduling mechanism elsewhere in this codebase (which reshape the QP's
+COST before solving, fresh each tick with no memory) — this one persisted
+`filtered` tick to tick, adding genuine lag.**
 
-That lag is bounded by fading `w` toward (never fully to) a floor as the
-car needs a fast, accurate response, via four independent, multiplicative
-`1/(1+k*|x|)`-shaped factors (the same saturating-curve style used
-throughout this codebase):
-
-1. **Current curvature** — `w = max(corner_floor, 1 - corner_frac)`, using
-   the existing `_corner_factor`. Full smoothing on a clean straight, fading
-   toward `corner_floor` as the car actually turns.
-2. **Current tracking error** (`k_ey`, `k_epsi`) — fades further as
-   `|e_y|`/`|e_psi|` grow, independent of curvature, so a disturbance
-   recovery on a straight (where curvature alone would keep smoothing at
-   full strength) still gets a fast response.
-3. **Lookahead curvature** (`lookahead_lead_s`) — fades smoothing down
-   BEFORE a corner already visible in the path arrives, not only once the
-   car's own current curvature has risen. Needed because a purely
-   current-curvature fade only starts acting after a short straight has
-   mostly already ended on tracks where straights are shorter than the
-   filter's own settle time. Implemented via `peak_kappa_ahead()` (mirrors
-   `curvature_speed()`'s dense-resample/denoise pipeline, returning peak
-   curvature over a scan window instead of a speed target) scanning a
-   speed-scaled distance (`scan_end = max(car_speed, 2.0) * lookahead_lead_s`
-   — a TIME lead converted to a DISTANCE via current speed, so the warning
-   lead time stays constant across speed rather than a fixed-metres window
-   giving less warning exactly when a fast car needs more) ahead of the
-   car's nearest point on the path; `corner_frac = max(current, lookahead)`.
-4. **`corner_floor`** — the hard floor factors 1-3 can never fade below,
-   so smoothing never fully disengages even at maximum corner severity.
-
-**Implemented in:**
-- **Live**: `mpc/mpc_controller.py`'s
-  post-solve block (search "Output smoothing"); `peak_kappa_ahead()` in
-  `control_utils.py`. Params: `output_smoothing_enabled`, `_alpha`,
-  `_corner_floor`, `_k_ey`, `_k_epsi`, `_lookahead_lead_s` — node-declared
-  parameters, NOT `MPCParams`/`NMPCParams` fields, so (unlike most tunables
-  in this codebase) they need EXPLICIT `DeclareLaunchArgument`/parameters-dict
-  wiring in `control.launch.py`/`sim.launch.py` rather than picking up
-  auto-generated launch args; `launch_all.sh`'s `OUTPUT_SMOOTHING_*`
-  variables forward into that wiring via `_append_mpc_arg`.
-- **Offline**: `sim/speed_profile.py`'s `peak_kappa_ahead()`, wired into
-  `sim/rollout_core.py`'s `if OUTPUT_SMOOTHING_ENABLED:` block (a local
-  `corner_frac_smooth` variable, not reassigning `corner_frac`, which is
-  read elsewhere in that function); `settings.py`'s `OUTPUT_SMOOTHING_*`
-  constants.
-
-**Caution:** the underlying EMA filter's own settle time
-(`~3/(alpha*CONTROL_HZ)` seconds to ~95%) sets the scale for tuning both
-`corner_floor` and `lookahead_lead_s` — a `lookahead_lead_s` much shorter
-than that settle time gives the fade too little time to complete before a
-corner arrives. `alpha` itself needs a genuine disturbance-recovery test
-to tune, not just an oracle-path rollout: a near-perfect reference path
-never exercises the recovery speed a real disturbance demands, so an
-offline sweep on that metric alone can select an `alpha` that looks better
-but drifts badly live. Re-tuning any of these four factors without a live
-test is not sufficient validation.
+Removed: it never improved on the QP's own steering-rate cost
+(`r_rate_delta`), which attacks the same jitter at its source instead of
+filtering an already-chattery command after the fact (see `tuning.md`'s
+tuning-order table — `r_rate_delta=52.5` and `NMPC_RJERK_DELTA=150.0` are
+the levers that actually worked). Shipped default was always `false`; the
+mechanism (node params, `peak_kappa_ahead()`, the offline mirror in
+`sim/rollout_core.py`/`settings.py`, and the `launch_all.sh`/launch-file
+wiring) has been deleted from both the live and offline sides rather than
+left as unused dead code.
 
 ## Straight-line lateral-error snap-back sharpness
 
@@ -637,8 +589,8 @@ implementation, and validation history, extended by §16.9-16.12 with the
 live-test results, the MPCC-feature live tests, and two DISTINCT
 standstill-steering bugs/fixes (§16.11: a manufactured tyre force at
 `v_x=0`; §16.12: the NMPC's own speed-tracking cost term leaking into
-steering — see this doc's "Post-solve output smoothing" section's
-neighbour, the speed-target rise limiter, for the fix's other half).
+steering, fixed by seeding the speed-target rise limiter's state from the
+car's actual speed on the first control tick instead of `None`).
 Reproduce the offline closed-loop comparison with
 `python3 ros2/src/fsae_planning/control/fsae_control/test/nmpc_offline_check.py`
 (no ROS/FSDS session needed; the closed-loop section self-skips without an

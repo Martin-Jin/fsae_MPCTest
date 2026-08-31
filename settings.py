@@ -416,67 +416,6 @@ REVERSAL_PENALTY_ENABLED = False
 REVERSAL_PENALTY_BOOST_MAX = 4.0   # ceiling multiplier, applied when u_prev steer == 0
 REVERSAL_PENALTY_K = 8.0           # 1/rad; half-boost at ~7.2deg of previous steering
 
-# [shared, both controllers, EXPERIMENTAL] Post-solve
-# moving-average filter on the FINAL steering command, applied identically
-# regardless of which controller (LTV-QP or NMPC) produced it -- mirrors
-# ros2/.../mpc/mpc_controller.py's node-level Output smoothing block.
-# Deliberately NOT a QP weight change: the solver's own Q/R/R_rate are
-# untouched, so this can't silently override separately-tuned weights the
-# way a cost-scheduling mechanism can (see NMPC_CORNER_RRATE_BLEND_ENABLED's
-# history -- enabling that dropped an already-tuned NMPC_R_RATE_DELTA down
-# to the LTV-QP's own unrelated, lower RRATE_STEER_STRAIGHT). This IS a
-# genuine temporal filter and DOES add lag, unlike every QP-weight-based
-# mechanism above (re-derived fresh from the current state each tick, no
-# cross-tick memory) -- traded off by weighting it down (never fully off)
-# as CURRENT curvature rises: full weight on a clean straight, fading toward
-# OUTPUT_SMOOTHING_CORNER_FLOOR (never below it) as the car actually turns,
-# so a sharp corner still gets a mostly-instant response.
-OUTPUT_SMOOTHING_ENABLED = False
-OUTPUT_SMOOTHING_ALPHA = 0.425        # EMA coefficient; lower = more smoothing/more lag
-# CAUTION: this is the live-validated value. A lower alpha (heavier
-# smoothing) can look strictly better on an offline reversals/s sweep, but
-# the offline recorded-map rollout has almost no genuine disturbance to
-# correct -- a slow filter reads as pure improvement there while live it
-# produces a real sustained lateral drift once the EMA's own settle time
-# (~3/(alpha*CONTROL_HZ) seconds) is too slow to track an actual
-# correction. Re-tune only against a live A/B, not this offline metric.
-OUTPUT_SMOOTHING_CORNER_FLOOR = 0.1   # min smoothing weight retained even at full curvature
-
-# [shared, both controllers, EXPERIMENTAL] ALSO fade
-# smoothing down (never below OUTPUT_SMOOTHING_CORNER_FLOOR) as CURRENT
-# tracking error grows, on top of the curvature-based fade above -- large
-# |e_y| or |e_psi| means the car needs its raw, fast-reacting command right
-# now regardless of curvature (e.g. recovering from a disturbance on a
-# straight, where curvature alone would keep smoothing at full strength).
-# Same saturating-curve style as model_utils.steer_rate_anti_hunt
-# (1/(1+k*|x|), independent per input, multiplied together), just fading the
-# OUTPUT weight down instead of boosting a QP cost up. 0.0 disables the
-# corresponding factor (saturates at 1.0, i.e. no extra fade from that term).
-OUTPUT_SMOOTHING_K_EY = 0.8      # 1/m; higher = fades out faster per metre of |e_y|
-OUTPUT_SMOOTHING_K_EPSI = 1.115  # 1/rad; higher = fades out faster per radian of |e_psi|
-
-# [shared, both controllers, EXPERIMENTAL] Fade smoothing
-# down BEFORE the car reaches a corner already visible in the path, not only
-# once the car's own CURRENT curvature has risen. Motivated by a track
-# (comp_test_map_3) where 61% of "straights" between corners are under 2s --
-# shorter than this filter's own settle time at typical alpha values, so a
-# purely current-curvature corner_frac only starts fading smoothing after
-# the straight has mostly already ended, producing a sustained sway right
-# where two corners are close together.
-# OUTPUT_SMOOTHING_LOOKAHEAD_LEAD_S is a TIME lead (converted to a scan
-# distance via the car's own current speed each tick, so the lead stays
-# consistent across speed rather than a fixed metres value giving less
-# warning at high speed exactly when more is needed), sized to roughly this
-# filter's own ~95% settle time (3 / (alpha * CONTROL_HZ) seconds) so the
-# fade has time to complete before the corner arrives. The scanned peak
-# curvature (speed_profile.peak_kappa_ahead) goes through the SAME
-# _corner_factor curve as the current-curvature signal, and the larger of
-# the two wins -- so whichever fires first drives the fade.
-# 0.0 disables (pure current-curvature corner_frac, unchanged behaviour).
-# Numeric parity: mpc_controller.py's
-# 'output_smoothing_lookahead_lead_s' ROS2 parameter.
-OUTPUT_SMOOTHING_LOOKAHEAD_LEAD_S = 0.5   # s of lead; 0.0 disables
-
 # [LTV-QP only] ADAPTIVE_R_RATE_ENABLE_IN_CORNERS — TEMPORARY/EXPERIMENTAL, fsds sim only.
 # (Renamed from ADAPTIVE_R_RATE_DISABLE_IN_CORNERS, whose True/False
 # polarity was inverted from what the name suggested.) adaptive_R_rate

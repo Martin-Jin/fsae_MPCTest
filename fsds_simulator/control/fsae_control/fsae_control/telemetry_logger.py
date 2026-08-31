@@ -95,12 +95,6 @@ ADAPTIVE_COLUMNS = (
     'corner_factor',           # 0 (straight) -> 1 (full corner), from current-position kappa only
     'low_speed_corner_boost',  # extra push toward "full corner", active only when corner_factor > 0 AND speed is low
     'corner_frac',             # corner_factor + low_speed_corner_boost, clipped to [0,1] -- the shared blend driver below
-    # output_smoothing_lookahead_lead_s > 0 only (empty otherwise) -- node-level
-    # (mpc_controller.py), not controller-internal:
-    # _corner_factor(peak_kappa_ahead(...)), the lookahead counterpart to
-    # corner_frac above, used to fade output_smoothing's blend weight down
-    # BEFORE the car reaches a corner already visible in the path.
-    'corner_frac_ahead',
     # Q[0,0]/Q[2,2]/Q[3,3] after the straight/corner blend, before adaptive_Q_scaling's centred-softening.
     'Q_ey_base', 'Q_epsi_base', 'Q_r_base',
     # R[0,0]/R_rate[0,0] after their own straight/corner blend.

@@ -1732,10 +1732,9 @@ class NMPCController:
         kappa_now = float(ref.kappa_at(np.array([s0]))[0])
         m_rrate_antihunt = 1.0
         # Always computed (not gated behind corner_rrate_blend_enabled) --
-        # this is a general current-curvature signal other mechanisms (e.g.
-        # the node-level output smoothing in mpc_controller.py) also key off
-        # via last_telemetry, independent of whether the R_rate weight-blend
-        # feature itself is active.
+        # this is a general current-curvature signal other mechanisms also
+        # key off via last_telemetry, independent of whether the R_rate
+        # weight-blend feature itself is active.
         corner_frac = _corner_factor(kappa_now, self.corner_factor_k)
         rrate_steer_corner_blend = float(self.r_rate[0])
         # Tracks R_rate[0,0]'s running value through the if/elif AND the

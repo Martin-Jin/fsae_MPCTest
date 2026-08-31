@@ -58,12 +58,6 @@ def generate_launch_description():
     enable_dynamic_speed_cap = LaunchConfiguration('enable_dynamic_speed_cap')
     dynamic_cap_a_lat_max = LaunchConfiguration('dynamic_cap_a_lat_max')
     dynamic_cap_safety = LaunchConfiguration('dynamic_cap_safety')
-    output_smoothing_enabled = LaunchConfiguration('output_smoothing_enabled')
-    output_smoothing_alpha = LaunchConfiguration('output_smoothing_alpha')
-    output_smoothing_corner_floor = LaunchConfiguration('output_smoothing_corner_floor')
-    output_smoothing_k_ey = LaunchConfiguration('output_smoothing_k_ey')
-    output_smoothing_k_epsi = LaunchConfiguration('output_smoothing_k_epsi')
-    output_smoothing_lookahead_lead_s = LaunchConfiguration('output_smoothing_lookahead_lead_s')
     # Every MPCController tuning field, forwarded to control.launch.py --
     # see that file's own comment on MPC_PARAM_FIELDS for why these are
     # generated instead of hand-written.
@@ -195,33 +189,6 @@ def generate_launch_description():
             'dynamic_cap_safety', default_value='0.9',
             description='safety margin for the dynamic speed cap only '
                         '(overrides fsae_params.yaml controller.dynamic_cap_safety)'),
-        DeclareLaunchArgument(
-            'output_smoothing_enabled', default_value='false',
-            description='EXPERIMENTAL: post-solve moving-average '
-                        'filter on the final steering command, NOT a QP weight change '
-                        '-- passed through to control.launch.py, see that file\'s own '
-                        'description.'),
-        DeclareLaunchArgument(
-            'output_smoothing_alpha', default_value='0.3',
-            description='EMA coefficient for output_smoothing_enabled; lower = more '
-                        'smoothing/more lag -- passed through to control.launch.py.'),
-        DeclareLaunchArgument(
-            'output_smoothing_corner_floor', default_value='0.1',
-            description='min smoothing weight retained even at full curvature -- '
-                        'passed through to control.launch.py.'),
-        DeclareLaunchArgument(
-            'output_smoothing_k_ey', default_value='0.5',
-            description='EXPERIMENTAL: fade output_smoothing down '
-                        'as CURRENT |e_y| grows -- passed through to control.launch.py.'),
-        DeclareLaunchArgument(
-            'output_smoothing_k_epsi', default_value='0.8',
-            description='EXPERIMENTAL: fade output_smoothing down '
-                        'as CURRENT |e_psi| grows -- passed through to control.launch.py.'),
-        DeclareLaunchArgument(
-            'output_smoothing_lookahead_lead_s', default_value='0.5',
-            description='EXPERIMENTAL: fade output_smoothing down '
-                        'BEFORE a corner already visible in the path -- passed through '
-                        'to control.launch.py.'),
         *(DeclareLaunchArgument(
             name,
             default_value=('true' if default else 'false') if isinstance(default, bool) else str(default),
@@ -244,12 +211,6 @@ def generate_launch_description():
             'enable_dynamic_speed_cap': enable_dynamic_speed_cap,
             'dynamic_cap_a_lat_max': dynamic_cap_a_lat_max,
             'dynamic_cap_safety': dynamic_cap_safety,
-            'output_smoothing_enabled': output_smoothing_enabled,
-            'output_smoothing_alpha': output_smoothing_alpha,
-            'output_smoothing_corner_floor': output_smoothing_corner_floor,
-            'output_smoothing_k_ey': output_smoothing_k_ey,
-            'output_smoothing_k_epsi': output_smoothing_k_epsi,
-            'output_smoothing_lookahead_lead_s': output_smoothing_lookahead_lead_s,
             **mpc_param_configs,
         }),
         IncludeLaunchDescription(

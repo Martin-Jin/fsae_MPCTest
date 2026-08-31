@@ -93,13 +93,13 @@ controller:
     q_e_y: 6.35                # lateral deviation from path centreline (1/m^2)
     q_e_yd: 0.5                # rate of change of lateral deviation (1/(m/s)^2)
     q_e_psi: 1.65              # heading error relative to path tangent (1/rad^2)
-    q_r: 1.20                  # yaw rate (1/(rad/s)^2)
-    q_e_v: 5.5                 # speed error: car_speed - desired_speed (1/(m/s)^2)
+    q_r: 1.0                   # yaw rate (1/(rad/s)^2)
+    q_e_v: 5.40                # speed error: car_speed - desired_speed (1/(m/s)^2)
     r_delta: 1.8               # steering command effort (1/rad^2)
     r_a_accel: 2.25            # acceleration command effort, a_cmd >= 0 (1/(m/s^2)^2)
     r_a_brake: 0.5             # acceleration command effort, a_cmd < 0 -- braking (1/(m/s^2)^2)
-    r_rate_delta: 52.5         # steering rate of change (1/(rad/s)^2)
-    r_rate_a: 5.0              # acceleration rate of change (1/(m/s^3)^2)
+    r_rate_delta: 2.5          # steering rate of change (1/(rad/s)^2)
+    r_rate_a: 2.25             # acceleration rate of change (1/(m/s^3)^2)
     terminal_q_scale: 1.0      # extra weight on terminal predicted state; 1.0 = no-op
 
     # Feature enable/disable flags
@@ -180,8 +180,6 @@ controller:
     nmpc_r_rate_delta: -1.0   # override r_rate_delta (-1 = inherit) (1/rad^2)
     nmpc_r_rate_a: -1.0       # override r_rate_a (-1 = inherit) (1/(m/s^2)^2)
     nmpc_terminal_scale: -1.0 # override terminal_q_scale (-1 = inherit)
-    nmpc_steer_rate_anti_hunt_enabled: false   # EXPERIMENTAL: apply steer_rate_anti_hunt to the NMPC too (independent of steer_rate_anti_hunt_enabled above), unvalidated (bool)
-    nmpc_anti_hunt_boost_max: -1.0             # override anti_hunt_boost_max for the NMPC only (-1 = inherit). Only read when nmpc_steer_rate_anti_hunt_enabled is true
 
     # ── NONLINEAR MPC (nmpc_core.py's NMPCController) ────────────────────
     # use_nmpc=false (default) means none of this is used and the LTV-QP
@@ -215,7 +213,7 @@ controller:
     nmpc_alat_ceiling_enabled: true   # include FSDS's measured sustained lateral-acceleration ceiling (MPCParams.alat_ceiling_flat/_slope/_intercept, the same law mpc_core._alat_ceiling_at uses) as a smooth saturation of the prediction'...
     # [NMPC only] MPCC-inspired additions (2026-08-13) -- see mpc_params.py's
     # own field metadata (controller: "nmpc_only") and
-    # fsae_MPCTest/`docs/reference/README.md`'s "Three MPCC-inspired
+    # fsae_MPCTest/docs/planning_control_sync.md's "Three MPCC-inspired
     # additions" / "Which settings affect which controller" sections.
     nmpc_spline_reference_enabled: true   # [NMPC only] true (default) -> PathReference builds kappa(s)/psi_ref(s) from an analytic CubicSpline fit to the raw waypoints instead of the dense-resample + moving-average + finite-difference pipeline. Numerical-quality fix, no new solver coupling, defaults on unlike every other flag in this block. False restores the old moving-average path exactly, for A/B comparison (bool)
     nmpc_horizon_speed_profile_enabled: false   # [NMPC only, EXPERIMENTAL] true -> sample a precomputed per-lap speed profile v(s) at each horizon stage's own PREDICTED arc length s_k instead of holding v_ref constant across the horizon. Mirrors kappa(s)'s state-keyed, non-schedulable lookup on purpose. No-op unless a speed-profile array is supplied at PathReference construction time. Default false: unvalidated, do not enable for a live run without an offline A/B first (bool)
