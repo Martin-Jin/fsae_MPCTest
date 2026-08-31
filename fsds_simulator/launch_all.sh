@@ -162,7 +162,7 @@ SPEED_CSV="$TRACK_DIR/speed_profile.csv"
 _TRACK_GEOMETRY_NAME="$(_track_geometry_name "$TRACK_DIR")"
 PATH_CSV="$TRACK_DIR/$_TRACK_GEOMETRY_NAME"
 
-# Precomputed-map toggles for the mpc/mpc_standalone controller (see
+# Precomputed-map toggles for the mpc controller (see
 # fsae_planning's README.md "Precomputed-map launch args" and sim.launch.py's
 # own DeclareLaunchArgument defaults for the full explanation). Set here so
 # they don't need to be typed on every launch; both default to matching
@@ -214,10 +214,18 @@ for _f in \
     fi
 done
 
-# Path-tracking controller to launch (stanley | mpc | mpc_standalone — see
-# sim.launch.py's own 'controller' DeclareLaunchArgument). Matches
-# sim.launch.py's default (mpc_standalone) unless overridden here.
-CONTROLLER=mpc_standalone
+# Path-tracking controller to launch (stanley | mpc — see sim.launch.py's
+# own 'controller' DeclareLaunchArgument). Matches sim.launch.py's default
+# (mpc) unless overridden here.
+CONTROLLER=mpc
+
+# mpc only: true (default) -> the MPC node publishes fs_msgs/ControlCommand
+# directly with its own throttle/brake (fsds_bridge skipped) -- this is
+# what "mpc_standalone" used to mean before mpc_controller.py and
+# mpc_controller_standalone.py were merged into one node with this toggle.
+# false -> steering only via the shared cmd_vel interface, fsds_bridge
+# computes throttle/brake (what plain "mpc" used to mean).
+STANDALONE_OUTPUT=true
 
 # Speed caps passed to the controller node (see sim.launch.py's v_max/v_min
 # DeclareLaunchArgument -- overrides fsae_params.yaml's controller.v_max/
@@ -569,6 +577,7 @@ _append_mpc_arg q_ey_corner "$MPC_Q_EY_CORNER"
 _append_mpc_arg q_epsi_corner "$MPC_Q_EPSI_CORNER"
 _append_mpc_arg adaptive_q_scaling_enabled "$MPC_ADAPTIVE_Q_SCALING_ENABLED"
 _append_mpc_arg steer_rate_anti_hunt_enabled "$MPC_STEER_RATE_ANTI_HUNT_ENABLED"
+_append_mpc_arg standalone_output "$STANDALONE_OUTPUT"
 _append_mpc_arg use_nmpc "$USE_NMPC"
 _append_mpc_arg nmpc_horizon "$NMPC_HORIZON"
 _append_mpc_arg nmpc_sqp_iters "$NMPC_SQP_ITERS"
@@ -753,20 +762,20 @@ fi
 # resources, so every affected file qualifies), so src/ IS the running code.
 # Safe to run every launch: colcon no-ops packages that are already built
 # and up to date.
-# echo "[1.5/3] Building workspace (--symlink-install)..."
-# if [ "$USE_DOCKER" = true ]; then
-#     docker exec "$CONTAINER_NAME" bash -c "
-#         source /opt/ros/jazzy/setup.bash && \
-#         cd $CONTAINER_ROS2_DIR && \
-#         colcon build --symlink-install
-#     "
-# else
-#     bash -c "
-#         source /opt/ros/jazzy/setup.bash && \
-#         cd '$HOST_ROS2_DIR' && \
-#         colcon build --symlink-install
-#     "
-# fi
+echo "[1.5/3] Building workspace (--symlink-install)..."
+if [ "$USE_DOCKER" = true ]; then
+    docker exec "$CONTAINER_NAME" bash -c "
+        source /opt/ros/jazzy/setup.bash && \
+        cd $CONTAINER_ROS2_DIR && \
+        colcon build --symlink-install
+    "
+else
+    bash -c "
+        source /opt/ros/jazzy/setup.bash && \
+        cd '$HOST_ROS2_DIR' && \
+        colcon build --symlink-install
+    "
+fi
 
 # 2. Launch ROS 2 Bridge in background
 echo "[2/3] Initializing fsds_ros2_bridge..."
@@ -877,10 +886,11 @@ if [ "$USE_DOCKER" != true ]; then
 fi
 
 # 3. Launch Planning Stack in the foreground
-# sim.launch.py defaults to controller:=mpc_standalone and record_cones:=true,
-# so cone recording starts automatically alongside the stack (no separate
-# terminal needed). Controller is set via CONTROLLER above; override
-# record_cones:=false directly on the line below if ever needed.
+# sim.launch.py defaults to controller:=mpc, standalone_output:=true, and
+# record_cones:=true, so cone recording starts automatically alongside the
+# stack (no separate terminal needed). Controller is set via CONTROLLER
+# above; override record_cones:=false directly on the line below if ever
+# needed.
 #
 # The precomputed-speed/path toggles are set via USE_PRECOMPUTED_SPEED /
 # USE_PRECOMPUTED_PATH above, and WHICH track's CSVs they read via TRACK.

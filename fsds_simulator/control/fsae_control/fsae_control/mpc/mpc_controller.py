@@ -2,11 +2,11 @@
 MPC path-tracking controller.
 
 A drop-in alternative to the Stanley controller: it follows the planned
-centreline and drives on the same optimiser (mpc_core.MPCController, a linear
-time-varying MPC, or nmpc_core.NMPCController when use_nmpc=true) either
-node built here always runs. Unlike Stanley (which reacts to the
-instantaneous cross-track/heading error), the MPC plans a 1.25 s horizon,
-which is what damps the high-speed left-right sway.
+centreline using one of two optimisers, constructed unconditionally in
+__init__ (mpc_core.MPCController, a linear time-varying MPC, by default; or
+nmpc_core.NMPCController when use_nmpc=true). Unlike Stanley (which reacts
+to the instantaneous cross-track/heading error), the MPC plans a 1.25 s
+horizon, which is what damps the high-speed left-right sway.
 
 This node has TWO output modes, selected by the `standalone_output` ROS2
 parameter (default true):
