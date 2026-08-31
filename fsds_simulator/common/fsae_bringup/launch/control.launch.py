@@ -11,28 +11,34 @@ from launch_ros.actions import Node
 
 # fsae_control is an installed package by the time `ros2 launch` generates
 # this file (same as any node import), so this resolves the same way
-# mpc_core.py's own `from fsae_control.mpc_params import ...` does -- no
+# mpc_core.py's own `from fsae_control.mpc.mpc_params import ...` does -- no
 # relative path back to src/ needed, unlike map_path's hardcoded absolute
 # default below (which points at data, not code on the Python path).
-from fsae_control.mpc_params import MPC_PARAM_FIELDS
+from fsae_control.mpc.mpc_params import MPC_PARAM_FIELDS
 # NMPCParams' fields (nonlinear-MPC controller, use_nmpc default false) are
 # generated into launch args by the SAME mechanism as MPCParams' -- see
 # nmpc_params.py's own note on why they are a separate dataclass.
-from fsae_control.nmpc_params import NMPC_PARAM_FIELDS
+from fsae_control.mpc.nmpc_params import NMPC_PARAM_FIELDS
 
 
 # Control subsystem: a path-tracking controller + the FSDS command bridge.
-# The controller is selectable with `controller:=stanley|mpc|mpc_standalone`.
-#   stanley, mpc       — publish the shared cmd_vel interface; fsds_bridge
+# The controller is selectable with `controller:=stanley|mpc`.
+#   stanley            — publishes the shared cmd_vel interface; fsds_bridge
 #                         converts it (speed/steering -> ControlCommand) and
-#                         owns GO-gating + cone e-braking, identically for both.
-#   mpc_standalone     — publishes fs_msgs/ControlCommand directly, using the
-#                         MPC's own throttle/brake instead of fsds_bridge's
-#                         speed-error P-loop (preserves the offline-tuned
-#                         longitudinal behaviour from the fsae_MPCTest repo).
-#                         Owns GO-gating + cone e-braking itself, so
-#                         fsds_bridge is skipped for this mode — see
-#                         mpc_controller_standalone.py's module docstring.
+#                         owns GO-gating + cone e-braking.
+#   mpc                — runs mpc/mpc_controller.py; its OWN `standalone_output`
+#                         parameter (a separate launch arg, default true) then
+#                         picks that node's output mode:
+#                           standalone_output=false — same shared cmd_vel
+#                             interface as stanley, via fsds_bridge.
+#                           standalone_output=true — publishes
+#                             fs_msgs/ControlCommand directly, using the MPC's
+#                             own throttle/brake instead of fsds_bridge's
+#                             speed-error P-loop (preserves the offline-tuned
+#                             longitudinal behaviour from the fsae_MPCTest
+#                             repo). Owns GO-gating + cone e-braking itself,
+#                             so fsds_bridge is skipped in this mode — see
+#                             mpc/mpc_controller.py's module docstring.
 # The skidpad planner drives the car itself (it publishes cmd_vel directly),
 # so the controller is skipped in skidpad mode; fsds_bridge still runs then
 # (skidpad also uses the shared cmd_vel interface).
@@ -50,6 +56,7 @@ def generate_launch_description():
     use_precomputed_path = LaunchConfiguration('use_precomputed_path')
     use_precomputed_heading_profile = LaunchConfiguration('use_precomputed_heading_profile')
     use_nmpc = LaunchConfiguration('use_nmpc')
+    standalone_output = LaunchConfiguration('standalone_output')
     v_max = LaunchConfiguration('v_max')
     v_min = LaunchConfiguration('v_min')
     stanley_gain = LaunchConfiguration('stanley_gain')
@@ -97,36 +104,35 @@ def generate_launch_description():
         '',
     )
     # Map the friendly name to the package entry point; node name stays
-    # 'controller' either way so all three read the `controller:` params block.
+    # 'controller' either way so both read the `controller:` params block.
     controller_exec = PythonExpression([
-        "'mpc_controller_standalone' if '", controller, "' == 'mpc_standalone' "
-        "else 'mpc_controller' if '", controller, "' == 'mpc' "
+        "'mpc_controller' if '", controller, "' == 'mpc' "
         "else 'controller'"
     ])
-    # fsds_bridge is redundant (and would race mpc_standalone for
-    # /fsds/control_command) when the standalone MPC node is selected.
+    # fsds_bridge is redundant (and would race the MPC node for
+    # /fsds/control_command) when the MPC's own standalone_output mode is
+    # selected -- see mpc/mpc_controller.py's module docstring.
     run_bridge = IfCondition(
-        PythonExpression(["'", controller, "' != 'mpc_standalone'"])
+        PythonExpression([
+            "not ('", controller, "' == 'mpc' and '", standalone_output, "' == 'true')"
+        ])
     )
-    # map_path and path_map_path are both declared by all three controllers
-    # (mpc_controller.py, mpc_controller_standalone.py, stanley_controller.py
-    # all declare_parameters both), so both Node() entries below receive
-    # both -- a Stanley run and an MPC run on the same track can share the
-    # identical speed target AND/OR the identical tracked path (e.g. a
-    # raceline.csv) for a directly comparable telemetry CSV. Kept as two
-    # Node() entries (rather than branching one entry's params) because the
-    # MPC entry also carries the full MPCParams field set, which Stanley
-    # does not declare.
+    # map_path and path_map_path are both declared by both controllers
+    # (mpc/mpc_controller.py, stanley_controller.py both declare_parameters
+    # both), so both Node() entries below receive both -- a Stanley run and
+    # an MPC run on the same track can share the identical speed target
+    # AND/OR the identical tracked path (e.g. a raceline.csv) for a directly
+    # comparable telemetry CSV. Kept as two Node() entries (rather than
+    # branching one entry's params) because the MPC entry also carries the
+    # full MPCParams field set, which Stanley does not declare.
     run_controller_mpc = IfCondition(
         PythonExpression([
-            "'", planner, "' != 'skidpad_planner' and '", controller,
-            "' in ('mpc', 'mpc_standalone')"
+            "'", planner, "' != 'skidpad_planner' and '", controller, "' == 'mpc'"
         ])
     )
     run_controller_non_mpc = IfCondition(
         PythonExpression([
-            "'", planner, "' != 'skidpad_planner' and '", controller,
-            "' not in ('mpc', 'mpc_standalone')"
+            "'", planner, "' != 'skidpad_planner' and '", controller, "' != 'mpc'"
         ])
     )
 
@@ -158,14 +164,13 @@ def generate_launch_description():
     )
     warn_nmpc_not_mpc = IfCondition(
         PythonExpression([
-            "'", use_nmpc, "' == 'true' and '", controller,
-            "' not in ('mpc', 'mpc_standalone')"
+            "'", use_nmpc, "' == 'true' and '", controller, "' != 'mpc'"
         ])
     )
     warn_heading_profile_not_mpc = IfCondition(
         PythonExpression([
             "'", use_precomputed_heading_profile, "' == 'true' and '",
-            controller, "' not in ('mpc', 'mpc_standalone')"
+            controller, "' != 'mpc'"
         ])
     )
 
@@ -199,7 +204,16 @@ def generate_launch_description():
         DeclareLaunchArgument('planner', default_value='centerline_planner'),
         DeclareLaunchArgument(
             'controller', default_value='stanley',
-            description='stanley | mpc | mpc_standalone — path-tracking controller to run'),
+            description='stanley | mpc — path-tracking controller to run'),
+        DeclareLaunchArgument(
+            'standalone_output', default_value='true',
+            description=(
+                "mpc only: true -> the MPC node publishes fs_msgs/ControlCommand "
+                "directly with its own throttle/brake (fsds_bridge is skipped); "
+                "false -> it forwards only steering via the shared cmd_vel "
+                "interface, same as stanley, and fsds_bridge computes "
+                "throttle/brake. See mpc/mpc_controller.py's module docstring."
+            )),
         DeclareLaunchArgument(
             'log_csv', default_value='false',
             description='Write controller CSV telemetry (e_y/e_psi/steer/...) to log_dir'),
@@ -240,10 +254,10 @@ def generate_launch_description():
                 "fsae_MPCTest checkout required to READ it (only to produce "
                 "a NEW one; see tracks/README or fsae_MPCTest's "
                 "tuner/export_speed_profile.py). Has no effect unless "
-                "use_precomputed_speed:=true. Applies to `mpc`, "
-                "`mpc_standalone`, AND `stanley` (all three declare this "
-                "param) -- letting Stanley and MPC runs on the same track "
-                "share the identical speed target. If the file doesn't "
+                "use_precomputed_speed:=true. Applies to both `mpc` and "
+                "`stanley` (both declare this param) -- letting Stanley and "
+                "MPC runs on the same track share the identical speed "
+                "target. If the file doesn't "
                 "exist, the node logs an error at startup and falls back to "
                 "live curvature_speed() -- it does not crash."
             )),
@@ -253,7 +267,7 @@ def generate_launch_description():
                 "true (default) -> look up the target speed from map_path's "
                 "precomputed oracle profile instead of live curvature_speed() "
                 "every tick. Only valid for a track that's already been fully "
-                "mapped -- see mpc_controller_standalone.py's map_path param. "
+                "mapped -- see mpc/mpc_controller.py's map_path param. "
                 "Set to false here (or on the command line) to go back to "
                 "unchanged live curvature_speed() behaviour regardless of "
                 "map_path."
@@ -274,9 +288,9 @@ def generate_launch_description():
                 "Path to a CSV exported from a recorded cone map (same "
                 "this-repo tracks/<name>/ location as map_path), used as "
                 "the tracked PATH (not just speed) -- see "
-                "mpc_controller_standalone.py's path_map_path param. Has no "
-                "effect unless use_precomputed_path:=true. Applies to all "
-                "three controllers: `mpc`, `mpc_standalone`, and `stanley`."
+                "mpc/mpc_controller.py's path_map_path param. Has no "
+                "effect unless use_precomputed_path:=true. Applies to both "
+                "`mpc` and `stanley`."
             )),
         DeclareLaunchArgument(
             'use_precomputed_path', default_value='true',
@@ -308,8 +322,8 @@ def generate_launch_description():
                 "declare this."
             )),
         # v_max/v_min/stanley_gain: overrides the shared controller.ros__parameters
-        # block in fsae_params.yaml (applies to stanley, mpc, and mpc_standalone
-        # alike -- the node name is 'controller' for all three). Defaults match
+        # block in fsae_params.yaml (applies to stanley and mpc alike -- the
+        # node name is 'controller' for both). Defaults match
         # that file's current values exactly, so leaving these unset on the
         # command line changes nothing; pass e.g. v_max:=3.0 for a one-off slow
         # lap (cone-map recording, characterisation runs) without editing the
@@ -346,7 +360,7 @@ def generate_launch_description():
             'output_smoothing_enabled', default_value='false',
             description='EXPERIMENTAL: post-solve moving-average '
                         'filter on the final steering command, NOT a QP weight change '
-                        '-- see mpc_controller_standalone.py\'s Output smoothing block.'),
+                        '-- see mpc/mpc_controller.py\'s Output smoothing block.'),
         DeclareLaunchArgument(
             'output_smoothing_alpha', default_value='0.3',
             description='EMA coefficient for output_smoothing_enabled; lower = more '
@@ -379,6 +393,7 @@ def generate_launch_description():
             name='controller',
             output='screen',
             parameters=[config, {
+                'standalone_output': standalone_output,
                 'log_csv': log_csv, 'log_dir': log_dir,
                 'map_path': effective_map_path,
                 'path_map_path': effective_path_map_path,
@@ -393,12 +408,12 @@ def generate_launch_description():
                 'output_smoothing_k_ey': output_smoothing_k_ey,
                 'output_smoothing_k_epsi': output_smoothing_k_epsi,
                 'output_smoothing_lookahead_lead_s': output_smoothing_lookahead_lead_s,
-                # stanley_gain deliberately omitted here: neither
-                # mpc_controller.py nor mpc_controller_standalone.py declares
-                # it, so passing it would raise ParameterNotDeclaredException.
-                # Every MPCParams field IS declared by both MPC nodes (see
-                # mpc_params.py's declare_mpc_params()), so unlike
-                # stanley_gain these are safe to pass unconditionally here.
+                # stanley_gain deliberately omitted here: mpc_controller.py
+                # doesn't declare it, so passing it would raise
+                # ParameterNotDeclaredException. Every MPCParams field IS
+                # declared by the MPC node (see mpc_params.py's
+                # declare_mpc_params()), so unlike stanley_gain these are
+                # safe to pass unconditionally here.
                 **mpc_param_configs,
                 # Both MPC nodes declare every NMPCParams field (see
                 # nmpc_params.declare_nmpc_params()), so these are safe to
@@ -437,13 +452,13 @@ def generate_launch_description():
         ),
         LogInfo(
             msg=["WARNING: use_nmpc=true has NO EFFECT with controller:='", controller,
-                 "' -- it is only read by the mpc/mpc_standalone nodes."],
+                 "' -- it is only read by the mpc node."],
             condition=warn_nmpc_not_mpc,
         ),
         LogInfo(
             msg=["WARNING: use_precomputed_heading_profile=true has NO EFFECT with "
                  "controller:='", controller,
-                 "' -- only the mpc/mpc_standalone nodes declare this parameter."],
+                 "' -- only the mpc node declares this parameter."],
             condition=warn_heading_profile_not_mpc,
         ),
     ])

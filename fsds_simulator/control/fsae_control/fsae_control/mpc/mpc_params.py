@@ -13,10 +13,10 @@ one dataclass, MPCParams. mpc_core.py accepts an MPCParams instance
 module-level constants or local list literals — see mpc_core.py's own
 docstring for how this is threaded through.
 
-mpc_controller.py / mpc_controller_standalone.py declare_parameters() every
-field of MPCParams (using DEFAULT_MPC_PARAMS as the ROS default), read the
-values back, and build a fresh MPCParams(...) to hand to MPCController — see
-those files for the ROS2 launch-parameter wiring. control.launch.py /
+mpc_controller.py declare_parameters() every field of MPCParams (using
+DEFAULT_MPC_PARAMS as the ROS default), reads the values back, and builds a
+fresh MPCParams(...) to hand to MPCController — see that file for the ROS2
+launch-parameter wiring. control.launch.py /
 sim.launch.py / fsae_params.yaml / launch_all.sh expose the same fields as
 launch-time overrides — see FIELDS below for the metadata that generates
 those launch args mechanically instead of by hand (35 near-identical
@@ -268,9 +268,9 @@ DEFAULT_MPC_PARAMS = MPCParams()
 
 # (name, default, metadata) tuples for every field, in declaration order —
 # the single source the launch-arg generation (control.launch.py) and the
-# ROS2 declare_parameters() calls (mpc_controller.py / mpc_controller_standalone.py)
-# both build from, so the dataclass, the YAML defaults, and the launch args
-# can't silently drift against each other.
+# ROS2 declare_parameters() calls (mpc_controller.py) both build from, so the
+# dataclass, the YAML defaults, and the launch args can't silently drift
+# against each other.
 MPC_PARAM_FIELDS = tuple(
     (f.name, getattr(DEFAULT_MPC_PARAMS, f.name), f.metadata)
     for f in fields(MPCParams)
@@ -280,9 +280,9 @@ MPC_PARAM_FIELDS = tuple(
 def declare_mpc_params(node) -> None:
     """
     declare_parameters() every MPCParams field on `node`, defaulting to
-    DEFAULT_MPC_PARAMS. Shared by mpc_controller.py / mpc_controller_standalone.py
-    so neither has to hand-write 56 declare_parameters entries (and risk them
-    drifting from MPCParams' own defaults/names).
+    DEFAULT_MPC_PARAMS. Used by mpc_controller.py so it doesn't have to
+    hand-write 56 declare_parameters entries (and risk them drifting from
+    MPCParams' own defaults/names).
     """
     node.declare_parameters(
         namespace='',

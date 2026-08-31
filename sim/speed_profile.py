@@ -738,7 +738,7 @@ def peak_kappa_ahead(waypoints, scan_end=6.0):
     behaviour of imposing no constraint rather than guessing).
 
     Used by sim/rollout_core.py's output-smoothing block (and the live
-    mpc_controller_standalone.py/mpc_controller.py block it mirrors) to fade
+    mpc_controller.py block it mirrors) to fade
     OUTPUT_SMOOTHING's corner_frac blend down BEFORE the car reaches a
     corner already visible in the path, not only once the car's own current
     curvature has already risen — see that block's own comment for why a

@@ -302,19 +302,23 @@ arguments — it doesn't need editing to switch between them. It also launches
 MPC + cone recording in one command, no second terminal needed:
 
 ```bash
-ros2 launch fsae_bringup sim.launch.py                              # mpc_standalone (default), cone_recorder on
+ros2 launch fsae_bringup sim.launch.py                              # mpc, standalone_output=true (default), cone_recorder on
 ros2 launch fsae_bringup sim.launch.py controller:=stanley
-ros2 launch fsae_bringup sim.launch.py controller:=mpc
+ros2 launch fsae_bringup sim.launch.py controller:=mpc standalone_output:=false
 ros2 launch fsae_bringup sim.launch.py planner:=skidpad_planner controller:=mpc
 ros2 launch fsae_bringup sim.launch.py record_cones:=false          # skip cone_recorder
 ```
 
-- `stanley` and `mpc` both publish the shared `cmd_vel` interface;
-  `fsds_bridge` converts it to `fs_msgs/ControlCommand` and owns GO-gating +
-  cone e-braking for either one.
-- `mpc_standalone` (default) is this repo's `mpc_controller_standalone.py` —
-  see above for its control-loop phases. It publishes `ControlCommand`
-  directly and skips `fsds_bridge` (the launch file handles that
+`mpc_controller.py` (the `controller:=mpc` node) has two output modes,
+selected by its own `standalone_output` parameter — no longer two separate
+files/executables:
+
+- `standalone_output:=false` — `mpc` (like `stanley`) publishes the shared
+  `cmd_vel` interface; `fsds_bridge` converts it to `fs_msgs/ControlCommand`
+  and owns GO-gating + cone e-braking.
+- `standalone_output:=true` (default) — publishes `fs_msgs/ControlCommand`
+  directly (using the MPC's own throttle/brake), and owns GO-gating +
+  cone-braking itself. Skips `fsds_bridge` (the launch file handles that
   automatically).
 
 **Topic map for the control node:**
@@ -330,39 +334,43 @@ ros2 launch fsae_bringup sim.launch.py record_cones:=false          # skip cone_
 /fsae/slam/right_track,
 /fsae/slam/car_position        → centerline_planner → /fsae/planning/selected_trajectory
 
-/fsae/planning/selected_trajectory  → mpc_controller_standalone   → /fsds/control_command
-/fsae/slam/car_position             → mpc_controller_standalone
-/fsae/slam/car_odom                 → mpc_controller_standalone  (SAME snapshot as car_position;
-                                                                   see sim_perception.py's "Speed/
-                                                                   yaw-rate synchronisation" note —
-                                                                   do NOT use the raw
-                                                                   /fsds/testing_only/odom directly)
-/fsae/perception/cone_detection     → mpc_controller_standalone  (cone proximity brake)
+/fsae/planning/selected_trajectory  → mpc_controller   → /fsds/control_command (standalone_output=true)
+                                                        → /fsae/control/cmd_vel (standalone_output=false)
+/fsae/slam/car_position             → mpc_controller
+/fsae/slam/car_odom                 → mpc_controller  (SAME snapshot as car_position;
+                                                         see sim_perception.py's "Speed/
+                                                         yaw-rate synchronisation" note —
+                                                         do NOT use the raw
+                                                         /fsds/testing_only/odom directly)
+/fsae/perception/cone_detection     → mpc_controller  (cone proximity brake, standalone_output=true only)
 
-/fsds/signal/go                → mpc_controller_standalone  (unlock)
+/fsds/signal/go                → mpc_controller  (unlock, standalone_output=true only)
 ```
 
-Note: `mpc_controller_standalone` does not subscribe to a desired-speed
+Note: `mpc_controller` does not subscribe to a desired-speed
 topic — it computes `desired_speed` itself every tick from the current path
 via `control_utils.curvature_speed()` (see the `v_max`/`v_min` ROS
-parameters it declares, which default to `V_MAX`/`V_MIN`). Also note
-`mpc_controller_standalone` publishes `fs_msgs/ControlCommand` **directly** —
-it does *not* go through `fsds_bridge.py` (upstream's shared GO-gating/
-cone-brake/throttle-conversion layer that Stanley and upstream's default
-`mpc_controller.py` both use). Don't launch `fsds_bridge` alongside
-`mpc_controller_standalone` — they would both publish to
-`/fsds/control_command`. (`control.launch.py`'s `controller:=mpc_standalone`
-option already handles this — it skips `fsds_bridge` automatically.)
+parameters it declares, which default to `V_MAX`/`V_MIN`). Also note that in
+`standalone_output=true` mode, `mpc_controller` publishes
+`fs_msgs/ControlCommand` **directly** — it does *not* go through
+`fsds_bridge.py` (the shared GO-gating/cone-brake/throttle-conversion layer
+that Stanley and `mpc` in `standalone_output=false` mode both use). Don't
+launch `fsds_bridge` alongside `mpc` in `standalone_output=true` mode — they
+would both publish to `/fsds/control_command`. (`control.launch.py`'s
+`standalone_output:=true` option already handles this — it skips
+`fsds_bridge` automatically.)
 
-**Control loop phases** (see `mpc_controller_standalone.py`'s `_control_loop`):
+**Control loop phases** (see `mpc/mpc_controller.py`'s `_control_step`; phases 1
+and 4 apply only in `standalone_output=true` mode):
 
 1. **Hold at start line** — full brake until the `/fsds/signal/go` signal is
    received.
-2. **Stale-path emergency brake** — full brake, and `MPCController.reset()`,
-   if no fresh path has arrived within `PATH_TIMEOUT` (0.5 s) or the path
-   has fewer than 2 points. The reset discards the QP's warm start and
-   actuator-lag memory so the controller doesn't resume from stale state
-   once the path returns.
+2. **Stale-path emergency brake** — full brake (in `standalone_output=true`
+   mode; `standalone_output=false` publishes nothing and relies on
+   `fsds_bridge`'s own timeout), and `MPCController.reset()`, if no fresh
+   path has arrived within `PATH_TIMEOUT` (0.5 s) or the path has fewer than
+   2 points. The reset discards the QP's warm start and actuator-lag memory
+   so the controller doesn't resume from stale state once the path returns.
 3. **Normal MPC solve** — `MPCController.compute()`.
 4. **Cone-proximity brake override** — hard-overrides throttle/brake (not
    steering) if a fused cone is inside a dynamic corridor directly ahead.
@@ -575,19 +583,19 @@ docstring for the full reasoning.
 
 #### 3. What the live controller reads
 
-Two independent ROS launch args, both consumed by `mpc`/`mpc_standalone`
-(not `stanley`):
+Two independent ROS launch args, both consumed by `mpc` (regardless of its
+own `standalone_output` mode; not `stanley`):
 
 | Launch arg | Default (via `launch_all.sh`) | Effect |
 |------|---------|--------|
 | `map_path` + `use_precomputed_speed` | newest track's `speed_profile.csv` | Look up target speed from the CSV's oracle profile instead of live `curvature_speed()` per tick |
 | `path_map_path` + `use_precomputed_path` | newest track's `centerline.csv` (else `raceline.csv`) | Track the CSV's geometry instead of subscribing to `centerline_planner.py`'s `/fsae/planning/selected_trajectory` — removes the live planner from the control loop entirely |
-| `use_nmpc` | `false` | Swap `MPCController` (linear QP) for `nmpc_core.NMPCController` (Frenet-frame nonlinear MPC) entirely. `mpc`/`mpc_standalone` only, no effect on `stanley`. See `docs/reference/control_mechanisms.md`'s "Nonlinear MPC (`use_nmpc`)" section and `architecture.md`'s "Second controller" section — not covered further here since it's a whole separate controller, not a launch-time data source like the two rows above. |
+| `use_nmpc` | `false` | Swap `MPCController` (linear QP) for `nmpc_core.NMPCController` (Frenet-frame nonlinear MPC) entirely. `mpc` only, no effect on `stanley`. See `docs/reference/control_mechanisms.md`'s "Nonlinear MPC (`use_nmpc`)" section and `architecture.md`'s "Second controller" section — not covered further here since it's a whole separate controller, not a launch-time data source like the two rows above. |
 
-**`map_path`/`path_map_path` are consumed by all three controllers, not only
-`mpc`/`mpc_standalone`.** `stanley_controller.py` declares and reads both
-parameters exactly like the two MPC nodes do, and `control.launch.py` hands
-all three the identical resolved value (see
+**`map_path`/`path_map_path` are consumed by both controllers, not only
+`mpc`.** `stanley_controller.py` declares and reads both
+parameters exactly like the MPC node does, and `control.launch.py` hands
+both the identical resolved value (see
 `docs/reference/reference_path_and_speed.md`'s "`USE_PRECOMPUTED_SPEED`/`_PATH`
 are resolved in the launch file" for the mechanism) — this is what lets a
 Stanley run and an MPC run on the same track share the identical speed
@@ -638,7 +646,7 @@ Putting it all together, end to end:
 ```bash
 # 1. Record (planner-in-loop, so the recording is a real live-driven lap)
 #    -- set TRACK=<new-name>, USE_PRECOMPUTED_SPEED=false,
-#    USE_PRECOMPUTED_PATH=false, CONTROLLER=mpc_standalone (or stanley) in
+#    USE_PRECOMPUTED_PATH=false, CONTROLLER=mpc (or stanley) in
 #    ros2/launch_all.sh, then:
 ./ros2/launch_all.sh
 
@@ -654,8 +662,8 @@ python -m tuner.tools.raceline_optimizer   <new-name>
 
 ### CSV telemetry logging
 
-Every controller node (`stanley_controller.py`, `mpc_controller.py`,
-`mpc_controller_standalone.py`) can optionally write two CSVs per run —
+Every controller node (`stanley_controller.py`, `mpc_controller.py`, in
+either `standalone_output` mode) can optionally write two CSVs per run —
 per-control-step telemetry and periodic path snapshots — via
 `telemetry_logger.ControlLogger`. **Off by default**, same toggle pattern as
 `cone_recorder` above: a ROS parameter, not a separate node or launch flag.
@@ -669,7 +677,7 @@ ros2 launch fsae_bringup sim.launch.py                                        # 
 Or directly on a `ros2 run`/node if you're not going through `sim.launch.py`:
 
 ```bash
-ros2 run fsae_control mpc_controller_standalone --ros-args -p log_csv:=true -p log_dir:=/path/to/logs
+ros2 run fsae_control mpc_controller --ros-args -p log_csv:=true -p log_dir:=/path/to/logs
 ```
 
 Each run writes `<tag>_control_<timestamp>.csv` (one row per 20 Hz control
@@ -1108,7 +1116,7 @@ docker run -it \
 ```
 
 To rebuild just the `fsae_planning` package after editing it (e.g. after
-re-copying an updated `mpc_controller_standalone.py`/`mpc_core.py`/
+re-copying an updated `mpc/mpc_controller.py`/`mpc/mpc_core.py`/
 `control_utils.py` from this repo's `fsds_simulator/` staging mirror):
 
 ```bash

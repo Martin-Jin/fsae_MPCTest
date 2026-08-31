@@ -123,7 +123,7 @@ USE_PRECOMPUTED_SPEED_PROFILE = True
 # No effect when USE_PRECOMPUTED_SPEED_PROFILE=False — that branch already
 # calls curvature_speed() directly every tick with no oracle target to cap.
 # Mirrors the live ROS side's enable_dynamic_speed_cap parameter
-# (mpc_controller.py / mpc_controller_standalone.py) — keep both in sync.
+# (mpc_controller.py) — keep both in sync.
 ENABLE_DYNAMIC_SPEED_CAP = True
 
 # DYNAMIC_CAP_A_LAT_MAX / DYNAMIC_CAP_SAFETY — curvature_speed()'s own
@@ -137,8 +137,8 @@ DYNAMIC_CAP_A_LAT_MAX = 3.2   # m/s^2
 DYNAMIC_CAP_SAFETY = 0.9
 
 # Offline parity note for the live ROS side's path_map_path param
-# (fsae_planning's mpc_controller.py / mpc_controller_standalone.py, which
-# tracks a precomputed path instead of subscribing to the live planner's
+# (fsae_planning's mpc_controller.py, which tracks a precomputed path
+# instead of subscribing to the live planner's
 # centreline): the equivalent offline experiment is USE_PLANNER=False above
 # (or, for a recorded real track specifically, `python3 -m
 # tuner.recorded_map_rollout <map.json> --oracle`) — see that flag's own
@@ -419,7 +419,7 @@ REVERSAL_PENALTY_K = 8.0           # 1/rad; half-boost at ~7.2deg of previous st
 # [shared, both controllers, EXPERIMENTAL] Post-solve
 # moving-average filter on the FINAL steering command, applied identically
 # regardless of which controller (LTV-QP or NMPC) produced it -- mirrors
-# ros2/.../mpc_controller_standalone.py's node-level Output smoothing block.
+# ros2/.../mpc/mpc_controller.py's node-level Output smoothing block.
 # Deliberately NOT a QP weight change: the solver's own Q/R/R_rate are
 # untouched, so this can't silently override separately-tuned weights the
 # way a cost-scheduling mechanism can (see NMPC_CORNER_RRATE_BLEND_ENABLED's
@@ -473,7 +473,7 @@ OUTPUT_SMOOTHING_K_EPSI = 1.115  # 1/rad; higher = fades out faster per radian o
 # _corner_factor curve as the current-curvature signal, and the larger of
 # the two wins -- so whichever fires first drives the fade.
 # 0.0 disables (pure current-curvature corner_frac, unchanged behaviour).
-# Numeric parity: mpc_controller(_standalone).py's
+# Numeric parity: mpc_controller.py's
 # 'output_smoothing_lookahead_lead_s' ROS2 parameter.
 OUTPUT_SMOOTHING_LOOKAHEAD_LEAD_S = 0.5   # s of lead; 0.0 disables
 

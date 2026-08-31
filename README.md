@@ -18,26 +18,29 @@ flag (`use_nmpc` in `settings.py` / the live ROS 2 node's launch args):
 See [docs/architecture.md](docs/architecture.md)'s "Second controller:
 nonlinear MPC" section for the full comparison and why the NMPC exists.
 
-This repository also includes a ROS 2 control node (`mpc_controller_standalone.py`
-/ `mpc_core.py`, staged under `fsds_simulator/` — see below) that runs the
+This repository also includes a ROS 2 control node (`mpc/mpc_controller.py`'s
+`standalone_output=true` mode / `mpc/mpc_core.py`, staged under
+`fsds_simulator/` — see below) that runs the
 same MPC live inside the
 [FSDS](https://github.com/FS-Driverless/Formula-Student-Driverless-Simulator)
 simulator, by pasting it into the matching file in the
-[fsae_planning](https://github.com/UOA-FSAE/fsae_planning) repo (see
-[`docs/reference/`](`docs/reference/`) for the exact
-file mapping — `mpc_controller_standalone.py` is a distinct node from
-upstream's default `mpc_controller.py`). Weights tuned offline in this
-project transfer directly to that live controller, because both preserve the
-MPC's own throttle/brake output rather than routing speed through
-`fsds_bridge.py`'s separate P-loop.
+[fsae_planning](https://github.com/UOA-FSAE/fsae_planning) repo.
+
+See [`docs/reference/`](`docs/reference/`) for the exact
+file mapping — `mpc_controller.py`'s `standalone_output=true` mode is a
+distinct code path from its own `standalone_output=false` mode, the direct
+descendant of upstream's original `mpc_controller.py` design. Weights tuned
+offline in this project transfer directly to that live controller, because
+both preserve the MPC's own throttle/brake output rather than routing speed
+through `fsds_bridge.py`'s separate P-loop.
 
 `fsds_simulator/` is a staging area, not a live module of this repo: it
 mirrors `fsae_planning`'s entire ROS 2 workspace — every package
 (`fsae_interfaces`, `fsae_bringup`, `fsae_sim_perception`, `fsae_planning`,
 `fsae_control`), including build scaffolding, not just the MPC-relevant
 files — at the exact same relative paths, so someone with only this repo and
-FSDS can build and run the full stack (Stanley, `mpc`, or `mpc_standalone`)
-with no separate `fsae_planning` checkout. See
+FSDS can build and run the full stack (Stanley or `mpc`, either
+`standalone_output` mode) with no separate `fsae_planning` checkout. See
 [fsds_simulator/README.md](fsds_simulator/README.md) for build/run steps.
 Nothing under `fsds_simulator/` is imported by the simulator or tuner —
 those live under `planning/`, `sim/`, `model/`, `controller/` instead.
@@ -121,7 +124,7 @@ for how to run the CMA-ES weight tuner instead.
 | `model/bicycle_model.py` / `controller/optimiser.py` / `controller/model_utils.py` | The MPC's linear prediction model, QP formulation/solve, and adaptive gain scheduling. |
 | `settings.py` | All project-level tuning/scoring/DNF configuration. |
 | `gui/manual_drive.py` | Standalone keyboard-driven test mode against the nonlinear plant. |
-| `mpc_controller_standalone.py` / `mpc_core.py` / `control_utils.py` (staged under `fsds_simulator/control/fsae_control/fsae_control/`) | The live ROS 2 MPC controller for FSDS. |
+| `mpc/mpc_controller.py` / `mpc/mpc_core.py` / `control_utils.py` (staged under `fsds_simulator/control/fsae_control/fsae_control/`) | The live ROS 2 MPC controller for FSDS — `mpc_controller.py`'s `standalone_output` parameter selects its output mode. |
 | `fsds_simulator/` | Full staging mirror of the live ROS 2 workspace (all packages, not just control) — see [fsds_simulator/README.md](fsds_simulator/README.md). |
 
 See [docs/architecture.md#module-reference](docs/architecture.md#module-reference)

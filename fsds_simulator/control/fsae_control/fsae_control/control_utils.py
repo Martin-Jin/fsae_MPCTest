@@ -372,7 +372,7 @@ def peak_kappa_ahead(waypoints, scan_end=6.0):
     to measure curvature at all (matches curvature_speed's own short-path
     behaviour of imposing no constraint rather than guessing).
 
-    Used by mpc_controller_standalone.py/mpc_controller.py's output
+    Used by mpc_controller.py's output
     smoothing block to fade OUTPUT_SMOOTHING's corner_frac blend down
     BEFORE the car reaches a corner already visible in the path, not only
     once the car's own current curvature has already risen — see that

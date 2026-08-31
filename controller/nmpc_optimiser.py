@@ -200,7 +200,7 @@ class PathReference:
         # caller's scalar. Built from the speed profile's OWN (path_v_xy)
         # points, NOT self.arc: the speed-profile CSV's array is a separate
         # object from the path array handed to this constructor (confirmed
-        # at the rollout_core.py/mpc_controller_standalone.py call sites --
+        # at the rollout_core.py/mpc_controller.py call sites --
         # the live planner centreline and the oracle path/speed-profile
         # points are frequently different arrays entirely), so its own
         # cumulative arc length must be computed independently.

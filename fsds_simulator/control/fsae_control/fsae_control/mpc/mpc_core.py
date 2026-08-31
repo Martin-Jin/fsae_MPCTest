@@ -13,12 +13,12 @@ mpc_core.py — Live MPC Path-Tracking Controller for FSDS
 
 PURPOSE
 -------
-Provides MPCController, the single class both mpc_controller.py and
-mpc_controller_standalone.py use to turn a planner path + current vehicle
-state into steering/throttle/brake at 20 Hz (mpc_controller.py forwards only
-steering through the shared cmd_vel interface; mpc_controller_standalone.py
-uses the full (steering, throttle, brake) triple directly — see that file's
-own docstring for why). It is a self-contained, "live-solve" re-implementation
+Provides MPCController, the class mpc_controller.py uses to turn a planner
+path + current vehicle state into steering/throttle/brake at 20 Hz. That
+node's `standalone_output` parameter picks how the result is used:
+false forwards only steering through the shared cmd_vel interface;
+true uses the full (steering, throttle, brake) triple directly — see that
+file's own docstring for why. It is a self-contained, "live-solve" re-implementation
 of the same linear time-varying MPC formulated generically in optimiser.py /
 bicycle_model.py for the offline tuner and simulator (both in the
 fsae_MPCTest repo), designed for 100% numerical parity with that offline
@@ -70,10 +70,9 @@ controller.
 
 USED BY
 -------
-  mpc_controller.py and mpc_controller_standalone.py — each constructs its
-                    own MPCController(dt=0.05, N=35) in __init__ and calls
-                    .compute() every 20 Hz tick, .reset() on stale path /
-                    cone-brake fail-safes.
+  mpc_controller.py — constructs an MPCController(dt=0.05, N=35) in
+                    __init__ and calls .compute() every 20 Hz tick,
+                    .reset() on stale path / cone-brake fail-safes.
 """
 
 import math
@@ -84,7 +83,7 @@ import cvxpy as cp
 import numpy as np
 from scipy.linalg import expm
 
-from fsae_control.mpc_params import DEFAULT_MPC_PARAMS, MPCParams
+from fsae_control.mpc.mpc_params import DEFAULT_MPC_PARAMS, MPCParams
 
 # Maximum physical steering deflection.  25deg matches this stack's limit
 # (fsae_control.control_utils / fsds_bridge); upstream used 35deg.
@@ -491,9 +490,9 @@ class MPCController:
         ----------
         dt : float
             Control/prediction timestep (s). Must equal the calling node's
-            control timer period (0.05 s / 20 Hz in both mpc_controller.py
-            and mpc_controller_standalone.py) so the discretised model's
-            predictions align with real elapsed time.
+            control timer period (0.05 s / 20 Hz in mpc_controller.py) so
+            the discretised model's predictions align with real elapsed
+            time.
         N : int
             MPC horizon length in steps (35 -> 1.75 s lookahead at dt=0.05).
             Must match settings.N_HORIZON for tuned weights to transfer.
@@ -1203,9 +1202,8 @@ class MPCController:
         Guard: if the path has fewer than 2 points, immediately returns a
         neutral/mild-braking command (0.0, 0.0, 0.5) without touching the
         QP or any internal state — the calling node's own path-staleness
-        check is expected to normally catch this first
-        (mpc_controller_standalone.py's Phase 2, or mpc_controller.py's
-        equivalent stale-path guard).
+        check is expected to normally catch this first (mpc_controller.py's
+        Phase 2).
         """
         if len(path) < 2:
             return 0.0, 0.0, 0.5   

@@ -4,8 +4,9 @@ This folder is a **staging mirror** of the live
 [`fsae_planning`](https://github.com/UOA-FSAE/fsae_planning) ROS 2 workspace — every
 file lives at the exact relative path colcon expects, so this folder alone (plus
 FSDS itself and the two message repos below) is enough to build and run the full
-autonomous stack: `centerline_planner`, and either the `stanley` or `mpc`/`mpc_standalone`
-controller. Every node/package file is byte-for-byte identical to its live counterpart;
+autonomous stack: `centerline_planner`, and either the `stanley` or `mpc`
+controller (the latter's `standalone_output` parameter selects its output
+mode). Every node/package file is byte-for-byte identical to its live counterpart;
 `launch_all.sh` is the one exception — see "What's here but adapted" below. See the parent
 repo's [`docs/reference/`](../`docs/reference/`)
 for the exact file-by-file mapping, what is deliberately *not* mirrored, and the resync
@@ -29,8 +30,8 @@ fsds_simulator/
 ├── planning/
 │   └── fsae_planning/          # centerline_planner, skidpad_planner + utils
 └── control/
-    └── fsae_control/           # stanley_controller / mpc_controller / mpc_controller_standalone
-                                 # + fsds_bridge (cmd_vel → FSDS) + mpc_core (shared MPC QP)
+    └── fsae_control/           # stanley_controller / mpc/mpc_controller (standalone_output param)
+                                 # + fsds_bridge (cmd_vel → FSDS) + mpc/mpc_core (shared MPC QP)
                                  # + scoring.py (live/offline score parity, see `docs/reference/`)
 ```
 
@@ -78,15 +79,15 @@ ros2 launch fsds_ros2_bridge fsds_ros2_bridge.launch.py UDP_control:=false
 
 # Terminal 3 — perception + planning + control
 cd ~/ros2_fsd && source install/setup.bash
-ros2 launch fsae_bringup sim.launch.py controller:=stanley           # Stanley controller
-ros2 launch fsae_bringup sim.launch.py controller:=mpc               # MPC via fsds_bridge (steering only)
-ros2 launch fsae_bringup sim.launch.py controller:=mpc_standalone     # MPC's own throttle/brake (default)
+ros2 launch fsae_bringup sim.launch.py controller:=stanley                                    # Stanley controller
+ros2 launch fsae_bringup sim.launch.py controller:=mpc standalone_output:=false               # MPC via fsds_bridge (steering only)
+ros2 launch fsae_bringup sim.launch.py controller:=mpc                                        # MPC's own throttle/brake (default: standalone_output:=true)
 ```
 
-`controller:=mpc_standalone` is the only mode whose longitudinal behaviour matches
+`standalone_output:=true` (the default) is the only mode whose longitudinal behaviour matches
 what this repo's offline tuner actually tunes — see the parent README's explanation
-of why `mpc_controller.py` discards the MPC's own throttle/brake. `stanley` and `mpc`
-both route through `fsds_bridge`'s simple speed-error P-loop instead.
+of why the `standalone_output=false` mode discards the MPC's own throttle/brake. `stanley` and
+`mpc standalone_output:=false` both route through `fsds_bridge`'s simple speed-error P-loop instead.
 
 ### One-command launch (`launch_all.sh`)
 

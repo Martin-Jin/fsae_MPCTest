@@ -887,19 +887,18 @@ For the run command, controls, and workflow, see [developer_guide.md's Manual Dr
 
 ## 9. Running Against the Real FSDS Simulator
 
-The live ROS 2 side of this project lives as a proper ROS 2 package, `fsae_control`, under `fsds_simulator/control/fsae_control/`. It ships three selectable console-script controllers plus a shared bridge node, wired together in `fsds_simulator/common/fsae_bringup/launch/control.launch.py`:
+The live ROS 2 side of this project lives as a proper ROS 2 package, `fsae_control`, under `fsds_simulator/control/fsae_control/`. It ships two selectable console-script controllers plus a shared bridge node, wired together in `fsds_simulator/common/fsae_bringup/launch/control.launch.py`:
 
 | Executable | Backing file | What it does |
 |---|---|---|
-| `controller` (`controller:=stanley`, the default) | `stanley_controller.py` | The active reactive Stanley controller, publishes `cmd_vel`, routes through `fsds_bridge` like `mpc_controller` does |
-| `mpc_controller` (`controller:=mpc`) | `mpc_controller.py` (uses `mpc_core.MPCController`) | Publishes only steering through the shared `cmd_vel` interface; `fsds_bridge` computes throttle/brake itself from a simple speed-error loop, the same way it does for Stanley |
-| `mpc_controller_standalone` (`controller:=mpc_standalone`) | `mpc_controller_standalone.py` (also uses `mpc_core.MPCController`) | Publishes `fs_msgs/ControlCommand` directly, using the MPC's own throttle/brake output unchanged. This preserves the offline-tuned longitudinal behaviour from `tuner/offline_tuner.py`/`gui/simulation.py`, since both also drive the plant with the MPC's own commanded acceleration (see `sim/rollout_core.py`) |
+| `controller` (`controller:=stanley`, the default) | `stanley_controller.py` | The active reactive Stanley controller, publishes `cmd_vel`, routes through `fsds_bridge` like `mpc_controller` does in its `standalone_output=false` mode |
+| `mpc_controller` (`controller:=mpc`) | `mpc/mpc_controller.py` (uses `mpc_core.MPCController`) | Its `standalone_output` ROS2 parameter (default `true`) picks one of two output modes: `false` publishes only steering through the shared `cmd_vel` interface (`fsds_bridge` computes throttle/brake itself from a simple speed-error loop, the same way it does for Stanley); `true` publishes `fs_msgs/ControlCommand` directly, using the MPC's own throttle/brake output unchanged — this preserves the offline-tuned longitudinal behaviour from `tuner/offline_tuner.py`/`gui/simulation.py`, since both also drive the plant with the MPC's own commanded acceleration (see `sim/rollout_core.py`) |
 
-`fsds_bridge` converts the shared `cmd_vel` interface into `fs_msgs/ControlCommand`, and owns GO-gating plus cone-proximity e-braking for both `stanley` and `mpc` modes. The `mpc_standalone` controller owns all of that itself instead, since it talks to FSDS directly, so `fsds_bridge` is skipped automatically when `controller:=mpc_standalone` is selected (running both would leave `fsds_bridge`'s output unused, and race the standalone node for the same output topic).
+`fsds_bridge` converts the shared `cmd_vel` interface into `fs_msgs/ControlCommand`, and owns GO-gating plus cone-proximity e-braking for `stanley` and for `mpc` in its `standalone_output=false` mode. `mpc` in `standalone_output=true` mode owns all of that itself instead, since it talks to FSDS directly, so `fsds_bridge` is skipped automatically when `standalone_output:=true` (the default) is selected (running both would leave `fsds_bridge`'s output unused, and race the MPC node for the same output topic).
 
-For the full topic map (including the perception to planning chain upstream of the controller), see [developer_guide.md's Topic map for the control node](developer_guide.md#simulator-integration). Kept there as the canonical version, not duplicated here. In short: `mpc_controller_standalone` subscribes to the planner's centreline, the car's pose/odometry, the race-start signal, and cone-proximity detections, and publishes `fs_msgs/ControlCommand` directly. It does **not** subscribe to a separate desired-speed topic; it computes `desired_speed` itself every tick from the current path via `control_utils.curvature_speed()`.
+For the full topic map (including the perception to planning chain upstream of the controller), see [developer_guide.md's Topic map for the control node](developer_guide.md#simulator-integration). Kept there as the canonical version, not duplicated here. In short: `mpc_controller` in `standalone_output=true` mode subscribes to the planner's centreline, the car's pose/odometry, the race-start signal, and cone-proximity detections, and publishes `fs_msgs/ControlCommand` directly. It does **not** subscribe to a separate desired-speed topic; it computes `desired_speed` itself every tick from the current path via `control_utils.curvature_speed()`.
 
-**Control loop phases** (`mpc_controller_standalone.py`'s `_control_loop`):
+**Control loop phases** (`mpc/mpc_controller.py`'s `_control_step`; phases 1 and 4 apply only in `standalone_output=true` mode):
 
 1. **Hold at start line**: full brake until `/fsds/signal/go` is received.
 2. **Stale-path/pose emergency brake**: full brake + controller reset if no fresh trajectory has arrived within the timeout, the trajectory has fewer than 2 points, or a SLAM pose hasn't arrived yet.
@@ -912,7 +911,7 @@ For the full from-scratch Windows/WSL/Docker setup (cloning FSDS, building the R
 
 ### 9.1 Driving a Precomputed Track Instead of the Live Planner
 
-`mpc`/`mpc_standalone` can also skip the live planner entirely and track a precomputed path/speed CSV recorded from an earlier lap, useful for isolating controller/plant tracking error from planner-induced path error, or for driving a known track at its (offline-computed) minimum-time line instead of the planner's live centreline. Each such track lives in its own `tracks/<name>/` directory (cone map + two exported CSVs) inside the separate `fsae_planning` repo, so FSDS + `fsae_planning` alone can drive any already-recorded track with no `fsae_MPCTest` checkout needed. Switching which one the car drives is one variable, `TRACK=` near the top of `ros2/launch_all.sh`.
+`mpc` (either `standalone_output` mode) can also skip the live planner entirely and track a precomputed path/speed CSV recorded from an earlier lap, useful for isolating controller/plant tracking error from planner-induced path error, or for driving a known track at its (offline-computed) minimum-time line instead of the planner's live centreline. Each such track lives in its own `tracks/<name>/` directory (cone map + two exported CSVs) inside the separate `fsae_planning` repo, so FSDS + `fsae_planning` alone can drive any already-recorded track with no `fsae_MPCTest` checkout needed. Switching which one the car drives is one variable, `TRACK=` near the top of `ros2/launch_all.sh`.
 
 Full record, export, drive steps, the CSV format, and every launch arg involved: `docs/developer_guide.md`'s [Recording, exporting and driving a track](developer_guide.md#recording-exporting-and-driving-a-track). Kept there as the canonical version rather than duplicated here.
 
@@ -936,5 +935,5 @@ Full record, export, drive steps, the CSV format, and every launch arg involved:
 | `tuner/performance_stats.py` | Powers Show Metrics / Benchmark All Paths |
 | `settings.py` | All project-level tuning/scoring/DNF configuration |
 | `planning/*` | Shared cone-sorting/boundary/path-building code (from the `fsae_planning` repo) |
-| `fsds_simulator/control/fsae_control/fsae_control/mpc_core.py`, `control_utils.py`, `mpc_controller.py`, `mpc_controller_standalone.py`, `stanley_controller.py`, `fsds_bridge.py`, `telemetry_logger.py` | The live ROS 2 controller package for FSDS (Section [9](#9-running-against-the-real-fsds-simulator)) |
+| `fsds_simulator/control/fsae_control/fsae_control/mpc/mpc_core.py`, `mpc/mpc_controller.py`, `control_utils.py`, `stanley_controller.py`, `fsds_bridge.py`, `telemetry_logger.py` | The live ROS 2 controller package for FSDS (Section [9](#9-running-against-the-real-fsds-simulator)) |
 | `fsds_simulator/` (`common/`, `perception/`, `planning/`) | Full staging mirror of the rest of the live ROS 2 workspace (messages, bringup/launch, perception, planning), see [`docs/reference/`](`docs/reference/`) |

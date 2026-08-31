@@ -107,7 +107,7 @@ STALL_CHECK_INTERVAL = 60   # Steps between rolling stall checks (3 s at 20 Hz)
 STALL_MIN_DISTANCE = 3.0    # Minimum distance (m) expected per interval
 
 # v_max/v_min for the live-planner branch's speed_profile.curvature_speed() call.
-# Mirror fsds_simulator/control/fsae_control/fsae_control/mpc_controller_standalone.py's
+# Mirror fsds_simulator/control/fsae_control/fsae_control/mpc/mpc_controller.py's
 # v_max/v_min ROS parameters (default V_MAX/V_MIN) — and the old SimPlanner
 # defaults these replace — so offline-tuned weights see the same speed targets
 # the live node will command.
@@ -115,14 +115,14 @@ PLANNER_V_MAX = 20.0
 PLANNER_V_MIN = 1.5
 
 # Max rate (m/s^2) at which the speed TARGET may rise. Mirrors
-# mpc_controller_standalone.SPEED_TARGET_RISE_RATE — keep the two in sync.
+# mpc_controller.SPEED_TARGET_RISE_RATE — keep the two in sync.
 # Decreases are never rate-limited; only the rise is damped, to suppress the
 # planner's frame-to-frame curvature jitter without capping real acceleration.
 SPEED_TARGET_RISE_RATE = 7.0
 
 # Max rate (gate-units/s) at which tracking_error_speed_gate()'s output may
 # change per tick, in either direction. Mirrors
-# mpc_controller_standalone.GATE_RATE_LIMIT — keep the two in sync. See that
+# mpc_controller.GATE_RATE_LIMIT — keep the two in sync. See that
 # constant's own comment for the full rationale.
 GATE_RATE_LIMIT = 2.0
 
@@ -882,7 +882,7 @@ def run_core_rollout(
                     # live curvature-lookahead cap under it (min, never above
                     # the oracle target) so a corner reached faster than
                     # planned still gets braked for in time. Mirrors
-                    # mpc_controller(_standalone).py's identical logic.
+                    # mpc_controller.py's identical logic.
                     if ENABLE_DYNAMIC_SPEED_CAP:
                         dists = np.linalg.norm(cl - car_pos_np, axis=1)
                         cl_idx = int(np.argmin(dists))
@@ -928,7 +928,7 @@ def run_core_rollout(
             v_target = float(path_v_profile[idx])
 
         # ── Tracking-error speed gate + rise-rate limit ────────────────────
-        # Mirrors mpc_controller_standalone.py's Phase 3 exactly (see
+        # Mirrors mpc_controller.py's Phase 3 exactly (see
         # control_utils.tracking_error_speed_gate for the rationale and the
         # live measurements behind the thresholds). curvature_speed() reads
         # only path SHAPE, so without this the target stays high — and can even
@@ -936,7 +936,7 @@ def run_core_rollout(
         # already saturated, which is unrecoverable.
         #
         # Applied to the oracle branch via GATE_RATE_LIMIT -- see
-        # mpc_controller_standalone.py's identical comment for the full
+        # mpc_controller.py's identical comment for the full
         # rationale (disabling the gate outright trades away its whole
         # purpose; smoothing its rate of change removes the sharp-cliff
         # side effect that motivated disabling it in the first place).
@@ -1239,7 +1239,7 @@ def run_core_rollout(
                 inaccurate_count_total += 1
 
         # ── Output smoothing (EXPERIMENTAL, default off) ──
-        # Offline mirror of mpc_controller_standalone.py's node-level filter
+        # Offline mirror of mpc_controller.py's node-level filter
         # -- see that file (and `docs/reference/README.md`'s "Post-solve output
         # smoothing" section) for the full mechanism/reasoning. Applied to
         # u_opt[0] (steering) AFTER the solve, so it's identical whichever
@@ -1248,7 +1248,7 @@ def run_core_rollout(
         # ALSO fades smoothing down (never off, same floor) as CURRENT
         # tracking error grows -- e_y/e_psi are already in scope above (used
         # to build x0_mpc before the branch split), identical for both
-        # controllers. See mpc_controller_standalone.py's identical block.
+        # controllers. See mpc_controller.py's identical block.
         if OUTPUT_SMOOTHING_ENABLED:
             if steer_filtered is None:
                 steer_filtered = u_opt[0]
@@ -1264,7 +1264,7 @@ def run_core_rollout(
                 # further ahead (in metres) than a slow one, the same amount
                 # of time ahead either way. A floor speed avoids scanning
                 # zero metres at a standstill/very low speed.
-                # Mirrors mpc_controller_standalone.py's identical block.
+                # Mirrors mpc_controller.py's identical block.
                 scan_end = max(vx_true, 2.0) * OUTPUT_SMOOTHING_LOOKAHEAD_LEAD_S
                 # Same path source e_y/e_psi and (in NMPC mode) the Frenet
                 # reference were built from above: the live planner's

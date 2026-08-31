@@ -250,7 +250,7 @@ throughout this codebase):
    so smoothing never fully disengages even at maximum corner severity.
 
 **Implemented in:**
-- **Live**: `mpc_controller.py`/`mpc_controller_standalone.py`'s
+- **Live**: `mpc/mpc_controller.py`'s
   post-solve block (search "Output smoothing"); `peak_kappa_ahead()` in
   `control_utils.py`. Params: `output_smoothing_enabled`, `_alpha`,
   `_corner_floor`, `_k_ey`, `_k_epsi`, `_lookahead_lead_s` — node-declared

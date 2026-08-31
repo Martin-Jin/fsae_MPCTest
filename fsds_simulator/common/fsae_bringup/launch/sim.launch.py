@@ -9,14 +9,14 @@ from launch.substitutions import LaunchConfiguration, PythonExpression
 
 # See control.launch.py's own comment on this import -- fsae_control is an
 # installed package by launch-description-generation time, same as any node.
-from fsae_control.mpc_params import MPC_PARAM_FIELDS
-from fsae_control.nmpc_params import NMPC_PARAM_FIELDS
+from fsae_control.mpc.mpc_params import MPC_PARAM_FIELDS
+from fsae_control.mpc.nmpc_params import NMPC_PARAM_FIELDS
 
 
 # Top-level simulator bring-up: composes perception + planning + control.
 # Pick the planner with `planner:=…`; the mode wires the rest automatically.
 #
-#   ros2 launch fsae_bringup sim.launch.py                              # mpc_standalone (default)
+#   ros2 launch fsae_bringup sim.launch.py                              # mpc, standalone_output=true (default)
 #   ros2 launch fsae_bringup sim.launch.py planner:=skidpad_planner
 #   ros2 launch fsae_bringup sim.launch.py controller:=stanley          # use the Stanley controller
 #   ros2 launch fsae_bringup sim.launch.py record_cones:=false          # skip cone_recorder
@@ -42,6 +42,7 @@ def generate_launch_description():
     launch_dir = os.path.join(get_package_share_directory('fsae_bringup'), 'launch')
     planner = LaunchConfiguration('planner')
     controller = LaunchConfiguration('controller')
+    standalone_output = LaunchConfiguration('standalone_output')
     record_cones = LaunchConfiguration('record_cones')
     cone_out_path = LaunchConfiguration('cone_out_path')
     log_csv = LaunchConfiguration('log_csv')
@@ -93,8 +94,14 @@ def generate_launch_description():
             description='centerline_planner | skidpad_planner'),
         DeclareLaunchArgument(
             'controller',
-            default_value='mpc_standalone',
-            description='stanley | mpc | mpc_standalone — path-tracking controller to run'),
+            default_value='mpc',
+            description='stanley | mpc — path-tracking controller to run'),
+        DeclareLaunchArgument(
+            'standalone_output',
+            default_value='true',
+            description="mpc only: passed through to control.launch.py — see that "
+                        "file's own description. Default true reproduces this "
+                        "launch file's historical default of controller:=mpc_standalone."),
         DeclareLaunchArgument(
             'record_cones',
             default_value='true',
@@ -127,7 +134,7 @@ def generate_launch_description():
             description="Passed through to control.launch.py — see that file's "
                         "use_precomputed_speed description. Toggle here (or "
                         "override with use_precomputed_speed:=false on the "
-                        "command line) to switch every mpc/mpc_standalone run "
+                        "command line) to switch every mpc run "
                         "back to live curvature_speed()."),
         DeclareLaunchArgument(
             'path_map_path',
@@ -156,7 +163,7 @@ def generate_launch_description():
             description="Passed through to control.launch.py — see that file's "
                         "use_precomputed_path description. On by default: "
                         "matches use_precomputed_speed's default so "
-                        "mpc_standalone tracks the precomputed "
+                        "mpc tracks the precomputed "
                         "oracle path/speed pair by default, planner out of "
                         "the loop. Override with use_precomputed_path:=false "
                         "on the command line for the planner-vs-controller "
@@ -228,6 +235,7 @@ def generate_launch_description():
         include('planning.launch.py',   {'planner': planner}),
         include('control.launch.py',    {
             'planner': planner, 'controller': controller,
+            'standalone_output': standalone_output,
             'log_csv': log_csv, 'log_dir': log_dir,
             'map_path': map_path, 'use_precomputed_speed': use_precomputed_speed,
             'path_map_path': path_map_path, 'use_precomputed_path': use_precomputed_path,

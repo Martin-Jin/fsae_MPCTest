@@ -107,14 +107,14 @@ Other consequences worth knowing:
   dated or not — auto-discovery does not hide or delete anything, it only
   changes which one is picked with no `TRACK=` override.
 
-## `USE_PRECOMPUTED_SPEED`/`_PATH` are resolved in the launch file, identically for all three controllers
+## `USE_PRECOMPUTED_SPEED`/`_PATH` are resolved in the launch file, identically for both controllers
 
 **Plain version:** whether the precomputed files get used at all is decided
 once, in `control.launch.py`, before any controller node starts — not inside
-each controller's own code. All three controllers (Stanley, MPC, MPC-
-standalone) are handed the exact same result, so a Stanley run and an MPC run
-on the same track are guaranteed to share the identical speed target and/or
-path if that is what the toggles say.
+each controller's own code. Both controllers (Stanley and MPC, regardless of
+MPC's own `standalone_output` mode) are handed the exact same result, so a
+Stanley run and an MPC run on the same track are guaranteed to share the
+identical speed target and/or path if that is what the toggles say.
 
 Mechanism: `control.launch.py` computes `effective_map_path` and
 `effective_path_map_path` with an `IfElseSubstitution` —

@@ -31,8 +31,9 @@ describes the alternative Frenet-frame nonlinear MPC
 
 This is the closed loop the simulator runs at 20 Hz. It's the same loop
 `tuner/offline_tuner.py` runs headless (no plotting) thousands of times
-during tuning, and the same loop `mpc_controller_standalone.py` (staged
-under `fsds_simulator/`, pasted into `fsae_planning` — see
+during tuning, and the same loop `mpc_controller.py` (in its
+`standalone_output=true` mode; mirrored under `fsds_simulator/`, pasted into
+`fsae_planning` — see
 [`docs/reference/`](`docs/reference/`)) runs live against
 the real/FSDS vehicle. All three share one implementation
 (`sim/rollout_core.run_core_rollout()` for the first two;
@@ -145,7 +146,7 @@ boundary.py                     │  planning/boundary.py             (shared)
 path_utils.py                   │  planning/path_utils.py           (shared)
 cone_sorting.py                 │  planning/cone_sorting.py         (shared)
 mpc_core.py                     │  gui/simulation.py / mpc_core.py               (shared)
-mpc_controller_standalone.py    │  gui/simulation.py's rollout loop              (shared design — see `docs/reference/`)
+mpc_controller.py (standalone_output=true) │  gui/simulation.py's rollout loop   (shared design — see `docs/reference/`)
 cone_recorder.py                │  sim/track_io.py + gui/simulation.py's Load Recorded Track  (recorder writes what the loader reads)
 ```
 
@@ -154,8 +155,8 @@ the actual current Stanley controller (mirrored from upstream, kept in sync
 like everything else under `fsds_simulator/` — see
 [`docs/reference/`](`docs/reference/`)), not just a
 structural reference. This project's tuner and offline simulator only ever
-drive against the MPC (`mpc_controller_standalone.py` / `mpc_core.py`,
-same directory) — Stanley is mirrored purely so `fsds_simulator/` can stand
+drive against the MPC (`mpc_controller.py`'s `standalone_output=true` mode /
+`mpc_core.py`, same directory) — Stanley is mirrored purely so `fsds_simulator/` can stand
 up the full live stack, not because this repo's own simulator exercises it.
 
 ---
@@ -1678,8 +1679,8 @@ not here.
 | `tuner/performance_stats.py` | Scores a completed simulator run for the **Show Metrics** button by replaying its stored history through the exact same `scoring.RolloutMetrics` accumulator the tuner uses. Also exposes `benchmark_weights()` for **Benchmark All Paths**. |
 | `gui/manual_drive.py` | Standalone WASD/mouse drive mode against the 24-state nonlinear plant — no MPC, no scoring, purely open-loop human control for building intuition or sanity-checking a track. See [Manual Drive Mode](developer_guide.md#manual-drive-mode). |
 | `settings.py` | All project-level tuning/scoring/DNF configuration. See [Configuring the Project](#configuring-the-project-settingspy). |
-| `mpc_controller_standalone.py` / `mpc_core.py` / `control_utils.py` (staged under `fsds_simulator/control/fsae_control/fsae_control/`) | The live ROS 2 MPC controller for FSDS. See [Simulator Integration](developer_guide.md#simulator-integration). |
-| `fsds_simulator/` (whole tree) | Full staging mirror of upstream's ROS 2 workspace — every package, not just control — so a clone of this repo plus FSDS can build and run the complete stack (`stanley`, `mpc`, or `mpc_standalone`) with no separate `fsae_planning` checkout. See [`docs/reference/`](`docs/reference/`) and [fsds_simulator/README.md](../fsds_simulator/README.md). |
+| `mpc_controller.py` / `mpc_core.py` / `control_utils.py` (staged under `fsds_simulator/control/fsae_control/fsae_control/mpc/` and `.../fsae_control/`) | The live ROS 2 MPC controller for FSDS — `mpc_controller.py`'s `standalone_output` parameter selects its output mode. See [Simulator Integration](developer_guide.md#simulator-integration). |
+| `fsds_simulator/` (whole tree) | Full staging mirror of upstream's ROS 2 workspace — every package, not just control — so a clone of this repo plus FSDS can build and run the complete stack (`stanley` or `mpc`, either `standalone_output` mode) with no separate `fsae_planning` checkout. See [`docs/reference/`](`docs/reference/`) and [fsds_simulator/README.md](../fsds_simulator/README.md). |
 
 
 <a id="second-controller-nonlinear-mpc-use_nmpc"></a>
@@ -1766,9 +1767,9 @@ for the exhaustive, field-by-field version this table summarises.
 | Precomputed corner map (`use_precomputed_corner_map`) | Removed from both | Removed from both | Served the deleted lookahead gain-scheduling family — gone from both controllers, not an LMPC/NMPC difference. See [`removed_mechanisms.md` §7](removed_mechanisms.md#7-precomputed-corner-segmentation-cornermap). |
 | Precomputed shaped heading-lead profile (`use_precomputed_heading_profile`) | **Yes** | **Accepted but ignored** (`set_heading_profile()` exists so the node needs no branch, logs a one-time warning) | Same reasoning as gain scheduling — the shaped lead is a workaround for the same missing curvature term NMPC closes structurally. Applying both would double-count the anticipation. |
 | Delay/latency compensation (rolling `x0` forward through recently-issued commands) | **Yes** (`predict_ahead()`, linear rollforward) | **Yes** (rolls `x0` forward through the nonlinear model instead) | Both need this — it's about *sensor/actuation lag*, a problem that exists regardless of which prediction model is used. Different implementation, same four gating fields (`delay_compensation_enabled`, `max_delay_compensation_steps`, `pose_age_lp_alpha`, `n_delay_hysteresis`) — shared `MPCParams` fields, read by both. One exception: `predict_epsi_clip` is LTV-QP only (a small-angle bound specific to the *linear* rollforward; NMPC's nonlinear rollforward has no such bound to set). |
-| Tracking-error speed gate (slow down when `e_y`/`e_psi` are large) | **Yes** | **Yes** | This lives in `control_utils.py`, called by the **node** (`mpc_controller.py`/`mpc_controller_standalone.py`) *before* either controller's `.compute()` is invoked — neither `MPCController` nor `NMPCController` is even aware it exists. Controller-agnostic by construction. |
+| Tracking-error speed gate (slow down when `e_y`/`e_psi` are large) | **Yes** | **Yes** | This lives in `control_utils.py`, called by the **node** (`mpc_controller.py`) *before* either controller's `.compute()` is invoked — neither `MPCController` nor `NMPCController` is even aware it exists. Controller-agnostic by construction. |
 | Curvature-based speed profile (`curvature_speed()`) | **Yes** | **Yes** | Same reason as the row above — computed by the node, handed to whichever controller is selected as `desired_speed`. |
-| Cone-proximity emergency braking, GO-gating, stale-path fail-safes | **Yes** | **Yes** | All node-level (`mpc_controller_standalone.py`'s `_control_loop` phases), not part of either controller class. `NMPCController` exposes the same `compute()`/`reset()`/`set_static_path()` surface as `MPCController` specifically so the node doesn't need a branch. |
+| Cone-proximity emergency braking, GO-gating, stale-path fail-safes | **Yes** | **Yes** | All node-level (`mpc_controller.py`'s `_control_step` phases, `standalone_output=true` only), not part of either controller class. `NMPCController` exposes the same `compute()`/`reset()`/`set_static_path()` surface as `MPCController` specifically so the node doesn't need a branch. |
 | FSDS lateral-acceleration ceiling | **Yes**, as a plain speed-profile input (`curvature_speed()`'s friction-circle cap) | **Yes**, AND inside the prediction itself (`tanh` saturation on predicted tyre force) | NMPC's version is strictly more — the ceiling shapes what the *solver itself* believes is achievable, not just the requested speed. Without it, NMPC's linear-tyre model believes it can hold any corner at any speed and the car spins (measured). |
 | Horizon length | 35 steps (1.75 s) | 20 steps (1.0 s) | Independent tuning choices, not a structural requirement — NMPC's shorter horizon reflects its per-tick solve cost (Gauss-Newton SQP is more expensive per step than one convex QP). |
 | Solve method | One convex QP per tick (OSQP) | Real-time-iteration SQP: one Gauss-Newton step per tick, warm-started, condensed dense QP (OSQP) | See [The solver](#the-solver) above for what a QP is; NMPC needs the extra linearize-and-resolve step because its own model is nonlinear (curvature is now a function of a state, not a fixed matrix entry). |

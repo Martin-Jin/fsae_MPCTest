@@ -96,7 +96,7 @@ ADAPTIVE_COLUMNS = (
     'low_speed_corner_boost',  # extra push toward "full corner", active only when corner_factor > 0 AND speed is low
     'corner_frac',             # corner_factor + low_speed_corner_boost, clipped to [0,1] -- the shared blend driver below
     # output_smoothing_lookahead_lead_s > 0 only (empty otherwise) -- node-level
-    # (mpc_controller_standalone.py/mpc_controller.py), not controller-internal:
+    # (mpc_controller.py), not controller-internal:
     # _corner_factor(peak_kappa_ahead(...)), the lookahead counterpart to
     # corner_frac above, used to fade output_smoothing's blend weight down
     # BEFORE the car reaches a corner already visible in the path.
@@ -409,9 +409,9 @@ class ControlLogger:
 
         # Full-run-configuration dump (see module docstring's "Config
         # header" section): plain strings, ALREADY `# `-prefixed by the
-        # caller (mpc_controller.py / mpc_controller_standalone.py /
-        # stanley_controller.py -- see each node's own `_build_config_lines`-
-        # style helper). Stored here rather than written immediately because
+        # caller (mpc_controller.py / stanley_controller.py -- see each
+        # node's own `_build_config_lines`-style helper). Stored here rather
+        # than written immediately because
         # it's folded into the SAME single-rewrite-at-close() mechanism the
         # score header already uses (see _write_score_header) -- one header
         # write, not two.
@@ -428,10 +428,9 @@ class ControlLogger:
         method rather than a constructor-only argument because the
         controller object (whose params/effective weights make up most of
         this dump — see build_config_lines()) is often constructed AFTER
-        ControlLogger in a node's __init__ (e.g.
-        mpc_controller_standalone.py builds `self._telemetry` before
-        `self._mpc`); calling this any time before close() is fine, the
-        lines are only read at that point.
+        ControlLogger in a node's __init__ (e.g. mpc_controller.py builds
+        `self._telemetry` before `self._mpc`); calling this any time before
+        close() is fine, the lines are only read at that point.
         """
         self._config_lines = list(lines)
 

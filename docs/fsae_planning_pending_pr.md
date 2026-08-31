@@ -102,7 +102,10 @@ working-tree-only.
 
 - New `mpc_controller_standalone.py` — sends MPC throttle/brake directly, so
   offline longitudinal tuning actually reaches the car (bypasses
-  `fsds_bridge`'s separate P-loop).
+  `fsds_bridge`'s separate P-loop). **Since merged** into `mpc_controller.py`
+  as its `standalone_output=true` mode (a boolean parameter, not a separate
+  file/executable) — the pending diff no longer adds a second file here, see
+  `fsae_planning/CHANGES.md`'s "Control — merged MPC controller nodes" entry.
 - Tracking-error gate + speed-rise-rate limiter added to both controller
   nodes.
 - Both nodes now slice tracked path from car's nearest point before
@@ -130,10 +133,12 @@ working-tree-only.
 ## Build/package plumbing
 
 
-- `setup.py` (all four packages): new `console_scripts` entry points —
-  `mpc_controller_standalone` (control), `cone_recorder` (perception).
-  Without these, `ros2 run` can't launch either new node even though the
-  source files are present.
+- `setup.py` (all four packages): new `console_scripts` entry point —
+  `cone_recorder` (perception). Without it, `ros2 run` can't launch that new
+  node even though the source file is present. (The `mpc_controller`
+  entry point's target changed from `mpc_controller.py` to
+  `mpc.mpc_controller`, and the once-separate `mpc_controller_standalone`
+  entry point no longer exists — see the merge note above.)
 - `setup.py` (all four packages): `zip_safe=True` → `False` — works around a
   stale-install issue in `colcon build --symlink-install` where an edited
   source file wasn't picked up until a full clean rebuild.

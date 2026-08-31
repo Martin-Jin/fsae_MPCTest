@@ -70,7 +70,7 @@ controller:
     stanley_gain: 1.0   # cross-track gain (k_cte)
 
     # Real-time curvature-lookahead speed cap layered under the precomputed
-    # speed profile (map_path), mpc/mpc_standalone only — see
+    # speed profile (map_path), mpc only — see
     # control_utils.dynamic_speed_cap()'s docstring. No effect when map_path
     # is unset. Mirrors fsae_MPCTest/settings.py's ENABLE_DYNAMIC_SPEED_CAP /
     # DYNAMIC_CAP_A_LAT_MAX / DYNAMIC_CAP_SAFETY.
@@ -78,8 +78,8 @@ controller:
     dynamic_cap_a_lat_max: 3.2   # m/s^2 — lateral-accel budget for the dynamic cap only
     dynamic_cap_safety: 0.9      # safety margin for the dynamic cap only
 
-    # MPC tuning (mpc/mpc_standalone only; ignored by stanley). Single source
-    # of truth is fsae_control/mpc_params.py's MPCParams dataclass — every
+    # MPC tuning (mpc only; ignored by stanley). Single source
+    # of truth is fsae_control/mpc/mpc_params.py's MPCParams dataclass — every
     # field there has a matching key here with the SAME default, so leaving
     # these untouched changes nothing. Must be kept numerically identical to
     # fsae_MPCTest/settings.py's matching constants (CLAUDE.md's plant/model
@@ -186,7 +186,7 @@ controller:
     # ── NONLINEAR MPC (nmpc_core.py's NMPCController) ────────────────────
     # use_nmpc=false (default) means none of this is used and the LTV-QP
     # MPCController runs exactly as it always has. Single source of truth for
-    # these is fsae_control/nmpc_params.py's NMPCParams dataclass — every
+    # these is fsae_control/mpc/nmpc_params.py's NMPCParams dataclass — every
     # field there has a matching key here with the SAME default.
     #
     # These are STRUCTURAL/SOLVER settings only (no LTV-QP analogue to

@@ -16,7 +16,7 @@
 
   <depend>python3-numpy</depend>
   <depend>python3-scipy</depend>
-  <!-- The MPC controller (mpc_core.py) additionally needs cvxpy, osqp and
+  <!-- The MPC controller (mpc/mpc_core.py) additionally needs cvxpy, osqp and
        clarabel.  These are pip-only (no rosdep key), so install them once into
        the ROS interpreter rather than via rosdep:
          pip install cvxpy osqp clarabel

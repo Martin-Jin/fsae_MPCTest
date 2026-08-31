@@ -26,7 +26,7 @@ the skidpad planner, which reconstructs the whole figure-8 up front); the defaul
 
 Two publish rates (`pose_rate` 20 Hz, `cone_rate` 10 Hz): pose and cones are
 published on separate timers. `pose_rate` must be >= the controller's rate
-(`CONTROL_HZ = 20` in mpc_controller_standalone.py) — if the MPC re-solves
+(`CONTROL_HZ = 20` in mpc_controller.py) — if the MPC re-solves
 against an unchanged pose on some ticks, the pose jumps multiple steps' worth
 at once on the next tick and the controller over-corrects (catch-up jumps
 rather than smooth motion). The FSDS bridge itself publishes odom at 250 Hz,
@@ -41,8 +41,8 @@ no drift, no estimation lag. The offline tuner models this gap explicitly via
 `SLAM_NOISE_ENABLED` in fsae_MPCTest/settings.py (default off, since FSDS has
 no such error).
 
-Speed/yaw-rate synchronisation: mpc_controller.py / mpc_controller_standalone.py
-get car_pos/car_yaw AND car_speed/car_yaw_rate from /fsae/slam/car_odom (this
+Speed/yaw-rate synchronisation: mpc_controller.py gets car_pos/car_yaw AND
+car_speed/car_yaw_rate from /fsae/slam/car_odom (this
 node's 20 Hz relay), not from a separate direct subscription to the raw 250 Hz
 /fsds/testing_only/odom topic. Two independent subscriptions racing the same
 250 Hz publisher have no guarantee the "latest" sample each holds at a given

@@ -9,7 +9,7 @@ This is a SECOND, independently selectable controller. It does not modify,
 subclass or import behaviour from mpc_core.MPCController's solve path: that
 LTV-QP controller remains the default and is completely untouched. Selection
 happens at node construction time via NMPCParams.use_nmpc (default False) —
-see mpc_controller.py / mpc_controller_standalone.py.
+see mpc_controller.py.
 
 WHY IT EXISTS: MPCController's prediction model has no term for the path
 itself bending (`e_psi_dot = r`, missing `- kappa(s)*s_dot`), so with the car
@@ -108,12 +108,12 @@ except ImportError as _exc:      # pragma: no cover - see package.xml
     osqp = None
     _OSQP_IMPORT_ERROR = _exc
 
-from fsae_control.mpc_core import (
+from fsae_control.mpc.mpc_core import (
     MAX_ACCEL, MAX_BRAKE, MAX_STEER_RAD, _steer_rate_anti_hunt,
     _corner_factor, _blend, _reversal_penalty_boost,
 )
-from fsae_control.mpc_params import DEFAULT_MPC_PARAMS, MPCParams
-from fsae_control.nmpc_params import DEFAULT_NMPC_PARAMS, NMPCParams
+from fsae_control.mpc.mpc_params import DEFAULT_MPC_PARAMS, MPCParams
+from fsae_control.mpc.nmpc_params import DEFAULT_NMPC_PARAMS, NMPCParams
 
 # ── State/input/output layout ────────────────────────────────────────────
 IDX_S     = 0   # arc length along the reference path (m)
@@ -275,7 +275,7 @@ class PathReference:
         # caller's scalar. Built from the speed profile's OWN (path_v_xy)
         # points, NOT self.arc: the speed-profile array is a separate object
         # from the path array handed to this constructor (confirmed at the
-        # mpc_controller_standalone.py call site -- self._static_path and
+        # mpc_controller.py call site -- self._static_path and
         # self._speed_profile are loaded from two different CSVs), so its own
         # cumulative arc length must be computed independently.
         self.s_v = None
@@ -1733,9 +1733,9 @@ class NMPCController:
         m_rrate_antihunt = 1.0
         # Always computed (not gated behind corner_rrate_blend_enabled) --
         # this is a general current-curvature signal other mechanisms (e.g.
-        # the node-level output smoothing in mpc_controller_standalone.py)
-        # also key off via last_telemetry, independent of whether the R_rate
-        # weight-blend feature itself is active.
+        # the node-level output smoothing in mpc_controller.py) also key off
+        # via last_telemetry, independent of whether the R_rate weight-blend
+        # feature itself is active.
         corner_frac = _corner_factor(kappa_now, self.corner_factor_k)
         rrate_steer_corner_blend = float(self.r_rate[0])
         # Tracks R_rate[0,0]'s running value through the if/elif AND the
