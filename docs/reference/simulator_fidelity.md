@@ -299,6 +299,25 @@ behaviour. A tuning run that scores well offline can still produce a car
 that saturates steering a fifth of the time. Always validate on the car
 before trusting a tuned weight set.
 
+**One specific failure mode of this P-loop: it can stall the car completely
+at a low target speed.** `fsds_bridge.py`'s throttle is
+`KP_THROTTLE * speed_error` with no floor — at `car_speed=0` that only
+saturates to a usable value when the target speed is large (a 20 m/s target
+gives throttle 1.0 from a stop; a 3 m/s target gives only 0.18).
+
+Measured live: a 3 m/s low-speed test left `v_actual` at ~0 for a full 54 s
+run, not merely "accelerates slowly."
+
+Fixed with a stiction-breaking throttle floor
+(`STICTION_KICK_SPEED`/`STICTION_KICK_THROTTLE`, both in `fsds_bridge.py`):
+below 1.0 m/s car speed the throttle is floored at 0.35 while accelerating,
+then the floor stops applying and the normal P-loop tapers it down as the
+target is approached.
+
+Inert at any target speed where the P-loop already saturates throttle to
+something above the floor from a stop, so this does not change normal
+(higher-speed) behaviour — it only fixes the low-target-speed stall.
+
 ## Known planner defect: centreline curvature spikes (OPEN — not fixed)
 
 **Status: open.** The controller carries workarounds; the root cause is in

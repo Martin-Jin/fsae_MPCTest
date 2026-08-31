@@ -34,6 +34,21 @@ CONE_BRAKE_DIST  = 2.5   # metres forward — hard-brake if a cone enters this z
 CONE_BRAKE_WIDTH = 0.6   # metres lateral half-width of the braking corridor
 CMD_TIMEOUT      = 0.5   # seconds — brake if no fresh cmd_vel received
 
+# Stiction-breaking throttle floor. KP_THROTTLE alone stalls the car at any
+# low target speed: at car_speed=0 the commanded throttle is
+# KP_THROTTLE * cmd_speed, which only saturates to a usable value when
+# cmd_speed is large (>~6 m/s gives throttle 0.36+; a 3 m/s target gives only
+# 0.18, measured to leave the car at v_actual~0 for 54s straight — not a
+# "goes slowly", a genuine stall against static/rolling friction). Below
+# STICTION_KICK_SPEED, floor the throttle at STICTION_KICK_THROTTLE while
+# accelerating; once car_speed clears that threshold the floor stops applying
+# and pure P-control takes back over, so this only ever adds an initial kick
+# and never changes the steady-state or high-speed behaviour (at any target
+# where the P-loop already produces >= STICTION_KICK_THROTTLE from a stop,
+# `max()` below is a no-op).
+STICTION_KICK_SPEED    = 1.0   # m/s -- floor applies only below this car_speed
+STICTION_KICK_THROTTLE = 0.35  # starting guess; retune from a run's v_actual trace
+
 
 class FsdsBridge(Node):
     def __init__(self):
@@ -119,6 +134,8 @@ class FsdsBridge(Node):
             speed_error = self._cmd_speed - self._car_speed
             if speed_error >= 0.0:
                 cmd.throttle = min(1.0, KP_THROTTLE * speed_error)
+                if self._car_speed < STICTION_KICK_SPEED:
+                    cmd.throttle = max(cmd.throttle, STICTION_KICK_THROTTLE)
                 cmd.brake    = 0.0
             else:
                 cmd.throttle = 0.0
