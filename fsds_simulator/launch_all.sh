@@ -217,7 +217,7 @@ done
 # Path-tracking controller to launch (stanley | mpc | mpc_standalone — see
 # sim.launch.py's own 'controller' DeclareLaunchArgument). Matches
 # sim.launch.py's default (mpc_standalone) unless overridden here.
-CONTROLLER=stanley
+CONTROLLER=mpc_standalone
 
 # Speed caps passed to the controller node (see sim.launch.py's v_max/v_min
 # DeclareLaunchArgument -- overrides fsae_params.yaml's controller.v_max/
