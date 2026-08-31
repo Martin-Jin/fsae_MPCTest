@@ -218,6 +218,40 @@ are true; otherwise the car falls back to the live planner and to
 speed-cap decision as much as a profile decision — check both files' ranges
 before swapping either.
 
+## A third speed profile: corner-only slowdown, for low-speed corner testing
+
+**Plain version:** testing how the car turns at low speed is slow if the car
+crawls the *whole* lap to reach a corner. This variant drives at normal speed
+everywhere and only slows down where the path actually curves — so a test
+run reaches the corner it is meant to test at full pace, then slows for it.
+
+Produced by `tuner.tools.export_speed_profile --corner-slowdown KAPPA`
+(`sim.speed_profile.compute_corner_slowdown_profile()`), which:
+
+1. Computes the ordinary curvature-limited profile — the same thing
+   `speed_profile.csv` itself contains.
+2. Clamps every station where `|κ| > KAPPA` down to `min(existing, corner_speed)`
+   (`--corner-speed`, default 3 m/s). `min()`, not an unconditional overwrite
+   — a `corner_speed` above what the curvature limit already demands there
+   must not raise the target back up.
+3. Re-runs the same forward-acceleration/backward-braking propagation passes
+   `compute_speed_profile()` uses (see "How the speed profile … is
+   calculated" above) over the now-clamped profile, so the step down to
+   `corner_speed` becomes a real, physically reachable deceleration zone
+   rather than an instantaneous drop the car cannot brake into.
+
+Writes `speed_profile_corner_test.csv`, never `speed_profile.csv` — point
+`SPEED_CSV` at it explicitly in `launch_all.sh` for the duration of a test,
+and back at `speed_profile.csv` afterwards.
+
+**Picking `KAPPA`:** run `--corner-slowdown` with no value to print the
+track's curvature distribution and, per candidate threshold, how many
+distinct corner zones (contiguous `|κ|` runs above it) that threshold would
+flag. Too low a threshold catches every gentle bend — the whole-lap-slow
+problem this feature exists to avoid; too high catches nothing. On
+`comp_test_map_3`, `0.10` flags 9 corner zones and skips the gentle bends
+(p75 curvature is 0.079, well below it).
+
 ## Reference line: raceline vs centreline
 
 **Plain version:** there are two ways to decide the line the car drives. A

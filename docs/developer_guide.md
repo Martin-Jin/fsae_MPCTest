@@ -507,7 +507,14 @@ the live controller can read. Run from `fsae_MPCTest/`:
 python -m tuner.tools.export_speed_profile <name>   # -> ../ros2/src/fsae_planning/tracks/<name>/speed_profile.csv
 python -m tuner.tools.raceline_optimizer   <name>    # -> ../ros2/src/fsae_planning/tracks/<name>/raceline.csv
 python -m tuner.tools.raceline_optimizer   <name> --mode centerline   # -> .../centerline.csv
+python -m tuner.tools.export_speed_profile <name> --corner-slowdown 0.10   # -> .../speed_profile_corner_test.csv
 ```
+
+The fourth is a third speed-profile variant for low-speed corner testing —
+normal speed everywhere, slowed only where curvature crosses a threshold, so
+a test run reaches a corner at full pace instead of crawling the whole lap.
+See `docs/reference/reference_path_and_speed.md`'s "A third speed profile:
+corner-only slowdown" for the mechanism and how to pick the threshold.
 
 **The two exporters do not share a corner-speed limit.**
 `export_speed_profile` plans from `CURVATURE_SPEED_A_LAT_MAX`

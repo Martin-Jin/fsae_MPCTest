@@ -316,6 +316,27 @@ def compute_speed_profile(
             safety=safety,
         )
 
+    _propagate_accel_brake_limits(v_profile, segs, a_accel_max, a_brake_max, closed_loop)
+
+    # The propagation passes can push points below v_min (e.g. approaching a
+    # hairpin whose corner speed is already at the floor); restore the floor
+    # so the profile never demands a stop the curvature limit didn't ask for.
+    np.clip(v_profile, v_min, None, out=v_profile)
+
+    return v_profile
+
+
+def _propagate_accel_brake_limits(v_profile, segs, a_accel_max, a_brake_max, closed_loop):
+    """
+    Passes 1-2 of `compute_speed_profile`, factored out so a caller that starts
+    from a MODIFIED v_profile (not the plain curvature-limited one) can still
+    make it achievable by acceleration/braking -- see
+    `compute_corner_slowdown_profile` below, which clamps speed at specific
+    stations and then re-runs this to connect the clamp to the rest of the lap
+    with reachable ramps instead of an instantaneous, physically impossible
+    step. Mutates `v_profile` in place; returns nothing.
+    """
+    n = len(v_profile)
     a_brake_mag = abs(a_brake_max)
 
     if closed_loop:
@@ -357,9 +378,80 @@ def compute_speed_profile(
             if v_allowed < v_profile[i]:
                 v_profile[i] = v_allowed
 
-    # The propagation passes can push points below v_min (e.g. approaching a
-    # hairpin whose corner speed is already at the floor); restore the floor
-    # so the profile never demands a stop the curvature limit didn't ask for.
+
+def compute_corner_slowdown_profile(
+    path_X, path_Y,
+    kappa_threshold,
+    corner_speed=3.0,
+    v_max=CURVATURE_SPEED_V_MAX,
+    a_accel_max=7.0,
+    a_brake_max=-5.0,
+    v_min=CURVATURE_SPEED_V_MIN,
+    safety=1.0,
+    scan_end=CURVATURE_SPEED_SCAN_END,
+    a_lat_max=CURVATURE_SPEED_A_LAT_MAX,
+    closed_loop=True,
+):
+    """
+    A `compute_speed_profile()` variant for low-speed CORNER testing: drive at
+    the normal curvature-limited speed everywhere, except clamp to
+    `corner_speed` wherever the path curvature exceeds `kappa_threshold`, so a
+    test run reaches a corner at full pace instead of crawling the whole lap
+    at `corner_speed` (which is what a flat `v_max=corner_speed` does).
+
+    Not something the live car reads a flag for -- this is a distinct,
+    EXPLICITLY-EXPORTED CSV (see `tuner/tools/export_speed_profile.py
+    --corner-slowdown`), never `speed_profile.csv` itself, selected by
+    pointing `SPEED_CSV` at it in `launch_all.sh` for the duration of a
+    low-speed test.
+
+    MECHANISM
+    ---------
+    1. Compute the ordinary curvature-limited profile exactly as
+       `compute_speed_profile()` does (pass 0 + the accel/brake propagation
+       passes) -- this is the "drive normally" baseline.
+    2. Clamp every station where `|kappa| > kappa_threshold` down to
+       `min(existing_target, corner_speed)`. `min(...)`, not an unconditional
+       overwrite, because a corner_speed ABOVE what the curvature limit
+       already demands there must not raise the target back up past the
+       physically-safe cornering speed.
+    3. Re-run the SAME accel/brake propagation passes over the now-clamped
+       profile. Without this, the clamp is an instantaneous step the car
+       cannot brake into (the exact "profile demands ~273 m/s^2 of braking"
+       failure `compute_speed_profile()`'s own docstring describes) -- step 3
+       is what turns the clamp into a real deceleration zone approaching the
+       corner and a real acceleration zone leaving it.
+
+    `kappa_threshold` should sit below this track's tightest corner curvature
+    and above its gentle bends, so only the corner(s) meant for testing slow
+    down -- inspect `compute_path_curvature(path_X, path_Y)`'s output first
+    to pick a sensible value (see the CLI's own printout of the curvature
+    range when this is invoked with no threshold given).
+    """
+    path_X = np.asarray(path_X)
+    path_Y = np.asarray(path_Y)
+    n = len(path_X)
+
+    v_profile = compute_speed_profile(
+        path_X, path_Y, v_max=v_max, a_accel_max=a_accel_max,
+        a_brake_max=a_brake_max, v_min=v_min, safety=safety,
+        scan_end=scan_end, a_lat_max=a_lat_max, closed_loop=closed_loop,
+    )
+    if n < 3:
+        return v_profile
+
+    kappa = compute_path_curvature(path_X, path_Y)
+    corner_mask = np.abs(kappa) > kappa_threshold
+    v_profile[corner_mask] = np.minimum(v_profile[corner_mask], corner_speed)
+
+    pts = np.column_stack([path_X, path_Y])
+    if closed_loop:
+        segs = np.hypot(np.diff(pts[:, 0], append=pts[0, 0]),
+                        np.diff(pts[:, 1], append=pts[0, 1]))
+    else:
+        segs = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+
+    _propagate_accel_brake_limits(v_profile, segs, a_accel_max, a_brake_max, closed_loop)
     np.clip(v_profile, v_min, None, out=v_profile)
 
     return v_profile
