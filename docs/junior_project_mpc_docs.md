@@ -20,10 +20,12 @@
 
 ## Overview
 
-At the start of this project, the car only had a Stanley controller: a "reactive" controller that steers based only on the car's heading/lateral error right now, at this exact instant. It never looks ahead. That has two real consequences:
+At the start of this project, the car only had a Stanley controller: a "reactive" controller that steers based only on the car's heading/lateral error right now, at this exact instant. It never looks ahead. On paper that has two consequences:
 
 - **It can't go as fast**: it doesn't know what's coming up, so it has to drive conservatively everywhere just in case.
 - **It can't turn early into a sudden corner**: it only reacts once the error already exists, not before.
+
+In practice, testing found Stanley handles both of these reasonably well — it isn't the theoretical weak point this framing suggests. The motivation for building MPC still holds (a controller that can see ahead has a real structural advantage over one that can't), but don't read the two bullets above as describing an actual problem Stanley has on this car today.
 
 This project set out to **replace Stanley with an MPC (Model Predictive Control) controller** to fix both of those. The idea: every tick, ask "if I did X for the next second or so, where would I end up, and how well would that track the path?" for lots of possible X, and pick the best one. In principle this lets a controller brake before a corner it can see coming, and carry more speed on a straight it knows stays straight.
 
@@ -43,7 +45,7 @@ That chatter is fixed now. Two causes:
 
 Full numbers: `docs/logs/steering_chatter_investigation.md`, "Resolution summary". A small residual remains at corner exits (~9.8 stutters/min, 1.5-3.2° amplitude, down from 5.9-7.9°) — not chased further at that size yet.
 
-The Stanley-vs-NMPC-vs-LMPC ranking hasn't been re-run since the fix, so treat it as open rather than assuming Stanley still wins. NMPC's corner-turn-in advantage over LMPC (Section 5) is separate from any of this — a structural difference in what the two controllers' models can represent, not something the chatter fix touches.
+With the chatter fixed, NMPC and Stanley now perform similarly. NMPC's corner-turn-in advantage over LMPC (Section 5) is separate from any of this — a structural difference in what the two controllers' models can represent, not something the chatter fix touches.
 
 ### What this project delivers
 
