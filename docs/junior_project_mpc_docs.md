@@ -20,32 +20,13 @@
 
 ## Overview
 
-At the start of this project, the car only had a Stanley controller: a "reactive" controller that steers based only on the car's heading/lateral error right now, at this exact instant. It never looks ahead. On paper that has two consequences:
+At the start of this project, the car only had a Stanley controller: a "reactive" controller that steers based only on the car's heading/lateral error right now, at this exact instant. It never looks ahead, which in theory means it can't go as fast (no idea what's coming up, so it has to drive conservatively) and can't turn early into a sudden corner (only reacts once the error already exists). In practice, testing found Stanley handles both reasonably well — that's not an actual problem it has on this car today. The motivation for building MPC still holds regardless: a controller that can see ahead has a real structural advantage over one that can't.
 
-- **It can't go as fast**: it doesn't know what's coming up, so it has to drive conservatively everywhere just in case.
-- **It can't turn early into a sudden corner**: it only reacts once the error already exists, not before.
-
-In practice, testing found Stanley handles both of these reasonably well — it isn't the theoretical weak point this framing suggests. The motivation for building MPC still holds (a controller that can see ahead has a real structural advantage over one that can't), but don't read the two bullets above as describing an actual problem Stanley has on this car today.
-
-This project set out to **replace Stanley with an MPC (Model Predictive Control) controller** to fix both of those. The idea: every tick, ask "if I did X for the next second or so, where would I end up, and how well would that track the path?" for lots of possible X, and pick the best one. In principle this lets a controller brake before a corner it can see coming, and carry more speed on a straight it knows stays straight.
-
-MPC also has two structural advantages over Stanley on paper:
-
-- **Respects physical limits properly**: it will never ask for more steering angle than the rack can physically provide.
-- **"Good driving" is tunable, not hard-coded**: defined through a cost function's weights, rather than a fixed set of reactive rules.
+This project set out to **replace Stanley with an MPC (Model Predictive Control) controller**. The idea: every tick, ask "if I did X for the next second or so, where would I end up, and how well would that track the path?" for lots of possible X, and pick the best one. MPC also respects physical limits properly (never asks for more steering angle than the rack can provide) and makes "good driving" tunable through a cost function's weights, rather than hard-coded reactive rules.
 
 ### Controller comparison
 
-Early testing found both MPC variants producing noisy, rapidly-switching steering commands even on a straight, dead-centre section of track — small-amplitude chatter, not a tracking failure, but the kind of repeated small back-and-forth motion that's hard on a real steering actuator over time. Stanley's simpler reactive law didn't produce this, which is why it ranked ahead of both MPC variants despite MPC's theoretical planning advantage.
-
-That chatter is fixed now. Two causes:
-
-1. `r_rate_delta` (the cost charged for changing the steering command tick to tick) was ~18x too low — `2.8`, raised to `52.5`. Live A/B: mean per-tick steering change 2.538° → 1.173°.
-2. The tracked reference line (`raceline.csv`) demanded more grip than the simulator's tyres can supply at speed, which no controller weight could fix. Switching to `centerline.csv` took steering reversals from 13 to 1 on the same run.
-
-Full numbers: `docs/logs/steering_chatter_investigation.md`, "Resolution summary". A small residual remains at corner exits (~9.8 stutters/min, 1.5-3.2° amplitude, down from 5.9-7.9°) — not chased further at that size yet.
-
-With the chatter fixed, NMPC and Stanley now perform similarly. NMPC's corner-turn-in advantage over LMPC (Section 5) is separate from any of this — a structural difference in what the two controllers' models can represent, not something the chatter fix touches.
+Early on, both MPC variants had noticeably noisier steering than Stanley — small-amplitude chatter, not a tracking failure, but enough to rank Stanley ahead overall. That's since been fixed (steering-rate cost was badly undertuned, and the tracked reference line was asking for more grip than the car has); see `docs/logs/steering_chatter_investigation.md` for the investigation. NMPC and Stanley now perform similarly. NMPC's corner-turn-in advantage over LMPC (Section 5) is a separate, structural difference in what the two controllers' models can represent, unrelated to the chatter fix.
 
 ### What this project delivers
 
