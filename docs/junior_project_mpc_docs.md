@@ -568,7 +568,7 @@ R_rate_diag = [50.0, 49.6]
 **Apply the result to both places** (they are not linked, and must be kept in sync by hand):
 
 1. `settings.py`, `Q_diag`, `R_diag`, `R_rate_diag`
-2. `fsds_simulator/control/fsae_control/fsae_control/mpc_core.py`, the same three arrays hardcoded inside `MPCController.__init__` (the live ROS 2 controller is a standalone module on purpose, with zero simulator dependencies)
+2. `fsds_simulator/control/fsae_control/fsae_control/mpc/mpc_core.py`, the same three arrays hardcoded inside `MPCController.__init__` (the live ROS 2 controller is a standalone module on purpose, with zero simulator dependencies)
 
 ### 2.6 Manual Tuning Guide
 

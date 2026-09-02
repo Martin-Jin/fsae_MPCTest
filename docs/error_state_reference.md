@@ -16,10 +16,10 @@ every downstream number by hand, with a worked numeric example at each step.
 **Where the real code lives**, if you want to check this doc against ground
 truth:
 - Live LTV-QP controller: `MPCController._error_state()` in
-  [`mpc_core.py`](../../ros2/src/fsae_planning/control/fsae_control/fsae_control/mpc_core.py)
+  [`mpc_core.py`](../../ros2/src/fsae_planning/control/fsae_control/fsae_control/mpc/mpc_core.py)
   (lines ~833-945 as of this writing).
 - Live NMPC controller: `PathReference.project()`/`_f()`/`_outputs()` in
-  [`nmpc_core.py`](../../ros2/src/fsae_planning/control/fsae_control/fsae_control/nmpc_core.py).
+  [`nmpc_core.py`](../../ros2/src/fsae_planning/control/fsae_control/fsae_control/mpc/nmpc_core.py).
 - Offline plant-side equivalent: `vehicle_physics.plant_to_tracking_error()`.
 
 ---
