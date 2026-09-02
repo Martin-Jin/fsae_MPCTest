@@ -596,16 +596,27 @@ Reproduce the offline closed-loop comparison with
 (no ROS/FSDS session needed; the closed-loop section self-skips without an
 `fsae_MPCTest` sibling checkout) or `python -m tuner.nmpc_offline_check`.
 
-**Open, separate issue: NMPC steering chatter while cornering** (magnitude
-hunting tick-to-tick, not a sign-flip reversal — distinct from both the
-reversal-penalty feature above and the two standstill bugs). Root cause not
-yet found; confirmed NMPC-specific (~7x noisier than the LTV-QP under
-matched conditions) and reproducible offline with zero sensor noise, so it
-is not purely a live sensor-noise artifact, though a live-only contributor
-also appears to stack on top of the offline-reproducible baseline. See
-`docs/logs/steering_chatter_investigation.md` for the full investigation —
-what's been ruled out (single cost-weight retunes, SQP iteration count,
-trust-region size in isolation, FD-Jacobian coarseness, reference-spline
-noise, Frenet-projection instability, terminal cost scale) and what hasn't
-been tried yet, before repeating any of that work. Reproduce/extend with
-`python -m tuner.steering_chatter_check`.
+**Resolved: NMPC steering chatter while cornering** (magnitude hunting
+tick-to-tick, not a sign-flip reversal — distinct from both the
+reversal-penalty feature above and the two standstill bugs). Two
+independent causes, both fixed — see
+`docs/logs/steering_chatter_investigation.md`'s "Resolution summary" for
+the full history, including everything ruled out along the way:
+
+1. **`r_rate_delta` was ~18x too low** (2.8, raised to 52.5) — the
+   steering-rate cost barely charged for rapid changes. Live A/B:
+   `mean|d_steer|` per tick 2.538° → 1.173°, sign-flip rate 66% → 55.5%
+   (the first intervention that moved it off ~65% at all).
+2. **The tracked reference line was a confound for the rest of it.**
+   Switching from `raceline.csv` to `centerline.csv`, weights unchanged,
+   took steering reversals 13 → 1 and both saturation and slew-limited
+   ticks to exactly 0 (see "Centreline beats raceline" — the raceline's
+   own geometry was demanding grip the simulator's tyre model can't supply
+   at that speed, which no controller-side weight can fix).
+
+A small residual remains, clustered at corner **exits**: ~9.8 stutters/min,
+amplitude 1.5-3.2° (down from 5.9-7.9° pre-fix) — the signature is heading
+still unwinding (`|e_psi|` 13-16°) while lateral error is already small and
+shrinking. Distinct from the two fixes above, not yet chased further at
+this amplitude; the next lever would be `q_e_psi`/`q_r` at corner exit.
+Reproduce/extend with `python -m tuner.steering_chatter_check`.

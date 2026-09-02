@@ -34,33 +34,20 @@ MPC also has two structural advantages over Stanley on paper:
 
 ### Where things actually stand
 
-Based on testing so far, **Stanley is currently the better controller, and MPC has not replaced it.**
+**Superseded finding, kept for history — do not treat the ranking below as current.** Earlier testing (around this project's original timeline above) found MPC noticeably noisier than Stanley on straights, and used that to rank Stanley ahead overall:
 
-The current rough ranking:
+> Both MPC variants produced noisy, rapidly-switching small steering commands even on a straight, dead-centre section of track where nothing meaningful was actually changing tick to tick — small-amplitude chatter around the correct line, not a tracking failure, but plausibly hard on a real steering actuator over time. Stanley's simpler reactive law didn't produce this chatter at all, which was the stated reason it still came out ahead of both MPC variants despite MPC's theoretical planning advantage.
 
-1. **Stanley + speed profile**: best overall. Comparable tracking accuracy to the MPC variants, and the most stable on straights.
-2. **Nonlinear MPC (NMPC)**: better corner turn-in than the linear MPC (Section 5), and somewhat more stable than the linear MPC on straights, but still not as stable as Stanley.
-3. **Linear MPC (LMPC)**: the original/baseline MPC (Sections 1-4). The weakest of the three on straight-line stability, and turns corners slowly/late relative to the other two — the "late turn-in" problem described in Section 5.
+**That chatter has since been fixed**, two independent causes, both resolved (full investigation and numbers: `docs/logs/steering_chatter_investigation.md`, "Resolution summary"):
 
-**An important caveat on what "more stable" actually means here.** Stanley's advantage is specifically about steering-command smoothness, not a functional tracking failure on the MPC side.
+1. `r_rate_delta` (the cost charged for changing the steering command tick to tick) was found to be ~18x too low — `2.8`, raised to `52.5`. Live A/B: mean per-tick steering change 2.538° → 1.173°, more than halved.
+2. The tracked reference line (`raceline.csv`) was itself demanding more grip than the simulator's tyres can supply at speed, which no controller weight could fix — switching to `centerline.csv` took steering reversals from 13 to 1 on the same run.
 
-**What the noise actually is:**
-- Both MPC variants produce noisy, rapidly-switching small steering commands even on a straight, dead-centre section of track where nothing meaningful is actually changing tick to tick.
-- Cause: the controller re-solves "what minimises cost right now" from scratch every tick (Section 1.1). Small amounts of sensor/model noise shift which candidate looks marginally cheapest, tick to tick.
+A small residual remains at corner exits (~9.8 stutters/min, 1.5-3.2° amplitude, down from 5.9-7.9°), not yet chased further at that size — but the "noisy, rapidly-switching, even on a straight" behaviour described above no longer reflects the current tuning.
 
-**What it isn't:**
-- It does not degrade tracking, and it does not cause hunting (a sustained, growing oscillation that feeds back on itself).
-- It's small-amplitude chatter around the correct line, not the controller losing its line — visually a very slight wobble, easy to miss unless you're looking for it.
+**What this means for the old Stanley > NMPC > LMPC ranking: it needs re-testing, not assuming.** The chatter fix directly removes the quoted reason Stanley was ranked first, but that doesn't automatically make NMPC or LMPC the new winner either — nobody has re-run the Stanley-vs-NMPC-vs-LMPC comparison since. Re-run it (`tuner/performance_stats.py`'s Benchmark All Paths, or a live A/B on the same track) before relying on any "best controller" claim, including this correction.
 
-**Why it still matters:**
-- The concern is longer-term wear, not immediate driving quality: this kind of repeated small back-and-forth motion is plausibly hard on a real steering actuator over time, even though it isn't a driving-quality problem in the simulator's own metrics.
-- Stanley's much simpler reactive law doesn't produce this chatter at all. That's the actual reason it still comes out ahead despite MPC's theoretical planning advantage — the win is actuator longevity and visual smoothness, not tracking capability.
-
-None of this makes MPC a dead end:
-
-- NMPC's corner behaviour is a real improvement over LMPC's, and corner-anticipation (Section 5) is a harder, more interesting problem than a simple average-tracking comparison suggests.
-- But don't read "this project built an MPC controller" as "MPC is what's currently recommended for the car." As of this writing, **Stanley plus a curvature-aware speed profile is the best-performing, most stable controller** — that combination is the baseline to beat, not Stanley alone.
-- The trade-off MPC pays for its theoretical advantages is real regardless: complexity and computation cost, solving an optimisation problem 20 times a second instead of simple trigonometry.
+NMPC's corner-turn-in advantage over LMPC (Section 5) is unaffected by any of this — that's a structural difference in what the two controllers' models can represent, not something the chatter fix touches.
 
 ### What this project delivers
 
