@@ -340,12 +340,12 @@ longer exist on either side.
 
 | `MPCParams` field | `settings.py` constant | Current value |
 |---|---|---|
-| `q_e_y` | `Q_diag[0]` | `6.35` live / `6.0` offline — not yet re-synced |
-| `q_e_yd` | `Q_diag[1]` | `0.5` / `0.8` (matched) |
+| `q_e_y` | `Q_diag[0]` | `6.35` both sides — synced |
+| `q_e_yd` | `Q_diag[1]` | `0.5` both sides — synced |
 | `q_e_psi` | `Q_diag[2]` | `1.65` both sides — synced |
 | `q_r` | `Q_diag[3]` | `1.20` both sides — synced |
 | `q_e_v` | `Q_diag[4]` | `5.5` both sides — synced |
-| `r_delta` | `R_diag[0]` | `1.35` live / `1.8` offline — not yet re-synced |
+| `r_delta` | `R_diag[0]` | `1.35` both sides — synced |
 | `r_a_accel` | `R_diag`/`R_A_ACCEL` | `2.25` both sides — synced; see "Accel/brake effort weight split" below |
 | `r_a_brake` | `R_A_BRAKE`/`R_diag[1]` | `0.5` both sides — synced |
 | `r_rate_delta` | `R_rate_diag[0]` | `52.5` both sides — synced (raised from ~2.8/2.0, see the steering-chatter fix below) |

@@ -547,7 +547,7 @@ EPSI_RA_BRAKE_FLOOR = 0.5
 # straights, where a speed-error weight does little. Compare on the approach
 # phase when re-tuning this.
 # Mirrors mpc_params.py's Q_diag.
-Q_diag      = [6.0, 0.8, 1.65, 1.20, 5.5, 0.0, 0.0, 0.0]
+Q_diag      = [6.35, 0.5, 1.65, 1.20, 5.5, 0.0, 0.0, 0.0]
 # [shared] R_diag index -> input penalised:
 #   [0] delta_cmd  steering command effort (rad)
 #   [1] a_cmd      acceleration command effort (m/s^2)
@@ -576,7 +576,7 @@ Q_diag      = [6.0, 0.8, 1.65, 1.20, 5.5, 0.0, 0.0, 0.0]
 # Mirrors mpc_params.py's R_diag. R_diag[1] is nominal-only (see comment
 # above) -- the live side's R_A_ACCEL/R_A_BRAKE split (below) is what
 # actually matters for a_cmd's effort cost.
-R_diag      = [1.8, 0.77]
+R_diag      = [1.35, 0.77]
 # [shared] R_rate_diag index -> input RATE-OF-CHANGE penalised (tick-to-tick jerk, not
 # the input itself):
 #   [0] delta_cmd  steering rate of change
