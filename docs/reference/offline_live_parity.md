@@ -71,16 +71,18 @@ Details in "The sim-to-real gap" below and
 `fsae_planning`'s own ROS 2 workspace hierarchy exactly — every package
 (`common/fsae_interfaces`, `common/fsae_bringup`, `perception/
 fsae_sim_perception`, `planning/fsae_planning`, `control/fsae_control`), not
-just the control-layer files — so the whole thing can be copied straight
-across into a workspace `src/` at the same relative paths with no manual
-re-pathing and no missing scaffolding (`package.xml`/`setup.py`/`setup.cfg`/
-`resource/` included). See `fsds_simulator/README.md` for the build/run
-instructions this enables. Nothing under `fsds_simulator/` is imported by
-`gui/simulation.py`, `tuner/offline_tuner.py`, or anything else in this repo —
-those all live under `planning/`, `sim/`, `model/`, `controller/` instead.
-`fsds_simulator/` exists purely so this repo can hold, version, and hand off a
-ready-to-build copy of the ROS 2 side — including to someone who has only
-this repo and FSDS, with no separate `fsae_planning` checkout at all.
+just the control-layer files. That means the whole tree can be copied
+straight across into a workspace `src/` at the same relative paths, with no
+manual re-pathing and no missing scaffolding (`package.xml`/`setup.py`/
+`setup.cfg`/`resource/` included). See `fsds_simulator/README.md` for the
+build/run instructions this enables.
+
+Nothing under `fsds_simulator/` is imported by `gui/simulation.py`,
+`tuner/offline_tuner.py`, or anything else in this repo — those all live
+under `planning/`, `sim/`, `model/`, `controller/` instead. `fsds_simulator/`
+exists purely so this repo can hold, version, and hand off a ready-to-build
+copy of the ROS 2 side — including to someone who has only this repo and
+FSDS, with no separate `fsae_planning` checkout at all.
 
 **Current mirror scope.** `fsds_simulator/` covers the full workspace, not
 just the control layer: `common/fsae_interfaces` (message package),
@@ -212,13 +214,13 @@ between the two output modes that used to be two separate files:
   Selected via `standalone_output:=true` (the default) in `control.launch.py`,
   which skips `fsds_bridge` for that mode.
 
-If you're resyncing this repo's mirror against a newer `fsae_planning`, diff
+When resyncing this repo's mirror against a newer `fsae_planning`, diff
 `mpc_controller.py` against `mpc_controller.py` — both modes live in the same
 file now, so there's only one file to resync. The two modes' code paths
 inside it are deliberately different (see the file's own module docstring
 for exactly which parts branch on `standalone_output` and which are shared),
-reusing the same `MPCController` QP core; don't try to unify them further
-without a specific reason to.
+reusing the same `MPCController` QP core; don't unify them further without a
+specific reason to.
 
 ## Deliberately not mirrored
 
@@ -229,9 +231,9 @@ without a specific reason to.
   and imported a `separate_cones_by_color` helper that isn't defined anywhere
   in either repo. The real, current `StanleyController` (in
   `control_utils.py`) and `stanley_controller.py` node are now mirrored
-  instead, kept in sync like everything else under `fsds_simulator/`. If you
-  find an older local copy of this repo with the frozen reference still
-  present, that's the *previous* state — don't resurrect it.
+  instead, kept in sync like everything else under `fsds_simulator/`. An
+  older local copy of this repo with the frozen reference still present
+  reflects the *previous* state — don't resurrect it.
 - **`roll_loop_to_car`** (added to upstream's `path_utils.py`) — a
   closed-loop-reordering helper upstream's skidpad planner uses to follow a
   known figure-8. Ported here for parity (see "Last resynced" above). In the
@@ -339,15 +341,15 @@ longer exist on either side.
 | `MPCParams` field | `settings.py` constant | Current value |
 |---|---|---|
 | `q_e_y` | `Q_diag[0]` | `6.35` live / `6.0` offline — not yet re-synced |
-| `q_e_yd` | `Q_diag[1]` | `0.5` live / `0.8` offline — not yet re-synced |
-| `q_e_psi` | `Q_diag[2]` | `2.0` live / `1.6` offline — not yet re-synced |
+| `q_e_yd` | `Q_diag[1]` | `0.5` / `0.8` (matched) |
+| `q_e_psi` | `Q_diag[2]` | `1.65` both sides — synced |
 | `q_r` | `Q_diag[3]` | `1.20` both sides — synced |
-| `q_e_v` | `Q_diag[4]` | `5.45` live / `5.55` offline — close, not yet re-synced |
-| `r_delta` | `R_diag[0]` | `1.8` (matched) |
-| `r_a_accel` | `R_diag`/`R_A_ACCEL` | `2.5` live / `1.8` offline (`R_diag[0]` doubles as the offline accel-effort slot) — not yet re-synced; see "Accel/brake effort weight split" below |
-| `r_a_brake` | `R_A_BRAKE`/`R_diag[1]` | `0.5` live / `0.77` offline — not yet re-synced |
-| `r_rate_delta` | `R_rate_diag[0]` | `2.0` live / `2.5` offline — not yet re-synced |
-| `r_rate_a` | `R_rate_diag[1]` | `2.35` live / `2.4` offline — close, not yet re-synced |
+| `q_e_v` | `Q_diag[4]` | `5.5` both sides — synced |
+| `r_delta` | `R_diag[0]` | `1.35` live / `1.8` offline — not yet re-synced |
+| `r_a_accel` | `R_diag`/`R_A_ACCEL` | `2.25` both sides — synced; see "Accel/brake effort weight split" below |
+| `r_a_brake` | `R_A_BRAKE`/`R_diag[1]` | `0.5` both sides — synced |
+| `r_rate_delta` | `R_rate_diag[0]` | `52.5` both sides — synced (raised from ~2.8/2.0, see the steering-chatter fix below) |
+| `r_rate_a` | `R_rate_diag[1]` | `5.0` both sides — synced |
 | `terminal_q_scale` | `TERMINAL_Q_SCALE` | `1.0` (matched) |
 | `adaptive_q_scaling_enabled` | `ADAPTIVE_Q_SCALING_ENABLED` | `True` (matched) |
 | `steer_rate_anti_hunt_enabled` | `STEER_RATE_ANTI_HUNT_ENABLED` | `True` (matched) |
@@ -414,17 +416,20 @@ scorer reports `13.0`" row in
 [`docs/logs/sim_to_real_investigation.md`](logs/sim_to_real_investigation.md)'s
 findings table.
 
-`LapProgressTracker` in `telemetry_logger.py` supplies them: it tracks the car's
-forward-bounded nearest-index position against the precomputed track path
-(the same CSV already loaded for the live speed lookup) to get real
+`LapProgressTracker` in `telemetry_logger.py` supplies them: it tracks the
+car's forward-bounded nearest-index position against the precomputed track
+path (the same CSV already loaded for the live speed lookup) to get real
 `progress`/`reached_end`, and integrates `ds / v_target` over the
-already-loaded speed profile for an `optimal_time` bound —
-**not** a call into `speed_profile.optimal_lap_time()`, since that solver
-lives in `fsae_MPCTest` and is not on the live node's `PYTHONPATH` (see the
-settings-import caveat above). `time_bonus = optimal_time * progress /
-actual_lap_time`, clipped to `[0, 1]`, same scaling convention as
-`sim/rollout_core.py`. Both controller nodes feed the tracker's output into
-`close()`, and the CSV header now also records `lap_time_s`/`optimal_time_s`.
+already-loaded speed profile for an `optimal_time` bound — **not** a call
+into `speed_profile.optimal_lap_time()`, since that solver lives in
+`fsae_MPCTest` and is not on the live node's `PYTHONPATH` (see the
+settings-import caveat above).
+
+`time_bonus = optimal_time * progress / actual_lap_time`, clipped to
+`[0, 1]`, same scaling convention as `sim/rollout_core.py`. Both controller
+nodes feed the tracker's output into `close()`, and the CSV header now also
+records `lap_time_s`/`optimal_time_s`.
+
 This only works when a precomputed speed profile is loaded (`map_path` set,
 the normal live-driving setup); a run against the live planner topic instead
 still has no path end to measure progress against, so `progress`/`reached_end`

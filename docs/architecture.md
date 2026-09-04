@@ -29,16 +29,15 @@ describes the alternative Frenet-frame nonlinear MPC
 
 ### Full System Flow
 
-This is the closed loop the simulator runs at 20 Hz. It's the same loop
-`tuner/offline_tuner.py` runs headless (no plotting) thousands of times
-during tuning, and the same loop `mpc_controller.py` (in its
-`standalone_output=true` mode; mirrored under `fsds_simulator/`, pasted into
-`fsae_planning` — see
-[`docs/reference/`](`docs/reference/`)) runs live against
-the real/FSDS vehicle. All three share one implementation
-(`sim/rollout_core.run_core_rollout()` for the first two;
+This is the closed loop the simulator runs at 20 Hz. The same loop runs
+headless (no plotting) thousands of times during tuning in
+`tuner/offline_tuner.py`, and also runs live against the real/FSDS vehicle
+as `mpc_controller.py` (in its `standalone_output=true` mode; mirrored
+under `fsds_simulator/`, pasted into `fsae_planning` — see
+[`docs/reference/`](docs/reference/)). All three share one implementation:
+`sim/rollout_core.run_core_rollout()` for the first two, and
 `mpc_core.MPCController` for the live node, kept in numeric parity with
-`rollout_core`).
+`rollout_core`.
 
 Note: the diagram below shows the case where `USE_PLANNER = True` (the
 simulator/tuner reconstructs the track from cones, like the real car would).
@@ -145,7 +144,7 @@ cone_map.py                     │  planning/cone_map.ConeMap        (shared)
 boundary.py                     │  planning/boundary.py             (shared)
 path_utils.py                   │  planning/path_utils.py           (shared)
 cone_sorting.py                 │  planning/cone_sorting.py         (shared)
-mpc_core.py                     │  gui/simulation.py / mpc_core.py               (shared)
+mpc_core.py                     │  controller/optimiser.py + model/bicycle_model.py + controller/model_utils.py  (shared design, same QP)
 mpc_controller.py (standalone_output=true) │  gui/simulation.py's rollout loop   (shared design — see `docs/reference/`)
 cone_recorder.py                │  sim/track_io.py + gui/simulation.py's Load Recorded Track  (recorder writes what the loader reads)
 ```
@@ -153,7 +152,7 @@ cone_recorder.py                │  sim/track_io.py + gui/simulation.py's Load 
 `fsds_simulator/control/fsae_control/fsae_control/stanley_controller.py` is
 the actual current Stanley controller (mirrored from upstream, kept in sync
 like everything else under `fsds_simulator/` — see
-[`docs/reference/`](`docs/reference/`)), not just a
+[`docs/reference/`](docs/reference/)), not just a
 structural reference. This project's tuner and offline simulator only ever
 drive against the MPC (`mpc_controller.py`'s `standalone_output=true` mode /
 `mpc_core.py`, same directory) — Stanley is mirrored purely so `fsds_simulator/` can stand
@@ -288,7 +287,7 @@ used mathematically.
 ### Global scaling knobs
 
 Three constants at the top of `VehicleParams.__init__` proportionally scale
-groups of related parameters, so you don't have to hand-tune every
+groups of related parameters, removing the need to hand-tune every
 individual tyre/inertia constant to make the car noticeably grippier,
 heavier-feeling, or coast further:
 
@@ -298,16 +297,16 @@ INERTIA_SCALE  = 0.8   # Scales yaw inertia and wheel rotational mass together
 COASTING_SCALE = 3.0   # Scales rolling resistance / drivetrain drag only, NOT aero drag (Cd_A is a fixed physical value) — < 1.0 = rolls further, > 1.0 = stops faster
 ```
 
-Prefer adjusting these three over individual Pacejka/inertia constants
-unless you have real tyre test data (TTC) or measured chassis inertia to
-plug in directly.
+These three should generally be adjusted in preference to individual
+Pacejka/inertia constants, unless real tyre test data (TTC) or measured
+chassis inertia is available to plug in directly.
 
-### If you import new tyre data
+### Importing new tyre data
 
 The plant uses a Pacejka **MF94** tyre model (`B`, `C`, `D`, `E`, `Sv`, `Sh`
 per axle — see [The Pacejka Tyre Model](#the-pacejka-tyre-model) below for
-what each coefficient physically means). If you replace these with real TTC
-data:
+what each coefficient physically means). Replacing these with real TTC
+data requires one additional step:
 
 > **You must also recompute `Cf` and `Cr`** — the *linear* cornering
 > stiffnesses used by the MPC's internal bicycle model in
@@ -369,7 +368,7 @@ This section assumes no prior background — every term below (model, state,
 input, cost function, solver) is defined in plain English the first time it
 appears.
 
-### Four terms you need before anything else makes sense
+### Four terms needed before anything else makes sense
 
 - **State**: the set of numbers that describe "where things stand right
   now." For this controller, state doesn't mean the car's raw (X, Y)
@@ -394,9 +393,9 @@ appears.
   make this number bigger. The controller's whole job each tick is to
   search for the sequence of inputs that makes this number as small as
   possible. The thing doing that search is called the **solver** (see [The
-  solver](#the-solver) below) — you don't write a search algorithm
-  yourself, you hand the cost function and the model to an existing,
-  purpose-built solver library and it finds the best answer.
+  solver](#the-solver) below) — rather than writing a search algorithm from
+  scratch, the cost function and the model are handed to an existing,
+  purpose-built solver library, which finds the best answer.
 
 With those four ideas in hand, the rest of this section builds up exactly
 what this controller's state, input, model, and cost function actually are,
@@ -457,19 +456,24 @@ correctly predict how the car will really move over the horizon.
 State 5 is purely for consistency, there is a rate of change for each state.
 
 **`e_v`'s target speed is frozen for the whole horizon, not a per-step
-profile.** `desired_speed` is looked up/computed once per solve (from
-`speed_profile.curvature_speed()` live, or the offline `v_profile` array
-previously — see "Planner/Speed-Profile Architecture" below) and baked into
-`x0[4]` as a single scalar; nothing in `Ad`/`Bd` re-references it at later
-horizon steps, so the cost function penalises deviation from *the same*
-target speed across all `N` steps (1.75 s), not the true curvature-limited
-speed at each predicted future position. This is a deliberate receding-horizon
-simplification — the controller re-solves every 50 ms with a freshly
-recomputed `desired_speed`, so a stale in-horizon reference self-corrects
-within one tick — not a bug, but worth knowing if you're debugging
-speed-tracking behaviour approaching a corner whose onset falls inside the
-current horizon.
-Currently there is no acceleration profile so there is no acceleration error.
+profile.** In plain terms: the controller picks one target speed at the
+start of each solve and holds it fixed across the whole 1.75 s look-ahead,
+rather than asking for a different speed at each future point along that
+horizon. Concretely, `desired_speed` is looked up/computed once per solve —
+from `speed_profile.curvature_speed()` when the live planner is in the
+loop, or from the precomputed `path_v_profile` array otherwise — and baked
+into `x0[4]` as a single scalar. Nothing in `Ad`/`Bd` re-references it at
+later horizon steps, so the cost function penalises deviation from *the
+same* target speed across all `N` steps, not the true curvature-limited
+speed at each predicted future position.
+
+This is a deliberate receding-horizon simplification rather than an
+oversight: the controller re-solves every 50 ms with a freshly recomputed
+`desired_speed`, so a stale in-horizon reference self-corrects within one
+tick. It is still worth knowing about when debugging speed-tracking
+behaviour approaching a corner whose onset falls inside the current
+horizon. There is currently no acceleration profile, so there is no
+acceleration error either.
 
 #### How the error vector is actually measured (Frenet-frame projection)
 
@@ -515,9 +519,9 @@ themselves (those are states 6 and 7 above, which lag behind `u`).
 ### Building the prediction model (`model/bicycle_model.py`)
 
 Before the MPC can plan anything, it needs a way to answer the question:
-*"if the car is currently in error state `x`, and I apply steering/throttle
-command `u`, what will the error state be a tiny fraction of a second
-later?"* That question, answered mathematically, is the **prediction
+*"if the car is currently in error state `x`, and a steering/throttle
+command `u` is applied, what will the error state be a tiny fraction of a
+second later?"* That question, answered mathematically, is the **prediction
 model**. This section builds it up from scratch — the general form, the two
 physical models that get blended into it, and finally how it's converted
 into the exact numbers the solver uses.
@@ -720,8 +724,8 @@ the `+delta_cmd/tau_delta` "pull toward the target" term lives in `B`).
 #### What the matrix multiplication actually produces
 
 Putting `A` and `B` together, `ẋ = A·x + B·u` means: multiply each row of
-`A` by the entire state vector `x` (a dot product), add the matching row of
-`B` multiplied by `u`, and that gives you the rate of change of that one
+`A` by the entire state vector `x` (a dot product), then add the matching
+row of `B` multiplied by `u`; the result is the rate of change of that one
 state. Spelling out just the two most important rows — using the dynamic
 model's `e_y_dot` row and the kinematic model's `e_psi` row as concrete
 examples — the matrix multiplication `A·x` expands into exactly the
@@ -1025,15 +1029,16 @@ to be a family of ~15 interacting functions that scanned *forward* along the
 path (a "lookahead" scan producing a peak curvature ahead, `kappa_max_abs`)
 and reweighted the cost matrices in anticipation of a corner not yet
 reached. That whole family was deleted and replaced by three simpler,
-**current-state-only** factors — no forward scan at all. **"Current-state
-gain scheduling" below documents
-what runs today; "Historical: the lookahead gain-scheduling family"
-documents what it replaced, kept for the reasoning (why it was tried, what
-it got right, and the structural argument for why reweighting *today's*
-cost based on a *future* corner cannot substitute for a prediction model
-that actually represents the road bending — see the [Second controller:
-nonlinear MPC](#second-controller-nonlinear-mpc-use_nmpc) section
-for how that argument plays out fully.**
+**current-state-only** factors — no forward scan at all.
+
+"Current-state gain scheduling" below documents what runs today;
+"Historical: the lookahead gain-scheduling family" documents what it
+replaced, kept for the reasoning — why it was tried, what it got right, and
+the structural argument for why reweighting *today's* cost based on a
+*future* corner cannot substitute for a prediction model that actually
+represents the road bending. See the [Second controller: nonlinear
+MPC](#second-controller-nonlinear-mpc-use_nmpc) section for how that
+argument plays out fully.
 
 #### Current-state gain scheduling
 
@@ -1239,11 +1244,12 @@ tangent (only `e_psi` — `e_y` is unaffected). Structurally different from
 curvature-forcing above: it changes what's true at `k=0` (a real, current
 error) rather than telling the QP about a future obligation it's free to
 satisfy however is cheapest — synthetic testing found this avoids
-curvature-forcing's wrong-direction transient entirely. See
-`docs/reference/control_mechanisms.md`'s "Precomputed shaped heading-lead profile"
-section for the full design, the fixed-lookahead version that was tried and
-rejected first (immediate full-lock steering), and an important caveat
-about this track's lack of true straights. Live-tested with a
+curvature-forcing's wrong-direction transient entirely.
+
+See `docs/reference/control_mechanisms.md`'s "Precomputed shaped heading-lead
+profile" section for the full design, the fixed-lookahead version that was
+tried and rejected first (immediate full-lock steering), and an important
+caveat about this track's lack of true straights. Live-tested with a
 high-variance, inconclusive result and currently shipped off by default —
 see `tuning.md` §4.5c for the full status.
 
@@ -1524,9 +1530,9 @@ values).
 
 ### Post-optimisation: picking the final answer
 
-After the search budget is exhausted (or you `Ctrl+C`), two candidates are
-freshly evaluated **serially** (outside the noisy parallel pool, for a
-clean comparison):
+After the search budget is exhausted (or `Ctrl+C` is pressed), two
+candidates are freshly evaluated **serially** (outside the noisy parallel
+pool, for a clean comparison):
 
 - **`xbest`** — the single best individual candidate observed across the
   entire search.
@@ -1695,14 +1701,18 @@ selected by `settings.USE_NMPC`; this section is a pointer to the live design,
 not a mirror of the offline code — see `docs/reference/README.md`'s "Nonlinear
 MPC (`use_nmpc`)" section for the offline port's specifics.
 
-**The structural difference, in one line.** The LTV-QP predicts how the car's
+**The structural difference, in one line.** In plain terms: the LTV-QP
+plans ahead as though the road stays pointed the same direction for the
+whole horizon, even if a corner is coming up; the NMPC's internal model
+actually knows the road bends, and where. The LTV-QP predicts how the car's
 current error (`e_y`, `e_psi`) drifts under its own dynamics, against a
 reference direction it treats as fixed for the whole horizon. The NMPC
 predicts that same error's evolution **relative to a path whose bend is
 itself part of the prediction** — the model knows the reference direction
-changes with `s`, not just the car's state. Concretely: the LTV-QP's
-prediction is written in error coordinates with the reference frame's
-rotation dropped, so `e_psi_dot = r` instead of
+changes with `s`, not just the car's state.
+
+Concretely: the LTV-QP's prediction is written in error coordinates with
+the reference frame's rotation dropped, so `e_psi_dot = r` instead of
 `e_psi_dot = r - kappa(s)*s_dot`. With the car on line and a corner ahead, its
 35-step rollout predicts staying on line forever (measured: exactly 0.000 deg
 commanded at 8 dead-on-line states), which is why the "structural limit"

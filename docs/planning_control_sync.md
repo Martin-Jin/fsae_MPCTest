@@ -2,7 +2,7 @@
 
 This document has been split by subject into [`docs/reference/`](reference/).
 
-| you were looking for | now in |
+| topic | now in |
 |---|---|
 | file mapping, non-mirrors, numeric-parity tables, score parity, resync procedure | [`reference/offline_live_parity.md`](reference/offline_live_parity.md) |
 | speed profile, raceline/centreline exporters, `SPEED_CSV`/`PATH_CSV` | [`reference/reference_path_and_speed.md`](reference/reference_path_and_speed.md) |

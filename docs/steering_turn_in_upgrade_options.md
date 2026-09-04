@@ -107,9 +107,9 @@ rises with it (mean|d| 2.23 -> 3.2-4.0).
 Genuinely useful side effect worth keeping in mind: **the ramp clears the
 offline DNF** that the shipped flat config produces (452 ticks -> full lap)
 and improves `|e_y|` (0.497 -> 0.428). So it does buy real corner
-compliance -- it just pays for it in exactly the currency we were trying to
-save. Same failure shape as Option 2: more compliance, less damping, worse
-on both chatter and catch-up.
+compliance -- it just pays for it in exactly the currency this change was
+meant to save. Same failure shape as Option 2: more compliance, less damping,
+worse on both chatter and catch-up.
 
 ### LIVE-TESTED AND ALSO REJECTED
 
@@ -122,8 +122,8 @@ on both chatter and catch-up.
 | saturation | 0.03% | 0.27% |
 
 Live agrees with offline, and is worse than offline predicted: slew-limited
-ticks nearly TRIPLED. The user's report was unchanged ("still has late
-turns"). **Option 1 is rejected on both fronts.**
+ticks nearly TRIPLED. The subjective driving impression was unchanged
+("still has late turns"). **Option 1 is rejected on both fronts.**
 
 Worth noting as a methodology point: this is the FIRST time in this
 investigation that offline and live agreed. Offline's four earlier

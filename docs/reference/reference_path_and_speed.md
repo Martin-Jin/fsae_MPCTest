@@ -166,7 +166,7 @@ Points worth knowing:
   next 24 m of path, takes the peak curvature in that window, and returns
   `safety·√(a_lat_max / κ_peak)` clamped to `[v_min, v_max]`.
 - **`a_accel_max`/`a_brake_max` are planning values, not the plant's limits**
-  (7.0 / −5.0 against the plant's 12.0 / −9.0). Planning at the true limits
+  (7.0 / −5.0 against the plant's 12.0 / −7.0). Planning at the true limits
   leaves the controller no margin for combined slip or model error and makes
   passes 1–2 nearly non-binding.
 - **Passes 1–2 have no live counterpart.** The car relies on

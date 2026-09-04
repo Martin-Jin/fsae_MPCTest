@@ -9,12 +9,12 @@ assumes no prior MPC or vehicle-dynamics background.
 [`architecture.md`](architecture.md), which explains *what each module does
 and how they connect*), and not a project-status narrative (that's
 [`junior_project_mpc_docs.md`](junior_project_mpc_docs.md), which covers the
-same ideas at a higher level with less arithmetic). This doc exists so you
-can take a concrete `(car position, car heading, path)` triple and reproduce
-every downstream number by hand, with a worked numeric example at each step.
+same ideas at a higher level with less arithmetic). This doc exists so a
+concrete `(car position, car heading, path)` triple can be taken and every
+downstream number reproduced by hand, with a worked numeric example at each
+step.
 
-**Where the real code lives**, if you want to check this doc against ground
-truth:
+**Where the real code lives**, for checking this doc against ground truth:
 - Live LTV-QP controller: `MPCController._error_state()` in
   [`mpc_core.py`](../../ros2/src/fsae_planning/control/fsae_control/fsae_control/mpc/mpc_core.py)
   (lines ~833-945 as of this writing).
@@ -43,16 +43,15 @@ truth:
 
 ## 1. The absolute basics: what "error" means here
 
-Forget control theory for a second. You're driving, and there's a line
-painted on the road (the racing line / planner's centreline) that you're
-trying to follow. At any instant, two numbers describe how well you're
-doing:
+Forget control theory for a second. Picture a car driving, with a line
+painted on the road (the racing line / planner's centreline) it's trying to
+follow. At any instant, two numbers describe how well it's doing:
 
-- **`e_y`** (lateral error): how far *sideways* you are from the line, in
+- **`e_y`** (lateral error): how far *sideways* the car is from the line, in
   metres. Positive means one side, negative the other.
-- **`e_psi`** (heading error): the angle between which way you're *pointing*
-  and which way the line *points* at the nearest point, in radians (or
-  degrees, for humans).
+- **`e_psi`** (heading error): the angle between which way the car is
+  *pointing* and which way the line *points* at the nearest point, in
+  radians (or degrees, for humans).
 
 Everything else (rate of change of `e_y`, speed error, curvature) is a
 straightforward derivative or lookup built on top of those two ideas. The
@@ -161,10 +160,10 @@ happened to be represented.
 e_y_dot = car_speed * sin(e_psi) + car_vy * cos(e_psi)
 ```
 
-Plain English: if you're pointed slightly off from the path direction
-(`e_psi ≠ 0`) while moving forward, your sideways position drifts at a rate
-proportional to `sin(e_psi)` times your speed — the faster you go, or the
-more misaligned you are, the faster `e_y` changes. The second term accounts
+Plain English: if the car is pointed slightly off from the path direction
+(`e_psi ≠ 0`) while moving forward, its sideways position drifts at a rate
+proportional to `sin(e_psi)` times its speed — the faster it goes, or the
+more misaligned it is, the faster `e_y` changes. The second term accounts
 for genuine sideways slip (`car_vy`, body-frame lateral velocity) on top of
 that.
 
@@ -282,10 +281,10 @@ e_v = 8 - 10 = -2 m/s   (2 m/s slower than target)
 x0 = [0.361, 0.698, 0.0873, car_yaw_rate, -2.0, 0.0, delta_act, a_act]
 ```
 
-You can now plug this into the cost function
+Plugging this into the cost function
 (`Q_0*e_y² + Q_1*e_y_dot² + ...`, see
 [`architecture.md`'s cost-function section](architecture.md#the-cost-function-and-qp-controlleroptimiserpy))
-and reproduce exactly what the solver is penalising this tick.
+reproduces exactly what the solver is penalising this tick.
 
 ### 2.2 Is this current-error or forward-looking?
 
@@ -302,8 +301,8 @@ awareness* — is exactly the limitation Section 3 explains.
 
 ## 3. Why the LTV-QP can't just "re-project at every future step"
 
-A natural question once you understand Section 2: the horizon prediction
-just applies a formula 35 times in a row to roll `x0` forward. Why not, at
+A natural question follows from Section 2: the horizon prediction just
+applies a formula 35 times in a row to roll `x0` forward. Why not, at
 each of those 35 steps, take the model's predicted `(x, y)` position, find
 the nearest path point *there*, and recompute `e_y`/`e_psi` against that new
 nearest point — exactly like Section 2 does at `t=0`, just repeated at every
@@ -319,8 +318,8 @@ failure is what motivates Section 4's specific design.
 
 ### 3.1 The part that breaks it: this search can't live inside a QP
 
-The LTV-QP's speed comes from one specific trick: the relationship "if
-you're in state `x` and apply input `u`, you move to state `x'`" is
+The LTV-QP's speed comes from one specific trick: the relationship "being in
+state `x` and applying input `u` moves the car to state `x'`" is
 expressed as a single fixed matrix multiplication, `x' = Ad·x + Bd·u`
 (see [architecture.md](architecture.md#building-the-prediction-model-modelbicycle_modelpy)).
 Because that relationship is *linear* (state times a fixed number, added
@@ -346,9 +345,9 @@ millions of candidate steering sequences in 1-5 milliseconds.
    Nonlinear Program (see
    [architecture.md's linear-vs-nonlinear section](architecture.md#linear-vs-nonlinear-in-plain-english)).
 
-So the honest answer to "why not just re-project every step" is: **you're
-allowed to, but the moment you do, you're no longer solving a QP, you're
-solving something structurally different** — which is exactly what Section 4
+So the honest answer to "why not just re-project every step" is: **it's
+allowed, but the moment it's done, the problem is no longer a QP — it
+becomes something structurally different** — which is exactly what Section 4
 is. The LTV-QP specifically avoids this because staying a QP is what lets it
 finish reliably inside the 50 ms tick budget.
 
@@ -533,7 +532,7 @@ Plain English for each line:
 - `s_dot`: how fast the car is advancing *along the path* (not just through
   the world) — this needs the `1/denom` correction because "distance along
   a curving path" and "distance in a straight line" aren't quite the same
-  thing once you're offset from the centreline (a car on the inside of a
+  thing once the car is offset from the centreline (a car on the inside of a
   bend covers less arc-length per metre travelled than one on the outside;
   `denom` captures exactly that geometric effect, and is clamped away from
   zero to avoid dividing by zero on an extreme case).
@@ -579,8 +578,8 @@ Compare to Section 2's model at the same instant: `e_psi_dot = r = 0`
 immediately** — specifically, drifting at -0.75 rad/s (about -43°/s) the
 very first instant, purely because the path is curving underneath the car,
 even though the car hasn't turned its wheels yet. That's the entire
-mechanism: the model tells the solver "if you do nothing, you're about to
-develop heading error," and the solver reacts to that *predicted* error the
+mechanism: the model tells the solver "doing nothing here leads to heading
+error building up," and the solver reacts to that *predicted* error the
 same way it reacts to *real* error today, using the normal cost function —
 no bolted-on lookahead heuristic required.
 

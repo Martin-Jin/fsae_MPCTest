@@ -9,7 +9,7 @@ tuning doesn't cover (system architecture, how to run the tuner, live/offline
 resync procedure).
 
 **Source of truth for exact numbers**: `settings.py` (offline) and
-`ros2/src/fsae_planning/control/fsae_control/fsae_control/mpc_params.py`
+`ros2/src/fsae_planning/control/fsae_control/fsae_control/mpc/mpc_params.py`
 (live). This doc explains *what each one does and how to tune it*; it
 deliberately does not restate every current numeric value, since those drift
 as tuning continues and a second copy of the numbers here would just be one
@@ -28,7 +28,7 @@ for what the NMPC is and why it exists.
 
 ## How to use this doc
 
-1. Find the parameter or feature you want to change below.
+1. Locate the parameter or feature to change below.
 2. Read its purpose and the "how to tune it" guidance.
 3. Check the "known constraints" column — some values have a hard floor/
    ceiling discovered by prior testing. Don't re-cross a boundary already
@@ -37,8 +37,8 @@ for what the NMPC is and why it exists.
 5. Re-validate: `python -m tuner.recorded_map_rollout` (offline, ~2 min) at
    minimum; for anything touching adaptive gains or delay handling, also run
    `VALIDATION_SUITE`. Never trust an offline-only score for a change that
-   affects saturation or heading error — see `docs/reference/offline_live_parity.md`'s project rule 3, "the offline
-   simulator does not fully predict the car".
+   affects saturation or heading error — see `docs/reference/offline_live_parity.md`'s
+   project rule 3, "the offline simulator does not fully predict the car".
 
 ---
 
@@ -157,7 +157,7 @@ plus a set of *shape constants* (the floors/ceilings/ramp sharpness of the
 curve it applies). The flags decide whether a mechanism is active; the shape
 constants decide how strongly it acts once active. Change shape constants
 only for mechanisms that are enabled — tuning a disabled mechanism's shape
-has no effect until you also flip its flag.
+has no effect until its flag is also flipped on.
 
 **Two generations, same as `architecture.md`'s "Adaptive gain scheduling"
 section.** §4.1-4.3 below describe mechanisms still active today.
@@ -301,22 +301,26 @@ See `docs/reference/control_mechanisms.md`'s "Precomputed shaped heading-lead pr
 section for the full design and why this avoids curvature-forcing's
 wrong-direction-transient failure.
 
-**Status: implemented, offline-validated (no-op-when-off confirmed, profile
-shape sanity-checked), live-tested with a HIGH-VARIANCE, inconclusive
-result** — four live runs at the default `authority_frac=0.5` ranged from
+**Status: implemented, offline-validated, live-tested with an
+inconclusive result.** Offline, the no-op-when-off case is confirmed and
+the profile shape has been sanity-checked. Live, four runs at the default
+`authority_frac=0.5` produced a high-variance result: they ranged from
 the single best run recorded all session (zero steering saturation) to
 some of the worst, against a baseline that itself varied nearly as much
-run-to-run; not enough runs to call it a net win or a net loss. Currently
-shipped **OFF** (`USE_PRECOMPUTED_HEADING_PROFILE=false` in
+run-to-run — not enough runs to call it a net win or a net loss.
+
+Currently shipped **OFF** (`USE_PRECOMPUTED_HEADING_PROFILE=false` in
 `ros2/launch_all.sh`) pending more data, not because it's confirmed not to
 help — check that file's shortlist before assuming either default.
-`comp_test_map_3` has few true straights, so the lead is active
-almost everywhere on that track at the default `authority_frac` — a
-plausible explanation for the variance (the lead can't selectively target
-the approach phase on this track) that further runs haven't yet confirmed
-or ruled out. See `docs/reference/README.md`'s caveat and
-`late_turn_in_investigation.md` Parts 12-13 for the full run-by-run data
-before drawing conclusions from any single result.
+
+`comp_test_map_3` has few true straights, so the lead is active almost
+everywhere on that track at the default `authority_frac` — a plausible
+explanation for the variance (the lead can't selectively target the
+approach phase on this track) that further runs haven't yet confirmed or
+ruled out. See `docs/reference/control_mechanisms.md`'s "Precomputed
+shaped heading-lead profile" section and `docs/logs/late_turn_in_investigation.md`
+Parts 7-13 for the full run-by-run data before drawing conclusions from
+any single result.
 
 ### 4.6 Historical: U-turn detector and straight-line adjustments (removed)
 
@@ -780,19 +784,29 @@ score = run_headless_rollout(x0, "PATH_SUDDEN_TURN", 400, 0.0, 0.0)
 
 ---
 
-## 5. Dynamic speed cap — disabled, do not re-enable without re-diagnosis
+## 5. Dynamic speed cap — code default on, shipped off pending re-diagnosis
 
 `enable_dynamic_speed_cap` / `dynamic_cap_a_lat_max` / `dynamic_cap_safety`
 layer a real-time curvature-lookahead speed cap under the precomputed speed
-profile. **Built and live-tested; made overall driving worse despite
-improving its own target metric** (lateral-acceleration-over-ceiling ratio
-improved sharply, but steering saturation and heading error both got worse,
-and the composite score regressed). The root cause of that regression was
-never diagnosed. `ros2/launch_all.sh` disables this at runtime regardless of
-the code-level default — see its MPC tuning shortlist. Do not re-enable
-without first diagnosing why it regressed saturation/heading-error, not just
-re-tuning `dynamic_cap_a_lat_max`/`dynamic_cap_safety` and hoping. Full
-writeup: `docs/logs/sim_to_real_investigation.md`.
+profile, catching the case where the car is running ahead of the oracle
+profile's own pace and needs to start braking for a corner sooner than the
+static profile alone would trigger.
+
+**`ENABLE_DYNAMIC_SPEED_CAP` defaults to `True` in both `settings.py` and
+`mpc_params.py`** — this mechanism is not disabled at the code level. It
+made overall driving worse despite improving its own target metric when
+built and live-tested: the lateral-acceleration-over-ceiling ratio improved
+sharply, but steering saturation and heading error both got worse, and the
+composite score regressed. The root cause of that regression was never
+diagnosed.
+
+Because of that result, `ros2/launch_all.sh`'s MPC tuning shortlist
+currently overrides the flag to `false` at runtime — check that shortlist
+before assuming the code-level default is what actually drives a given run.
+Do not re-enable it for a live run without first diagnosing why it
+regressed saturation/heading-error, not just re-tuning
+`dynamic_cap_a_lat_max`/`dynamic_cap_safety` and hoping. Full writeup:
+`docs/logs/late_turn_in_investigation.md`'s "Dynamic speed cap" addendum.
 
 ---
 
@@ -819,9 +833,10 @@ stay a verbatim numeric copy (see `docs/reference/offline_live_parity.md`'s "Liv
   contributes to the final composite score (lower is better). This is
   literally the tuner's definition of "good driving." Must sum to ~1.0 so a
   run scoring exactly at every metric's reference scale scores 1.0 before
-  bonuses/penalties — if you change one weight, take the offsetting change
-  from another to preserve the sum. Typical adjustment: change a weight by
-  roughly 20–30% of its own value at a time, then re-tune and compare.
+  bonuses/penalties — changing one weight requires taking the
+  offsetting change from another to preserve the sum. Typical adjustment:
+  change a weight by roughly 20–30% of its own value at a time, then
+  re-tune and compare.
 
 The 13 metrics, in order: `rmse`, `yaw_rms`, `smooth_rms`, `steer_rms`,
 `accel_rms`, `max_steering`, `steering_sat_ratio`, `jerk_rms`,
@@ -862,8 +877,8 @@ link here for anything about what to change and why:
   upstream-resync procedure; not a tuning-values guide.
 - `docs/logs/sim_to_real_investigation.md` — the full chronological
   investigation history behind several of the "known constraints" above.
-  Read it for *how* a constraint was discovered; this doc is where you look
-  up *what* the constraint is without reading the whole investigation.
+  Read it for *how* a constraint was discovered; this doc states *what*
+  the constraint is without requiring the whole investigation to be read.
 - `junior_project_mpc_docs.md` — a standalone, self-contained onboarding
   wiki page; intentionally still explains tuning from scratch rather than
   linking here, since it's meant to be readable without any other doc open.

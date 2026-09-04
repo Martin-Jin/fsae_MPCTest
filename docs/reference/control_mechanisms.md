@@ -7,10 +7,15 @@ shaped the way it is, and what to be careful of when changing it.
 
 - which knob to turn and to what value → `docs/tuning.md`
 - how a subsystem is built → `docs/architecture.md`
-- a mechanism that no longer exists → `docs/reference/removed_mechanisms.md`
+- a mechanism that no longer exists → `docs/removed_mechanisms.md`
 - the reference path and speed profile → `docs/reference/reference_path_and_speed.md`
 
 ## Corner-factor scheduler — what replaced the lookahead gain-scheduling family
+
+**Plain version:** the controller drives differently depending on whether it
+is currently on a straight or currently in a corner, smoothly blending its
+weights between the two based on how sharply the road is curving right now
+— not based on a forecast of what's coming up ahead.
 
 **The current mechanism** is `_corner_factor`/`_low_speed_corner_boost`/
 `_blend`: a single continuous CURRENT-curvature-only fraction blending four
@@ -23,23 +28,32 @@ reference — not repeated here to avoid duplicating either.
 It exists on both sides: `fsae_MPCTest/controller/model_utils.py`
 (`_corner_factor`/`_low_speed_corner_boost`/`_blend` plus `settings.py`'s
 matching constants) and `fsds_simulator/`'s copies of `mpc_core.py`/
-`mpc_params.py`/`fsae_params.yaml`, byte-identical to the live files (see the
-parity table above).
+`mpc_params.py`/`fsae_params.yaml`, byte-identical to the live files (see
+`offline_live_parity.md`'s "MPC weight/gain parity" table).
 
-**What it replaced, and why that matters if you are tempted to re-add it.**
-The previous design was ~15 interacting functions that scanned FORWARD along
-the path every tick (`lookahead_curvature_profile` → a scalar `kappa_max_abs`,
-the peak curvature within a speed-scaled lookahead window) and reweighted
-`Q`/`R`/`R_rate` in anticipation of a corner not yet reached: approach/exit
-`Q[0,0]`/`Q[2,2]` boosts, `Q[3,3]`/`R[0,0]` relaxations, demand normalisation
-(`_corner_demand`/`_alat_ceiling_at`), a U-turn detector, straight-line
-`Q`/`R[0,0]` adjustments, and a `CornerMap`/`_segment_corners`
-precomputed-path fast path for the same scan. See `mpc_core.py`'s own
-"Lookahead gain-scheduling family: removed" comment for the exhaustive
-function-name list, and [`removed_mechanisms.md`](removed_mechanisms.md) for
-the mechanism-level detail of each (`tuning.md` §4.4/§4.6/§4.8/§4.10 and
-`architecture.md`'s "Historical" subsection both link there rather than
-restating it).
+**What it replaced, and why re-adding it is a bad idea.** The scheduler above
+reacts to CURRENT curvature only. The design it replaced instead scanned
+FORWARD along the path every tick, trying to anticipate a corner before the
+car reached it. That earlier design does not work, for a structural reason
+explained below — re-adding any part of it should be weighed against that
+reason, not just against how it tuned in isolation.
+
+The previous design was ~15 interacting functions:
+
+- `lookahead_curvature_profile` → a scalar `kappa_max_abs`, the peak
+  curvature within a speed-scaled lookahead window.
+- Reweighted `Q`/`R`/`R_rate` in anticipation of a corner not yet reached:
+  approach/exit `Q[0,0]`/`Q[2,2]` boosts, `Q[3,3]`/`R[0,0]` relaxations,
+  demand normalisation (`_corner_demand`/`_alat_ceiling_at`), a U-turn
+  detector, straight-line `Q`/`R[0,0]` adjustments.
+- A `CornerMap`/`_segment_corners` precomputed-path fast path for the same
+  scan.
+
+See `mpc_core.py`'s own "Lookahead gain-scheduling family: removed" comment
+for the exhaustive function-name list, and
+[`removed_mechanisms.md`](../removed_mechanisms.md) for the mechanism-level
+detail of each (`tuning.md` §4.4/§4.6/§4.8/§4.10 and `architecture.md`'s
+"Historical" subsection both link there rather than restating it).
 
 The family was removed because this MPC formulation already predicts state
 error against the reference at each future horizon step. Reweighting TODAY's
@@ -52,6 +66,12 @@ motivates the nonlinear MPC below: reweighting an existing error's cost is not
 the same as making the *prediction itself* see the road bend.
 
 ## Soft steering-reversal penalty (`reversal_penalty_*` / `nmpc_reversal_penalty_*`)
+
+**Plain version:** a steering reversal (the wheel flicking one way then
+immediately the other) always passes through zero steering angle on the way.
+This mechanism makes it a little more expensive to change steering quickly
+right when the previous command was near zero — nudging the controller away
+from that flip-prone state without penalising the flip itself directly.
 
 **Default off, experimental on both controllers.** Boosts `R_rate[0,0]`
 (steering rate-of-change cost) whenever LAST tick's steering command was
@@ -85,6 +105,12 @@ offline (reversals dropped only ~5.6% while score worsened) — leave
 wired and functional, just not currently worth enabling.
 
 ## Slew-rate limit (`du_max`): on both sides, at 180 deg/s
+
+**Plain version:** the steering rack can only turn so fast, so the controller
+is not allowed to command a bigger step change in steering than the real
+actuator (or, offline, the simulated one) could actually achieve in one
+control tick. This cap has to be identical on both sides, or weights tuned
+offline will ask more of the real car than it can deliver.
 
 The hard per-step slew-rate constraint on `[delta_cmd, a_cmd]` must exist on
 both sides. It was once live-only, with `controller/optimiser.py` carrying no
@@ -132,6 +158,10 @@ lower-bound estimate, not a datasheet figure. Refine it via system-ID on the
 running sim and update both sides together.
 
 ## MPC prediction horizon: frozen target speed
+
+**Plain version:** the target speed the MPC predicts against does not change
+across the steps it looks ahead within one solve — the whole horizon plans
+against a single frozen speed target, refreshed only on the next tick.
 
 `sim/rollout_core.py`'s (and `mpc_core.py`'s) MPC formulation bakes
 `desired_speed` into `x0[4]` (`e_v`) as a single scalar frozen for the whole
@@ -182,6 +212,11 @@ preceding single-scalar `r_a` cut this split superseded.
 
 ## Lookahead corner-anticipation window (approach side)
 
+**Plain version:** this window controls how far ahead the controller looks
+to notice an upcoming corner and start reweighting its costs — but see the
+caveat below: widening the window only helps once there is already some real
+tracking error to reweight, it cannot manufacture anticipation from nothing.
+
 `adaptive_q_lookahead_dist_max` is `25.0` on both sides (`fsae_params.yaml`,
 `fsds_simulator` mirror), matching `adaptive_q_lookahead_exit_decay_dist_max`
 (also `25.0`) — the approach-side and exit-side ceilings are symmetric.
@@ -211,6 +246,11 @@ gaps on real tracks, and for the candidate fixes considered.
 
 ## Post-solve output smoothing — removed
 
+**Plain version:** a low-pass filter was once applied to the steering
+command after the solver had already produced it, to smooth out chatter.
+It has been removed — it just added lag, and the QP's own steering-rate
+cost fixes the same chatter without that penalty.
+
 **A post-solve low-pass filter on the SOLVED steering command
 (`filtered += alpha*(raw - filtered)`, then
 `steering = (1-w)*raw + w*filtered`), distinct from every `Q`/`R`/`R_rate`
@@ -229,6 +269,11 @@ wiring) has been deleted from both the live and offline sides rather than
 left as unused dead code.
 
 ## Straight-line lateral-error snap-back sharpness
+
+**Plain version:** on a clear straight the controller cares less about small
+lateral wobble (to avoid hunting), then tightens back up to full sensitivity
+as a corner approaches. This section is about how quickly that tightening
+happens, not about the relaxation itself.
 
 `_lookahead_straight_lateral_reduce` softens `Q[0,0]` (lateral-error cost) to
 `ey_floor=0.7` on a clear straight, then fades back to full weight as
@@ -278,6 +323,12 @@ two.
 
 ## Dynamic speed cap
 
+**Plain version:** the precomputed speed profile assumes the car is where the
+plan expects it to be. If the car is actually running faster than planned
+(e.g. it exited the last corner quicker than expected), this mechanism pulls
+the target speed back down before the next corner, on top of whatever the
+precomputed profile already says.
+
 `control_utils.dynamic_speed_cap()` is a thin wrapper over
 `curvature_speed()` (see that function's own docstring for the scan/
 braking-distance mechanism) that runs *underneath* the precomputed oracle
@@ -313,19 +364,22 @@ reasons never diagnosed.
 
 ## Precomputed shaped heading-lead profile
 
-A derived, offline-only third pass over an already-optimized raceline that
-replaces the geometric heading reference (`atan2` of the path tangent) with
-a SHAPED one: at each waypoint, the heading target leads the geometric
-tangent by however much yaw the car can physically achieve between here and
-the upcoming bend at that station's already-planned speed. This changes
-`e_psi` at `k=0` itself — before the QP ever runs — rather than adding a
-future-deviation cost the QP is free to satisfy however is cheapest (the
-failure mode of both curvature-forcing and a cost-target shift, both
-rejected). It also does not use a fixed lookahead distance (which saturates
-steering to full lock at ~8m of lead on a realistic corner-entry ramp);
-instead the lead is scaled by achievable yaw rate at the station's planned
-speed, which naturally decays it to ~0 once a corner's constant-curvature
-section begins.
+**Plain version:** the car is told to start turning in slightly before the
+path geometry itself says to, by however much yaw it can physically achieve
+before the bend at the speed it's planned to be going. This is a derived,
+offline-only third pass over an already-optimized raceline, replacing the
+geometric heading reference (`atan2` of the path tangent) with a SHAPED one.
+
+At each waypoint, the heading target leads the geometric tangent by however
+much yaw the car can physically achieve between here and the upcoming bend
+at that station's already-planned speed. This changes `e_psi` at `k=0`
+itself — before the QP ever runs — rather than adding a future-deviation
+cost the QP is free to satisfy however is cheapest (the failure mode of both
+curvature-forcing and a cost-target shift, both rejected). It also does not
+use a fixed lookahead distance (which saturates steering to full lock at
+~8m of lead on a realistic corner-entry ramp); instead the lead is scaled by
+achievable yaw rate at the station's planned speed, which naturally decays
+it to ~0 once a corner's constant-curvature section begins.
 
 **Where it lives:**
 - Offline: `fsae_MPCTest/tuner/tools/raceline_optimizer.py` — `max_yaw_rate`,
@@ -364,7 +418,12 @@ more runs), see `docs/logs/late_turn_in_investigation.md` Parts 7-13.
 
 ## Nonlinear MPC (`use_nmpc`) — a second controller
 
-`ros2/src/fsae_planning/control/fsae_control/fsae_control/nmpc_core.py`'s
+**Plain version:** the LTV-QP controller (`MPCController`) is one of two
+controllers available; the other, `NMPCController`, solves a nonlinear
+version of the same problem so its own prediction can see the road curve
+ahead, instead of only reacting to error that has already appeared.
+
+`ros2/src/fsae_planning/control/fsae_control/fsae_control/mpc/nmpc_core.py`'s
 `NMPCController` is a Frenet-frame **nonlinear** MPC (Gauss-Newton SQP, a
 condensed dense QP subproblem solved by OSQP, real-time-iteration style — one
 SQP iteration per tick, warm-started from the previous tick). It has an
@@ -382,14 +441,16 @@ with the reference frame's own rotation dropped — it is missing
 `e_psi_dot = r - kappa(s) * s_dot` from its `Ad`/`Bd`, so with `e_y = e_psi =
 0` the QP's rollout predicts staying at zero error forever and no weighting
 can produce turn-in before real error exists (`MPCController` measurably
-commands 0.000 deg at 8 dead-on-line states approaching a known bend). The
-Frenet formulation makes `kappa` a function of the **state** `s` (driven by
-the car's own predicted motion) rather than a horizon-indexed exogenous
-schedule, so the anticipation obligation is not schedulable and the solver
-cannot pre-pay it early the way the curvature-forcing and heading-lead
-workarounds do. Full derivation, the formulation survey (including why MPCC's
-progress-maximising formulation was not adopted wholesale), and the falsification
-methodology are in `late_turn_in_investigation.md` Part 16.
+commands 0.000 deg at 8 dead-on-line states approaching a known bend).
+
+The Frenet formulation fixes this by making `kappa` a function of the
+**state** `s` (driven by the car's own predicted motion) rather than a
+horizon-indexed exogenous schedule, so the anticipation obligation is not
+schedulable and the solver cannot pre-pay it early the way the
+curvature-forcing and heading-lead workarounds do. Full derivation, the
+formulation survey (including why MPCC's progress-maximising formulation was
+not adopted wholesale), and the falsification methodology are in
+`late_turn_in_investigation.md` Part 16.
 
 ### Model and what it reuses
 
@@ -546,23 +607,27 @@ rollforward.
 `_boost_max`/`_k` (soft steering-reversal penalty, see its own section below)
 — none have any read site in `nmpc_core.py`.
 
-**NMPC-only overrides** (`mpc_params.py:189-205, 222-223, 238-240, 253-256`):
-`nmpc_q_e_y`, `nmpc_q_e_yd`, `nmpc_q_e_psi`, `nmpc_q_epsi_dot` (overrides
-`q_r`, different regressor), `nmpc_q_e_v`, `nmpc_r_delta`, `nmpc_r_a_accel`,
-`nmpc_r_a_brake`, `nmpc_r_rate_delta`, `nmpc_r_rate_a`, `nmpc_terminal_scale`,
-`nmpc_steer_rate_anti_hunt_enabled`, `nmpc_anti_hunt_boost_max`,
-`nmpc_reversal_penalty_enabled`/`_boost_max`/`_k` (see the reversal-penalty
-section below), `nmpc_corner_rrate_blend_enabled`, `nmpc_corner_factor_k`,
-`nmpc_rrate_steer_straight`/`_corner` (blends `R_rate[0,0]` by current
-curvature; takes priority over `nmpc_steer_rate_anti_hunt_enabled` if both
-are set — use one or the other, not both),
-`nmpc_rrate_zone_enabled`/`_boost_straight`/`_ease_approach`/`_floor_corner`
-(the three-zone rate schedule — see "Three-zone rate schedule" below; note it
-also reads `nmpc_corner_factor_k`, so that field is NOT exclusive to the
-corner blend),
-`nmpc_rjerk_delta`/`_a` (second-difference input cost),
-`nmpc_rrate_stage_ramp_enabled`/`_near` — each read solely by
-`nmpc_core.py`'s `_pick()` calls; `mpc_core.py` never references any of them.
+**NMPC-only overrides** (`mpc_params.py:189-205, 222-223, 238-240, 253-256`)
+— each read solely by `nmpc_core.py`'s `_pick()` calls; `mpc_core.py` never
+references any of them:
+
+- Base weight overrides: `nmpc_q_e_y`, `nmpc_q_e_yd`, `nmpc_q_e_psi`,
+  `nmpc_q_epsi_dot` (overrides `q_r`, different regressor), `nmpc_q_e_v`,
+  `nmpc_r_delta`, `nmpc_r_a_accel`, `nmpc_r_a_brake`, `nmpc_r_rate_delta`,
+  `nmpc_r_rate_a`, `nmpc_terminal_scale`.
+- `nmpc_steer_rate_anti_hunt_enabled`, `nmpc_anti_hunt_boost_max`.
+- `nmpc_reversal_penalty_enabled`/`_boost_max`/`_k` (see the
+  reversal-penalty section below).
+- `nmpc_corner_rrate_blend_enabled`, `nmpc_corner_factor_k`,
+  `nmpc_rrate_steer_straight`/`_corner` (blends `R_rate[0,0]` by current
+  curvature; takes priority over `nmpc_steer_rate_anti_hunt_enabled` if both
+  are set — use one or the other, not both).
+- `nmpc_rrate_zone_enabled`/`_boost_straight`/`_ease_approach`/`_floor_corner`
+  (the three-zone rate schedule — see "Three-zone rate schedule" below; note
+  it also reads `nmpc_corner_factor_k`, so that field is NOT exclusive to
+  the corner blend).
+- `nmpc_rjerk_delta`/`_a` (second-difference input cost).
+- `nmpc_rrate_stage_ramp_enabled`/`_near`.
 
 **`NMPCParams`** (`nmpc_params.py`) — all 20 fields NMPC-only by the file's
 own design (module docstring, lines 9-19); `mpc_core.py` never imports or
@@ -591,6 +656,7 @@ standstill-steering bugs/fixes (§16.11: a manufactured tyre force at
 `v_x=0`; §16.12: the NMPC's own speed-tracking cost term leaking into
 steering, fixed by seeding the speed-target rise limiter's state from the
 car's actual speed on the first control tick instead of `None`).
+
 Reproduce the offline closed-loop comparison with
 `python3 ros2/src/fsae_planning/control/fsae_control/test/nmpc_offline_check.py`
 (no ROS/FSDS session needed; the closed-loop section self-skips without an

@@ -66,25 +66,26 @@ the control rate. The node logs a warning if `pose_rate < 20`.
 Note the offline rollout never modelled this at all — it calls
 `perception.visible_cones()` and `planner.update()` every step with a fresh
 pose, i.e. it always assumed the 20 Hz behaviour the fix now delivers. So this
-was a live-only defect, and the sim needs no mirrored change. If you ever want
-to reproduce a slow-pose regime offline, the correct model is a **pose
-zero-order hold at a configurable rate**, not more `DELAY_JITTER_STEPS` —
-jitter models a *varying* delay, whereas this was a *systematically halved
-measurement rate*. Those are different failure modes and the jitter knob will
-not reproduce it.
+was a live-only defect, and the sim needs no mirrored change. Reproducing a
+slow-pose regime offline would require a **pose zero-order hold at a
+configurable rate**, not more `DELAY_JITTER_STEPS` — jitter models a
+*varying* delay, whereas this was a *systematically halved measurement
+rate*. Those are different failure modes and the jitter knob will not
+reproduce it.
 
 **A sibling bug of the same root-cause class, also fixed** (see
-`docs/logs/sim_to_real_investigation.md` §55): the fix above makes `pose_rate` keep up
-with the controller, but it did not guarantee that a given `car_position`
-sample and the `car_speed`/`car_yaw_rate` the controller read *at the same
-tick* came from the same underlying odom instant — `mpc_controller.py`/
-`mpc_controller_standalone.py` subscribed to the raw 250 Hz
-`/fsds/testing_only/odom` directly for speed/yaw-rate, a second, independent
-subscription racing `sim_perception.py`'s own separate subscription to the
-same publisher (the one that produces `car_position`). This is a
-**cross-topic snapshot mismatch**, not a rate mismatch — different mechanism,
-same underlying cause (`sim_perception.py`'s publish timing not actually
-delivering what a downstream consumer assumes). Fixed by adding
+`docs/logs/sim_to_real_investigation.md` §55): the fix above makes
+`pose_rate` keep up with the controller, but it did not guarantee that a
+given `car_position` sample and the `car_speed`/`car_yaw_rate` the
+controller read *at the same tick* came from the same underlying odom
+instant. `mpc_controller.py`/`mpc_controller_standalone.py` subscribed to
+the raw 250 Hz `/fsds/testing_only/odom` directly for speed/yaw-rate, a
+second, independent subscription racing `sim_perception.py`'s own separate
+subscription to the same publisher (the one that produces `car_position`).
+
+This is a **cross-topic snapshot mismatch**, not a rate mismatch — different
+mechanism, same underlying cause (`sim_perception.py`'s publish timing not
+actually delivering what a downstream consumer assumes). Fixed by adding
 `/fsae/slam/car_odom` (`nav_msgs/Odometry`), published from the exact same
 `_odom_cb`-updated state and the exact same 20 Hz timer tick as
 `car_position`, and switching both MPC controllers to read speed/yaw-rate
@@ -212,7 +213,7 @@ factor explains.
 | tool | answers |
 |---|---|
 | `tuner/checks/steering_sysid_analysis.py`, `tuner/checks/steering_step_analysis.py` | what does FSDS do? |
-| `tuner/checks/plant_openloop_validation.py` | does our plant reproduce it? (`--ab`, `--robustness`) |
+| `tuner/checks/plant_openloop_validation.py` | does the plant model reproduce it? (`--ab`, `--robustness`) |
 | `tuner/recorded_map_rollout.py` | the closed-loop table above, headless and reproducible |
 | `tuner/checks/live_vs_sim_diagnostics.py` | conditional + reference-heading decomposition of live vs sim |
 

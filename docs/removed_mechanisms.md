@@ -13,9 +13,9 @@ They're preserved here, in one place, for two reasons:
   from scratch and rediscover the same failure the hard way.
 
 **None of the fields, functions, or flags described below exist on
-`MPCParams`, `mpc_core.py`, or `controller/model_utils.py` today.** If
-you're looking for what tuning knobs currently exist, see
-[`tuning.md`](tuning.md) instead — it links back here only for history.
+`MPCParams`, `mpc_core.py`, or `controller/model_utils.py` today.** For the
+tuning knobs that currently exist, see [`tuning.md`](tuning.md) instead —
+it links back here only for history.
 
 ---
 
@@ -237,8 +237,8 @@ served was deleted in the corner-factor rewrite.
 
 Offline-validated (regression-checked bit-for-bit identical when disabled,
 measurably different when enabled), never live-tested before removal. See
-[`docs/reference/`](`docs/reference/`) for what replaced
-it.
+`docs/reference/control_mechanisms.md`'s "Corner-factor scheduler" section
+for what replaced it.
 
 ---
 
@@ -294,8 +294,8 @@ so there's no separate slot to schedule around — see
 for the direct comparison.
 
 Full numeric gain-sweep trace and the anti-hunt interaction found alongside
-this: [`docs/reference/README.md`'s "Curvature-forcing
-term"](`docs/reference/`) section.
+this: `docs/reference/superseded_mechanisms.md`'s "Curvature-forcing term"
+section.
 
 ---
 
@@ -323,8 +323,8 @@ gain-scheduling family.
 
 See `docs/logs/late_turn_in_investigation.md`'s "Appendix — Low-speed
 steering-rate boost" for the full incident, and
-[`docs/reference/superseded_mechanisms.md`'s "Low-speed steering-rate boost"](`docs/reference/`)
-for the current-state pointer.
+`docs/reference/superseded_mechanisms.md`'s "Low-speed steering-rate boost"
+section for the current-state pointer.
 
 ---
 

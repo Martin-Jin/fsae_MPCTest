@@ -6,32 +6,6 @@ project (new synthetic paths, debugging solver failures). For the deep
 technical explanation of *why* the system is built this way, see
 [Architecture](architecture.md).
 
-## Documentation conventions
-
-Docs and logs in this repo follow three conventions, checkable with
-`python -m tuner.tools.doc_lint`:
-
-1. **No prose block longer than ~12 lines.** Break it into bullets, a table,
-   or several short paragraphs. Lists, tables, headings and fenced code are
-   exempt — they are already structured.
-2. **Plain-English summary first, then the mechanism and the numbers.** Assume
-   a reader who does not know the control-theory vocabulary. Do not drop the
-   technical detail to achieve this; a doc that reads easily but is no longer
-   sufficient to act on has failed differently.
-3. **Standalone-document voice.** No first or second person, no session
-   scaffolding, no narrative of what was tried in what order unless the order
-   is itself the finding. State findings in the present tense as properties of
-   the system, and attribute measurements to the measurement.
-
-The linter reports rather than fails by default. At the time it was added the
-baseline was **112** oversized prose blocks and **169** transcript-voice lines,
-nearly all of them in `docs/logs/late_turn_in_investigation.md` and
-`docs/logs/sim_to_real_investigation.md`, which predate the conventions. Those
-were deliberately left alone: their measurement records are worth more than
-their formatting, and a mechanical rewrite risks corrupting numbers that cannot
-be re-derived. Apply the conventions to new and edited sections, and use
-`--strict` in a hook if the baseline is ever cleared.
-
 ## Table of Contents
 
 1. [Running the Simulator](#running-the-simulator)
@@ -131,7 +105,7 @@ Click **Show Metrics** to print a full 13-metric breakdown to the console
 summary in the plot title. Click **Benchmark All Paths** to run every
 synthetic path 3× each with the currently loaded weights and print a
 per-path score table — useful for checking a weight set generalises rather
-than only working on the path you happened to test.
+than only working on whichever single path was tested.
 
 ### 8. Reset
 
@@ -145,7 +119,8 @@ The offline tuner (`tuner/offline_tuner.py`) automatically searches for `Q`, `R`
 `R_rate` cost weights that minimise the [composite score](architecture.md#the-composite-score)
 across a library of synthetic corner shapes, using CMA-ES (see
 [How the Offline Tuner Works](architecture.md#how-the-offline-tuner-works) for the algorithm
-itself). It has no GUI — it's a long-running batch job you leave to finish.
+itself). It has no GUI — it's a long-running batch job left to finish on
+its own.
 
 ### 1. Install dependencies
 
@@ -157,12 +132,12 @@ Same as the simulator (see above) — `tuner/offline_tuner.py` uses the same
 
 Before running, confirm:
 
-- `VALIDATION_SUITE` lists the corner shapes you want the tuner to optimise
+- `VALIDATION_SUITE` lists the corner shapes the tuner should optimise
   for (see [Configuring the Project](architecture.md#configuring-the-project-settingspy)).
-- `MAX_EVALS` is set to a budget you're happy to wait for (a good run is
+- `MAX_EVALS` is set to an acceptable budget to wait for (a good run is
   20 minutes to a few hours depending on core count and `MAX_EVALS`).
-- `USE_PLANNER` reflects whether you want the tuner testing the full
-  perception/planning pipeline (`True`) or driving on the perfect
+- `USE_PLANNER` reflects whether the tuner should test the full
+  perception/planning pipeline (`True`) or drive on the perfect
   reference line (`False`, default as of 2026-08-08, also faster).
 - The `Q_diag`/`R_diag`/`R_rate_diag` cost weights and `SCORE_WEIGHTS`/
   `METRIC_SCALES` the tuner optimises against — see
@@ -203,7 +178,7 @@ Progress prints once per CMA-ES generation:
 seen so far across the whole run; `sigma` is CMA-ES's current search-radius
 (shrinks as it converges). Lower scores are better throughout.
 
-You can safely stop early with **Ctrl+C** — the tuner finishes its current
+It is safe to stop early with **Ctrl+C** — the tuner finishes its current
 generation, then reports the best weights found so far rather than exiting
 uncleanly.
 
@@ -220,7 +195,7 @@ R_rate_diag = [50.0, 49.6]
 
 It also prints a list of "improvement milestones" — the point in the search
 (by true-evaluation count) at which each meaningfully better score was found,
-so you can see how much of the run's time was actually productive.
+showing how much of the run's time was actually productive.
 
 ### 5. Apply the weights
 
@@ -276,21 +251,24 @@ for what they control.
 own ROS 2 workspace — every package (`fsae_interfaces`, `fsae_bringup`,
 `fsae_sim_perception`, `fsae_planning`, `fsae_control`), not just the
 control-layer files, e.g. `fsds_simulator/control/fsae_control/
-fsae_control/mpc_core.py` sits at the exact relative path it needs to land at
+fsae_control/mpc/mpc_core.py` sits at the exact relative path it needs to land at
 inside a `fsae_planning` checkout. There are two ways to use it:
 
-- **If you already have a `fsae_planning` checkout**, copy everything under
+- **With an existing `fsae_planning` checkout**, copy everything under
   `fsds_simulator/control/`, `fsds_simulator/perception/`,
   `fsds_simulator/common/`, and `fsds_simulator/planning/` in this repo over
   the matching paths inside `fsae_planning` (same relative structure, so
   it's a straight directory copy, not a manual file-by-file paste).
-- **If you don't**, `fsds_simulator/` alone (plus FSDS and the two message
+- **Without one**, `fsds_simulator/` alone (plus FSDS and the two message
   repos it depends on) is enough to build a working workspace from scratch —
   see [fsds_simulator/README.md](../fsds_simulator/README.md).
 
-See [`docs/reference/`](`docs/reference/`) for the full
-file mapping and what's a deliberate non-mirror.
-(If you already have the simulator set up with the `fsae_planning` repo. Scroll down for installing from scratch on windows.)
+See [`docs/reference/`](docs/reference/) for the full
+file mapping and what's a deliberate non-mirror. The rest of this section
+covers integration when the simulator is already set up with the
+`fsae_planning` repo; see
+[Launching nodes with FSDS on Windows](#launching-nodes-with-fsds-on-windows-wsl--docker)
+below for installing from scratch on Windows.
 
 **Choosing the controller and planner:**
 
@@ -387,8 +365,8 @@ This is the full pipeline from "no map of this track exists" to "the car
 drives the precomputed line/speed on it" — recording, the two export tools,
 the on-disk layout they share, and the one switch that puts a track on the
 car. Each stage used to be documented (or not) in a different file; this
-section is now the single place that chains them. If you only need the
-concept, not the steps: `docs/reference/offline_live_parity.md`'s parity rule and
+section is now the single place that chains them. For the concept rather
+than the steps: `docs/reference/offline_live_parity.md`'s parity rule and
 `tracks/__init__.py`'s module docstring cover *why* the layout looks like
 this; this section covers *how* to use it.
 
@@ -413,8 +391,8 @@ all, so the track data itself (not just the code that reads it) ships with
 `TRACKS_DIR` constant at that sibling-repo path, so every tool below
 (`export_speed_profile.py`, `raceline_optimizer.py`, `recorded_map_rollout.py`,
 etc.) reads and writes there transparently when both repos are checked out
-side by side — you still type `tracks/<name>/`-shaped commands from
-`fsae_MPCTest/`, they just land across the repo boundary. `fsae_planning` is
+side by side — commands are still typed in `tracks/<name>/`-shaped form
+from `fsae_MPCTest/`, but they land across the repo boundary. `fsae_planning` is
 a separate git repo with its own remote (see this project's `docs/reference/`);
 changes under that path are local edits to that checkout only.
 
@@ -467,7 +445,7 @@ ros2 launch fsae_bringup sim.launch.py controller:=stanley \
     cone_out_path:=/path/to/fsae_planning/tracks/<name>/cone_map.json
 ```
 
-(`cone_recorder.launch.py` still exists standalone if you want to attach a
+(`cone_recorder.launch.py` still exists standalone for attaching a
 recorder to a stack that's already running — any planner/controller works,
 since it only subscribes and doesn't affect the pipeline:
 
@@ -487,12 +465,12 @@ never closes (e.g. a DNF) it writes anyway after `max_record_time` (default
 recording is still usable but distinguishable from a clean lap.
 
 Writing straight into `tracks/<name>/` (as above) means the export tools in
-step 2 need no path argument — just the track name. If you instead record via
+step 2 need no path argument — just the track name. Recording instead via
 a bare `ros2 launch fsae_bringup sim.launch.py` (default output
-`~/fsae_logs/cone_map_<timestamp>.json`), move or copy that file into
-`tracks/<name>/cone_map.json` before exporting, or pass its full path to the
-export tools directly (both accept an explicit path as well as a track name —
-see `tracks/__init__.py`'s `resolve_map_arg`).
+`~/fsae_logs/cone_map_<timestamp>.json`) requires moving or copying that
+file into `tracks/<name>/cone_map.json` before exporting, or passing its
+full path to the export tools directly (both accept an explicit path as
+well as a track name — see `tracks/__init__.py`'s `resolve_map_arg`).
 
 `ros2/launch_all.sh` writes directly to
 `ros2/src/fsae_planning/tracks/$TRACK/cone_map.json` using whatever `TRACK=`
@@ -608,12 +586,13 @@ already drives the default track's precomputed line and speed with the
 planner out of the loop. `map_path` and `path_map_path` can point at
 different files (e.g. speed from the centreline, geometry from the raceline)
 since the toggles are independent — but the common case is both pointing at
-the same track, which is what step 4 gives you in one setting.
+the same track, which step 4 sets up in one setting.
 
 If a CSV path doesn't exist (e.g. before the first export), the node logs an
 error at startup and falls back to live `curvature_speed()`/the live
-planner — it does not crash, but it also silently isn't doing what you asked,
-so check the log if a run looks unexpectedly like a live-planner run.
+planner — it does not crash, but it also silently isn't doing what was
+requested, so check the log if a run looks unexpectedly like a
+live-planner run.
 
 #### 4. Switching which track the car drives
 
@@ -625,12 +604,12 @@ TRACK=comp_test_map_3    # change this line to any name under fsae_planning's tr
 
 This expands to both `map_path` and `path_map_path` (and, for a *new*
 recording, `cone_out_path`) automatically — no other line in that script
-needs editing, and you never touch the hardcoded absolute defaults in
-`sim.launch.py`/`control.launch.py` (those exist only as the fallback for a
-bare `ros2 launch`, not as the thing to edit day-to-day). The script checks
-the track's CSVs exist before launching and fails with a clear message
-(naming the tracks that *do* exist) rather than silently falling back to
-live planning.
+needs editing, and the hardcoded absolute defaults in
+`sim.launch.py`/`control.launch.py` never need to be touched (those exist
+only as the fallback for a bare `ros2 launch`, not as the thing to edit
+day-to-day). The script checks the track's CSVs exist before launching and
+fails with a clear message (naming the tracks that *do* exist) rather than
+silently falling back to live planning.
 
 To drive a track without going through `launch_all.sh`, pass the same three
 args directly:
@@ -674,7 +653,7 @@ ros2 launch fsae_bringup sim.launch.py log_csv:=true log_dir:=/path/to/logs   # 
 ros2 launch fsae_bringup sim.launch.py                                        # logging off (default)
 ```
 
-Or directly on a `ros2 run`/node if you're not going through `sim.launch.py`:
+Or directly on a `ros2 run`/node, when not going through `sim.launch.py`:
 
 ```bash
 ros2 run fsae_control mpc_controller --ros-args -p log_csv:=true -p log_dir:=/path/to/logs
@@ -705,8 +684,8 @@ known path end, so its score stays partial (`score_is_partial=1`).
 
 Logging and cone recording are independent toggles and can be combined freely
 (`log_csv:=true record_cones:=true`) — a common pattern for a validation lap
-you want to both replay through the CSV telemetry and reload into the GUI as
-a recorded track.
+that needs to be both replayed through the CSV telemetry and reloaded into
+the GUI as a recorded track.
 
 ### The tuner/ layout at a glance
 
@@ -743,7 +722,7 @@ duplicating it here:
 |---|---|
 | `analyze_adaptive_log.py` | Attributes tracking error to individual adaptive-gain features from a live control CSV, per corner — re-run on any new log carrying the adaptive-feature trace columns. |
 | `live_vs_sim_diagnostics.py` | Like-for-like live-vs-sim comparison on speed-tracking error and saturation-episode structure, not just aggregate saturation %. |
-| `plant_openloop_validation.py` | Replays measured open-loop FSDS experiments through `model/vehicle_physics.py` and reports residuals — the check for "does our plant model now reproduce what FSDS does?". |
+| `plant_openloop_validation.py` | Replays measured open-loop FSDS experiments through `model/vehicle_physics.py` and reports residuals — the check for whether the plant model reproduces what FSDS does. |
 | `ref_heading_limiter_ab.py` / `ref_heading_limiter_suite_check.py` | A/B and suite-wide checks for `REF_HEADING_RATE_LIMIT` (see [tuning.md](tuning.md)'s §3) — re-run both before re-enabling that limiter. |
 | `steering_response.py` | Fits the live car's steering→yaw response from a control CSV (understeer coefficient, full-lock deficit). |
 | `steering_step_analysis.py` | Identifies which mechanism caps FSDS's yaw rate from step-input transients (hard limit / scaled authority / active damping). |
@@ -822,16 +801,17 @@ moment — copy both files together into `recorded_runs/`, not just the
 own driven trajectory with no live path overlay. The path CSV is a time
 series of path snapshots (see `telemetry_logger.py`'s `log_path()`); the
 slider always shows the most recent snapshot at or before the selected
-time, not an interpolation between two snapshots. Runs may have different
-`t` sampling or length (e.g. an 80-sample Stanley log next to a 50-sample
-MPC log) — the slider drives one shared time value, and each run
-independently looks up its own nearest sample, so mismatched logs still
-overlay correctly. The slider itself still scrubs the full range up to the
-**longest** run's end (so the map/zoom views can follow it to completion),
-but the left-hand signal plots' x-axis is clipped to the **shortest** run's
-end — past that point only one run has data left, which would otherwise
-dwarf the overlapping (comparable) part of the plot with a stretch that
-isn't a comparison anymore.
+time, not an interpolation between two snapshots.
+
+Runs may have different `t` sampling or length (e.g. an 80-sample Stanley
+log next to a 50-sample MPC log) — the slider drives one shared time
+value, and each run independently looks up its own nearest sample, so
+mismatched logs still overlay correctly. The slider itself still scrubs
+the full range up to the **longest** run's end (so the map/zoom views can
+follow it to completion), but the left-hand signal plots' x-axis is
+clipped to the **shortest** run's end — past that point only one run has
+data left, which would otherwise dwarf the overlapping (comparable) part
+of the plot with a stretch that isn't a comparison anymore.
 
 **Auto-search folder: `fsds_simulator/recorded_runs/`.** Running the script
 with no CSV argument searches this folder **recursively** for
@@ -841,12 +821,14 @@ e.g. `recorded_runs/LMPC/`, `recorded_runs/NMPC/`, `recorded_runs/Stanley/`
 That stamp is either the current local `%Y%m%d-%H%M%S` form or the older
 epoch-seconds form — `plot_playback.py`'s `_stamp()` decodes both to epoch
 seconds so a folder holding runs from either era sorts correctly as one set.
-By default it loads just the **newest run from each
-subfolder** (one representative LMPC run, one NMPC run, one Stanley run,
-...; runs left flat directly in `recorded_runs/` are grouped as one
-"folder" for this purpose) — pass `--all` to overlay every run in every
-subfolder instead, or `--latest-only` to load only the single newest run
-across the whole tree (which may leave other controllers unrepresented).
+
+By default it loads just the **newest run from each subfolder** (one
+representative LMPC run, one NMPC run, one Stanley run, ...; runs left flat
+directly in `recorded_runs/` are grouped as one "folder" for this purpose)
+— pass `--all` to overlay every run in every subfolder instead, or
+`--latest-only` to load only the single newest run across the whole tree
+(which may leave other controllers unrepresented).
+
 Each run's plot label is its `recorded_runs/<folder>/` name (e.g. `LMPC`,
 `NMPC`, `Stanley`) rather than the raw filename tag, since the tag alone is
 often ambiguous (both LMPC and NMPC logs use the same `mpc_standalone`
@@ -854,17 +836,19 @@ tag) — runs left flat directly in `recorded_runs/` fall back to the
 filename tag; if a folder has multiple loaded runs (e.g. under `--all`),
 duplicates get a ` #2`, ` #3`, ... suffix. The CSVs under this folder are
 tracked in git (not gitignored) so reference runs for each controller
-travel with the repo. A live run's actual output location is `log_dir`
-(default `~/fsae_logs`, or whatever `ros2/launch_all.sh`'s `log_dir:=` argument points at, in the
+travel with the repo.
+
+A live run's actual output location is `log_dir` (default `~/fsae_logs`,
+or whatever `ros2/launch_all.sh`'s `log_dir:=` argument points at, in the
 outer `fsae_planning`-adjacent launch script — outside this repo, not
-modified by this feature), so after a run, copy or move the CSV pair into
-the right controller subfolder yourself:
+modified by this feature), so after a run, the CSV pair needs to be copied
+or moved into the right controller subfolder manually:
 
 ```bash
 cp ~/fsae_logs/mpc_standalone_control_<stamp>.csv \
    ~/fsae_logs/mpc_standalone_path_<stamp>.csv \
    fsds_simulator/recorded_runs/LMPC/
-python -m tuner.tools.plot_playback       # picks up the one you just copied in
+python -m tuner.tools.plot_playback       # picks up the file just copied in
 ```
 
 The recorded filenames under `recorded_runs/` may also carry a descriptive
@@ -879,7 +863,7 @@ topic segment does not affect discovery or sibling pairing.
 subfolders), auto-load uses **only** what's in `graph/` instead of scanning
 `LMPC/`/`NMPC/`/`Stanley/`/etc. This is the easiest way to control exactly
 what a plain `python -m tuner.tools.plot_playback` shows: move (or copy) the
-specific run(s) you want to look at into `graph/`, without deleting them
+specific run(s) of interest into `graph/`, without deleting them
 from their controller subfolder or passing a path on the command line each
 time. It's empty by default (tracked via `.gitkeep`) — drop files in, run
 the command, and it just works:
@@ -896,18 +880,17 @@ python -m tuner.tools.plot_playback       # loads every run in graph/, overlaid
 default, which keeps only the newest run per controller subfolder. This is
 what makes it useful for comparing runs across different controllers (e.g.
 an NMPC run against a Stanley run) without `--all`. `--latest-only` still
-narrows a populated `graph/` down to its single newest run if that's what
-you want instead. Each run's label falls back to its filename tag rather
+narrows a populated `graph/` down to its single newest run when that's the
+desired result instead. Each run's label falls back to its filename tag rather
 than the folder name `graph` (which would be true of every run in it and so
 useless for telling them apart) — same rule as a run left loose directly in
 `recorded_runs/` itself.
 
 Point the search elsewhere with `--recorded-runs <dir>` (e.g. to auto-load
 straight out of `~/fsae_logs` without copying, or to compare two specific
-takes you keep in their own directories) — this bypasses the `graph/`
+takes kept in their own directories) — this bypasses the `graph/`
 override too, since it changes the root being searched. When two or more
-runs are loaded,
-a **"Zoom focus"** radio-button widget appears bottom-left of the figure —
+runs are loaded, a **"Zoom focus"** radio-button widget appears bottom-left of the figure —
 pick a run there to change which one the bottom-right zoomed view tracks
 (it defaults to the first-loaded run). The separate **"Show/hide"**
 checkbox widget above it toggles each run's visibility everywhere
@@ -1020,8 +1003,8 @@ Copy everything under `fsds_simulator/control/`, `fsds_simulator/perception/`,
 `fsds_simulator/common/`, and `fsds_simulator/planning/` (in this repo) over
 the matching paths inside the freshly-cloned `fsae_planning` checkout — the
 hierarchy already matches, so this is a straight directory copy (see
-[`docs/reference/`](`docs/reference/`) for the exact file
-mapping if you want to copy file-by-file instead), then resolve dependencies
+[`docs/reference/`](docs/reference/) for the exact file
+mapping, for copying file-by-file instead), then resolve dependencies
 and build:
 
 ```bash
@@ -1049,8 +1032,8 @@ ulimit -c 0
 ```
 
 Alternatively, use the provided launch script to bring up the bridge and
-planning nodes together: (note you need to change the paths in the launch file 
-to where you installed your fsds simulator)
+planning nodes together (the paths in the launch file must first be
+changed to match where the FSDS simulator was installed):
 
 ```bash
 cd /home/Formula-Student-Driverless-Simulator/ros2/
@@ -1187,15 +1170,15 @@ pip install optuna  # optional: only needed for USE_OPTUNA_PRESEARCH in settings
 
 ## Extending and Debugging
 
-If you're extending the simulator or tuning the vehicle, follow these
-guidelines to keep the MPC/plant architecture consistent.
+These guidelines keep the MPC/plant architecture consistent when extending
+the simulator or tuning the vehicle.
 
 ### Modifying vehicle parameters
 
 See [Configuring the Vehicle](architecture.md#configuring-the-vehicle-modelvehicle_physicspy)
 above. The short version: `VehicleParams` in `model/vehicle_physics.py` is the
-single source of truth; if you import new Pacejka tyre data, you must also
-recompute `Cf`/`Cr` to match its initial slope, or the MPC's internal model
+single source of truth; importing new Pacejka tyre data also requires
+recomputing `Cf`/`Cr` to match its initial slope, or the MPC's internal model
 will silently diverge from the plant it's controlling.
 
 ### Adding a new synthetic path
@@ -1234,12 +1217,15 @@ frequently shows `OPTIMAL_INACCURATE`:
 
 To try the nonlinear controller during development, flip `settings.USE_NMPC =
 True` and re-run any tuner/rollout script — `run_core_rollout()` takes
-`use_nmpc` explicitly, so nothing else needs to change. Before trusting a
-result, run `python -m tuner.nmpc_offline_check`: it re-verifies model
-parity, Jacobians, SQP convergence, and a closed-loop LTV-QP-vs-NMPC A/B on
-every call, so a broken change fails loudly instead of silently degrading a
-tuning run. If the SQP misbehaves (non-improving steps, oscillation), the
-usual suspects are the same as the LTV-QP's solver failures above, plus two
+`use_nmpc` explicitly, so nothing else needs to change.
+
+Before trusting a result, run `python -m tuner.nmpc_offline_check`: it
+re-verifies model parity, Jacobians, SQP convergence, and a closed-loop
+LTV-QP-vs-NMPC A/B on every call, so a broken change fails loudly instead
+of silently degrading a tuning run.
+
+If the SQP misbehaves (non-improving steps, oscillation), the usual
+suspects are the same as the LTV-QP's solver failures above, plus two
 NMPC-specific ones: `nmpc_solve_budget_ms`/`nmpc_sqp_iters` too tight for the
 horizon, or a weight override (`NMPC_Q_E_Y` etc. in `settings.py`, `-1`
 inherits from the base weight) pushing the cost badly out of scale. See

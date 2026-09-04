@@ -7,7 +7,7 @@
 **Timeline:** 20/06/2026 - 26/08/2026
 
 
-## Skills you will learn
+## Skills covered
 
 - How an MPC controller works, from the maths behind it to the actual code.
 - How to use the MPC controller in `fsae_MPCTest`.
@@ -18,14 +18,19 @@
 
 ## Overview
 
-The car runs a track in two laps: the first maps it (live planner, cone recording), the second drives it again using that recorded map — now that the whole path is known in advance rather than discovered lap-by-lap, a controller can plan ahead instead of only reacting. That second lap is what this project's MPC (Model Predictive Control) controller is for, alongside Stanley, not a replacement for it.
+The car runs a track in two laps. The first lap maps it: a live planner reconstructs the track from cones as the car drives, recording the result. The second lap drives the same track again using that recorded map — and because the whole path is now known in advance instead of being discovered lap-by-lap, a controller can plan ahead instead of only reacting. That second lap is what this project's MPC (Model Predictive Control) controller is for. MPC runs alongside the existing Stanley controller, not as a replacement for it — both remain available options on the second lap.
 
-The idea: every tick, ask "if I did X for the next second or so, where would I end up, and how well would that track the path?" for lots of possible X, and pick the best one. MPC also respects physical limits properly (never asks for more steering angle than the rack can provide) and makes "good driving" tunable through a cost function's weights, rather than hard-coded reactive rules.
+The core idea behind MPC: every tick, ask "if the car did X for the next second or so, where would it end up, and how well would that track the path?" for lots of possible X, and pick the best one. Two properties fall out of that naturally:
+
+- **Physical limits are respected properly** — the optimisation never asks for more steering angle than the rack can actually provide.
+- **"Good driving" becomes tunable** through a cost function's weights, rather than hard-coded reactive rules.
 
 
 ### Controller comparison
 
-Early on, both MPC variants had noticeably noisier steering than Stanley — small-amplitude chatter, not a tracking failure, but enough to rank Stanley ahead overall. That's since been fixed (steering-rate cost was badly undertuned, and the tracked reference line was asking for more grip than the car has); see `docs/logs/steering_chatter_investigation.md` for the investigation. NMPC and Stanley now perform similarly. NMPC's corner-turn-in advantage over LMPC (Section 4) is a separate, structural difference in what the two controllers' models can represent, unrelated to the chatter fix.
+Early on, both MPC variants (LMPC and NMPC, introduced in Sections 2 and 3) had noticeably noisier steering than Stanley — small-amplitude chatter, not a tracking failure, but enough to rank Stanley ahead overall on the composite score. Two causes were found and fixed: the steering-rate cost was badly undertuned, and the tracked reference line was asking for more grip than the car has. See `docs/logs/steering_chatter_investigation.md` for the investigation. With both fixed, NMPC and Stanley now perform similarly.
+
+That chatter fix is unrelated to NMPC's other advantage over LMPC: a structural difference in what the two controllers' models can represent, specifically around corner turn-in (Section 4). Fixing the chatter did not change that difference — it removed a separate, noisier symptom that was masking the comparison.
 
 
 ### What this project delivers
@@ -40,7 +45,7 @@ Early on, both MPC variants had noticeably noisier steering than Stanley — sma
 ## Index
 
 - [Junior Project: MPC Path Tracking Controller](#junior-project-mpc-path-tracking-controller)
-  - [Skills you will learn](#skills-you-will-learn)
+  - [Skills covered](#skills-covered)
   - [Overview](#overview)
     - [What this project delivers](#what-this-project-delivers)
   - [Index](#index)
@@ -79,7 +84,7 @@ Early on, both MPC variants had noticeably noisier steering than Stanley — sma
 
 ## 1. How MPC Works
 
-MPC ("Model Predictive Control") drives by repeatedly asking "if I did X for the next second or so, where would I end up, and how well would that track the path?" for many possible X, picking the best one. This section covers the mechanics every MPC controller in this project shares. Sections 2 and 3 cover the two controllers built on top of it — LMPC and NMPC — and how they differ.
+MPC ("Model Predictive Control") drives by repeatedly asking "if the car did X for the next second or so, where would it end up, and how well would that track the path?" for many possible X, picking the best one. This section covers the mechanics every MPC controller in this project shares. Sections 2 and 3 cover the two controllers built on top of it — LMPC and NMPC — and how they differ.
 
 
 ### 1.1 Receding Horizon Control
@@ -183,12 +188,23 @@ That equation is genuinely **nonlinear** (it multiplies two state-dependent quan
 
 ### 3.3 Does It Help?
 
-Yes, both offline and live. Offline, steering saturation (the classic symptom of reacting too late) dropped from 12.5% of ticks to 0.8%, with corner turn-in averaging 25 metres earlier on the harder corners. Live in FSDS, on a matched same-day pair on the same track, saturation dropped from 6.45% to 0.58% and lap time improved by about 2.4 seconds — the same direction and similar size as offline.
+Yes, both offline and live:
+
+- **Offline**, steering saturation (the classic symptom of reacting too late) dropped from 12.5% of ticks to 0.8%, with corner turn-in averaging 25 metres earlier on the harder corners.
+- **Live in FSDS**, on a matched same-day pair on the same track, saturation dropped from 6.45% to 0.58% and lap time improved by about 2.4 seconds — the same direction and similar size as offline.
+
+The fix described in Section 3.1 is the core mechanism. NMPC also carries three smaller, optional refinements on top of it, covered next.
 
 
 ### 3.4 Optional Refinements
 
-NMPC also carries three smaller, optional refinements, all off or default-on independently of the above: a smoother spline-fitted curvature reading (on by default, strictly better, no trade-off), an experimental per-point lookahead speed profile (off by default, still being validated), and a backup hard speed-limit check (off by default, unvalidated). Full detail: [`docs/reference/README.md`](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/reference/README.md)'s "Three MPCC-inspired additions" section.
+These three are independent of each other and of the core fix above — each can be switched on or off without affecting the others:
+
+- **A smoother spline-fitted curvature reading** — on by default, strictly better, no trade-off.
+- **An experimental per-point lookahead speed profile** — off by default, still being validated.
+- **A backup hard speed-limit check** — off by default, unvalidated.
+
+Full detail: [`docs/reference/README.md`](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/reference/README.md)'s "Three MPCC-inspired additions" section.
 
 
 ## 4. LMPC vs. NMPC, Compared
@@ -225,7 +241,7 @@ Having one well-defined score to optimise against matters beyond just this tuner
 
 The tuner uses **CMA-ES**, an evolutionary algorithm in the same family as genetic algorithms: it keeps a population of candidate weight sets, tests each by actually running a rollout and scoring it, then shifts the next generation's candidates toward whatever scored best — no formula for "which direction improves the score" required.
 
-- **Why this type of algorithm**: "how well did the car drive?" has no clean formula connecting a weight to the score (unlike fitting a line to data, where calculus gives you the answer directly), and is somewhat noisy besides. Evolutionary search only needs the ability to score a candidate, not differentiate it.
+- **Why this type of algorithm**: "how well did the car drive?" has no clean formula connecting a weight to the score (unlike fitting a line to data, where calculus gives the answer directly), and is somewhat noisy besides. Evolutionary search only needs the ability to score a candidate, not differentiate it.
 - **Pros**: doesn't get stuck needing gradients that don't exist here; naturally explores a wide space of weight combinations in parallel.
 - **Cons**: needs many rollouts to converge (thousands), and offers no guarantee of finding the true global best — only a good one.
 
@@ -265,7 +281,7 @@ A single weighted sum of all 13 metrics has a real limit: some good behaviours b
 | Step | Question | Effect |
 |---|---|---|
 | 1. Completion | Did the run even count? | A crash, off-track excursion, or DNF sits in a separate band above `CONSTRAINT_FLOOR` that no amount of good driving elsewhere can climb out of (though it still scores a little better for getting further before failing) |
-| 2. Lap time | How much slower than physically possible was it? | The real goal, in meaningful units (`time_cost = 0.15` means "18% longer than physically possible"). This alone rules out the hunting cheat — wobbling doesn't make you faster |
+| 2. Lap time | How much slower than physically possible was it? | The real goal, in meaningful units (`time_cost = 0.15` means "18% longer than physically possible"). This alone rules out the hunting cheat — wobbling doesn't make the car faster |
 | 3. Smoothness | Tie-breaker between similarly-fast laps | Only decides between two runs that are already close on time, not the winner outright |
 
 Completion is judged by `reached_end`, not `progress` — `progress` is computed by a search that stops just short of the final point, so even a perfect lap reports about 0.90.
@@ -290,10 +306,10 @@ Every tuning run appends to `tuning history.txt`: timestamp, the three weight ar
 
 ### 5.5 Manual Tuning Guide
 
-You generally shouldn't hand-edit individual `Q`/`R`/`R_rate` entries. They interact with each other, so a change that looks like an improvement for one corner can quietly break another. Prefer running the tuner. If you do need to nudge something by hand:
+Hand-editing individual `Q`/`R`/`R_rate` entries is generally not recommended. They interact with each other, so a change that looks like an improvement for one corner can quietly break another. Running the tuner is preferred. If a value does need nudging by hand:
 
 - **Change one number at a time**, by no more than 20-30%, then re-test. Small changes can have surprisingly large effects because they interact.
-- **Test against multiple corner shapes**, not just the one you're currently looking at, use **Benchmark All Paths** in the GUI, not just **Show Metrics** on a single run.
+- **Test against multiple corner shapes**, not just the one currently under inspection — use **Benchmark All Paths** in the GUI, not just **Show Metrics** on a single run.
 - **Watch for these specific symptoms** and roughly what to look at:
 
 | Symptom | What to check |
@@ -302,7 +318,7 @@ You generally shouldn't hand-edit individual `Q`/`R`/`R_rate` entries. They inte
 | Car cuts corners short / understeers into apexes | `Q[e_y]` too low relative to `Q[e_psi]`, or corner speed target is too high for the tyre grip assumed |
 | Car is sluggish to accelerate / stuck at low speed | `R[accel]` too high, or `COASTING_SCALE`/friction in `vehicle_physics.py` needs adjusting first |
 | Solver frequently fails / returns `OPTIMAL_INACCURATE` | See [Section 6.5](#65-key-settings-reference), usually a weight-scaling or solver-tolerance issue, not a driving-behaviour issue |
-| Good on one path, terrible on another | You're overfitting to one corner shape, add more paths to `VALIDATION_SUITE` and re-run the tuner rather than hand-patching |
+| Good on one path, terrible on another | Overfitting to one corner shape — add more paths to `VALIDATION_SUITE` and re-run the tuner rather than hand-patching |
 
 
 ### 5.6 Adding a New Test Track
@@ -336,7 +352,7 @@ LMPC's internal model (Section 2) is a simplified, linear 8-state bicycle model 
 
 ### 6.3 The GUI
 
-`gui/simulation.py` is the interactive matplotlib GUI: draw or load a path, run one closed-loop MPC rollout, then scrub through the result frame by frame and score it (**Show Metrics**, **Benchmark All Paths**; see Section 5.3). For the full step-by-step, see [developer_guide.md's Running the Simulator](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/developer_guide.md#running-the-simulator). There's also a keyboard-driven **manual drive mode** (`gui/manual_drive.py`), not important day to day; see [developer_guide.md's Manual Drive Mode](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/developer_guide.md#manual-drive-mode) if you need it.
+`gui/simulation.py` is the interactive matplotlib GUI: draw or load a path, run one closed-loop MPC rollout, then scrub through the result frame by frame and score it (**Show Metrics**, **Benchmark All Paths**; see Section 5.3). For the full step-by-step, see [developer_guide.md's Running the Simulator](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/developer_guide.md#running-the-simulator). There's also a keyboard-driven **manual drive mode** (`gui/manual_drive.py`), rarely needed day to day; see [developer_guide.md's Manual Drive Mode](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/developer_guide.md#manual-drive-mode) for details.
 
 
 ### 6.4 Module Reference
@@ -362,7 +378,7 @@ LMPC's internal model (Section 2) is a simplified, linear 8-state bicycle model 
 
 ### 6.5 Key Settings Reference
 
-Every one has a full plain-English explanation as a comment directly above it in `settings.py` itself — **read those before changing anything.** This is a quick-reference summary.
+Every one has a full plain-English explanation as a comment directly above it in `settings.py` itself — **read those before changing anything.** What follows is a quick-reference summary.
 
 | Setting | What it does | Typical adjustment |
 |---|---|---|

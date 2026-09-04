@@ -14,9 +14,9 @@ The old `_lookahead_exit_boost`/`_update_lookahead_peak`/`dist_since_peak`
 mechanism (which boosted `Q[2,2]` for a decaying window after a corner's
 peak curvature, to help the car straighten out on exit) no longer exists on
 either side. It was replaced by the corner-factor scheduler — see
-"Corner-factor scheduler — what replaced the lookahead gain-scheduling
-family" above for the current mechanism, and
-[`removed_mechanisms.md`](logs/removed_mechanisms.md) for what was removed.
+`control_mechanisms.md`'s "Corner-factor scheduler" section for the current
+mechanism, and [`removed_mechanisms.md`](../removed_mechanisms.md) for what
+was removed.
 
 For the history of the exit-boost mechanism itself — the timing bug where
 its decay clock was keyed on lookahead-window peak curvature instead of the
@@ -34,7 +34,15 @@ Historical tuning path and full measurements: `docs/logs/sim_to_real_investigati
 
 ## Low-speed steering-rate boost (removed)
 
-A mechanism that scaled `R_rate[0,0]` up at low speed (`_low_speed_steer_rate_boost`, `boost_max=2.5, k=0.35`) was tried, live-tested, and disabled the same day for regressing turn-in; it no longer exists in either codebase at all, having been removed along with the rest of the lookahead gain-scheduling family when the corner-factor scheduler replaced it. See "Corner-factor scheduler" above for what replaced it and the current mechanism, and `docs/logs/late_turn_in_investigation.md`'s "Appendix — Low-speed steering-rate boost: full incident" for the full incident history.
+A mechanism that scaled `R_rate[0,0]` up at low speed
+(`_low_speed_steer_rate_boost`, `boost_max=2.5, k=0.35`) was tried,
+live-tested, and disabled the same day for regressing turn-in; it no longer
+exists in either codebase at all, having been removed along with the rest of
+the lookahead gain-scheduling family when the corner-factor scheduler
+replaced it. See `control_mechanisms.md`'s "Corner-factor scheduler" section
+for what replaced it and the current mechanism, and
+`docs/logs/late_turn_in_investigation.md`'s "Appendix — Low-speed
+steering-rate boost: full incident" for the full incident history.
 
 ## Curvature-forcing term: a rejected approach to blind path-bending prediction
 
@@ -69,4 +77,12 @@ behind the structural-unsoundness finding.
 
 ## Precomputed corner segmentation (removed)
 
-*(Historical: a precomputed per-waypoint `CornerMap` once replaced the live corner-anticipation scan with an exact index lookup for static paths. It was part of the ~15-mechanism lookahead gain-scheduling family removed wholesale by the corner-factor rewrite — see [`Corner-factor scheduler`](#corner-factor-scheduler-what-replaced-the-lookahead-gain-scheduling-family) above for what replaced it, and [`removed_mechanisms.md`](removed_mechanisms.md)'s "7. Precomputed corner segmentation (`CornerMap`)" for the mechanism-level summary. Full implementation history in `docs/logs/late_turn_in_investigation.md` Parts 3-6.)*
+*(Historical: a precomputed per-waypoint `CornerMap` once replaced the live
+corner-anticipation scan with an exact index lookup for static paths. It was
+part of the ~15-mechanism lookahead gain-scheduling family removed wholesale
+by the corner-factor rewrite — see `control_mechanisms.md`'s "Corner-factor
+scheduler" section for what replaced it, and
+[`removed_mechanisms.md`](../removed_mechanisms.md)'s "7. Precomputed corner
+segmentation (`CornerMap`)" for the mechanism-level summary. Full
+implementation history in `docs/logs/late_turn_in_investigation.md` Parts
+3-6.)*
