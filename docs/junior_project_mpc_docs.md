@@ -328,20 +328,31 @@ New synthetic corner shapes are added in `tuner/offline_tuner.py`'s `build_synth
 
 ## 6. Repo Contents (`fsae_MPCTest`)
 
+`fsae_MPCTest` is the offline half of this project: everywhere the docs above talk about developing, tuning, or testing the MPC without needing FSDS running, this is the repo that does it. It holds:
+
+- A fast **2D simulator** for visualizing and closed-loop testing a controller against a path, independent of FSDS.
+- A **debugging tool** (`tuner/tools/plot_playback.py`) that graphs logged run data (from the simulator or from a real/FSDS run) for inspection after the fact.
+- The **automatic tuner** (Section 5) that searches the simulator for good cost-function weights.
+
 
 ### 6.1 Two Deliverables, Two Repos
 
 This project has two deliverables, in two separate repos:
 
 - A **working ROS 2 implementation**, in the `fsae_planning` repo, that runs on the FSDS simulator `autonomous` uses for testing. See Section 7.
-- **`fsae_MPCTest`**: a fast offline 2D simulator to develop and test the MPC controller against, plus the automatic tuner (Section 5) that searches it for good cost-function weights, without needing FSDS running at all.
+- **`fsae_MPCTest`**: everything listed just above — the offline 2D simulator, debugging/graphing tool, and automatic tuner (Section 5) that searches the simulator for good cost-function weights, without needing FSDS running at all.
 
 The rest of this section is what `fsae_MPCTest` itself contains.
 
 
 ### 6.2 Two Vehicle Models, On Purpose
 
-LMPC's internal model (Section 2) is a simplified, linear 8-state bicycle model — it has to be simple, because the solver evaluates it many times per second. `fsae_MPCTest`'s simulator instead drives a separate, detailed 24-state nonlinear "ground truth" model (`model/vehicle_physics.py`: real tyre curves, suspension, weight transfer, aerodynamics) as the simulated car, and only ever hands the controller its tracking error, never its internal state — exactly like a real controller only has GPS/odometry, not X-ray vision into the tyres. That mismatch is deliberate, not a bug: it's what lets the simulator stand in for the real car when developing and tuning the controller offline.
+There are two separate vehicle models in play here, each built for a different job:
+
+- **LMPC's internal model** (Section 2) is a simplified, linear 8-state bicycle model. It has to be simple because the solver evaluates it many times per second — this is the model the controller uses to plan.
+- **`fsae_MPCTest`'s simulator** drives a separate, detailed 24-state nonlinear "ground truth" model (`model/vehicle_physics.py`: real tyre curves, suspension, weight transfer, aerodynamics) as the simulated car. The controller only ever gets this model's tracking error, never its internal state — exactly like a real controller only has GPS/odometry, not X-ray vision into the tyres.
+
+Having both is what lets the simulator stand in for the real car: the simple model is what the controller *thinks* the car is, and the detailed model is what the car *actually is*, and testing the first against the second is what "developing and tuning offline" means in this project.
 
 > If you ever import new real tyre test data into `vehicle_physics.py`, you **must** also
 > recompute `Cf`/`Cr` (used by the MPC's *internal* model) to match the new curve's initial slope,

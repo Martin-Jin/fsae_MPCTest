@@ -6,6 +6,32 @@ with a Model Predictive Controller, and provides CMA-ES-based automated weight
 optimisation so the controller's cost weights don't have to be hand-tuned by
 trial and error.
 
+## What's in this repo
+
+This is the offline half of the project — everywhere below that talks about
+developing, tuning, or testing the MPC without needing FSDS running, this
+repo is what does it. Four things live here:
+
+- A fast **2D simulator** (`gui/simulation.py`, backed by `sim/`, `model/`,
+  `controller/`) for closed-loop testing a controller against a path,
+  independent of FSDS.
+- A **debugging tool** (`tuner/tools/plot_playback.py`) that graphs exported
+  telemetry CSVs — from this simulator or from a real/FSDS run — for
+  inspection after the fact.
+- The **automatic tuner** (`tuner/offline_tuner.py`) that searches the
+  simulator for good cost-function weights via CMA-ES.
+- **`fsds_simulator/`**, a staging mirror of the live `fsae_planning` ROS 2
+  workspace — not a live module of this repo (nothing here imports it), but
+  the only place the changes made to that workspace are actually stored,
+  since nothing is ever pushed to `fsae_planning` itself. See "Staging area
+  for the live ROS 2 workspace" below.
+
+The rest of this document expands on each of these, plus the two
+interchangeable MPC implementations and how offline-tuned weights carry over
+to the live car.
+
+## Two MPC implementations
+
 There are **two interchangeable MPC implementations**, selected by a single
 flag (`use_nmpc` in `settings.py` / the live ROS 2 node's launch args):
 
@@ -17,6 +43,8 @@ flag (`use_nmpc` in `settings.py` / the live ROS 2 node's launch args):
 
 See [docs/architecture.md](docs/architecture.md)'s "Second controller:
 nonlinear MPC" section for the full comparison and why the NMPC exists.
+
+## From offline weights to the live car
 
 This repository also includes a ROS 2 control node (`mpc/mpc_controller.py`'s
 `standalone_output=true` mode / `mpc/mpc_core.py`, staged under
@@ -34,6 +62,8 @@ offline in this project transfer directly to that live controller, because
 both preserve the MPC's own throttle/brake output rather than routing speed
 through `fsds_bridge.py`'s separate P-loop.
 
+## Staging area for the live ROS 2 workspace
+
 `fsds_simulator/` is a staging area, not a live module of this repo: it
 mirrors `fsae_planning`'s entire ROS 2 workspace — every package
 (`fsae_interfaces`, `fsae_bringup`, `fsae_sim_perception`, `fsae_planning`,
@@ -44,6 +74,8 @@ FSDS can build and run the full stack (Stanley or `mpc`, either
 [fsds_simulator/README.md](fsds_simulator/README.md) for build/run steps.
 Nothing under `fsds_simulator/` is imported by the simulator or tuner —
 those live under `planning/`, `sim/`, `model/`, `controller/` instead.
+
+## Perception/planning simulation and recorded tracks
 
 The 2D simulator can optionally simulate the full perception + planning
 pipeline (`USE_PLANNER` in `settings.py`) by placing cones along a path
