@@ -329,16 +329,57 @@ is the current, actually-shipped configuration, not a stale one, and it is
 specifically this configuration where the solver genuinely fails in the
 band rather than merely tracking worse.
 
-This is consistent with, not contradicting, the root cause identified
-above: a heavier steering-rate weight and an active corner-dependent gain
-schedule change the relative scale of terms feeding into the same
-already-marginal, ill-conditioned Hessian this document's `A_k` peak
-measurements describe, making an existing numerical fragility more likely
-to tip into an outright solver failure rather than merely a bigger, but
-still nominally "solved", tracking error. Not independently confirmed at
-the Jacobian level with these specific newer weights, this is inferred
-from the config diff and the solver-status pattern, not re-derived from
-`A_k`/`grad` the way the root cause section above was.
+**Tested directly and NOT confirmed, correcting the paragraph that stood
+here previously.** The paragraph originally here claimed the heavier
+steering-rate weight and the corner-dependent gain schedule likely explain
+the split by worsening the Hessian's conditioning. Reconstructing both the
+old and the new `MPCParams`/`NMPCParams` exactly (the same field-by-field
+`settings.py` derivation used throughout this document) and comparing them
+directly refutes that claim as stated:
+
+- `A_k` itself is byte-identical between the two configs at every speed
+  tested (2.0-6.0 m/s, straight and mid-corner states alike). This is
+  expected on reflection, not a surprise once checked: `A_k`/`B_k` are pure
+  plant-dynamics sensitivities from `_jacobians()`, they do not depend on
+  any cost weight at all, only `Hess`/`grad` do.
+- `_solve_step`'s returned **status is also identical** between configs at
+  every single-tick state tested, including the exact `vx=2.5` state that
+  produces `problem non convex` under the shipped `jac_substeps=1`, under
+  both the old and the new weights.
+- A 40-tick warm-started sequence approaching a corner at a constant low
+  speed (crudely forward-integrated, not the real plant, but enough to
+  exercise the SQP's own warm start across many ticks) shows **zero**
+  solver failures under either config.
+
+So the specific causal mechanism proposed (heavier weights directly
+worsening this Hessian's conditioning) is not supported by direct testing.
+
+**A second candidate explanation was checked and also ruled out.** Every
+in-band failure across the four "newer" runs clusters at one of two
+arc-lengths: the launch (`nmpc_s0` near 0, expected, this is the same
+low-speed-from-a-stop condition this whole document is about) and a
+specific corner around `nmpc_s0` = 185-195 m, recurring in two independent
+runs. This looked like it might simply be "the two clean old runs never
+drove far enough to reach that corner", since they are also the two
+shortest runs (489 and 1247 ticks). Checked directly: **both old runs DO
+pass through that exact arc-length range**, at broadly similar speeds to
+the runs that fail there (mostly 5-9 m/s, versus 3-6 m/s in the failing
+runs, an overlapping range), and both show a clean `nmpc_status=1.0` the
+whole way through.
+
+**The cause of the config-era split is genuinely unresolved.** Both
+proposed explanations (heavier weights, never having reached the hard
+corner) are now checked and rejected. What is confirmed: the split is real
+(four of six runs show it, reliably, at the same track location across
+independent runs), it is not an artifact of which weights were loaded, and
+it is not an artifact of run length. What remains unknown: whether it's a
+path-dependent/chaotic sensitivity (small differences in SLAM noise, pose
+history, or warm-start state accumulated earlier in each specific run,
+tipping an already-marginal solve one way or the other at that corner) or
+a genuine, not-yet-diffed change to something outside `mpc_params.py`/
+`nmpc_params.py` between 2026-08-24 and 2026-09-01 (the plant model,
+delay/pose-age handling, perception/SLAM noise settings). Not investigated
+further here.
 
 ## Revised: this is not merely consistent with a successful FSDS session, it is directly visible in one
 
