@@ -381,6 +381,52 @@ a genuine, not-yet-diffed change to something outside `mpc_params.py`/
 delay/pose-age handling, perception/SLAM noise settings). Not investigated
 further here.
 
+## The recurring failure corner (s=165-196 m) is the single hardest corner on the lap
+
+Reported independently, before this section was checked: a driver watching
+the car described the problem as happening "just like one place basically,
+where there is a sudden turn." That matches this document's own arc-length
+finding directly, the `nmpc_s0`=185-195 m failure cluster recorded in two
+independent live logs falls inside a single corner segment (`s`=165.2 to
+196.4 m).
+
+Measuring every corner on the lap the same way (`|kappa|` from finite-
+differenced heading, and each corner's own minimum speed target):
+
+| Corner (arc length) | Radius | Speed target minimum |
+|---|---|---|
+| 41-51 m | 5.6 m | 6.55 m/s |
+| 113-128 m | 7.5 m | 7.07 m/s |
+| 132-154 m | 6.2 m | 6.59 m/s |
+| **165-196 m (the failure corner)** | **4.7 m** | **6.00 m/s** |
+| 259-270 m | 6.8 m | 6.82 m/s |
+| 276-303 m | 9.3 m | 7.60 m/s |
+| 338-363 m | 7.6 m | 6.97 m/s |
+| 399-414 m | 9.5 m | 7.76 m/s |
+| 430-444 m | 10.9 m | 8.13 m/s |
+
+The failure corner is both the **tightest radius on the entire lap** (4.7 m,
+the next-tightest is 5.6 m) and carries the **lowest target speed of any
+corner** (6.00 m/s). No other corner combines both. That is the plain-
+English reason it alone triggers the failure repeatedly while none of the
+other eight do: it is the one place on the track that forces the car to be
+at low speed and turning hard at the same time, exactly the combined
+condition (small `v_x`, genuinely nonzero curvature and yaw rate together)
+that stresses the `A_k` Jacobian spike this document's root cause section
+describes. A corner with a higher speed target stays above the fragile
+band even while cornering hard; a gentler corner doesn't demand enough
+yaw rate to matter even at low speed.
+
+Checked and NOT confirmed: whether this corner's curvature ramps up more
+*suddenly* than the others (a steeper `d(kappa)/ds` at corner entry). By
+that specific measure it is not the steepest (0.0123 rad/m/m, versus up to
+0.033 for two gentler corners), though this finite-difference measure is
+inherently noisy (see this document's own reliance on the project's
+already-documented centreline-curvature-spike caveat) and should not be
+read as ruling suddenness out, only as not confirming it as the
+distinguishing factor. Tightness combined with a low speed target is the
+distinguishing factor that was actually measured.
+
 ## Revised: this is not merely consistent with a successful FSDS session, it is directly visible in one
 
 An earlier version of this section argued the effect might simply never
