@@ -5,10 +5,12 @@ acceleration whenever car speed sits in roughly 2.5-6 m/s on a low-curvature
 path, regardless of how large the speed error is. Root cause is a numerical
 instability in one specific internal approximation (`nmpc_jac_substeps=1`),
 not the vehicle model, not the cost weights, and not the shipped rollout
-integration. Raising `nmpc_jac_substeps` from 1 to 2 fixes nearly all of the
-affected range at roughly 1.6x the per-tick solve cost, still well inside
-the 25 ms budget. **Not applied to any shipped file** as of this writing;
-this document is the findings, not a changelog entry.
+integration. Raising `nmpc_jac_substeps` to 4 (2 is not enough, see below)
+fixes the whole affected range in every multi-tick test run so far, at
+roughly double the Jacobian's share of per-tick solve cost, expected to
+still fit the 25 ms budget but not separately re-measured at this setting.
+**Not applied to any shipped file** as of this writing; this document is
+the findings, not a changelog entry.
 
 ## In plain English
 
@@ -218,6 +220,40 @@ target embedded hardware — see
 `fsae_autonomous/docs/NMPC_INTEGRATION_GAPS.md` gap E2, which already flags
 solve time as unvalidated on a Jetson.
 
+## The 2.5-3.0 m/s residual: closed, `nmpc_jac_substeps=2` is not enough on its own
+
+The single-tick isolated probe above understated this. In a real multi-tick
+`compute()` call (car held at a fixed speed, warm start carried tick to
+tick, exactly how the live controller runs), `nmpc_jac_substeps=2` leaves
+2.5 and 3.0 m/s **fully stuck at exactly `a_cmd=0.0` for all 15 tested
+ticks**, not just a depressed single-tick value. The earlier "not fully
+closed" framing was itself an understatement of how narrow the surviving
+band actually is: it does not gradually recover with more ticks under
+`jac_substeps=2`, it does not move at all.
+
+`nmpc_jac_substeps=4` closes it. Same multi-tick test, real settings.py
+config, at exactly the two speeds that stayed stuck under `jac_substeps=2`:
+
+| Tick | vx=2.5 m/s, `a_cmd` | vx=3.0 m/s, `a_cmd` |
+|---|---|---|
+| 0 | 0.60 | 0.60 |
+| 3 | 2.40 | 2.40 |
+| 7 | 4.80 | 4.80 |
+| 10 | 5.82 | 5.83 |
+| 14 | 5.76 | 5.94 |
+
+A clean, monotonic ramp to the trust-region-clamped ceiling and a settle
+near the target, the shape a working controller should produce.
+`nmpc_jac_substeps=8` gives a similar (slightly noisier at 2.5 m/s, cleaner
+at 3.0 m/s) result, no clear further improvement over 4.
+
+**Revised recommendation**: `nmpc_jac_substeps=1 -> 4`, not `-> 2`. The
+2 -> 4 step costs roughly another doubling of the Jacobian's share of
+per-tick solve time (not separately re-measured here, extrapolate
+cautiously from the earlier 8.28 -> 13.02 ms, 1 -> 2 measurement), still
+expected to fit the 25 ms budget on the machine this was investigated on,
+still not measured on target embedded hardware (gap E2, unchanged).
+
 ## Why this is consistent with "it worked fine on FSDS"
 
 Nothing here contradicts a live FSDS session that drove successfully. The
@@ -243,9 +279,15 @@ actually watched closely at low speed.
   and every other shipped file are exactly as they were before this
   investigation, in every one of `fsae_MPCTest`, the sim-side
   `ros2/src/fsae_planning`, and the `fsae_autonomous` port.
-- The 2.5-3.0 m/s residual under the candidate fix is not explained.
-- `nmpc_jac_substeps=2`'s effect on tracking quality/solve time over a full
-  lap (not just a straight-line low-speed probe) has not been measured.
+- `nmpc_jac_substeps=4`'s effect on tracking quality/solve time over a full
+  lap (not just a straight-line low-speed probe) has not been measured, nor
+  has its exact per-tick cost (extrapolated, not separately timed).
+- A full `run_core_rollout` closed-loop pass with `nmpc_jac_substeps=4`
+  applied has not been run, only the isolated straight-line multi-tick
+  probe above. The next step for a future session is exactly that: apply
+  the override via `nmpc_overrides={'jac_substeps': 4}` (or equivalent) in
+  a rollout call, not by editing `settings.py` yet, and re-check the
+  standard `tuner.recorded_map_rollout`/`tuner.nmpc_offline_check` tables.
 - Whether the same eigenvalue/stability argument predicts a similar issue
   at any OTHER combination of this vehicle's parameters has not been
   checked, this was diagnosed at the specific `Cf`/`Cr`/`m`/`Iz` values

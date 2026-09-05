@@ -172,10 +172,11 @@ each raw weight directly to its raw-unit error term (`q_e_y` on metres²,
 magnitude before weighting. Don't assume two `MPCParams`/`settings.py`
 values are on a comparable scale just because they're both "a weight."
 
-## Git layout: four independent repos
+## Git layout: five repos (four local checkouts + one pushable staging mirror)
 
 `git` at the FSDS root does **not** see the planning/control work. There are
-four separate repos:
+four separate local repos, plus a fifth, `fsae_MPCRos`, that exists purely
+because one of the four (`fsae_autonomous`) can never be pushed to directly:
 
 | Path | Repo | Branch | Role |
 |---|---|---|---|
@@ -183,6 +184,7 @@ four separate repos:
 | `ros2/src/fsae_planning/` | `fsae_planning` (own `.git`) | `main` | sim-side planning/control dev |
 | `fsae_MPCTest/` | `fsae_MPCTest` (own `.git`) | `main` | offline tuning + change ledger for `fsae_planning` |
 | `fsae_autonomous/` | `fsae_autonomous` (own `.git`) | `main` | **production, goes on the real car** |
+| `github.com/Martin-Jin/fsae_MPCRos` | `fsae_MPCRos`, no local checkout by default | `main` | **pushable staging mirror for `fsae_autonomous`**, see below |
 
 `fsae_planning` and `fsae_MPCTest` are nested inside the outer tree;
 `fsae_autonomous` is a sibling checkout, not nested under the outer repo at
@@ -192,6 +194,39 @@ wrong root shows them only as `??` untracked directories and cannot resolve
 their commits. **Run git inside the actual repo directory** to inspect its
 history, and note that `git worktree` on the outer repo produces a tree
 containing *none* of the planning/control code.
+
+### `fsae_MPCRos`: the pushable mirror for `fsae_autonomous` work
+
+`fsae_autonomous` itself can never be pushed to by an agent (see the hard
+rule below), so local edits made there have no git-visible, shareable
+record on their own. `fsae_MPCRos` exists to be that record: a normal,
+pushable GitHub repo, tracking only the `fsae_autonomous` files that are
+actually relevant to whatever's being worked on there (day one of this was
+the ported NMPC controller; it is not a full mirror of the whole
+`fsae_autonomous` tree, see its own README for what it tracks and why).
+
+**After any local edit inside `fsae_autonomous`, mirror the changed files
+into a local clone of `fsae_MPCRos` at the same relative path under
+`src/fsae_autonomous/`, and push.** This is not optional or a one-off, it
+applies to every future `fsae_autonomous` change, not just the NMPC port
+this convention was written during. Concretely, for a file changed at
+`fsae_autonomous/<path>`, the mirror lands at
+`fsae_MPCRos/src/fsae_autonomous/<path>` (unchanged relative path). Commit
+and push `fsae_MPCRos` the same way as `fsae_MPCTest` (straight to `main`,
+no feature branch, no `Co-Authored-By`, see below). Before publishing a new
+change, `diff` the local `fsae_autonomous` working tree against the current
+`fsae_MPCRos` clone first, since more than one round of edits can land in
+`fsae_autonomous` between mirror pushes (this happened once already: a
+`package.xml` fix and two new test files were made in `fsae_autonomous`
+after an earlier mirror push and were missed until an explicit diff caught
+them).
+
+If `fsae_autonomous`'s own edit touches a file also mirrored by
+`fsae_MPCTest/fsds_simulator/` or by the sim-side `fsae_planning` tree (rare,
+since those two mirror each other, not `fsae_autonomous`, but check), apply
+the same "Third copy" discipline described later in this file: mirror the
+specific change made, don't add files that were never there, don't fix
+unrelated drift while you're in there.
 
 ### Git workflow per repo
 
@@ -205,12 +240,18 @@ policy. Check which repo you're in before applying a rule:
   the local edit if asked, then report the change back to the user instead
   of committing. This is a hard rule, not a default, see the standing note
   on this.
-- **`fsae_MPCTest`** and the outer FSDS repo: day-to-day tuning/doc commits
-  have been going straight to `main`/`master` (no feature branch, no squash
-  step) and that is the established pattern here; don't unilaterally start
-  branching for routine parity/doc/weight commits. Do use a throwaway branch
-  for anything you'd want to abandon cleanly (an experimental model change,
-  a multi-commit investigation that might not pan out).
+- **`fsae_MPCTest`**: day-to-day tuning/doc commits have been going straight
+  to `main` (no feature branch, no squash step) and that is the established
+  pattern here; don't unilaterally start branching for routine
+  parity/doc/weight commits. Do use a throwaway branch for anything you'd
+  want to abandon cleanly (an experimental model change, a multi-commit
+  investigation that might not pan out).
+- **The outer FSDS repo (`/`, upstream `FS-Driverless/Formula-Student-Driverless-Simulator`)**:
+  **never push here as an agent**, same hard rule as `fsae_planning` and
+  `fsae_autonomous` below, not a default that yields to "it's just a doc
+  commit." `CLAUDE.md` itself lives here as a local, uncommitted file for
+  exactly this reason, it has never been pushed and shouldn't be. The only
+  two repos an agent pushes to at all are `fsae_MPCTest` and `fsae_MPCRos`.
 - **`fsae_autonomous`**: the production repo. **Never push here as an
   agent, full stop, the same hard rule as `fsae_planning` above, not a
   wait-for-explicit-ask gate.** Pushes to this repo happen deliberately and
@@ -223,6 +264,9 @@ policy. Check which repo you're in before applying a rule:
   independently of the other three (other contributors, or the user's own
   past pushes merged upstream), so a local checkout can go stale between
   sessions in a way that isn't true of the same-session-owned tuning repos.
+  **Mirror every local edit here to `fsae_MPCRos` and push it there**, see
+  "`fsae_MPCRos`: the pushable mirror for `fsae_autonomous` work" above for
+  the exact mechanism.
 - **Authorship**: commits pushed on the user's behalf use the user as sole
   author, no `Co-Authored-By` trailer unless asked. (Some existing commits
   in `fsae_MPCTest` do carry one from before this was clarified; don't treat
