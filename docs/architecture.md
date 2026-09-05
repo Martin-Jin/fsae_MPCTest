@@ -2,7 +2,7 @@
 
 Deep technical reference for how the simulator, MPC, and offline tuner work.
 For quick-start usage, tuning workflow, and FSDS integration steps, see
-[Developer Guide](developer_guide.md) instead — this document explains the
+[Developer Guide](developer_guide.md) instead, this document explains the
 system, that one explains how to operate/extend it.
 
 **Two MPC implementations exist**, selected by one flag (`use_nmpc`):
@@ -33,7 +33,7 @@ This is the closed loop the simulator runs at 20 Hz. The same loop runs
 headless (no plotting) thousands of times during tuning in
 `tuner/offline_tuner.py`, and also runs live against the real/FSDS vehicle
 as `mpc_controller.py` (in its `standalone_output=true` mode; mirrored
-under `fsds_simulator/`, pasted into `fsae_planning` — see
+under `fsds_simulator/`, pasted into `fsae_planning`, see
 [`docs/reference/`](docs/reference/)). All three share one implementation:
 `sim/rollout_core.run_core_rollout()` for the first two, and
 `mpc_core.MPCController` for the live node, kept in numeric parity with
@@ -122,8 +122,8 @@ USER INPUT (draw path / load synthetic path)
 ```
 
 Both `offline_tuner.run_headless_rollout()` and `simulation.simulate_closed_loop()`
-are thin wrappers around `rollout_core.run_core_rollout()` (`sim/rollout_core.py`)
-— the single implementation of the tracking-error computation, progress tracking,
+are thin wrappers around `rollout_core.run_core_rollout()` (`sim/rollout_core.py`),
+the single implementation of the tracking-error computation, progress tracking,
 MPC solve, delay queue, termination checks, and metric accumulation.
 `gui/simulation.py` calls it with `want_history=True` to get a full
 step-by-step history dict for the GUI; `tuner/offline_tuner.py` calls it with
@@ -151,11 +151,11 @@ cone_recorder.py                │  sim/track_io.py + gui/simulation.py's Load 
 
 `fsds_simulator/control/fsae_control/fsae_control/stanley_controller.py` is
 the actual current Stanley controller (mirrored from upstream, kept in sync
-like everything else under `fsds_simulator/` — see
+like everything else under `fsds_simulator/`, see
 [`docs/reference/`](docs/reference/)), not just a
 structural reference. This project's tuner and offline simulator only ever
 drive against the MPC (`mpc_controller.py`'s `standalone_output=true` mode /
-`mpc_core.py`, same directory) — Stanley is mirrored purely so `fsds_simulator/` can stand
+`mpc_core.py`, same directory). Stanley is mirrored purely so `fsds_simulator/` can stand
 up the full live stack, not because this repo's own simulator exercises it.
 
 ---
@@ -164,7 +164,7 @@ up the full live stack, not because this repo's own simulator exercises it.
 `settings.py` is the single place to change tuning knobs, cost weights, and
 DNF/validation configuration shared by `gui/simulation.py`,
 `tuner/offline_tuner.py`, `sim/scoring.py`, `sim/rollout_core.py`, and
-`tuner/performance_stats.py`. It has no vehicle physics in it — that lives
+`tuner/performance_stats.py`. It has no vehicle physics in it, that lives
 in `model/vehicle_physics.py` (see next section). Every setting has a
 detailed, plain-language explanation directly above it in the file itself.
 
@@ -172,14 +172,14 @@ For what every weight/gain/flag in `settings.py` does, how to tune it, and
 known constraints (including `N_HORIZON`, `DELAY_STEPS`/`DELAY_JITTER_STEPS`,
 `SLAM_NOISE_ENABLED` and the rest of the simulator-fidelity settings, the
 `Q_diag`/`R_diag`/`R_rate_diag` cost weights, and `SCORE_WEIGHTS`/
-`METRIC_SCALES`), see [tuning.md](tuning.md) — this section instead covers
+`METRIC_SCALES`), see [tuning.md](tuning.md); this section instead covers
 the parts of `settings.py` that are about tuner *mechanics* (DNF detection,
 solver settings, the pose-feed-hold sim-to-real model) rather than tuning
 values themselves.
 
 ### DNF penalty configuration
 
-`DNF_PENALTY` and `DNF_OFFTRACK_PENALTY` — flat score penalties added when a
+`DNF_PENALTY` and `DNF_OFFTRACK_PENALTY` are flat score penalties added when a
 tuning rollout doesn't finish the track, and an additional penalty
 specifically when the reason was leaving the track boundary. These exist so
 the tuner can't find a deceptively good score by having the car crawl
@@ -187,13 +187,13 @@ slowly and carefully without ever finishing.
 
 ### Solver settings for headless rollouts
 
-`ROLLOUT_EPS` / `ROLLOUT_MAX_ITER` — OSQP convergence tolerance and iteration
+`ROLLOUT_EPS` / `ROLLOUT_MAX_ITER` are OSQP convergence tolerance and iteration
 cap used only during offline tuning rollouts (looser than the live
 simulator's defaults for faster mass evaluation, at negligible accuracy
-cost). `MAX_EVALS` — total true-rollout budget for one tuning run.
-`PATH_N_POINTS` — how many points each synthetic test track is resampled to.
-`USE_OPTUNA_PRESEARCH` / `OPTUNA_PRE_PASS_EVALS` — optional TPE pre-search
-that seeds CMA-ES's starting point; see
+cost). `MAX_EVALS` is the total true-rollout budget for one tuning run.
+`PATH_N_POINTS` is how many points each synthetic test track is resampled to.
+`USE_OPTUNA_PRESEARCH` / `OPTUNA_PRE_PASS_EVALS` configure an optional TPE
+pre-search that seeds CMA-ES's starting point; see
 [Optional Optuna TPE pre-search](#optional-optuna-tpe-pre-search).
 
 ### Scoring weights
@@ -204,7 +204,7 @@ for how to tune these; see [The Composite Score](#the-composite-score) below
 for exactly what each of the 13 metrics measures and how they combine into
 one score.
 
-`VALIDATION_SUITE` — which of the synthetic corner-shape paths (defined in
+`VALIDATION_SUITE` is which of the synthetic corner-shape paths (defined in
 `tuner/offline_tuner.build_synthetic_paths()`) the tuner actually evaluates
 candidates against. Commented-out paths are available but excluded by
 default to keep each tuning run faster.
@@ -223,7 +223,7 @@ in how badly the feed stalled):
 | longest hold | 5 ticks (0.25 s) | 20 ticks (0.99 s) |
 | peak `pose_age_s` | 347 ms | 1242 ms |
 
-In the failed run the pose froze for ~1 s at 14 m/s — ~17 m travelled blind —
+In the failed run the pose froze for ~1 s at 14 m/s, about 17 m travelled blind,
 and the car spun on resume with 105° of heading error.
 
 This is distinct from the two existing delay knobs, and none of them substitute
@@ -235,10 +235,10 @@ for it:
   controller is briefly blind.
 
 While a hold is active the rollout also **skips perception and planning**, since
-on the car the planner is triggered by `car_position` — a stalled pose stalls
+on the car the planner is triggered by `car_position`, and a stalled pose stalls
 the whole chain. Without that, re-planning from a frozen pose still yields a
-slightly different centreline each tick and the controller is never actually
-blind (measured: `e_y` repeated on 0.0% of ticks instead of the intended ~5%).
+slightly different centreline each tick and the controller is never blind
+(measured: `e_y` repeated on 0.0% of ticks instead of the intended ~5%).
 
 Tuned to the normal run: `POSE_HOLD_PROB = 0.05`, `MEAN_TICKS = 2.1`,
 `MAX_TICKS = 5` reproduces 5.8% repeated ticks / mean hold 2.10 against the
@@ -254,18 +254,18 @@ measured 5.3% / 2.08.
 > - Also tested and eliminated: plant grip, corner entry speed, planner
 >   centreline quality, SLAM pose noise, extra actuation delay, and planner
 >   update rate.
-> - The cause remains open — do not treat offline scores as predictive of
+> - The cause remains open. Do not treat offline scores as predictive of
 >   live behaviour until it is found.
 
 ---
 
 ### Bonus weights
 
-`TIME_BONUS_WEIGHT` — legacy weight, no longer used by the score itself.
+`TIME_BONUS_WEIGHT` is a legacy weight, no longer used by the score itself.
 Time is now the *primary objective* (tier 2), scaled by
 `TIME_OBJECTIVE_WEIGHT`, not a bonus subtracted from a metric sum.
 
-`COMPLETION_BONUS_WEIGHT` — **no longer used by the score.** Completion is a
+`COMPLETION_BONUS_WEIGHT`: **no longer used by the score.** Completion is a
 hard constraint (tier 1), not something rewarded: a run that doesn't finish
 is scored above `CONSTRAINT_FLOOR` regardless of how well it drove. Both
 constants are retained only so the live copy's CSV header and
@@ -275,12 +275,12 @@ constants are retained only so the live copy's CSV header and
 
 ## Configuring the Vehicle (`model/vehicle_physics.py`)
 
-The single source of truth for all vehicle physics — mass, geometry, tyre
-grip, suspension, aerodynamics, actuator limits — is the `VehicleParams`
+The single source of truth for all vehicle physics (mass, geometry, tyre
+grip, suspension, aerodynamics, actuator limits) is the `VehicleParams`
 class in `model/vehicle_physics.py`. This is what the nonlinear 24-state
 plant (the "truth" simulation) uses, and several of these values (`Cf`,
 `Cr`, `tau_delta`, `tau_a`, `lf`, `lr`, `m`, `Iz`) also feed directly into
-the MPC's own internal linear model in `model/bicycle_model.py` — see
+the MPC's own internal linear model in `model/bicycle_model.py`, see
 [How the MPC Works](#how-the-mpc-works) for how those specific values are
 used mathematically.
 
@@ -304,11 +304,11 @@ chassis inertia is available to plug in directly.
 ### Importing new tyre data
 
 The plant uses a Pacejka **MF94** tyre model (`B`, `C`, `D`, `E`, `Sv`, `Sh`
-per axle — see [The Pacejka Tyre Model](#the-pacejka-tyre-model) below for
+per axle, see [The Pacejka Tyre Model](#the-pacejka-tyre-model) below for
 what each coefficient physically means). Replacing these with real TTC
 data requires one additional step:
 
-> **You must also recompute `Cf` and `Cr`** — the *linear* cornering
+> **You must also recompute `Cf` and `Cr`**, the *linear* cornering
 > stiffnesses used by the MPC's internal bicycle model in
 > `model/bicycle_model.py`, a completely separate pair of constants from
 > the Pacejka coefficients above.
@@ -316,13 +316,13 @@ data requires one additional step:
 > - **Why:** `Cf`/`Cr` need to match the new Pacejka curve's initial slope
 >   near zero slip angle, via `C_eff ≈ mu * Fz_nominal * B * C * D`.
 > - **What happens if you skip this:** the MPC's internal prediction model
->   quietly stops matching the plant it's actually controlling. It doesn't
->   error out — it just produces degraded tracking with no obvious cause,
+>   quietly stops matching the plant it's controlling. It doesn't
+>   error out, it just produces degraded tracking with no obvious cause,
 >   since nothing flags the mismatch directly.
 
 ### Actuator limits
 
-`max_steer`, `max_accel`, `max_accel_brake` — changing these automatically
+`max_steer`, `max_accel`, `max_accel_brake`: changing these automatically
 propagates to the MPC's hard QP constraints in `controller/optimiser.py` and
 `mpc_core.py` (both read `VehicleParams` directly), so the controller
 will never be asked to command something the (simulated) vehicle physically
@@ -330,7 +330,7 @@ can't do.
 
 ### The Pacejka Tyre Model
 
-The plant computes tyre grip using the Pacejka **MF94** "Magic Formula" —
+The plant computes tyre grip using the Pacejka **MF94** "Magic Formula",
 an empirical curve fit to real tyre test data, rather than a physics-derived
 equation:
 Fy = mu · Fz · sin(C · atan(B·α − E·(B·α − atan(B·α))))
@@ -339,18 +339,18 @@ Where `α` is slip angle (lateral) or slip ratio (longitudinal), and `Fz` is
 the tyre's current normal load. See
 [vehicle_physics_guide.md §4](vehicle_physics_guide.md#4-what-is-full-mf94-pacejka-and-what-is-a-tyre-model-at-all)
 for what each coefficient (`B`/`C`/`D`/`E`/`Sv`/`Sh`), `mu`/`k_sens`, tyre
-relaxation, and the friction ellipse physically mean — not repeated here.
+relaxation, and the friction ellipse physically mean, not repeated here.
 
-This curve is where the plant's nonlinearity actually shows up numerically.
-Near `α = 0` it's *approximately* a straight line through the origin —
+This curve is where the plant's nonlinearity shows up numerically.
+Near `α = 0` it's *approximately* a straight line through the origin, and
 that local slope is exactly the linear cornering-stiffness `Cf`/`Cr` the
 MPC's internal model assumes holds everywhere (see "Linear vs nonlinear" in
 [How the MPC Works](#how-the-mpc-works)). Push `α` out past roughly 5-8° of
 slip, though, and the real curve visibly bends over: each extra degree of
 slip buys noticeably less extra force than the last, until it saturates at
 `D` and can even fall past that (a tyre that's broken traction). Doubling
-the slip angle out here does **not** double the force — it might only add
-20% more, or none at all — which is exactly the behaviour a fixed-multiplier
+the slip angle out here does **not** double the force: it might only add
+20% more, or none at all, which is exactly the behaviour a fixed-multiplier
 linear model cannot represent.
 
 ---
@@ -359,12 +359,12 @@ linear model cannot represent.
 This section explains the controller in full: the state vector, where every
 entry of every matrix comes from, the cost function, the solver, and the two
 runtime adaptive features layered on top. The implementation is split across
-three files that must be kept in numeric agreement — `model/bicycle_model.py`
+three files that must be kept in numeric agreement: `model/bicycle_model.py`
 (the prediction model), `controller/optimiser.py` (the QP formulation, used
 by the simulator/tuner), and `mpc_core.py` (a self-contained duplicate of
 both, used by the live ROS 2 node so it has no simulator dependencies).
 
-This section assumes no prior background — every term below (model, state,
+This section assumes no prior background: every term below (model, state,
 input, cost function, solver) is defined in plain English the first time it
 appears.
 
@@ -372,28 +372,28 @@ appears.
 
 - **State**: the set of numbers that describe "where things stand right
   now." For this controller, state doesn't mean the car's raw (X, Y)
-  position — it means *how far off the intended path the car currently is*
+  position, it means *how far off the intended path the car currently is*
   (see [The 8-state error vector](#the-8-state-error-vector) below for the
   actual list). Written as a vector, `x`.
 - **Input** (also called a **command**): the numbers the controller
-  actually gets to choose each tick — steering angle and
+  actually gets to choose each tick, steering angle and
   acceleration/braking. Written as a vector, `u`.
 - **Model**: a mathematical rule that answers *"given the current state `x`
   and a chosen input `u`, what will the state be a moment later?"* It's the
   controller's internal, simplified stand-in for "how the car behaves,"
-  used purely for planning — not the real car itself. This project's model
+  used purely for planning, not the real car itself. This project's model
   is a **bicycle model**: instead of simulating all four wheels, the car is
   approximated as one wheel on the front axle and one on the rear, both on
-  the centreline. That's a standard simplification in vehicle control — it
+  the centreline. That's a standard simplification in vehicle control, and it
   captures the two things that matter most for path tracking (how the
   front wheel steers, and how the whole car rotates/slides) while staying
   simple enough to evaluate thousands of times a second.
 - **Cost function**: a single number that scores "how bad" a candidate plan
-  is — bigger tracking error, more control effort, or jerkier commands all
+  is, where bigger tracking error, more control effort, or jerkier commands all
   make this number bigger. The controller's whole job each tick is to
   search for the sequence of inputs that makes this number as small as
   possible. The thing doing that search is called the **solver** (see [The
-  solver](#the-solver) below) — rather than writing a search algorithm from
+  solver](#the-solver) below). Rather than writing a search algorithm from
   scratch, the cost function and the model are handed to an existing,
   purpose-built solver library, which finds the best answer.
 
@@ -423,13 +423,13 @@ that its internal model (linear, 8-state) is not a perfect match for the
 real vehicle (nonlinear, 24-state, Pacejka tyres, suspension, aero). Any
 mismatch between what the model predicted and what the plant actually did
 shows up as tracking error at the next measurement, and gets corrected on
-the next solve — the controller never needs its internal model to be
+the next solve. The controller never needs its internal model to be
 perfectly accurate, only good enough to plan a *reasonable* next step.
 
 ### The 8-state error vector
 
 The MPC does not track the car's raw position (X, Y). It tracks **error
-relative to the path** — how far off, and in what way, the car currently is.
+relative to the path**, how far off, and in what way, the car currently is.
 This keeps the model's behaviour independent of where on the map the car
 happens to be.
 
@@ -441,27 +441,27 @@ x = [e_y, e_y_dot, e_psi, e_psi_dot, e_v, e_a, delta_act, a_act]
 |---|---|---|---|
 | 0 | `e_y` | Lateral (sideways) distance from the path centreline | m |
 | 1 | `e_y_dot` | Rate of change of `e_y` | m/s |
-| 2 | `e_psi` | Heading error — car's yaw minus the path's tangent direction | rad |
+| 2 | `e_psi` | Heading error, car's yaw minus the path's tangent direction | rad |
 | 3 | `e_psi_dot` | Yaw rate (how fast the car's heading is currently changing) | rad/s |
-| 4 | `e_v` | Speed error — current speed minus the planner's target speed | m/s |
+| 4 | `e_v` | Speed error, current speed minus the planner's target speed | m/s |
 | 5 | `e_a` | Unused acceleration-error placeholder, always driven toward 0 | m/s² |
 | 6 | `delta_act` | The steering angle the actuator has *actually* reached so far (after lag) | rad |
 | 7 | `a_act` | The acceleration command the actuator has *actually* reached so far (after lag) | m/s² |
 
 States 6 and 7 exist because a real steering rack / throttle doesn't jump
-instantly to a commanded value — there's a first-order lag (see
+instantly to a commanded value, there's a first-order lag (see
 `tau_delta`, `tau_a` in `model/vehicle_physics.py`). Tracking the *actual*
 (lagged) actuator state, not just the commanded value, lets the model
-correctly predict how the car will really move over the horizon.
+correctly predict how the car will move over the horizon.
 State 5 is purely for consistency, there is a rate of change for each state.
 
 **`e_v`'s target speed is frozen for the whole horizon, not a per-step
 profile.** In plain terms: the controller picks one target speed at the
 start of each solve and holds it fixed across the whole 1.75 s look-ahead,
 rather than asking for a different speed at each future point along that
-horizon. Concretely, `desired_speed` is looked up/computed once per solve —
+horizon. Concretely, `desired_speed` is looked up/computed once per solve,
 from `speed_profile.curvature_speed()` when the live planner is in the
-loop, or from the precomputed `path_v_profile` array otherwise — and baked
+loop, or from the precomputed `path_v_profile` array otherwise, and baked
 into `x0[4]` as a single scalar. Nothing in `Ad`/`Bd` re-references it at
 later horizon steps, so the cost function penalises deviation from *the
 same* target speed across all `N` steps, not the true curvature-limited
@@ -475,10 +475,10 @@ behaviour approaching a corner whose onset falls inside the current
 horizon. There is currently no acceleration profile, so there is no
 acceleration error either.
 
-#### How the error vector is actually measured (Frenet-frame projection)
+#### How the error vector is measured (Frenet-frame projection)
 
 The error states above (`e_y`, `e_psi`, etc.) aren't things the car can
-read off a sensor directly — they only make sense *relative to a point on
+read off a sensor directly, they only make sense *relative to a point on
 the path*. Every control tick, `vehicle_physics.plant_to_tracking_error()`
 (`model/vehicle_physics.py`) has to answer: "of all the points along the
 reference path, which one is
@@ -486,12 +486,12 @@ the car currently 'at', and how far off is it from that point?"
 
 This is a **Frenet-frame** conversion: instead of describing the car's
 position in the usual global (X, Y) map coordinates, it's re-described
-relative to the path itself — as a longitudinal position *along* the path
+relative to the path itself, as a longitudinal position *along* the path
 plus a lateral offset *perpendicular* to it. Concretely, the code:
 
 1. Finds the nearest reference point on the path to the car's current
    (X, Y) position (`get_interpolated_ref_point()`), giving a reference
-   `(ref_x, ref_y, ref_psi)` — the path's position and tangent heading at
+   `(ref_x, ref_y, ref_psi)`, the path's position and tangent heading at
    that point.
 2. Projects the car's offset from that point onto the direction
    perpendicular to the path's tangent, which gives the signed lateral
@@ -500,7 +500,7 @@ plus a lateral offset *perpendicular* to it. Concretely, the code:
    heading at that point, giving `e_psi`.
 
 This is the same idea used throughout path-tracking control (and in the
-planner's centreline/curvature calculations — see
+planner's centreline/curvature calculations, see
 [Architecture Overview](#architecture-overview)): re-expressing "where am
 I" as "how far along the path, and how far off to the side," which is a
 much more useful frame for a controller whose whole job is to stay close
@@ -513,7 +513,7 @@ u = [delta_cmd, a_cmd]
 ```
 
 `delta_cmd` (rad) and `a_cmd` (m/s²) are the raw commands sent to the
-actuator lag filters — not the actual steering angle / acceleration
+actuator lag filters, not the actual steering angle / acceleration
 themselves (those are states 6 and 7 above, which lag behind `u`).
 
 ### Building the prediction model (`model/bicycle_model.py`)
@@ -522,11 +522,11 @@ Before the MPC can plan anything, it needs a way to answer the question:
 *"if the car is currently in error state `x`, and a steering/throttle
 command `u` is applied, what will the error state be a tiny fraction of a
 second later?"* That question, answered mathematically, is the **prediction
-model**. This section builds it up from scratch — the general form, the two
+model**. This section builds it up from scratch: the general form, the two
 physical models that get blended into it, and finally how it's converted
 into the exact numbers the solver uses.
 
-The car itself is approximated as a **bicycle model** — instead of four
+The car itself is approximated as a **bicycle model**: instead of four
 separate wheels, it's treated as one wheel on the front axle and one wheel
 on the rear axle, both sitting on the car's centreline. This is a standard
 simplification in vehicle control: it captures the two things that matter
@@ -548,7 +548,7 @@ command (u)."** `A` and `B` are just tables of numbers (matrices) that say
 *how much* of each state and each command feeds into the rate of change of
 every other state. This is "continuous-time" because `ẋ` is a true
 instantaneous rate of change (like a speedometer reading), not a per-tick
-step — that comes later.
+step; that comes later.
 
 Recall the 8-state error vector and 2-input command vector from above:
 
@@ -561,7 +561,7 @@ So `A` is an **8×8** grid of numbers and `B` is an **8×2** grid of numbers.
 Reading the grid: **entry `A[row, col]` is a multiplier saying "how much
 does the current value of state `col` contribute to the rate of change of
 state `row`."** Most entries are zero, because most states have no direct
-physical influence on most other states — only a handful of meaningful
+physical influence on most other states, only a handful of meaningful
 physical relationships exist, and those are the only non-zero numbers in
 the grid. Two different physical assumptions produce two different sets of
 numbers for `A` (`B` turns out to be the same in both), described next.
@@ -569,7 +569,7 @@ numbers for `A` (`B` turns out to be the same in both), described next.
 #### 1. Kinematic model (used below ~1 m/s)
 
 At very low speed, the tyres haven't built up any real sideways
-(cornering) grip yet — the car turns purely by geometry, the same way
+(cornering) grip yet, so the car turns purely by geometry, the same way
 pushing a shopping trolley by its handle makes it pivot. The physical
 relationships are:
 
@@ -580,10 +580,10 @@ relationships are:
 
 In plain words: *"how fast the car drifts sideways off the path depends on
 how much it's currently pointing the wrong way, scaled by speed"* (turn
-your wheels while stationary and nothing happens — sideways drift needs
+your wheels while stationary and nothing happens, sideways drift needs
 forward motion to convert into it), and *"how fast the car's heading is
 changing depends on the current steering angle and speed, via the
-wheelbase"* (standard Ackermann steering geometry — a longer car turns more
+wheelbase"* (standard Ackermann steering geometry: a longer car turns more
 slowly for the same steering angle).
 
 Every other state either isn't affected in this simple model, or follows
@@ -615,7 +615,7 @@ A_kin[2, 6] = v_x_safe / L      # ė_psi = v_x/L * delta_act  (Ackermann geometr
 #### 2. Dynamic model (used above ~2.5 m/s)
 
 At higher speed, tyre grip (cornering stiffness × slip angle) dominates
-over pure geometry — this is the regime a real car spends most of its time
+over pure geometry, and this is the regime a real car spends most of its time
 in. It's the standard linearised bicycle model, derived from Newton's laws
 for a rigid body sliding and rotating in a plane, assuming small slip
 angles:
@@ -629,12 +629,12 @@ angles:
 ```
 
 `Cf`/`Cr` are the front/rear cornering stiffnesses (N/rad, from
-`VehicleParams` — how much sideways force a tyre generates per radian of
+`VehicleParams`, how much sideways force a tyre generates per radian of
 slip angle), `lf`/`lr` are the distances from the car's centre of mass to
 each axle, `m` is mass, and `Iz` is yaw inertia (how hard it is to make the
 car spin, similar to how a figure skater with arms out spins slower). The
 `1/vx` terms exist because at higher speed, the same sideways drift
-produces a *smaller* slip angle — the tyre has rolled further forward for
+produces a *smaller* slip angle. The tyre has rolled further forward for
 the same amount of sideways motion, so it "notices" the slide less, and
 grip builds up more gradually rather than instantly.
 
@@ -668,7 +668,7 @@ A_dyn[3, 6] = (2*Cf * lf) / Iz                               # Steering → yaw 
 ```
 
 Notice row 1 (`e_y_dot`) here isn't just `ė_y = ...` like the kinematic
-model — it's a *second-order* relationship (`ë_y`, acceleration of lateral
+model, it's a *second-order* relationship (`ë_y`, acceleration of lateral
 error), so the state `e_y_dot` itself needs its own row saying `ė_y = 
 e_y_dot` (row 0, entry `[0,1] = 1`) before row 1 can describe how
 `e_y_dot` itself accelerates. This is the standard trick for turning a
@@ -679,7 +679,7 @@ all.
 
 #### 3. Shared rows (identical in both models)
 
-Four rows don't depend on which physical regime is active — they're either
+Four rows don't depend on which physical regime is active, they're either
 structural bookkeeping or simple decay behaviour, so both `A_kin` and
 `A_dyn` set them identically:
 
@@ -693,9 +693,9 @@ A_kin[7, 7] = A_dyn[7, 7] = -1.0 / tau_a      # da_act/dt = -a_act/tau_a
 The last two rows describe **actuator lag**: a real steering rack or
 throttle doesn't jump instantly to a commanded value, it eases toward it.
 Left alone (no new command), `delta_act` and `a_act` naturally decay back
-toward zero over a time constant `tau_delta`/`tau_a` — like a stretched
+toward zero over a time constant `tau_delta`/`tau_a`, like a stretched
 spring relaxing. What actually *drives* them toward the commanded value is
-the input matrix `B` (8×2 — one column per command, `delta_cmd` and
+the input matrix `B` (8×2, one column per command, `delta_cmd` and
 `a_cmd`), which is identical for both the kinematic and dynamic models:
 
 ```
@@ -716,7 +716,7 @@ B[7, 1] = 1.0 / tau_a       # a_cmd drives the acceleration lag integrator
 ```
 
 Together, row 6 of `A` and row 6 of `B` combine into the classic
-first-order lag equation `dδ_act/dt = (delta_cmd − δ_act) / tau_delta` —
+first-order lag equation `dδ_act/dt = (delta_cmd − δ_act) / tau_delta`:
 the actuator moves toward the command, at a rate proportional to how far
 away it still is (the `-δ_act/tau_delta` self-decay term lives in `A`,
 the `+delta_cmd/tau_delta` "pull toward the target" term lives in `B`).
@@ -726,9 +726,9 @@ the `+delta_cmd/tau_delta` "pull toward the target" term lives in `B`).
 Putting `A` and `B` together, `ẋ = A·x + B·u` means: multiply each row of
 `A` by the entire state vector `x` (a dot product), then add the matching
 row of `B` multiplied by `u`; the result is the rate of change of that one
-state. Spelling out just the two most important rows — using the dynamic
+state. Spelling out just the two most important rows, using the dynamic
 model's `e_y_dot` row and the kinematic model's `e_psi` row as concrete
-examples — the matrix multiplication `A·x` expands into exactly the
+examples, the matrix multiplication `A·x` expands into exactly the
 physical equations from sections 1 and 2:
 
 ```
@@ -748,7 +748,7 @@ Row 2 (e_psi) of A_kin · x  =  [v_x/L]·delta_act  =  ė_psi
   ← exactly the kinematic-model equation from section 1
 ```
 
-Every zero entry in the row simply means "this state has no effect here" —
+Every zero entry in the row simply means "this state has no effect here",
 the dot product just drops those terms out. This is the whole point of
 writing the physics as a matrix: instead of writing eight separate
 equations by hand, `Ad @ x + Bd @ u` (one line of code) computes all eight
@@ -759,7 +759,7 @@ sequence.
 #### 4. Blending kinematic and dynamic models
 
 A single linear model can't represent the car well across its whole speed
-range — the kinematic model breaks down once tyres start sliding, and the
+range: the kinematic model breaks down once tyres start sliding, and the
 dynamic model's `1/vx` terms blow up as speed approaches zero. Rather than
 switching abruptly between the two (which would cause a visible jump/jerk
 in the car's predicted behaviour right at the switch-over speed), the two
@@ -775,11 +775,11 @@ pure kinematic model below 1 m/s, pure dynamic model above 2.5 m/s, and a
 proportional mix of the two matrices' numbers in between (e.g. at
 `alpha = 0.5`, every entry of `A_c` is exactly halfway between the
 matching entry of `A_kin` and `A_dyn`). `B` is identical in both models, so
-it doesn't need blending — it's used unchanged regardless of `alpha`.
+it doesn't need blending, it's used unchanged regardless of `alpha`.
 
 #### 5. From continuous to discrete: Zero-Order Hold (ZOH)
 
-Everything above describes `ẋ = A_c·x + B_c·u` — an instantaneous,
+Everything above describes `ẋ = A_c·x + B_c·u`, an instantaneous,
 continuous-time rate of change. But the MPC doesn't operate continuously;
 it makes one decision every `dt = 0.05 s` and holds that decision fixed
 until the next tick. What it actually needs is a **discrete** one-step
@@ -789,18 +789,18 @@ prediction:
 x[k+1] = Ad·x[k] + Bd·u[k]
 ```
 
-— "given the state right now (`x[k]`) and the command I'm about to hold for
+In plain terms, "given the state right now (`x[k]`) and the command I'm about to hold for
 the next 0.05 s (`u[k]`), what will the state be exactly one tick later
 (`x[k+1]`)?" Converting the continuous equation into this discrete one is
 called **discretisation**, and the method used here is **Zero-Order Hold
-(ZOH)** — the exact, mathematically correct discretisation for a system
+(ZOH)**, the exact, mathematically correct discretisation for a system
 where the input is held constant between updates (a "zero-order hold" on
 the input), which is precisely how MPC applies its commands. This is more
 accurate than a simpler method like Euler's approximation, which introduces
 compounding error at every step.
 
-Both `Ad` and `Bd` are computed together via one matrix exponential (`expm`
-— the matrix equivalent of `e^x`) on an augmented matrix, which sidesteps
+Both `Ad` and `Bd` are computed together via one matrix exponential (`expm`,
+the matrix equivalent of `e^x`) on an augmented matrix, which sidesteps
 having to directly invert `A_c` (a numerically risky operation if `A_c` is
 close to singular):
 
@@ -816,7 +816,7 @@ Md = scipy.linalg.expm(M * dt)
 Ad, Bd = Md[:8, :8], Md[:8, 8:]
 ```
 
-`Ad` and `Bd` are what actually get handed to the solver — the continuous
+`Ad` and `Bd` are what actually get handed to the solver, the continuous
 matrices `A_c`/`B_c` above exist only as an intermediate step to build them
 correctly.
 
@@ -825,7 +825,7 @@ correctly.
 Now that `Ad`/`Bd` exist concretely, it's worth being precise about what
 "linear" actually means here, since the word gets used constantly below. A
 model is **linear** if every output is just a fixed multiple of each input,
-added together — double an input and its contribution exactly doubles, and
+added together, double an input and its contribution exactly doubles, and
 no input's effect depends on the current value of another input. Every
 matrix built above (`A`, `B`, `Ad`, `Bd`) is exactly this: a table of fixed
 multipliers, so `x[k+1] = Ad·x[k] + Bd·u[k]` is always "this state times a
@@ -833,18 +833,18 @@ fixed number, plus that state times a fixed number, ...", never anything
 that bends or saturates depending on where the car currently is.
 
 That rigid structure is what lets the solver treat "find the best control
-sequence" as a **Quadratic Program (QP)** — see [The cost function and
+sequence" as a **Quadratic Program (QP)**, see [The cost function and
 QP](#the-cost-function-and-qp-controlleroptimiserpy) and [The
-solver](#the-solver) below — with a fast, predictable solve and a
+solver](#the-solver) below, with a fast, predictable solve and a
 guaranteed global optimum every tick.
 
-The real plant (`model/vehicle_physics.py`) has no such structure — its
+The real plant (`model/vehicle_physics.py`) has no such structure: its
 tyre forces, weight transfer, and heading kinematics genuinely curve and
 saturate (see the tyre section above for concrete numbers). If the MPC
 tried to plan against those equations directly, the relationship between
 `x[k+1]` and `(x[k], u[k])` would no longer reduce to a fixed multiplier
 table, and the problem would stop being a QP and become a much harder
-nonlinear program (NLP) — no guaranteed optimum, no fast off-the-shelf
+nonlinear program (NLP), no guaranteed optimum, no fast off-the-shelf
 solver, and solve times that can balloon unpredictably.
 
 That's exactly why the MPC doesn't plan against the real nonlinear plant
@@ -852,14 +852,14 @@ directly: it builds the much simpler **linear** approximation derived above
 (good near the car's *current* operating point, thanks to the
 kinematic/dynamic blend) and re-linearises it fresh every single tick as
 speed and conditions change. The nonlinear plant is reserved for simulating
-what actually happens to the "real" car in response to a command — see
+what actually happens to the "real" car in response to a command, see
 [Configuring the Vehicle](#configuring-the-vehicle-modelvehicle_physicspy)
 above.
 
 #### Note on OSQP sparsity
 
 `Ad` and `Bd` are consumed a few sections down by **OSQP**, the QP
-(Quadratic Program — see [The solver](#the-solver) below) solver that
+(Quadratic Program, see [The solver](#the-solver) below) solver that
 actually computes the steering/throttle command every tick. OSQP has a
 quirk that affects how these matrices must be initialised, explained here
 since it's decided at model-construction time even though it only matters
@@ -869,8 +869,8 @@ All matrices start as `1e-12` (not exact `0.0`) rather than `np.zeros(...)`.
 Here's why:
 
 - **What a sparsity pattern is:** OSQP analyses which matrix entries are
-  nonzero on its *first* solve, then caches that pattern — the *set* of
-  matrix positions holding a nonzero value — for speed on every later
+  nonzero on its *first* solve, then caches that pattern (the *set* of
+  matrix positions holding a nonzero value) for speed on every later
   solve.
 - **The bug this avoids:** if a later solve produces an entry that rounds
   exactly to zero where it was previously nonzero (which can happen as
@@ -903,7 +903,7 @@ subject to:
    -3.5 - slack ≤ x[0,k] ≤ 3.5 + slack    (soft ±3.5 m lane corridor on e_y)
 ```
 
-`Q`, `R`, `R_rate` are diagonal weight matrices — one number per state/input
+`Q`, `R`, `R_rate` are diagonal weight matrices, one number per state/input
 dimension, controlling how much the solver cares about minimising that
 particular quantity relative to the others (see the
 [Manual Tuning Guide](junior_project_mpc_docs.md#26-manual-tuning-guide) and
@@ -911,13 +911,13 @@ the comments in `settings.py` for what each entry means practically). They're
 expressed and injected as
 square roots (`sqrtQ`, `sqrtR`, `sqrtR_rate`) so the cost can be written with
 `cp.sum_squares`, which CVXPY maps efficiently onto OSQP's internal
-quadratic-cost matrix — this is a numerical-stability/implementation choice,
+quadratic-cost matrix, this is a numerical-stability/implementation choice,
 not a change in what's being penalised (`‖√w·x‖² = w·x²`).
 
 **Why states 5-7 (`e_a`, `delta_act`, `a_act`) are never tuned:** only the
 first 5 diagonal entries of `Q` (`e_y` through `e_v`) and both entries of
 `R`/`R_rate` are exposed to the offline tuner (`TUNABLE_Q_IDX = [0,1,2,3,4]`
-in `tuner/offline_tuner.py`) — for two different reasons:
+in `tuner/offline_tuner.py`), for two different reasons:
 
 - **`Q[5,5]` (`e_a`)** stays at 0 because that state is a structural
   placeholder with no independent target. Penalising it would just add
@@ -925,7 +925,7 @@ in `tuner/offline_tuner.py`) — for two different reasons:
 - **`Q[6,6]`/`Q[7,7]` (`delta_act`, `a_act`)** also stay at 0, for a
   different reason: those are *measurements* of where the actuator
   currently is, not tracking errors. There's no "correct" value for them
-  to be pulled toward — the actual steering/acceleration commands are
+  to be pulled toward: the actual steering/acceleration commands are
   already penalised directly through `R` and `R_rate` instead.
 
 **The rate-of-change (smoothness) cost is split into two pieces** because
@@ -944,7 +944,7 @@ cost += sum(sum_squares(sqrtR_rate * du))
 **The soft lane boundary** (`±3.5 m` on `e_y`, matching `TRACK_HALF_WIDTH`)
 uses a slack variable rather than a hard constraint. `W_slack = 10000.0` is
 large enough that the solver will essentially never choose to violate the
-corridor when a compliant solution exists — but because it's *soft*
+corridor when a compliant solution exists, but because it's *soft*
 (penalised, not forbidden), the QP stays solvable even when the car is
 already outside the corridor (e.g. mid-recovery from an off-track excursion),
 where a hard constraint would make the problem infeasible and the solver
@@ -955,7 +955,7 @@ expression are built **once** using `cp.Parameter` placeholders rather than
 plain numbers. Every subsequent solve only updates the parameter *values*
 (`Ad`, `Bd`, `x0`, weights, etc.) and re-invokes the same compiled problem.
 This lets OSQP reuse its cached factorisation and warm-start from the
-previous solution — rebuilding the whole CVXPY expression graph from scratch
+previous solution, rebuilding the whole CVXPY expression graph from scratch
 every tick would be roughly 10× slower and is unnecessary since the
 problem's *structure* (which variables relate to which) never changes,
 only the numbers plugged into it.
@@ -967,10 +967,10 @@ error + control effort + smoothness, all squared) is a **quadratic**
 function of the unknowns (`x` and `u` over the whole horizon), and every
 constraint (dynamics, actuator limits, lane boundary) is **linear**. A
 quadratic cost with linear constraints is called a **Quadratic Program
-(QP)** — a well-studied category of optimisation problem for which fast,
+(QP)**, a well-studied category of optimisation problem for which fast,
 reliable, purpose-built solvers exist. This is precisely why the cost
 function was built the way it was (squared errors, not e.g. absolute
-values or something more exotic) — it's what keeps the whole problem inside
+values or something more exotic), it's what keeps the whole problem inside
 this fast-to-solve category rather than needing a slower, more general
 optimiser.
 
@@ -982,33 +982,33 @@ never violating a hard constraint (actuator limits) and only softly
 violating the lane boundary if truly necessary. It does this by starting
 from a guess, checking whether nudging that guess in some direction reduces
 the cost while respecting the constraints, and repeating until no further
-nudge helps — this iterative process is what OSQP's `max_iter`/`eps_abs`
+nudge helps. This iterative process is what OSQP's `max_iter`/`eps_abs`
 settings control (how many nudges it's allowed, and how small a nudge
 counts as "close enough" to stop).
 
 **Primary: OSQP.** Exploits the QP's sparsity (most matrix entries are
-zero, so the solver skips work on them) and supports warm-starting —
+zero, so the solver skips work on them) and supports warm-starting,
 reusing the *previous* tick's solution as this tick's starting guess. Since
 consecutive MPC solves in a receding horizon differ by only one step (the
 horizon just slides forward by 0.05 s each time), the previous answer is
 already an excellent starting guess, so warm-started solves typically
-converge in ~50-200 nudges instead of 500-2000 from a cold start — this is
+converge in ~50-200 nudges instead of 500-2000 from a cold start, and this is
 what makes solving a QP fast enough to happen 20 times per second. Typical
 solve time is 1-5 ms at `N=25`.
 
 **Fallback: Clarabel.** A different (interior-point) solving strategy that
 is generally slower per solve but more numerically robust on
 poorly-behaved problems. It's only invoked if OSQP itself fails to reach a
-usable answer — returning infeasible, unbounded, or hitting numerical
+usable answer: returning infeasible, unbounded, or hitting numerical
 trouble or its iteration cap.
 
 **If both fail**, the simulator/tuner returns `None` and the caller holds
 the previous command; the live `mpc_core.MPCController` instead
-returns a full-brake command (`[u_prev[0], -a_max_brake]`) — braking is the
+returns a full-brake command (`[u_prev[0], -a_max_brake]`), braking is the
 safer default for a real vehicle than continuing to coast on a stale plan.
 
 **`OPTIMAL_INACCURATE`** (OSQP found an answer, but not to its full
-precision tolerance) is still accepted and used — refusing it and holding
+precision tolerance) is still accepted and used. Refusing it and holding
 the previous command would generally be worse than using a
 slightly-under-converged-but-still-reasonable solution at 20 Hz. The
 offline tuner counts these occurrences and applies a scoring penalty (see
@@ -1021,7 +1021,7 @@ run outright.
 The tuned `Q`, `R`, `R_rate` weights are optimised as if for a single
 "average" operating point. A handful of functions rescale `Q`/`R`/`R_rate`
 *every tick* to compensate for known, predictable ways the required control
-authority changes with speed and curvature — without needing a separate
+authority changes with speed and curvature, without needing a separate
 tuned weight set for every regime.
 
 **This section describes two generations of that idea.** The mechanism used
@@ -1029,11 +1029,11 @@ to be a family of ~15 interacting functions that scanned *forward* along the
 path (a "lookahead" scan producing a peak curvature ahead, `kappa_max_abs`)
 and reweighted the cost matrices in anticipation of a corner not yet
 reached. That whole family was deleted and replaced by three simpler,
-**current-state-only** factors — no forward scan at all.
+**current-state-only** factors, no forward scan at all.
 
 "Current-state gain scheduling" below documents what runs today;
 "Historical: the lookahead gain-scheduling family" documents what it
-replaced, kept for the reasoning — why it was tried, what it got right, and
+replaced, kept for the reasoning: why it was tried, what it got right, and
 the structural argument for why reweighting *today's* cost based on a
 *future* corner cannot substitute for a prediction model that actually
 represents the road bending. See the [Second controller: nonlinear
@@ -1043,12 +1043,12 @@ argument plays out fully.
 #### Current-state gain scheduling
 
 Every function below reacts only to curvature/error the car is measuring
-*right now* — none of them scan the path ahead. `adaptive_R_scaling` and
+*right now*, none of them scan the path ahead. `adaptive_R_scaling` and
 `adaptive_R_rate` predate the corner-factor rewrite (below) and carry over
 unchanged; the corner-factor blend and the heading-error accel/brake
 asymmetry were introduced by that rewrite.
 
-**`adaptive_R_scaling(vx, R)`** — increases steering cost with speed:
+**`adaptive_R_scaling(vx, R)`** increases steering cost with speed:
 
 ```
 steer_scale = 1 + (1.5 · vx) / (6.0 + vx)      # → 1.0 at vx=0, → 2.5 as vx→∞
@@ -1058,14 +1058,14 @@ accel_scale = 1 + 0.05 · vx                     # gentler linear scale
 At higher speed, the same steering angle produces much more lateral
 acceleration (`a_lat ≈ vx² · κ`), so the same-magnitude steering command is
 more destabilising. This Hill-function form was chosen over a straight
-linear ramp because it *saturates* — steering cost approaches but never
+linear ramp because it *saturates*: steering cost approaches but never
 exceeds 2.5× base, so the controller is never effectively locked out of
 steering at very high speed. The half-saturation point (`vx_half = 6.0`)
 sits in the same speed range where the kinematic→dynamic model blend
 transitions (1-2.5 m/s), so extra steering conservatism ramps up exactly
 where the internal prediction model itself becomes less certain.
 
-**`adaptive_R_rate(kappa, R_rate, enable_in_corners=True)`** — softens the
+**`adaptive_R_rate(kappa, R_rate, enable_in_corners=True)`** softens the
 steering *jerk* penalty in tight corners, via a floor on the current-position
 curvature alone:
 
@@ -1074,28 +1074,28 @@ during_scale = max(0.625, 1 / (1 + 3·κ))     # current-position curvature only
 ```
 
 `κ` (curvature) is estimated causally from the plant's own current yaw rate
-and speed (`curvature_estimate()`: `κ = |yaw_rate| / vx`) — it reflects the
+and speed (`curvature_estimate()`: `κ = |yaw_rate| / vx`), it reflects the
 curvature the car is *currently experiencing*. In a straight, the full
 smoothness penalty applies. In a tight corner, the penalty is floored rather
-than removed entirely — enough softening to let the controller make the fast
+than removed entirely, enough softening to let the controller make the fast
 steering changes a tight corner demands, without ever allowing the rate cost
 to vanish completely (which would permit arbitrarily rapid, oscillatory
 steering). (This function used to also combine a second, lookahead-driven
-floor via `min()` — see "Historical" below; the corner-factor rewrite
+floor via `min()`, see "Historical" below; the corner-factor rewrite
 removed that half, leaving only the current-position floor shown above.)
 
-Both functions return a **copy** of the base matrix — the tuned weights in
+Both functions return a **copy** of the base matrix, the tuned weights in
 `settings.py` are never mutated, only scaled per-tick on top of.
 
 #### Corner-factor scheduler
 
 Everything from here through `steer_rate_anti_hunt` above reacts to
-curvature the car is *at* right now — none of it anticipates a corner ahead.
+curvature the car is *at* right now, none of it anticipates a corner ahead.
 `mpc_core.py`'s `_corner_factor`/`_low_speed_corner_boost`/`_blend` (and the
 offline mirror, `controller/model_utils.py`'s functions of the same name)
 turn that same current-position `κ` into a single continuous 0→1 "how much
 in a corner am I" fraction, then blend several weights between a straight
-endpoint and a corner endpoint on that fraction — replacing the entire
+endpoint and a corner endpoint on that fraction, replacing the entire
 forward-scanning lookahead family documented under "Historical" below.
 
 ```
@@ -1105,13 +1105,13 @@ corner_frac = clip(corner_factor + low_speed_boost, 0, 1)
 ```
 
 - **`corner_factor`** is a saturating curve of current curvature only (no
-  forward scan, no decay-distance timer, no hysteresis state) — entry and
+  forward scan, no decay-distance timer, no hysteresis state), entry and
   exit are exactly symmetric, driven purely by how `κ` itself rises and
   falls tick to tick. `corner_factor_k` (default 8.0) sets the curve's
   sharpness.
 - **`low_speed_corner_boost`** adds extra weight toward the "full corner"
-  endpoint specifically at low speed, but **only while `corner_factor > 0`**
-  — the multiplicative gate on `corner_factor` makes this an exact no-op on
+  endpoint specifically at low speed, but **only while `corner_factor > 0`**.
+  The multiplicative gate on `corner_factor` makes this an exact no-op on
   a straight regardless of speed. That gate is what makes it safe where a
   since-deleted mechanism (`low_speed_steer_rate_boost`, gated on speed
   alone) was not: with no curvature signal to distinguish the two, that
@@ -1132,11 +1132,11 @@ corner_frac = clip(corner_factor + low_speed_boost, 0, 1)
   `Q_ey_eff`, `Rrate_steer_corner_blend`, `R_steer_corner_blend`, ...) so a
   log shows exactly where each blend landed, not just the final QP weights.
 
-**Heading-error-driven accel/brake asymmetry (always-on)** — independent of
+**Heading-error-driven accel/brake asymmetry (always-on)**: independent of
 `corner_frac` above, a continuous fraction of
 current `|e_psi|` scales `r_a_accel` (acceleration effort) toward a boost
-ceiling — making the MPC less willing to keep accelerating through a
-heading error it should be correcting — and scales `r_a_brake` toward a
+ceiling, making the MPC less willing to keep accelerating through a
+heading error it should be correcting, and scales `r_a_brake` toward a
 floor, freeing up braking authority specifically when heading error is
 large:
 
@@ -1147,13 +1147,13 @@ r_a_brake_eff = r_a_brake · (1 - (1 - epsi_ra_brake_floor) · frac_epsi)
 ```
 
 Not a replacement for `adaptive_R_scaling`'s current-speed-driven `R[0,0]`
-scaling above, which this leaves untouched — the two compose.
+scaling above, which this leaves untouched: the two compose.
 
 `adaptive_R_rate`'s current-position floor above used to combine with a
 second, lookahead-driven floor via `min()` (whichever was more aggressive
-won) — see "Historical" below for that half.
+won), see "Historical" below for that half.
 
-**`adaptive_Q_scaling(e_y, Q, enabled)`** — softens the lateral-error cost
+**`adaptive_Q_scaling(e_y, Q, enabled)`** softens the lateral-error cost
 `Q[0,0]` when the car is already close to the centreline, to reduce
 small-error hunting/chatter:
 
@@ -1164,21 +1164,21 @@ scale = 1.0                                               |e_y| >= ey_hi
 ```
 
 - **Why:** steering sign-reversal rate was observed rising as `|e_y|` gets
-  *smaller* live — the car darting across the centreline rather than
+  *smaller* live, the car darting across the centreline rather than
   settling onto it. A quadratic cost pulls toward zero error with the same
   proportional strength no matter how small the error already is, a
   plausible contributor to a correct-overcorrect cycle right where the
   controller should be settling, not correcting.
 - **Status:** `ADAPTIVE_Q_SCALING_ENABLED = True` in `settings.py`
   (**enabled by default**, to match the live controller). Still not
-  reproduced on the offline recorded-map rollout — there, reversal rate
-  rises *with* `|e_y|`, the opposite direction — so it may be a live-only
+  reproduced on the offline recorded-map rollout, there, reversal rate
+  rises *with* `|e_y|`, the opposite direction, so it may be a live-only
   symptom of sensor noise, delay-compensation dynamics, or the plant
   behaving differently from the linear model near zero slip. Re-validate
   against `VALIDATION_SUITE`/the recorded map before any further re-tuning
   around it.
 
-**`enable_in_corners` (an `adaptive_R_rate` parameter, on by default)** —
+**`enable_in_corners` (an `adaptive_R_rate` parameter, on by default)** is
 renamed from `disable_in_corners`, whose `True`/`False` polarity was inverted
 from what the name suggested. Setting it `False` *undoes* `adaptive_R_rate`'s
 softening once estimated curvature exceeds a small "cornering" threshold
@@ -1190,7 +1190,7 @@ warm-starts on ticks straddling it. Kept in the code, gated on (softening
 active, the setting that avoids the discontinuity), as a documented dead end
 rather than deleted, so it isn't accidentally re-tried without this context.
 
-**`steer_rate_anti_hunt(kappa, e_y, R_rate, enabled, e_psi=0.0)`** — stacks on
+**`steer_rate_anti_hunt(kappa, e_y, R_rate, enabled, e_psi=0.0)`** stacks on
 top of `adaptive_R_rate` (not a replacement): multiplies `R_rate[0,0]` **up**
 by a fixed boost ceiling (6.0×) instead of softening it, strongest when the
 car is simultaneously straight (`κ` near zero), centred (`|e_y|` small), *and*
@@ -1208,22 +1208,22 @@ scale = 1 + (6.0 - 1) · boost_kappa · boost_ey · boost_epsi
   centred, aligned" ideal, fading smoothly (never snapping) as any one of
   them grows.
 - **Why `e_psi`:** guards against a car that enters a straight *misaligned*
-  (large `|e_psi|`, small `|e_y|` — e.g. just exited a corner still pointed
+  (large `|e_psi|`, small `|e_y|`, e.g. just exited a corner still pointed
   the wrong way). Without it, `κ`/`e_y` alone can't distinguish "straight
   and correctly aligned" from "straight but needs to yaw back into line",
   making exactly the correction it needs artificially expensive.
 - **What it covers:** the "already on the line, not cornering" regime
-  `adaptive_R_rate` alone doesn't address — that function only ever softens
+  `adaptive_R_rate` alone doesn't address, that function only ever softens
   the rate cost for corners, never stiffens it for straights.
 - **Status:** `STEER_RATE_ANTI_HUNT_ENABLED = True` in `settings.py`
   (**enabled by default**). Experimental, not validated.
 
 #### Historical: the lookahead gain-scheduling family (removed)
 
-An entire family of mechanisms — lookahead corner anticipation, demand
+An entire family of mechanisms, lookahead corner anticipation, demand
 normalisation, U-turn detection, straight-line adjustments, precomputed
 corner segmentation (`CornerMap`), curvature forcing, and the low-speed
-steering-rate boost — scanned forward along the path every tick and
+steering-rate boost, scanned forward along the path every tick and
 reweighted `Q`/`R`/`R_rate` in anticipation of a corner not yet reached.
 All of it was deleted by the corner-factor rewrite.
 
@@ -1234,52 +1234,52 @@ several of the ideas were tried, measured, and rejected for specific,
 non-obvious reasons worth not re-discovering by accident.
 
 **Precomputed shaped heading-lead profile (`use_precomputed_heading_profile`)**
-— a related but distinct idea, unaffected by the corner-factor rewrite
+is a related but distinct idea, unaffected by the corner-factor rewrite
 above: instead of reweighting Q/R given an existing tracking error,
 precompute a heading REFERENCE (`psi_target`, a new `raceline.csv` column)
 that already leads the geometric path tangent by however much yaw the car
 can achieve at its planned speed between here and the next station.
 `_error_state` measures `e_psi` against this instead of the geometric
-tangent (only `e_psi` — `e_y` is unaffected). Structurally different from
+tangent (only `e_psi`, `e_y` is unaffected). Structurally different from
 curvature-forcing above: it changes what's true at `k=0` (a real, current
 error) rather than telling the QP about a future obligation it's free to
-satisfy however is cheapest — synthetic testing found this avoids
+satisfy however is cheapest; synthetic testing found this avoids
 curvature-forcing's wrong-direction transient entirely.
 
 See `docs/reference/control_mechanisms.md`'s "Precomputed shaped heading-lead
 profile" section for the full design, the fixed-lookahead version that was
 tried and rejected first (immediate full-lock steering), and an important
 caveat about this track's lack of true straights. Live-tested with a
-high-variance, inconclusive result and currently shipped off by default —
+high-variance, inconclusive result and currently shipped off by default,
 see `tuning.md` §4.5c for the full status.
 
 **Delay compensation (`mpc_core.py`'s `predict_ahead()` / `_update_n_delay()`,
-live controller only)** — the live car's perception→planning→control→actuation
+live controller only)**: the live car's perception→planning→control→actuation
 latency is unknown and time-varying, unlike the offline simulator's fixed
 `DELAY_STEPS`.
 
 - **Mechanism:** each solve is told how old the pose it's using actually is
   (`pose_age_s`, from the pose message's own timestamp), converts that into
   an integer step count, and rolls the error state forward through that
-  many recently-issued commands before solving — so the QP plans against
+  many recently-issued commands before solving, so the QP plans against
   the state the car will actually be in, not a stale measurement.
 - **Why filtered first:** the raw step count is low-pass filtered and
   hysteresis-gated before use. Ordinary control-loop jitter would otherwise
   flip the raw `round(pose_age_s / dt)` between adjacent integers tick to
   tick, and each flip discontinuously changes how far the state gets rolled
-  forward — injecting a step disturbance into the QP at the control rate
+  forward, injecting a step disturbance into the QP at the control rate
   purely from measurement noise, independent of any real latency change.
 
 **Tracking-error speed gate (`control_utils.tracking_error_speed_gate()`,
-both live nodes)** — `curvature_speed()`'s target only looks at path shape,
+both live nodes)**: `curvature_speed()`'s target only looks at path shape,
 with no way to know whether the car is actually near that path right now.
 
 - **Mechanism:** scales the speed target down (linear ramp, floored so the
   car always retains enough speed to steer) once lateral or heading
   tracking error grows large.
 - **Rise-rate limiter:** paired with a cap on how fast the resulting speed
-  target may *rise* — braking is never delayed, only the "speed up"
-  direction is capped — so the target doesn't jump around tick to tick.
+  target may *rise*, braking is never delayed, only the "speed up"
+  direction is capped, so the target doesn't jump around tick to tick.
 
 ### Where this is duplicated, and why
 
@@ -1297,7 +1297,7 @@ by `tuner/offline_tuner.py` will not transfer faithfully to the live controller.
 Both QPs enforce a hard per-step slew-rate limit (`du_max`) on top of the soft
 `R_rate` cost. This used to be a live-only constraint, which meant the tuner
 was optimising against a plant that could change steering arbitrarily fast
-while the real car was clamped — a silent parity break independent of any
+while the real car was clamped, a silent parity break independent of any
 weight choice.
 
 `controller/optimiser.py` now takes a `du_max` too (baked into
@@ -1374,7 +1374,7 @@ settings.py: Q/R/R_rate templates, VALIDATION_SUITE, INITIAL_CONDITIONS
 ### Search space
 
 Rather than searching over raw weight values directly, CMA-ES searches over
-9 **multiplicative scale factors** — one per tunable diagonal entry
+9 **multiplicative scale factors**, one per tunable diagonal entry
 (`TUNABLE_Q_IDX = [0,1,2,3,4]`, `TUNABLE_R_IDX = [0,1]`,
 `TUNABLE_R_RATE_IDX = [0,1]`):
 
@@ -1384,7 +1384,7 @@ R[i,i]      = vec[j] · R_template[i,i]
 R_rate[i,i] = vec[j] · R_rate_template[i,i]
 ```
 
-Each factor is bounded to `[0.1, 10.0]` — one decade of adjustment in either
+Each factor is bounded to `[0.1, 10.0]`, one decade of adjustment in either
 direction from the template. Searching in multiplicative (rather than
 absolute) space keeps the problem dimensionally consistent regardless of
 the template's starting magnitude, and the `0.1` floor (rather than `1.0`)
@@ -1392,7 +1392,7 @@ specifically allows the tuner to discover that a weight should be *reduced*
 below its starting point, not only increased.
 
 The starting point `x0 = sqrt(lower · upper) = 1.0` for every parameter is
-the geometric (log-scale) midpoint of `[0.1, 10.0]` — i.e. "start the search
+the geometric (log-scale) midpoint of `[0.1, 10.0]`, i.e. "start the search
 exactly at the current template weights, unscaled," which is the natural
 neutral point for a multiplicative search space (the arithmetic mean would
 be biased toward the larger bound). This fixed midpoint is CMA-ES's default
@@ -1404,7 +1404,7 @@ replaced by the Optuna pre-pass's best result instead.
 `USE_OPTUNA_PRESEARCH` in `settings.py` (default `True`) runs a short
 Optuna TPE (Tree-structured Parzen Estimator) search *before* CMA-ES starts,
 using `OPTUNA_PRE_PASS_EVALS` true rollouts (default 10% of `MAX_EVALS`) out
-of a separate mini-budget — this phase's cost is in addition to, not carved
+of a separate mini-budget. This phase's cost is in addition to, not carved
 out of, the main `MAX_EVALS` budget. TPE is a cheaper, less precise
 global search method than CMA-ES; the idea is to spend a small budget
 finding a promising general region of the 9-dimensional search space, then
@@ -1412,7 +1412,7 @@ start CMA-ES there instead of at the fixed geometric midpoint, so more of
 CMA-ES's own budget goes toward local refinement instead of coarse search.
 
 The pre-pass reuses the exact same objective (`parallel_evaluate_candidate`)
-and worker pool as the CMA-ES phase — no rollout logic is duplicated —
+and worker pool as the CMA-ES phase (no rollout logic is duplicated),
 running trials sequentially (`n_jobs=1`) since each trial already fans a
 single candidate out across every core via the pool; a second layer of
 Optuna-level parallelism would only oversubscribe the same cores. It
@@ -1429,18 +1429,18 @@ runs used it.
 > See the header of that file for the full list and consequences.
 
 Requires the optional `optuna` package (see
-[Dependencies](developer_guide.md#dependencies)) — only needed if this flag
+[Dependencies](developer_guide.md#dependencies)), only needed if this flag
 is enabled.
 
 ### CMA-ES: what it's doing and why
 
 CMA-ES (Covariance Matrix Adaptation Evolution Strategy) is a
-**derivative-free black-box optimiser** — it doesn't need a formula for how
+**derivative-free black-box optimiser**, it doesn't need a formula for how
 the score changes as a weight changes, only the ability to run a rollout
 and read off a score.
 
-**Why that matters here:** the objective (drive N corners well) is noisy —
-two rollouts with identical weights can score slightly differently — and
+**Why that matters here:** the objective (drive N corners well) is noisy,
+two rollouts with identical weights can score slightly differently, and
 has no clean formula connecting a weight to the score, the way fitting a
 straight line to data does. There's no calculus shortcut available, so any
 optimiser that needs one is off the table.
@@ -1451,7 +1451,7 @@ optimiser that needs one is off the table.
    (think: a fuzzy cloud centred on the current best guess).
 2. Sample a population of candidates from that cloud, and run a real
    rollout to score each one.
-3. Adapt the cloud's centre and shape toward the better-scoring region —
+3. Adapt the cloud's centre and shape toward the better-scoring region,
    learning, over generations, not just *where* good solutions are but
    which *directions* in parameter space matter and which don't.
 
@@ -1460,8 +1460,8 @@ additional techniques on top of plain CMA-ES:
 
 **BIPOP (bi-population) restarts.** Rather than one long single run, the
 optimiser interleaves "large" restarts (population size doubles each time
-via `incpopsize=2` — broader exploration, better at escaping local minima)
-with "small" restarts (reduced population — faster local refinement around
+via `incpopsize=2`, broader exploration, better at escaping local minima)
+with "small" restarts (reduced population, faster local refinement around
 the current best candidate). `max_restarts = 7` caps how many restarts the
 whole session gets.
 
@@ -1476,14 +1476,14 @@ keep the surrogate honest) get a real rollout. This is what lets `MAX_EVALS`
 (`CMA_stds = 0.23 · log(upper/lower)`)** control how large a jump CMA-ES
 takes when sampling new candidates early in the search. Since
 `log(10/0.1) ≈ 4.6`, this gives an initial per-dimension standard deviation
-of roughly `1.06` in log-space — large enough to explore meaningfully across
+of roughly `1.06` in log-space, large enough to explore meaningfully across
 the full decade of allowed adjustment, without being so large that early
 generations are mostly wasted on wildly implausible weight combinations.
 
 ### Parallel + serial evaluation
 
 Every CMA-ES candidate is evaluated across all tasks in
-`EVAL_TASKS` — the cross-product of `VALIDATION_SUITE` (the corner shapes
+`EVAL_TASKS`, the cross-product of `VALIDATION_SUITE` (the corner shapes
 from `settings.py`) and `INITIAL_CONDITIONS` (a nominal on-path start, plus
 a perturbed start with `ey0=0.2 m, epsi0=0.05 rad`, to force the tuner to
 find weights that also recover from imperfect starting position). Each
@@ -1497,29 +1497,29 @@ objective = 0.7 · weighted_mean(scores) + 0.3 · quantile(scores, TAIL_QUANTILE
 
 The 30% tail term exists specifically so CMA-ES can't find a weight set that
 scores well *on average* by driving one corner shape perfectly and another
-one badly — every task in the suite has to be reasonably good, not just the
+one badly, every task in the suite has to be reasonably good, not just the
 average.
 
 `TAIL_QUANTILE` (in `settings.py`, default `0.8`) replaced a hard `max()`.
 With the flat `DNF_PENALTY` of +3.0 (+6.0 off-track), the old `max()` let
 **one** unlucky task out of ten shift the objective by ~0.9 and swamp all
-twelve continuous quality metrics — measured, a plausible hand-picked gain set
+twelve continuous quality metrics. Measured, a plausible hand-picked gain set
 ranked 3rd-worst of six (below two deliberately pathological sets) purely
 because a single one of its ten tasks DNF'd. That is a discontinuous,
 high-variance signal for CMA-ES and a likely contributor to the ~10× spread in
-tuned gains across historical runs. A high quantile keeps the intent — punish
-weights that fail badly *somewhere* — while requiring more than one bad task
+tuned gains across historical runs. A high quantile keeps the intent, punish
+weights that fail badly *somewhere*, while requiring more than one bad task
 before it dominates. Set `TAIL_QUANTILE = 1.0` to recover the old behaviour
 exactly.
 
-### DNF conditions (offline tuner — tighter than the live simulator)
+### DNF conditions (offline tuner, tighter than the live simulator)
 
 A rollout inside the tuner is marked "did not finish" if any of:
 
-- `|e_y| ≥ 3.50 m` (left the track — matches `OFFTRACK_LIMIT`)
+- `|e_y| ≥ 3.50 m` (left the track, matches `OFFTRACK_LIMIT`)
 - 5 consecutive MPC solver failures (matches `MAX_FAILS`)
 - **Rolling stall check**: less than 3.0 m of forward progress in any
-  rolling 60-step (3 s) window — catches a car that hasn't technically left
+  rolling 60-step (3 s) window, catches a car that hasn't technically left
   the track or failed to solve, but also isn't actually driving anywhere
   (e.g. stuck oscillating in place).
 
@@ -1534,9 +1534,9 @@ After the search budget is exhausted (or `Ctrl+C` is pressed), two
 candidates are freshly evaluated **serially** (outside the noisy parallel
 pool, for a clean comparison):
 
-- **`xbest`** — the single best individual candidate observed across the
+- **`xbest`** is the single best individual candidate observed across the
   entire search.
-- **`xfavorite`** — the mean of CMA-ES's final search distribution, which
+- **`xfavorite`** is the mean of CMA-ES's final search distribution, which
   tends to be more robust/averaged than any one lucky sample.
 
 Whichever scores lower in this final clean evaluation is printed as the
@@ -1549,7 +1549,7 @@ result and appended to `tuning_history.txt`.
 Both the offline tuner and the simulator's **Show Metrics**/**Benchmark All
 Paths** buttons score a rollout through the exact same code path
 (`scoring.RolloutMetrics`), which is what guarantees a path scored live in
-the GUI and the same path scored offline produce matching numbers — there
+the GUI and the same path scored offline produce matching numbers, there
 is exactly one implementation of the scoring maths, not two independently
 maintained copies.
 
@@ -1561,17 +1561,17 @@ normalised (mostly to RMS values) at the end via `.finalize()`:
 | # | Metric | What it measures |
 |---|---|---|
 | 0 | `rmse` | Combined tracking error: `1.2·e_y² + 0.4·e_psi²`, root-mean-squared over the run. The primary quality signal. |
-| 1 | `yaw_rms` | RMS of the true yaw rate — penalises a car whose heading oscillates/wobbles. |
-| 2 | `smooth_rms` | RMS of step-to-step control change (`Δu`) — penalises jerky command sequences. A failed solver step adds a flat +5.0 penalty here. |
-| 3 | `steer_rms` | RMS steering command magnitude — overall steering effort. |
-| 4 | `accel_rms` | RMS acceleration/brake command magnitude — overall longitudinal effort. |
+| 1 | `yaw_rms` | RMS of the true yaw rate, penalises a car whose heading oscillates/wobbles. |
+| 2 | `smooth_rms` | RMS of step-to-step control change (`Δu`), penalises jerky command sequences. A failed solver step adds a flat +5.0 penalty here. |
+| 3 | `steer_rms` | RMS steering command magnitude, overall steering effort. |
+| 4 | `accel_rms` | RMS acceleration/brake command magnitude, overall longitudinal effort. |
 | 5 | `max_steering` | The single largest steering command issued during the run. |
-| 6 | `steering_sat_ratio` | Fraction of steps where steering was within 95% of `max_steer` — how often the controller is pinned at its limit. |
-| 7 | `jerk_rms` | RMS of the *second* difference of control (`Δ²u`) — smoothness of the smoothness, catches abrupt changes in how fast commands are changing. |
-| 8 | `max_yaw_rate` | The single fastest yaw rate reached — cornering aggressiveness ceiling. |
-| 9 | `steering_reversal_rms` | Magnitude-weighted RMS of steering sign-flip swings (beyond a 0.02 rad noise gate): `sqrt(Σ swing² / n steps)`, where `swing = |u_steer| + |u_steer_prev|` at the moment of the flip. A tiny back-and-forth trim wiggle contributes almost nothing while a large aggressive swing dominates (squared), which is what distinguishes controller hunting/dithering from a twisty path (S-bends, slaloms) legitimately demanding more frequent-but-small direction changes — a flat per-flip count couldn't tell those apart. The raw reversal count and its per-step rate are still reported separately as informational-only fields (`steering_reversals`, `steering_reversal_rate` in the returned dict) alongside it. |
-| 10 | `peak_lateral_error` | The single worst `|e_y|` reached at any point — a safety-margin measure independent of the average. |
-| 11 | `speed_rmse` | RMS of `v_actual - v_target` — how well the car tracks the planner's requested speed. |
+| 6 | `steering_sat_ratio` | Fraction of steps where steering was within 95% of `max_steer`, how often the controller is pinned at its limit. |
+| 7 | `jerk_rms` | RMS of the *second* difference of control (`Δ²u`), smoothness of the smoothness, catches abrupt changes in how fast commands are changing. |
+| 8 | `max_yaw_rate` | The single fastest yaw rate reached, cornering aggressiveness ceiling. |
+| 9 | `steering_reversal_rms` | Magnitude-weighted RMS of steering sign-flip swings (beyond a 0.02 rad noise gate): `sqrt(Σ swing² / n steps)`, where `swing = |u_steer| + |u_steer_prev|` at the moment of the flip. A tiny back-and-forth trim wiggle contributes almost nothing while a large aggressive swing dominates (squared), which is what distinguishes controller hunting/dithering from a twisty path (S-bends, slaloms) legitimately demanding more frequent-but-small direction changes; a flat per-flip count couldn't tell those apart. The raw reversal count and its per-step rate are still reported separately as informational-only fields (`steering_reversals`, `steering_reversal_rate` in the returned dict) alongside it. |
+| 10 | `peak_lateral_error` | The single worst `|e_y|` reached at any point, a safety-margin measure independent of the average. |
+| 11 | `speed_rmse` | RMS of `v_actual - v_target`, how well the car tracks the planner's requested speed. |
 | 12 | `accel_reversal_rms` | The same magnitude-weighted reversal construction as `steering_reversal_rms` (metric 9), applied to `u_opt[1]` (`a_cmd`) instead of `u_opt[0]` (`delta_cmd`), with a 0.02 m/s² noise gate in place of the steering metric's 0.02 rad. `steering_reversal_rms` only ever looks at the steering command, so without this nothing in the score discourages `a_cmd` oscillating across zero even though the same accel/brake chatter concern applies. Keyword-only with a default value so callers written before this metric existed keep working unmodified. |
 
 ### Combining into one score
@@ -1596,8 +1596,8 @@ if inaccurate_count > 0:
 
 **Why three tiers instead of one sum.** A weighted sum is
 linear scalarisation, and can only reach solutions on the *convex hull* of the
-trade-off surface. Where that surface is non-convex — normal for vehicle
-dynamics — whole regions of good behaviour are unreachable by **any** weight
+trade-off surface. Where that surface is non-convex (normal for vehicle
+dynamics), whole regions of good behaviour are unreachable by **any** weight
 vector. Measured: a deliberately-hunting gain set outscored a sane one purely
 by tracking the line more tightly, and kept winning even after `METRIC_SCALES`
 made the smoothness terms bite (normalisation amplifies the tracking terms
@@ -1619,12 +1619,12 @@ on the dominant term.
   a bounded nearest-index search that stops short of the final path point, so a
   fully-completed run reports ~0.90. Thresholding on it marked every successful
   run infeasible. `COMPLETION_THRESHOLD` remains only as a fallback for callers
-  that cannot supply `reached_end` — that no longer includes
+  that cannot supply `reached_end`, that no longer includes
   the live car when it's running against a precomputed speed profile (see
   `LapProgressTracker` in `docs/reference/README.md`'s "Live/offline score
   parity" section); a run against the live planner topic instead still has no
   known path end and falls back to this threshold.
-- `COMPLETION_BONUS_WEIGHT` is now unused by the score — completion is a
+- `COMPLETION_BONUS_WEIGHT` is now unused by the score, completion is a
   precondition, not a reward. The constant is retained for the live copy's
   header compatibility.
 
@@ -1643,7 +1643,7 @@ metric at its reference scores exactly 1.0 before bonuses) and are **not**
 comparable to earlier logged scores.
 
 **Lower is always better.** A good finishing run typically scores in
-`[-0.5, -0.3]` — negative because the completion/time bonuses usually
+`[-0.5, -0.3]`, negative because the completion/time bonuses usually
 outweigh the (small, well-tuned) metric costs. See
 [tuning.md](tuning.md#6-scoring-metric_scales-and-score_weights) for how to
 tune `SCORE_WEIGHTS`/`METRIC_SCALES`.
@@ -1651,14 +1651,14 @@ tune `SCORE_WEIGHTS`/`METRIC_SCALES`.
 The inaccurate-solver penalty (up to +50% at 5 or more
 `OPTIMAL_INACCURATE` occurrences in one rollout) uses
 `score + abs(score)·factor` rather than a flat addition specifically so it
-scales with, and preserves the sign of, an already-good (negative) score —
+scales with, and preserves the sign of, an already-good (negative) score:
 a run that finished well but had a few marginally-converged solves is
 penalised proportionally, not knocked into DNF-penalty territory outright.
 
 ---
 ## Module Reference
 
-Detailed explanations of the core algorithms live in the sections above —
+Detailed explanations of the core algorithms live in the sections above:
 [How the MPC Works](#how-the-mpc-works) and
 [How the Offline Tuner Works](#how-the-offline-tuner-works). This section is
 a short per-file index: what each module is for, and where its logic is
@@ -1671,22 +1671,22 @@ not here.
 
 | File | Purpose |
 |---|---|
-| `gui/simulation.py` | Interactive matplotlib GUI — draw/load a path, run one closed-loop rollout, scrub through history, view metrics. Thin wrapper around `rollout_core.run_core_rollout(want_history=True)`. |
+| `gui/simulation.py` | Interactive matplotlib GUI: draw/load a path, run one closed-loop rollout, scrub through history, view metrics. Thin wrapper around `rollout_core.run_core_rollout(want_history=True)`. |
 | `sim/rollout_core.py` | The single shared closed-loop rollout loop used by both `gui/simulation.py` and `tuner/offline_tuner.py`. Not GUI-safe to import from `gui/simulation.py`'s multiprocessing workers, so it's split out into its own dependency-light module. |
 | `sim/scoring.py` | The single implementation of the 13-metric accumulation and composite score. See [The Composite Score](#the-composite-score). |
 | `model/bicycle_model.py` | Builds the MPC's linear 8-state prediction model. See [How the MPC Works](#how-the-mpc-works). |
 | `controller/model_utils.py` | Runtime curvature/speed-based rescaling of `R`/`R_rate`. See [Adaptive gain scheduling](#adaptive-gain-scheduling-controllermodel_utilspy). |
 | `controller/optimiser.py` | The parameterised CVXPY/OSQP QP formulation and solve. See [The cost function and QP](#the-cost-function-and-qp-controlleroptimiserpy). |
-| `model/vehicle_physics.py` | The 24-state nonlinear "truth" plant (Pacejka tyres, suspension, aero) that the MPC never observes directly — only through tracking error. See [Configuring the Vehicle](#configuring-the-vehicle-modelvehicle_physicspy). |
+| `model/vehicle_physics.py` | The 24-state nonlinear "truth" plant (Pacejka tyres, suspension, aero) that the MPC never observes directly, only through tracking error. See [Configuring the Vehicle](#configuring-the-vehicle-modelvehicle_physicspy). |
 | `tuner/offline_tuner.py` | Headless CMA-ES weight search. See [How the Offline Tuner Works](#how-the-offline-tuner-works). Also exports the synthetic path library (`SYNTHETIC_PATHS`, `PATH_NAMES`) and the speed-keyed model cache (`get_cached_model`) used by both the tuner and the simulator. |
 | `sim/speed_profile.py` | Curvature-based per-point target speed (`compute_speed_profile`), with a moving-average smoothing pass (`smooth_profile`). Uses the friction-circle approximation `v = sqrt(a_lat_max / κ)` over a forward look-ahead window. |
 | `sim/sim_track.py` | Simulator-side mirrors of the real perception/planner nodes: `place_cones()` (static track layout), `SimPerception` (FOV filter), `SimPlanner` (cone accumulation → centreline + speed profile). |
-| `sim/track_io.py` | Loads a `fsae_planning` `cone_recorder` JSON cone map into the same `(path_X, path_Y, path_Psi, path_v, blue, yellow)` tuple shape as a synthetic path — see [Recording, exporting and driving a track](developer_guide.md#recording-exporting-and-driving-a-track). |
+| `sim/track_io.py` | Loads a `fsae_planning` `cone_recorder` JSON cone map into the same `(path_X, path_Y, path_Psi, path_v, blue, yellow)` tuple shape as a synthetic path, see [Recording, exporting and driving a track](developer_guide.md#recording-exporting-and-driving-a-track). |
 | `tuner/performance_stats.py` | Scores a completed simulator run for the **Show Metrics** button by replaying its stored history through the exact same `scoring.RolloutMetrics` accumulator the tuner uses. Also exposes `benchmark_weights()` for **Benchmark All Paths**. |
-| `gui/manual_drive.py` | Standalone WASD/mouse drive mode against the 24-state nonlinear plant — no MPC, no scoring, purely open-loop human control for building intuition or sanity-checking a track. See [Manual Drive Mode](developer_guide.md#manual-drive-mode). |
+| `gui/manual_drive.py` | Standalone WASD/mouse drive mode against the 24-state nonlinear plant, no MPC, no scoring, purely open-loop human control for building intuition or sanity-checking a track. See [Manual Drive Mode](developer_guide.md#manual-drive-mode). |
 | `settings.py` | All project-level tuning/scoring/DNF configuration. See [Configuring the Project](#configuring-the-project-settingspy). |
-| `mpc_controller.py` / `mpc_core.py` / `control_utils.py` (staged under `fsds_simulator/control/fsae_control/fsae_control/mpc/` and `.../fsae_control/`) | The live ROS 2 MPC controller for FSDS — `mpc_controller.py`'s `standalone_output` parameter selects its output mode. See [Simulator Integration](developer_guide.md#simulator-integration). |
-| `fsds_simulator/` (whole tree) | Full staging mirror of upstream's ROS 2 workspace — every package, not just control — so a clone of this repo plus FSDS can build and run the complete stack (`stanley` or `mpc`, either `standalone_output` mode) with no separate `fsae_planning` checkout. See [`docs/reference/`](`docs/reference/`) and [fsds_simulator/README.md](../fsds_simulator/README.md). |
+| `mpc_controller.py` / `mpc_core.py` / `control_utils.py` (staged under `fsds_simulator/control/fsae_control/fsae_control/mpc/` and `.../fsae_control/`) | The live ROS 2 MPC controller for FSDS, `mpc_controller.py`'s `standalone_output` parameter selects its output mode. See [Simulator Integration](developer_guide.md#simulator-integration). |
+| `fsds_simulator/` (whole tree) | Full staging mirror of upstream's ROS 2 workspace, every package, not just control, so a clone of this repo plus FSDS can build and run the complete stack (`stanley` or `mpc`, either `standalone_output` mode) with no separate `fsae_planning` checkout. See [`docs/reference/`](`docs/reference/`) and [fsds_simulator/README.md](../fsds_simulator/README.md). |
 
 
 <a id="second-controller-nonlinear-mpc-use_nmpc"></a>
@@ -1698,7 +1698,7 @@ live workspace carries a **second, separately selectable** controller,
 `nmpc_core.NMPCController`, chosen by the node parameter `use_nmpc` (default
 false). This repo has its own offline port, `controller/nmpc_optimiser.py`,
 selected by `settings.USE_NMPC`; this section is a pointer to the live design,
-not a mirror of the offline code — see `docs/reference/README.md`'s "Nonlinear
+not a mirror of the offline code, see `docs/reference/README.md`'s "Nonlinear
 MPC (`use_nmpc`)" section for the offline port's specifics.
 
 **The structural difference, in one line.** In plain terms: the LTV-QP
@@ -1708,7 +1708,7 @@ actually knows the road bends, and where. The LTV-QP predicts how the car's
 current error (`e_y`, `e_psi`) drifts under its own dynamics, against a
 reference direction it treats as fixed for the whole horizon. The NMPC
 predicts that same error's evolution **relative to a path whose bend is
-itself part of the prediction** — the model knows the reference direction
+itself part of the prediction**, the model knows the reference direction
 changes with `s`, not just the car's state.
 
 Concretely: the LTV-QP's prediction is written in error coordinates with
@@ -1720,7 +1720,7 @@ callout elsewhere in this doc exists and why the adaptive lookahead layer had
 to be invented. The NMPC works in curvilinear (Frenet) coordinates where arc
 length `s` is a state and `kappa(s)` is looked up from the path, so the road
 bending ahead is part of the dynamics rather than something bolted onto the
-cost — as `s` advances along the predicted horizon, `kappa(s)` changes with
+cost. As `s` advances along the predicted horizon, `kappa(s)` changes with
 it, so a bend 10 steps out is already shaping the plan today, not just once
 the car arrives there.
 
@@ -1732,7 +1732,7 @@ the predicted lateral force at FSDS's measured `a_lat` ceiling.
 **How it's solved (Gauss-Newton SQP)**, step by step each tick:
 
 1. **Roll the nonlinear model forward** from the car's actually-measured
-   state — not an approximation, the real equations from Section 4.2 above.
+   state, not an approximation, the real equations from Section 4.2 above.
    Starting from a real state means the rollout is always physically
    consistent with where the car actually is (no "dynamics defect" to
    correct for later).
@@ -1742,14 +1742,14 @@ the predicted lateral force at FSDS's measured `a_lat` ceiling.
    Section 1.3's `A`/`B` matrices capture, just recomputed fresh around
    this tick's specific rollout instead of a fixed formula). Done for every
    horizon stage at once (vectorised), not one at a time.
-3. **Condense into a QP** — fold the whole 20-step problem down into one
+3. **Condense into a QP**: fold the whole 20-step problem down into one
    solved for input *changes* only (not full trajectories), which OSQP can
    solve the same way it solves the LTV-QP's problem.
 4. **Solve with a trust region**: cap how large a step OSQP is allowed to
    take from this tick's rollout, since the linearisation from step 2 is
    only accurate near it.
 5. **One iteration per tick, warm-started from last tick's answer**
-   ("real-time iteration") — rather than looping steps 1-4 until full
+   ("real-time iteration"), rather than looping steps 1-4 until full
    convergence within a single tick, which would risk missing the 50 ms
    deadline.
 
@@ -1766,40 +1766,40 @@ compensation are unchanged.
 #### Feature comparison: LTV-QP vs. NMPC, at a glance
 
 Every feature below is verified against actual read-sites in the code, not
-inferred from a docstring or field name — see
+inferred from a docstring or field name, see
 `docs/reference/README.md`'s "Which settings affect which controller" map
 for the exhaustive, field-by-field version this table summarises.
 
 | Feature | LTV-QP (`mpc_core.py`) | NMPC (`nmpc_core.py`) | Why |
 |---|---|---|---|
-| Adaptive gain scheduling (`_corner_factor`, anti-hunt, `adaptive_Q_scaling`, `adaptive_R_scaling`, `adaptive_R_rate`) | **Yes** | **No** (inert — none of these fields have any read site in `nmpc_core.py`) | Every one of these mechanisms exists to compensate for the LTV-QP's blind spot (it can't predict the path curving). NMPC's model has that built in structurally, so reweighting the cost on top would double-count an effect that's now already handled — see [`removed_mechanisms.md` §1](removed_mechanisms.md#1-the-structural-limit-the-argument-that-motivates-nmpc). |
-| `steer_rate_anti_hunt` (steering-rate damping when centred/aligned/uncurving) | **Yes**, on by default | **Opt-in**, off by default (`nmpc_steer_rate_anti_hunt_enabled`) | The one exception to the row above — it only ever makes steering *more* damped in a specific narrow case, the opposite direction from anticipation, so it doesn't fight NMPC's structural fix the way the rest of the gain schedule would. Reuses the LTV-QP's own function verbatim (imported, not reimplemented). |
-| Precomputed corner map (`use_precomputed_corner_map`) | Removed from both | Removed from both | Served the deleted lookahead gain-scheduling family — gone from both controllers, not an LMPC/NMPC difference. See [`removed_mechanisms.md` §7](removed_mechanisms.md#7-precomputed-corner-segmentation-cornermap). |
-| Precomputed shaped heading-lead profile (`use_precomputed_heading_profile`) | **Yes** | **Accepted but ignored** (`set_heading_profile()` exists so the node needs no branch, logs a one-time warning) | Same reasoning as gain scheduling — the shaped lead is a workaround for the same missing curvature term NMPC closes structurally. Applying both would double-count the anticipation. |
-| Delay/latency compensation (rolling `x0` forward through recently-issued commands) | **Yes** (`predict_ahead()`, linear rollforward) | **Yes** (rolls `x0` forward through the nonlinear model instead) | Both need this — it's about *sensor/actuation lag*, a problem that exists regardless of which prediction model is used. Different implementation, same four gating fields (`delay_compensation_enabled`, `max_delay_compensation_steps`, `pose_age_lp_alpha`, `n_delay_hysteresis`) — shared `MPCParams` fields, read by both. One exception: `predict_epsi_clip` is LTV-QP only (a small-angle bound specific to the *linear* rollforward; NMPC's nonlinear rollforward has no such bound to set). |
-| Tracking-error speed gate (slow down when `e_y`/`e_psi` are large) | **Yes** | **Yes** | This lives in `control_utils.py`, called by the **node** (`mpc_controller.py`) *before* either controller's `.compute()` is invoked — neither `MPCController` nor `NMPCController` is even aware it exists. Controller-agnostic by construction. |
-| Curvature-based speed profile (`curvature_speed()`) | **Yes** | **Yes** | Same reason as the row above — computed by the node, handed to whichever controller is selected as `desired_speed`. |
+| Adaptive gain scheduling (`_corner_factor`, anti-hunt, `adaptive_Q_scaling`, `adaptive_R_scaling`, `adaptive_R_rate`) | **Yes** | **No** (inert, none of these fields have any read site in `nmpc_core.py`) | Every one of these mechanisms exists to compensate for the LTV-QP's blind spot (it can't predict the path curving). NMPC's model has that built in structurally, so reweighting the cost on top would double-count an effect that's now already handled, see [`removed_mechanisms.md` §1](removed_mechanisms.md#1-the-structural-limit-the-argument-that-motivates-nmpc). |
+| `steer_rate_anti_hunt` (steering-rate damping when centred/aligned/uncurving) | **Yes**, on by default | **Opt-in**, off by default (`nmpc_steer_rate_anti_hunt_enabled`) | The one exception to the row above: it only ever makes steering *more* damped in a specific narrow case, the opposite direction from anticipation, so it doesn't fight NMPC's structural fix the way the rest of the gain schedule would. Reuses the LTV-QP's own function verbatim (imported, not reimplemented). |
+| Precomputed corner map (`use_precomputed_corner_map`) | Removed from both | Removed from both | Served the deleted lookahead gain-scheduling family, gone from both controllers, not an LMPC/NMPC difference. See [`removed_mechanisms.md` §7](removed_mechanisms.md#7-precomputed-corner-segmentation-cornermap). |
+| Precomputed shaped heading-lead profile (`use_precomputed_heading_profile`) | **Yes** | **Accepted but ignored** (`set_heading_profile()` exists so the node needs no branch, logs a one-time warning) | Same reasoning as gain scheduling: the shaped lead is a workaround for the same missing curvature term NMPC closes structurally. Applying both would double-count the anticipation. |
+| Delay/latency compensation (rolling `x0` forward through recently-issued commands) | **Yes** (`predict_ahead()`, linear rollforward) | **Yes** (rolls `x0` forward through the nonlinear model instead) | Both need this, it's about *sensor/actuation lag*, a problem that exists regardless of which prediction model is used. Different implementation, same four gating fields (`delay_compensation_enabled`, `max_delay_compensation_steps`, `pose_age_lp_alpha`, `n_delay_hysteresis`), shared `MPCParams` fields, read by both. One exception: `predict_epsi_clip` is LTV-QP only (a small-angle bound specific to the *linear* rollforward; NMPC's nonlinear rollforward has no such bound to set). |
+| Tracking-error speed gate (slow down when `e_y`/`e_psi` are large) | **Yes** | **Yes** | This lives in `control_utils.py`, called by the **node** (`mpc_controller.py`) *before* either controller's `.compute()` is invoked, neither `MPCController` nor `NMPCController` is even aware it exists. Controller-agnostic by construction. |
+| Curvature-based speed profile (`curvature_speed()`) | **Yes** | **Yes** | Same reason as the row above: computed by the node, handed to whichever controller is selected as `desired_speed`. |
 | Cone-proximity emergency braking, GO-gating, stale-path fail-safes | **Yes** | **Yes** | All node-level (`mpc_controller.py`'s `_control_step` phases, `standalone_output=true` only), not part of either controller class. `NMPCController` exposes the same `compute()`/`reset()`/`set_static_path()` surface as `MPCController` specifically so the node doesn't need a branch. |
-| FSDS lateral-acceleration ceiling | **Yes**, as a plain speed-profile input (`curvature_speed()`'s friction-circle cap) | **Yes**, AND inside the prediction itself (`tanh` saturation on predicted tyre force) | NMPC's version is strictly more — the ceiling shapes what the *solver itself* believes is achievable, not just the requested speed. Without it, NMPC's linear-tyre model believes it can hold any corner at any speed and the car spins (measured). |
-| Horizon length | 35 steps (1.75 s) | 20 steps (1.0 s) | Independent tuning choices, not a structural requirement — NMPC's shorter horizon reflects its per-tick solve cost (Gauss-Newton SQP is more expensive per step than one convex QP). |
+| FSDS lateral-acceleration ceiling | **Yes**, as a plain speed-profile input (`curvature_speed()`'s friction-circle cap) | **Yes**, AND inside the prediction itself (`tanh` saturation on predicted tyre force) | NMPC's version is strictly more: the ceiling shapes what the *solver itself* believes is achievable, not just the requested speed. Without it, NMPC's linear-tyre model believes it can hold any corner at any speed and the car spins (measured). |
+| Horizon length | 35 steps (1.75 s) | 20 steps (1.0 s) | Independent tuning choices, not a structural requirement, NMPC's shorter horizon reflects its per-tick solve cost (Gauss-Newton SQP is more expensive per step than one convex QP). |
 | Solve method | One convex QP per tick (OSQP) | Real-time-iteration SQP: one Gauss-Newton step per tick, warm-started, condensed dense QP (OSQP) | See [The solver](#the-solver) above for what a QP is; NMPC needs the extra linearize-and-resolve step because its own model is nonlinear (curvature is now a function of a state, not a fixed matrix entry). |
 
 **Three further, NMPC-only additions**, assessed against
 Alexander Liniger's Model Predictive Contouring Control (MPCC) but narrower
-than it — full MPCC's progress-maximisation apparatus was considered and
+than it: full MPCC's progress-maximisation apparatus was considered and
 rejected as too close to a failure mode already eliminated here (see
 `docs/reference/README.md`'s writeup for why). One is on by default, two are
 off:
 
-- `nmpc_spline_reference_enabled` (default **true**) — `PathReference`'s
+- `nmpc_spline_reference_enabled` (default **true**): `PathReference`'s
   `kappa(s)`/`psi_ref(s)` come from an analytic cubic-spline fit to the
   waypoints instead of moving-average-smoothed finite differences. A
   numerical-quality fix, not a new coupling to the solver.
-- `nmpc_horizon_speed_profile_enabled` (default **false**, experimental) —
+- `nmpc_horizon_speed_profile_enabled` (default **false**, experimental):
   samples a precomputed speed profile at each horizon stage's own predicted
   arc length, the same state-keyed pattern `kappa(s)` already uses, instead
   of holding one frozen speed target across the horizon.
-- `nmpc_friction_circle_enabled` (default **false**, experimental) — a hard
+- `nmpc_friction_circle_enabled` (default **false**, experimental): a hard
   per-axle tyre-force bound in the QP, additional to (not replacing) the
   existing soft `alat_ceiling` saturation.
 
@@ -1808,8 +1808,8 @@ All three are implemented identically in `nmpc_core.py` and the offline
 
 Full detail: `docs/reference/control_mechanisms.md`'s "Nonlinear MPC (`use_nmpc`)" section
 (what it is, what it reuses, what is inactive, offline A/B numbers, the offline
-port, a matched same-day LIVE A/B — steering saturation 6.45% → 0.58%,
-lap 54.72s → 52.35s — and the "Which settings affect which controller" map
+port, a matched same-day LIVE A/B (steering saturation 6.45% → 0.58%,
+lap 54.72s → 52.35s) and the "Which settings affect which controller" map
 and the three MPCC-inspired additions above), `tuning.md` §4.5d (tuning
 surface), and `late_turn_in_investigation.md` Part 16 (research survey,
 formulation choice, validation, the four bugs found in testing).

@@ -1,4 +1,4 @@
-# Planning/Control Sync — moved
+# Planning/Control Sync, moved
 
 This document has been split by subject into [`docs/reference/`](reference/).
 

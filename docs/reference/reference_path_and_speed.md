@@ -10,10 +10,10 @@ the live planner and a per-tick curvature speed estimate.
 
 **Related documents**
 
-- `docs/developer_guide.md`, "Recording, exporting and driving a track" — the
+- `docs/developer_guide.md`, "Recording, exporting and driving a track", for the
   step-by-step workflow for producing these files.
-- `docs/tuning.md` — the controller weights that track the reference.
-- `docs/reference/offline_live_parity.md` — the offline/live parity rules the numbers
+- `docs/tuning.md`, for the controller weights that track the reference.
+- `docs/reference/offline_live_parity.md`, for the offline/live parity rules the numbers
   here are subject to.
 
 ## The two files, and which does what
@@ -42,13 +42,13 @@ which regressed the car badly and was reverted. See "Speed-profile
 aggressiveness" below and `launch_all.sh`'s own comment before changing the
 pairing.
 
-## Which file the car actually loads at launch — auto-discovery, newest by default
+## Which file the car actually loads at launch, auto-discovery, newest by default
 
 **Plain version:** by default the car drives the most recently recorded
 track, and the most recently exported geometry file for it (preferring the
 centreline over the raceline if both exist). Nothing has to be typed to pick
 these up. `TRACK=` can still be set explicitly to pin a specific track
-instead — e.g. while comparing two recordings — but that is now an override,
+instead, e.g. while comparing two recordings, but that is now an override,
 not a requirement.
 
 ```bash
@@ -61,35 +61,36 @@ PATH_CSV="$TRACK_DIR/$_TRACK_GEOMETRY_NAME"   # centerline.csv, else raceline.cs
 Resolution mechanism:
 
 - **`TRACK` defaults to the newest track directory**, picked by the mtime of
-  its `cone_map.json` — not by parsing a date out of the directory name. This
+  its `cone_map.json`, not by parsing a date out of the directory name. This
   means an undated legacy track (recorded before the dating scheme existed)
   and a re-recorded track (which refreshes the existing directory's mtime
   without renaming it) both resolve correctly as "newest" the moment they
   actually are. The selection logic lives in `launch_all.sh` itself
   (`_newest_track`), reimplemented in bash rather than shelled out to the
-  Python `tracks` module's `newest_track()` — this script must stay runnable
-  with no `fsae_MPCTest` checkout present, see the file-mapping note above.
+  Python `tracks` module's `newest_track()`, because this script must stay
+  runnable with no `fsae_MPCTest` checkout present, see the file-mapping note
+  above.
 - **`PATH_CSV` defaults to the newest export within that track**, preferring
   `centerline.csv` over `raceline.csv` when both exist (`_track_geometry_name`
   in `launch_all.sh`, matching `tracks.geometry_path()`'s preference exactly).
   Set `PATH_CSV=` explicitly (e.g. to `"$TRACK_DIR/raceline.csv"`) to override
-  the preference for a timed run — see "Reference line: raceline vs
+  the preference for a timed run, see "Reference line: raceline vs
   centreline" above.
-- **`SPEED_CSV` is NOT resolved this way** — it always points at
+- **`SPEED_CSV` is NOT resolved this way.** It always points at
   `speed_profile.csv`, the one file that name can mean. The "newest export,
   prefer centreline" logic only applies to the geometry file, because there
   is only one speed-profile exporter and one filename for its output.
 
 Recording a brand-new track:
 
-- **A genuinely new `TRACK=` name is dated automatically** —
-  `<name>_<YYYYmmdd>` — the moment `launch_all.sh` notices the directory does
+- **A new `TRACK=` name is dated automatically**, as
+  `<name>_<YYYYmmdd>`, the moment `launch_all.sh` notices the directory does
   not exist yet, matching `tracks.dated_track_name()` exactly. Two recordings
   under the same base name on different days land in separate directories
   instead of overwriting each other.
 - **Re-recording an EXISTING track (refreshing its cone map in place) is NOT
   dated again.** If `TRACK_DIR` already exists, `launch_all.sh` keeps writing
-  into it — this is the documented "refresh a cone map in place" workflow
+  into it. This is the documented "refresh a cone map in place" workflow
   and remains unchanged; only first creation gets a date suffix.
 
 Overwrite protection at export time: `tuner.tools.export_speed_profile` and
@@ -104,20 +105,20 @@ Other consequences worth knowing:
   `launch_all.sh`, before the launch command runs.** Editing them mid-run has
   no effect on an already-launched node; relaunch to pick up a change.
 - **`ls "$HOST_ROS2_DIR/src/fsae_planning/tracks"` still shows every track**,
-  dated or not — auto-discovery does not hide or delete anything, it only
+  dated or not. Auto-discovery does not hide or delete anything, it only
   changes which one is picked with no `TRACK=` override.
 
 ## `USE_PRECOMPUTED_SPEED`/`_PATH` are resolved in the launch file, identically for both controllers
 
 **Plain version:** whether the precomputed files get used at all is decided
-once, in `control.launch.py`, before any controller node starts — not inside
+once, in `control.launch.py`, before any controller node starts, not inside
 each controller's own code. Both controllers (Stanley and MPC, regardless of
 MPC's own `standalone_output` mode) are handed the exact same result, so a
 Stanley run and an MPC run on the same track are guaranteed to share the
 identical speed target and/or path if that is what the toggles say.
 
 Mechanism: `control.launch.py` computes `effective_map_path` and
-`effective_path_map_path` with an `IfElseSubstitution` —
+`effective_path_map_path` with an `IfElseSubstitution`.
 `USE_PRECOMPUTED_SPEED=true` passes `map_path` through as given,
 `USE_PRECOMPUTED_SPEED=false` passes an empty string instead (regardless of
 what `map_path` was set to), and the same for the path toggle. That
@@ -126,7 +127,7 @@ controller's `map_path`/`path_map_path` ROS parameter actually receives.
 
 Consequence for reading the controller source: `stanley_controller.py` has no
 `use_precomputed_speed`/`use_precomputed_path` parameter and never checks
-either toggle — nor do the two MPC nodes. Reading only the node's own code
+either toggle, nor do the two MPC nodes. Reading only the node's own code
 therefore looks like the toggles are ignored; they are not, they are applied
 one layer up. All three nodes only ever see "load this file" (a non-empty
 string) or "there is no file" (empty string), and treat those two cases
@@ -148,7 +149,7 @@ The speed file is built in three sweeps:
 
 The result is a speed at every point that is both cornering-safe and
 reachable by a real car. Without sweeps 2 and 3 the file can demand
-impossible braking — measured at ~273 m/s² before they were added.
+impossible braking, measured at ~273 m/s² before they were added.
 
 ### The speed profile: `compute_speed_profile()` in `sim/speed_profile.py`
 
@@ -177,7 +178,7 @@ Points worth knowing:
   a recorded lap) point *n−1* is treated as adjacent to point 0 and passes 1–2
   run twice in each direction, so a constraint crossing the start/finish seam
   propagates all the way round. Without it the car met an artificial slowdown
-  at the line once per lap. Set `False` only for a genuinely open path, such
+  at the line once per lap. Set `False` only for an open path, such
   as an acceleration event ending at a stop.
 
 ### The path geometry: `tuner/tools/raceline_optimizer.py`
@@ -215,24 +216,24 @@ are true; otherwise the car falls back to the live planner and to
 
 **The precomputed-speed branch applies no `v_max` clip**, so whatever
 `SPEED_CSV` contains is commanded directly. That makes the choice of file a
-speed-cap decision as much as a profile decision — check both files' ranges
+speed-cap decision as much as a profile decision, so check both files' ranges
 before swapping either.
 
 ## A third speed profile: corner-only slowdown, for low-speed corner testing
 
 **Plain version:** testing how the car turns at low speed is slow if the car
 crawls the *whole* lap to reach a corner. This variant drives at normal speed
-everywhere and only slows down where the path actually curves — so a test
+everywhere and only slows down where the path curves, so a test
 run reaches the corner it is meant to test at full pace, then slows for it.
 
 Produced by `tuner.tools.export_speed_profile --corner-slowdown KAPPA`
 (`sim.speed_profile.compute_corner_slowdown_profile()`), which:
 
-1. Computes the ordinary curvature-limited profile — the same thing
+1. Computes the ordinary curvature-limited profile, the same thing
    `speed_profile.csv` itself contains.
 2. Clamps every station where `|κ| > KAPPA` down to `min(existing, corner_speed)`
-   (`--corner-speed`, default 3 m/s). `min()`, not an unconditional overwrite
-   — a `corner_speed` above what the curvature limit already demands there
+   (`--corner-speed`, default 3 m/s). `min()`, not an unconditional overwrite,
+   because a `corner_speed` above what the curvature limit already demands there
    must not raise the target back up.
 3. Re-runs the same forward-acceleration/backward-braking propagation passes
    `compute_speed_profile()` uses (see "How the speed profile … is
@@ -240,14 +241,14 @@ Produced by `tuner.tools.export_speed_profile --corner-slowdown KAPPA`
    `corner_speed` becomes a real, physically reachable deceleration zone
    rather than an instantaneous drop the car cannot brake into.
 
-Writes `speed_profile_corner_test.csv`, never `speed_profile.csv` — point
+Writes `speed_profile_corner_test.csv`, never `speed_profile.csv`. Point
 `SPEED_CSV` at it explicitly in `launch_all.sh` for the duration of a test,
 and back at `speed_profile.csv` afterwards.
 
 **Picking `KAPPA`:** run `--corner-slowdown` with no value to print the
 track's curvature distribution and, per candidate threshold, how many
 distinct corner zones (contiguous `|κ|` runs above it) that threshold would
-flag. Too low a threshold catches every gentle bend — the whole-lap-slow
+flag. Too low a threshold catches every gentle bend, the whole-lap-slow
 problem this feature exists to avoid; too high catches nothing. On
 `comp_test_map_3`, `0.10` flags 9 corner zones and skips the gentle bends
 (p75 curvature is 0.079, well below it).
@@ -260,7 +261,7 @@ apex. A *centreline* just follows the middle of the track. The racing line is
 faster in principle, but it is harder to follow, and when something goes wrong
 it is impossible to tell from the logs whether a large error means the car
 missed the line or the line deliberately went near the edge. The centreline
-removes that ambiguity — and on this track it is currently also faster in
+removes that ambiguity, and on this track it is currently also faster in
 practice.
 
 `tuner/tools/raceline_optimizer.py` has two modes, selected by `--mode`, and
@@ -286,7 +287,7 @@ designed, and the telemetry cannot distinguish them. On the centreline `|e_y|`
 is unambiguously distance from the middle of the track, which is what makes a
 "drove too close to the cones" report answerable from the log alone.
 
-**On `comp_test_map_3` the centreline is not merely more legible — it is
+**On `comp_test_map_3` the centreline is not merely more legible, it is
 faster.** Same controller settings, same `speed_profile.csv`, 3 laps each:
 
 | | raceline | centreline |
@@ -310,7 +311,7 @@ because no lap is spent recovering from the excursion.
 
 - The raceline's offset from the centreline is tiny: mean 0.13 m, max 0.48 m
   over the whole lap, and only 0.35 m through the failing corner.
-- At that corner `|κ|` is 0.209 — the global maximum for this track, and about
+- At that corner `|κ|` is 0.209, the global maximum for this track, and about
   70% of the car's full-lock kinematic floor (1/3.32 m = 0.30).
 - There is no width left to cut with, so the search bought no lap time. But
   the offset it did apply still perturbed the curvature of a corner already at
@@ -330,7 +331,7 @@ Consequences:
   cost weights.** Reversals 13 → 1 and saturation → 0 came from changing the
   line, with every weight held fixed. A chatter or turn-in result measured on
   a reference the car cannot track is not attributable to the weight under
-  test — see `docs/logs/steering_chatter_investigation.md`.
+  test, see `docs/logs/steering_chatter_investigation.md`.
 - Fixing the optimiser means constraining a candidate's `κ·v²` against
   `alat_ceiling_at(v)` per station, not `|κ|` against a flat constant. Not
   done.
@@ -340,7 +341,7 @@ Consequences:
 Corner speed in the oracle profile comes from `v = √(a_lat_max / κ)`, so
 `CURVATURE_SPEED_A_LAT_MAX` (`sim/speed_profile.py`) is the single knob that
 sets how hard the car is willing to corner. `v_max`/`V_MAX` do NOT affect
-corner speed at all — they are a flat top-speed clip that only ever binds on
+corner speed at all, they are a flat top-speed clip that only ever binds on
 the fastest straights, and on the precomputed-speed path they are not applied
 at all (the CSV's own values are the target, see `launch_all.sh`'s
 `SPEED_CSV` comment).
@@ -350,7 +351,7 @@ at all (the CSV's own values are the target, see `launch_all.sh`'s
 editing `sim/speed_profile.py`, re-running
 `python -m tuner.tools.export_speed_profile <map>`, and relaunching. It is
 ALSO the live `control_utils.curvature_speed()` default (used when no
-precomputed profile is loaded), so both sides must be changed together —
+precomputed profile is loaded), so both sides must be changed together,
 see the numeric-parity table above.
 
 Scale reference: FSDS's measured sustained lateral-acceleration ceiling is
@@ -381,7 +382,7 @@ updates the first but silently leaves the second alone.
 
 Consequence: after changing this constant, re-run **`export_speed_profile`**.
 Re-running `raceline_optimizer --mode centerline` will report an unchanged
-`v_target` range and that is correct, not a failed export — on
+`v_target` range and that is correct, not a failed export, on
 `comp_test_map_3` the current files read 6.00–18.00 (`speed_profile.csv`) and
 5.54–16.70 (`centerline.csv`).
 
@@ -395,7 +396,7 @@ this constant is live-relevant even while the car drives `centerline.csv`.
 
 *Plain version:* this number decides how fast the car is allowed to plan to go
 through corners. Set too high, the car arrives at the tightest corner faster
-than it can physically turn — so the steering slams over, the car runs wide,
+than it can physically turn, so the steering slams over, the car runs wide,
 and it feels like a sudden jerk. Lowering it slightly made the steering much
 smoother at a small cost in lap time.
 
@@ -403,7 +404,7 @@ Currently **4.75**, reduced from 5.5 after 5.5 was traced to a specific
 sudden-steering-jump symptom. At 5.5 the car arrived at the track's hardest
 curvature ramp (s0≈43→46, where the geometrically-required angle climbs
 8.5°→15.2° in 2.7 m) carrying ~3 m/s more than its own target, which needs
-roughly 15 m/s² of lateral acceleration — twice the plant's ~7.5 ceiling.
+roughly 15 m/s² of lateral acceleration, twice the plant's ~7.5 ceiling.
 No steering policy can track that, so the command stalls near 9° and `e_psi`
 runs away to −18°.
 
@@ -421,20 +422,20 @@ Live effect of 5.5 → 4.75, same controller settings:
 
 **Why this matters for tuning order:** four controller-side weight changes
 (`r_rate_delta`, `nmpc_corner_factor_k`, `nmpc_q_e_y`, `NMPC_SQP_ITERS`) were
-each tried against this symptom first and none of them moved it — see "Turn-in
+each tried against this symptom first and none of them moved it, see "Turn-in
 timing" above. The steering command was already *early* (leading the geometric
 requirement by 0.15 s) and at ~94% of the required magnitude; the binding
 problem was the speed the car brought to the corner. **A "won't turn / jerks
 at tight corners" report should be checked against `a_lat` demand and speed
 overshoot before any steering weight is touched.**
 
-Note the mechanism is not "the car brakes better" — speed overshoot relative
+Note the mechanism is not "the car brakes better". Speed overshoot relative
 to target barely changed (hot ticks 13.31% → 13.14%). What changed is that the
 target itself is lower, so the absolute speed and the required angle at the
 curvature ramp are both smaller.
 
 Also note `a_brake_max` (the `compute_speed_profile` braking pass) looked even
-better on per-tick metrics at 3.5 — hot ticks to 0.00%, saturation 0.65% — but
+better on per-tick metrics at 3.5 (hot ticks to 0.00%, saturation 0.65%) but
 **DNF'd in every offline variant tried**. Do not ship it without understanding
 that failure.
 
@@ -446,7 +447,7 @@ used to ignore the setting that chooses which path file to drive, so changing
 that setting appeared to do nothing.
 
 `launch_all.sh` ends in an `if [ "$USE_DOCKER" = true ]` split, and
-`USE_DOCKER` is **auto-detected**, not set by hand — so which branch runs is
+`USE_DOCKER` is **auto-detected**, not set by hand, so which branch runs is
 not obvious from reading the config at the top of the file.
 
 The Docker branch previously hard-coded the filenames:
@@ -464,12 +465,12 @@ path_map_path:=$CONTAINER_TRACK_DIR/$(basename "$PATH_CSV")
 ```
 
 The container mounts the repo at a different root, so the host-side
-`$SPEED_CSV`/`$PATH_CSV` paths cannot be passed through verbatim — only their
+`$SPEED_CSV`/`$PATH_CSV` paths cannot be passed through verbatim, only their
 basenames, re-rooted at `$CONTAINER_TRACK_DIR`.
 
 **Why this matters beyond the one-line fix:** with the old code, switching
 `PATH_CSV` to `centerline.csv` silently drove the raceline on any Docker run,
 and the telemetry header would have reported the raceline correctly while the
 operator believed otherwise. **When a config change appears to have no effect,
-check the launch header in the telemetry CSV** — `launch.path_map_path` and
+check the launch header in the telemetry CSV**: `launch.path_map_path` and
 `launch.map_path` record what the controller actually received.

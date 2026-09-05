@@ -2,7 +2,7 @@
 
 This is a **from-scratch, derive-it-yourself reference** for how both
 controllers turn "the car is here, the path is there" into the numbers
-(`e_y`, `e_psi`, `kappa`, ...) their cost functions actually penalise. It
+(`e_y`, `e_psi`, `kappa`, ...) their cost functions penalise. It
 assumes no prior MPC or vehicle-dynamics background.
 
 **What this doc is not:** a system architecture overview (that's
@@ -57,10 +57,10 @@ Everything else (rate of change of `e_y`, speed error, curvature) is a
 straightforward derivative or lookup built on top of those two ideas. The
 two controllers in this repo compute `e_y`/`e_psi` using the **same
 geometric convention** (front-axle projection, perpendicular distance, wrapped
-angle) — this is deliberate, so a number logged by one controller means the
+angle), and this is deliberate, so a number logged by one controller means the
 same physical thing as the same-named number logged by the other. Where they
 differ is *what reference direction* `e_psi` is measured against, and
-*whether the prediction horizon knows the reference direction changes* — that
+*whether the prediction horizon knows the reference direction changes*. That
 difference is the whole subject of [Section 3](#3-why-the-ltv-qp-cant-just-re-project-at-every-future-step).
 
 ---
@@ -69,11 +69,11 @@ difference is the whole subject of [Section 3](#3-why-the-ltv-qp-cant-just-re-pr
 
 Source: `MPCController._error_state()`.
 
-**Step 1 — Find the front axle's position.**
+**Step 1: Find the front axle's position.**
 
 The car's raw pose is usually given as a rear-axle reference point
 (`car_pos`) plus a heading (`car_yaw`). Error is measured at the **front
-axle** instead, since that's the end of the car that's actually steered:
+axle** instead, since that's the end of the car that's steered:
 
 ```
 front_axle = car_pos + lf * [cos(car_yaw), sin(car_yaw)]
@@ -82,7 +82,7 @@ front_axle = car_pos + lf * [cos(car_yaw), sin(car_yaw)]
 `lf` is the distance from the car's centre of mass to the front axle (0.70 m
 in this project's model).
 
-**Step 2 — Find the nearest waypoint on the path.**
+**Step 2: Find the nearest waypoint on the path.**
 
 The path is a list of `(x, y)` waypoints. Compute the straight-line
 (Euclidean) distance from the front axle to *every* waypoint, and take
@@ -92,10 +92,10 @@ whichever is smallest:
 base_idx = argmin_i ( distance(front_axle, path[i]) )
 ```
 
-This is a brute-force nearest-neighbour search — no cleverness, just "which
+This is a brute-force nearest-neighbour search, no cleverness, just "which
 point is closest right now."
 
-**Step 3 — Find the path's direction at that point (`path_yaw`).**
+**Step 3: Find the path's direction at that point (`path_yaw`).**
 
 Take the *next* waypoint along the path from `base_idx`, subtract the
 current one, and use `atan2` to turn that little vector into an angle:
@@ -105,13 +105,13 @@ segment = path[base_idx + 1] - path[base_idx]
 path_yaw = atan2(segment.y, segment.x)
 ```
 
-This is a plain two-point finite difference — no smoothing, no lookahead.
+This is a plain two-point finite difference, no smoothing, no lookahead.
 It only ever considers the *one* segment nearest the car.
 
-**Step 4 — Project the offset onto "sideways to the path" (`e_y`).**
+**Step 4: Project the offset onto "sideways to the path" (`e_y`).**
 
 This is the step people most often get wrong by intuition, so it's worth
-being explicit about *why* it isn't simply "the distance to the nearest
+being explicit about *why* it isn't "the distance to the nearest
 point."
 
 ```
@@ -120,8 +120,8 @@ e_y = dy * cos(path_yaw) - dx * sin(path_yaw)
 ```
 
 What this formula does: it takes the raw offset `(dx, dy)` and **rotates it
-into the path's own local coordinate frame** — "how far along the path" and
-"how far to the side of the path" — then keeps only the "to the side" part.
+into the path's own local coordinate frame**, "how far along the path" and
+"how far to the side of the path," then keeps only the "to the side" part.
 Rotating a vector `(dx, dy)` by `-path_yaw` and taking the resulting
 y-component is exactly `dy·cos(path_yaw) - dx·sin(path_yaw)`; that's all
 this line is.
@@ -129,32 +129,32 @@ this line is.
 **Why not just use the raw distance to the nearest point?**
 
 That number conflates "sideways off the line" with "further down the line
-than the nearest waypoint happens to be" — it's the wrong thing to measure.
+than the nearest waypoint happens to be." It's the wrong thing to measure.
 
 Concrete counter-example: a car that is 5 m further along a dead straight
 path, but only 0.2 m sideways off it, has a Euclidean nearest-point
-distance of `sqrt(5² + 0.2²) ≈ 5.004` — reporting the car as 5 metres off
-the racing line, when it's really almost exactly on it.
+distance of `sqrt(5² + 0.2²) ≈ 5.004`, reporting the car as 5 metres off
+the racing line, when it's almost exactly on it.
 
 The rotation above avoids this by throwing away the "along the path"
 component (`dx·cos + dy·sin`, not used here) and keeping only the
-perpendicular component — which is what a lateral-error term is actually
+perpendicular component, which is what a lateral-error term is
 supposed to measure.
 
-**Step 5 — Heading error (`e_psi`).**
+**Step 5: Heading error (`e_psi`).**
 
 ```
 e_psi = atan2( sin(car_yaw - path_yaw), cos(car_yaw - path_yaw) )
 ```
 
 The naive version, `e_psi = car_yaw - path_yaw`, breaks the moment the two
-angles straddle the ±180° wraparound (e.g. car at 179°, path at -179° — a
+angles straddle the ±180° wraparound (e.g. car at 179°, path at -179°, a
 1° actual difference, but a naive subtraction reports 358°). Wrapping
 through `atan2(sin(Δ), cos(Δ))` is the standard trick: it always returns the
 equivalent angle in `(-180°, 180°]`, regardless of how the two raw angles
 happened to be represented.
 
-**Step 6 — Rate of lateral error (`e_y_dot`).**
+**Step 6: Rate of lateral error (`e_y_dot`).**
 
 ```
 e_y_dot = car_speed * sin(e_psi) + car_vy * cos(e_psi)
@@ -162,12 +162,12 @@ e_y_dot = car_speed * sin(e_psi) + car_vy * cos(e_psi)
 
 Plain English: if the car is pointed slightly off from the path direction
 (`e_psi ≠ 0`) while moving forward, its sideways position drifts at a rate
-proportional to `sin(e_psi)` times its speed — the faster it goes, or the
+proportional to `sin(e_psi)` times its speed: the faster it goes, or the
 more misaligned it is, the faster `e_y` changes. The second term accounts
 for genuine sideways slip (`car_vy`, body-frame lateral velocity) on top of
 that.
 
-**Step 7 — Speed error (`e_v`).**
+**Step 7: Speed error (`e_v`).**
 
 ```
 e_v = car_speed - desired_speed
@@ -177,7 +177,7 @@ Just a plain difference; `desired_speed` comes from the planner or a
 precomputed speed profile, low-pass filtered before this point so a sudden
 step change in the request doesn't shock the controller.
 
-**Step 8 — Curvature preview (`kappa`), used only for gain scheduling, not
+**Step 8: Curvature preview (`kappa`), used only for gain scheduling, not
 the dynamics.**
 
 Walk forward along the path from `base_idx` accumulating distance until you
@@ -192,19 +192,19 @@ dpsi = wrap(yaw_after - yaw_before)
 kappa = dpsi / average_segment_length
 ```
 
-This number is **not** fed into the prediction model at all — it's only
+This number is **not** fed into the prediction model at all. It's only
 used to retune the cost weights *for this tick's solve* (see
 [architecture.md's adaptive gain scheduling section](architecture.md#adaptive-gain-scheduling-controllermodel_utilspy)).
 Section 3 explains exactly why it can't also be used to make the *prediction*
 curvature-aware.
 
-**Step 9 — Assemble the 8-state vector.**
+**Step 9: Assemble the 8-state vector.**
 
 ```
 x0 = [ e_y, e_y_dot, e_psi, car_yaw_rate, e_v, 0.0, delta_act, a_act ]
 ```
 
-`delta_act`/`a_act` (the actuator-lag states) aren't measured — they're
+`delta_act`/`a_act` (the actuator-lag states) aren't measured, they're
 carried over from the controller's own memory of what it last commanded,
 since a real steering rack/throttle doesn't reach a commanded value
 instantly.
@@ -223,7 +223,7 @@ The car's rear-axle position is `(9.35, 0.3)`, heading `car_yaw = 5°`
 (slightly rotated counter-clockwise from due East), speed `car_speed = 8
 m/s`, `car_vy = 0`, `desired_speed = 10 m/s`, `lf = 0.70`.
 
-**Step 1 — front axle:**
+**Step 1: front axle:**
 
 ```
 front_axle = (9.35, 0.3) + 0.70 * (cos5°, sin5°)
@@ -232,17 +232,17 @@ front_axle = (9.35, 0.3) + 0.70 * (cos5°, sin5°)
            = (10.047, 0.361)
 ```
 
-**Step 2 — nearest waypoint:** by inspection, `path[10] = (10.0, 0.0)` is
+**Step 2: nearest waypoint.** By inspection, `path[10] = (10.0, 0.0)` is
 closest (distance `sqrt(0.047² + 0.361²) ≈ 0.364`).
 
-**Step 3 — path direction:**
+**Step 3: path direction:**
 
 ```
 segment = (10.5, 0.0) - (10.0, 0.0) = (0.5, 0.0)
 path_yaw = atan2(0.0, 0.5) = 0°
 ```
 
-**Step 4 — `e_y`:**
+**Step 4: `e_y`:**
 
 ```
 dx = 10.047 - 10.0 = 0.047
@@ -251,16 +251,16 @@ e_y = 0.361*cos(0°) - 0.047*sin(0°) = 0.361 - 0 = 0.361 m
 ```
 
 Since the path is exactly due East here, `cos(0°)=1, sin(0°)=0`, so the
-formula reduces to "just the `dy` component" — matching intuition, the car
+formula reduces to "just the `dy` component," matching intuition: the car
 is `0.361` m north of the line.
 
-**Step 5 — `e_psi`:**
+**Step 5: `e_psi`:**
 
 ```
 e_psi = wrap(5° - 0°) = 5° (0.0873 rad)
 ```
 
-**Step 6 — `e_y_dot`:**
+**Step 6: `e_y_dot`:**
 
 ```
 e_y_dot = 8 * sin(5°) + 0 * cos(5°) = 8 * 0.0872 = 0.698 m/s
@@ -269,7 +269,7 @@ e_y_dot = 8 * sin(5°) + 0 * cos(5°) = 8 * 0.0872 = 0.698 m/s
 The car is currently drifting further from the line at about 0.7 m/s,
 because it's pointed slightly away from it while moving.
 
-**Step 7 — `e_v`:**
+**Step 7: `e_v`:**
 
 ```
 e_v = 8 - 10 = -2 m/s   (2 m/s slower than target)
@@ -290,12 +290,12 @@ reproduces exactly what the solver is penalising this tick.
 
 **Entirely current-instant.** Every step above uses only `car_pos`,
 `car_yaw`, `car_speed`, and the path geometry *right now*. Nothing about
-where the path goes 2 seconds from now enters this calculation — the
+where the path goes 2 seconds from now enters this calculation. The
 horizon-forward prediction happens afterward, using this single `x0` as
 the starting point and the linear model from
 [architecture.md's "Building the prediction model" section](architecture.md#building-the-prediction-model-modelbicycle_modelpy).
-That distinction — *one snapshot, then a linear rollout with no path-shape
-awareness* — is exactly the limitation Section 3 explains.
+That distinction, *one snapshot, then a linear rollout with no path-shape
+awareness*, is exactly the limitation Section 3 explains.
 
 ---
 
@@ -305,15 +305,15 @@ A natural question follows from Section 2: the horizon prediction just
 applies a formula 35 times in a row to roll `x0` forward. Why not, at
 each of those 35 steps, take the model's predicted `(x, y)` position, find
 the nearest path point *there*, and recompute `e_y`/`e_psi` against that new
-nearest point — exactly like Section 2 does at `t=0`, just repeated at every
+nearest point, exactly like Section 2 does at `t=0`, just repeated at every
 future step too?
 
-**Short answer: that idea is correct in spirit — it's a real fix, and it's
-*conceptually* what the nonlinear controller in Section 4 actually does.**
+**Short answer: that idea is correct in spirit, it's a real fix, and it's
+*conceptually* what the nonlinear controller in Section 4 does.**
 The obstacle is purely about **how the solver works**, not whether the idea
 is sound geometrically. The rest of this section explains exactly what
-breaks (§3.1), then walks through what the team actually tried instead and
-why even *that* still failed (§3.2) — both are worth reading, since §3.2's
+breaks (§3.1), then walks through what the team tried instead and
+why even *that* still failed (§3.2); both are worth reading, since §3.2's
 failure is what motivates Section 4's specific design.
 
 ### 3.1 The part that breaks it: this search can't live inside a QP
@@ -323,22 +323,22 @@ state `x` and applying input `u` moves the car to state `x'`" is
 expressed as a single fixed matrix multiplication, `x' = Ad·x + Bd·u`
 (see [architecture.md](architecture.md#building-the-prediction-model-modelbicycle_modelpy)).
 Because that relationship is *linear* (state times a fixed number, added
-up — no state multiplied by another state, no branching, no lookups), the
+up, no state multiplied by another state, no branching, no lookups), the
 solver (OSQP) can find the mathematically *provably best* answer among
 millions of candidate steering sequences in 1-5 milliseconds.
 
-"At each step, find the nearest point on the path" is a **search** — a
-`min` over every waypoint — not a fixed formula. Two problems that causes:
+"At each step, find the nearest point on the path" is a **search**, a
+`min` over every waypoint, not a fixed formula. Two problems that causes:
 
 1. **It isn't smooth.** As the predicted position moves, the nearest
    waypoint can suddenly *jump* from one point to a different, non-adjacent
    one (imagine the predicted position crossing the midpoint between two
-   waypoints — the "nearest point" flips discontinuously). A fixed-multiplier
+   waypoints, and the "nearest point" flips discontinuously). A fixed-multiplier
    linear model has no jumps like that anywhere; a solver built to exploit
    that smoothness has no way to represent one.
 2. **It would need to happen 35 times per solve, for every one of the many
    candidate steering sequences the solver explores internally while
-   searching for the optimum** — not once. Baking a live nearest-point
+   searching for the optimum**, not once. Baking a live nearest-point
    search into the *dynamics themselves* destroys the fixed-matrix structure
    that makes OSQP fast in the first place; the problem stops being a
    Quadratic Program at all and becomes a much harder, generally much slower
@@ -346,8 +346,8 @@ millions of candidate steering sequences in 1-5 milliseconds.
    [architecture.md's linear-vs-nonlinear section](architecture.md#linear-vs-nonlinear-in-plain-english)).
 
 So the honest answer to "why not just re-project every step" is: **it's
-allowed, but the moment it's done, the problem is no longer a QP — it
-becomes something structurally different** — which is exactly what Section 4
+allowed, but the moment it's done, the problem is no longer a QP, it
+becomes something structurally different**, which is exactly what Section 4
 is. The LTV-QP specifically avoids this because staying a QP is what lets it
 finish reliably inside the 50 ms tick budget.
 
@@ -370,7 +370,7 @@ where  w[k] = -v_x * kappa(distance_k) * dt * gain
 ```
 
 This is essentially your idea, but with the "search" replaced by a
-**precomputed, fixed lookup** — done once, outside the solver, so the QP's
+**precomputed, fixed lookup**, done once, outside the solver, so the QP's
 linear structure survives.
 
 **Result: it made the car steer the wrong way first, then correct.**
@@ -379,13 +379,13 @@ before a bend, adding this term produced steering that swung the *wrong*
 direction for several consecutive ticks before turning the correct way.
 
 **Why, mechanically:** the injected term `w[k]` is a **known fact about the
-future** the moment the solver starts — it doesn't depend on what steering
-sequence the solver actually picks. Since it's already "priced in"
+future** the moment the solver starts: it doesn't depend on what steering
+sequence the solver picks. Since it's already "priced in"
 regardless of the chosen inputs, the solver has complete freedom to decide
-*when within its 35-step plan* to actually respond to it. If a brief
+*when within its 35-step plan* to respond to it. If a brief
 wrong-direction wiggle happens to produce a slightly lower total squared-cost
 than committing immediately (because of how the cost trades off against
-steering-rate penalties elsewhere in the horizon), the solver takes it — it
+steering-rate penalties elsewhere in the horizon), the solver takes it. It
 is mathematically optimizing the numbers it's given, and nothing in those
 numbers *forces* early commitment, only *permits* it. Every variant of
 "tell the solver about a future obligation as external data" tested this way
@@ -396,22 +396,22 @@ the car dead-centre and pointed correctly, `v_x = 15` m/s, approaching a
 bend whose curvature 24 m ahead is `kappa = 0.05` (1/m). The `e_psi` state's
 own natural decay in the linear model is `Ad[2,2] ≈ 0.946` per 0.05 s tick
 (i.e. any nonzero `e_psi` shrinks by about 5.4% every tick even with zero
-input) — that decay is fighting the forcing term every step.
+input), and that decay is fighting the forcing term every step.
 
 **`gain = 1.0`** (the physically exact value, from `path_yaw_rate = v_x·κ`):
 - Injected nudge per tick: `w = -v_x·kappa·dt·gain = -15·0.05·0.05·1.0 ≈ -0.0375` rad/step (≈ -2.15°/step).
 - But the QP's own decay bleeds off about 94.6% of whatever accumulated from the *previous* tick before this tick's nudge even lands.
-- **Result:** commanded steering under 1° — indistinguishable from ordinary solver noise. Too weak to produce any real anticipation.
+- **Result:** commanded steering under 1°, indistinguishable from ordinary solver noise. Too weak to produce any anticipation.
 
 **Raise `gain` to compensate, say `gain ≈ 6`:**
-- The nudge is now large enough to matter — but it also changes the *cheapest total path* through the QP's cost landscape.
-- Picture the cost as a landscape the solver is finding the lowest point of: a large forcing term partway through the horizon can make a brief dip in the *wrong* direction early (cheap in steering-rate terms, since it's a small correction) followed by a bigger *correct*-direction swing later — summing to a lower total squared-cost than committing immediately.
+- The nudge is now large enough to matter, but it also changes the *cheapest total path* through the QP's cost landscape.
+- Picture the cost as a landscape the solver is finding the lowest point of: a large forcing term partway through the horizon can make a brief dip in the *wrong* direction early (cheap in steering-rate terms, since it's a small correction) followed by a bigger *correct*-direction swing later, summing to a lower total squared-cost than committing immediately.
 - **Result, confirmed directly:** at this gain, the solver's chosen trajectory steers measurably away from the corner for the first few steps before reversing.
 
 **Push `gain` to ≈ 20** to force early correct-direction commitment to win outright:
-- **Result:** the forcing term is now so large it saturates steering at the mechanical limit for the *entire* horizon, regardless of actual tracking error — the controller is always turning at maximum, not responding to the real corner. This defeats the purpose just as badly as the first failure mode.
+- **Result:** the forcing term is now so large it saturates steering at the mechanical limit for the *entire* horizon, regardless of actual tracking error. The controller is always turning at maximum, not responding to the corner. This defeats the purpose just as badly as the first failure mode.
 
-**No gain in between works either.** This isn't a case of "try harder to tune it" — it's the geometry of the cost landscape itself changing shape as gain increases, the same structural property described above: the solver optimizes whatever total cost the numbers describe, and for a wide middle range of gains, a wrong-direction dip is genuinely cheaper.
+**No gain in between works either.** This isn't a case of "try harder to tune it," it's the geometry of the cost landscape itself changing shape as gain increases, the same structural property described above: the solver optimizes whatever total cost the numbers describe, and for a wide middle range of gains, a wrong-direction dip is cheaper.
 
 **The fix that actually worked:** make the curvature obligation impossible
 to defer, by making it a **structural consequence of the car's own predicted
@@ -423,17 +423,17 @@ motion**, not a fact injected from outside. That's Section 4.
 
 Source: `PathReference` class + `_f()` in `nmpc_core.py`.
 
-The key structural change: the state vector gains a new entry, **`s`** — arc
-length travelled along the path — and curvature is looked up **at whatever
+The key structural change: the state vector gains a new entry, **`s`**, arc
+length travelled along the path, and curvature is looked up **at whatever
 `s` the model currently predicts**, not at a fixed step index. Since `s`
 itself evolves as a normal state (driven by the car's own predicted speed
 and heading), a bend at some future distance along the path is automatically
-"there" the instant the horizon reaches it — there's no separate slot for
+"there" the instant the horizon reaches it, and there's no separate slot for
 the solver to defer paying into.
 
 State vector: `x = [s, e_y, e_psi, v_x, v_y, r, delta_act, a_act]`.
 
-**Step 1 — Build a smooth, continuous description of the path (once, not
+**Step 1: Build a smooth, continuous description of the path (once, not
 per-tick, for a static path).**
 
 Rather than reading curvature from raw waypoint-to-waypoint differences
@@ -450,13 +450,13 @@ y_spline = CubicSpline(arc, path.y)
 ```
 
 A cubic spline is a smooth curve that passes exactly through every waypoint
-while keeping its first and second derivatives continuous — which matters
+while keeping its first and second derivatives continuous, which matters
 here because curvature *is* a second derivative (see Step 2). This
 replaces the raw two-point differencing Section 2 uses, because differencing
 raw waypoints makes curvature "step" abruptly between waypoints in a way
 that doesn't reflect the path's true smooth shape.
 
-**Step 2 — Curvature and reference heading, as continuous functions of `s`.**
+**Step 2: Curvature and reference heading, as continuous functions of `s`.**
 
 Standard calculus result for a parametric curve `(x(s), y(s))`:
 
@@ -470,7 +470,7 @@ kappa(s) = ( x'(s)*y''(s) - y'(s)*x''(s) ) / ( x'(s)² + y'(s)² )^1.5
 spline's derivatives are themselves simple polynomials, so this is exact,
 not a numerical approximation). Plain English: `psi_ref(s)` is "which
 direction is the path pointing at distance `s` along it," and `kappa(s)` is
-"how sharply is it curving there" — both evaluated from the *same* smooth
+"how sharply is it curving there," both evaluated from the *same* smooth
 curve, which matters for the reason in the callout below.
 
 > **Why `psi_ref` and `kappa` must come from the same smoothed curve.**
@@ -479,13 +479,13 @@ curve, which matters for the reason in the callout below.
 > spline. That combination produced a **period-2 steering oscillation**
 > (commanded steering alternating roughly +25°, then -25°, every tick,
 > indefinitely) through tight corners. Cause: raw waypoint tangents jump in
-> discrete steps of about `segment_length / corner_radius` — 5.7° per 0.5 m
-> waypoint spacing on a 5 m-radius hairpin — and the controller read every
+> discrete steps of about `segment_length / corner_radius` (5.7° per 0.5 m
+> waypoint spacing on a 5 m-radius hairpin), and the controller read every
 > one of those artificial steps as real heading error to correct within a
 > single tick. Deriving `e_psi`'s reference from the *same* smoothed spline
 > that produces `kappa(s)` removed the artificial steps entirely.
 
-**Step 3 — Project the car onto the path (once, at `t=0`, same idea as
+**Step 3: Project the car onto the path (once, at `t=0`, same idea as
 Section 2 Steps 1-5, with two refinements).**
 
 ```
@@ -505,17 +505,17 @@ e_psi = wrap(car_yaw - path_yaw)
 
 Two differences from Section 2, both small but deliberate:
 1. `path_yaw` comes from the spline (`psi_ref`), not a raw two-point
-   difference — this is what avoids the period-2 oscillation above.
+   difference, and this is what avoids the period-2 oscillation above.
 2. The "along the path" component (`along`), which Section 2 computes but
-   throws away, is kept here and used to refine `s0` — the arc-length
-   station — beyond just "whichever waypoint happened to be nearest." On a
+   throws away, is kept here and used to refine `s0`, the arc-length
+   station, beyond just "whichever waypoint happened to be nearest." On a
    tight corner this correction can be a metre or more, over which the
-   reference heading genuinely changes, so the heading is re-evaluated a
+   reference heading changes, so the heading is re-evaluated a
    second time at the refined `s0`.
 
-**Step 4 — How error *evolves* over the horizon (this is the actual fix).**
+**Step 4: How error *evolves* over the horizon (this is the actual fix).**
 
-This is the part with no equivalent in Section 2 at all — Section 2's model
+This is the part with no equivalent in Section 2 at all. Section 2's model
 has no term describing how `e_psi` changes due to the path itself curving.
 Here, at every predicted stage of the horizon, given whatever `(s, e_y,
 e_psi, v_x, v_y, r)` the model currently predicts:
@@ -530,7 +530,7 @@ e_psi_dot = r - kap * s_dot                        # <-- the term Section 2's mo
 
 Plain English for each line:
 - `s_dot`: how fast the car is advancing *along the path* (not just through
-  the world) — this needs the `1/denom` correction because "distance along
+  the world), this needs the `1/denom` correction because "distance along
   a curving path" and "distance in a straight line" aren't quite the same
   thing once the car is offset from the centreline (a car on the inside of a
   bend covers less arc-length per metre travelled than one on the outside;
@@ -546,7 +546,7 @@ Plain English for each line:
 
 Because `s` is a **state that the rollout itself predicts forward** (via
 `s_dot`, which depends on the car's own predicted speed/heading), `kappa(s)`
-automatically changes as the horizon advances — a bend 10 steps ahead is
+automatically changes as the horizon advances, and a bend 10 steps ahead is
 already shaping today's plan, with no separate signal that needs to be
 "paid for later." This is the structural difference from Section 3.2's
 failed curvature-forcing attempt: there, `w[k]` was a fixed number computed
@@ -575,21 +575,21 @@ Compare to Section 2's model at the same instant: `e_psi_dot = r = 0`
 (unchanged, forever, since nothing there depends on `kappa`).
 
 **The NMPC's rollout predicts `e_psi` will start becoming nonzero
-immediately** — specifically, drifting at -0.75 rad/s (about -43°/s) the
+immediately**, specifically, drifting at -0.75 rad/s (about -43°/s) the
 very first instant, purely because the path is curving underneath the car,
 even though the car hasn't turned its wheels yet. That's the entire
 mechanism: the model tells the solver "doing nothing here leads to heading
 error building up," and the solver reacts to that *predicted* error the
-same way it reacts to *real* error today, using the normal cost function —
+same way it reacts to *real* error today, using the normal cost function,
 no bolted-on lookahead heuristic required.
 
 A few steps later (say the rollout has driven forward ~0.35 s, advancing `s`
 to roughly `50 + 15*0.35 ≈ 55.25` and picking up some real `e_psi` and
 countering yaw rate `r` from the QP's own chosen steering), you'd plug the
 *new* `s`, `e_y`, `e_psi`, `v_x`, `v_y`, `r` back into the same formulas
-above — this is a rollout, so each step's output becomes the next step's
+above, this is a rollout, so each step's output becomes the next step's
 input, exactly like Section 2's `x' = Ad·x + Bd·u`, except this update rule
-is nonlinear (it multiplies `kap` — itself a function of the state `s` — by
+is nonlinear (it multiplies `kap`, itself a function of the state `s`, by
 `s_dot`, another state-dependent quantity, so it isn't "state times a fixed
 number" any more; see [architecture.md's linear-vs-nonlinear section](architecture.md#linear-vs-nonlinear-in-plain-english)
 for what that distinction costs computationally).
@@ -601,7 +601,7 @@ Directly contrasting with Section 3.2:
 | | Curvature forcing (failed) | NMPC (works) |
 |---|---|---|
 | How curvature enters | A fixed number, `w[k]`, computed once before the solve and added to the prediction as external data | `kappa(s)`, looked up **inside** the dynamics equation using `s`, a state the solver is actively predicting |
-| Can the solver defer it? | Yes — `w[k]` is true no matter what input sequence gets chosen, so paying for it "now" vs "later in the plan" is a free choice | No — `e_psi_dot` at a given predicted moment mechanically depends on wherever `s` has gotten to by that moment; there's no separate slot to schedule around |
+| Can the solver defer it? | Yes: `w[k]` is true no matter what input sequence gets chosen, so paying for it "now" vs "later in the plan" is a free choice | No: `e_psi_dot` at a given predicted moment mechanically depends on wherever `s` has gotten to by that moment; there's no separate slot to schedule around |
 | Measured failure mode | Brief wrong-direction ("wrong way then correct") steering, ~7 consecutive ticks at comparable-to-peak magnitude | A single, negligible wrong-direction step (~-0.33°, confirmed as the true mathematical optimum, not a solver bug) against a real correction peak of +4.9° |
 
 ---
@@ -612,9 +612,9 @@ Directly contrasting with Section 3.2:
 |---|---|---|
 | When is error computed? | Once, at `t=0`, from the measured pose | Once at `t=0` for the *initial* state, then **continuously re-derived** at every horizon step as `s`, `e_y`, `e_psi` evolve |
 | Reference heading source | Raw two-point segment tangent | Analytic cubic-spline fit, evaluated at the (refined) arc-length station |
-| Does the *prediction* know the path curves? | No — `e_psi_dot = r` only | Yes — `e_psi_dot = r - kappa(s)*s_dot` |
-| How is curvature used at all? | Only to retune cost weights for *this* tick's solve (gain scheduling) — never enters the predicted dynamics | Enters the predicted dynamics directly, every step |
-| Structural class of problem | Convex Quadratic Program (QP) — one solve, guaranteed global optimum, ~1-5 ms | Sequence of QPs via Gauss-Newton SQP — no guaranteed global optimum, ~9 ms mean |
+| Does the *prediction* know the path curves? | No: `e_psi_dot = r` only | Yes: `e_psi_dot = r - kappa(s)*s_dot` |
+| How is curvature used at all? | Only to retune cost weights for *this* tick's solve (gain scheduling); never enters the predicted dynamics | Enters the predicted dynamics directly, every step |
+| Structural class of problem | Convex Quadratic Program (QP), one solve, guaranteed global optimum, ~1-5 ms | Sequence of QPs via Gauss-Newton SQP, no guaranteed global optimum, ~9 ms mean |
 | Consequence of the difference | Needs adaptive gain-scheduling machinery to approximate anticipation it structurally can't have; still turns in late on sharp/sudden corners | No corner-anticipation machinery needed; the whole adaptive gain-schedule family is inactive/inapplicable |
 
 ---
@@ -635,6 +635,6 @@ For the cost function itself (`Q`/`R`/`R_rate`, how these error terms turn
 into a single number to minimise), see
 [`architecture.md`'s "The cost function and QP" section](architecture.md#the-cost-function-and-qp-controlleroptimiserpy)
 or the more plain-English
-[`junior_project_mpc_docs.md` Section 1.4](junior_project_mpc_docs.md#14-the-cost-function) —
+[`junior_project_mpc_docs.md` Section 1.4](junior_project_mpc_docs.md#14-the-cost-function),
 not repeated here since that part is identical in spirit for both
 controllers and already well covered.

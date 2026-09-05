@@ -26,5 +26,5 @@ sections covering five unrelated topics.
 | an investigation's history and measurements | `docs/logs/` |
 
 Describe a mechanism in its own document and record only its parity obligation
-in `offline_live_parity.md` — writing both in one place is how the previous
+in `offline_live_parity.md`. Writing both in one place is how the previous
 single file accumulated 33 sections that had nothing to do with parity.

@@ -18,25 +18,25 @@
 
 ## Overview
 
-The car runs a track in two laps. The first lap maps it: a live planner reconstructs the track from cones as the car drives, recording the result. The second lap drives the same track again using that recorded map — and because the whole path is now known in advance instead of being discovered lap-by-lap, a controller can plan ahead instead of only reacting. That second lap is what this project's MPC (Model Predictive Control) controller is for. MPC runs alongside the existing Stanley controller, not as a replacement for it — both remain available options on the second lap.
+The car runs a track in two laps. The first lap maps it: a live planner reconstructs the track from cones as the car drives, recording the result. The second lap drives the same track again using that recorded map, and because the whole path is now known in advance instead of being discovered lap-by-lap, a controller can plan ahead instead of only reacting. That second lap is what this project's MPC (Model Predictive Control) controller is for. MPC runs alongside the existing Stanley controller, not as a replacement for it, both remain available options on the second lap.
 
 The core idea behind MPC: every tick, ask "if the car did X for the next second or so, where would it end up, and how well would that track the path?" for lots of possible X, and pick the best one. Two properties fall out of that naturally:
 
-- **Physical limits are respected properly** — the optimisation never asks for more steering angle than the rack can actually provide.
+- **Physical limits are respected properly**, the optimisation never asks for more steering angle than the rack can provide.
 - **"Good driving" becomes tunable** through a cost function's weights, rather than hard-coded reactive rules.
 
 
 ### Controller comparison
 
-Early on, both MPC variants (LMPC and NMPC, introduced in Sections 2 and 3) had noticeably noisier steering than Stanley — small-amplitude chatter, not a tracking failure, but enough to rank Stanley ahead overall on the composite score. Two causes were found and fixed: the steering-rate cost was badly undertuned, and the tracked reference line was asking for more grip than the car has. See `docs/logs/steering_chatter_investigation.md` for the investigation. With both fixed, NMPC and Stanley now perform similarly.
+Early on, both MPC variants (LMPC and NMPC, introduced in Sections 2 and 3) had noticeably noisier steering than Stanley, small-amplitude chatter, not a tracking failure, but enough to rank Stanley ahead overall on the composite score. Two causes were found and fixed: the steering-rate cost was badly undertuned, and the tracked reference line was asking for more grip than the car has. See `docs/logs/steering_chatter_investigation.md` for the investigation. With both fixed, NMPC and Stanley now perform similarly.
 
-That chatter fix is unrelated to NMPC's other advantage over LMPC: a structural difference in what the two controllers' models can represent, specifically around corner turn-in (Section 4). Fixing the chatter did not change that difference — it removed a separate, noisier symptom that was masking the comparison.
+That chatter fix is unrelated to NMPC's other advantage over LMPC: a structural difference in what the two controllers' models can represent, specifically around corner turn-in (Section 4). Fixing the chatter did not change that difference, it removed a separate, noisier symptom that was masking the comparison.
 
 
 ### What this project delivers
 
 - **A working MPC controller**: takes in odometry (position, heading, speed) and outputs a throttle + steering command.
-- **A working 2D simulator**: used to visualise and test the controller, and to run the offline tuner against. (This is a separate, lightweight simulator from FSDS — see [Section 6](#6-repo-contents-fsae_mpctest) for how the two compare.)
+- **A working 2D simulator**: used to visualise and test the controller, and to run the offline tuner against. (This is a separate, lightweight simulator from FSDS, see [Section 6](#6-repo-contents-fsae_mpctest) for how the two compare.)
 - **A working auto-tuner**: the controller's cost function has ~9 numbers that need tuning for it to drive well; this searches for good values automatically instead of by hand.
 - **Working ROS 2 nodes**: drop-in replacements for the old Stanley controller nodes in the FSDS/planning stack, so the MPC can be validated against the real simulator.
 - **Documentation**: the repo [README](https://github.com/Martin-Jin/fsae_MPCTest) and this docs page.
@@ -84,7 +84,7 @@ That chatter fix is unrelated to NMPC's other advantage over LMPC: a structural 
 
 ## 1. How MPC Works
 
-MPC ("Model Predictive Control") drives by repeatedly asking "if the car did X for the next second or so, where would it end up, and how well would that track the path?" for many possible X, picking the best one. This section covers the mechanics every MPC controller in this project shares. Sections 2 and 3 cover the two controllers built on top of it — LMPC and NMPC — and how they differ.
+MPC ("Model Predictive Control") drives by repeatedly asking "if the car did X for the next second or so, where would it end up, and how well would that track the path?" for many possible X, picking the best one. This section covers the mechanics every MPC controller in this project shares. Sections 2 and 3 cover the two controllers built on top of it, LMPC and NMPC, and how they differ.
 
 
 ### 1.1 Receding Horizon Control
@@ -100,12 +100,12 @@ graph LR
     E --> A
 ```
 
-This is called **receding horizon control**. Because every tick re-plans from a fresh measurement, any prediction error the internal model makes gets caught and corrected on the very next tick — this is what makes MPC robust to using a simplified internal model rather than the full complexity of a real car.
+This is called **receding horizon control**. Because every tick re-plans from a fresh measurement, any prediction error the internal model makes gets caught and corrected on the very next tick, and this is what makes MPC robust to using a simplified internal model rather than the full complexity of a real car.
 
 
 ### 1.2 State: Error Relative to the Path
 
-The controller doesn't track the car's raw (X, Y) position — it tracks **error relative to the path**, which keeps behaviour the same no matter where on the track the car is. Every tick, it finds the closest point on the path to the car, then measures sideways distance and heading difference from there — a **Frenet-frame** conversion, the standard approach for any controller whose job is staying close to a curve.
+The controller doesn't track the car's raw (X, Y) position, it tracks **error relative to the path**, which keeps behaviour the same no matter where on the track the car is. Every tick, it finds the closest point on the path to the car, then measures sideways distance and heading difference from there, a **Frenet-frame** conversion, the standard approach for any controller whose job is staying close to a curve.
 
 | Symbol | What it is | Units |
 |---|---|---|
@@ -128,23 +128,23 @@ Each solve minimises a weighted sum of a few things, over the whole planning hor
 | $R_{rate}$ | How jerky the commands are, tick to tick | Higher = smoother, less abrupt changes |
 | Slack | Crossing the track's lane boundary (soft, last resort) | Discourages leaving the corridor without making the problem infeasible |
 
-$Q$/$R$/$R_{rate}$ are exactly the weights the tuner searches for (Section 5). Because every term is a non-negative weight times a squared error, the cost can only ever grow as things get worse, never shrink — which is also what makes the whole problem **convex**, guaranteeing the solver finds the actual best answer rather than a merely locally-good one.
+$Q$/$R$/$R_{rate}$ are exactly the weights the tuner searches for (Section 5). Because every term is a non-negative weight times a squared error, the cost can only ever grow as things get worse, never shrink, which is also what makes the whole problem **convex**, guaranteeing the solver finds the actual best answer rather than a merely locally-good one.
 
 
 ### 1.4 The Solver
 
-A quadratic cost with linear constraints is a **Quadratic Program (QP)** — a well-studied problem class with fast, purpose-built solvers. The controller uses [OSQP](https://osqp.org/) (primary, ~1-5ms per solve, *warm-started* from the previous tick's answer) with [Clarabel](https://clarabel.org/) as a slower, more robust fallback. If both fail, the simulator holds the previous command; the live controller applies a full brake instead, since that's the safer default on real hardware.
+A quadratic cost with linear constraints is a **Quadratic Program (QP)**, a well-studied problem class with fast, purpose-built solvers. The controller uses [OSQP](https://osqp.org/) (primary, ~1-5ms per solve, *warm-started* from the previous tick's answer) with [Clarabel](https://clarabel.org/) as a slower, more robust fallback. If both fail, the simulator holds the previous command; the live controller applies a full brake instead, since that's the safer default on real hardware.
 
 
 ### 1.5 Adaptive Gain Scheduling and Safety Features
 
-The tuned weights are optimised for one "average" operating point. A handful of small functions rescale $Q$/$R$/$R_{rate}$ every tick (on a fresh copy — the tuned weights are never permanently modified) to compensate for how the car's needs change with speed and cornering:
+The tuned weights are optimised for one "average" operating point. A handful of small functions rescale $Q$/$R$/$R_{rate}$ every tick (on a fresh copy, the tuned weights are never permanently modified) to compensate for how the car's needs change with speed and cornering:
 
-- **Steering gets more conservative at higher speed** — the same angle produces more lateral acceleration, so steering cost scales up smoothly with speed.
-- **Smoothness penalty relaxes in corners, and stiffens on straights** — full smoothness cost on a straight, floored (not removed) in a tight corner; stiffened again once the car is already straight, centred, and aligned, to stop small unnecessary corrections.
-- **Lateral-error cost softens near the centreline** — prevents a correct-overcorrect cycle right where the car should be settling onto the line.
-- **Delay compensation** (live controller only) — rolls the tracking error forward through commands already in flight, so the controller plans against where the car will actually be, not where it was measured.
-- **Tracking-error speed gate** — slows the car down when it's not actually near the path it's trying to follow, independent of the path's own shape.
+- **Steering gets more conservative at higher speed**, the same angle produces more lateral acceleration, so steering cost scales up smoothly with speed.
+- **Smoothness penalty relaxes in corners, and stiffens on straights**, full smoothness cost on a straight, floored (not removed) in a tight corner; stiffened again once the car is already straight, centred, and aligned, to stop small unnecessary corrections.
+- **Lateral-error cost softens near the centreline**, preventing a correct-overcorrect cycle right where the car should be settling onto the line.
+- **Delay compensation** (live controller only), rolls the tracking error forward through commands already in flight, so the controller plans against where the car will be, not where it was measured.
+- **Tracking-error speed gate**, slows the car down when it's not near the path it's trying to follow, independent of the path's own shape.
 
 Full detail on each of these: [`docs/reference/control_mechanisms.md`](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/reference/control_mechanisms.md).
 
@@ -161,14 +161,14 @@ LMPC models the car as a **bicycle model** (one wheel per axle, on the centrelin
 
 ### 2.2 Why Linear Is Good Enough
 
-A real tyre's grip isn't actually linear — it bends and saturates as slip grows. LMPC's model doesn't need to capture that, because MPC's receding-horizon replanning (Section 1.1) corrects any prediction error on the very next tick regardless. The trade is a small, bounded loss of prediction accuracy for a large, guaranteed win in solve speed and reliability — worthwhile because the alternative, a nonlinear model, turns the QP into a much harder nonlinear program with no guaranteed optimum and unpredictable solve times, which a controller due for an answer every 50ms can't risk.
+A real tyre's grip isn't actually linear, it bends and saturates as slip grows. LMPC's model doesn't need to capture that, because MPC's receding-horizon replanning (Section 1.1) corrects any prediction error on the very next tick regardless. The trade is a small, bounded loss of prediction accuracy for a large, guaranteed win in solve speed and reliability, worthwhile because the alternative, a nonlinear model, turns the QP into a much harder nonlinear program with no guaranteed optimum and unpredictable solve times, which a controller due for an answer every 50ms can't risk.
 
 
 ### 2.3 LMPC's Blind Spot: It Can't See the Road Bend
 
-LMPC's model only knows how the *car* moves in response to its own state and commands — nothing in it represents "the path itself is turning." Put the car exactly on the centreline, pointed the right way, with a sharp corner ahead, and the model predicts zero error forever, no matter how sharply the real path bends just beyond the horizon. The controller only reacts once the car is already partway into the corner and real error has appeared — showing up as **late turn-in**: straight for too long, then a lot of steering all at once to catch up.
+LMPC's model only knows how the *car* moves in response to its own state and commands, nothing in it represents "the path itself is turning." Put the car exactly on the centreline, pointed the right way, with a sharp corner ahead, and the model predicts zero error forever, no matter how sharply the real path bends just beyond the horizon. The controller only reacts once the car is already partway into the corner and real error has appeared, showing up as **late turn-in**: straight for too long, then a lot of steering all at once to catch up.
 
-Feeding curvature into the cost function as a lookahead signal doesn't fix this properly either — the solver is free to defer paying for it, or even steer briefly the wrong way first, since nothing in the dynamics themselves changed. NMPC (Section 3) exists specifically to fix this at the model level. See [`removed_mechanisms.md`](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/removed_mechanisms.md) for the lookahead approaches that were tried and rejected.
+Feeding curvature into the cost function as a lookahead signal doesn't fix this properly either, the solver is free to defer paying for it, or even steer briefly the wrong way first, since nothing in the dynamics themselves changed. NMPC (Section 3) exists specifically to fix this at the model level. See [`removed_mechanisms.md`](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/removed_mechanisms.md) for the lookahead approaches that were tried and rejected.
 
 
 ## 3. NMPC: The Nonlinear Controller
@@ -178,12 +178,12 @@ Feeding curvature into the cost function as a lookahead signal doesn't fix this 
 
 ### 3.1 The Fix
 
-NMPC fixes LMPC's blind spot by changing what the model tracks: instead of the car's raw position, its state includes **`s`, distance travelled along the path**, and the path's curvature at that distance is fed directly into the heading-error equation. Because `s` is predicted forward using the car's own predicted speed, a bend at some future distance is automatically "seen" the moment it enters the horizon — there's no separate signal for the solver to defer paying for, because the bend is now built into the dynamics themselves, not bolted onto the cost.
+NMPC fixes LMPC's blind spot by changing what the model tracks: instead of the car's raw position, its state includes **`s`, distance travelled along the path**, and the path's curvature at that distance is fed directly into the heading-error equation. Because `s` is predicted forward using the car's own predicted speed, a bend at some future distance is automatically "seen" the moment it enters the horizon, and there's no separate signal for the solver to defer paying for, because the bend is now built into the dynamics themselves, not bolted onto the cost.
 
 
 ### 3.2 Solving It
 
-That equation is genuinely **nonlinear** (it multiplies two state-dependent quantities together), so it can't be solved as one convex QP. Instead NMPC re-linearises around its own predicted trajectory and solves a sequence of QPs that converge toward the nonlinear optimum — **Sequential Quadratic Programming (SQP)** — costing more per tick (~9ms vs. LMPC's ~1-5ms) but still comfortably inside the 50ms budget.
+That equation is **nonlinear** (it multiplies two state-dependent quantities together), so it can't be solved as one convex QP. Instead NMPC re-linearises around its own predicted trajectory and solves a sequence of QPs that converge toward the nonlinear optimum, **Sequential Quadratic Programming (SQP)**, costing more per tick (~9ms vs. LMPC's ~1-5ms) but still comfortably inside the 50ms budget.
 
 
 ### 3.3 Does It Help?
@@ -191,18 +191,18 @@ That equation is genuinely **nonlinear** (it multiplies two state-dependent quan
 Yes, both offline and live:
 
 - **Offline**, steering saturation (the classic symptom of reacting too late) dropped from 12.5% of ticks to 0.8%, with corner turn-in averaging 25 metres earlier on the harder corners.
-- **Live in FSDS**, on a matched same-day pair on the same track, saturation dropped from 6.45% to 0.58% and lap time improved by about 2.4 seconds — the same direction and similar size as offline.
+- **Live in FSDS**, on a matched same-day pair on the same track, saturation dropped from 6.45% to 0.58% and lap time improved by about 2.4 seconds, the same direction and similar size as offline.
 
 The fix described in Section 3.1 is the core mechanism. NMPC also carries three smaller, optional refinements on top of it, covered next.
 
 
 ### 3.4 Optional Refinements
 
-These three are independent of each other and of the core fix above — each can be switched on or off without affecting the others:
+These three are independent of each other and of the core fix above, each can be switched on or off without affecting the others:
 
-- **A smoother spline-fitted curvature reading** — on by default, strictly better, no trade-off.
-- **An experimental per-point lookahead speed profile** — off by default, still being validated.
-- **A backup hard speed-limit check** — off by default, unvalidated.
+- **A smoother spline-fitted curvature reading**, on by default, strictly better, no trade-off.
+- **An experimental per-point lookahead speed profile**, off by default, still being validated.
+- **A backup hard speed-limit check**, off by default, unvalidated.
 
 Full detail: [`docs/reference/README.md`](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/reference/README.md)'s "Three MPCC-inspired additions" section.
 
@@ -211,13 +211,13 @@ Full detail: [`docs/reference/README.md`](https://github.com/Martin-Jin/fsae_MPC
 
 | | **LMPC** | **NMPC** |
 |---|---|---|
-| Sees the road bend ahead? | **No** — predicts zero error forever if it starts at zero | **Yes** — curvature is part of the dynamics, not bolted on |
+| Sees the road bend ahead? | **No**, predicts zero error forever if it starts at zero | **Yes**, curvature is part of the dynamics, not bolted on |
 | Solved as | One convex QP per tick | A sequence of QPs (SQP), re-solved per tick |
 | Solve time (measured) | ~1-5 ms | ~9 ms mean, ~12 ms p95 |
-| Horizon length | 35 steps (1.75 s) | 20 steps (1.0 s) — a tuning choice reflecting the higher per-tick cost |
-| Adaptive gain scheduling (Section 1.5) | Active | Mostly inert — it exists to compensate for LMPC's blind spot, which NMPC doesn't have. `steer_rate_anti_hunt` is the one exception, opt-in on NMPC |
-| Delay compensation, speed gate, e-braking, GO-gating | Shared — computed by the ROS 2 node itself, upstream of either controller | Shared |
-| Yaw-rate cost weight | `q_r` penalises **absolute** yaw rate | `nmpc_q_epsi_dot` penalises yaw rate *relative to what the corner demands* — penalising absolute yaw rate here would fight the cornering it's built to enable |
+| Horizon length | 35 steps (1.75 s) | 20 steps (1.0 s), a tuning choice reflecting the higher per-tick cost |
+| Adaptive gain scheduling (Section 1.5) | Active | Mostly inert, it exists to compensate for LMPC's blind spot, which NMPC doesn't have. `steer_rate_anti_hunt` is the one exception, opt-in on NMPC |
+| Delay compensation, speed gate, e-braking, GO-gating | Shared, computed by the ROS 2 node itself, upstream of either controller | Shared |
+| Yaw-rate cost weight | `q_r` penalises **absolute** yaw rate | `nmpc_q_epsi_dot` penalises yaw rate *relative to what the corner demands*, penalising absolute yaw rate here would fight the cornering it's built to enable |
 | Where it lives | `model/bicycle_model.py` (`fsae_MPCTest`) + `mpc_core.py` (live) | `nmpc_core.py` (live) + `controller/nmpc_optimiser.py` (`fsae_MPCTest`'s offline port) |
 
 For the exact formulas and a full feature-by-feature comparison verified against code: [`architecture.md`](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/architecture.md#feature-comparison-ltv-qp-vs-nmpc-at-a-glance) and [`error_state_reference.md`](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/error_state_reference.md).
@@ -227,30 +227,30 @@ For the exact formulas and a full feature-by-feature comparison verified against
 
 Section 1's cost function has weights ($Q$, $R$, $R_{rate}$) that decide what "good driving" means to the solver. This section covers finding good values for those weights: why that's hard to do by hand, the automatic tuner that does it instead, how a candidate weight set gets scored, and how to run and read the tuner in practice.
 
-Tuning runs against the offline 2D simulator, not the real car or FSDS directly — see Section 6 for that simulator and why weights tuned here transfer to FSDS.
+Tuning runs against the offline 2D simulator, not the real car or FSDS directly. See Section 6 for that simulator and why weights tuned here transfer to FSDS.
 
 
 ### 5.1 Why an Automatic Tuner?
 
 $Q$, $R$, and $R_{rate}$ have 9 tunable numbers between them (`Q_diag[0:5]`, `R_diag[0:2]`, `R_rate_diag[0:2]`). Hand-tuning 9 interacting numbers by trial and error, across multiple corner shapes, is slow and doesn't scale: a change that helps one corner type can hurt another. `tuner/offline_tuner.py` searches for good values automatically instead, by running thousands of simulated laps and minimising a single composite score.
 
-Having one well-defined score to optimise against matters beyond just this tuner: it's what makes "is this weight set better?" an objective, repeatable question rather than a judgement call from watching a run, and it's the same reason a single score (Section 5.3) is useful for comparing runs generally — on the GUI, from the tuner, or off the real car.
+Having one well-defined score to optimise against matters beyond just this tuner: it's what makes "is this weight set better?" an objective, repeatable question rather than a judgement call from watching a run, and it's the same reason a single score (Section 5.3) is useful for comparing runs generally, on the GUI, from the tuner, or off the real car.
 
 
 ### 5.2 How the Tuner Works (CMA-ES)
 
-The tuner uses **CMA-ES**, an evolutionary algorithm in the same family as genetic algorithms: it keeps a population of candidate weight sets, tests each by actually running a rollout and scoring it, then shifts the next generation's candidates toward whatever scored best — no formula for "which direction improves the score" required.
+The tuner uses **CMA-ES**, an evolutionary algorithm in the same family as genetic algorithms: it keeps a population of candidate weight sets, tests each by running a rollout and scoring it, then shifts the next generation's candidates toward whatever scored best, no formula for "which direction improves the score" required.
 
 - **Why this type of algorithm**: "how well did the car drive?" has no clean formula connecting a weight to the score (unlike fitting a line to data, where calculus gives the answer directly), and is somewhat noisy besides. Evolutionary search only needs the ability to score a candidate, not differentiate it.
 - **Pros**: doesn't get stuck needing gradients that don't exist here; naturally explores a wide space of weight combinations in parallel.
-- **Cons**: needs many rollouts to converge (thousands), and offers no guarantee of finding the true global best — only a good one.
+- **Cons**: needs many rollouts to converge (thousands), and offers no guarantee of finding the true global best, only a good one.
 
 Every candidate is scored across a library of synthetic corner shapes, both from a perfect start and a slightly-off one (to test recovery, not just tracking), and the worst-case shapes are weighted more heavily than a plain average so the tuner can't win by driving one shape perfectly and another badly.
 
 
 ### 5.3 How a Run Gets Scored
 
-Every rollout — from the tuner, from **Show Metrics**/**Benchmark All Paths** in the GUI, or off the **real car** (the ROS 2 package carries a verbatim copy of the same scoring code) — is scored through the exact same logic, so a number from any of the three is directly comparable to the others. One caveat on the car: it can't measure `offtrack` (needs ground-truth track edges), and a run against the live planner has no known path end, so either case leaves `score_is_partial=1` in the run's log header.
+Every rollout, from the tuner, from **Show Metrics**/**Benchmark All Paths** in the GUI, or off the **real car** (the ROS 2 package carries a verbatim copy of the same scoring code), is scored through the exact same logic, so a number from any of the three is directly comparable to the others. One caveat on the car: it can't measure `offtrack` (needs ground-truth track edges), and a run against the live planner has no known path end, so either case leaves `score_is_partial=1` in the run's log header.
 
 
 #### 5.3.1 The 13 Raw Metrics
@@ -259,7 +259,7 @@ Accumulated every simulation step:
 
 | # | Metric | What it measures |
 |---|---|---|
-| 0 | `rmse` | Combined tracking error, root-mean-squared — the single most important signal |
+| 0 | `rmse` | Combined tracking error, root-mean-squared, the single most important signal |
 | 1 | `yaw_rms` | How much the car's heading wobbled/oscillated overall |
 | 2 | `smooth_rms` | How jerky the steering/throttle changes were, step to step |
 | 3 | `steer_rms` | Overall steering effort used |
@@ -281,10 +281,10 @@ A single weighted sum of all 13 metrics has a real limit: some good behaviours b
 | Step | Question | Effect |
 |---|---|---|
 | 1. Completion | Did the run even count? | A crash, off-track excursion, or DNF sits in a separate band above `CONSTRAINT_FLOOR` that no amount of good driving elsewhere can climb out of (though it still scores a little better for getting further before failing) |
-| 2. Lap time | How much slower than physically possible was it? | The real goal, in meaningful units (`time_cost = 0.15` means "18% longer than physically possible"). This alone rules out the hunting cheat — wobbling doesn't make the car faster |
+| 2. Lap time | How much slower than physically possible was it? | The real goal, in meaningful units (`time_cost = 0.15` means "18% longer than physically possible"). This alone rules out the hunting cheat, since wobbling doesn't make the car faster |
 | 3. Smoothness | Tie-breaker between similarly-fast laps | Only decides between two runs that are already close on time, not the winner outright |
 
-Completion is judged by `reached_end`, not `progress` — `progress` is computed by a search that stops just short of the final point, so even a perfect lap reports about 0.90.
+Completion is judged by `reached_end`, not `progress`. `progress` is computed by a search that stops just short of the final point, so even a perfect lap reports about 0.90.
 
 
 #### 5.3.3 Normalising and Weighting the Metrics
@@ -296,12 +296,12 @@ The 13 metrics have wildly different natural sizes (`steering_reversal_rms` ~0.0
 
 #### 5.3.4 Where Results Are Logged
 
-Every tuning run appends to `tuning history.txt`: timestamp, the three weight arrays (copy-pasteable), the tuner's own score, and the git commit hash — plus an `Overall score` field left blank for filling in by hand once those weights have actually been tested in FSDS, since the offline score doesn't perfectly predict real-world performance.
+Every tuning run appends to `tuning history.txt`: timestamp, the three weight arrays (copy-pasteable), the tuner's own score, and the git commit hash, plus an `Overall score` field left blank for filling in by hand once those weights have been tested in FSDS, since the offline score doesn't perfectly predict real-world performance.
 
 
 ### 5.4 Running the Tuner
 
-`python -m tuner.offline_tuner` runs it (safe to stop early with **Ctrl+C** — it reports the best weights found so far). On completion it prints the weights to copy in. **Apply the result to both places**, they are not linked and must be kept in sync by hand: `settings.py`'s `Q_diag`/`R_diag`/`R_rate_diag`, and the same three arrays hardcoded in the live ROS 2 controller's `mpc_core.py` (`MPCController.__init__`).
+`python -m tuner.offline_tuner` runs it (safe to stop early with **Ctrl+C**, it reports the best weights found so far). On completion it prints the weights to copy in. **Apply the result to both places**, they are not linked and must be kept in sync by hand: `settings.py`'s `Q_diag`/`R_diag`/`R_rate_diag`, and the same three arrays hardcoded in the live ROS 2 controller's `mpc_core.py` (`MPCController.__init__`).
 
 
 ### 5.5 Manual Tuning Guide
@@ -309,7 +309,7 @@ Every tuning run appends to `tuning history.txt`: timestamp, the three weight ar
 Hand-editing individual `Q`/`R`/`R_rate` entries is generally not recommended. They interact with each other, so a change that looks like an improvement for one corner can quietly break another. Running the tuner is preferred. If a value does need nudging by hand:
 
 - **Change one number at a time**, by no more than 20-30%, then re-test. Small changes can have surprisingly large effects because they interact.
-- **Test against multiple corner shapes**, not just the one currently under inspection — use **Benchmark All Paths** in the GUI, not just **Show Metrics** on a single run.
+- **Test against multiple corner shapes**, not just the one currently under inspection, using **Benchmark All Paths** in the GUI, not just **Show Metrics** on a single run.
 - **Watch for these specific symptoms** and roughly what to look at:
 
 | Symptom | What to check |
@@ -318,12 +318,12 @@ Hand-editing individual `Q`/`R`/`R_rate` entries is generally not recommended. T
 | Car cuts corners short / understeers into apexes | `Q[e_y]` too low relative to `Q[e_psi]`, or corner speed target is too high for the tyre grip assumed |
 | Car is sluggish to accelerate / stuck at low speed | `R[accel]` too high, or `COASTING_SCALE`/friction in `vehicle_physics.py` needs adjusting first |
 | Solver frequently fails / returns `OPTIMAL_INACCURATE` | See [Section 6.5](#65-key-settings-reference), usually a weight-scaling or solver-tolerance issue, not a driving-behaviour issue |
-| Good on one path, terrible on another | Overfitting to one corner shape — add more paths to `VALIDATION_SUITE` and re-run the tuner rather than hand-patching |
+| Good on one path, terrible on another | Overfitting to one corner shape, add more paths to `VALIDATION_SUITE` and re-run the tuner rather than hand-patching |
 
 
 ### 5.6 Adding a New Test Track
 
-New synthetic corner shapes are added in `tuner/offline_tuner.py`'s `build_synthetic_paths()`; add the new key to `VALIDATION_SUITE` in `settings.py` to have the tuner actually optimise against it.
+New synthetic corner shapes are added in `tuner/offline_tuner.py`'s `build_synthetic_paths()`; add the new key to `VALIDATION_SUITE` in `settings.py` to have the tuner optimise against it.
 
 
 ## 6. Repo Contents (`fsae_MPCTest`)
@@ -340,7 +340,7 @@ New synthetic corner shapes are added in `tuner/offline_tuner.py`'s `build_synth
 This project has two deliverables, in two separate repos:
 
 - A **working ROS 2 implementation**, in the `fsae_planning` repo, that runs on the FSDS simulator `autonomous` uses for testing. See Section 7.
-- **`fsae_MPCTest`**: everything listed just above — the offline 2D simulator, debugging/graphing tool, and automatic tuner (Section 5) that searches the simulator for good cost-function weights, without needing FSDS running at all.
+- **`fsae_MPCTest`**: everything listed just above, the offline 2D simulator, debugging/graphing tool, and automatic tuner (Section 5) that searches the simulator for good cost-function weights, without needing FSDS running at all.
 
 The rest of this section is what `fsae_MPCTest` itself contains.
 
@@ -349,8 +349,8 @@ The rest of this section is what `fsae_MPCTest` itself contains.
 
 There are two separate vehicle models in play here, each built for a different job:
 
-- **LMPC's internal model** (Section 2) is a simplified, linear 8-state bicycle model. It has to be simple because the solver evaluates it many times per second — this is the model the controller uses to plan.
-- **`fsae_MPCTest`'s simulator** drives a separate, detailed 24-state nonlinear "ground truth" model (`model/vehicle_physics.py`: real tyre curves, suspension, weight transfer, aerodynamics) as the simulated car. The controller only ever gets this model's tracking error, never its internal state — exactly like a real controller only has GPS/odometry, not X-ray vision into the tyres.
+- **LMPC's internal model** (Section 2) is a simplified, linear 8-state bicycle model. It has to be simple because the solver evaluates it many times per second, and this is the model the controller uses to plan.
+- **`fsae_MPCTest`'s simulator** drives a separate, detailed 24-state nonlinear "ground truth" model (`model/vehicle_physics.py`: real tyre curves, suspension, weight transfer, aerodynamics) as the simulated car. The controller only ever gets this model's tracking error, never its internal state, exactly like a real controller only has GPS/odometry, not X-ray vision into the tyres.
 
 Having both is what lets the simulator stand in for the real car: the simple model is what the controller *thinks* the car is, and the detailed model is what the car *actually is*, and testing the first against the second is what "developing and tuning offline" means in this project.
 
@@ -389,7 +389,7 @@ Having both is what lets the simulator stand in for the real car: the simple mod
 
 ### 6.5 Key Settings Reference
 
-Every one has a full plain-English explanation as a comment directly above it in `settings.py` itself — **read those before changing anything.** What follows is a quick-reference summary.
+Every one has a full plain-English explanation as a comment directly above it in `settings.py` itself. **Read those before changing anything.** What follows is a quick-reference summary.
 
 | Setting | What it does | Typical adjustment |
 |---|---|---|
@@ -403,9 +403,9 @@ Every one has a full plain-English explanation as a comment directly above it in
 | `MAX_EVALS` | Total true-rollout budget for one tuning run (2500 by default) | Double/halve to meaningfully change tuning time |
 | `PATH_N_POINTS` | How finely each synthetic test track is resampled | 200-500 at a time |
 | `SCORE_WEIGHTS` / `METRIC_SCALES` | The two 13-entry arrays behind the composite score (Section 5.3) | Move 0.01-0.03 between `SCORE_WEIGHTS` entries |
-| `VALIDATION_SUITE` | Which synthetic corner shapes the tuner actually scores against | Add/remove one at a time, watch tuning time change |
+| `VALIDATION_SUITE` | Which synthetic corner shapes the tuner scores against | Add/remove one at a time, watch tuning time change |
 | `TIME_OBJECTIVE_WEIGHT` / `QUALITY_WEIGHT` | How much the score cares about lap time vs. smooth driving | 0.05 at a time on `QUALITY_WEIGHT` |
-| `CONSTRAINT_FLOOR` / `DNF_PENALTY` / `DNF_OFFTRACK_PENALTY` | The failed-run scoring band and how much worse a crash is than simply not finishing | Rarely; 0.5-1.0 at a time on the penalties |
+| `CONSTRAINT_FLOOR` / `DNF_PENALTY` / `DNF_OFFTRACK_PENALTY` | The failed-run scoring band and how much worse a crash is than not finishing | Rarely; 0.5-1.0 at a time on the penalties |
 | `FAST_TEST_MODE` | Shrinks everything for a ~1 minute smoke-test after a code change. **Never** paste weights tuned with this on into `Q_diag` etc, it's a correctness check, not a real tuning result | `True` only for quick dev iteration |
 
 
@@ -416,7 +416,7 @@ The live ROS 2 side of this project lives as a proper ROS 2 package, `fsae_contr
 | Executable | Backing file | What it does |
 |---|---|---|
 | `controller` (`controller:=stanley`, the default) | `stanley_controller.py` | The active reactive Stanley controller, publishes `cmd_vel`, routes through `fsds_bridge` like `mpc_controller` does in its `standalone_output=false` mode |
-| `mpc_controller` (`controller:=mpc`) | `mpc/mpc_controller.py` (uses `mpc_core.MPCController`) | Its `standalone_output` ROS2 parameter (default `true`) picks one of two output modes: `false` publishes only steering through the shared `cmd_vel` interface (`fsds_bridge` computes throttle/brake itself from a simple speed-error loop, the same way it does for Stanley); `true` publishes `fs_msgs/ControlCommand` directly, using the MPC's own throttle/brake output unchanged — this preserves the offline-tuned longitudinal behaviour from `tuner/offline_tuner.py`/`gui/simulation.py`, since both also drive the plant with the MPC's own commanded acceleration (see `sim/rollout_core.py`) |
+| `mpc_controller` (`controller:=mpc`) | `mpc/mpc_controller.py` (uses `mpc_core.MPCController`) | Its `standalone_output` ROS2 parameter (default `true`) picks one of two output modes: `false` publishes only steering through the shared `cmd_vel` interface (`fsds_bridge` computes throttle/brake itself from a simple speed-error loop, the same way it does for Stanley); `true` publishes `fs_msgs/ControlCommand` directly, using the MPC's own throttle/brake output unchanged, which preserves the offline-tuned longitudinal behaviour from `tuner/offline_tuner.py`/`gui/simulation.py`, since both also drive the plant with the MPC's own commanded acceleration (see `sim/rollout_core.py`) |
 
 `fsds_bridge` converts the shared `cmd_vel` interface into `fs_msgs/ControlCommand`, and owns GO-gating plus cone-proximity e-braking for `stanley` and for `mpc` in its `standalone_output=false` mode. `mpc` in `standalone_output=true` mode owns all of that itself instead, since it talks to FSDS directly, so `fsds_bridge` is skipped automatically when `standalone_output:=true` (the default) is selected (running both would leave `fsds_bridge`'s output unused, and race the MPC node for the same output topic).
 

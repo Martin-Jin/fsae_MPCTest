@@ -1,4 +1,4 @@
-# Late / jerky turn-in on shallow corners — upgrade options
+# Late / jerky turn-in on shallow corners: upgrade options
 
 **Status: Option 2 is CONFIGURED and awaiting a live test** (config only,
 no code change -- see that section). Options 1, 3 and 4 remain analysis
@@ -6,7 +6,7 @@ only, nothing implemented.
 
 ## The problem
 
-`r_rate_delta = 52.5` (up from 2.8) fixed the steering chatter — see
+`r_rate_delta = 52.5` (up from 2.8) fixed the steering chatter. See
 `docs/logs/steering_chatter_investigation.md`. But it introduced a new
 symptom on **shallow** corners: the car holds a smooth line, refuses to
 begin turning, then jerks once the NMPC's predicted errors finally grow
@@ -16,7 +16,7 @@ enough to overpower the rate cost, then resumes smooth tracking.
 
 The rate cost is `r_rate · Σ(du)²`, summed over the horizon. The tracking
 cost is `Σ(q·e²)`. Both are quadratic, but **the tracking term scales with
-error² while the rate term scales with the size of the steering step** — so
+error² while the rate term scales with the size of the steering step**, so
 their ratio swings enormously with corner severity:
 
 | corner | e_y | e_psi | tracking cost | rate cost of a 1° step | ratio |
@@ -28,11 +28,11 @@ their ratio swings enormously with corner severity:
 A **100× swing** in how strongly the rate cost resists the first steering
 input. On a sharp corner the tracking term overwhelms it instantly; on a
 shallow one they are the same order of magnitude, so the optimal plan is
-genuinely to *wait* — the QP is behaving correctly, the weighting is wrong.
+to *wait*. The QP is behaving correctly, the weighting is wrong.
 
 **Confirmed in the live log** (`…_1787483327.csv`, `r_rate=52.5`):
 
-- Every jerk event lands at **exactly 9.00°/tick** — that is `du_max`
+- Every jerk event lands at **exactly 9.00°/tick**, that is `du_max`
   (180°/s × 0.05 s). The controller is hitting the **actuator slew limit**,
   i.e. it deferred so long it then had to catch up faster than physically
   possible.
@@ -40,7 +40,7 @@ genuinely to *wait* — the QP is behaving correctly, the weighting is wrong.
   `r_rate=2.8`. The high gain created this.
 - `max|e_psi|` rose 21.7° → **29.4°**.
 - Chatter by corner severity: `mean|d_steer|` is 0.833°/tick at
-  `corner_frac<0.1` but 2.482° at 0.25–0.50 — the damping bites hardest
+  `corner_frac<0.1` but 2.482° at 0.25–0.50. The damping bites hardest
   exactly where it is least wanted.
 
 **One flat weight cannot be both stiff enough to kill straight-line hunting
@@ -48,13 +48,13 @@ and compliant enough for a gentle corner's small, early input.** Every
 option below is a way of making the rate cost *conditional*.
 
 Relevant structural fact: `nmpc_core.py:1110` builds the rate weight as
-`np.tile(self.r_rate, N)` — **uniform across all horizon stages**. Nothing
+`np.tile(self.r_rate, N)`, **uniform across all horizon stages**. Nothing
 in the current formulation varies it per stage, though the machinery to do
 so already exists.
 
 ---
 
-## Option 1 — Per-stage rate weight: soft now, stiff later ★ recommended
+## Option 1: Per-stage rate weight, soft now, stiff later ★ recommended
 
 **Idea.** Keep the rate cost uniform in *magnitude* but ramp it across the
 horizon: cheap to move the wheel at stage 0–2, expensive by stage 10+.
@@ -62,11 +62,11 @@ The controller can commit to a small input *immediately* without being
 allowed to oscillate, because sustained wiggling costs full price.
 
 **Why it should work.** The chatter being suppressed is a *tick-to-tick*
-oscillation — it shows up as alternating `du` across many consecutive
+oscillation. It shows up as alternating `du` across many consecutive
 stages. Turn-in is a *single sustained* input. A stage-ramped weight
 distinguishes exactly these two: the flat weight cannot.
 
-**Implementation.** Small and low-risk — the hook already exists:
+**Implementation.** Small and low-risk, since the hook already exists:
 
 ```python
 # nmpc_core.py, replacing np.tile(self.r_rate, N)
@@ -104,7 +104,7 @@ happens is simpler: a cheaper near-stage rate means the solver spends MORE
 of the slew budget, every tick, so it hits the limit more often, and chatter
 rises with it (mean|d| 2.23 -> 3.2-4.0).
 
-Genuinely useful side effect worth keeping in mind: **the ramp clears the
+Useful side effect worth keeping in mind: **the ramp clears the
 offline DNF** that the shipped flat config produces (452 ticks -> full lap)
 and improves `|e_y|` (0.497 -> 0.428). So it does buy real corner
 compliance -- it just pays for it in exactly the currency this change was
@@ -145,15 +145,15 @@ compliance at roughly 1:1. That is strong evidence the rate cost cannot be
 early also lets oscillation happen. The quantity being penalised is wrong,
 not its schedule. That leaves Option 4.
 
-## Option 2 — Curvature-scheduled rate weight, done properly
+## Option 2: Curvature-scheduled rate weight, done properly
 
-**Idea.** What `nmpc_corner_rrate_blend_enabled` already does — stiff on
-straights, soft in corners — but with endpoints scaled to the real
+**Idea.** What `nmpc_corner_rrate_blend_enabled` already does, stiff on
+straights, soft in corners, but with endpoints scaled to the real
 `r_rate_delta` instead of the LTV-QP's stale 2.0/1.25.
 
 **Status.** The code **already exists and is wired**. It was live-tested and
 broke the car *only because its endpoints defaulted to `-1` (inherit)*,
-substituting 2.0/1.25 for 52.5 — a 30× cut giving 21% saturation. See the
+substituting 2.0/1.25 for 52.5, a 30× cut giving 21% saturation. See the
 TRAP section in the chatter log.
 
 **To test:**
@@ -162,10 +162,10 @@ NMPC_CORNER_RRATE_BLEND_ENABLED=true
 NMPC_RRATE_STEER_STRAIGHT=52.5
 NMPC_RRATE_STEER_CORNER=20.0     # try 15-25
 ```
-- **Effort:** none — config only. **Try this first, before writing code.**
+- **Effort:** none, config only. **Try this first, before writing code.**
 - **Risk:** low, and already understood.
 - **Weakness:** keyed on **current** curvature, so on a shallow corner
-  `corner_frac` is small and the softening barely engages — precisely the
+  `corner_frac` is small and the softening barely engages, precisely the
   case that is broken. Likely insufficient alone, but nearly free to check.
 
 ### Measured before the first run: `corner_factor_k` must be raised too
@@ -174,7 +174,7 @@ NMPC_RRATE_STEER_CORNER=20.0     # try 15-25
 live run, `corner_frac` **never exceeded 0.63** (p50 0.31, p90 0.49) at the
 default `k=8.0`. Because `_blend` is a plain lerp, the blend can therefore
 only travel ~2/3 of the way to its corner endpoint - even a corner endpoint
-of 2.0 leaves **~32** where the jerks actually occur (mean `corner_frac`
+of 2.0 leaves **~32** where the jerks occur (mean `corner_frac`
 0.40 on slew-limited ticks), i.e. only a 25% cut from 52.5. Far too weak.
 
 Raising `k` fixes the reach. Curvature seen on this track maps as
@@ -197,7 +197,7 @@ max 52.5), so this is a fair test of the idea, not a misconfiguration.
 | max \|e_psi\| | 29.4 deg | **36.8 deg** |
 | saturation | 0.03% | **1.52%** |
 
-Softening in corners did not buy earlier turn-in; it simply gave back the
+Softening in corners did not buy earlier turn-in; it gave back the
 chatter suppression, and the resulting worse tracking then produced MORE
 slew-limited catch-up, not less. **Option 2 is falsified. Do not retry it,
 and by extension be very sceptical of Option 3** (same signal, shifted
@@ -224,27 +224,27 @@ knows.** The cost function just is not using what the prediction can see.
 That points away from state-keyed scheduling entirely and toward Option 1
 (per-stage, i.e. keyed on horizon position) or Option 4.
 
-## Option 3 — Lookahead-curvature scheduling
+## Option 3: Lookahead-curvature scheduling
 
 **Idea.** As Option 2 but keyed on **peak curvature ahead** rather than
 current, so the weight softens *before* the corner arrives.
 
 **Prior art in-repo.** `peak_kappa_ahead()` was built for the post-solve
 output-smoothing lookahead fade, which has since been removed (it never
-improved on the QP's own rate cost — see the removed feature's history in
+improved on the QP's own rate cost, see the removed feature's history in
 `fsae_planning`'s `CHANGES.md`); the helper itself was removed along with it.
-Reimplementing it from scratch is straightforward — same dense-resample +
+Reimplementing it from scratch is straightforward, same dense-resample +
 moving-average denoise as `curvature_speed()`, just returning peak |κ|
 instead of a speed target.
 
 - **Effort:** low-medium. Straightforward to reimplement from the pattern above.
 - **Risk:** medium. `dκ/ds`-style lookahead signals amplify planner
-  curvature noise — the documented open centreline-spike defect. Fine
+  curvature noise, the documented open centreline-spike defect. Fine
   against the static raceline in use now; re-validate before any live
   planner path.
 - **Note:** composes naturally with Option 1 (when *and* where).
 
-## Option 4 — Penalise steering *acceleration* instead of rate
+## Option 4: Penalise steering *acceleration* instead of rate
 
 **Idea.** Replace (or augment) the `Σ(du)²` term with a second-difference
 penalty `Σ(du_k − du_{k−1})²`. A steady ramp into a corner has near-zero
@@ -274,21 +274,21 @@ document has.
 and `Hess += E2' diag(R_jerk) E2`. `E` is built once in `_build_qp`
 (`nmpc_core.py:848-855`); `E2 = E @ E` structurally, so construction is
 trivial. But it **changes the QP's Hessian sparsity pattern**, so
-`_csc_pattern`/the OSQP `P` matrix setup must be rebuilt — the one option
+`_csc_pattern`/the OSQP `P` matrix setup must be rebuilt. This is the one option
 here that touches solver plumbing rather than just weights.
 
 - **Effort:** medium-high (~150 lines, new operator, P-matrix pattern,
   both repos, new test).
 - **Risk:** medium. Sparsity/`P`-update changes are where subtle solver bugs
   live. Needs a dedicated `nmpc_offline_check` case.
-- **Payoff:** highest. Likely the *correct* long-term formulation, and would
+- **Payoff:** highest. Likely the correct long-term formulation, and would
   let `r_rate_delta` drop back toward its original value.
 
 ## Option 5 — Raise `du_max` (actuator slew limit)
 
 **Idea.** Jerks saturate at exactly 9.00°/tick, so raise the cap.
 
-**Assessment: reject as a fix.** This treats the symptom — the controller
+**Assessment: reject as a fix.** This treats the symptom. The controller
 would still turn in late, just catch up more violently. Worse, 180°/s is a
 *measured lower-bound estimate* of the real FSDS actuator (see
 `docs/reference/README.md`'s slew-rate section); raising it past the real
@@ -300,28 +300,28 @@ alongside a fresh system-ID of the true rate.
 
 **Idea.** Accept 52.5 is too blunt; drop toward ~15-20 and suppress the
 residual chatter another way (Option 4, or a post-solve smoothing filter
-reimplemented but scoped *only* to straights — the removed output-smoothing
+reimplemented but scoped *only* to straights; the removed output-smoothing
 mechanism attempted the general case and didn't improve on `r_rate_delta`
 alone).
 
-**Assessment:** a reasonable fallback, but strictly worse than Options 1/4 —
-it re-opens a problem already solved. Keep as a retreat if the others fail.
+**Assessment:** a reasonable fallback, but strictly worse than Options 1/4.
+It re-opens a problem already solved. Keep as a retreat if the others fail.
 
 ---
 
 ## Recommended sequence (REVISED after Option 2's live rejection)
 
-1. ~~Option 2~~ — **done, rejected.** Worse on every metric; see above.
-2. ~~Option 3~~ — **deprioritised to near-dead.** It keys on the same
+1. ~~Option 2~~: **done, rejected.** Worse on every metric; see above.
+2. ~~Option 3~~: **deprioritised to near-dead.** It keys on the same
    curvature signal as Option 2, merely earlier. Since 27% of jerks show no
    curvature or error signal at all one second out, and Option 2's actual
    failure was giving back chatter rather than being too late, shifting the
    same signal forward is unlikely to help. Not worth the noise risk.
-3. ~~Option 1~~ — **implemented, rejected OFFLINE AND LIVE.** Live slew%
+3. ~~Option 1~~: **implemented, rejected OFFLINE AND LIVE.** Live slew%
    1.75 -> 5.10 (nearly tripled), |e_y| 0.288 -> 0.434, max|e_psi| 29.4 ->
    42.3 deg. Kept default-off only because it is the one change that clears
    the offline DNF.
-4. **Option 4** (steering-acceleration penalty) — **the only remaining
+4. **Option 4** (steering-acceleration penalty): **the only remaining
    candidate, and the one with the strongest evidence** (4.31x separation on
    |d2| vs ~1.9x on |d1|; 96% of slew events are reversals not ramps).
    Options 1 and 2 both failed the same way -- trading chatter for
@@ -334,22 +334,22 @@ applies, 4 changes *what is being damped*. Neither depends on a
 measured-state schedule, which is the property that matters given the
 measurements above.
 
-Options 1, 2 and 3 are mutually composable — 1 schedules *when* in the
+Options 1, 2 and 3 are mutually composable: 1 schedules *when* in the
 horizon, 2/3 schedule *where* on the track. Option 4 could eventually
 replace the need for any of them.
 
 ## Measurement protocol (any option)
 
-Verifying this needs a metric the chatter work did not have — chatter and
+Verifying this needs a metric the chatter work did not have. Chatter and
 turn-in trade against each other, so one number is not enough:
 
-- `mean|d_steer|` and sign-flip% — must not regress from ~1.92°/59.7%.
-- **Slew-limit ticks** (`|d_steer| > 8.9°`) — the turn-in metric.
+- `mean|d_steer|` and sign-flip%: must not regress from ~1.92°/59.7%.
+- **Slew-limit ticks** (`|d_steer| > 8.9°`): the turn-in metric.
   **1.75% now; target ~0%.** This is the number that matters.
-- `max|e_psi|` — 29.4° now, was 21.7° at `r_rate=2.8`.
+- `max|e_psi|`: 29.4° now, was 21.7° at `r_rate=2.8`.
 - `|e_y|` mean/p90 and saturation% as guardrails.
 - Reproduce with `python -m tuner.steering_chatter_check --set ...`, but
   **note the offline closed-loop harness currently DNFs on shipped
-  defaults** (see the chatter log) — live A/B is authoritative until that is
+  defaults** (see the chatter log). Live A/B is authoritative until that is
   resolved. Fixing this turn-in problem may itself clear that DNF, since it
   is plausibly the same mechanism in a less forgiving plant.
