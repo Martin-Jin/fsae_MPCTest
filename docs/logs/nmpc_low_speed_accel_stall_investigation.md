@@ -6,11 +6,15 @@ path, regardless of how large the speed error is. Root cause is a numerical
 instability in one specific internal approximation (`nmpc_jac_substeps=1`),
 not the vehicle model, not the cost weights, and not the shipped rollout
 integration. Raising `nmpc_jac_substeps` to 4 (2 is not enough, see below)
-fixes the whole affected range in every multi-tick test run so far, at
-roughly double the Jacobian's share of per-tick solve cost, expected to
-still fit the 25 ms budget but not separately re-measured at this setting.
-**Not applied to any shipped file** as of this writing; this document is
-the findings, not a changelog entry.
+fixes the whole affected range and closes it in a full closed-loop lap too
+(DNF eliminated, tracking error improves, the stalled-tick fraction drops
+from 14% to 3%), but roughly doubles mean per-tick solve time (9.56 -> 18.63 ms)
+with a measured p95 close to, and a max past, the 25 ms `nmpc_solve_budget_ms`
+default, and more than doubles steering saturation incidence (5.0% -> 11.0%,
+though at the same mean speed in both cases, see below for why that reads as
+a consequence of driving through the affected band far more often rather
+than a new defect). **Not applied to any shipped file** as of this writing;
+this document is the findings, not a changelog entry.
 
 ## In plain English
 
@@ -282,12 +286,61 @@ actually watched closely at low speed.
 - `nmpc_jac_substeps=4`'s effect on tracking quality/solve time over a full
   lap (not just a straight-line low-speed probe) has not been measured, nor
   has its exact per-tick cost (extrapolated, not separately timed).
-- A full `run_core_rollout` closed-loop pass with `nmpc_jac_substeps=4`
-  applied has not been run, only the isolated straight-line multi-tick
-  probe above. The next step for a future session is exactly that: apply
-  the override via `nmpc_overrides={'jac_substeps': 4}` (or equivalent) in
-  a rollout call, not by editing `settings.py` yet, and re-check the
-  standard `tuner.recorded_map_rollout`/`tuner.nmpc_offline_check` tables.
+## Full closed-loop result on the recorded track, `nmpc_jac_substeps=1` vs `4`
+
+`jac_substeps` is not actually wired through `run_core_rollout`'s
+`nmpc_overrides` dict (unlike `q_e_y`, `r_delta`, and the other weight
+fields), it is read as a plain module-level name
+(`jac_substeps=NMPC_JAC_SUBSTEPS`, `sim/rollout_core.py`), bound from
+`settings.py` at import time. Testing an override without editing
+`settings.py` means reassigning that name directly on the already-imported
+module (`rollout_core.NMPC_JAC_SUBSTEPS = 4`), not passing it through
+`nmpc_overrides`, which this field does not support.
+
+Full lap, `comp_test_map_3`, real settings.py weights, `continue_after_dnf=True`:
+
+| | `jac_substeps=1` (shipped) | `jac_substeps=4` (candidate) |
+|---|---|---|
+| DNF | **True** (real off-track excursion) | **False** |
+| Reached end | True | True |
+| Lap length | 1389 ticks | 1146 ticks (faster) |
+| \|e_y\| mean / p90 / max | 0.592 / 1.390 / 2.760 | 0.488 / 1.126 / 2.029 (all better) |
+| \|e_psi\| mean | 7.68 deg | 7.63 deg (about the same) |
+| Ticks stuck in the 2.0-2.5 m/s band | 199 / 1389 (14.3%) | 31 / 1146 (2.7%) |
+| Solve time mean / p95 / max | 9.56 / 14.05 / 32.99 ms | 18.63 / 23.61 / 38.86 ms |
+| Steering saturation | 5.0% (70 ticks) | 11.0% (126 ticks) |
+| Mean speed during saturated ticks | 3.21 m/s | 3.23 m/s (same) |
+| Mean speed over the whole lap | 6.52 m/s | 7.89 m/s |
+
+The DNF is gone, tracking error improves across the board, and the dead
+zone shrinks from 14% of the lap to 3%. This is a real, full-lap
+confirmation, not just the isolated straight-line probe above.
+
+**Two real costs, not glossed over:**
+
+- **Solve time roughly doubles** (9.56 -> 18.63 ms mean), and its p95
+  (23.61 ms) sits close to the 25 ms `nmpc_solve_budget_ms` default, with a
+  measured max (38.86 ms) that exceeds it. `nmpc_solve_budget_ms` is a soft
+  per-SQP-iteration check that ships the best feasible iterate rather than
+  hard-failing, so an occasional overrun does not crash anything, but this
+  is a real, not-yet-explained cost. Neither figure has been measured on
+  target embedded hardware (gap E2 in `fsae_autonomous/docs/NMPC_INTEGRATION_GAPS.md`,
+  unchanged).
+- **Steering saturation more than doubles** (5.0% to 11.0% of ticks). Not
+  an unexplained regression: saturated ticks happen at essentially the
+  same mean speed in both runs (3.21 vs 3.23 m/s), squarely inside the
+  residual band this section is about. With the fix, the car actually
+  accelerates through that band on every corner exit instead of getting
+  stuck there once and staying stuck, so it passes through the same
+  saturation-prone speed range far more often over the course of a full
+  lap (mean lap speed rises from 6.52 to 7.89 m/s, consistent with driving
+  a genuinely faster, more active lap rather than a differently-broken
+  one). Not independently confirmed beyond this correlation.
+
+**Still not done**: no per-corner or per-speed-bin breakdown of exactly
+which saturated ticks are "new" versus "the same corner, encountered
+again because the car didn't stall out of the lap the way it used to."
+Not measured on target embedded hardware. Not applied to any shipped file.
 - Whether the same eigenvalue/stability argument predicts a similar issue
   at any OTHER combination of this vehicle's parameters has not been
   checked, this was diagnosed at the specific `Cf`/`Cr`/`m`/`Iz` values
