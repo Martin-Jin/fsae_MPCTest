@@ -284,6 +284,62 @@ sub-millimetre agreement). This run used the unfixed shipped config, so it
 shows the residual at full severity, not the reduced version measured
 under `jac_substeps=4` above.
 
+## All six available live logs show the same pattern, but not the same severity
+
+Every `mpc_standalone_control_*.csv` in `fsae_logs/` (six total, spanning
+2026-08-24 to 2026-09-05, all `use_nmpc=1`, all `nmpc_jac_substeps=1`, all
+on `comp_test_map_3` against `centerline.csv`) shows worse tracking inside
+the 2.5-6.0 m/s band than outside it:
+
+| Run | \|e_y\| ratio, in-band vs out | `nmpc_status` mean, in-band | `nmpc_status` mean, out-of-band |
+|---|---|---|---|
+| 2026-08-24 17:41 | 1.72x | 1.000 | 1.000 |
+| 2026-08-24 17:45 | 2.88x | 1.000 | 1.000 |
+| 2026-09-01 08:18 | 2.73x | 0.651 | 0.998 |
+| 2026-09-05 08:13 | 1.94x | 0.952 | 0.993 |
+| 2026-09-05 15:41 | 1.40x | 0.812 | 0.994 |
+| 2026-09-05 21:36 | 3.29x | **0.504** | 0.997 |
+
+`nmpc_status` is `1.0` only when the SQP's own OSQP call reports a status
+string starting with "solved", `0.0` for anything else (a budget bailout,
+a rejected backtracking step, or an outright solver failure like the
+"problem non convex" this investigation measured offline at exactly
+2.5 m/s). A mean of 0.504 means the solver genuinely fails to solve
+cleanly on roughly HALF of every tick spent in this band, on a real car.
+This is the direct, mechanism-level link between the live symptom and the
+offline diagnosis, not merely a correlation: the car isn't just tracking
+worse in slower corners in some generic sense, its own solver is
+reporting trouble at exactly the band this investigation's `A_k` Jacobian
+measurements identified.
+
+**Not every run shows this.** The two oldest runs (2026-08-24) have worse
+`|e_y|` ratios than several of the newer ones, yet their solver status is
+a clean 1.000 in-band, identical to outside it. Diffing each run's own
+recorded config (every log header carries its full `mpc_params`/
+`nmpc_params` dump) explains why: the two old runs carry an explicit
+`nmpc_r_rate_delta=2.8` override, while every run from 2026-09-01 onward
+carries `nmpc_r_rate_delta=-1.0` ("inherit the base `r_rate_delta`", which
+is `52.5` in both eras, unchanged), an 18.75x higher effective
+steering-rate weight for the NMPC specifically. The newer runs also carry
+`nmpc_rrate_zone_enabled=True` (was `False`), `nmpc_corner_factor_k=27.0`
+(was inherited at a much lower base value), and `nmpc_rjerk_delta=150.0`
+(was `0.0`, off). **All four of these match `settings.py` exactly as it
+stands today** (confirmed directly), so every run from 2026-09-01 onward
+is the current, actually-shipped configuration, not a stale one, and it is
+specifically this configuration where the solver genuinely fails in the
+band rather than merely tracking worse.
+
+This is consistent with, not contradicting, the root cause identified
+above: a heavier steering-rate weight and an active corner-dependent gain
+schedule change the relative scale of terms feeding into the same
+already-marginal, ill-conditioned Hessian this document's `A_k` peak
+measurements describe, making an existing numerical fragility more likely
+to tip into an outright solver failure rather than merely a bigger, but
+still nominally "solved", tracking error. Not independently confirmed at
+the Jacobian level with these specific newer weights, this is inferred
+from the config diff and the solver-status pattern, not re-derived from
+`A_k`/`grad` the way the root cause section above was.
+
 ## Revised: this is not merely consistent with a successful FSDS session, it is directly visible in one
 
 An earlier version of this section argued the effect might simply never
