@@ -1,4 +1,4 @@
-# NMPC stalls at 2.5-6 m/s in straight-line offline rollouts: root cause found, one candidate fix validated, not yet applied
+# NMPC stalls at 2.5-6 m/s, confirmed in real FSDS telemetry: root cause found, one candidate fix validated, not yet applied
 
 The shipped NMPC (`use_nmpc=True`, default weights) commands essentially zero
 acceleration whenever car speed sits in roughly 2.5-6 m/s on a low-curvature
@@ -258,24 +258,54 @@ cautiously from the earlier 8.28 -> 13.02 ms, 1 -> 2 measurement), still
 expected to fit the 25 ms budget on the machine this was investigated on,
 still not measured on target embedded hardware (gap E2, unchanged).
 
-## Why this is consistent with "it worked fine on FSDS"
+## Confirmed present in real FSDS telemetry, not just the offline plant
 
-Nothing here contradicts a live FSDS session that drove successfully. The
-vehicle model, the shipped rollout integration (`nmpc_rk_substeps=2`), and
-the tuned weights are all unaffected, confirmed directly, this is isolated
-to one internal approximation used only to pick the next step, not to the
-predicted trajectory or the cost being optimised. Triggering it cleanly
-needs a sustained window with the car near-enough on-line and near-enough
-aligned (small `e_y`/`e_psi`) while speed sits in the affected band on a
-low-curvature stretch, the exact condition an isolated straight-line probe
-constructs on purpose and a live lap, with its own ordinary tracking noise
-and curvature almost everywhere, may simply not sustain for long. The
-closed-loop rollout evidence above shows it is not merely a synthetic-probe
-artifact either, the real recorded-track rollout stalls in the same band,
-but "stalls repeatedly for 14% of a lap and DNFs once" is also not the same
-as "never once observed in prior live testing", both can be true at once
-depending on which track, which speed profile, and which specific runs were
-actually watched closely at low speed.
+`fsae_logs/mpc_standalone_control_20260905-213630.csv`, a genuine live FSDS
+run (`use_nmpc=1`, `nmpc_jac_substeps=1`, the unfixed shipped default,
+`path_map_path=centerline.csv`, the same track and the same path source
+as every offline number above) shows the identical pattern:
+
+| | Offline rollout (`comp_test_map_3`, `jac_substeps=1`) | Live FSDS run, same track and path source |
+|---|---|---|
+| correlation(v, \|e_y\|) over the whole run | -0.655 | **-0.601** |
+| mean \|e_y\| inside the 2.5-6.0 m/s band | (not separately isolated) | **0.779 m** |
+| mean \|e_y\| outside that band | (not separately isolated) | **0.237 m** (3.3x smaller) |
+| worst \|e_y\| excursions, speed at each | 1.0-5.4 m/s (see table above) | **4.6-5.6 m/s** |
+
+This directly answers the "is it cutting corners" observation: the worst
+tracking-error excursions on a real FSDS lap, run against the exact
+`centerline.csv` this whole investigation used offline, sit at 4.6-5.6 m/s,
+inside the same band this document is about, and the car's mean lateral
+error more than triples the moment it enters that band versus outside it.
+Not a synthetic-plant artifact, and not explained by a different path
+source (`centerline.csv` and this investigation's offline reconstruction
+are numerically identical, confirmed by nearest-point comparison,
+sub-millimetre agreement). This run used the unfixed shipped config, so it
+shows the residual at full severity, not the reduced version measured
+under `jac_substeps=4` above.
+
+## Revised: this is not merely consistent with a successful FSDS session, it is directly visible in one
+
+An earlier version of this section argued the effect might simply never
+surface in live testing (a live lap's ordinary tracking noise and curvature
+breaking the exact-zero conditions an isolated probe constructs on
+purpose). The real FSDS telemetry above rules that argument out: the same
+3x jump in mean `|e_y|` on entering the 2.5-6.0 m/s band is directly
+present in an actual, very recent live run.
+
+What is still true, and still explains "a live session can look fine
+overall" without contradicting the finding: the vehicle model, the shipped
+rollout integration (`nmpc_rk_substeps=2`), and the tuned weights are all
+unaffected, confirmed directly, this is isolated to one internal
+approximation used only to pick the next step, not to the predicted
+trajectory or the cost being optimised, so most of the lap (everywhere
+outside the affected band) is genuinely unaffected and can look completely
+normal. A lap that spends most of its time above 6 m/s, or that only
+briefly touches the band while already carrying speed through it rather
+than trying to accelerate from a stop inside it, would show this as a
+handful of slightly-wide corners rather than an obvious failure, exactly
+matching "cutting corners slightly sometimes" rather than a dramatic,
+unmissable one.
 
 ## What has NOT been done
 
