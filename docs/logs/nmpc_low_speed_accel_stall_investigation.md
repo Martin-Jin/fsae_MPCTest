@@ -427,6 +427,57 @@ read as ruling suddenness out, only as not confirming it as the
 distinguishing factor. Tightness combined with a low speed target is the
 distinguishing factor that was actually measured.
 
+## Why some runs fail there and others don't: dwell time, not a hidden config or code cause
+
+Three candidate explanations for the config-era split (identified above)
+were tested directly and rejected in turn: heavier cost weights worsening
+the Hessian conditioning (`A_k` and `_solve_step`'s status are byte-
+identical between old and new weights at every state tested), the clean
+runs simply never reaching the corner (both do, at similar speed), and a
+genuine code difference found while diffing the two eras' full recorded
+config, a rise-limiter seeding fix
+(`if self._v_des_prev is None: self._v_des_prev = self._car_speed`, absent
+in the old code, present in the new) landing in the same commit as the
+weight change. Simulating both the old (unseeded, skips the clamp
+entirely on first use after a reset) and the new (seeded from actual
+speed) behaviour side by side, at this exact corner's geometry, in both a
+braking-in and an accelerating-out scenario, produced byte-identical
+`nmpc_status` sequences in every configuration tried. None of these three
+explain the split.
+
+**Looking directly at the raw telemetry instead of guessing a mechanism
+finds the actual difference.** In the one clean old run and the one
+failing new run, `v_actual` and `v_desired` are nearly identical averaged
+over the WHOLE lap (mean 10.07 vs 10.06 m/s, fraction of ticks under
+5.0 m/s 5.9% vs 5.4%), ruling out "the newer run just drives more
+conservatively overall". But at THIS corner specifically, the two runs'
+braking behaviour differs concretely: the old run's passes through
+`nmpc_s0`=180-200 m mostly stay at 6-14 m/s, with one brief dip to
+5.02 m/s that recovers within a tick or two; the new run's single pass
+shows a continuous, monotonic deceleration from 6.4 down to 4.2 m/s
+sustained over 20+ consecutive ticks (roughly a second of real time), and
+`nmpc_status` flips to `0.0` right as that sustained dwell crosses into
+the low-4s.
+
+The pre-existing `jac_substeps=1` fragility (root cause section above) is
+a property of a single tick's linearisation at a given speed, it does not
+itself require dwelling there, but a solve that is merely stalled or
+slightly degraded for one or two ticks can still look "solved" by luck
+(the warm start carrying over is close enough, or the backtracking line
+search finds *something* to accept) in a way that a MANY-tick sustained
+dwell in the same fragile band cannot: more consecutive fragile ticks
+means more chances for the SQP's own internal state (warm start, trust
+region) to wander into a genuinely infeasible or non-convex corner of the
+subproblem rather than being carried past it by momentum from a
+still-healthy adjacent tick. Braking hard enough into this specific corner
+to linger at 4-5 m/s for a second or more, rather than clipping through it
+at 6+ m/s, is what turns the underlying fragility from a near-miss into an
+observed failure. Why some approaches to this corner brake harder than
+others (perception noise, a slightly different line taken lap to lap, or
+genuine closed-loop sensitivity to small differences) is not investigated
+further here, ordinary run-to-run variation in a chaotic closed loop is a
+sufficient explanation and no further hidden cause needs to be assumed.
+
 ## Revised: this is not merely consistent with a successful FSDS session, it is directly visible in one
 
 An earlier version of this section argued the effect might simply never
