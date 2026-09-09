@@ -795,8 +795,16 @@ NMPC_SQP_ITERS = 1                         # Gauss-Newton iterations/tick (real-
                                             # than 2.
 NMPC_SOLVE_BUDGET_MS = 25.0                # wall-clock budget/tick; ships the best feasible
                                             # iterate rather than overrunning DT=0.05s.
-NMPC_RK_SUBSTEPS = 2                       # RK4 substeps in the prediction rollout -- needed
-                                            # because tau_a=0.02s is stiff against DT=0.05s.
+NMPC_RK_SUBSTEPS = 4                       # RK4 substeps in the prediction rollout. Two stiff
+                                            # modes set this: tau_a=0.02s against DT=0.05s (2
+                                            # covers that), and the (v_y, r) lateral dynamics,
+                                            # which stiffen as 1/v_x. Was 2, found outright
+                                            # UNSTABLE (~6e8 disturbance growth over the
+                                            # horizon) across 2.25-3.5 m/s, making the
+                                            # prediction garbage and freezing the controller at
+                                            # exactly zero output. 3 still fails at 2.50 m/s
+                                            # exactly -- see docs/logs/
+                                            # nmpc_low_speed_accel_stall_investigation.md.
 NMPC_JAC_SUBSTEPS = 4                       # RK4 substeps for the QP's sensitivity Jacobians
                                             # only (never the prediction itself). Was 1, found
                                             # numerically unstable below ~6.5-7 m/s (not just

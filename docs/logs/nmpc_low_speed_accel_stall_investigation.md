@@ -1,11 +1,19 @@
-# NMPC stalls at 2.5-6 m/s, confirmed in real FSDS telemetry: root cause found, one candidate fix validated, not yet applied
+# NMPC stalls at low speed: TWO independent RK4 stability defects, both root-caused, both fixed
+
+Two separate substep counts were too low, each making a different part of
+the solver numerically unstable (not merely inaccurate) at low speed:
+`nmpc_jac_substeps` 1 -> 4 (the QP's step direction, band below ~6.5-7 m/s)
+and `nmpc_rk_substeps` 2 -> 4 (the predicted trajectory, band 2.25-3.5 m/s).
+Both are applied. The first is documented immediately below; the second, and
+the comparison table separating them, is under "The prediction rollout has
+the same defect".
 
 The shipped NMPC (`use_nmpc=True`, default weights) commands essentially zero
 acceleration whenever car speed sits in roughly 2.5-6 m/s on a low-curvature
 path, regardless of how large the speed error is. Root cause is a numerical
 instability in one specific internal approximation (`nmpc_jac_substeps=1`),
-not the vehicle model, not the cost weights, and not the shipped rollout
-integration. Raising `nmpc_jac_substeps` to 4 (2 is not enough, see below)
+not the vehicle model and not the cost weights. Raising `nmpc_jac_substeps`
+to 4 (2 is not enough, see below)
 fixes the whole affected range and closes it in a full closed-loop lap too
 (DNF eliminated, tracking error improves, the stalled-tick fraction drops
 from 14% to 3%), but roughly doubles mean per-tick solve time (9.56 -> 18.63 ms)
@@ -13,8 +21,19 @@ with a measured p95 close to, and a max past, the 25 ms `nmpc_solve_budget_ms`
 default, and more than doubles steering saturation incidence (5.0% -> 11.0%,
 though at the same mean speed in both cases, see below for why that reads as
 a consequence of driving through the affected band far more often rather
-than a new defect). **Not applied to any shipped file** as of this writing;
-this document is the findings, not a changelog entry.
+than a new defect).
+
+**Two corrections to the paragraph above, both established later in this
+document.** It was written before either fix landed and before the second
+defect was known:
+
+- **The "not the shipped rollout integration" clause is wrong.** A second,
+  independent defect with the same stiffness mechanism sits in the
+  PREDICTION rollout (`nmpc_rk_substeps=2`), causing a separate dead band at
+  2.25-3.5 m/s. Separate bug, separate fix. See "The prediction rollout has
+  the same defect".
+- **"Not applied to any shipped file" is no longer true.** Both fixes are
+  applied. See the "Applied" notes.
 
 ## In plain English
 
@@ -74,11 +93,17 @@ gives 1.8e-26, 2.4 gives 3.5e-44, the exact zero plateau sits in roughly
   cost reduction is available by accelerating (cost drops from 7392 to 5126
   at a 5 m/s^2 test perturbation). The objective the solver is supposed to
   be descending is fine; what it computes as the descent direction is not.
-- **Not `nmpc_rk_substeps`.** This parameter controls the rollout used to
-  predict the trajectory, not the Jacobian. Sweeping it from 2 to 32 changed
-  nothing, which is itself informative: it means the actual predicted
-  trajectory (what the car is expected to do) was never the problem, only
-  the internal sensitivity estimate used to decide the next step.
+- **Not `nmpc_rk_substeps`, for THIS band.** This parameter controls the
+  rollout used to predict the trajectory, not the Jacobian. Sweeping it from
+  2 to 32 changed nothing in the 2.5-6 m/s band this section is about.
+  **Do not read this bullet as clearing `nmpc_rk_substeps` generally: it is
+  the root cause of a second, narrower dead band at 2.25-3.5 m/s**, found
+  later and documented under "The prediction rollout has the same defect"
+  below. The sweep above missed it because the first defect's own zero
+  output masks it: with `nmpc_jac_substeps=1` the command is already zero
+  across the whole range, so varying `nmpc_rk_substeps` cannot change the
+  observed output either way. It only becomes visible once the Jacobian is
+  fixed.
 - **Confirmed present in a genuine closed-loop rollout, not just an isolated
   probe.** `fsae_MPCTest/sim/rollout_core.run_core_rollout()` (the same
   machinery `tuner.nmpc_offline_check`'s own closed-loop check and
@@ -582,3 +607,260 @@ document validated above, prompted by the same stall reproducing on the
 channel this investigation started from). The measured solve-time and
 saturation costs above stand as recorded; not re-measured on embedded
 hardware by this change (gap E2, unchanged).
+
+## The prediction rollout has the same defect: `nmpc_rk_substeps=2` is RK4-unstable at 2.25-3.5 m/s
+
+A second dead band survives the `nmpc_jac_substeps` fix above, at roughly
+2.3-3.2 m/s, where the NMPC commands **exactly** zero steering and zero
+acceleration. It is a distinct bug with a distinct fix: `nmpc_rk_substeps`
+2 -> 4. Both defects come from the same physical stiffness, but they corrupt
+different things, so fixing either one alone leaves the other.
+
+| | First defect | Second defect |
+|---|---|---|
+| Parameter | `nmpc_jac_substeps` 1 -> 4 | `nmpc_rk_substeps` 2 -> 4 |
+| What goes unstable | `_jacobians()`, the QP's `A_k`/`B_k` | `_rollout()`, the predicted trajectory |
+| What that corrupts | the SQP's step DIRECTION | the cost every step is SCORED against |
+| Affected band | below ~6.5-7 m/s | 2.25-3.5 m/s |
+| OSQP's own status | `solved` (falsely) or `problem non convex` | `solved`, and the step it returns is fine |
+| Reported `nmpc_status` | 1.0, falsely | 0.0, via `'rejected'` |
+
+### In plain English
+
+The controller decides what to do by imagining the next second of driving
+several times over and keeping whichever attempt scores best. The first
+defect broke its estimate of *which direction to try*. This second one
+breaks the imagining itself: below about 3.5 m/s the simulated car inside
+the controller's head goes unstable and predicts a wild, physically
+impossible slide that never happens in reality.
+
+The consequence is worse than a bad guess. Every alternative the controller
+tries is scored through that broken prediction, so every alternative looks
+catastrophically bad, while doing nothing at all happens to be scored
+through a starting point that is still clean. So "do nothing" wins every
+comparison, and it keeps winning on every subsequent tick. The car sits
+there with the wheel straight, in a corner, and the solver honestly believes
+that is the best available option.
+
+### `nmpc_status=0.0` here means the LINE SEARCH rejected the step, not that OSQP failed
+
+Worth stating plainly, because the two look identical in telemetry and point
+at opposite causes. Instrumenting the raw OSQP result object at
+`car_speed=2.8` (inside the band) versus `4.0` (outside it), on the same
+90-degree 10 m corner:
+
+| | speed 2.8 | speed 4.0 |
+|---|---|---|
+| `res.info.status` | `solved` | `solved` |
+| `res.info.status_val` | 1 | 1 |
+| `res.info.iter` | 25 | 25 |
+| `max abs(res.x)` | 0.142 (nonzero step returned) | 0.0047 |
+| final `delta_cmd` | **0.0** | 6.25 deg |
+
+OSQP solves cleanly and hands back a perfectly good nonzero step at both
+speeds. `_solve_step` returns it with status `solved`. The zero is produced
+*after* that, in `compute()`'s backtracking loop, which rejects the step and
+sets `status = 'rejected'`; `nmpc_status` is then `0.0` only because
+`'rejected'` does not start with `'solved'`. Every candidate cause that
+assumes an infeasible or ill-conditioned QP (primal infeasibility, the
+soft-track slack rows, the friction-circle rows, `osqp_max_iter`, Hessian
+conditioning) is therefore ruled out by this table alone.
+
+### The line search cannot escape, because the cost gets WORSE as the step shrinks
+
+The backtracking loop only accepts `cost_try <= cost`. Trying the accepted
+step at decreasing fractions, at `car_speed=2.8` (base cost 10.626):
+
+| step fraction | cost | predicted `v_x` at horizon end |
+|---|---|---|
+| 1.0 | 60.243 | 3.755 |
+| 0.5 | 64.358 | 3.770 |
+| 0.25 | 68.175 | 3.763 |
+| 0.125 | 69.776 | 3.754 |
+| 0.01 | 66.683 | 3.733 |
+| 1e-6 | 46.099 | 3.664 |
+| **0.0** | **10.626** | **2.800** |
+
+A correct line search converges back to the base cost as the fraction goes
+to zero. This one does not: at a step of 1e-6, numerically indistinguishable
+from no step at all, the cost is still 4.3x the base and the predicted speed
+has climbed from 2.80 to 3.66 m/s. The cost is **discontinuous at zero**, so
+no amount of backtracking finds an acceptable step and the loop always exits
+`'rejected'`, leaving `U` at the warm start. Once the warm start is all
+zeros the state is self-sustaining: the same rejection repeats every tick.
+
+### The discontinuity is in `_rollout`, and it is not the kinematic/dynamic blend
+
+Perturbing only the steering channel of the input trajectory by 1e-12 rad, a
+quantity with no physical meaning whatsoever, and rolling out from the same
+`x0`:
+
+| `delta` perturbation | `v_x` at horizon end |
+|---|---|
+| 0 | 2.800 |
+| 1e-12 | 3.538 |
+| 1e-9 | 3.626 |
+| 1e-6 | 3.690 |
+| 1e-3 | 3.737 |
+
+The rollout amplifies an infinitesimal input into a 0.74 m/s speed change.
+Two things this is NOT, both checked directly and eliminated:
+
+- **Not the `v_blend_lo`/`v_blend_hi` kinematic-dynamic blend.** `blend` is
+  exactly 1.0 at every stage of the affected rollout (`v_blend_hi=2.5` and
+  the whole horizon sits above it), so the blend is fully saturated and its
+  `np.clip` derivative is not involved. The band's proximity to
+  `v_blend_hi=2.5` is coincidence.
+- **Not a steering input at all.** `delta` reads 0.000000 at every stage
+  while `v_y` and `r` grow from 1e-4 to 0.37 in a single stage, a 1000x
+  jump. Nothing is steering; the integration is diverging on its own.
+
+The `v_x` rise is a downstream symptom, not the fault. `_f_scalar` sets
+`v_x_dot = a + blend * r * v_y`, an ordinary centripetal coupling term, so
+once the diverging `v_y` and `r` are large the speed is dragged up with
+them.
+
+### Root cause: the (v_y, r) eigenvalues scale as 1/v_x, so slowing down is what breaks it
+
+Identical mechanism to the first defect, quantified the same way. The
+linearised lateral sub-dynamics have eigenvalues proportional to `1/v_x`, so
+the system gets **stiffer as the car slows**. RK4's real-axis stability
+limit is about 2.78, and the relevant quantity is `|lambda| * dt / n_sub`
+with `dt=0.05`. Measured directly as the amplification of a 1e-9 `(v_y, r)`
+disturbance over a 20-stage horizon with zero input on a straight path
+(below 1.0 means the integration decays it, as a stable one must):
+
+| `v_x` | n_sub=1 | n_sub=2 (shipped) | n_sub=3 | n_sub=4 |
+|---|---|---|---|---|
+| 2.00 | 1.6e+09 | 1.5e-21 | 2.1e-27 | 9.2e-28 |
+| 2.20 | 7.7e+08 | 1.1e-02 | 2.8e-33 | 2.7e-38 |
+| 2.30 | 6.4e+08 | **5.8e+08** | 7.3e-26 | 3.4e-43 |
+| 2.50 | 6.6e+08 | **4.0e+08** | **2.6e+01** | 2.0e-34 |
+| 2.80 | 5.3e+08 | **3.9e+08** | 4.8e-11 | 3.7e-42 |
+| 3.20 | 7.8e+08 | **4.3e+08** | 1.1e-22 | 2.5e-44 |
+| 3.50 | 6.5e+08 | 5.2e+06 | 1.7e-28 | 8.9e-42 |
+| 4.00 | 7.9e+08 | 1.5e-03 | 1.4e-33 | 6.1e-38 |
+| 6.00 | 1.4e+09 | 3.0e-22 | 7.4e-25 | 4.7e-25 |
+
+Swept at 0.05 m/s resolution over 2.0-6.0 m/s, the count of unstable points
+is 32 at `n_sub=2`, exactly **1** at `n_sub=3` (at 2.50 m/s), and **0** at
+`n_sub=4`. At `n_sub=4` the disturbance decays across the entire 0.1-25 m/s
+operating envelope.
+
+### Why the band has a lower edge as well as an upper one
+
+The upper edge (~3.5 m/s) is where `1/v_x` stiffness falls back inside RK4's
+stability limit. The lower edge (~2.2 m/s) has a different cause, and this
+is why the band is narrower than the first defect's: below `v_blend_hi=2.5`
+the `blend` factor fades the tyre forces out at the source
+(`F_yf *= blend`, `F_yr *= blend`), which softens the very stiffness that
+causes the divergence. Two opposing speed dependences bracket the band. The
+first defect, running one substep coarser, is unstable well past where the
+blend can save it, which is why its band runs all the way to ~6.5 m/s.
+
+### `nmpc_rk_substeps=3` is NOT enough, for the same reason 2 was not enough for the Jacobian
+
+Full multi-tick `compute()` sweep, 366 conditions (speeds 2.00-5.00 in 0.05
+steps x corner radii 6/10/15 m x left/right), 10 ticks each, counting
+conditions that return exactly-zero steering or a non-`solved` status:
+
+| `nmpc_rk_substeps` | `alat_ceiling` off | `alat_ceiling` on (shipped) |
+|---|---|---|
+| 2 (shipped) | **152 / 366** | 0 / 366 |
+| 3 | **4 / 366** (all at 2.50-2.55 m/s) | 0 / 366 |
+| 4 | **0 / 366** | 0 / 366 |
+
+`n_sub=3` leaves a real, narrow failure at exactly the 2.50 m/s point the
+disturbance-growth table predicts. 4 is the first value with margin, and
+matches `nmpc_jac_substeps`, so the two no longer need to be reasoned about
+separately.
+
+### The `alat_ceiling` model masks this defect, which is why live logs degrade rather than freeze
+
+With `nmpc_alat_ceiling_enabled=True` (the shipped default) the sweep shows
+0 failures at every substep count. The ceiling's `tanh` saturation caps the
+tyre forces, which damps the divergence enough to hide the hard freeze. That
+resolves the apparent contradiction with the live telemetry earlier in this
+document, where in-band ticks track 1.4-3.3x worse but rarely report an
+outright solver failure: on the car the defect shows up as degraded
+prediction quality, not as a visible stall. It is still a wrong prediction,
+and it is still worth fixing, but the ceiling is why it was survivable.
+
+### Cost: negligible, unlike the first fix
+
+The rollout is not the dominant per-tick cost (the Jacobian pass is), so
+this fix is far cheaper than `nmpc_jac_substeps` 1 -> 4 was. Measured over
+160 ticks at 3/5/8/12 m/s:
+
+| `nmpc_rk_substeps` | mean | p50 | p95 | max |
+|---|---|---|---|---|
+| 2 | 20.69 ms | 20.34 | 29.82 | 33.22 |
+| 3 | 20.90 ms | 20.42 | 29.35 | 31.62 |
+| 4 | **22.32 ms** | 21.81 | 30.44 | 34.54 |
+
+Mean rises 8% and p95 is unchanged within noise. Not measured on target
+embedded hardware (gap E2, unchanged).
+
+### The closed-loop DNF at `rk=4` is chaotic variation, not a regression
+
+`tuner.nmpc_offline_check`'s closed-loop lap DNFs at `nmpc_rk_substeps=4`
+(off-track, `|e_y|=2.35 m`, step 409) where the shipped `rk=2` completes.
+That is not evidence the fix is harmful, for three measured reasons:
+
+| `nmpc_rk_substeps` | DNF | `|e_y|` mean | p90 | max |
+|---|---|---|---|---|
+| 2 (shipped) | False | 0.4875 | 1.126 | 2.029 |
+| 3 | False | 0.4889 | 1.150 | 2.150 |
+| **4** | **True** | 0.4871 | 1.164 | **2.692** |
+| 5 | False | 0.4887 | 1.180 | 2.119 |
+| 6 | False | 0.4876 | 1.166 | 2.075 |
+
+- **Monotonicity fails.** 5 and 6 are strictly more accurate integrations
+  than 4 and both complete. A defect caused by adding substeps would get
+  worse with more of them, not better.
+- **Mean tracking is flat** (0.4871-0.4889 across all five). There is no
+  systematic degradation, only which single excursion happens to cross the
+  2.35 m threshold.
+- **The trajectories diverge from tick 1.** Steering differs between `rk=2`
+  and `rk=4` by tick 1 and exceeds 0.01 rad by tick 18, so by step 409 the
+  two runs are at materially different track positions and are not
+  comparable tick-for-tick.
+
+Every variant peaks at 2.0-2.7 m against a 2.35 m threshold, so this lap
+rides the off-track boundary regardless of substep count.
+
+**Confirmed directly by perturbing something physically meaningless.**
+Holding the substep count fixed and shifting only the initial lateral
+offset `ey0` by a nanometre flips the outcome:
+
+| `ey0` | `rk=2` DNF | `rk=4` DNF |
+|---|---|---|
+| 0 | False | **True** |
+| 1e-9 m | False | False |
+| 1e-7 m | False | False |
+| 1e-5 m | False | False |
+
+Three of four `rk=4` seeds complete, and the one that DNFs is flipped by a
+1e-9 m change no physical vehicle could resolve. `|e_y|` mean stays in
+0.478-0.490 across all eight runs. This is the same closed-loop chaotic
+sensitivity already documented above for the config-era split.
+
+**Consequence for future work: the NMPC closed-loop check in
+`tuner.nmpc_offline_check` is a coin flip on this track and must not be
+read as a pass/fail gate on a small numerical change.** Judge such a change
+on `|e_y|` mean/p90 across several seeds, or on the open-loop
+disturbance-growth table above, which is deterministic.
+
+### Applied
+
+`nmpc_rk_substeps` 2 -> 4 in `settings.py`, `nmpc_params.py` (all three
+copies), `controller/nmpc_optimiser.py`'s signature default, and the
+`fsae_params.yaml` in all three trees.
+
+**`nmpc_jac_substeps` was still 1 in every `fsae_params.yaml`**, found while
+applying this fix. Those YAML files are loaded by
+`declare_nmpc_params`/`nmpc_params_from_node` at node startup and OVERRIDE
+the dataclass default, so the first defect's fix was not actually active on
+the car despite `nmpc_params.py` reading 4. Both counts are now 4 in all
+three YAMLs. A dataclass default is not the running value when a YAML
+declares the same field.

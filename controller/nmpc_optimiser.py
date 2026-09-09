@@ -736,7 +736,10 @@ class NMPCController:
         r_delta, r_a_accel, r_a_brake, r_rate_delta, r_rate_a,
         terminal_scale=1.0,
         sqp_iters=1, solve_budget_ms=25.0,
-        rk_substeps=2, jac_substeps=1,
+        # Both 4: the (v_y, r) lateral dynamics stiffen as 1/v_x and anything
+        # lower is RK4-unstable at low speed, freezing the solver at exactly
+        # zero output. See docs/logs/nmpc_low_speed_accel_stall_investigation.md
+        rk_substeps=4, jac_substeps=4,
         trust_delta_rad=math.radians(9.0), trust_a=0.6, backtrack_max=2,
         track_halfwidth=3.5, slack_weight=10000.0,
         osqp_max_iter=500, osqp_eps=1e-4,
