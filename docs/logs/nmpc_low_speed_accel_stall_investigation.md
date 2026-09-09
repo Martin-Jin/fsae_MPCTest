@@ -574,3 +574,11 @@ Before applying `nmpc_jac_substeps=2` (or any other fix) to a shipped file,
 re-run `python -m tuner.nmpc_offline_check` and `python -m
 tuner.recorded_map_rollout`, and validate live per the standing rule that
 an offline result alone is never the bar for a planning/control change.
+
+**Applied 2026-09-10**: `nmpc_jac_substeps` raised 1 to 4 in `settings.py`
+(offline) and `fsae_autonomous/.../nmpc_params.py` (live), the fix this
+document validated above, prompted by the same stall reproducing on the
+`fsae_autonomous` bench rig's steering channel (not just the acceleration
+channel this investigation started from). The measured solve-time and
+saturation costs above stand as recorded; not re-measured on embedded
+hardware by this change (gap E2, unchanged).

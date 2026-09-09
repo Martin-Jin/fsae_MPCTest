@@ -797,9 +797,11 @@ NMPC_SOLVE_BUDGET_MS = 25.0                # wall-clock budget/tick; ships the b
                                             # iterate rather than overrunning DT=0.05s.
 NMPC_RK_SUBSTEPS = 2                       # RK4 substeps in the prediction rollout -- needed
                                             # because tau_a=0.02s is stiff against DT=0.05s.
-NMPC_JAC_SUBSTEPS = 1                       # RK4 substeps for the QP's sensitivity Jacobians
-                                            # only (never the prediction itself) -- the
-                                            # dominant per-iteration cost, deliberately coarser.
+NMPC_JAC_SUBSTEPS = 4                       # RK4 substeps for the QP's sensitivity Jacobians
+                                            # only (never the prediction itself). Was 1, found
+                                            # numerically unstable below ~6.5-7 m/s (not just
+                                            # less accurate) -- see docs/logs/
+                                            # nmpc_low_speed_accel_stall_investigation.md.
 NMPC_TRUST_DELTA_RAD = np.radians(9.0)      # per-iteration steering trust region = MAX_STEER's
                                             # own slew-rate limit per tick (180 deg/s * DT) --
                                             # reused, not invented.
