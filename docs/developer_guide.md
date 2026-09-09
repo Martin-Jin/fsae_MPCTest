@@ -1044,7 +1044,7 @@ chmod +x launch_all.sh
 **Installing solver dependencies (MPC controller) inside the container**
 
 The base `osrf/ros:jazzy-desktop` image doesn't ship the QP solver stack
-this controller needs (see [The solver](architecture.md#the-solver)). Install it manually
+this controller needs (see [The solver](lmpc.md#the-solver)). Install it manually
 inside a running container:
 
 ```bash

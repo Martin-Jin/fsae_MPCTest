@@ -10,6 +10,25 @@ shaped the way it is, and what to be careful of when changing it.
 - a mechanism that no longer exists → `docs/removed_mechanisms.md`
 - the reference path and speed profile → `docs/reference/reference_path_and_speed.md`
 
+**What "mechanism" means here.** A mechanism is an extra layer bolted on
+top of a controller's core solve loop, enabled or tuned independently,
+addressing a specific known failure mode (steering chatter, late turn-in,
+sensor/actuation lag) rather than being part of the base
+prediction-and-solve loop itself. A mechanism can be disabled entirely and
+the controller still drives, just without whatever failure mode it was
+added to fix.
+
+This does **not** include the NMPC itself. `use_nmpc` does not add a
+feature to "the MPC", it swaps the entire core solve loop for a different
+one (LTV-QP's one convex QP per tick vs. NMPC's real-time-iteration SQP,
+see `architecture.md`); neither is optional on top of the other; it is
+which controller a given feature belongs to. The ["Nonlinear MPC
+(`use_nmpc`)"](#nonlinear-mpc-use_nmpc-a-second-controller) section below
+covers the two controllers themselves for that reason; every other
+section is a mechanism in the sense above, and can be LTV-QP-only,
+NMPC-only, or shared depending on which controller's blind spot it
+addresses.
+
 ## Corner-factor scheduler: what replaced the lookahead gain-scheduling family
 
 **Plain version:** the controller drives differently depending on whether it

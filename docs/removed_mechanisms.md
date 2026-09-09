@@ -49,8 +49,8 @@ from this doc.
   *expensive* an existing tracking error is. It never changes what the
   solver's own prediction of the future *looks like*.
 - The solver's internal model of "what happens over the next 35 steps"
-  (`Ad`/`Bd`, see [`architecture.md`'s "Building the prediction
-  model"](architecture.md#building-the-prediction-model-modelbicycle_modelpy))
+  (`Ad`/`Bd`, see [`lmpc.md`'s "Building the prediction
+  model"](lmpc.md#building-the-prediction-model-modelbicycle_modelpy))
   has **no path-curvature term at all**. Given the car dead on-line
   (`e_y ≈ e_psi ≈ 0`, exactly the situation on the straight approach to a
   corner) and no other input, that model predicts `e_y`/`e_psi` staying at

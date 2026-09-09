@@ -220,7 +220,7 @@ Full detail: [`docs/reference/README.md`](https://github.com/Martin-Jin/fsae_MPC
 | Yaw-rate cost weight | `q_r` penalises **absolute** yaw rate | `nmpc_q_epsi_dot` penalises yaw rate *relative to what the corner demands*, penalising absolute yaw rate here would fight the cornering it's built to enable |
 | Where it lives | `model/bicycle_model.py` (`fsae_MPCTest`) + `mpc_core.py` (live) | `nmpc_core.py` (live) + `controller/nmpc_optimiser.py` (`fsae_MPCTest`'s offline port) |
 
-For the exact formulas and a full feature-by-feature comparison verified against code: [`architecture.md`](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/architecture.md#feature-comparison-ltv-qp-vs-nmpc-at-a-glance) and [`error_state_reference.md`](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/error_state_reference.md).
+For the exact formulas and a full feature-by-feature comparison verified against code: [`nmpc.md`](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/nmpc.md#feature-comparison-ltv-qp-vs-nmpc-at-a-glance) and [`error_state_reference.md`](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/error_state_reference.md).
 
 
 ## 5. Tuning the Controller

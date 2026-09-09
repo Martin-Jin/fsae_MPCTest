@@ -194,7 +194,7 @@ kappa = dpsi / average_segment_length
 
 This number is **not** fed into the prediction model at all. It's only
 used to retune the cost weights *for this tick's solve* (see
-[architecture.md's adaptive gain scheduling section](architecture.md#adaptive-gain-scheduling-controllermodel_utilspy)).
+[lmpc.md's adaptive gain scheduling section](lmpc.md#adaptive-gain-scheduling-controllermodel_utilspy)).
 Section 3 explains exactly why it can't also be used to make the *prediction*
 curvature-aware.
 
@@ -283,7 +283,7 @@ x0 = [0.361, 0.698, 0.0873, car_yaw_rate, -2.0, 0.0, delta_act, a_act]
 
 Plugging this into the cost function
 (`Q_0*e_y² + Q_1*e_y_dot² + ...`, see
-[`architecture.md`'s cost-function section](architecture.md#the-cost-function-and-qp-controlleroptimiserpy))
+[`lmpc.md`'s cost-function section](lmpc.md#the-cost-function-and-qp-controlleroptimiserpy))
 reproduces exactly what the solver is penalising this tick.
 
 ### 2.2 Is this current-error or forward-looking?
@@ -293,7 +293,7 @@ reproduces exactly what the solver is penalising this tick.
 where the path goes 2 seconds from now enters this calculation. The
 horizon-forward prediction happens afterward, using this single `x0` as
 the starting point and the linear model from
-[architecture.md's "Building the prediction model" section](architecture.md#building-the-prediction-model-modelbicycle_modelpy).
+[lmpc.md's "Building the prediction model" section](lmpc.md#building-the-prediction-model-modelbicycle_modelpy).
 That distinction, *one snapshot, then a linear rollout with no path-shape
 awareness*, is exactly the limitation Section 3 explains.
 
@@ -321,7 +321,7 @@ failure is what motivates Section 4's specific design.
 The LTV-QP's speed comes from one specific trick: the relationship "being in
 state `x` and applying input `u` moves the car to state `x'`" is
 expressed as a single fixed matrix multiplication, `x' = Ad·x + Bd·u`
-(see [architecture.md](architecture.md#building-the-prediction-model-modelbicycle_modelpy)).
+(see [lmpc.md](lmpc.md#building-the-prediction-model-modelbicycle_modelpy)).
 Because that relationship is *linear* (state times a fixed number, added
 up, no state multiplied by another state, no branching, no lookups), the
 solver (OSQP) can find the mathematically *provably best* answer among
@@ -343,7 +343,7 @@ millions of candidate steering sequences in 1-5 milliseconds.
    that makes OSQP fast in the first place; the problem stops being a
    Quadratic Program at all and becomes a much harder, generally much slower
    Nonlinear Program (see
-   [architecture.md's linear-vs-nonlinear section](architecture.md#linear-vs-nonlinear-in-plain-english)).
+   [lmpc.md's linear-vs-nonlinear section](lmpc.md#linear-vs-nonlinear-in-plain-english)).
 
 So the honest answer to "why not just re-project every step" is: **it's
 allowed, but the moment it's done, the problem is no longer a QP, it
@@ -591,7 +591,7 @@ above, this is a rollout, so each step's output becomes the next step's
 input, exactly like Section 2's `x' = Ad·x + Bd·u`, except this update rule
 is nonlinear (it multiplies `kap`, itself a function of the state `s`, by
 `s_dot`, another state-dependent quantity, so it isn't "state times a fixed
-number" any more; see [architecture.md's linear-vs-nonlinear section](architecture.md#linear-vs-nonlinear-in-plain-english)
+number" any more; see [lmpc.md's linear-vs-nonlinear section](lmpc.md#linear-vs-nonlinear-in-plain-english)
 for what that distinction costs computationally).
 
 ### 4.2 Why this structure survives where curvature-forcing didn't
@@ -633,7 +633,7 @@ Directly contrasting with Section 3.2:
 
 For the cost function itself (`Q`/`R`/`R_rate`, how these error terms turn
 into a single number to minimise), see
-[`architecture.md`'s "The cost function and QP" section](architecture.md#the-cost-function-and-qp-controlleroptimiserpy)
+[`lmpc.md`'s "The cost function and QP" section](lmpc.md#the-cost-function-and-qp-controlleroptimiserpy)
 or the more plain-English
 [`junior_project_mpc_docs.md` Section 1.4](junior_project_mpc_docs.md#14-the-cost-function),
 not repeated here since that part is identical in spirit for both
