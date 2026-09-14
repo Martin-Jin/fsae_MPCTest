@@ -859,6 +859,15 @@ NMPC_STANDSTILL_STEER_DAMP_ENABLED = False  # damp stage-0 steering effort while
 NMPC_STANDSTILL_SPEED = 0.5                 # m/s -- below this MEASURED speed, stage 0 only
                                             # is damped. Keyed on the measurement so it
                                             # disengages as soon as the car moves.
+NMPC_STANDSTILL_FADE_SPEED = 3.0            # m/s -- speed at which the damping has faded
+                                            # fully back to 1x. Held at full scale below
+                                            # NMPC_STANDSTILL_SPEED, ramped linearly to 1.0
+                                            # here, so the weight never changes in one step.
+                                            # A hard release put the whole change into a
+                                            # single tick where the car is most sensitive:
+                                            # measured live, steering ran -1.8 to -12.9 deg
+                                            # over the six ticks right after the release.
+                                            # Set <= NMPC_STANDSTILL_SPEED for a hard cutoff.
 NMPC_STANDSTILL_STEER_R_SCALE = 20.0        # multiplier on r_delta for stage 0 only. Stage-0-
                                             # only is a weaker lever than raising r_delta
                                             # across the horizon: measured -6.71 -> -2.41 deg
@@ -907,20 +916,6 @@ NMPC_ALAT_CEILING_ENABLED = True            # model FSDS's measured sustained a_
 # regression shows up. False restores the pre-existing behaviour exactly.
 NMPC_SPLINE_REFERENCE_ENABLED = True
 
-# [NMPC only] NMPC_HORIZON_SPEED_PROFILE_ENABLED -- False (default, EXPERIMENTAL): sample a
-# precomputed per-lap speed profile v(s) at each horizon stage's own
-# PREDICTED arc length s_k (PathReference.v_ref_at), instead of holding a
-# single scalar v_ref constant across the whole horizon. Mirrors kappa(s)'s
-# own non-schedulable, state-keyed lookup on purpose -- see PathReference's
-# docstring and nmpc_core.py's module docstring on why curvature-as-
-# exogenous-horizon-data produced wrong-direction transients in three earlier
-# attempts; v_ref(s) is wired the same way specifically to inherit that
-# property. Only takes effect when a speed-profile array is actually
-# supplied to PathReference (see run_core_rollout's NMPC construction) --
-# with no such array, or with this False, v_ref is the exact same frozen
-# scalar as before. NMPC-only; the LTV-QP (mpc_core.py) is untouched.
-NMPC_HORIZON_SPEED_PROFILE_ENABLED = False
-
 # [NMPC only] NMPC_FRICTION_CIRCLE_ENABLED -- False (default, EXPERIMENTAL): add a HARD
 # per-axle |F_yf|/|F_yr| bound to the condensed QP (on top of, not instead
 # of, the existing SOFT alat-ceiling tanh saturation inside _f/_f_scalar --
@@ -932,45 +927,6 @@ NMPC_HORIZON_SPEED_PROFILE_ENABLED = False
 # _solve_step are all IDENTICAL (same array shapes, same QP dimensions) to
 # before this feature existed -- not just "the extra rows are empty".
 NMPC_FRICTION_CIRCLE_ENABLED = False
-
-# [NMPC only] NMPC_SPEED_LIMIT_ENABLED -- False (default, EXPERIMENTAL): add a
-# SOFT (slack-backed) v_x_k <= v_ref_at(s_k) + NMPC_SPEED_LIMIT_MARGIN +
-# slack_v_k row to the condensed QP at EVERY horizon stage, using the same
-# state-keyed PathReference.v_ref_at(s_k) lookup as
-# NMPC_HORIZON_SPEED_PROFILE_ENABLED and the same slack-with-weight pattern as
-# the existing soft track-bound rows. Never a HARD bound like
-# NMPC_FRICTION_CIRCLE_ENABLED -- that one's zero-slack hard bound went
-# infeasible under ordinary cornering and stalled the car (see
-# `docs/reference/`), so this one always carries slack and can
-# never make the subproblem infeasible.
-#
-# This exists as a CONSTRAINT because NMPC_HORIZON_SPEED_PROFILE_ENABLED's COST term
-# alone was live-tested and REJECTED: the QP just SUMS (v_x - v_ref)^2 across
-# stages with no ordering constraint, so the solver can trade a bad early
-# (in-corner) residual against a good late (post-corner) one in the SAME
-# solve -- it never has to actually slow down in time, only make the total
-# look good. Measured live: v_actual ~16.5 m/s against v_ref already down to
-# ~7-9 m/s on corner entry, with worse off-track excursions than doing
-# nothing. A per-stage INEQUALITY cannot be traded away that way: each
-# stage's bound must individually hold.
-#
-# Only takes effect when a speed-profile array is actually supplied to
-# PathReference (see run_core_rollout's NMPC construction / ref.v_target),
-# exactly like NMPC_HORIZON_SPEED_PROFILE_ENABLED's own gating; the two flags
-# are independent and either, both or neither can be enabled. Default False:
-# genuine experiment, not yet live-tested.
-NMPC_SPEED_LIMIT_ENABLED = False
-NMPC_SPEED_LIMIT_MARGIN = 0.5               # m/s added on top of v_ref_at(s_k) before the
-                                            # bound applies, so ordinary tracking noise around
-                                            # the profile doesn't constantly engage slack.
-                                            # 0 = bound exactly at the profile's own value.
-NMPC_SPEED_LIMIT_SLACK_WEIGHT = 200.0       # penalty on the speed-limit slack -- same role as
-                                            # NMPC_SLACK_WEIGHT for the track bound, but a
-                                            # separate, much smaller constant: a few m/s of
-                                            # overshoot for a tick or two while braking is
-                                            # expected and should cost noticeably less than
-                                            # actually leaving the track (10000), not be pinned
-                                            # to zero as aggressively.
 
 
 # ------------------------------------------------------------------------------

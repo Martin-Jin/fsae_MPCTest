@@ -322,17 +322,6 @@ NMPC_Q_E_Y=7.5
 # NMPC_R_RATE_DELTA=-1.0              # [NMPC only] -1 = inherit r_rate_delta
 # NMPC_ALAT_CEILING_ENABLED=true      # [NMPC only] model FSDS's measured sustained a_lat ceiling inside the prediction. true is correct for FSDS; without it the NMPC oscillated and eventually spun offline (Part 16 §16.6)
 # NMPC_SPLINE_REFERENCE_ENABLED=true         # [NMPC only] default true; analytic-spline kappa(s)/psi_ref(s) instead of moving-average+finite-difference. Numerical-quality fix, not a tuning knob -- see docs/reference/control_mechanisms.md's "Three MPCC-inspired additions" (2026-08-13)
-# LIVE-TESTED 2026-08-13 and REJECTED: v_actual reached ~16.7 m/s against a
-# v_desired of ~3.3-5 m/s for nearly 2s mid-corner, and the car went off-track
-# by up to 3.6 m (mpc_standalone_control_1786585464.csv, t~58-61s) -- the
-# solver pre-pays a future higher speed target the same way the three earlier
-# curvature-scheduling attempts pre-paid a future turn, except the cost here
-# is real off-track excursions, not just a steering wobble. See
-# docs/reference/control_mechanisms.md's "Three MPCC-inspired additions" section for the
-# full writeup. Do not re-enable without a fix to the underlying mechanism
-# (e.g. bounding how far ahead the sampled v_ref is allowed to rise) and a
-# fresh offline A/B first.
-# NMPC_HORIZON_SPEED_PROFILE_ENABLED=false   # [NMPC only, EXPERIMENTAL] default false; sample the speed profile at each horizon stage's own predicted arc length instead of one frozen v_ref. REJECTED 2026-08-13 -- see note above.
 # LIVE-TESTED 2026-08-13 and REJECTED: enabled with zero prior validation
 # (no offline A/B), user reported it "pretty much doesn't work anymore" --
 # reverted immediately without a detailed log post-mortem. Do not re-enable
@@ -464,41 +453,6 @@ NMPC_RRATE_ZONE_FLOOR_CORNER=0.15     # x r_rate mid-corner
 NMPC_RJERK_DELTA=150.0
 # NMPC_RJERK_A=0.0
 
-# [NMPC only, EXPERIMENTAL] Soft (slack-backed) per-stage
-# speed-limit constraint: v_x_k <= v_ref_at(s_k) + NMPC_SPEED_LIMIT_MARGIN +
-# slack_v_k at every horizon stage, own slack variable/weight (separate from
-# the track-boundary slack, never shared). Replaces the EARLIER, REJECTED
-# NMPC_HORIZON_SPEED_PROFILE_ENABLED approach, which put the per-stage speed
-# target into the QP's summed COST instead of a constraint -- a plain sum of
-# squared residuals lets the solver trade a bad (too-fast) residual at an
-# early/in-corner stage against a good residual at a later/post-corner stage
-# in the SAME solve, so it never actually had to brake in time (live-tested:
-# v_actual ~16.7 m/s against v_ref ~3-5 m/s approaching a corner). A per-stage
-# INEQUALITY can't be traded away that way -- it must hold at every stage
-# individually. Requires a speed-profile array to actually be supplied
-# (path_map_path mode); a no-op otherwise, same gating as
-# NMPC_HORIZON_SPEED_PROFILE_ENABLED's own ref.v_target check.
-# Offline A/B (comp_test_map_3, recorded-map rollout): |e_psi| mean 4.2->3.1
-# deg, steering saturation 1.7%->0.8%, ticks >0.5 m/s over target 16.6%->0.8%,
-# no DNF either way. LIVE-TESTED TWICE AND REJECTED both times (2026-08-19,
-# 2026-09-15): car runs a corner ~6 m/s over v_desired with
-# nmpc_speed_limit_over_max reading 0.0 throughout (the per-stage constraint
-# never registers a violation in its OWN predicted horizon even while the
-# real car is measurably over target), steers to full lock, and goes off-
-# track (|e_y| past nmpc_track_halfwidth=3.5 m; one 2026-09-15 run stalled
-# permanently, v_actual pinned at 0 for the rest of the log). Root cause:
-# the constraint is keyed to the model's OWN predicted trajectory
-# (v_ref_at(s_k)), so it inherits the documented sim-to-real prediction gap
-# (see CLAUDE.md "offline sim does not yet fully predict the car") instead
-# of catching cases where the real car's braking doesn't match that
-# prediction. Do not re-enable without addressing that gap first, or at
-# least loosening nmpc_speed_limit_margin/raising slack weight is unlikely
-# to help since the constraint isn't engaging at all, not engaging too
-# weakly.
-NMPC_SPEED_LIMIT_ENABLED=false
-# NMPC_SPEED_LIMIT_MARGIN=0.5                  # m/s added on top of the profile before the bound engages
-# NMPC_SPEED_LIMIT_SLACK_WEIGHT=200.0          # penalty on the speed-limit slack; much lower than the track bound's 10000 on purpose, see nmpc_params.py
-
 # [shared (LTV-QP native, NMPC via override), EXPERIMENTAL] Soft constraint
 # against steering REVERSALS (tick-to-tick sign flip), approximated by
 # boosting R_rate[0,0] whenever LAST tick's steering was already close to
@@ -601,7 +555,6 @@ _append_mpc_arg nmpc_r_delta "$NMPC_R_DELTA"
 _append_mpc_arg nmpc_r_rate_delta "$NMPC_R_RATE_DELTA"
 _append_mpc_arg nmpc_alat_ceiling_enabled "$NMPC_ALAT_CEILING_ENABLED"
 _append_mpc_arg nmpc_spline_reference_enabled "$NMPC_SPLINE_REFERENCE_ENABLED"
-_append_mpc_arg nmpc_horizon_speed_profile_enabled "$NMPC_HORIZON_SPEED_PROFILE_ENABLED"
 _append_mpc_arg nmpc_friction_circle_enabled "$NMPC_FRICTION_CIRCLE_ENABLED"
 _append_mpc_arg nmpc_steer_rate_anti_hunt_enabled "$NMPC_STEER_RATE_ANTI_HUNT_ENABLED"
 _append_mpc_arg nmpc_anti_hunt_boost_max "$NMPC_ANTI_HUNT_BOOST_MAX"
@@ -617,9 +570,6 @@ _append_mpc_arg nmpc_rrate_zone_ease_approach "$NMPC_RRATE_ZONE_EASE_APPROACH"
 _append_mpc_arg nmpc_rrate_zone_floor_corner "$NMPC_RRATE_ZONE_FLOOR_CORNER"
 _append_mpc_arg nmpc_rjerk_delta "$NMPC_RJERK_DELTA"
 _append_mpc_arg nmpc_rjerk_a "$NMPC_RJERK_A"
-_append_mpc_arg nmpc_speed_limit_enabled "$NMPC_SPEED_LIMIT_ENABLED"
-_append_mpc_arg nmpc_speed_limit_margin "$NMPC_SPEED_LIMIT_MARGIN"
-_append_mpc_arg nmpc_speed_limit_slack_weight "$NMPC_SPEED_LIMIT_SLACK_WEIGHT"
 _append_mpc_arg reversal_penalty_enabled "$REVERSAL_PENALTY_ENABLED"
 _append_mpc_arg reversal_penalty_boost_max "$REVERSAL_PENALTY_BOOST_MAX"
 _append_mpc_arg reversal_penalty_k "$REVERSAL_PENALTY_K"

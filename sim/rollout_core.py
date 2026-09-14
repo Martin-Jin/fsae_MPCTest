@@ -73,6 +73,7 @@ from settings import (
     NMPC_RK_SUBSTEPS, NMPC_JAC_SUBSTEPS, NMPC_JAC_GATE_SPEED, NMPC_JAC_SUBSTEPS_FAST,
     NMPC_RK_GATE_SPEED, NMPC_RK_SUBSTEPS_FAST,
     NMPC_STANDSTILL_STEER_DAMP_ENABLED, NMPC_STANDSTILL_SPEED,
+    NMPC_STANDSTILL_FADE_SPEED,
     NMPC_STANDSTILL_STEER_R_SCALE,
     NMPC_TRUST_DELTA_RAD, NMPC_TRUST_A,
     NMPC_BACKTRACK_MAX, NMPC_TRACK_HALFWIDTH, NMPC_SLACK_WEIGHT,
@@ -81,9 +82,8 @@ from settings import (
     NMPC_Q_E_Y, NMPC_Q_E_YD, NMPC_Q_E_PSI, NMPC_Q_EPSI_DOT, NMPC_Q_E_V,
     NMPC_R_DELTA, NMPC_R_A_ACCEL, NMPC_R_A_BRAKE,
     NMPC_R_RATE_DELTA, NMPC_R_RATE_A, NMPC_TERMINAL_SCALE,
-    NMPC_SPLINE_REFERENCE_ENABLED, NMPC_HORIZON_SPEED_PROFILE_ENABLED,
-    NMPC_FRICTION_CIRCLE_ENABLED, NMPC_SPEED_LIMIT_ENABLED,
-    NMPC_SPEED_LIMIT_MARGIN, NMPC_SPEED_LIMIT_SLACK_WEIGHT,
+    NMPC_SPLINE_REFERENCE_ENABLED,
+    NMPC_FRICTION_CIRCLE_ENABLED,
     NMPC_STEER_RATE_ANTI_HUNT_ENABLED,
     NMPC_CORNER_RRATE_BLEND_ENABLED, NMPC_CORNER_FACTOR_K,
     NMPC_RRATE_STEER_STRAIGHT, NMPC_RRATE_STEER_CORNER,
@@ -694,6 +694,7 @@ def run_core_rollout(
             rk_gate_speed=NMPC_RK_GATE_SPEED, rk_substeps_fast=NMPC_RK_SUBSTEPS_FAST,
             standstill_steer_damp_enabled=NMPC_STANDSTILL_STEER_DAMP_ENABLED,
             standstill_speed=NMPC_STANDSTILL_SPEED,
+            standstill_fade_speed=NMPC_STANDSTILL_FADE_SPEED,
             standstill_steer_r_scale=NMPC_STANDSTILL_STEER_R_SCALE,
             trust_delta_rad=NMPC_TRUST_DELTA_RAD, trust_a=NMPC_TRUST_A,
             backtrack_max=NMPC_BACKTRACK_MAX,
@@ -703,11 +704,7 @@ def run_core_rollout(
             alat_flat=ALAT_CEILING_FLAT, alat_slope=ALAT_CEILING_SLOPE,
             alat_intercept=ALAT_CEILING_INTERCEPT,
             spline_reference_enabled=NMPC_SPLINE_REFERENCE_ENABLED,
-            horizon_speed_profile_enabled=NMPC_HORIZON_SPEED_PROFILE_ENABLED,
             friction_circle_enabled=NMPC_FRICTION_CIRCLE_ENABLED,
-            speed_limit_enabled=NMPC_SPEED_LIMIT_ENABLED,
-            speed_limit_margin=NMPC_SPEED_LIMIT_MARGIN,
-            speed_limit_slack_weight=NMPC_SPEED_LIMIT_SLACK_WEIGHT,
             steer_rate_anti_hunt_enabled=NMPC_STEER_RATE_ANTI_HUNT_ENABLED,
             corner_rrate_blend_enabled=NMPC_CORNER_RRATE_BLEND_ENABLED,
             corner_factor_k=_ov('corner_factor_k',
@@ -1067,13 +1064,6 @@ def run_core_rollout(
                 dense_step=NMPC_CURVATURE_DENSE_STEP,
                 smooth_w=NMPC_CURVATURE_SMOOTH_W, kappa_clip=NMPC_KAPPA_CLIP,
                 step_index=step,
-                # settings.NMPC_HORIZON_SPEED_PROFILE_ENABLED: the oracle
-                # speed profile's OWN (path_X, path_Y) points and targets --
-                # a DIFFERENT array from nmpc_path_xy whenever the live
-                # planner centreline is in use above. No-op when the flag is
-                # off (PathReference ignores these unless the feature is
-                # enabled) or when path_v_profile has no matching geometry.
-                path_v_xy=path_xy, path_v=path_v_profile,
             )
             # The warm-start-projection invariant (see NMPCController.
             # _project_feasible) means compute_step() always ships a

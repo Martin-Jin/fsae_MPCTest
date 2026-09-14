@@ -98,16 +98,7 @@ class NMPCParams:
         "unit": "ms",
         "desc": "wall-clock budget per tick; SQP stops early (shipping the best "
                 "feasible iterate) once exceeded. Half of the 50 ms control "
-                "period, leaving the rest of the tick for the node. Checked in "
-                "two places in compute(): before starting an SQP iteration, and "
-                "before starting each backtracking line-search trial. The first "
-                "check alone is a no-op at the shipped nmpc_sqp_iters=1 (that "
-                "loop body always runs its one iteration to completion, so the "
-                "check can only ever refuse to start it); the per-backtrack "
-                "check is what actually bounds tick time in that configuration, "
-                "since each trial re-rolls out the full horizon and dominates "
-                "solve variance. Fixed 2026-09-14, see "
-                "fsae_MPCTest/docs/logs/nmpc_low_speed_accel_stall_investigation.md.",
+                "period, leaving the rest of the tick for the node",
         "controller": "nmpc_only",
     })
     nmpc_rk_substeps: int = field(default=4, metadata={
@@ -141,7 +132,6 @@ class NMPCParams:
                 "accel_stall_investigation.md",
         "controller": "nmpc_only",
     })
-
     nmpc_jac_substeps: int = field(default=4, metadata={
         "unit": "substeps",
         "desc": "RK4 substeps used when finite-differencing the QP's A_k/B_k "
@@ -156,12 +146,7 @@ class NMPCParams:
                 "exactly zero steering/accel, frozen once warm-started into "
                 "that state. 4 is the validated fix: see "
                 "fsae_MPCTest/docs/logs/nmpc_low_speed_accel_stall_"
-                "investigation.md for the root-cause derivation, the "
-                "substeps=1/2/4 comparison (2 is insufficient at 2.5-3.0 "
-                "m/s), and the full closed-loop lap A/B (tracking improves, "
-                "but mean solve time nearly doubles and p95 approaches the "
-                "nmpc_solve_budget_ms=25ms deadline -- not yet measured on "
-                "embedded/Jetson hardware, see GAP E2)",
+                "investigation.md for the root-cause derivation.",
         "controller": "nmpc_only",
     })
     nmpc_jac_gate_speed: float = field(default=8.0, metadata={
@@ -248,6 +233,18 @@ class NMPCParams:
                 "stage), stage 0's steering effort weight is scaled by "
                 "nmpc_standstill_steer_r_scale. Keyed on the measurement so "
                 "the damping disengages the moment the car actually moves.",
+        "controller": "nmpc_only",
+    })
+    nmpc_standstill_fade_speed: float = field(default=3.0, metadata={
+        "unit": "m/s",
+        "desc": "speed at which the standstill damping has faded fully back "
+                "to 1x. The multiplier is held at its full value below "
+                "nmpc_standstill_speed and ramped linearly to 1.0 here, so "
+                "the weight never changes in one step. A hard release put "
+                "the whole change into a single tick right where the car is "
+                "most sensitive: measured live, steering ran -1.8 to -12.9 "
+                "deg over the six ticks straight after the release. Set at "
+                "or below nmpc_standstill_speed to restore a hard cutoff.",
         "controller": "nmpc_only",
     })
     nmpc_standstill_steer_r_scale: float = field(default=20.0, metadata={
@@ -350,23 +347,6 @@ class NMPCParams:
         "controller": "nmpc_only",
     })
 
-    # ── Horizon speed profile (EXPERIMENTAL, default off) ────────────────
-    nmpc_horizon_speed_profile_enabled: bool = field(default=False, metadata={
-        "unit": "bool",
-        "desc": "true -> sample a precomputed per-lap speed profile v(s) at "
-                "each horizon stage's own PREDICTED arc length s_k "
-                "(PathReference.v_ref_at) instead of holding v_ref constant "
-                "across the horizon. Mirrors kappa(s)'s own state-keyed, "
-                "non-schedulable lookup so it inherits the same property "
-                "(see nmpc_core.py's module docstring on why curvature-as-"
-                "exogenous-horizon-data produced wrong-direction transients). "
-                "Only takes effect when a speed-profile array is actually "
-                "supplied at PathReference construction time -- otherwise "
-                "this flag is a no-op and v_ref stays the frozen scalar. "
-                "Default False: genuine experiment, not yet validated",
-        "controller": "nmpc_only",
-    })
-
     # ── Friction-circle hard constraint (EXPERIMENTAL, default off) ──────
     nmpc_friction_circle_enabled: bool = field(default=False, metadata={
         "unit": "bool",
@@ -383,50 +363,6 @@ class NMPCParams:
                 "_output_jacobians/_solve_step produce IDENTICAL output "
                 "(including array shapes) to before this feature existed. "
                 "Default False: genuine experiment, not yet validated",
-        "controller": "nmpc_only",
-    })
-
-    # ── Soft per-stage speed limit (EXPERIMENTAL, default off) ───────────
-    nmpc_speed_limit_enabled: bool = field(default=False, metadata={
-        "unit": "bool",
-        "desc": "true -> add a SOFT (slack-backed) v_x_k <= v_ref_at(s_k) + "
-                "nmpc_speed_limit_margin + slack_v_k row per stage, same "
-                "PathReference.v_ref_at(s_k) state-keyed lookup as "
-                "nmpc_horizon_speed_profile_enabled, same slack-with-weight "
-                "pattern as the existing soft track-bound rows (never a hard "
-                "bound like nmpc_friction_circle_enabled -- that one's zero-"
-                "slack hard bound went infeasible under ordinary cornering "
-                "and stalled the car; see `docs/reference/`). Added "
-                "2026-08-19 because nmpc_horizon_speed_profile_enabled's cost "
-                "term alone was live-tested and rejected: the QP just SUMS "
-                "(v_x-v_ref)^2 across stages with no ordering, so the solver "
-                "can trade a bad early (in-corner) residual against a good "
-                "late (post-corner) one in the SAME solve, producing v_actual "
-                "~16.7 m/s against v_ref ~3-5 m/s approaching a corner. A "
-                "per-stage INEQUALITY can't be traded away that way -- it "
-                "must hold at every stage individually. Only takes effect "
-                "when a speed-profile array is supplied (ref.v_target is not "
-                "None), exactly like nmpc_horizon_speed_profile_enabled's own "
-                "gating; can be enabled independently of that flag. Default "
-                "False: genuine experiment, not yet validated",
-        "controller": "nmpc_only",
-    })
-    nmpc_speed_limit_margin: float = field(default=0.5, metadata={
-        "unit": "m/s",
-        "desc": "added on top of v_ref_at(s_k) before the hard-but-soft bound "
-                "applies, so ordinary tracking noise around the profile "
-                "doesn't constantly engage slack. 0 = bound exactly at the "
-                "profile's own value",
-        "controller": "nmpc_only",
-    })
-    nmpc_speed_limit_slack_weight: float = field(default=200.0, metadata={
-        "unit": "1/(m/s)^2",
-        "desc": "penalty on the speed-limit slack, same role as "
-                "nmpc_slack_weight for the track bound but a separate, much "
-                "smaller constant: a speed overshoot of a few m/s for a tick "
-                "or two while braking is expected and should cost noticeably "
-                "less than actually leaving the track (nmpc_slack_weight = "
-                "10000), not be pinned to zero as aggressively",
         "controller": "nmpc_only",
     })
 
