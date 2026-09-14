@@ -794,7 +794,10 @@ NMPC_SQP_ITERS = 1                         # Gauss-Newton iterations/tick (real-
                                             # across ticks). Measured better AND ~2x cheaper
                                             # than 2.
 NMPC_SOLVE_BUDGET_MS = 25.0                # wall-clock budget/tick; ships the best feasible
-                                            # iterate rather than overrunning DT=0.05s.
+                                            # iterate rather than overrunning DT=0.05s. Checked
+                                            # both before an SQP iteration and before each
+                                            # backtracking trial (the latter is what actually
+                                            # bounds tick time at sqp_iters=1, fixed 2026-09-14).
 NMPC_RK_SUBSTEPS = 4                       # RK4 substeps in the prediction rollout. Two stiff
                                             # modes set this: tau_a=0.02s against DT=0.05s (2
                                             # covers that), and the (v_y, r) lateral dynamics,

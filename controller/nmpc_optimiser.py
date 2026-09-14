@@ -1513,6 +1513,15 @@ class NMPCController:
             step = 1.0
             accepted = False
             for _bt in range(max(0, self.backtrack_max) + 1):
+                # Budget check also lives here, not just above the outer loop:
+                # at the shipped sqp_iters=1 the outer check can only ever stop
+                # the single iteration from starting, never interrupt the
+                # Jacobian build or this backtracking search, which is where
+                # per-tick time actually varies (each trial re-rolls out the
+                # full horizon). _bt > 0 keeps the first trial unconditional so
+                # the common on-budget case is untouched. Mirrors nmpc_core.py.
+                if _bt > 0 and time.perf_counter() - t0 > budget_s:
+                    break
                 U_try = np.clip(U + step * dU, self.u_min, self.u_max)
                 X_try = self._rollout(x0, U_try, ref)
                 H_try = _outputs(X_try, ref, self.plant, desired_speed,
