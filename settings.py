@@ -802,11 +802,21 @@ NMPC_RK_SUBSTEPS = 4                       # RK4 substeps in the prediction roll
                                             # modes set this: tau_a=0.02s against DT=0.05s (2
                                             # covers that), and the (v_y, r) lateral dynamics,
                                             # which stiffen as 1/v_x. Was 2, found outright
-                                            # UNSTABLE (~6e8 disturbance growth over the
-                                            # horizon) across 2.25-3.5 m/s, making the
-                                            # prediction garbage and freezing the controller at
-                                            # exactly zero output. 3 still fails at 2.50 m/s
-                                            # exactly -- see docs/logs/
+                                            # UNSTABLE (infinitesimal-perturbation growth up to
+                                            # ~260x over the horizon, measured directly via
+                                            # _rollout, not just the Jacobian) across roughly
+                                            # 2.25-3.75 m/s, making the prediction garbage and
+                                            # freezing the controller at exactly zero output.
+                                            # CORRECTED 2026-09-15: an earlier note here claimed
+                                            # 3 substeps also fails at 2.50 m/s exactly -- a
+                                            # direct re-measurement (same perturbation-growth
+                                            # test, all 8 states individually perturbed, several
+                                            # control-sequence shapes) found 3 substeps fully
+                                            # stable (<=1.6x growth) everywhere tested in and
+                                            # around that band. The original claim's basis is not
+                                            # reproduced; treat 4 as still the safe default below
+                                            # NMPC_RK_GATE_SPEED, but 3 is confirmed safe above
+                                            # it (see NMPC_RK_SUBSTEPS_FAST). See docs/logs/
                                             # nmpc_low_speed_accel_stall_investigation.md.
 NMPC_JAC_SUBSTEPS = 4                       # RK4 substeps for the QP's sensitivity Jacobians
                                             # only (never the prediction itself). Was 1, found
@@ -825,6 +835,18 @@ NMPC_JAC_SUBSTEPS_FAST = 2                  # tracks the converged (4-substep) s
                                             # (3.07 vs 3.18 at 8 m/s, 4.90 vs 4.93 at 14 m/s). 1
                                             # is NOT safe here: inaccurate rather than unstable
                                             # at speed (1.30 vs converged 3.85 at 10 m/s).
+NMPC_RK_GATE_SPEED = 4.0                    # same technique as NMPC_JAC_GATE_SPEED, applied to
+                                            # the ROLLOUT itself (per predicted stage, not the
+                                            # whole horizon, since _rollout builds X
+                                            # incrementally). The rollout's instability is
+                                            # confined to a NARROWER band than the Jacobian's
+                                            # (measured stable, <=1x growth, at and above ~3.75
+                                            # m/s vs the Jacobian's ~8 m/s), so this gate opens
+                                            # earlier.
+NMPC_RK_SUBSTEPS_FAST = 3                   # NOT 2 -- 2 is the one substep count confirmed
+                                            # unstable in the 2.25-3.75 m/s band. 3 is fully
+                                            # converged (<=1.6x growth) everywhere measured at
+                                            # and above the gate speed.
 NMPC_TRUST_DELTA_RAD = np.radians(9.0)      # per-iteration steering trust region = MAX_STEER's
                                             # own slew-rate limit per tick (180 deg/s * DT) --
                                             # reused, not invented.

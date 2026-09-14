@@ -740,11 +740,15 @@ class NMPCController:
         # lower is RK4-unstable at low speed, freezing the solver at exactly
         # zero output. See docs/logs/nmpc_low_speed_accel_stall_investigation.md
         rk_substeps=4, jac_substeps=4,
-        # Speed-gate for the JACOBIAN substeps only (never rk_substeps -- the
-        # rollout stays at 4 everywhere): the instability above is confined to
-        # low speed, so at/above jac_gate_speed the cheaper jac_substeps_fast
-        # is used. See _jacobians' own docstring for the measured envelope.
+        # Speed gates: both the Jacobian's sensitivity AND the rollout itself
+        # are RK4-unstable only in a narrow low-speed band, not the whole 0.1-25
+        # m/s envelope, so the full substep count is only needed there. See
+        # _jacobians'/_rollout's own docstrings for the measured envelopes
+        # (different fast values: the rollout's instability is confined to a
+        # narrower band than the Jacobian's, and 2 substeps is the one count
+        # confirmed unstable there, so its fast value is 3, not 2).
         jac_gate_speed=8.0, jac_substeps_fast=2,
+        rk_gate_speed=4.0, rk_substeps_fast=3,
         trust_delta_rad=math.radians(9.0), trust_a=0.6, backtrack_max=2,
         track_halfwidth=3.5, slack_weight=10000.0,
         osqp_max_iter=500, osqp_eps=1e-4,
@@ -873,6 +877,8 @@ class NMPCController:
         self.jac_substeps = max(1, int(jac_substeps))
         self.jac_gate_speed = float(jac_gate_speed)
         self.jac_substeps_fast = max(1, int(jac_substeps_fast))
+        self.rk_gate_speed = float(rk_gate_speed)
+        self.rk_substeps_fast = max(1, int(rk_substeps_fast))
         self.trust_delta_rad = float(trust_delta_rad)
         self.trust_a = float(trust_a)
         self.backtrack_max = int(backtrack_max)
@@ -1063,13 +1069,28 @@ class NMPCController:
         """Roll the nonlinear model forward from the measured state under
         the current input guess, scalar fast path — see the live
         nmpc_core.py's _rollout for why this makes the QP's dynamics defect
-        exactly zero (the linearisation point is always feasible)."""
+        exactly zero (the linearisation point is always feasible).
+
+        rk_substeps is SPEED-GATED per stage, same technique as
+        nmpc_jac_substeps/nmpc_jac_gate_speed (see _jacobians). Measured
+        directly (infinitesimal perturbation propagated through this same
+        rollout, not just the sensitivity Jacobian): 2 substeps diverges
+        (up to ~260x growth) across roughly 2.25-3.75 m/s, but 3 is fully
+        converged everywhere tested in that band and above -- the fast
+        value here is 3, not 2, specifically because 2 is the one count
+        confirmed unstable. Gated per-stage on that stage's OWN predicted
+        v_x (unlike the Jacobian's single whole-horizon gate), since this
+        function builds X incrementally and a stage's speed can cross the
+        gate mid-horizon on a hard launch/brake."""
         N = self.N
         X = np.empty((N + 1, NX))
         X[0] = x0
         xk = [float(v) for v in x0]
-        p, dt, n_sub = self.plant, self.dt, self.rk_substeps
+        p, dt = self.plant, self.dt
         for k in range(N):
+            n_sub = self.rk_substeps
+            if xk[IDX_VX] >= self.rk_gate_speed:
+                n_sub = min(n_sub, self.rk_substeps_fast)
             xk = _step_scalar(xk, U[k], ref, p, dt, n_sub)
             X[k + 1] = xk
         return X
