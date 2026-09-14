@@ -480,9 +480,21 @@ NMPC_RJERK_DELTA=150.0
 # NMPC_HORIZON_SPEED_PROFILE_ENABLED's own ref.v_target check.
 # Offline A/B (comp_test_map_3, recorded-map rollout): |e_psi| mean 4.2->3.1
 # deg, steering saturation 1.7%->0.8%, ticks >0.5 m/s over target 16.6%->0.8%,
-# no DNF either way. LIVE-TESTED 2026-08-19 AND REJECTED: "didn't work" --
-# reverted to false. Not yet root-caused; see docs/reference/ before
-# re-attempting rather than re-enabling blind.
+# no DNF either way. LIVE-TESTED TWICE AND REJECTED both times (2026-08-19,
+# 2026-09-15): car runs a corner ~6 m/s over v_desired with
+# nmpc_speed_limit_over_max reading 0.0 throughout (the per-stage constraint
+# never registers a violation in its OWN predicted horizon even while the
+# real car is measurably over target), steers to full lock, and goes off-
+# track (|e_y| past nmpc_track_halfwidth=3.5 m; one 2026-09-15 run stalled
+# permanently, v_actual pinned at 0 for the rest of the log). Root cause:
+# the constraint is keyed to the model's OWN predicted trajectory
+# (v_ref_at(s_k)), so it inherits the documented sim-to-real prediction gap
+# (see CLAUDE.md "offline sim does not yet fully predict the car") instead
+# of catching cases where the real car's braking doesn't match that
+# prediction. Do not re-enable without addressing that gap first, or at
+# least loosening nmpc_speed_limit_margin/raising slack weight is unlikely
+# to help since the constraint isn't engaging at all, not engaging too
+# weakly.
 NMPC_SPEED_LIMIT_ENABLED=false
 # NMPC_SPEED_LIMIT_MARGIN=0.5                  # m/s added on top of the profile before the bound engages
 # NMPC_SPEED_LIMIT_SLACK_WEIGHT=200.0          # penalty on the speed-limit slack; much lower than the track bound's 10000 on purpose, see nmpc_params.py
