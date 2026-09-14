@@ -554,18 +554,29 @@ all NMPC-only and implemented identically in `nmpc_core.py` (live) and
    numerical-quality improvement with no new solver coupling. The old
    moving-average path is kept behind the flag for A/B if needed. Directly
    targets the open "centreline curvature spikes" defect described below.
-2. **Horizon speed profile**: `nmpc_horizon_speed_profile_enabled` /
-   `NMPC_HORIZON_SPEED_PROFILE_ENABLED`, default **false**. Would sample a
-   precomputed per-lap speed profile at each horizon stage's own predicted
-   arc length via `PathReference.v_ref_at(s)`, instead of holding `v_ref`
-   constant across the horizon. **Do not enable without first bounding how
-   far ahead along `s` the sampled `v_ref` may rise** (or an equivalent
-   per-stage clamp): summing `v_x - v_ref(s_k)` across all horizon stages
-   lets a high `v_ref` at a later stage offset a low `v_ref` at an earlier
-   one within the same solve, defeating the non-schedulability property this
-   feature was meant to inherit from `kappa(s)`. See
-   `late_turn_in_investigation.md` Part 16 §16.9 for the live-test evidence
-   behind this warning.
+2. **Horizon speed profile: tried, removed, do not re-add without new
+   evidence.** Two variants existed, both meant to sample a precomputed
+   per-lap speed profile at each horizon stage's own predicted arc length
+   (`PathReference.v_ref_at(s)`) instead of holding `v_ref` constant across
+   the horizon, and both were live-tested and rejected. A cost-term version
+   (`nmpc_horizon_speed_profile_enabled`) summed `v_x - v_ref(s_k)` across
+   all stages, which let a high `v_ref` at a later stage offset a low
+   `v_ref` at an earlier one within the same solve, defeating the
+   non-schedulability property this feature was meant to inherit from
+   `kappa(s)`; live-tested 2026-08-19, produced a 16.7 m/s corner overspeed
+   against a 3-5 m/s target. A follow-up hard-constraint version
+   (`nmpc_speed_limit_enabled`) replaced the cost term with a per-stage
+   inequality specifically to close that loophole, but failed live twice
+   (2026-08-19, 2026-09-15) for a different reason: the constraint is keyed
+   to the solver's own predicted trajectory, so a wrong prediction satisfies
+   it on paper while the real car is still measurably over target,
+   producing the same corner-overspeed/off-track outcome the inequality was
+   supposed to prevent. Both flags and their shared plumbing (`v_ref_at`,
+   `path_v_xy`/`path_v`, the per-stage slack rows) were removed from
+   `nmpc_core.py`/`nmpc_params.py` (live and offline) rather than left as
+   dead/experimental code. See `late_turn_in_investigation.md` Part 16
+   §16.9 and `docs/logs/nmpc_speed_limit_investigation.md` for the full
+   evidence from both rejections before attempting a third variant.
 3. **Friction-circle hard constraint**: `nmpc_friction_circle_enabled` /
    `NMPC_FRICTION_CIRCLE_ENABLED`, default **false**. Would add a hard
    `|F_yf|, |F_yr| <= F_max` bound (additional to, not replacing, the

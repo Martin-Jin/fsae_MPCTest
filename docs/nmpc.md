@@ -122,7 +122,10 @@ u = [delta_cmd, a_cmd]ᵀ
 The first three states are exactly the Frenet quantities described in
 [`lmpc.md`'s "How the error vector is measured"](lmpc.md#how-the-error-vector-is-measured-frenet-frame-projection):
 arc length along the path (`s`), lateral offset from it (`e_y`), and heading
-error against its tangent (`e_psi`). The remaining five are the same kind of
+error against its tangent (`e_psi`). `s` is a single number, the distance
+travelled along the path from its start, not an (x, y) position; the
+prediction's actual position is recovered from `s` plus the lateral offset
+`e_y`, never carried as its own coordinate. The remaining five are the same kind of
 physical state the LTV-QP tracks (speed, lateral velocity, yaw rate, and the
 two lagged-actuator states), just expressed once (as true quantities, not
 errors against a frozen target) rather than duplicated as both a raw state
@@ -571,27 +574,30 @@ for the exhaustive, field-by-field version this table summarises.
 | Horizon length | 35 steps (1.75 s) | 20 steps (1.0 s) | Independent tuning choices, not a structural requirement, NMPC's shorter horizon reflects its per-tick solve cost (Gauss-Newton SQP is more expensive per step than one convex QP). |
 | Solve method | One convex QP per tick (OSQP) | Real-time-iteration SQP: one Gauss-Newton step per tick, warm-started, condensed dense QP (OSQP) | See [`lmpc.md`'s "The solver"](lmpc.md#the-solver) for what a QP is; NMPC needs the extra linearize-and-resolve step because its own model is nonlinear (curvature is now a function of a state, not a fixed matrix entry). |
 
-**Three further, NMPC-only additions**, assessed against
-Alexander Liniger's Model Predictive Contouring Control (MPCC) but narrower
-than it: full MPCC's progress-maximisation apparatus was considered and
-rejected as too close to a failure mode already eliminated here (see
-`docs/reference/README.md`'s writeup for why). One is on by default, two are
-off:
+**Further NMPC-only additions**, assessed against Alexander Liniger's Model
+Predictive Contouring Control (MPCC) but narrower than it: full MPCC's
+progress-maximisation apparatus was considered and rejected as too close to
+a failure mode already eliminated here (see `docs/reference/README.md`'s
+writeup for why).
 
 - `nmpc_spline_reference_enabled` (default **true**): `PathReference`'s
   `kappa(s)`/`psi_ref(s)` come from an analytic cubic-spline fit to the
   waypoints instead of moving-average-smoothed finite differences. A
   numerical-quality fix, not a new coupling to the solver.
-- `nmpc_horizon_speed_profile_enabled` (default **false**, experimental):
-  samples a precomputed speed profile at each horizon stage's own predicted
-  arc length, the same state-keyed pattern `kappa(s)` already uses, instead
-  of holding one frozen speed target across the horizon.
 - `nmpc_friction_circle_enabled` (default **false**, experimental): a hard
   per-axle tyre-force bound in the QP, additional to (not replacing) the
   existing soft `alat_ceiling` saturation.
 
-All three are implemented identically in `nmpc_core.py` and the offline
-`controller/nmpc_optimiser.py`; none touch `mpc_core.py` (the LTV-QP).
+Per-horizon-stage speed sampling (holding a target other than one frozen
+scalar across the whole horizon) was tried twice, as a cost term and then as
+a per-stage constraint, and rejected both times after live testing; the
+flags and their shared plumbing have been removed rather than kept as
+dead/experimental code. See `docs/reference/control_mechanisms.md`'s
+"Horizon speed profile" writeup and `docs/logs/nmpc_speed_limit_investigation.md`.
+
+Both remaining flags are implemented identically in `nmpc_core.py` and the
+offline `controller/nmpc_optimiser.py`; neither touches `mpc_core.py` (the
+LTV-QP).
 
 Full detail: `docs/reference/control_mechanisms.md`'s "Nonlinear MPC (`use_nmpc`)" section
 (what it is, what it reuses, what is inactive, offline A/B numbers, the offline
