@@ -847,6 +847,23 @@ NMPC_RK_SUBSTEPS_FAST = 3                   # NOT 2 -- 2 is the one substep coun
                                             # unstable in the 2.25-3.75 m/s band. 3 is fully
                                             # converged (<=1.6x growth) everywhere measured at
                                             # and above the gate speed.
+NMPC_STANDSTILL_STEER_DAMP_ENABLED = False  # damp stage-0 steering effort while the car is
+                                            # measurably stationary. At v_x=0 steering cannot
+                                            # move the car, but the SQP minimises one cost
+                                            # summed over the whole horizon and the predicted
+                                            # v_x leaves zero by stage 1, so the optimiser
+                                            # pre-commits U[0] toward what helps later stages
+                                            # and the car launches already turned (measured
+                                            # live: ~-6.8 deg of steer built up over the ~1s
+                                            # before the car physically moves).
+NMPC_STANDSTILL_SPEED = 0.5                 # m/s -- below this MEASURED speed, stage 0 only
+                                            # is damped. Keyed on the measurement so it
+                                            # disengages as soon as the car moves.
+NMPC_STANDSTILL_STEER_R_SCALE = 20.0        # multiplier on r_delta for stage 0 only. Stage-0-
+                                            # only is a weaker lever than raising r_delta
+                                            # across the horizon: measured -6.71 -> -2.41 deg
+                                            # at 20x here, vs -1.03 deg for a whole-horizon
+                                            # 20x. Tuning value, re-check live.
 NMPC_TRUST_DELTA_RAD = np.radians(9.0)      # per-iteration steering trust region = MAX_STEER's
                                             # own slew-rate limit per tick (180 deg/s * DT) --
                                             # reused, not invented.
