@@ -740,6 +740,11 @@ class NMPCController:
         # lower is RK4-unstable at low speed, freezing the solver at exactly
         # zero output. See docs/logs/nmpc_low_speed_accel_stall_investigation.md
         rk_substeps=4, jac_substeps=4,
+        # Speed-gate for the JACOBIAN substeps only (never rk_substeps -- the
+        # rollout stays at 4 everywhere): the instability above is confined to
+        # low speed, so at/above jac_gate_speed the cheaper jac_substeps_fast
+        # is used. See _jacobians' own docstring for the measured envelope.
+        jac_gate_speed=8.0, jac_substeps_fast=2,
         trust_delta_rad=math.radians(9.0), trust_a=0.6, backtrack_max=2,
         track_halfwidth=3.5, slack_weight=10000.0,
         osqp_max_iter=500, osqp_eps=1e-4,
@@ -866,6 +871,8 @@ class NMPCController:
         self.solve_budget_ms = float(solve_budget_ms)
         self.rk_substeps = int(rk_substeps)
         self.jac_substeps = max(1, int(jac_substeps))
+        self.jac_gate_speed = float(jac_gate_speed)
+        self.jac_substeps_fast = max(1, int(jac_substeps_fast))
         self.trust_delta_rad = float(trust_delta_rad)
         self.trust_a = float(trust_a)
         self.backtrack_max = int(backtrack_max)
@@ -1071,10 +1078,16 @@ class NMPCController:
         """Finite-difference the one-step dynamics Jacobians A_k/B_k,
         vectorised across all horizon stages at once — see the live
         nmpc_core.py's _jacobians for why finite-differencing (not
-        hand-derived) and the nmpc_jac_substeps accuracy/cost tradeoff."""
+        hand-derived), the nmpc_jac_substeps accuracy/cost tradeoff, and the
+        jac_gate_speed/jac_substeps_fast speed gate this mirrors (gated on the
+        horizon's slowest predicted stage, not instantaneous speed, so it
+        changes rarely)."""
         N = self.N
         Xs = X[:N]
-        p, dt, n_sub = self.plant, self.dt, self.jac_substeps
+        p, dt = self.plant, self.dt
+        n_sub = self.jac_substeps
+        if float(X[:N, IDX_VX].min()) >= self.jac_gate_speed:
+            n_sub = min(n_sub, self.jac_substeps_fast)
         F0 = _step(Xs, U, ref, p, dt, n_sub)
         A = np.empty((N, NX, NX))
         B = np.empty((N, NX, NU))

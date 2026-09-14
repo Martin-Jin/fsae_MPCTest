@@ -813,6 +813,18 @@ NMPC_JAC_SUBSTEPS = 4                       # RK4 substeps for the QP's sensitiv
                                             # numerically unstable below ~6.5-7 m/s (not just
                                             # less accurate) -- see docs/logs/
                                             # nmpc_low_speed_accel_stall_investigation.md.
+NMPC_JAC_GATE_SPEED = 8.0                   # at/above this speed (slowest predicted horizon
+                                            # stage, not instantaneous), NMPC_JAC_SUBSTEPS_FAST
+                                            # is used instead of NMPC_JAC_SUBSTEPS -- the
+                                            # instability above is confined to low speed
+                                            # (measured max|A_k| 2.41e2 at 2.5 m/s vs 4.06 at
+                                            # 8 m/s, js=1 vs converged js=4), so the fix's cost
+                                            # need not apply where it was never needed.
+NMPC_JAC_SUBSTEPS_FAST = 2                  # tracks the converged (4-substep) sensitivity
+                                            # closely with no divergence at/above the gate speed
+                                            # (3.07 vs 3.18 at 8 m/s, 4.90 vs 4.93 at 14 m/s). 1
+                                            # is NOT safe here: inaccurate rather than unstable
+                                            # at speed (1.30 vs converged 3.85 at 10 m/s).
 NMPC_TRUST_DELTA_RAD = np.radians(9.0)      # per-iteration steering trust region = MAX_STEER's
                                             # own slew-rate limit per tick (180 deg/s * DT) --
                                             # reused, not invented.
