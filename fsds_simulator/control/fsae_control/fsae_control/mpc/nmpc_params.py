@@ -342,7 +342,7 @@ class NMPCParams:
     # V_CURV_FALL_RATE, this limits BOTH directions: curvature can swing
     # either sign as the corner's own shape gets re-resolved by the planner,
     # there's no "only delay bad news" asymmetry the way braking has.
-    nmpc_kappa_rate_max: float = field(default=0.0, metadata={
+    nmpc_kappa_rate_max: float = field(default=2.0, metadata={
         "unit": "1/m per s",
         "desc": "max tick-to-tick CHANGE of kappa(s) at matching arc-length "
                 "samples, live-planner mode only (inert when a static/"
