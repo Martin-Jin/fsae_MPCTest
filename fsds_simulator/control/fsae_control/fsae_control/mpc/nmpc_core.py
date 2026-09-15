@@ -1762,18 +1762,24 @@ class NMPCController:
         # speedup is the wrong shape of fix: this filter needs to react fast
         # to a genuine sustained drop without also reacting fast to noise.
         #
-        # Trying 0.13 (dt/alpha ~= 0.38 s) instead, roughly midway to 0.08:
-        # meaningfully faster than the original but far more conservative
-        # than 0.25. Not yet validated at this value. If this also proves
-        # too jumpy, the better-shaped fix is probably asymmetric (mirror
-        # V_CURV_FALL_RATE's own design: let v_ref FALL fast to catch up to
-        # genuine hard braking, keep a slow alpha for everything else) rather
-        # than a single faster alpha in both directions.
-        alpha = 0.13
-        if self._v_des_filtered is None:
-            self._v_des_filtered = desired_speed
-        self._v_des_filtered += alpha * (desired_speed - self._v_des_filtered)
-        v_ref = float(self._v_des_filtered)
+        # SECOND attempt (2026-09-15) tried 0.13 (dt/alpha ~= 0.38 s),
+        # roughly midway to 0.08. LIVE-TESTED AND REVERTED: still showed 4
+        # |e_y|>1.0m excursion clusters across the run, including one WORSE
+        # than either 0.08's single-corner baseline or 0.25's own worst
+        # excursion (peak -2.84 m at the same target hairpin) -- neither
+        # data point supports "faster alpha, tuned to the right magnitude"
+        # as the fix.
+        #
+        # TEMPORARILY DISABLED ENTIRELY (2026-09-15), at the user's explicit
+        # request, to test a clean no-filter baseline (v_ref = desired_speed
+        # directly, no smoothing at all) while a properly-shaped fix is
+        # investigated -- the better-shaped fix is probably asymmetric
+        # (mirror V_CURV_FALL_RATE's own design: let v_ref FALL fast to
+        # catch up to genuine hard braking, keep a slow alpha for
+        # everything else) rather than a single alpha in both directions.
+        # self._v_des_filtered is left untouched (unused while this branch
+        # is active) so re-enabling the filter is a one-line revert.
+        v_ref = float(desired_speed)
 
         ref = self._path_reference(path)
         if ref is None or ref.total < 1e-3:
