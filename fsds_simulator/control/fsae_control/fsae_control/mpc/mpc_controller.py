@@ -392,25 +392,26 @@ class MPCControllerNode(Node):
         # car was doing. Republish the static path onto the same topic to
         # fix that: this node has never published here before (pure
         # subscriber otherwise), so there is no live-planner traffic to
-        # collide with in this mode, and it matches this topic's own
-        # documented "live planner OR precomputed reference path (same
-        # topic)" contract in live_viz.py's docstring.
+        # collide with in the sense of a conflicting WRITER identity, and it
+        # matches this topic's own documented "live planner OR precomputed
+        # reference path (same topic)" contract in live_viz.py's docstring.
         #
-        # Fired from a one-shot timer, not inline here: a publisher has no
-        # subscribers yet at construction time (ROS2 discovery is
-        # asynchronous), so a publish() made immediately after
-        # create_publisher() would very likely be dropped before live_viz.py
-        # (started around the same time by launch_all.sh) has finished
-        # discovering it. 2 s comfortably covers normal node startup
-        # staggering; republishing costs nothing if a subscriber connects
-        # sooner, and static-path mode never needs a second update anyway.
+        # Republished every control tick from _control_step, NOT once at
+        # startup: centerline_planner.py has no idea this controller is in
+        # precomputed-path mode (confirmed 2026-09-15 -- it keeps running
+        # and keeps publishing its own live, per-tick centreline on this
+        # exact topic regardless, see planning.launch.py, there is no
+        # use_precomputed_path gating on the planner side). A one-shot
+        # publish at startup only wins that race for an instant before the
+        # next live-planner message overwrites it in the visualiser, which
+        # is exactly the "reference path keeps moving with the car" symptom
+        # reported live -- publishing every tick means every live-planner
+        # message gets immediately corrected back to the true static path
+        # on the very next control tick instead.
         self._static_path_pub = None
-        self._static_path_pub_timer = None
         if self._static_path is not None:
             self._static_path_pub = self.create_publisher(
                 PoseArray, '/fsae/planning/selected_trajectory', 10)
-            self._static_path_pub_timer = self.create_timer(
-                2.0, self._publish_static_path_once)
         # Static path never goes stale (no topic to lose) — treated as
         # "always fresh" by never being touched by the staleness check below,
         # rather than by faking a stamp that keeps advancing on its own.
@@ -534,9 +535,13 @@ class MPCControllerNode(Node):
         ) if msg.poses else np.empty((0, 2))
         self._path_stamp = self.get_clock().now()
 
-    def _publish_static_path_once(self) -> None:
-        """One-shot: see the comment on _static_path_pub's construction."""
-        self._static_path_pub_timer.cancel()
+    def _publish_static_path(self) -> None:
+        """
+        Republish self._static_path on /fsae/planning/selected_trajectory.
+        Called every control tick from _control_step -- see the comment on
+        _static_path_pub's construction for why a one-shot publish is not
+        enough.
+        """
         pose_array = PoseArray()
         pose_array.header.stamp = self.get_clock().now().to_msg()
         pose_array.header.frame_id = 'map'
@@ -592,6 +597,12 @@ class MPCControllerNode(Node):
         # command. Distinguishes "our compute is slow" from "our inputs were
         # already stale when we got them" (pose_age_s / path_age_s).
         _t_loop0 = time.perf_counter()
+
+        # Every tick, unconditionally, ahead of every other phase below: see
+        # _static_path_pub's construction comment for why this has to run
+        # every tick rather than once.
+        if self._static_path_pub is not None:
+            self._publish_static_path()
 
         # ── Phase 1 (standalone_output=true only): hold until GO ────────
         if self._standalone_output and not self._go_received:
