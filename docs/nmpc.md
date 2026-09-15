@@ -5,8 +5,9 @@ Full technical reference for the second, separately selectable controller,
 false). Split out of `architecture.md` because this material is large enough
 to be its own document; that file now only summarises and links here.
 
-For the default linear controller, see [`lmpc.md`](lmpc.md). For the
-worked-by-hand arithmetic behind `e_y`/`e_psi`, see
+For the default linear controller, see [`lmpc.md`](lmpc.md). For the third,
+non-MPC controller, see [`stanley.md`](stanley.md). For the worked-by-hand
+arithmetic behind `e_y`/`e_psi`, see
 [`error_state_reference.md`](error_state_reference.md).
 
 Everything in [`lmpc.md`](lmpc.md) describes `mpc_core.MPCController`:

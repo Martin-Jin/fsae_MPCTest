@@ -158,6 +158,8 @@ structural reference. This project's tuner and offline simulator only ever
 drive against the MPC (`mpc_controller.py`'s `standalone_output=true` mode /
 `mpc_core.py`, same directory). Stanley is mirrored purely so `fsds_simulator/` can stand
 up the full live stack, not because this repo's own simulator exercises it.
+See [`docs/stanley.md`](stanley.md) for its steering law and the speed-target
+smoothing added on top of it.
 
 ---
 ## Configuring the Project (`settings.py`)

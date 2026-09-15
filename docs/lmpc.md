@@ -7,6 +7,7 @@ every matrix entry, the cost function, the solver) is large enough to be its
 own document; that file now only summarises and links here.
 
 For the nonlinear alternative controller, see [`nmpc.md`](nmpc.md). For the
+third, non-MPC controller, see [`stanley.md`](stanley.md). For the
 worked-by-hand arithmetic behind `e_y`/`e_psi` specifically (more detail than
 this doc's own measurement section below), see
 [`error_state_reference.md`](error_state_reference.md).

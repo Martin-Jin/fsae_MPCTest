@@ -27,9 +27,22 @@ from nav_msgs.msg import Odometry
 
 from fsae_control.control_utils import (
     StanleyController, curvature_speed, load_path_profile_csv,
-    load_speed_profile_csv, precomputed_speed_at,
+    load_speed_profile_csv, precomputed_speed_at, tracking_error_speed_gate,
 )
 from fsae_control.telemetry_logger import ControlLogger, LapProgressTracker, build_config_lines
+
+# Same three safeguards mpc_controller.py wraps around curvature_speed()'s
+# raw output, ported here after live testing showed Stanley stuttering (a
+# single noisy live-refit path tick can swing v_curv 3-10 m/s and spike
+# steering error simultaneously, with nothing here to absorb either) --
+# see mpc_controller.py's own V_CURV_FALL_RATE/SPEED_TARGET_RISE_RATE/
+# GATE_RATE_LIMIT comments for the full rationale. Stanley has no fixed
+# control-loop timer (it runs off car_position arrival, not CONTROL_HZ), so
+# the rate limits below are applied per measured dt, not a compile-time
+# tick period.
+V_CURV_FALL_RATE = 7.0     # m/s^2 -- max rate curvature_speed()'s output may FALL
+SPEED_TARGET_RISE_RATE = 7.0   # m/s^2 -- max rate the composed target may RISE
+GATE_RATE_LIMIT = 2.0      # 1/s -- max rate tracking_error_speed_gate()'s output may change, either direction
 
 
 class StanleyControllerNode(Node):
@@ -142,6 +155,15 @@ class StanleyControllerNode(Node):
 
         self._stanley = StanleyController(k_cte=k_cte)
 
+        # State for the three rate limiters below -- see their module-level
+        # constants' comments. All reset to None on a stale/lost-path event
+        # (mirroring mpc_controller.py) so a fresh start doesn't inherit a
+        # rate limit computed against a stale previous tick.
+        self._v_curv_prev: float | None = None
+        self._gate_prev: float | None = None
+        self._v_des_prev: float | None = None
+        self._last_tick_time: float | None = None
+
         self.get_logger().info('controller ready — waiting for a trajectory + car_position.')
 
     # ------------------------------------------------------------------
@@ -175,20 +197,65 @@ class StanleyControllerNode(Node):
     def _control_step(self) -> None:
         _t_loop0 = time.perf_counter()
         if len(self._path) < 2:
+            # No path to track -- drop rate-limiter state so a fresh start
+            # once a path arrives doesn't inherit a limit computed against a
+            # now-meaningless previous tick (mirrors mpc_controller.py's
+            # equivalent reset on its own path_stale/no-pose branch).
+            self._v_curv_prev = None
+            self._gate_prev = None
+            self._v_des_prev = None
+            self._last_tick_time = None
             return
 
         steering = self._stanley.compute(
             self._path, self._car_pos, self._car_yaw,
             self._car_speed, self._car_yaw_rate,
         )
+
+        now = time.perf_counter()
+        dt = (now - self._last_tick_time) if self._last_tick_time is not None else None
+        self._last_tick_time = now
+
         if self._speed_profile is not None:
             # Same oracle-speed bypass as mpc_controller.py's map_path, so a
             # Stanley run and an MPC run on the same track use the identical
-            # speed target and differ only in steering behaviour.
+            # speed target and differ only in steering behaviour. The oracle
+            # lookup is not re-derived from a noisy live path, so none of the
+            # rate limiters below apply to this branch either (matches
+            # mpc_controller.py).
             path_X, path_Y, path_V = self._speed_profile
             speed = precomputed_speed_at(self._car_pos, path_X, path_Y, path_V)
         else:
-            speed = curvature_speed(self._path, v_max=self._v_max, v_min=self._v_min)
+            v_curv = curvature_speed(self._path, v_max=self._v_max, v_min=self._v_min)
+
+            # curvature_speed() has no memory of its own last output and the
+            # live path is re-fit every tick -- see V_CURV_FALL_RATE's own
+            # comment above and mpc_controller.py's identical mechanism.
+            if self._v_curv_prev is not None and dt is not None:
+                v_curv = max(v_curv, self._v_curv_prev - V_CURV_FALL_RATE * dt)
+            self._v_curv_prev = v_curv
+
+            # Scale down when tracking is already bad, so a controller that's
+            # off-line doesn't keep getting told to go fast -- see
+            # tracking_error_speed_gate()'s own docstring. Gate's own output
+            # is rate-limited (GATE_RATE_LIMIT) same as mpc_controller.py.
+            raw_gate = tracking_error_speed_gate(self._stanley.last_e_y, self._stanley.last_e_psi)
+            if self._gate_prev is not None and dt is not None:
+                max_step = GATE_RATE_LIMIT * dt
+                raw_gate = float(np.clip(raw_gate, self._gate_prev - max_step, self._gate_prev + max_step))
+            self._gate_prev = raw_gate
+            # Never gate below v_min: the car still needs authority to steer back.
+            speed = max(self._v_min, v_curv * raw_gate)
+
+            # Bound the composed target's RISE the same way mpc_controller.py
+            # does -- SPEED_TARGET_RISE_RATE. Seed from the car's actual speed
+            # on the first tick so a standing start doesn't jump straight to
+            # the full target.
+            if self._v_des_prev is None:
+                self._v_des_prev = self._car_speed
+            if dt is not None:
+                speed = min(speed, self._v_des_prev + SPEED_TARGET_RISE_RATE * dt)
+            self._v_des_prev = speed
 
         msg = AckermannDriveStamped()
         msg.header.stamp = self.get_clock().now().to_msg()

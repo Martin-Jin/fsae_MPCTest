@@ -381,6 +381,43 @@ the measured before/after and the live-test result). The a_lat-ceiling
 metric it targets improved, but the metrics that matter more got worse, for
 reasons never diagnosed.
 
+## Stanley speed-target smoothing, ported from the MPC pipeline
+
+**Plain version:** without a precomputed speed profile, the live planner
+rebuilds the path every tick, and that path carries a few centimetres of
+lateral wiggle frame-to-frame. Feeding that wiggle straight into a target
+speed makes the target randomly jump several m/s in a single 50 ms tick, even
+on a straight. On the LTV-QP/NMPC controller this was already smoothed out;
+Stanley had no such smoothing at all, so a noisy tick could simultaneously
+spike steering (Stanley's cross-track error comes from the same noisy path)
+and yank the speed target down, and nothing pulled the target back up once
+tracking degraded. This combination produced a live spin-out within the
+first few seconds of a run.
+
+`stanley_controller.py` now applies the same three safeguards
+`mpc_controller.py` already had around `curvature_speed()`'s raw output,
+live-mode only (`map_path` unset):
+
+- **`V_CURV_FALL_RATE`** (7.0 m/s²) rate-limits how fast `curvature_speed()`'s
+  output may *fall* tick-to-tick, since the function itself has no memory of
+  its own last value.
+- **`tracking_error_speed_gate()`**, rate-limited by **`GATE_RATE_LIMIT`**
+  (2.0 /s in either direction), scales the target down once `|e_y|`/`|e_psi|`
+  grow past their thresholds, so a controller that is already tracking badly
+  is not simultaneously told to go fast.
+- **`SPEED_TARGET_RISE_RATE`** (7.0 m/s²) bounds the final composed target's
+  rise, seeded from the car's actual speed on the first tick so a standing
+  start does not jump straight to the full target.
+
+Stanley has no fixed control-loop timer (`mpc_controller.py`'s `CONTROL_HZ`
+has no Stanley equivalent — it runs off `car_position` arrival), so all three
+limiters use a measured `dt` between ticks rather than a compile-time tick
+period. The precomputed-speed-profile branch (`precomputed_speed_at()`) is
+untouched — none of this applies there, matching `mpc_controller.py`.
+
+Not yet live-tested as of this port; validate on a live/sim run before
+trusting it the way `dynamic_speed_cap()` above has been.
+
 ## Precomputed shaped heading-lead profile
 
 **Plain version:** the car is told to start turning in slightly before the
