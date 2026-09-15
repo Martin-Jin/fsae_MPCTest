@@ -383,35 +383,36 @@ class MPCControllerNode(Node):
             self._static_path if self._static_path is not None else np.empty((0, 2))
         )
 
-        # In precomputed-path mode, _path_cb (above) never writes the live
-        # planner's topic into self._path -- see its own comment -- so
-        # live_viz.py's ref_path (which only ever subscribes to this same
-        # topic, see its docstring) had nothing to show the ACTUAL reference
-        # being driven against, and instead drew whatever the live planner
-        # happened to still be publishing underneath, unrelated to what the
-        # car was doing. Republish the static path onto the same topic to
-        # fix that: this node has never published here before (pure
-        # subscriber otherwise), so there is no live-planner traffic to
-        # collide with in the sense of a conflicting WRITER identity, and it
-        # matches this topic's own documented "live planner OR precomputed
-        # reference path (same topic)" contract in live_viz.py's docstring.
+        # live_viz.py's ref_path only ever subscribes to
+        # /fsae/planning/selected_trajectory (see its docstring), so with no
+        # publisher on it in precomputed-path mode the debugger had nothing
+        # to show the ACTUAL reference being driven against. TWO earlier
+        # attempts (one-shot, then every-tick) tried fixing this from here by
+        # racing/out-publishing centerline_planner.py on the same topic --
+        # both were wrong: that node has no use_precomputed_path awareness
+        # and used to keep running/publishing regardless (no gating existed
+        # in sim.launch.py, unlike e.g. cone_recorder's IfCondition), so a
+        # one-shot publish only won for an instant, and publishing an
+        # ~1000-point PoseArray every 50 ms tick to try to keep winning
+        # measurably inflated solve_ms (34-49 ms vs a healthy ~20-30 ms) and
+        # caused a genuine live stall. Properly fixed at the source instead
+        # (sim.launch.py now gates planning.launch.py's own inclusion on
+        # use_precomputed_path, so the planner never runs in this mode at
+        # all) -- this one-shot publish is safe again because there is
+        # nothing left to race. See planner_only_lap2_corner_spinout.md.
         #
-        # Republished every control tick from _control_step, NOT once at
-        # startup: centerline_planner.py has no idea this controller is in
-        # precomputed-path mode (confirmed 2026-09-15 -- it keeps running
-        # and keeps publishing its own live, per-tick centreline on this
-        # exact topic regardless, see planning.launch.py, there is no
-        # use_precomputed_path gating on the planner side). A one-shot
-        # publish at startup only wins that race for an instant before the
-        # next live-planner message overwrites it in the visualiser, which
-        # is exactly the "reference path keeps moving with the car" symptom
-        # reported live -- publishing every tick means every live-planner
-        # message gets immediately corrected back to the true static path
-        # on the very next control tick instead.
+        # Fired from a timer, not inline: a publisher has no subscribers yet
+        # at construction time (ROS2 discovery is asynchronous), so a
+        # publish() immediately after create_publisher() would likely be
+        # dropped before live_viz.py (started around the same time by
+        # launch_all.sh) finishes discovering it.
         self._static_path_pub = None
+        self._static_path_pub_timer = None
         if self._static_path is not None:
             self._static_path_pub = self.create_publisher(
                 PoseArray, '/fsae/planning/selected_trajectory', 10)
+            self._static_path_pub_timer = self.create_timer(
+                2.0, self._publish_static_path_once)
         # Static path never goes stale (no topic to lose) — treated as
         # "always fresh" by never being touched by the staleness check below,
         # rather than by faking a stamp that keeps advancing on its own.
@@ -535,13 +536,9 @@ class MPCControllerNode(Node):
         ) if msg.poses else np.empty((0, 2))
         self._path_stamp = self.get_clock().now()
 
-    def _publish_static_path(self) -> None:
-        """
-        Republish self._static_path on /fsae/planning/selected_trajectory.
-        Called every control tick from _control_step -- see the comment on
-        _static_path_pub's construction for why a one-shot publish is not
-        enough.
-        """
+    def _publish_static_path_once(self) -> None:
+        """One-shot: see the comment on _static_path_pub's construction."""
+        self._static_path_pub_timer.cancel()
         pose_array = PoseArray()
         pose_array.header.stamp = self.get_clock().now().to_msg()
         pose_array.header.frame_id = 'map'
@@ -597,12 +594,6 @@ class MPCControllerNode(Node):
         # command. Distinguishes "our compute is slow" from "our inputs were
         # already stale when we got them" (pose_age_s / path_age_s).
         _t_loop0 = time.perf_counter()
-
-        # Every tick, unconditionally, ahead of every other phase below: see
-        # _static_path_pub's construction comment for why this has to run
-        # every tick rather than once.
-        if self._static_path_pub is not None:
-            self._publish_static_path()
 
         # ── Phase 1 (standalone_output=true only): hold until GO ────────
         if self._standalone_output and not self._go_received:

@@ -3,7 +3,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
-from launch.conditions import IfCondition
+from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
 
@@ -75,10 +75,11 @@ def generate_launch_description():
         ["'true' if '", planner, "' == 'skidpad_planner' else 'false'"]
     )
 
-    def include(name, args):
+    def include(name, args, condition=None):
         return IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(launch_dir, name)),
             launch_arguments=args.items(),
+            condition=condition,
         )
 
     return LaunchDescription([
@@ -199,7 +200,19 @@ def generate_launch_description():
             ),
         ) for name, default, meta in (*MPC_PARAM_FIELDS, *NMPC_PARAM_FIELDS)),
         include('perception.launch.py', {'full_track': full_track}),
-        include('planning.launch.py',   {'planner': planner}),
+        # Gated on use_precomputed_path (2026-09-15): the planner has no
+        # awareness of that flag itself and used to run/publish unconditionally
+        # even when the controller was ignoring its output entirely (see
+        # mpc_controller.py's _path_cb) -- wasted SLAM/boundary/spline work
+        # every tick for no functional benefit, and, more importantly, the
+        # ONLY thing publishing to /fsae/planning/selected_trajectory in that
+        # mode, which meant live_viz.py could never show the real precomputed
+        # reference being driven against no matter what the controller did
+        # (see planner_only_lap2_corner_spinout.md's write-up of two failed
+        # controller-side attempts to fix this by racing/out-publishing the
+        # planner instead of just not running it).
+        include('planning.launch.py',   {'planner': planner},
+                condition=UnlessCondition(use_precomputed_path)),
         include('control.launch.py',    {
             'planner': planner, 'controller': controller,
             'standalone_output': standalone_output,
