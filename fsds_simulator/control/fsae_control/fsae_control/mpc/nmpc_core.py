@@ -1770,16 +1770,24 @@ class NMPCController:
         # data point supports "faster alpha, tuned to the right magnitude"
         # as the fix.
         #
-        # TEMPORARILY DISABLED ENTIRELY (2026-09-15), at the user's explicit
-        # request, to test a clean no-filter baseline (v_ref = desired_speed
-        # directly, no smoothing at all) while a properly-shaped fix is
-        # investigated -- the better-shaped fix is probably asymmetric
-        # (mirror V_CURV_FALL_RATE's own design: let v_ref FALL fast to
-        # catch up to genuine hard braking, keep a slow alpha for
-        # everything else) rather than a single alpha in both directions.
-        # self._v_des_filtered is left untouched (unused while this branch
-        # is active) so re-enabling the filter is a one-line revert.
-        v_ref = float(desired_speed)
+        # THIRD attempt (2026-09-15): filter disabled entirely
+        # (v_ref = desired_speed directly), at the user's request, to
+        # isolate whether the filter itself was contributing at all.
+        #
+        # FOURTH attempt (2026-09-15): user asked for the OPPOSITE
+        # direction -- 0.01 (dt/alpha ~= 5 s time constant), much heavier
+        # smoothing than even the original 0.08, not lighter. Not live-
+        # tested at this exact value before moving to the next one below
+        # (no matching-config log found).
+        #
+        # FIFTH attempt (2026-09-15): 0.05 (dt/alpha ~= 1 s), between 0.01
+        # and the original 0.08 -- still slower than the original, opposite
+        # direction from the 0.13/0.25 attempts that made things worse.
+        alpha = 0.05
+        if self._v_des_filtered is None:
+            self._v_des_filtered = desired_speed
+        self._v_des_filtered += alpha * (desired_speed - self._v_des_filtered)
+        v_ref = float(self._v_des_filtered)
 
         ref = self._path_reference(path)
         if ref is None or ref.total < 1e-3:
