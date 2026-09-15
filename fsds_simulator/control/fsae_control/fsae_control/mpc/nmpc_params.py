@@ -443,11 +443,19 @@ class NMPCParams:
     # root cause being live-planner REFERENCE volatility during braking
     # (measured 5-40x noisier than a precomputed path), which this feature
     # doesn't address -- it only compensates the fixed SOLVE-TIME gap.
-    # Confirmed harmless (rejected-rate improvement, no downside) on its own.
-    # TEMPORARILY defaulted True again (2026-09-15) to combine with the
-    # validated nmpc_kappa_rate_max=2.0 fix and see whether the two together
-    # close more of the residual stumble than either alone. Revert to False
-    # after that test unless kept on purpose.
+    # Initially looked harmless alone (rejected-rate improvement, no
+    # downside) and was tried combined with nmpc_kappa_rate_max=2.0. That
+    # combined run went on to show a real, separate regression (jerky/
+    # twitchy gentle-corner behaviour, never seen before that session,
+    # worse jerk_rms and control_smooth_rms than the day's earlier
+    # baseline). Unlike nmpc_kappa_rate_max (structurally inert on a
+    # precomputed path, later confirmed NOT the cause), this feature runs
+    # EVERY tick regardless of path source, so it remains a live,
+    # un-isolated suspect for that regression alongside a too-fast
+    # nmpc_v_des_filter_alpha (which WAS directly evidenced as harmful at
+    # large steps). Defaulted back to False pending an isolated test that
+    # actually singles this one out. Do not re-enable for a live run
+    # without doing that isolation first.
     nmpc_latency_compensation_enabled: bool = field(default=False, metadata={
         "unit": "bool",
         "desc": "true -> roll x0 forward by nmpc_latency_compensation_ms "
@@ -509,16 +517,26 @@ class NMPCParams:
     # to 1.7 m/s for over a second, braking stayed weak, and the car
     # carried too much speed into the tightest part of the corner (|e_y|
     # briefly ~2.6-2.8 m). Raising alpha to fix that made OVERALL
-    # performance worse each time tried: 0.25 (dt/alpha ~= 0.2 s) caused
-    # oscillating accel/brake and steering hunting at several OTHER
+    # performance worse at every LARGE step tried: 0.25 (dt/alpha ~= 0.2 s)
+    # caused oscillating accel/brake and steering hunting at several OTHER
     # corners plus one genuine off-track excursion; 0.13 (dt/alpha ~=
     # 0.38 s) still showed 4 excursion clusters, one WORSE than the 0.08
     # baseline's single corner; disabling the filter entirely (v_ref =
     # desired_speed, no smoothing) was worse still, 7 clusters, the worst
-    # result of any config tested. This flips the working theory: the
-    # filter was doing real, useful noise rejection, and speeding it up is
-    # the wrong direction. Testing SLOWER values (0.05, 0.01) next.
-    nmpc_v_des_filter_alpha: float = field(default=0.08, metadata={
+    # result of any config tested; 0.05 (slower than 0.08) also
+    # underperformed the original in a controlled A/B (also confounded
+    # with nmpc_kappa_rate_max/latency-compensation being active in that
+    # run, since disentangled). Once nmpc_kappa_rate_max and latency
+    # compensation were correctly isolated (both confirmed structurally
+    # inert on this precomputed-path test, and disabled respectively), a
+    # SMALL step above the original -- 0.09 -- gave the best full-run
+    # result of the day: composite_score 0.410 (vs this session's best-
+    # ever 0.369 at the unmodified 0.08 baseline that morning, and 0.476
+    # for the clean all-off baseline that evening), ZERO rejected solves,
+    # max|e_y| 0.84 m, jerk_rms/control_smooth_rms both in the healthy
+    # range. Landed here: a small tightening of the smoothing, not the
+    # large speedups that repeatedly proved counterproductive.
+    nmpc_v_des_filter_alpha: float = field(default=0.09, metadata={
         "unit": "unitless",
         "desc": "first-order low-pass coefficient on the speed target "
                 "before it reaches the NMPC's cost function. Smaller = "

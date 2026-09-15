@@ -169,3 +169,97 @@ worse.
 
 Neither test is a full root-cause fix; both are corner-symptom mitigations.
 The corner still visibly stumbles even at the validated 2.0 setting.
+
+## Separate precomputed-path corner failure: a genuine off-centre centreline
+
+A later same-day precomputed-path run (`path_map_path`/`map_path` both set,
+not the live planner) showed a different corner (`comp_test_map_3`, arc
+length ~177-196 m, near map coordinates (35-42, 40-50)) producing a large
+`e_y` excursion (up to -2.7 m) and the car visibly hugging the yellow cone
+wall. This is NOT the live-planner reference-volatility mechanism above
+(precomputed mode has no live-planner noise at all) and NOT a solver
+failure (`nmpc_status=1` throughout, the solver's own
+`nmpc_pred_ey_max_abs` tracked the growing error smoothly and accurately).
+
+Root cause, confirmed by direct measurement against the cone map: the
+precomputed centreline is genuinely off-centre through this corner,
+consistently closer to the yellow boundary than the blue one (1.5-2.1 m to
+yellow vs 2.0-2.4 m to blue at several sample points), through the
+tightest part of the track (radius bottoms at ~4.65 m here vs 7-10 m
+elsewhere nearby). This is a data problem in `centerline.csv`, not
+something any controller-side tuning can fix. Not yet corrected; flagged
+here so a future "car hugs the wall at this corner" report starts from
+this finding rather than re-investigating the controller.
+
+### Debugger fix, found and fixed along the way
+
+Diagnosing this required trusting `live_viz.py`'s displayed reference
+path, which was showing the LIVE PLANNER's rolling output even in
+precomputed-path mode, not the actual precomputed reference the car was
+driving against. Root cause: `centerline_planner.py` had no
+`use_precomputed_path` awareness and kept running/publishing regardless
+(no launch-time gating existed). Fixed two ways together: `sim.launch.py`
+now gates `planning.launch.py`'s own inclusion on `use_precomputed_path`
+(the planner process itself never starts in that mode), and
+`mpc_controller.py` publishes the static path once, with `TRANSIENT_LOCAL`
+QoS durability (not a fixed-delay timer, which was tried first and still
+lost the race against `live_viz.py` starting before the controller node
+exists), on its own topic (`/fsae/control/static_reference_path`, separate
+from the live planner's topic to avoid a QoS durability conflict).
+
+## Speed-target filter (`nmpc_v_des_filter_alpha`): wide sweep, landed on 0.09
+
+Same day, a THIRD corner (a different hairpin, ~11 m to 4.65 m radius,
+target speed collapsing ~4.7 m/s in ~1 s) showed the NMPC's actual
+optimisation target (`v_ref`, filtered through this alpha) lagging the raw
+`desired_speed` by up to 1.7 m/s for over a second, so commanded braking
+stayed weak while the car carried too much speed into the tightest part of
+the corner. This filter (originally 0.08, dt/alpha ~= 0.6 s time constant,
+introduced 2026-06-29 to smooth ~1 Hz live-planner target jumps) has no
+offline analogue at all — `nmpc_optimiser.py` never filters the speed
+target — so it had never been offline-validated or tuned against this
+specific lag.
+
+**Raising alpha to fix the lag made OVERALL performance worse at every
+large step tried**, confirmed across multiple full live runs: 0.25
+(dt/alpha ~= 0.2 s) caused oscillating accel/brake commands and steering
+hunting at several OTHER corners plus a genuine off-track excursion; 0.13
+still showed 4 excursion clusters (one worse than the 0.08 baseline's
+single corner); disabling the filter entirely (`v_ref = desired_speed`,
+no smoothing) was worse still, 7 clusters, the worst result of the whole
+session. This flips the naive read of the lag finding: the filter is
+doing real, useful noise rejection, and blanket speedup is the wrong
+shape of fix.
+
+**A later same-evening run also showed a broader regression** (not
+specific to any one corner): jerky/twitchy behaviour on GENTLE corners
+that had never been a problem before, with measurably worse `jerk_rms`
+(0.58 vs 0.15) and `control_smooth_rms` (0.45 vs 0.13) than the best run
+of the day. Three things had changed by that point: a fast `alpha`, plus
+two OTHER same-day additions, `nmpc_kappa_rate_max` and
+`nmpc_latency_compensation_enabled`. Disabling all three at once
+recovered most of the regression (score 0.476, jerk_rms 0.126, close to
+the day's best). Re-enabling `nmpc_kappa_rate_max=2.0` alone (validated
+value, `alpha` kept at the original 0.08) produced the BEST smoothness
+numbers of the day (score 0.431, jerk_rms 0.115) — consistent with
+`_path_reference()`'s own code confirming this limiter is structurally
+inert whenever a static/precomputed path is set (returns the cached
+static reference before ever reaching the rate-limiting code), so it was
+never a real suspect for a precomputed-path regression. This leaves
+`nmpc_latency_compensation_enabled` (which runs every tick regardless of
+path source, unlike the kappa limiter) as the live, un-isolated suspect
+for the smoothness regression, alongside the already-evidenced too-fast
+`alpha` values — NOT separately isolated from each other before landing
+on the settled config below.
+
+**Landed configuration, live-tested as the best full-run result of the
+day**: `nmpc_v_des_filter_alpha=0.09` (a small nudge above the original
+0.08, not a large jump), `nmpc_kappa_rate_max=2.0` (validated, structurally
+inert on this precomputed-path test), `nmpc_latency_compensation_enabled=
+False` (reverted, unresolved suspect). Score 0.410 (vs the day's best-ever
+0.369 at the unmodified original config, and the 0.476 clean-baseline
+recovery run), zero rejected solves, `max|e_y|` 0.84 m, healthy jerk/
+smoothness numbers. Not a proven optimum — `nmpc_latency_compensation_
+enabled` was never tested in isolation to confirm or clear it as the
+regression's actual cause, so treat it as guilty-by-association, not
+guilty-by-evidence, if revisiting this later.
