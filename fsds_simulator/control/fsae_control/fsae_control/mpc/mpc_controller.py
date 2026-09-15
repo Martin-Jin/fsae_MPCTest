@@ -382,6 +382,35 @@ class MPCControllerNode(Node):
         self._path: np.ndarray = (
             self._static_path if self._static_path is not None else np.empty((0, 2))
         )
+
+        # In precomputed-path mode, _path_cb (above) never writes the live
+        # planner's topic into self._path -- see its own comment -- so
+        # live_viz.py's ref_path (which only ever subscribes to this same
+        # topic, see its docstring) had nothing to show the ACTUAL reference
+        # being driven against, and instead drew whatever the live planner
+        # happened to still be publishing underneath, unrelated to what the
+        # car was doing. Republish the static path onto the same topic to
+        # fix that: this node has never published here before (pure
+        # subscriber otherwise), so there is no live-planner traffic to
+        # collide with in this mode, and it matches this topic's own
+        # documented "live planner OR precomputed reference path (same
+        # topic)" contract in live_viz.py's docstring.
+        #
+        # Fired from a one-shot timer, not inline here: a publisher has no
+        # subscribers yet at construction time (ROS2 discovery is
+        # asynchronous), so a publish() made immediately after
+        # create_publisher() would very likely be dropped before live_viz.py
+        # (started around the same time by launch_all.sh) has finished
+        # discovering it. 2 s comfortably covers normal node startup
+        # staggering; republishing costs nothing if a subscriber connects
+        # sooner, and static-path mode never needs a second update anyway.
+        self._static_path_pub = None
+        self._static_path_pub_timer = None
+        if self._static_path is not None:
+            self._static_path_pub = self.create_publisher(
+                PoseArray, '/fsae/planning/selected_trajectory', 10)
+            self._static_path_pub_timer = self.create_timer(
+                2.0, self._publish_static_path_once)
         # Static path never goes stale (no topic to lose) — treated as
         # "always fresh" by never being touched by the staleness check below,
         # rather than by faking a stamp that keeps advancing on its own.
@@ -504,6 +533,18 @@ class MPCControllerNode(Node):
             [[p.position.x, p.position.y] for p in msg.poses], dtype=np.float64
         ) if msg.poses else np.empty((0, 2))
         self._path_stamp = self.get_clock().now()
+
+    def _publish_static_path_once(self) -> None:
+        """One-shot: see the comment on _static_path_pub's construction."""
+        self._static_path_pub_timer.cancel()
+        pose_array = PoseArray()
+        pose_array.header.stamp = self.get_clock().now().to_msg()
+        pose_array.header.frame_id = 'map'
+        for x, y in self._static_path:
+            pose = Pose()
+            pose.position.x, pose.position.y = float(x), float(y)
+            pose_array.poses.append(pose)
+        self._static_path_pub.publish(pose_array)
 
     def _odom_cb(self, msg: Odometry) -> None:
         # v.x/v.y are body-frame (sim_perception.py relays them unrotated

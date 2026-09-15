@@ -443,9 +443,12 @@ class NMPCParams:
     # root cause being live-planner REFERENCE volatility during braking
     # (measured 5-40x noisier than a precomputed path), which this feature
     # doesn't address -- it only compensates the fixed SOLVE-TIME gap.
-    # Reverted to False; kept in the code as a real, working, validated-
-    # harmless mechanism, just not a fix for this specific margin.
-    nmpc_latency_compensation_enabled: bool = field(default=False, metadata={
+    # Confirmed harmless (rejected-rate improvement, no downside) on its own.
+    # TEMPORARILY defaulted True again (2026-09-15) to combine with the
+    # validated nmpc_kappa_rate_max=2.0 fix and see whether the two together
+    # close more of the residual stumble than either alone. Revert to False
+    # after that test unless kept on purpose.
+    nmpc_latency_compensation_enabled: bool = field(default=True, metadata={
         "unit": "bool",
         "desc": "true -> roll x0 forward by nmpc_latency_compensation_ms "
                 "(held at the last applied control, via the same nonlinear "
