@@ -756,6 +756,8 @@ class NMPCController:
         rrate_zone_floor_corner=0.15,
         rjerk_delta=0.0,
         rjerk_a=0.0,
+        latency_compensation_enabled=False,
+        latency_compensation_ms=25.0,
     ):
         if osqp is None:      # pragma: no cover - dependency guard
             raise ImportError(
@@ -776,6 +778,8 @@ class NMPCController:
         # ── Experimental feature flags (see settings.py's NMPC_* comments) ──
         self.spline_reference_enabled = bool(spline_reference_enabled)
         self.friction_circle_enabled = bool(friction_circle_enabled)
+        self.latency_compensation_enabled = bool(latency_compensation_enabled)
+        self.latency_compensation_ms = float(latency_compensation_ms)
         # EXPERIMENTAL, unvalidated for the NMPC -- see settings.py's
         # NMPC_STEER_RATE_ANTI_HUNT_ENABLED comment. Independent of any
         # LTV-QP-side anti-hunt flag.
@@ -1428,6 +1432,23 @@ class NMPCController:
             for u_hist in pending_cmds:
                 xk = _step_scalar(xk, u_hist, ref, self.plant, self.dt, self.rk_substeps)
             x0 = np.array(xk)
+
+        # Latency compensation (EXPERIMENTAL, mirrors nmpc_core.py's own
+        # block): same nonlinear rollforward as the pending_cmds block just
+        # above, but forward past "now" using the LAST APPLIED command held
+        # constant, to compensate for THIS solve's own wall-clock time
+        # rather than pose staleness. Held constant, not extrapolated -- the
+        # true future command is exactly what this solve is trying to
+        # determine. See settings.py's NMPC_LATENCY_COMPENSATION_* comments.
+        if self.latency_compensation_enabled:
+            n_latency = int(round(
+                self.latency_compensation_ms * 1e-3 / self.dt))
+            if n_latency > 0:
+                xk = [float(v) for v in x0]
+                for _ in range(n_latency):
+                    xk = _step_scalar(xk, self._u_prev, ref, self.plant, self.dt,
+                                      self.rk_substeps)
+                x0 = np.array(xk)
 
         if self._have_warm_start and step_index != 0:
             U = np.vstack([self._U[1:], self._U[-1:]])

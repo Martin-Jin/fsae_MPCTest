@@ -1823,6 +1823,28 @@ class NMPCController:
         else:
             n_delay = 0
 
+        # ── Latency compensation (nonlinear rollforward, EXPERIMENTAL) ───
+        # Same mechanism as delay compensation above, but forward past "now"
+        # instead of backward from a stale pose: the solve about to run
+        # takes real wall-clock time, so u[0] does not land until roughly
+        # nmpc_latency_compensation_ms after x0 was measured. Rolled forward
+        # holding the LAST APPLIED command constant (self._u_prev), not a
+        # guessed future command, since the future command is exactly what
+        # this solve is trying to determine. See nmpc_params.py's field
+        # docstring for why this is off by default.
+        n_latency = 0
+        if self.nmpc.nmpc_latency_compensation_enabled:
+            cap = self.params.max_delay_compensation_steps
+            n_latency = int(np.clip(
+                round(self.nmpc.nmpc_latency_compensation_ms * 1e-3 / self.dt),
+                0, cap))
+            if n_latency > 0:
+                xk = [float(v) for v in x0]
+                for _ in range(n_latency):
+                    xk = _step_scalar(xk, self._u_prev, ref, self.plant, self.dt,
+                                      self.nmpc.nmpc_rk_substeps)
+                x0 = np.array(xk)
+
         # ── Warm start: shift the previous solution one step ────────────
         if self._have_warm_start:
             U = np.vstack([self._U[1:], self._U[-1:]])
@@ -1944,6 +1966,7 @@ class NMPCController:
             'Rrate_steer_corner_blend': rrate_steer_current,
             'pose_age_s': float(pose_age_s),
             'n_delay': int(n_delay),
+            'n_latency': int(n_latency),
             'solve_ms': float(solve_ms),
             'car_speed': float(car_speed),
             'desired_speed': float(v_ref),

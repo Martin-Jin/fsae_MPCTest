@@ -131,6 +131,7 @@ ADAPTIVE_COLUMNS = (
     'nmpc_pred_ey_end',        # predicted e_y at the end of the horizon (m)
     'nmpc_pred_epsi_end',      # predicted e_psi at the end of the horizon (rad)
     'nmpc_pred_ey_max_abs',    # peak predicted |e_y| anywhere in the horizon (m)
+    'n_latency',               # nmpc_latency_compensation_enabled's rollforward depth (0 when off)
     # nmpc_friction_circle_enabled only (empty otherwise, same convention as
     # every other column above); see `docs/reference/README.md`'s "Three
     # MPCC-inspired additions" section.

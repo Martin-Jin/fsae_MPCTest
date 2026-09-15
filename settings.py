@@ -931,6 +931,21 @@ NMPC_SPLINE_REFERENCE_ENABLED = True
 # before this feature existed -- not just "the extra rows are empty".
 NMPC_FRICTION_CIRCLE_ENABLED = False
 
+# [NMPC only] NMPC_LATENCY_COMPENSATION_ENABLED -- False (default, EXPERIMENTAL): roll x0
+# forward by NMPC_LATENCY_COMPENSATION_MS (held at the last applied control, same
+# nonlinear _step_scalar rollforward the existing pose-age delay compensation
+# uses) before linearising, instead of around x0 as measured at the START of
+# the tick. Compensates for the SOLVE's own wall-clock time (up to
+# NMPC_SOLVE_BUDGET_MS), not pose staleness (that's the separate, already-
+# existing delay_compensation_enabled/pose_age_s mechanism). Held constant,
+# not extrapolated: the true future command is exactly what this tick's
+# solve is trying to determine, so guessing it would add error rather than
+# remove it. Not yet live-validated.
+NMPC_LATENCY_COMPENSATION_ENABLED = False
+NMPC_LATENCY_COMPENSATION_MS = 25.0         # defaults to NMPC_SOLVE_BUDGET_MS; rounded to the
+                                            # nearest whole DT step and capped by
+                                            # MAX_DELAY_COMPENSATION_STEPS, same as n_delay.
+
 
 # ------------------------------------------------------------------------------
 # Adaptive-gain SHAPE constants

@@ -375,6 +375,51 @@ class NMPCParams:
         "controller": "nmpc_only",
     })
 
+    # ── Solve-time latency compensation (EXPERIMENTAL, default off) ─────
+    # The existing delay_compensation_enabled/pose_age_s mechanism
+    # (mpc_params.py) rolls x0 forward through the ACTUAL applied control
+    # history to correct for how stale the MEASURED POSE already was when
+    # the solve started. It does not compensate for the solve's own
+    # wall-clock time: the linearisation and reference are still built
+    # around x0 as of the START of the tick, but u[0] is not applied until
+    # the solve finishes, up to nmpc_solve_budget_ms later. At corners where
+    # the car is decelerating hard and the reference (curvature ahead,
+    # target speed) is changing quickly tick to tick, that gap between
+    # "where x0 was linearised" and "where the car is when u[0] actually
+    # lands" is exactly the kind of staleness the backtracking line search
+    # (nmpc_backtrack_max) rejects steps over -- see
+    # planner_only_lap2_corner_spinout.md. This rolls x0 forward the SAME
+    # way as delay compensation (nonlinear _step_scalar, actual applied
+    # control), just forward past "now" using the last shipped command held
+    # constant, instead of backward using the recorded command history.
+    # Held constant, not extrapolated, because the true future command is
+    # exactly what this tick's solve is trying to determine -- guessing it
+    # would inject a new error source rather than remove one. Default off:
+    # unlike pose-age compensation (which corrects a MEASURED quantity),
+    # this rolls forward by a budget estimate, not a measured latency, and
+    # has not yet been validated live.
+    nmpc_latency_compensation_enabled: bool = field(default=False, metadata={
+        "unit": "bool",
+        "desc": "true -> roll x0 forward by nmpc_latency_compensation_ms "
+                "(held at the last applied control, via the same nonlinear "
+                "_step_scalar rollforward pose-age delay compensation uses) "
+                "before linearising, to compensate for the solve's own "
+                "wall-clock time rather than pose staleness. EXPERIMENTAL, "
+                "not yet live-validated. Default false.",
+        "controller": "nmpc_only",
+    })
+    nmpc_latency_compensation_ms: float = field(default=25.0, metadata={
+        "unit": "ms",
+        "desc": "assumed solve latency to roll x0 forward by when "
+                "nmpc_latency_compensation_enabled is true. Defaults to "
+                "nmpc_solve_budget_ms (a budget, not a per-tick "
+                "measurement: the true solve time isn't known until AFTER "
+                "the solve this would need to run before). Rounded to the "
+                "nearest whole dt step, same as pose-age compensation's "
+                "n_delay, and capped by max_delay_compensation_steps.",
+        "controller": "nmpc_only",
+    })
+
     # ── Solver tolerance ────────────────────────────────────────────────
     nmpc_osqp_max_iter: int = field(default=500, metadata={
         "unit": "iterations",

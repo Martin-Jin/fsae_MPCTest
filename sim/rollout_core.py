@@ -84,6 +84,7 @@ from settings import (
     NMPC_R_RATE_DELTA, NMPC_R_RATE_A, NMPC_TERMINAL_SCALE,
     NMPC_SPLINE_REFERENCE_ENABLED,
     NMPC_FRICTION_CIRCLE_ENABLED,
+    NMPC_LATENCY_COMPENSATION_ENABLED, NMPC_LATENCY_COMPENSATION_MS,
     NMPC_STEER_RATE_ANTI_HUNT_ENABLED,
     NMPC_CORNER_RRATE_BLEND_ENABLED, NMPC_CORNER_FACTOR_K,
     NMPC_RRATE_STEER_STRAIGHT, NMPC_RRATE_STEER_CORNER,
@@ -763,6 +764,8 @@ def run_core_rollout(
             rrate_zone_floor_corner=_ov('rrate_zone_floor_corner', NMPC_RRATE_ZONE_FLOOR_CORNER),
             rjerk_delta=_ov('rjerk_delta', NMPC_RJERK_DELTA),
             rjerk_a=_ov('rjerk_a', NMPC_RJERK_A),
+            latency_compensation_enabled=NMPC_LATENCY_COMPENSATION_ENABLED,
+            latency_compensation_ms=NMPC_LATENCY_COMPENSATION_MS,
         )
 
     metrics = RolloutMetrics()
