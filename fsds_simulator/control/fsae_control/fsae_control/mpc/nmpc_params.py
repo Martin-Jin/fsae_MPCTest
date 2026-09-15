@@ -398,10 +398,20 @@ class NMPCParams:
     # pose-age compensation (which corrects a MEASURED quantity), this rolls
     # forward by a budget estimate, not a measured latency.
     #
-    # TEMPORARILY defaulted True (2026-09-15) for a live A/B test at the
-    # lap-2 corner margin (planner_only_lap2_corner_spinout.md). Revert to
-    # False once that test is done unless it's kept on purpose.
-    nmpc_latency_compensation_enabled: bool = field(default=True, metadata={
+    # LIVE-TESTED 2026-09-15 at the lap-2 corner margin
+    # (planner_only_lap2_corner_spinout.md): does not close it. Two valid
+    # runs (n_latency=1 confirmed engaged both times, after fixing a
+    # rounding bug that silently no-op'd the first attempt) show a modest
+    # rejected-solve-rate improvement (7/1507 and 26/1507 vs a 24/1406
+    # baseline) but the same stall mechanism recurs -- a dense rejection
+    # cluster during hard braking at the same corner, car settles into a
+    # converged solved state at e_psi~-100 deg, v~0. Consistent with the
+    # root cause being live-planner REFERENCE volatility during braking
+    # (measured 5-40x noisier than a precomputed path), which this feature
+    # doesn't address -- it only compensates the fixed SOLVE-TIME gap.
+    # Reverted to False; kept in the code as a real, working, validated-
+    # harmless mechanism, just not a fix for this specific margin.
+    nmpc_latency_compensation_enabled: bool = field(default=False, metadata={
         "unit": "bool",
         "desc": "true -> roll x0 forward by nmpc_latency_compensation_ms "
                 "(held at the last applied control, via the same nonlinear "
