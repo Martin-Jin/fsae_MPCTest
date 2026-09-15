@@ -168,14 +168,52 @@ so `real_n` never shrinks and the new code path is a no-op there).
 Mirrored to `fsds_simulator/control/fsae_control/fsae_control/mpc/nmpc_core.py`
 (diff against the live copy is empty).
 
+## Planner-side root cause, found in fsae_planning's own upstream history
+
+The question left open above ("why does the planner emit a short path at
+all") has an answer: this exact failure was already found and fixed
+upstream (`origin/main` of `fsae_planning`, commit `0b4397e`, not yet
+merged into the branch this repo runs, `feature/nmpc-and-controller-
+improvements`, and not yet applied here at the time this was written).
+
+`path_utils.blend_paths()` re-anchors the previous tick's published path
+and the freshly-planned one onto a common forward grid
+(`_resample_forward`) and averages them. `_resample_forward` clamps
+samples past a path's real end to its last point, exactly the mechanism
+that produces a frozen trailing tail: if the fresh path is genuinely short
+this tick (nothing wrong with it, it is just short), its samples past its
+own real end silently repeat its last point, and the OLD behaviour then
+blended those repeated-point samples against the PREVIOUS path's genuine
+further-out data, publishing a result that extends past where the fresh
+path was actually validated to reach, using stale geometry to fill the
+gap. That published, padded array is exactly the `t=23.62 s` snapshot
+described above (51 points, only 20 distinct).
+
+Fixed directly in `path_utils.py` (`fsae_planning`, applied here from the
+upstream commit): `_resample_forward` now also returns the path's real arc
+length (`total`), and `blend_paths` truncates its output to the FRESH
+path's own validated length rather than the full blend horizon. A short
+fresh path now produces a short, honest published path instead of a padded
+one. Verified with a synthetic case (5 m fresh path blended against a 30 m
+stale one): the published blend now stops at 5.0 m, where it previously
+extended to 11.0 m of largely stale geometry.
+
+This planner-side fix is the actual root cause fix. The NMPC-side
+`PathReference` fix described above remains as defence in depth (any other
+future path-shortening mechanism, or a planner change that reintroduces
+padding, still can't feed NMPC a frozen tail as if it were real geometry),
+but the padding itself should no longer be produced upstream of NMPC now
+that `blend_paths` is fixed.
+
 ## Status
 
-Root cause confirmed (truncated live planner path snapshot at `t=23.62 s`,
-verified against both the control and path logs) and a targeted fix has
-landed in `PathReference` to stop NMPC trusting a frozen/padded tail.
-**Not yet live-tested**: this run cannot be replayed against the fix
-offline (the truncation only happens live, is not a recorded/precomputed
-path defect), so validate with a fresh live planner-only run before
-trusting this closes the failure mode. The underlying question of why the
-planner emits a short path at all remains open and is a separate,
-planner-side investigation.
+Root cause confirmed at TWO levels: the immediate mechanism (`PathReference`
+trusting a frozen trailing tail as real geometry, fixed in `nmpc_core.py`)
+and the actual source (`blend_paths` publishing a padded array when the
+fresh path is shorter than the blend horizon, fixed in `path_utils.py`,
+ported from `fsae_planning` upstream `main`). Both fixes are applied and
+offline-verified (synthetic tests plus `tuner.nmpc_offline_check`/
+`recorded_map_rollout`, unchanged). **Not yet live-tested together**: this
+run cannot be replayed against either fix offline (the failure only occurs
+against a live, per-tick-rebuilt planner path), so validate with a fresh
+live planner-only run before considering this closed.

@@ -268,12 +268,17 @@ def _resample_forward(path, car_pos, ds, n_samples):
     and a fresh one can be compared sample-for-sample.  Samples past the end of
     the path clamp to its last point.
 
-    Returns an (n_samples, 2) array, or None if the path is degenerate.
+    Returns (samples, total): an (n_samples, 2) array (positions past the
+    path's end clamp to its last point) and the path's real remaining arc
+    length (`total`, metres, from the car's projection to the path's actual
+    endpoint) -- callers need `total` to tell a real sample from one that
+    only exists because it was clamped (see blend_paths' fresh-endpoint
+    guard). Returns (None, 0.0) if the path is degenerate.
     """
     path = np.asarray(path, dtype=np.float64)
     m = len(path)
     if m < 2:
-        return None
+        return None, 0.0
 
     # Nearest-segment projection of the car onto the path.
     best_seg, best_t, best_d2 = 0, 0.0, np.inf
@@ -294,13 +299,14 @@ def _resample_forward(path, car_pos, ds, n_samples):
     arc     = np.concatenate([[0.0], np.cumsum(seg)])
     total   = float(arc[-1])
     if total < 1e-6:
-        return None
+        return None, 0.0
 
     targets = np.minimum(np.arange(n_samples) * ds, total)
-    return np.column_stack([
+    samples = np.column_stack([
         np.interp(targets, arc, fwd_pts[:, 0]),
         np.interp(targets, arc, fwd_pts[:, 1]),
     ])
+    return samples, total
 
 
 def blend_paths(prev, new, car_pos, alpha=0.4, ds=0.5, horizon=15.0,
@@ -329,14 +335,25 @@ def blend_paths(prev, new, car_pos, alpha=0.4, ds=0.5, horizon=15.0,
 
     Returns the blended (K, 2) path.  Falls back to `new` unchanged when there is
     no usable previous path.
+
+    The blended output is truncated to the fresh (`new`) path's own validated
+    arc length. Without this, a short fresh path -- its samples past its real
+    endpoint clamp and repeat the last point, see _resample_forward -- still
+    gets averaged against a longer previous path's genuine further-out
+    samples, which pulls the blend PAST the point the fresh path (the one
+    actually validated this tick) was willing to vouch for, into territory
+    only the stale previous plan supports. This is the mechanism behind a
+    live-observed failure where the published path silently carried a
+    duplicated-point tail well past where the fresh centreline actually
+    ended (see fsae_MPCTest/docs/logs/nmpc_planner_only_corner_failure.md).
     """
     new = np.asarray(new, dtype=np.float64)
     if prev is None or len(new) < 2 or alpha >= 1.0:
         return new
 
     n = int(horizon / ds) + 1
-    r_new  = _resample_forward(new,  car_pos, ds, n)
-    r_prev = _resample_forward(prev, car_pos, ds, n)
+    r_new,  new_total = _resample_forward(new,  car_pos, ds, n)
+    r_prev, _prev_total = _resample_forward(prev, car_pos, ds, n)
     if r_new is None or r_prev is None:
         return new
 
@@ -344,6 +361,14 @@ def blend_paths(prev, new, car_pos, alpha=0.4, ds=0.5, horizon=15.0,
         return r_new
 
     blended = (1.0 - alpha) * r_prev + alpha * r_new
+
+    # Never extend past the fresh path's own validated endpoint (+1 sample so
+    # the point AT new_total itself is kept, not dropped by a boundary
+    # rounding case).
+    n_keep = int(np.searchsorted(np.arange(n) * ds, new_total)) + 1
+    n_keep = max(2, min(n_keep, len(blended)))
+    blended = blended[:n_keep]
+
     # Drop trailing near-duplicate samples (path shorter than the horizon clamps
     # its tail to the last point).
     keep = np.concatenate([[True],
