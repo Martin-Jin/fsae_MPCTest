@@ -171,8 +171,12 @@ PATH_CSV="$TRACK_DIR/$_TRACK_GEOMETRY_NAME"
 # Set BOTH to false (with CONTROLLER=stanley below) when recording a NEW
 # track: the precomputed toggles replay the OLD map/oracle path instead of
 # driving off the live planner, which defeats recording a fresh lap.
-USE_PRECOMPUTED_SPEED=true
-USE_PRECOMPUTED_PATH=true
+# TEMPORARY (2026-09-15): both false to live-test the PathReference
+# truncated-trailing-tail fix (nmpc_planner_only_corner_failure.md) against
+# the live planner, the only mode that can reproduce it. Restore both to
+# true afterward, this is not the normal running configuration.
+USE_PRECOMPUTED_SPEED=false
+USE_PRECOMPUTED_PATH=false
 # Use raceline_optimizer.py's shaped psi_target column (heading-lead
 # reference, see late_turn_in_investigation.md Part 8/9/10/12) in place of
 # the geometric path tangent for e_psi's reference. Only has an effect
