@@ -17,9 +17,17 @@ authoritative topic table):
     /fsae/slam/right_track           fsae_interfaces/Track          yellow boundary, global frame
     /fsae/slam/car_position           geometry_msgs/PoseStamped      car pose, global frame
     /fsae/slam/car_odom               nav_msgs/Odometry              car speed/yaw rate
-    /fsae/planning/selected_trajectory  geometry_msgs/PoseArray      live planner OR precomputed
-                                                                     reference path (same topic,
-                                                                     see mpc_controller.py)
+    /fsae/planning/selected_trajectory  geometry_msgs/PoseArray      live planner's centreline
+                                                                     (empty in precomputed-path
+                                                                     mode -- the planner does not
+                                                                     even run then, see
+                                                                     sim.launch.py)
+    /fsae/control/static_reference_path geometry_msgs/PoseArray      one-shot, TRANSIENT_LOCAL:
+                                                                     the precomputed path
+                                                                     (path_map_path), when set --
+                                                                     see mpc_controller.py. Drawn
+                                                                     INSTEAD OF the topic above
+                                                                     when populated, never both
     /fsae/control/nmpc_predicted_path geometry_msgs/PoseArray        NMPC's predicted horizon,
                                                                      only published when
                                                                      use_nmpc=true (see
@@ -44,7 +52,9 @@ from matplotlib.animation import FuncAnimation  # noqa: E402
 
 import rclpy  # noqa: E402
 from rclpy.node import Node  # noqa: E402
-from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy  # noqa: E402
+from rclpy.qos import (  # noqa: E402
+    DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy,
+)
 
 from ackermann_msgs.msg import AckermannDriveStamped  # noqa: E402
 from fs_msgs.msg import ControlCommand  # noqa: E402
@@ -100,6 +110,18 @@ class LiveVizNode(Node):
             history=HistoryPolicy.KEEP_LAST,
             depth=10,
         )
+        # Matches mpc_controller.py's static_path_qos exactly -- ROS2 requires
+        # a TRANSIENT_LOCAL subscriber to receive a TRANSIENT_LOCAL
+        # publisher's last message regardless of connection order, which is
+        # the whole point here (this node starts before mpc_controller.py
+        # even exists, see launch_all.sh). A plain (VOLATILE) subscription
+        # would silently never see the one-shot publish.
+        static_path_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
 
         self.car_x = 0.0
         self.car_y = 0.0
@@ -110,6 +132,7 @@ class LiveVizNode(Node):
         self.left_cones = np.empty((0, 2))
         self.right_cones = np.empty((0, 2))
         self.ref_path = np.empty((0, 2))
+        self.static_ref_path = np.empty((0, 2))
         self.nmpc_pred_path = np.empty((0, 2))
         self.trail = deque(maxlen=TRAIL_MAXLEN)
 
@@ -130,6 +153,9 @@ class LiveVizNode(Node):
         self._subscribe(Odometry, '/fsae/slam/car_odom', self._odom_cb, sensor_qos)
         self._subscribe(
             PoseArray, '/fsae/planning/selected_trajectory', self._ref_path_cb, 10)
+        self._subscribe(
+            PoseArray, '/fsae/control/static_reference_path',
+            self._static_ref_path_cb, static_path_qos)
         self._subscribe(
             PoseArray, '/fsae/control/nmpc_predicted_path', self._nmpc_pred_cb, 10)
         self._subscribe(
@@ -186,6 +212,9 @@ class LiveVizNode(Node):
     def _ref_path_cb(self, msg: PoseArray) -> None:
         self.ref_path = self._pose_array_to_xy(msg)
 
+    def _static_ref_path_cb(self, msg: PoseArray) -> None:
+        self.static_ref_path = self._pose_array_to_xy(msg)
+
     def _nmpc_pred_cb(self, msg: PoseArray) -> None:
         self.nmpc_pred_path = self._pose_array_to_xy(msg)
 
@@ -232,7 +261,14 @@ def main():
             ax.scatter(node.right_cones[:, 0], node.right_cones[:, 1],
                        c='gold', marker='^', s=25, label='right (yellow)')
 
-        if node.ref_path.size:
+        # Precomputed mode: the planner never runs (sim.launch.py gates it
+        # off), so ref_path stays empty and static_ref_path carries the real
+        # reference instead -- draw whichever one actually has data, not
+        # both (they're never populated at the same time in practice).
+        if node.static_ref_path.size:
+            ax.plot(node.static_ref_path[:, 0], node.static_ref_path[:, 1],
+                    c='tab:gray', lw=1.5, ls='--', label='precomputed reference path')
+        elif node.ref_path.size:
             ax.plot(node.ref_path[:, 0], node.ref_path[:, 1],
                     c='tab:gray', lw=1.5, ls='--', label='reference/planner path')
 

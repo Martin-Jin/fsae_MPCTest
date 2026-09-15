@@ -53,6 +53,10 @@ being selected by two separate launchable executables.
                                                                              (standalone_output=true only)
     out  /fsae/control/cmd_vel               ackermann_msgs/AckermannDriveStamped  (standalone_output=false)
     out  /fsds/control_command                fs_msgs/ControlCommand               (standalone_output=true)
+    out  /fsae/control/static_reference_path  geometry_msgs/PoseArray        one-shot, TRANSIENT_LOCAL (path_map_path
+                                                                             set only) — self._static_path, for
+                                                                             live_viz.py's debug display only, not
+                                                                             read by anything in the control loop
 
 CONTROL LOOP PHASES (see _control_step)
 ----------------------------------------------------------------------------
@@ -82,7 +86,7 @@ import time
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 
 from ackermann_msgs.msg import AckermannDriveStamped
 from fs_msgs.msg import ControlCommand, GoSignal
@@ -383,36 +387,53 @@ class MPCControllerNode(Node):
             self._static_path if self._static_path is not None else np.empty((0, 2))
         )
 
-        # live_viz.py's ref_path only ever subscribes to
-        # /fsae/planning/selected_trajectory (see its docstring), so with no
-        # publisher on it in precomputed-path mode the debugger had nothing
-        # to show the ACTUAL reference being driven against. TWO earlier
-        # attempts (one-shot, then every-tick) tried fixing this from here by
-        # racing/out-publishing centerline_planner.py on the same topic --
-        # both were wrong: that node has no use_precomputed_path awareness
-        # and used to keep running/publishing regardless (no gating existed
-        # in sim.launch.py, unlike e.g. cone_recorder's IfCondition), so a
-        # one-shot publish only won for an instant, and publishing an
-        # ~1000-point PoseArray every 50 ms tick to try to keep winning
-        # measurably inflated solve_ms (34-49 ms vs a healthy ~20-30 ms) and
-        # caused a genuine live stall. Properly fixed at the source instead
-        # (sim.launch.py now gates planning.launch.py's own inclusion on
-        # use_precomputed_path, so the planner never runs in this mode at
-        # all) -- this one-shot publish is safe again because there is
-        # nothing left to race. See planner_only_lap2_corner_spinout.md.
+        # live_viz.py had no way to show the ACTUAL reference being driven
+        # against in precomputed-path mode. THREE earlier attempts got this
+        # wrong before landing here. One and two tried publishing the static
+        # path onto /fsae/planning/selected_trajectory (the live planner's
+        # own topic) to fix live_viz.py's subscription to it: that topic's
+        # other publisher, centerline_planner.py, had no use_precomputed_path
+        # awareness and used to keep running/publishing regardless (no
+        # gating existed in sim.launch.py, unlike e.g. cone_recorder's
+        # IfCondition), so a one-shot publish only won a race against it for
+        # an instant, and publishing an ~1000-point PoseArray every 50 ms
+        # tick to try to keep winning measurably inflated solve_ms and
+        # caused a genuine live stall. Fixed the live-planner side of that
+        # at the source (sim.launch.py now gates planning.launch.py's
+        # inclusion on use_precomputed_path, so the planner never runs in
+        # this mode) -- but attempt three's one-shot-after-a-fixed-delay
+        # publish, still onto the SAME shared topic, STILL showed nothing
+        # live: launch_all.sh starts live_viz.py well before this node even
+        # exists (see its own "topics simply have no data yet" comment), so
+        # a plain VOLATILE publish is a genuine race against ROS2 discovery
+        # completing on live_viz.py's side with no guaranteed margin, timer
+        # delay or not -- confirmed live (a standalone repro showed the
+        # message correctly logged as sent by this node, but never observed
+        # by a subscriber that started earlier).
         #
-        # Fired from a timer, not inline: a publisher has no subscribers yet
-        # at construction time (ROS2 discovery is asynchronous), so a
-        # publish() immediately after create_publisher() would likely be
-        # dropped before live_viz.py (started around the same time by
-        # launch_all.sh) finishes discovering it.
+        # Fixed properly with its OWN topic + TRANSIENT_LOCAL durability,
+        # not a bigger delay: /fsae/planning/selected_trajectory still also
+        # carries the LIVE planner's own (VOLATILE) output in non-
+        # precomputed mode, and a TRANSIENT_LOCAL subscriber cannot match a
+        # VOLATILE publisher under ROS2's QoS compatibility rules -- putting
+        # the static path there under TRANSIENT_LOCAL would have broken
+        # live-planner-mode viewing instead. A separate topic sidesteps that
+        # entirely. TRANSIENT_LOCAL removes the discovery-timing race
+        # itself: ROS2 guarantees a late-joining subscriber (also
+        # TRANSIENT_LOCAL, see live_viz.py's matching subscription)
+        # receives the publisher's last message regardless of when it
+        # connects. See planner_only_lap2_corner_spinout.md.
         self._static_path_pub = None
-        self._static_path_pub_timer = None
         if self._static_path is not None:
+            static_path_qos = QoSProfile(
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                history=HistoryPolicy.KEEP_LAST,
+                depth=1,
+            )
             self._static_path_pub = self.create_publisher(
-                PoseArray, '/fsae/planning/selected_trajectory', 10)
-            self._static_path_pub_timer = self.create_timer(
-                2.0, self._publish_static_path_once)
+                PoseArray, '/fsae/control/static_reference_path', static_path_qos)
+            self._publish_static_path_once()
         # Static path never goes stale (no topic to lose) — treated as
         # "always fresh" by never being touched by the staleness check below,
         # rather than by faking a stamp that keeps advancing on its own.
@@ -537,8 +558,11 @@ class MPCControllerNode(Node):
         self._path_stamp = self.get_clock().now()
 
     def _publish_static_path_once(self) -> None:
-        """One-shot: see the comment on _static_path_pub's construction."""
-        self._static_path_pub_timer.cancel()
+        """
+        One-shot: see the comment on _static_path_pub's construction for why
+        TRANSIENT_LOCAL durability (not timing) is what makes "once" safe
+        for a subscriber that connects later.
+        """
         pose_array = PoseArray()
         pose_array.header.stamp = self.get_clock().now().to_msg()
         pose_array.header.frame_id = 'map'
