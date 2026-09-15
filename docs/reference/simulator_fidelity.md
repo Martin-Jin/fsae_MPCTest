@@ -372,7 +372,17 @@ removed without re-measuring against a repaired planner:
 3. **Speed-target rise limiter**: `SPEED_TARGET_RISE_RATE = 7.0` m/s², applied
    in both controller nodes and `sim/rollout_core.py`. Increases only;
    decreases pass through instantly so a genuine brake request is never
-   delayed.
+   delayed. The rate assumes the car can accelerate at 7.0 m/s^2, which is
+   false from a standing start (the car does not break static friction for
+   ~1 s), so `SPEED_TARGET_DEFICIT_MAX = 2.5` m/s (same three files) caps how
+   far the ramp is allowed to run ahead of the car's measured speed before it
+   holds and waits, rather than continuing to climb against a target the car
+   cannot reach. Holds at `car_speed + DEFICIT_MAX`, never below the previous
+   target, so a real speed error always remains and the ramp resumes on its
+   own as the car closes the gap; a gate that held the target at ~0 while the
+   car is stationary would deadlock (no error, no throttle, car never moves).
+   See `fsae_autonomous/docs/NMPC_INTEGRATION_GAPS.md` gap E8 for the live
+   measurement.
 
 Combined, these bound tick-to-tick `v_desired` volatility and cap commanded
 speed in the unrecoverable `|e_y| > 1.5 m` regime, at a small cost on
