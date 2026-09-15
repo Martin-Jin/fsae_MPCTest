@@ -346,12 +346,21 @@ class NMPCParams:
         "unit": "1/m per s",
         "desc": "max tick-to-tick CHANGE of kappa(s) at matching arc-length "
                 "samples, live-planner mode only (inert when a static/"
-                "precomputed path is set via set_static_path). 2.0 = "
-                "0.1 1/m per 50 ms tick: roughly 8x the noise floor measured "
-                "against a precomputed path, but ~5x tighter than the "
-                "pathological live-planner spikes that produced the lap-2 "
-                "corner stall. Not yet live-validated -- see "
-                "planner_only_lap2_corner_spinout.md.",
+                "precomputed path is set via set_static_path). "
+                "LIVE-VALIDATED at 2.0 2026-09-15 (planner_only_lap2_corner_"
+                "spinout.md): survives the corner that used to stall "
+                "permanently, rejected-tick rate roughly halves (1.7% -> "
+                "1.0%), but the car still visibly stumbles through it "
+                "(speed collapse + e_psi swinging to -103 deg before "
+                "recovering). TIGHTENING TRIED AND REVERTED: 1.0 FAILED at "
+                "the same corner (stalled to a stop this time) and its own "
+                "telemetry showed MORE kappa_horizon_end sign-flipping "
+                "through the corner than 2.0's run, not less -- consistent "
+                "with 1.0 being tight enough to lag the corner's genuinely "
+                "fast-resolving curvature estimate and then overshoot when "
+                "it catches up, i.e. this specific corner needs more than "
+                "1.0 1/m/s of legitimate correction rate. Do not re-try "
+                "values below 2.0 without new evidence.",
         "controller": "nmpc_only",
     })
 

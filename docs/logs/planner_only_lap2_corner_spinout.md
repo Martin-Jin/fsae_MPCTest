@@ -129,3 +129,43 @@ pre-existing narrow margin at one corner's SQP convergence under hard
 braking, now visible because the car survives long enough to reach lap 2
 and encounter it twice. Recorded so a future "car spins out on lap 2" report
 starts here rather than re-investigating the already-fixed bugs.
+
+## Two candidate fixes tried, one confirmed working, one confirmed not
+
+**Solve-latency compensation (`nmpc_latency_compensation_enabled`): tried,
+does not close the margin.** Rolls the car's own state forward through the
+solve's own wall-clock time, the same way the existing pose-age delay
+compensation already rolls it forward through stale pose measurement. Two
+live runs with the mechanism confirmed engaged (`n_latency=1` throughout,
+after fixing a `round()`-half-to-even bug that silently zeroed it at its own
+25 ms default) show a small rejected-solve-rate improvement but the same
+stall mechanism recurs. Consistent with the root cause being reference
+volatility, not the fixed solve-time gap: this compensates a KNOWN, roughly
+constant delay, but the thing actually swinging tick to tick is the live
+planner's own curvature/speed estimate, which this mechanism never touches.
+Reverted to its safe default (off); kept in the code as a real, working
+mechanism for a different problem.
+
+**Curvature-reference rate limiting (`nmpc_kappa_rate_max`): tried, helps.**
+Same idea as the speed-target fall-rate fix, applied to the horizon's own
+curvature profile instead: caps how fast `kappa(s)` at a given arc-length
+point is allowed to change between ticks, live-planner mode only. At 2.0
+1/m/s, the car survives the corner that previously stalled permanently on
+every recorded run (rejected-tick rate roughly halves, 1.7% to 1.0%,
+cluster size at the corner itself shrinks), though it still visibly stumbles
+through it (speed collapse, `e_psi` swinging out to -103 degrees before
+recovering). Tightening to 1.0 was tried and made it WORSE: the car stalled
+at the same corner, and `nmpc_kappa_horizon_end` showed MORE sign-flipping
+through the corner at 1.0 than at 2.0, not less. Reading: 1.0 is tight
+enough to lag the corner's own genuinely fast-firming-up curvature estimate
+as the car gets close and perception resolves it, and then overshoot when
+the reference catches up, an oscillation, not a smoothing improvement. This
+is a real corner-specific rate requirement, not obviously noise: **do not
+retest values below 2.0 without new evidence**, and note that any future
+retuning of this constant should check `nmpc_kappa_horizon_end` for
+oscillation, not just the rejected-tick count, since the count alone
+improved at 1.0 relative to no limiter at all while the actual outcome got
+worse.
+
+Neither test is a full root-cause fix; both are corner-symptom mitigations.
+The corner still visibly stumbles even at the validated 2.0 setting.
