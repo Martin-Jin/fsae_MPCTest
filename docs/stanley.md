@@ -181,10 +181,15 @@ unaffected — none of the three limiters apply there, matching
 `mpc_controller.py`'s identical exemption (that branch is not re-derived
 from a noisy live path, so there is nothing to smooth).
 
-**Status: not yet live-tested as of this writing.** The mechanism mirrors
-an already-proven pattern from the MPC side, but has not itself been
-validated on a live/sim run. Confirm before trusting it the way
-`dynamic_speed_cap()` (a similar port) has been confirmed.
+**Status: live-tested once, 2026-09-16, on a full recording lap of
+`comp_test_map_2`** (`fsae_logs/stanley_control_20260916-081934.csv`). The
+car reached a corner with `e_y` growing to -1.03 m and `e_psi` to 24 deg,
+steering saturating at the 25 deg lock, then recovered and finished the lap
+normally — a materially better outcome than the pre-fix run on the same
+track family, which spun out under similar tracking-error growth. One run
+is not exhaustive validation; treat this as a first positive signal, not a
+closed investigation, and re-check on further tracks/conditions before
+treating it as fully proven the way `dynamic_speed_cap()` has been.
 
 ## Sign conventions and telemetry parity
 
