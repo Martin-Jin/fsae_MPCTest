@@ -134,22 +134,48 @@ defect.
   detection range cutting the planned centreline short) or a systematic
   planner behavior at this corner shape is not known; the planner's own
   code was not instrumented for this investigation.
-- **Whether NMPC should detect and reject/hold on a truncated path.** No
-  validation currently distinguishes "planner published fewer real points
-  than usual" from "planner published its normal full-length path." Adding
-  such a check (e.g. detect a run of repeated trailing points, or a
-  minimum path arc length before trusting a new snapshot) is a plausible
-  fix, not yet designed or tested.
 - **Single occurrence.** One corner, one run. Not yet checked whether the
   same planner-side truncation reproduces on a repeat run or at other
   corners.
+- **Not fixed at the source.** The fix below stops NMPC from being misled
+  by a truncated path; it does not explain or address why the planner
+  emitted one in the first place.
+
+## Fix: `PathReference` now detects and drops a frozen trailing tail
+
+`PathReference.__init__` (`nmpc_core.py`) scans the incoming path's segment
+lengths from the end and drops any trailing run of near-zero-length
+segments (repeated last-point padding) before computing arc length,
+curvature or reference heading. The path's real length (`self.total`) then
+reflects only the genuine data, and the existing edge-hold behaviour in
+`kappa_at`/`psi_ref_at` (see their docstrings, unchanged) takes over from
+the true last point: a horizon that runs past real data holds the last
+*real* curvature/heading sample, rather than reading a frozen duplicate
+point as flat, stopped geometry. This directly matches the mechanism
+confirmed above (`nmpc_pred_ey_end`/`nmpc_pred_ey_max_abs` blowing out
+because the reference stopped moving with the corner).
+
+Verified against a synthetic padded path (20 real points on a curve plus 30
+duplicated final points): `PathReference.total`/`.path` correctly reflect
+only the 20 real points, and `kappa_at` beyond that range returns the last
+real curvature rather than the padded value. `python -m
+tuner.nmpc_offline_check` passes unchanged (model parity, SQP convergence,
+turn-in sign checks, closed-loop DNF check), confirming the truncation
+detection does not alter behavior on any normal, non-truncated path (every
+recorded/precomputed path check in that suite has no trailing duplicates,
+so `real_n` never shrinks and the new code path is a no-op there).
+
+Mirrored to `fsds_simulator/control/fsae_control/fsae_control/mpc/nmpc_core.py`
+(diff against the live copy is empty).
 
 ## Status
 
 Root cause confirmed (truncated live planner path snapshot at `t=23.62 s`,
-verified against both the control and path logs). Not yet fixed: no guard
-against a short/truncated planner path exists in NMPC or in the planner
-output today. Planner-only NMPC is otherwise unaffected by this failure
-mode in this run: the run completes normally and this is the only
-truncated snapshot in 62.7 s of driving (one per second, ~63 snapshots
-total).
+verified against both the control and path logs) and a targeted fix has
+landed in `PathReference` to stop NMPC trusting a frozen/padded tail.
+**Not yet live-tested**: this run cannot be replayed against the fix
+offline (the truncation only happens live, is not a recorded/precomputed
+path defect), so validate with a fresh live planner-only run before
+trusting this closes the failure mode. The underlying question of why the
+planner emits a short path at all remains open and is a separate,
+planner-side investigation.

@@ -184,9 +184,26 @@ class PathReference:
     def __init__(self, path, dense_step=0.5, smooth_w=3, kappa_clip=0.5,
                  spline_reference_enabled=True):
         path = np.asarray(path, dtype=float)
-        self.path = path
         seg = np.diff(path, axis=0)
         seg_len = np.hypot(seg[:, 0], seg[:, 1])
+
+        # A live planner path can arrive padded with the last real point
+        # repeated to a fixed array length (seen live 2026-09-15, see
+        # nmpc_planner_only_corner_failure.md): those trailing zero-length
+        # segments look like valid flat geometry to everything below, so the
+        # horizon predicts the corner simply stopping. Drop them before any
+        # arc-length/kappa/psi_ref math runs, so the real end of data becomes
+        # this path's actual last point and the existing edge-hold behaviour
+        # in kappa_at/psi_ref_at (see their docstrings) takes over from there,
+        # holding the last REAL sample instead of a frozen duplicate one.
+        real_n = len(path)
+        while real_n > 2 and seg_len[real_n - 2] < 1e-6:
+            real_n -= 1
+        if real_n < len(path):
+            path = path[:real_n]
+            seg_len = seg_len[:real_n - 1]
+
+        self.path = path
         self.arc = np.concatenate([[0.0], np.cumsum(seg_len)])
         self.total = float(self.arc[-1]) if len(self.arc) else 0.0
 
