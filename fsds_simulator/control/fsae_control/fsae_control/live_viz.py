@@ -60,7 +60,14 @@ VIEW_AHEAD = 25.0
 VIEW_BEHIND = 8.0
 
 TRAIL_MAXLEN = 2000        # ~40s at 50 Hz control rate, plenty for a debug view
-REDRAW_HZ = 10.0           # window refresh rate; independent of the 50 Hz control loop
+REDRAW_HZ = 25.0           # window refresh rate; independent of the 50 Hz control loop.
+# Not pushed higher than this: each frame does a full ax.clear() + re-plot
+# (scatter/lines/legend/text), not a blit-based partial update, so redraw
+# cost scales with cone/path point counts: past ~25-30 Hz the redraw itself
+# starts taking longer than the interval on a typical track-sized cone map,
+# and frames just queue up behind rclpy.spin_once() instead of arriving
+# sooner. Move to blitting (redrawing only changed artists) if a higher rate
+# is ever needed.
 
 
 def get_car_triangle(x, y, heading, size=1.6):
@@ -112,18 +119,34 @@ class LiveVizNode(Node):
         self.cmd_speed_target = None   # cmd_vel mode only
         self.control_topic = None      # which of the two actually fired, for the stats panel
 
-        self.create_subscription(Track, '/fsae/slam/left_track', self._left_track_cb, 10)
-        self.create_subscription(Track, '/fsae/slam/right_track', self._right_track_cb, 10)
-        self.create_subscription(PoseStamped, '/fsae/slam/car_position', self._pose_cb, 10)
-        self.create_subscription(Odometry, '/fsae/slam/car_odom', self._odom_cb, sensor_qos)
-        self.create_subscription(
+        # Bumped by every callback below (see _counted), so redraw() can
+        # detect "nothing new arrived" and stop draining without needing a
+        # per-callback counter to remember to update.
+        self._callback_count = 0
+
+        self._subscribe(Track, '/fsae/slam/left_track', self._left_track_cb, 10)
+        self._subscribe(Track, '/fsae/slam/right_track', self._right_track_cb, 10)
+        self._subscribe(PoseStamped, '/fsae/slam/car_position', self._pose_cb, 10)
+        self._subscribe(Odometry, '/fsae/slam/car_odom', self._odom_cb, sensor_qos)
+        self._subscribe(
             PoseArray, '/fsae/planning/selected_trajectory', self._ref_path_cb, 10)
-        self.create_subscription(
+        self._subscribe(
             PoseArray, '/fsae/control/nmpc_predicted_path', self._nmpc_pred_cb, 10)
-        self.create_subscription(
+        self._subscribe(
             ControlCommand, '/fsds/control_command', self._control_command_cb, 10)
-        self.create_subscription(
+        self._subscribe(
             AckermannDriveStamped, '/fsae/control/cmd_vel', self._cmd_vel_cb, 10)
+
+    def _subscribe(self, msg_type, topic, callback, qos):
+        """
+        create_subscription wrapper that bumps _callback_count around every
+        callback, so redraw() can tell "nothing new arrived" without each
+        callback remembering to update a counter itself.
+        """
+        def counted(msg, _cb=callback):
+            _cb(msg)
+            self._callback_count += 1
+        return self.create_subscription(msg_type, topic, counted, qos)
 
     @staticmethod
     def _pose_array_to_xy(msg: PoseArray) -> np.ndarray:
@@ -184,7 +207,21 @@ def main():
     ax.set_aspect('equal')
 
     def redraw(_frame):
-        rclpy.spin_once(node, timeout_sec=0.0)
+        # Process every callback queued since the last frame, not just one:
+        # at REDRAW_HZ < 50 Hz (the control loop's own rate), a single
+        # spin_once per frame falls behind and each redraw would show a
+        # stale, queued-up state rather than the latest tick. rclpy has no
+        # built-in "drain everything ready right now" call, so spin_once
+        # (non-blocking, timeout_sec=0) is called in a bounded loop instead;
+        # each of this node's callbacks is a cheap attribute write, so a
+        # 50 Hz backlog empties in well under a millisecond, and the loop
+        # exits itself (via the callback-count check) once nothing is left,
+        # rather than always running to the cap.
+        for _ in range(20):
+            before = node._callback_count
+            rclpy.spin_once(node, timeout_sec=0.0)
+            if node._callback_count == before:
+                break
         ax.clear()
         ax.set_aspect('equal')
 
