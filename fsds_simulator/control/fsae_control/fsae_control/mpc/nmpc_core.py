@@ -1731,8 +1731,34 @@ class NMPCController:
 
         t0 = time.perf_counter()
 
-        # Same first-order target-speed filter as MPCController.compute().
-        alpha = 0.08
+        # Same first-order target-speed filter as MPCController.compute(),
+        # but NOT the same alpha -- see the value's own comment below.
+        #
+        # LIVE-TESTED 2026-09-15 at the default 0.08 (dt/alpha ~= 0.6 s time
+        # constant, chosen 2026-06-29 to smooth ~1 Hz live-planner target
+        # jumps, never offline-validated -- see
+        # planner_only_lap2_corner_spinout.md): at a corner whose true
+        # target speed collapses ~4.7 m/s in ~1 s (an 11 m to 4.65 m radius
+        # tightening hairpin), v_ref lagged the raw target by up to 1.7 m/s
+        # for over a second. Commanded braking (a_cmd) stayed near zero the
+        # whole time BECAUSE the filtered target the cost function actually
+        # sees hadn't caught up yet, so the car carried too much speed into
+        # the tightest part of the corner and steering saturated trying to
+        # hold the line at a_lat the tyres/ceiling can't sustain at that
+        # speed -- this matches a symptom already flagged, unresolved, in
+        # late_turn_in_investigation.md Part 11 ("severe speed-tracking lag
+        # causes a near-spin").
+        #
+        # Raised to 0.25 (dt/alpha ~= 0.2 s) for this specific case: this
+        # ONLY changes the smoothing time constant, not the ceiling/weight
+        # mechanisms already tuned around instant response elsewhere (q_e_v,
+        # r_a_brake), so it should not double-count with those. TEMPORARY
+        # for this test -- revert to 0.08 if this doesn't hold up, or keep
+        # if it does; not yet validated on any OTHER corner or offline
+        # (this filter has no offline analogue at all, see
+        # planner_only_lap2_corner_spinout.md -- the weights around it were
+        # never tuned against its lag).
+        alpha = 0.25
         if self._v_des_filtered is None:
             self._v_des_filtered = desired_speed
         self._v_des_filtered += alpha * (desired_speed - self._v_des_filtered)
