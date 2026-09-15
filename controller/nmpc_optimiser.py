@@ -1441,8 +1441,13 @@ class NMPCController:
         # true future command is exactly what this solve is trying to
         # determine. See settings.py's NMPC_LATENCY_COMPENSATION_* comments.
         if self.latency_compensation_enabled:
-            n_latency = int(round(
-                self.latency_compensation_ms * 1e-3 / self.dt))
+            # math.floor(x + 0.5), not round(): round() is round-half-to-
+            # even, so exactly 25 ms at dt=0.05 s (0.5 steps) rounds to 0,
+            # silently disabling this at its own default value -- caught
+            # live 2026-09-15 (n_latency logged 0 for an entire run at the
+            # 25 ms default).
+            n_latency = int(math.floor(
+                self.latency_compensation_ms * 1e-3 / self.dt + 0.5))
             if n_latency > 0:
                 xk = [float(v) for v in x0]
                 for _ in range(n_latency):

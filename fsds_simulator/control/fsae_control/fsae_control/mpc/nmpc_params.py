@@ -394,11 +394,14 @@ class NMPCParams:
     # constant, instead of backward using the recorded command history.
     # Held constant, not extrapolated, because the true future command is
     # exactly what this tick's solve is trying to determine -- guessing it
-    # would inject a new error source rather than remove one. Default off:
-    # unlike pose-age compensation (which corrects a MEASURED quantity),
-    # this rolls forward by a budget estimate, not a measured latency, and
-    # has not yet been validated live.
-    nmpc_latency_compensation_enabled: bool = field(default=False, metadata={
+    # would inject a new error source rather than remove one. Unlike
+    # pose-age compensation (which corrects a MEASURED quantity), this rolls
+    # forward by a budget estimate, not a measured latency.
+    #
+    # TEMPORARILY defaulted True (2026-09-15) for a live A/B test at the
+    # lap-2 corner margin (planner_only_lap2_corner_spinout.md). Revert to
+    # False once that test is done unless it's kept on purpose.
+    nmpc_latency_compensation_enabled: bool = field(default=True, metadata={
         "unit": "bool",
         "desc": "true -> roll x0 forward by nmpc_latency_compensation_ms "
                 "(held at the last applied control, via the same nonlinear "

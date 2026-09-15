@@ -1835,8 +1835,13 @@ class NMPCController:
         n_latency = 0
         if self.nmpc.nmpc_latency_compensation_enabled:
             cap = self.params.max_delay_compensation_steps
+            # math.floor(x + 0.5), not round(): Python's round() is
+            # round-half-to-even, so exactly 25 ms at dt=0.05 s (0.5 steps)
+            # rounds to 0, silently disabling this at its own default value
+            # -- caught live 2026-09-15 (n_latency logged 0 for an entire
+            # run at the 25 ms default).
             n_latency = int(np.clip(
-                round(self.nmpc.nmpc_latency_compensation_ms * 1e-3 / self.dt),
+                math.floor(self.nmpc.nmpc_latency_compensation_ms * 1e-3 / self.dt + 0.5),
                 0, cap))
             if n_latency > 0:
                 xk = [float(v) for v in x0]
