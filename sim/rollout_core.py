@@ -127,6 +127,14 @@ SPEED_TARGET_RISE_RATE = 7.0
 # constant's own comment for the full rationale.
 GATE_RATE_LIMIT = 2.0
 
+# Max rate (m/s^2) at which curvature_speed()'s OWN output (the live,
+# per-step centreline-derived target, NOT the precomputed-profile oracle
+# lookup) may fall. Mirrors mpc_controller.V_CURV_FALL_RATE — keep the two
+# in sync. See that constant's own comment for the full rationale (sized at
+# speed_profile.A_BRAKE_PLAN, the deceleration curvature_speed()'s own
+# braking-distance propagation already assumes achievable).
+V_CURV_FALL_RATE = 5.0
+
 
 def _normalize_angle(angle):
     """Wrap an angle to (−π, π] using atan2."""
@@ -628,6 +636,10 @@ def run_core_rollout(
     # Previous step's tracking-error speed gate, for GATE_RATE_LIMIT above.
     gate_prev = None
 
+    # Previous step's LIVE curvature_speed() output, for V_CURV_FALL_RATE
+    # above. Only used in the live-planner (non-precomputed-profile) branch.
+    v_curv_prev = None
+
     # Previous step's LIMITED reference heading, for REF_HEADING_RATE_LIMIT.
     # Unwrapped/continuous (not [-pi, pi]) so consecutive limiting steps
     # compose correctly across the wrap boundary.
@@ -903,6 +915,16 @@ def run_core_rollout(
                     v_target = sp.curvature_speed(
                         cl[cl_idx:], v_max=PLANNER_V_MAX, v_min=PLANNER_V_MIN
                     )
+                    # curvature_speed() has no memory of its own last output
+                    # and the live centreline is rebuilt every step, so a
+                    # single noisy sample can swing v_target down far faster
+                    # than any real corner's own braking-distance curve would
+                    # ask for -- see V_CURV_FALL_RATE's own comment. Mirrors
+                    # mpc_controller.py's identical fix.
+                    if v_curv_prev is not None:
+                        max_fall = V_CURV_FALL_RATE * DT
+                        v_target = max(v_target, v_curv_prev - max_fall)
+                    v_curv_prev = v_target
 
                 if want_history:
                     history["planner_X"].append(cl_x)

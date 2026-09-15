@@ -118,6 +118,22 @@ PATH_TIMEOUT         = 0.5    # s — reset the MPC if no fresh trajectory withi
 # never rate-limited; delaying a genuine brake request is the failure this is
 # meant to prevent.
 SPEED_TARGET_RISE_RATE = 7.0
+# Max rate (m/s^2) at which curvature_speed()'s OWN output (v_curv, the live
+# per-tick geometry-derived target, NOT the precomputed-track oracle lookup)
+# may fall, applied before the tracking-error gate. curvature_speed() is a
+# pure per-tick function with no memory of its own last output, and its
+# docstring already documents that the live planner path (re-fit every
+# frame) carries a few cm of lateral wiggle that survives its internal
+# denoising often enough to swing v_curv by 3-10 m/s in a single 50 ms tick
+# even on a straight or gentle bend (measured live 2026-09-15, see
+# planner_only_speed_target_oscillation.md) -- SPEED_TARGET_RISE_RATE does
+# not catch this, it only bounds the composed target's RISE, and this same
+# noise is the actual DROP. Sized at A_BRAKE_PLAN (control_utils.py, 5.0
+# m/s^2): that is the deceleration curvature_speed()'s own braking-distance
+# propagation already assumes achievable when it decides a real corner
+# needs a lower speed sooner, so a genuine corner's own braking curve is
+# never the thing this caps, only a collapse steeper than that.
+V_CURV_FALL_RATE = 5.0
 # Max rate (gate-units/s, gate in [floor, 1.0]) at which
 # tracking_error_speed_gate()'s output may change per tick, in EITHER
 # direction. Without this, a fast-growing e_y sweeping through the gate's
@@ -345,6 +361,11 @@ class MPCControllerNode(Node):
         # None = no history yet, so the first gate value passes through
         # unlimited (nothing to ramp from).
         self._gate_prev: float | None = None
+        # Previous tick's LIVE curvature_speed() output, for V_CURV_FALL_RATE
+        # below. Only used in that branch (never the precomputed-track oracle
+        # lookup); None = no history yet, so the first value passes through
+        # unlimited.
+        self._v_curv_prev: float | None = None
 
         dt = 1.0 / CONTROL_HZ
         # Controller selection. use_nmpc=False (default) constructs exactly
@@ -519,6 +540,7 @@ class MPCControllerNode(Node):
             self._delta_filt = None   # drop filter state with the MPC warm-start
             self._v_des_prev = None   # don't ramp from a pre-fail-safe target
             self._gate_prev = None    # ditto for the tracking-error speed gate
+            self._v_curv_prev = None  # ditto for the live curvature_speed() fall limiter
             if self._standalone_output:
                 # Explicit brake command — this node owns braking, unlike
                 # false mode below, which publishes nothing and relies on
@@ -570,6 +592,18 @@ class MPCControllerNode(Node):
                     path_ahead = path_ahead[i_near:]
 
             v_curv = curvature_speed(path_ahead, v_max=self._v_max, v_min=self._v_min)
+
+            # curvature_speed() has no memory of its own last output and the
+            # live path is re-fit every tick, so a single noisy sample can
+            # swing v_curv down (never up, in this direction rises are what
+            # the corner needs) far faster than any real corner's own
+            # braking-distance curve would ask for -- see V_CURV_FALL_RATE's
+            # own comment. The precomputed-track oracle branch above does not
+            # need this: it is not re-derived from a noisy live path.
+            if self._v_curv_prev is not None:
+                max_fall = V_CURV_FALL_RATE / CONTROL_HZ
+                v_curv = max(v_curv, self._v_curv_prev - max_fall)
+            self._v_curv_prev = v_curv
 
         # Gate's own output is rate-limited (GATE_RATE_LIMIT) so its
         # tick-to-tick change is bounded — see that constant's own comment.
@@ -652,6 +686,7 @@ class MPCControllerNode(Node):
                     self._mpc.reset()
                     self._v_des_prev = None   # see the stale-path reset above
                     self._gate_prev = None
+                    self._v_curv_prev = None
                     self._cone_reset_done = True
                 self.get_logger().warn(
                     f'Cone proximity brake active ({self._cone_brake_duration:.2f} s).',
