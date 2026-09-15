@@ -121,6 +121,29 @@ PLANNER_V_MIN = 1.5
 # planner's frame-to-frame curvature jitter without capping real acceleration.
 SPEED_TARGET_RISE_RATE = 7.0
 
+# Max speed error (m/s) the rise limiter is allowed to open up before it stops
+# ramping and waits for the car. Mirrors mpc_controller.SPEED_TARGET_DEFICIT_MAX
+# — keep the two in sync.
+#
+# SPEED_TARGET_RISE_RATE alone assumes the car can accelerate at that rate. From
+# a standing start it cannot: the car does not break static friction for ~1 s,
+# so the target ramps to ~7 m/s while the car is still stationary and banks a
+# deficit it spends the next second chasing. The NMPC minimises one scalar cost
+# over the horizon, so a speed error that large swamps the lateral term and the
+# optimiser trades e_y away for speed it was never going to get — measured as a
+# sideways excursion at launch that self-corrects once the car is rolling.
+#
+# Capping the DEFICIT rather than gating on measured speed is deliberate. A gate
+# of the form "hold the target while v_actual is near zero" deadlocks: no target
+# means no speed error, which means no throttle, which means the car never moves
+# and the gate never opens. Holding at v_actual + DEFICIT_MAX always leaves a
+# real speed error, so throttle still commands and the launch still happens; the
+# ramp resumes by itself as the car closes the gap.
+#
+# Not specific to launch: the same rule stops the target running away after a
+# spin or a heavy brake, for the same reason.
+SPEED_TARGET_DEFICIT_MAX = 2.5
+
 # Max rate (gate-units/s) at which tracking_error_speed_gate()'s output may
 # change per tick, in either direction. Mirrors
 # mpc_controller.GATE_RATE_LIMIT — keep the two in sync. See that
@@ -130,10 +153,15 @@ GATE_RATE_LIMIT = 2.0
 # Max rate (m/s^2) at which curvature_speed()'s OWN output (the live,
 # per-step centreline-derived target, NOT the precomputed-profile oracle
 # lookup) may fall. Mirrors mpc_controller.V_CURV_FALL_RATE — keep the two
-# in sync. See that constant's own comment for the full rationale (sized at
-# speed_profile.A_BRAKE_PLAN, the deceleration curvature_speed()'s own
-# braking-distance propagation already assumes achievable).
-V_CURV_FALL_RATE = 5.0
+# in sync. See that constant's own comment for the full history: an initial
+# 5.0 (speed_profile.A_BRAKE_PLAN, the PLANNING-time deceleration
+# curvature_speed()'s braking-distance propagation assumes) capped genuine
+# hard braking below what the car can do (measured live 2026-09-15: car
+# entered the first corner at ~17 m/s, took 3+ s to reach the real ~2.5 m/s
+# target, spun out before arriving). Now 7.0, matching mpc_core.MAX_BRAKE /
+# vehicle_physics.max_accel_brake, the car's actual achievable braking
+# deceleration rather than a conservative planning assumption.
+V_CURV_FALL_RATE = 7.0
 
 
 def _normalize_angle(angle):
@@ -981,6 +1009,13 @@ def run_core_rollout(
         if v_des_prev is None:
             v_des_prev = state[3]
         v_target = min(v_target, v_des_prev + SPEED_TARGET_RISE_RATE * DT)
+        # Stop ramping once the target has run this far ahead of the car; see
+        # SPEED_TARGET_DEFICIT_MAX. Never DROPS the target (max against
+        # v_des_prev), so a car that is merely slow does not get the target
+        # dragged down to meet it, and a genuine brake request still passes
+        # through the min() above untouched.
+        if v_target - state[3] > SPEED_TARGET_DEFICIT_MAX:
+            v_target = min(v_target, max(v_des_prev, state[3] + SPEED_TARGET_DEFICIT_MAX))
         v_des_prev = v_target
 
         # ── TRUE tracking error, for scoring only ──────────────────────────

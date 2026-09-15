@@ -118,6 +118,29 @@ PATH_TIMEOUT         = 0.5    # s — reset the MPC if no fresh trajectory withi
 # never rate-limited; delaying a genuine brake request is the failure this is
 # meant to prevent.
 SPEED_TARGET_RISE_RATE = 7.0
+
+# Max speed error (m/s) the rise limiter is allowed to open up before it stops
+# ramping and waits for the car. Mirrors sim/rollout_core.py's constant of the
+# same name — keep in sync.
+#
+# SPEED_TARGET_RISE_RATE alone assumes the car can accelerate at that rate. From
+# a standing start it cannot: the car does not break static friction for ~1 s,
+# so the target ramps to ~7 m/s while the car is still stationary and banks a
+# deficit it spends the next second chasing. The NMPC minimises one scalar cost
+# over the horizon, so a speed error that large swamps the lateral term and the
+# optimiser trades e_y away for speed it was never going to get — measured live
+# as a sideways excursion at launch that self-corrects once the car is rolling.
+#
+# Capping the DEFICIT rather than gating on measured speed is deliberate. A gate
+# of the form "hold the target while v_actual is near zero" deadlocks: no target
+# means no speed error, which means no throttle, which means the car never moves
+# and the gate never opens. Holding at v_actual + DEFICIT_MAX always leaves a
+# real speed error, so throttle still commands and the launch still happens; the
+# ramp resumes by itself as the car closes the gap.
+#
+# Not specific to launch: the same rule stops the target running away after a
+# spin or a heavy brake, for the same reason.
+SPEED_TARGET_DEFICIT_MAX = 2.5
 # Max rate (m/s^2) at which curvature_speed()'s OWN output (v_curv, the live
 # per-tick geometry-derived target, NOT the precomputed-track oracle lookup)
 # may fall, applied before the tracking-error gate. curvature_speed() is a
@@ -128,12 +151,29 @@ SPEED_TARGET_RISE_RATE = 7.0
 # even on a straight or gentle bend (measured live 2026-09-15, see
 # planner_only_speed_target_oscillation.md) -- SPEED_TARGET_RISE_RATE does
 # not catch this, it only bounds the composed target's RISE, and this same
-# noise is the actual DROP. Sized at A_BRAKE_PLAN (control_utils.py, 5.0
-# m/s^2): that is the deceleration curvature_speed()'s own braking-distance
-# propagation already assumes achievable when it decides a real corner
-# needs a lower speed sooner, so a genuine corner's own braking curve is
-# never the thing this caps, only a collapse steeper than that.
-V_CURV_FALL_RATE = 5.0
+# noise is the actual DROP.
+#
+# FIRST attempt (2026-09-15) sized this at A_BRAKE_PLAN (control_utils.py,
+# 5.0 m/s^2), reasoning that curvature_speed()'s own braking-distance
+# propagation already assumes that deceleration is enough to plan a genuine
+# corner's slowdown, so a cap at that rate should never bind on real
+# braking. That reasoning had a gap: it assumes the target had the full
+# scan-window distance to ramp down over, but the corner speed can firm up
+# to its true low value only once the car is already close (after the noisy
+# early-window estimate settles), leaving less runway than the planning
+# assumption presupposes. Measured live the same day: with the 5.0 cap in
+# place, the car entered the first corner at ~17 m/s and took 3+ seconds to
+# reach the ~2.5 m/s target, spinning out well before it got there
+# (e_psi -> -98 deg, stalled). 5.0 m/s^2 was capping GENUINE required
+# braking, not just noise.
+#
+# Sized instead at MAX_BRAKE (mpc_core.py, 7.0 m/s^2, matching
+# vehicle_physics.max_accel_brake): the car's actual achievable braking
+# deceleration, not a conservative planning-time assumption. This still
+# smooths a single noisy tick's collapse (which asks for far more than 7.0
+# m/s^2 worth of change) across a few ticks, but no longer throttles a
+# genuine hard-braking need down below what the car can physically do.
+V_CURV_FALL_RATE = 7.0
 # Max rate (gate-units/s, gate in [floor, 1.0]) at which
 # tracking_error_speed_gate()'s output may change per tick, in EITHER
 # direction. Without this, a fast-growing e_y sweeping through the gate's
@@ -628,6 +668,15 @@ class MPCControllerNode(Node):
             self._v_des_prev = self._car_speed
         desired_speed = min(desired_speed,
                             self._v_des_prev + SPEED_TARGET_RISE_RATE / CONTROL_HZ)
+        # Stop ramping once the target has run this far ahead of the car; see
+        # SPEED_TARGET_DEFICIT_MAX. Never DROPS the target (max against the
+        # previous value), so a car that is merely slow does not get the target
+        # dragged down to meet it, and a genuine brake request still passes
+        # through the min() above untouched.
+        if desired_speed - self._car_speed > SPEED_TARGET_DEFICIT_MAX:
+            desired_speed = min(desired_speed,
+                                max(self._v_des_prev,
+                                    self._car_speed + SPEED_TARGET_DEFICIT_MAX))
         self._v_des_prev = desired_speed
 
         # Age of the pose the MPC is about to solve against — how long ago it
