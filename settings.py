@@ -954,6 +954,17 @@ NMPC_LATENCY_COMPENSATION_MS = 25.0         # defaults to NMPC_SOLVE_BUDGET_MS; 
                                             # nearest whole DT step and capped by
                                             # MAX_DELAY_COMPENSATION_STEPS, same as n_delay.
 
+# NMPC_V_DES_FILTER_ALPHA: parity placeholder only, NOT YET WIRED IN. Live's
+# nmpc_core.py low-pass-filters the incoming speed target before its cost
+# function sees it (nmpc_params.py's nmpc_v_des_filter_alpha, default 0.05
+# as of 2026-09-15 live tuning -- see planner_only_lap2_corner_spinout.md).
+# controller/nmpc_optimiser.py's compute_step() has NO equivalent: it feeds
+# desired_speed straight into _outputs()/_solve_step() unfiltered every
+# call. This constant exists only so the live default has a matching
+# offline record per CLAUDE.md's parity rule; it has no effect until/unless
+# an equivalent filter is actually added to nmpc_optimiser.py.
+NMPC_V_DES_FILTER_ALPHA = 0.05
+
 
 # ------------------------------------------------------------------------------
 # Adaptive-gain SHAPE constants

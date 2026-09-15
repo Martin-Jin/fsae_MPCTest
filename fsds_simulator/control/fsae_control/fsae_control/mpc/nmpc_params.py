@@ -491,6 +491,46 @@ class NMPCParams:
         "controller": "nmpc_only",
     })
 
+    # ── Speed-target smoothing ────────────────────────────────────────────
+    # First-order low-pass on the incoming desired_speed before it reaches
+    # the cost function (v_ref = v_ref + alpha*(desired_speed - v_ref) each
+    # tick). Introduced 2026-06-29 (mirrors MPCController's own identical
+    # filter in mpc_core.py) to smooth the live planner's ~1 Hz cone-map
+    # target-speed jumps, so a single noisy planner update doesn't look like
+    # a step-input speed error to the solver. Has NO offline analogue
+    # (rollout_core.py/nmpc_optimiser.py never filter the speed target), so
+    # this has always been live-only and untested against the offline
+    # weight sweeps.
+    #
+    # LIVE-TUNING HISTORY 2026-09-15 (planner_only_lap2_corner_spinout.md):
+    # started at the original default 0.08 (dt/alpha ~= 0.6 s time
+    # constant). At one hard-braking hairpin (11 m -> 4.65 m radius,
+    # collapsing target ~4.7 m/s in ~1 s) this lagged the raw target by up
+    # to 1.7 m/s for over a second, braking stayed weak, and the car
+    # carried too much speed into the tightest part of the corner (|e_y|
+    # briefly ~2.6-2.8 m). Raising alpha to fix that made OVERALL
+    # performance worse each time tried: 0.25 (dt/alpha ~= 0.2 s) caused
+    # oscillating accel/brake and steering hunting at several OTHER
+    # corners plus one genuine off-track excursion; 0.13 (dt/alpha ~=
+    # 0.38 s) still showed 4 excursion clusters, one WORSE than the 0.08
+    # baseline's single corner; disabling the filter entirely (v_ref =
+    # desired_speed, no smoothing) was worse still, 7 clusters, the worst
+    # result of any config tested. This flips the working theory: the
+    # filter was doing real, useful noise rejection, and speeding it up is
+    # the wrong direction. Testing SLOWER values (0.05, 0.01) next.
+    nmpc_v_des_filter_alpha: float = field(default=0.05, metadata={
+        "unit": "unitless",
+        "desc": "first-order low-pass coefficient on the speed target "
+                "before it reaches the NMPC's cost function. Smaller = "
+                "slower/heavier smoothing (more lag, more noise "
+                "rejection); larger = faster tracking (less lag, more "
+                "sensitive to planner/perception jitter). See this "
+                "field's own comment for the 2026-09-15 live-tuning "
+                "history -- raising it has repeatedly made overall "
+                "performance worse, not better.",
+        "controller": "nmpc_only",
+    })
+
 
 DEFAULT_NMPC_PARAMS = NMPCParams()
 

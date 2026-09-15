@@ -1731,59 +1731,13 @@ class NMPCController:
 
         t0 = time.perf_counter()
 
-        # Same first-order target-speed filter as MPCController.compute(),
-        # but NOT the same alpha -- see the value's own comment below.
-        #
-        # LIVE-TESTED 2026-09-15 at the default 0.08 (dt/alpha ~= 0.6 s time
-        # constant, chosen 2026-06-29 to smooth ~1 Hz live-planner target
-        # jumps, never offline-validated -- see
-        # planner_only_lap2_corner_spinout.md): at a corner whose true
-        # target speed collapses ~4.7 m/s in ~1 s (an 11 m to 4.65 m radius
-        # tightening hairpin), v_ref lagged the raw target by up to 1.7 m/s
-        # for over a second. Commanded braking (a_cmd) stayed near zero the
-        # whole time BECAUSE the filtered target the cost function actually
-        # sees hadn't caught up yet, so the car carried too much speed into
-        # the tightest part of the corner and steering saturated trying to
-        # hold the line at a_lat the tyres/ceiling can't sustain at that
-        # speed -- this matches a symptom already flagged, unresolved, in
-        # late_turn_in_investigation.md Part 11 ("severe speed-tracking lag
-        # causes a near-spin").
-        #
-        # FIRST attempt (2026-09-15) raised this to 0.25 (dt/alpha ~= 0.2 s).
-        # LIVE-TESTED AND REVERTED: fixed the hairpin, but caused oscillating
-        # accel/brake commands (a_cmd swinging -7.0 -> +2.55 -> -3.66 m/s^2
-        # within ~2 s) and steering hunting (11.8 -> -7 -> -22 -> 25 deg) at
-        # SEVERAL other corners, with a new |e_y| excursion nearly as bad as
-        # the one being fixed, and the car actually left the track at one
-        # point -- 0.25 tracks genuine planner/perception jitter as
-        # aggressively as it tracks real braking need, reintroducing
-        # exactly the "impulse request" instability this filter exists to
-        # prevent (see its 2026-06-29 introducing-commit comment). Blanket
-        # speedup is the wrong shape of fix: this filter needs to react fast
-        # to a genuine sustained drop without also reacting fast to noise.
-        #
-        # SECOND attempt (2026-09-15) tried 0.13 (dt/alpha ~= 0.38 s),
-        # roughly midway to 0.08. LIVE-TESTED AND REVERTED: still showed 4
-        # |e_y|>1.0m excursion clusters across the run, including one WORSE
-        # than either 0.08's single-corner baseline or 0.25's own worst
-        # excursion (peak -2.84 m at the same target hairpin) -- neither
-        # data point supports "faster alpha, tuned to the right magnitude"
-        # as the fix.
-        #
-        # THIRD attempt (2026-09-15): filter disabled entirely
-        # (v_ref = desired_speed directly), at the user's request, to
-        # isolate whether the filter itself was contributing at all.
-        #
-        # FOURTH attempt (2026-09-15): user asked for the OPPOSITE
-        # direction -- 0.01 (dt/alpha ~= 5 s time constant), much heavier
-        # smoothing than even the original 0.08, not lighter. Not live-
-        # tested at this exact value before moving to the next one below
-        # (no matching-config log found).
-        #
-        # FIFTH attempt (2026-09-15): 0.05 (dt/alpha ~= 1 s), between 0.01
-        # and the original 0.08 -- still slower than the original, opposite
-        # direction from the 0.13/0.25 attempts that made things worse.
-        alpha = 0.05
+        # Same first-order target-speed filter as MPCController.compute().
+        # Now a tunable launch param (nmpc_v_des_filter_alpha) rather than a
+        # hardcoded constant -- see that field's own docstring in
+        # nmpc_params.py for the mechanism and the 2026-09-15 live-tuning
+        # history (raising it has repeatedly made overall performance
+        # worse, not better; see planner_only_lap2_corner_spinout.md).
+        alpha = float(self.nmpc.nmpc_v_des_filter_alpha)
         if self._v_des_filtered is None:
             self._v_des_filtered = desired_speed
         self._v_des_filtered += alpha * (desired_speed - self._v_des_filtered)
