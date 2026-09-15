@@ -342,7 +342,7 @@ class NMPCParams:
     # V_CURV_FALL_RATE, this limits BOTH directions: curvature can swing
     # either sign as the corner's own shape gets re-resolved by the planner,
     # there's no "only delay bad news" asymmetry the way braking has.
-    nmpc_kappa_rate_max: float = field(default=2.0, metadata={
+    nmpc_kappa_rate_max: float = field(default=0.0, metadata={
         "unit": "1/m per s",
         "desc": "max tick-to-tick CHANGE of kappa(s) at matching arc-length "
                 "samples, live-planner mode only (inert when a static/"
@@ -448,7 +448,7 @@ class NMPCParams:
     # validated nmpc_kappa_rate_max=2.0 fix and see whether the two together
     # close more of the residual stumble than either alone. Revert to False
     # after that test unless kept on purpose.
-    nmpc_latency_compensation_enabled: bool = field(default=True, metadata={
+    nmpc_latency_compensation_enabled: bool = field(default=False, metadata={
         "unit": "bool",
         "desc": "true -> roll x0 forward by nmpc_latency_compensation_ms "
                 "(held at the last applied control, via the same nonlinear "
@@ -518,7 +518,7 @@ class NMPCParams:
     # result of any config tested. This flips the working theory: the
     # filter was doing real, useful noise rejection, and speeding it up is
     # the wrong direction. Testing SLOWER values (0.05, 0.01) next.
-    nmpc_v_des_filter_alpha: float = field(default=0.05, metadata={
+    nmpc_v_des_filter_alpha: float = field(default=0.08, metadata={
         "unit": "unitless",
         "desc": "first-order low-pass coefficient on the speed target "
                 "before it reaches the NMPC's cost function. Smaller = "
