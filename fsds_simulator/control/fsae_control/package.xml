@@ -22,6 +22,11 @@
          pip install cvxpy osqp clarabel
        (on Ubuntu 24.04 add the break-system-packages flag).  The Stanley
        controller (default) has no such dependency. -->
+  <!-- live_viz.py (sim debug tool only) needs matplotlib + a Tk backend:
+         pip install matplotlib
+         apt install python3-tk
+       Neither is needed by the Stanley or MPC controllers themselves. -->
+  <exec_depend>python3-tk</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

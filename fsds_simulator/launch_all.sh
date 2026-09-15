@@ -633,6 +633,10 @@ cleanup() {
     if [ ! -z "$HZ_IMU_PID" ]; then
         kill "$HZ_IMU_PID" 2>/dev/null
     fi
+    if [ ! -z "$LIVE_VIZ_PID" ]; then
+        echo "Stopping live debug visualiser (PID: $LIVE_VIZ_PID)..."
+        kill "$LIVE_VIZ_PID" 2>/dev/null
+    fi
 
     # 2. Forcefully terminate the Windows visual simulator trees via taskkill
     echo "Forcefully terminating Windows FSDS window instances..."
@@ -849,6 +853,24 @@ if [ "$USE_DOCKER" != true ]; then
     " > "$HZ_LOG_DIR/imu_hz_${HZ_STAMP}.log" 2>&1 &
     HZ_IMU_PID=$!
     echo "      (temporary) logging topic-hz + clock-drift diagnostics to $HZ_LOG_DIR"
+fi
+
+# Live debug visualiser (close-up car/cones/reference path/NMPC predicted
+# horizon/driven trail + control-output stats), see
+# fsae_control/live_viz.py's own docstring. Sim-only debug tool: not part of
+# the autonomy stack, host-only (needs a real display, no X11 forwarding set
+# up for the Docker path today). Starts before the stack is fully up on
+# purpose, its topics simply have no data yet and the window sits blank
+# until [3/3] below starts publishing.
+if [ "$USE_DOCKER" != true ]; then
+    bash -c "
+        source /opt/ros/jazzy/setup.bash && \
+        cd '$HOST_ROS2_DIR' && \
+        source install/local_setup.bash && \
+        ros2 run fsae_control live_viz
+    " > "$HOST_REPO_ROOT/fsae_logs/live_viz.log" 2>&1 &
+    LIVE_VIZ_PID=$!
+    echo "      live debug visualiser started (PID: $LIVE_VIZ_PID), log: fsae_logs/live_viz.log"
 fi
 
 # 3. Launch Planning Stack in the foreground

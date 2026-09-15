@@ -365,6 +365,26 @@ class PathReference:
         """
         return np.interp(s, self.s_psi, self.psi_ref)
 
+    def xy_at(self, s, e_y):
+        """
+        Cartesian (x, y) for arc length(s) `s` with perpendicular offset(s)
+        `e_y`, the exact inverse of project()'s e_y projection: the path
+        point at `s` (interpolated off the raw waypoints, matching arc/path
+        elsewhere in this class) offset by e_y along the LEFT normal of
+        psi_ref_at(s), so xy_at(*project(front_axle, yaw)[:2]) recovers
+        front_axle. Used to convert the NMPC's own Frenet-frame horizon
+        prediction (s, e_y per stage) into a plottable Cartesian trajectory
+        for live visualisation, see live_viz.py.
+        """
+        s = np.atleast_1d(np.asarray(s, dtype=float))
+        e_y = np.atleast_1d(np.asarray(e_y, dtype=float))
+        x_path = np.interp(s, self.arc, self.path[:, 0])
+        y_path = np.interp(s, self.arc, self.path[:, 1])
+        psi = self.psi_ref_at(s)
+        x = x_path - e_y * np.sin(psi)
+        y = y_path + e_y * np.cos(psi)
+        return x, y
+
     def project(self, front_axle, car_yaw):
         """
         Frenet projection of a front-axle position onto the path.
@@ -1943,6 +1963,12 @@ class NMPCController:
             'nmpc_pred_ey_end': float(X[-1, IDX_EY]),
             'nmpc_pred_epsi_end': float(X[-1, IDX_EPSI]),
             'nmpc_pred_ey_max_abs': float(np.abs(X[:, IDX_EY]).max()),
+            # Full predicted horizon in Cartesian (x, y), for live
+            # visualisation only (live_viz.py): not logged to CSV (that's
+            # what the scalar nmpc_pred_* summaries above are for), and
+            # cheap relative to the solve itself, one xy_at() call over N
+            # points already computed by the rollout.
+            'nmpc_pred_xy': ref.xy_at(X[:, IDX_S], X[:, IDX_EY]),
         }
         if self.friction_circle_enabled:
             # H's two extra (unweighted) rows -- realized per-axle force at

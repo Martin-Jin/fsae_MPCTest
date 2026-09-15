@@ -87,7 +87,7 @@ from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from ackermann_msgs.msg import AckermannDriveStamped
 from fs_msgs.msg import ControlCommand, GoSignal
 from fsae_interfaces.msg import ConeDetection
-from geometry_msgs.msg import PoseArray, PoseStamped
+from geometry_msgs.msg import Pose, PoseArray, PoseStamped
 from nav_msgs.msg import Odometry
 from rclpy.time import Time
 
@@ -315,6 +315,13 @@ class MPCControllerNode(Node):
             self.pub_cmd = self.create_publisher(ControlCommand, '/fsds/control_command', 10)
         else:
             self.pub_cmd = self.create_publisher(AckermannDriveStamped, '/fsae/control/cmd_vel', 10)
+
+        # NMPC's predicted horizon (Cartesian, from last_telemetry['nmpc_pred_xy'],
+        # see nmpc_core.py's xy_at()), for live_viz.py only -- not read by
+        # anything else in this stack, empty/absent whenever the LTV-QP path
+        # is in use (last_telemetry never has this key in that case).
+        self.pub_nmpc_pred_path = self.create_publisher(
+            PoseArray, '/fsae/control/nmpc_predicted_path', 10)
 
         self._path: np.ndarray = (
             self._static_path if self._static_path is not None else np.empty((0, 2))
@@ -606,6 +613,18 @@ class MPCControllerNode(Node):
             car_speed=self._car_speed, desired_speed=desired_speed,
             car_yaw_rate=self._car_yaw_rate, pose_age_s=pose_age_s, car_vy=self._car_vy,
         )
+        pred_xy = self._mpc.last_telemetry.get('nmpc_pred_xy')
+        if pred_xy is not None:
+            pred_x, pred_y = pred_xy
+            pose_array = PoseArray()
+            pose_array.header.stamp = self.get_clock().now().to_msg()
+            pose_array.header.frame_id = 'map'
+            for x, y in zip(pred_x, pred_y):
+                pose = Pose()
+                pose.position.x, pose.position.y = float(x), float(y)
+                pose_array.poses.append(pose)
+            self.pub_nmpc_pred_path.publish(pose_array)
+
         if self._standalone_output:
             steering, throttle, brake = mpc_steering, mpc_throttle, mpc_brake
         else:
