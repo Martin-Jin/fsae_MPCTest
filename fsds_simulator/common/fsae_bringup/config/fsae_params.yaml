@@ -218,6 +218,7 @@ controller:
     nmpc_curvature_dense_step: 0.5   # arc-length resampling step for the kappa(s) reference (= curvature_speed()'s dense_step) (m)
     nmpc_curvature_smooth_w: 3   # moving-average width applied before differencing headings (= curvature_speed()'s w). 1 disables smoothing (samples)
     nmpc_kappa_clip: 0.5   # hard clamp on |kappa(s)|. GUARD, not a tuning knob: 0.5 = a 2 m radius, the tightest corner curvature_speed()'s own docstring contemplates, so it is inert on any real track line and only catches a ... (1/m)
+    nmpc_kappa_rate_max: 2.0   # max tick-to-tick change of kappa(s) at matching arc-length samples, live-planner mode only. Live planner measured moving the horizon's own curvature up to 0.49 1/m/tick (40x a precomputed path) during the lap-2 corner stall; 2.0 (0.1 1/m per 50ms tick) is ~8x the precomputed-path noise floor but ~5x tighter than that spike. Not yet live-validated (1/m per s)
     nmpc_alat_ceiling_enabled: true   # include FSDS's measured sustained lateral-acceleration ceiling (MPCParams.alat_ceiling_flat/_slope/_intercept, the same law mpc_core._alat_ceiling_at uses) as a smooth saturation of the prediction'...
     # [NMPC only] MPCC-inspired additions (2026-08-13) -- see mpc_params.py's
     # own field metadata (controller: "nmpc_only") and

@@ -330,6 +330,31 @@ class NMPCParams:
         "controller": "nmpc_only",
     })
 
+    # nmpc_kappa_rate_max: same idea as MPCParams' V_CURV_FALL_RATE (the
+    # speed-side rate limiter), applied to the kappa(s) PROFILE instead of a
+    # scalar speed target. planner_only_lap2_corner_spinout.md measured the
+    # live planner's per-tick-rebuilt path making the NMPC's horizon-end
+    # curvature move up to 0.49 1/m per TICK (40x a precomputed path's
+    # 0.012 1/m/tick) during a hard-braking corner entry -- exactly the
+    # window where a rejected SQP step holds a stale plan for 50 ms, and a
+    # stale plan against a fast-moving reference is a much bigger error than
+    # against a slow-moving one (see that doc's mechanism section). Unlike
+    # V_CURV_FALL_RATE, this limits BOTH directions: curvature can swing
+    # either sign as the corner's own shape gets re-resolved by the planner,
+    # there's no "only delay bad news" asymmetry the way braking has.
+    nmpc_kappa_rate_max: float = field(default=2.0, metadata={
+        "unit": "1/m per s",
+        "desc": "max tick-to-tick CHANGE of kappa(s) at matching arc-length "
+                "samples, live-planner mode only (inert when a static/"
+                "precomputed path is set via set_static_path). 2.0 = "
+                "0.1 1/m per 50 ms tick: roughly 8x the noise floor measured "
+                "against a precomputed path, but ~5x tighter than the "
+                "pathological live-planner spikes that produced the lap-2 "
+                "corner stall. Not yet live-validated -- see "
+                "planner_only_lap2_corner_spinout.md.",
+        "controller": "nmpc_only",
+    })
+
     nmpc_alat_ceiling_enabled: bool = field(default=True, metadata={
         "unit": "bool",
         "desc": "include FSDS's measured sustained lateral-acceleration ceiling "

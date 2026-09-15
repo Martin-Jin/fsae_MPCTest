@@ -78,6 +78,7 @@ from settings import (
     NMPC_TRUST_DELTA_RAD, NMPC_TRUST_A,
     NMPC_BACKTRACK_MAX, NMPC_TRACK_HALFWIDTH, NMPC_SLACK_WEIGHT,
     NMPC_CURVATURE_DENSE_STEP, NMPC_CURVATURE_SMOOTH_W, NMPC_KAPPA_CLIP,
+    NMPC_KAPPA_RATE_MAX,
     NMPC_OSQP_MAX_ITER, NMPC_OSQP_EPS, NMPC_ALAT_CEILING_ENABLED,
     NMPC_Q_E_Y, NMPC_Q_E_YD, NMPC_Q_E_PSI, NMPC_Q_EPSI_DOT, NMPC_Q_E_V,
     NMPC_R_DELTA, NMPC_R_A_ACCEL, NMPC_R_A_BRAKE,
@@ -766,6 +767,7 @@ def run_core_rollout(
             rjerk_a=_ov('rjerk_a', NMPC_RJERK_A),
             latency_compensation_enabled=NMPC_LATENCY_COMPENSATION_ENABLED,
             latency_compensation_ms=NMPC_LATENCY_COMPENSATION_MS,
+            kappa_rate_max=NMPC_KAPPA_RATE_MAX,
         )
 
     metrics = RolloutMetrics()

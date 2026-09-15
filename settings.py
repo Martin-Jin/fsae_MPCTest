@@ -892,6 +892,14 @@ NMPC_CURVATURE_SMOOTH_W = 3                 # denoise precedent as sim/speed_pro
 NMPC_KAPPA_CLIP = 0.5                       # hard |kappa(s)| clamp -- a 2m-radius guard,
                                             # inert on any real track line, only catches a
                                             # degenerate/spiking path.
+NMPC_KAPPA_RATE_MAX = 2.0                   # max tick-to-tick change of kappa(s) at matching
+                                            # arc-length samples, live-planner mode only. Live
+                                            # planner measured moving the horizon's own curvature
+                                            # up to 0.49 1/m/tick (40x a precomputed path) during
+                                            # the lap-2 corner stall (planner_only_lap2_corner_
+                                            # spinout.md); 2.0 (0.1 1/m per 50ms tick) is ~8x the
+                                            # precomputed-path noise floor but ~5x tighter than
+                                            # that spike. Not yet live-validated. (1/m per s)
 NMPC_OSQP_MAX_ITER = 500                    # bounded well below solve_mpc's ~8000: this is a
                                             # step DIRECTION validated by the backtracking cost
                                             # check before being kept, so a hard subproblem

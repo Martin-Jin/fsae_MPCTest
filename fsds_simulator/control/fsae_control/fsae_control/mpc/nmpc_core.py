@@ -1146,6 +1146,12 @@ class NMPCController:
         self._u_history.clear()
         self._pose_age_filtered = None
         self._n_delay = 0
+        # _ref/_ref_signature themselves already carry the "previous tick's
+        # kappa profile" _rate_limit_kappa needs, via _path_reference; clear
+        # them too so a reset doesn't rate-limit the NEXT path's kappa
+        # against a profile from before the reset.
+        self._ref = None
+        self._ref_signature = None
 
     # ------------------------------------------------------------------
     # QP subproblem (condensed, dense, fixed sparsity)
@@ -2022,6 +2028,7 @@ class NMPCController:
             return self._static_ref
         if self._ref is not None and self._ref_signature == sig:
             return self._ref
+        prev = self._ref
         try:
             self._ref = PathReference(
                 path,
@@ -2033,4 +2040,38 @@ class NMPCController:
         except (ValueError, IndexError):    # pragma: no cover - defensive
             return None
         self._ref_signature = sig
+        self._rate_limit_kappa(self._ref, prev)
         return self._ref
+
+    def _rate_limit_kappa(self, ref: PathReference, prev: PathReference | None) -> None:
+        """
+        Cap kappa(s)'s tick-to-tick change against the LAST rebuild's profile,
+        live-planner mode only (never called for a static/precomputed path,
+        see set_static_path()'s own branch in _path_reference).
+
+        Mirrors V_CURV_FALL_RATE (mpc_params.py/mpc_controller.py) but for
+        the curvature PROFILE the NMPC's whole horizon predicts against,
+        rather than a single scalar speed target. See
+        NMPCParams.nmpc_kappa_rate_max's docstring for why: a live-planner
+        path's re-resolved corner geometry can move an order of magnitude
+        faster tick to tick than a precomputed one, and that's exactly what
+        a rejected SQP step (which holds this tick's plan unchanged for
+        50 ms) is most exposed to.
+
+        Mutates `ref.kappa`/`ref._k_list` in place and re-derives every
+        cached field kappa_scalar's fast path reads, so this MUST run before
+        anything downstream (kappa_now, the SQP rollout, telemetry) touches
+        `ref`. `ref.psi_ref` is deliberately left untouched: it comes from
+        the same smoothed samples as kappa (see PathReference's own
+        docstring on why they must describe one reference), so rate-limiting
+        kappa alone without also touching psi_ref would desynchronise the
+        two and reintroduce the e_psi/e_psi_dot mismatch that motivated
+        computing them together in the first place.
+        """
+        rate = float(self.nmpc.nmpc_kappa_rate_max)
+        if rate <= 0.0 or prev is None:
+            return
+        max_step = rate * self.dt
+        prev_on_grid = np.interp(ref.s_kappa, prev.s_kappa, prev.kappa)
+        ref.kappa = np.clip(ref.kappa, prev_on_grid - max_step, prev_on_grid + max_step)
+        ref._k_list = [float(v) for v in np.atleast_1d(ref.kappa)]

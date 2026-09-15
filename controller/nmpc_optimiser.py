@@ -758,6 +758,7 @@ class NMPCController:
         rjerk_a=0.0,
         latency_compensation_enabled=False,
         latency_compensation_ms=25.0,
+        kappa_rate_max=2.0,
     ):
         if osqp is None:      # pragma: no cover - dependency guard
             raise ImportError(
@@ -780,6 +781,7 @@ class NMPCController:
         self.friction_circle_enabled = bool(friction_circle_enabled)
         self.latency_compensation_enabled = bool(latency_compensation_enabled)
         self.latency_compensation_ms = float(latency_compensation_ms)
+        self.kappa_rate_max = float(kappa_rate_max)
         # EXPERIMENTAL, unvalidated for the NMPC -- see settings.py's
         # NMPC_STEER_RATE_ANTI_HUNT_ENABLED comment. Independent of any
         # LTV-QP-side anti-hunt flag.
@@ -898,12 +900,29 @@ class NMPCController:
         )
         if self._ref is not None and self._ref_signature == sig:
             return self._ref
+        prev = self._ref
         self._ref = PathReference(
             path, dense_step=dense_step, smooth_w=smooth_w, kappa_clip=kappa_clip,
             spline_reference_enabled=spline_reference_enabled,
         )
         self._ref_signature = sig
+        self._rate_limit_kappa(self._ref, prev)
         return self._ref
+
+    def _rate_limit_kappa(self, ref, prev):
+        """
+        Cap kappa(s)'s tick-to-tick change against the last rebuild's
+        profile. Mirrors the live nmpc_core.py's own _rate_limit_kappa --
+        see that method's docstring for the mechanism and
+        NMPCParams.nmpc_kappa_rate_max's for why. Mutates ref.kappa/
+        ref._k_list in place; must run before anything reads them.
+        """
+        if self.kappa_rate_max <= 0.0 or prev is None:
+            return
+        max_step = self.kappa_rate_max * self.dt
+        prev_on_grid = np.interp(ref.s_kappa, prev.s_kappa, prev.kappa)
+        ref.kappa = np.clip(ref.kappa, prev_on_grid - max_step, prev_on_grid + max_step)
+        ref._k_list = [float(v) for v in np.atleast_1d(ref.kappa)]
 
     def reset(self):
         self._delta_act = 0.0
