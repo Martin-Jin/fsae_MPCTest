@@ -1749,16 +1749,27 @@ class NMPCController:
         # late_turn_in_investigation.md Part 11 ("severe speed-tracking lag
         # causes a near-spin").
         #
-        # Raised to 0.25 (dt/alpha ~= 0.2 s) for this specific case: this
-        # ONLY changes the smoothing time constant, not the ceiling/weight
-        # mechanisms already tuned around instant response elsewhere (q_e_v,
-        # r_a_brake), so it should not double-count with those. TEMPORARY
-        # for this test -- revert to 0.08 if this doesn't hold up, or keep
-        # if it does; not yet validated on any OTHER corner or offline
-        # (this filter has no offline analogue at all, see
-        # planner_only_lap2_corner_spinout.md -- the weights around it were
-        # never tuned against its lag).
-        alpha = 0.25
+        # FIRST attempt (2026-09-15) raised this to 0.25 (dt/alpha ~= 0.2 s).
+        # LIVE-TESTED AND REVERTED: fixed the hairpin, but caused oscillating
+        # accel/brake commands (a_cmd swinging -7.0 -> +2.55 -> -3.66 m/s^2
+        # within ~2 s) and steering hunting (11.8 -> -7 -> -22 -> 25 deg) at
+        # SEVERAL other corners, with a new |e_y| excursion nearly as bad as
+        # the one being fixed, and the car actually left the track at one
+        # point -- 0.25 tracks genuine planner/perception jitter as
+        # aggressively as it tracks real braking need, reintroducing
+        # exactly the "impulse request" instability this filter exists to
+        # prevent (see its 2026-06-29 introducing-commit comment). Blanket
+        # speedup is the wrong shape of fix: this filter needs to react fast
+        # to a genuine sustained drop without also reacting fast to noise.
+        #
+        # Trying 0.13 (dt/alpha ~= 0.38 s) instead, roughly midway to 0.08:
+        # meaningfully faster than the original but far more conservative
+        # than 0.25. Not yet validated at this value. If this also proves
+        # too jumpy, the better-shaped fix is probably asymmetric (mirror
+        # V_CURV_FALL_RATE's own design: let v_ref FALL fast to catch up to
+        # genuine hard braking, keep a slow alpha for everything else) rather
+        # than a single faster alpha in both directions.
+        alpha = 0.13
         if self._v_des_filtered is None:
             self._v_des_filtered = desired_speed
         self._v_des_filtered += alpha * (desired_speed - self._v_des_filtered)
