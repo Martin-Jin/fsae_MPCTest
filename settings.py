@@ -847,7 +847,7 @@ NMPC_RK_SUBSTEPS_FAST = 3                   # NOT 2 -- 2 is the one substep coun
                                             # unstable in the 2.25-3.75 m/s band. 3 is fully
                                             # converged (<=1.6x growth) everywhere measured at
                                             # and above the gate speed.
-NMPC_STANDSTILL_STEER_DAMP_ENABLED = False  # damp stage-0 steering effort while the car is
+NMPC_STANDSTILL_STEER_DAMP_ENABLED = True   # damp stage-0 steering effort while the car is
                                             # measurably stationary. At v_x=0 steering cannot
                                             # move the car, but the SQP minimises one cost
                                             # summed over the whole horizon and the predicted
@@ -868,11 +868,14 @@ NMPC_STANDSTILL_FADE_SPEED = 3.0            # m/s -- speed at which the damping 
                                             # measured live, steering ran -1.8 to -12.9 deg
                                             # over the six ticks right after the release.
                                             # Set <= NMPC_STANDSTILL_SPEED for a hard cutoff.
-NMPC_STANDSTILL_STEER_R_SCALE = 20.0        # multiplier on r_delta for stage 0 only. Stage-0-
+NMPC_STANDSTILL_STEER_R_SCALE = 200.0       # multiplier on r_delta for stage 0 only. Stage-0-
                                             # only is a weaker lever than raising r_delta
-                                            # across the horizon: measured -6.71 -> -2.41 deg
-                                            # at 20x here, vs -1.03 deg for a whole-horizon
-                                            # 20x. Tuning value, re-check live.
+                                            # across the horizon, so it needs a larger number:
+                                            # pre-load -6.71 deg at 1x, -2.41 at 20x, -0.33 at
+                                            # 200x, halving per doubling. Live-validated at
+                                            # 200x -- peak steer through the fade band
+                                            # 10.68 -> 6.79 deg, reversals 5.78 -> 3.82 pct.
+                                            # Tuning value, re-check live.
 NMPC_TRUST_DELTA_RAD = np.radians(9.0)      # per-iteration steering trust region = MAX_STEER's
                                             # own slew-rate limit per tick (180 deg/s * DT) --
                                             # reused, not invented.

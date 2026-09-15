@@ -206,10 +206,10 @@ controller:
     nmpc_jac_substeps_fast: 2   # tracks the converged 4-substep sensitivity closely with no divergence at/above the gate speed (3.07 vs 3.18 at 8 m/s). 1 is not safe here: inaccurate rather than unstable at speed (substeps)
     nmpc_rk_gate_speed: 4.0   # same gating as nmpc_jac_gate_speed but for the ROLLOUT, checked per predicted STAGE (_rollout builds X incrementally). The rollout's unstable band is narrower than the Jacobian's (stable at/above ~3.75 m/s vs ~8), so this gate opens earlier (m/s)
     nmpc_rk_substeps_fast: 3   # NOT 2: 2 is the one count confirmed unstable (up to ~260x perturbation growth) in the 2.25-3.75 m/s band. 3 is fully converged everywhere measured at/above the gate (substeps)
-    nmpc_standstill_steer_damp_enabled: false   # damp stage-0 steering effort while measurably stationary. At v_x=0 steering cannot move the car, but the SQP's cost is summed over the whole horizon and the predicted v_x leaves zero by stage 1, so it pre-commits U[0] toward what helps later stages and the car launches already turned (~-6.8 deg measured live)
+    nmpc_standstill_steer_damp_enabled: true   # damp stage-0 steering effort while measurably stationary. At v_x=0 steering cannot move the car, but the SQP's cost is summed over the whole horizon and the predicted v_x leaves zero by stage 1, so it pre-commits U[0] toward what helps later stages and the car launches already turned (~-6.8 deg measured live)
     nmpc_standstill_speed: 0.5   # m/s -- below this MEASURED speed the damping is at full scale
     nmpc_standstill_fade_speed: 3.0   # m/s -- damping ramps linearly back to 1x by this speed instead of releasing in one tick; set <= nmpc_standstill_speed for a hard cutoff
-    nmpc_standstill_steer_r_scale: 20.0   # multiplier on r_delta for stage 0 only. Tuning value, not derived: re-check live
+    nmpc_standstill_steer_r_scale: 200.0   # multiplier on r_delta for stage 0 only. Tuning value, not derived: re-check live
     nmpc_trust_delta_rad: 0.15707963267948966   # per-iteration trust region on each stage's steering deviation. 9 deg = MPCController's own du_max steering slew per tick (180 deg/s * 0.05 s) — reused, not invented (rad)
     nmpc_trust_a: 0.6   # per-iteration trust region on each stage's accel deviation. 0.6 = MPCController's du_max[1] — reused, not invented (m/s^2)
     nmpc_backtrack_max: 2   # max step halvings if a full SQP step increases the true nonlinear cost (divergence guard). 0 disables backtracking (halvings)
