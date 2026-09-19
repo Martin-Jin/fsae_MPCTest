@@ -81,6 +81,7 @@ CONTROL LOOP PHASES (see _control_step)
   Phase 4a — Telemetry logging of the *final* (post-override) command.
   Phase 5 — Publish.
 """
+import json
 import time
 
 import numpy as np
@@ -94,6 +95,7 @@ from fsae_interfaces.msg import ConeDetection
 from geometry_msgs.msg import Pose, PoseArray, PoseStamped
 from nav_msgs.msg import Odometry
 from rclpy.time import Time
+from std_msgs.msg import String
 
 from fsae_control.control_utils import (
     curvature_speed, dynamic_speed_cap, load_path_profile_csv,
@@ -383,6 +385,13 @@ class MPCControllerNode(Node):
         self.pub_nmpc_pred_path = self.create_publisher(
             PoseArray, '/fsae/control/nmpc_predicted_path', 10)
 
+        # Per-tick weighted-error breakdown + solve time, for live_viz.py's
+        # debug panel only. JSON over a plain String rather than a new
+        # fsae_interfaces .msg: this is a debug-only, best-effort field set
+        # with no other consumer, not a stable interface worth a schema.
+        self.pub_debug_weights = self.create_publisher(
+            String, '/fsae/control/debug_weights', 10)
+
         self._path: np.ndarray = (
             self._static_path if self._static_path is not None else np.empty((0, 2))
         )
@@ -609,6 +618,85 @@ class MPCControllerNode(Node):
         ))
 
     # ------------------------------------------------------------------
+    # Debug telemetry (live_viz.py's weighted-error breakdown panel)
+    # ------------------------------------------------------------------
+
+    def _publish_debug_weights(self, tel: dict) -> None:
+        """
+        Weighted-cost breakdown of every term the MPC actually solved this
+        tick (error^2 * effective weight, as a share of its own GROUP's sum,
+        see `group` below), plus the true solved objective and solve_ms.
+        Debug-only, for live_viz.py's bar-graph panel(s).
+
+        Grouped rather than one shared 0-100% scale: tracking errors
+        (metres/radians), input effort (the command itself) and input rate
+        (change per tick) are wildly different magnitudes squared against
+        their own weights, so e.g. a steering-rate term of a few
+        milliradians/tick will always round to ~0% next to a 0.3 m lateral
+        error even when the rate cost is the one actually dominant within
+        its own group -- comparing within a group is the only comparison
+        that's meaningful. live_viz.py draws one 100% bar-graph per group.
+
+        The per-term breakdown is step-0-only (the current tick's
+        instantaneous errors/rates/command, not summed over the horizon) for
+        both solvers, so it stays an "at a glance, which term is biggest
+        right now" signal, not a horizon-summed one. total_cost, by
+        contrast, IS the exact full-horizon scalar each solver minimised
+        (cp.Problem.value for the LTV-QP, the SQP's own converged objective
+        for NMPC, see mpc_core.py's _solve_qp / nmpc_core.py's
+        _cost_breakdown) -- it will not visually reconcile with a sum of any
+        group's displayed bars, by design.
+
+        Falls back to the static MPCParams weight when no corner-blended
+        "_eff" value is in last_telemetry (always true for NMPC, which has
+        no blending step for Q/R).
+        """
+        params = self._mpc.params
+        a_cmd = tel.get('a_cmd', 0.0)
+        # accel/brake effort is one QP term split by sign (see mpc_core.py's
+        # _build_qp cp.pos(u)/cp.neg(u) split) -- mirror that split here so
+        # exactly one of the two is ever nonzero for a given tick, matching
+        # what the solver actually charged rather than double-counting.
+        r_a_eff = tel.get('R_a_accel_eff', params.r_a_accel) if a_cmd >= 0.0 \
+            else tel.get('R_a_brake_eff', params.r_a_brake)
+        terms = {
+            'e_y':      ('tracking', tel.get('e_y', 0.0),      tel.get('Q_ey_eff', params.q_e_y)),
+            'e_yd':     ('tracking', tel.get('e_yd', 0.0),      params.q_e_yd),
+            'e_psi':    ('tracking', tel.get('e_psi', 0.0),    tel.get('Q_epsi_eff', params.q_e_psi)),
+            'yaw_rate': ('tracking', tel.get('yaw_rate', 0.0), tel.get('Q_r_eff', params.q_r)),
+            'e_v':      ('tracking', tel.get('e_v', 0.0),      params.q_e_v),
+            'steer_effort': ('effort', tel.get('delta_cmd', 0.0),
+                              tel.get('R_steer_eff', params.r_delta)),
+            'accel_effort': ('effort', a_cmd, r_a_eff),
+            'delta_u_steer': ('rate', tel.get('delta_u_steer', 0.0),
+                              tel.get('Rrate_steer_eff',
+                                      tel.get('Rrate_steer_corner_blend', params.r_rate_delta))),
+            'delta_u_accel': ('rate', tel.get('delta_u_accel', 0.0), params.r_rate_a),
+        }
+        costs = {name: weight * error ** 2 for name, (group, error, weight) in terms.items()}
+        group_totals: dict[str, float] = {}
+        for name, (group, _error, _weight) in terms.items():
+            group_totals[group] = group_totals.get(group, 0.0) + costs[name]
+        breakdown = {
+            name: {
+                'group': group,
+                'error': error,
+                'weight': weight,
+                'cost': costs[name],
+                'pct': (100.0 * costs[name] / group_totals[group])
+                       if group_totals[group] > 0.0 else 0.0,
+            }
+            for name, (group, error, weight) in terms.items()
+        }
+        msg = String()
+        msg.data = json.dumps({
+            'terms': breakdown,
+            'solve_ms': tel.get('solve_ms'),
+            'total_cost': tel.get('total_cost'),
+        })
+        self.pub_debug_weights.publish(msg)
+
+    # ------------------------------------------------------------------
     # Control step (fixed 20 Hz)
     # ------------------------------------------------------------------
 
@@ -774,6 +862,8 @@ class MPCControllerNode(Node):
                 pose.position.x, pose.position.y = float(x), float(y)
                 pose_array.poses.append(pose)
             self.pub_nmpc_pred_path.publish(pose_array)
+
+        self._publish_debug_weights(self._mpc.last_telemetry)
 
         if self._standalone_output:
             steering, throttle, brake = mpc_steering, mpc_throttle, mpc_brake

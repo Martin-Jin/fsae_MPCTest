@@ -1512,6 +1512,57 @@ class NMPCController:
             slack = float(self.nmpc.nmpc_slack_weight * np.sum(over ** 2))
         return stage + eff + rate + jerk + slack
 
+    def _cost_breakdown(self, X, U, H):
+        """
+        Same arithmetic as _cost(), split into named components instead of
+        summed to one scalar. Debug-only (live_viz.py's weighted-error
+        panel): called once per tick on the final accepted trajectory, never
+        inside the backtracking loop, so it cannot affect which step gets
+        accepted. Keep in sync with _cost() by hand if that method's terms
+        ever change; duplicated rather than refactoring _cost() to return
+        both, to avoid touching the hot backtracking path at all.
+        """
+        w = self.w_out
+        H = H[:, :NH]
+        out_terms = {
+            'e_y':      float(w[0] * H[0, 0] ** 2),
+            'e_yd':     float(w[1] * H[0, 1] ** 2),
+            'e_psi':    float(w[2] * H[0, 2] ** 2),
+            'yaw_rate': float(w[3] * H[0, 3] ** 2),
+            'e_v':      float(w[4] * H[0, 4] ** 2),
+        }
+        stage = float(np.sum(w * H[:-1] ** 2)) + float(
+            self.terminal_scale * np.sum(w * H[-1] ** 2))
+        a = U[:, 1]
+        eff = float(self.r_delta * np.sum(U[:, 0] ** 2)
+                    + (self._r_delta_stage0(X) - self.r_delta) * U[0, 0] ** 2
+                    + self.r_a_accel * np.sum(np.maximum(a, 0.0) ** 2)
+                    + self.r_a_brake * np.sum(np.minimum(a, 0.0) ** 2))
+        du = np.vstack([U[0] - self._u_prev, np.diff(U, axis=0)])
+        _rr = getattr(self, '_Rr_flat', None)
+        if _rr is None or _rr.shape[0] != du.size:
+            rate = float(np.sum(self.r_rate * du ** 2))
+        else:
+            rate = float(np.sum(_rr * du.reshape(-1) ** 2))
+        jerk = 0.0
+        if self._E2rE2 is not None:
+            d2 = np.vstack([du[0] - (self._u_prev - self._u_prev2),
+                            np.diff(du, axis=0)])
+            jerk = float(np.sum(np.array([self.rjerk_delta, self.rjerk_a]) * d2 ** 2))
+        slack = 0.0
+        if self._use_slack:
+            over = np.maximum(np.abs(X[1:, IDX_EY]) - self.nmpc.nmpc_track_halfwidth,
+                               0.0)
+            slack = float(self.nmpc.nmpc_slack_weight * np.sum(over ** 2))
+        return {
+            'step0_terms': out_terms,     # step-0 output errors, for the per-error bar graph
+            'stage_total': stage,         # full-horizon output-tracking cost
+            'effort_total': eff,          # full-horizon steering/accel effort cost
+            'rate_total': rate,           # full-horizon input rate-of-change cost
+            'jerk_total': jerk,           # full-horizon input jerk cost (0.0 if disabled)
+            'slack_total': slack,         # full-horizon soft-boundary slack cost (0.0 if disabled)
+        }
+
     def _solve_step(self, X, U, ref, v_ref):
         """
         One Gauss-Newton SQP iteration: condense, solve the QP, return the
@@ -1955,6 +2006,7 @@ class NMPCController:
             brake = float(np.clip(-a_cmd / self.a_max_brake, 0.0, 1.0))
 
         solve_ms = (time.perf_counter() - t0) * 1e3
+        cost_breakdown = self._cost_breakdown(X, U, H)
 
         # Telemetry: the keys mpc_core publishes keep their exact meaning (so
         # every existing offline analysis script and telemetry_logger column
@@ -1993,9 +2045,25 @@ class NMPCController:
             'a_cmd': a_cmd,
             'delta_act': float(self._delta_act),
             'a_act': float(self._a_act),
+            # e_yd/yaw_rate: raw step-0 output-error terms with no equivalent
+            # top-level key elsewhere in this dict (e_y/e_psi/e_v already
+            # exist above) -- see _cost_breakdown()'s step0_terms for the
+            # weighted version. e_yd read from H (the same output vector the
+            # cost is built from), not X, since it has no dedicated state.
+            'e_yd': float(H[0, 1]),
+            'yaw_rate': float(X[0, IDX_R]),
+            # Actual step-0 rate-of-change the rate cost penalised this tick
+            # (this tick's issued command vs the previous one), matching
+            # mpc_core.py's delta_u_steer/delta_u_accel definition exactly.
+            'delta_u_steer': float(self._u_prev[0] - self._u_prev2[0]),
+            'delta_u_accel': float(self._u_prev[1] - self._u_prev2[1]),
+            # Debug-only weighted breakdown for live_viz.py's bar graph, see
+            # _cost_breakdown()'s own docstring for what each key means.
+            'cost_breakdown': cost_breakdown,
             # NMPC-specific: see telemetry_logger.NMPC_COLUMNS.
             'nmpc_iters': int(iters),
             'nmpc_cost': float(cost),
+            'total_cost': float(cost),  # alias: same key mpc_core.py uses
             'nmpc_status': 1.0 if status.lower().startswith('solved') else 0.0,
             'nmpc_s0': float(s0),
             'nmpc_kappa_horizon_end': float(kap_horizon[-1]),

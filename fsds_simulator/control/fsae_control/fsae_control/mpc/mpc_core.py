@@ -479,6 +479,12 @@ class MPCController:
     """
     Linear time-varying MPC for combined lateral and longitudinal path tracking.
     """
+    # Soft lane-boundary slack weight, see _build_qp's cost. A class constant
+    # (not a local inside _build_qp) purely so last_telemetry's debug-only
+    # weighted breakdown can reference the same value _build_qp uses,
+    # without threading it through as an argument.
+    W_SLACK = 10000.0
+
     def __init__(
         self,
         dt: float = 0.05,
@@ -718,6 +724,14 @@ class MPCController:
             maxlen=self.params.max_delay_compensation_steps
         )
 
+        # Solved objective value (cp.Problem.value) and step-0 slack from the
+        # most recent QP solve, for last_telemetry's total_cost/slack only --
+        # see _solve_qp(). Both None whenever both solvers failed this tick
+        # (fail-safe branch), rather than stale-repeating the previous tick's
+        # value.
+        self._last_solver_cost: float | None = None
+        self._last_slack0: float | None = None
+
         # Filtered pose age and the currently-committed rollforward depth.
         # See the MPCParams.pose_age_lp_alpha / .n_delay_hysteresis notes above.
         self._pose_age_filtered: float | None = None
@@ -753,7 +767,7 @@ class MPCController:
         u     = cp.Variable((nu, N))
         slack = cp.Variable(N)  # Soft lane boundary constraint
 
-        W_slack = 10000.0
+        W_slack = self.W_SLACK
 
         # Dynamics constraints
         constraints = [
@@ -820,6 +834,7 @@ class MPCController:
             "r_a_brake": r_a_brake_param,
             "weighted_u_prev": weighted_u_prev_param,
             "u":     u,
+            "slack": slack,
         }
 
     def _discrete_model(self, v_x: float) -> tuple[np.ndarray, np.ndarray]:
@@ -986,7 +1001,9 @@ class MPCController:
 
         dbg = {
             "e_y":        e_y,
+            "e_yd":       e_yd,
             "e_psi":      e_psi,
+            "yaw_rate":   car_yaw_rate,
             "e_v":        x0[4],
             "kappa":      kappa,
             "base_idx":   base_idx,
@@ -1119,9 +1136,13 @@ class MPCController:
 
         if status == cp.OPTIMAL_INACCURATE and u_val is not None:
             print("[MPC] Warning: OSQP OPTIMAL_INACCURATE — Proceeding with viable solution.")
+            self._last_solver_cost = qp["prob"].value
+            self._last_slack0 = float(qp["slack"][0].value)
             return u_val.copy()
 
         if status == cp.OPTIMAL and u_val is not None:
+            self._last_solver_cost = qp["prob"].value
+            self._last_slack0 = float(qp["slack"][0].value)
             return u_val.copy()
 
         # ── Fallback: Clarabel ────────────────────────────────────────
@@ -1131,6 +1152,8 @@ class MPCController:
             u_val_fb  = qp["u"][:, 0].value
             if status_fb in (cp.OPTIMAL, cp.OPTIMAL_INACCURATE) and u_val_fb is not None:
                 print("[MPC] Warning: OSQP failed, Clarabel succeeded.")
+                self._last_solver_cost = qp["prob"].value
+                self._last_slack0 = float(qp["slack"][0].value)
                 return u_val_fb.copy()
         except cp.error.SolverError as exc:
             print(f"[MPC] Warning: Clarabel also failed: {exc!r}")
@@ -1138,7 +1161,11 @@ class MPCController:
         # Both solvers failed: hold the last commanded steering angle (avoids
         # a sudden straighten-out mid-corner) and command full brake (a
         # fail-safe deceleration) rather than coasting or repeating a
-        # possibly-bad last accel command.
+        # possibly-bad last accel command. No solved objective exists for
+        # this tick, so last_telemetry's total_cost/slack should read as
+        # unknown rather than silently repeating the previous tick's value.
+        self._last_solver_cost = None
+        self._last_slack0 = None
         return np.array([self._u_prev[0], -self.a_max_brake])
 
     def compute(
@@ -1393,6 +1420,7 @@ class MPCController:
         # from "the pipeline upstream of us is slow" — see solve_ms in
         # telemetry_logger's column reference.
         _t_solve0 = time.perf_counter()
+        u_prev_for_rate = self._u_prev.copy()
         u_opt = self._solve_qp(
             x0, Ad, Bd, R_scaled, R_rate_scaled, Q_scaled,
             r_a_accel=r_a_accel_eff, r_a_brake=r_a_brake_eff,
@@ -1400,14 +1428,19 @@ class MPCController:
         solve_ms = (time.perf_counter() - _t_solve0) * 1e3
         self._u_history.append(u_opt.copy())
 
+        # Actual step-0 rate-of-change the QP's R_rate term penalised this
+        # tick (u_opt vs the previous command), for last_telemetry only.
+        delta_u_steer = float(u_opt[0] - u_prev_for_rate[0])
+        delta_u_accel = float(u_opt[1] - u_prev_for_rate[1])
+
         # ── EXACT ZOH ACTUATOR INTEGRATION ────────────────────────────
         # Prevents explicit Euler instability when dt > tau_a
         exp_delta = math.exp(-self.dt / self.tau_delta)
         exp_a     = math.exp(-self.dt / self.tau_a)
-        
+
         self._delta_act = self._delta_act * exp_delta + u_opt[0] * (1.0 - exp_delta)
         self._a_act     = self._a_act * exp_a         + u_opt[1] * (1.0 - exp_a)
-        
+
         self._u_prev    = u_opt.copy()
         # ──────────────────────────────────────────────────────────────
 
@@ -1443,6 +1476,14 @@ class MPCController:
             "a_cmd":         a_cmd,
             "delta_act":     self._delta_act,
             "a_act":         self._a_act,
+            "delta_u_steer": delta_u_steer,
+            "delta_u_accel": delta_u_accel,
+            "slack0":        self._last_slack0,
+            # Solved QP objective (cp.Problem.value), the exact scalar the
+            # solver minimised this tick, summed over the whole horizon --
+            # None whenever both solvers failed (see _solve_qp's fail-safe
+            # branch, which never calls .solve() again after that point).
+            "total_cost":    self._last_solver_cost,
         }
 
         return steering, throttle, brake

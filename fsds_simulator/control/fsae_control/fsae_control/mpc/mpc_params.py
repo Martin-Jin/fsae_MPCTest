@@ -44,11 +44,11 @@ class MPCParams:
     # ── Core cost weights ───────────────────────────────────────────────
     # Q_diag index -> state penalised (states x are [e_y, e_yd, e_psi, r,
     # e_v, e_a, delta_act, a_act]; see mpc_core.py module docstring):
-    q_e_y:   float = field(default=6.35, metadata={"unit": "1/m^2",   "desc": "lateral deviation from path centreline", "controller": "both"})
-    q_e_yd:  float = field(default=0.5,  metadata={"unit": "1/(m/s)^2", "desc": "rate of change of lateral deviation", "controller": "both"})
+    q_e_y:   float = field(default=5.0, metadata={"unit": "1/m^2",   "desc": "lateral deviation from path centreline", "controller": "both"})
+    q_e_yd:  float = field(default=0.0,  metadata={"unit": "1/(m/s)^2", "desc": "rate of change of lateral deviation", "controller": "both"})
     q_e_psi: float = field(default=1.65, metadata={"unit": "1/rad^2", "desc": "heading error relative to path tangent", "controller": "both"})
-    q_r:     float = field(default=1.20, metadata={"unit": "1/(rad/s)^2", "desc": "yaw rate (LTV-QP). Shared base value the NMPC also reads (see nmpc_q_epsi_dot below), but under the NMPC it weights heading-error RATE, not absolute yaw rate -- same slot, different regressor", "controller": "both"})
-    q_e_v:   float = field(default=5.5,  metadata={"unit": "1/(m/s)^2", "desc": "speed error: car_speed - desired_speed", "controller": "both"})
+    q_r:     float = field(default=1.40, metadata={"unit": "1/(rad/s)^2", "desc": "yaw rate (LTV-QP). Shared base value the NMPC also reads (see nmpc_q_epsi_dot below), but under the NMPC it weights heading-error RATE, not absolute yaw rate -- same slot, different regressor", "controller": "both"})
+    q_e_v:   float = field(default=2.0,  metadata={"unit": "1/(m/s)^2", "desc": "speed error: car_speed - desired_speed", "controller": "both"})
     # R_diag index -> input penalised (inputs u are [delta_cmd, a_cmd]):
     r_delta: float = field(default=1.35, metadata={"unit": "1/rad^2",     "desc": "steering command effort", "controller": "both"})
     # a_cmd>=0 (accel) and a_cmd<0 (brake) get independent effort weights
@@ -57,10 +57,10 @@ class MPCParams:
     # independently. See mpc_core.py's _build_qp/_solve_qp for the
     # cp.pos/cp.neg split and `docs/reference/README.md`'s "Accel/brake
     # effort weight split" section for the diagnosis.
-    r_a_accel: float = field(default=2.25, metadata={"unit": "1/(m/s^2)^2", "desc": "acceleration command effort, a_cmd >= 0", "controller": "both"})
+    r_a_accel: float = field(default=1.0, metadata={"unit": "1/(m/s^2)^2", "desc": "acceleration command effort, a_cmd >= 0", "controller": "both"})
     r_a_brake: float = field(default=0.5, metadata={"unit": "1/(m/s^2)^2", "desc": "acceleration command effort, a_cmd < 0 (braking)", "controller": "both"})
     # R_rate_diag index -> input RATE-OF-CHANGE penalised (tick-to-tick jerk):
-    r_rate_delta: float = field(default=52.50, metadata={"unit": "1/(rad/s)^2",     "desc": "steering rate of change", "controller": "both"})
+    r_rate_delta: float = field(default=100.0, metadata={"unit": "1/(rad/s)^2",     "desc": "steering rate of change", "controller": "both"})
     r_rate_a:     float = field(default=5.0, metadata={"unit": "1/(m/s^3)^2",     "desc": "acceleration rate of change", "controller": "both"})
     # Extra weight on the final predicted state x[:,N]. 1.0 = no-op, the
     # only value ever validated against the Q_diag/R_diag/R_rate_diag above.

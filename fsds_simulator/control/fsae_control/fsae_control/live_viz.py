@@ -35,12 +35,22 @@ authoritative topic table):
     /fsds/control_command             fs_msgs/ControlCommand         steering/throttle/brake
                                                                      (standalone_output=true)
     /fsae/control/cmd_vel             ackermann_msgs/AckermannDriveStamped  (standalone_output=false)
+    /fsae/control/debug_weights       std_msgs/String                 JSON: per-tick weighted
+                                                                       tracking-error breakdown
+                                                                       (e_y/e_psi/e_v: error,
+                                                                       weight, cost, pct of total)
+                                                                       + solve_ms, debug-only, see
+                                                                       mpc_controller.py's
+                                                                       _publish_debug_weights()
 
 Both control-output topics are subscribed; whichever one is actually being
 published (depends on the `standalone_output` launch arg) is the one that
 updates the stats panel, the other simply never fires.
 """
 
+import json
+import os
+import signal
 from collections import deque
 
 import matplotlib
@@ -61,6 +71,7 @@ from fs_msgs.msg import ControlCommand  # noqa: E402
 from fsae_interfaces.msg import Track  # noqa: E402
 from geometry_msgs.msg import PoseArray, PoseStamped  # noqa: E402
 from nav_msgs.msg import Odometry  # noqa: E402
+from std_msgs.msg import String  # noqa: E402
 
 # Close-up window: how far ahead/behind/either side of the car the axes span
 # (metres). Small enough to actually see steering/tracking detail up close,
@@ -141,6 +152,7 @@ class LiveVizNode(Node):
         self.brake = 0.0
         self.cmd_speed_target = None   # cmd_vel mode only
         self.control_topic = None      # which of the two actually fired, for the stats panel
+        self.debug_weights = None      # parsed JSON dict from /fsae/control/debug_weights, or None
 
         # Bumped by every callback below (see _counted), so redraw() can
         # detect "nothing new arrived" and stop draining without needing a
@@ -162,6 +174,8 @@ class LiveVizNode(Node):
             ControlCommand, '/fsds/control_command', self._control_command_cb, 10)
         self._subscribe(
             AckermannDriveStamped, '/fsae/control/cmd_vel', self._cmd_vel_cb, 10)
+        self._subscribe(
+            String, '/fsae/control/debug_weights', self._debug_weights_cb, 10)
 
     def _subscribe(self, msg_type, topic, callback, qos):
         """
@@ -227,13 +241,62 @@ class LiveVizNode(Node):
         self.cmd_speed_target = msg.drive.speed
         self.control_topic = '/fsae/control/cmd_vel'
 
+    def _debug_weights_cb(self, msg: String) -> None:
+        try:
+            self.debug_weights = json.loads(msg.data)
+        except (json.JSONDecodeError, TypeError):
+            self.debug_weights = None
+
+
+# Which terms (mpc_controller.py's _publish_debug_weights() dict keys)
+# belong on which bar-graph panel, and each panel's own axis label. Grouped
+# by unit family, NOT all in one chart -- a steering-rate term of a few
+# milliradians/tick and a 0.3 m lateral error are both real costs but
+# squared-and-weighted they sit at wildly different absolute magnitudes, so
+# one shared 0-100% scale makes the smaller group always look like ~0% even
+# when it is the dominant term within its own family. Matches the 'group'
+# field _publish_debug_weights() tags each term with; kept as an explicit
+# order/label table here (not derived from the message) so panel order is
+# stable regardless of dict iteration order.
+DEBUG_BAR_GROUPS = (
+    ('tracking', 'Tracking error cost (% of tracking total)',
+     ('e_y', 'e_yd', 'e_psi', 'yaw_rate', 'e_v')),
+    ('effort', 'Input effort cost (% of effort total)',
+     ('steer_effort', 'accel_effort')),
+    ('rate', 'Input rate-of-change cost (% of rate total)',
+     ('delta_u_steer', 'delta_u_accel')),
+)
+
 
 def main():
     rclpy.init()
     node = LiveVizNode()
 
+    # Tk's mainloop (entered below via plt.show()) is a blocking C event
+    # loop: CPython only runs a signal handler between bytecode
+    # instructions, so with no handler registered here, SIGTERM/SIGINT
+    # delivery while blocked in Tk was left to chance -- it only got through
+    # incidentally, whenever FuncAnimation's own timer happened to pump the
+    # loop back into Python. launch_all.sh's cleanup() sends SIGTERM (and
+    # Ctrl+C sends SIGINT) expecting a prompt exit; os._exit(0) rather than
+    # sys.exit()/plt.close() so the process dies immediately instead of
+    # waiting for Tk to unwind its own C loop cleanly (which is exactly the
+    # step that was hanging).
+    def _handle_shutdown_signal(_signum, _frame):
+        os._exit(0)
+    signal.signal(signal.SIGTERM, _handle_shutdown_signal)
+    signal.signal(signal.SIGINT, _handle_shutdown_signal)
+
     fig, ax = plt.subplots(figsize=(8, 8))
     ax.set_aspect('equal')
+
+    # Separate window (per the "too much for one window" call): the weighted
+    # cost breakdown has nothing spatial about it and doesn't need to share
+    # a canvas with the map view -- a dedicated figure also gives each of
+    # the three unit-family groups its own full-height panel instead of
+    # squeezing all of them into one narrow sidebar.
+    fig_dbg, ax_bars = plt.subplots(len(DEBUG_BAR_GROUPS), 1, figsize=(7, 9))
+    fig_dbg.suptitle('MPC weighted-cost breakdown (debug)')
 
     def redraw(_frame):
         # Process every callback queued since the last frame, not just one:
@@ -312,7 +375,53 @@ def main():
         ax.legend(loc='lower right', fontsize=8)
         ax.set_title('Live MPC debug view')
 
+    def redraw_debug(_frame):
+        # Weighted-cost breakdown, one bar-graph panel per unit-family group
+        # (see DEBUG_BAR_GROUPS) -- which term is costing the solver the
+        # most right now, as a share of ITS OWN GROUP's sum. See
+        # mpc_controller.py's _publish_debug_weights() for what "weighted
+        # cost" means here (error^2 * effective weight, step-0 only) and why
+        # no group's bars sum to total_cost (shown in the figure suptitle):
+        # total_cost is the true full-horizon solved objective, including
+        # terms (full-horizon summation, jerk, slack) this bar graph does
+        # not attempt to decompose per-tick.
+        dw = node.debug_weights
+        terms = dw.get('terms', {}) if dw is not None else {}
+        for ax_bar, (_group, label, names) in zip(ax_bars, DEBUG_BAR_GROUPS):
+            ax_bar.clear()
+            present = [n for n in names if n in terms]
+            if present:
+                pcts = [terms[n]['pct'] for n in present]
+                colors = ['tab:red' if p >= 50.0 else 'tab:blue' for p in pcts]
+                bars = ax_bar.barh(present, pcts, color=colors)
+                for bar, name in zip(bars, present):
+                    t = terms[name]
+                    ax_bar.text(
+                        bar.get_width() + 1.5, bar.get_y() + bar.get_height() / 2,
+                        f"{t['pct']:.1f}%  (v={t['error']:+.4f}, w={t['weight']:.2f})",
+                        va='center', ha='left', fontsize=7, family='monospace')
+            else:
+                ax_bar.text(0.5, 0.5, '(no data yet)', ha='center', va='center',
+                            transform=ax_bar.transAxes, fontsize=9)
+            ax_bar.set_xlim(0, 100)
+            ax_bar.set_xlabel(label, fontsize=8)
+
+        header = []
+        if dw is not None:
+            total_cost = dw.get('total_cost')
+            if total_cost is not None:
+                header.append(f"true total solver cost = {total_cost:.4f}")
+            solve_ms = dw.get('solve_ms')
+            if solve_ms is not None:
+                header.append(f"solve time = {solve_ms:.2f} ms")
+        fig_dbg.suptitle('MPC weighted-cost breakdown (debug)'
+                          + ('\n' + '   |   '.join(header) if header else ''))
+
+    fig.tight_layout()
+    fig_dbg.tight_layout(rect=(0, 0, 1, 0.94))  # leave room for suptitle's two lines
     ani = FuncAnimation(fig, redraw, interval=1000.0 / REDRAW_HZ, cache_frame_data=False)
+    ani_dbg = FuncAnimation(fig_dbg, redraw_debug, interval=1000.0 / REDRAW_HZ,
+                             cache_frame_data=False)
     plt.show()
 
     node.destroy_node()
