@@ -262,9 +262,44 @@ Three telemetry columns (`nmpc_v_cap`, `nmpc_speed_cap_over`,
 `nmpc_s_target_gap_end`) are declared in `telemetry_logger.py` **before** the
 feature is used live, deliberately: `nmpc_friction_circle_enabled` shipped
 without its two columns and its own diagnostics silently never reached a CSV,
-which is how a conflicting `F_max` went undiagnosed. The GUI
-(`live_viz.py`) shows a `progress` cost bar when the flag is on and skips it
-otherwise, since its term tables are filtered allow-lists.
+which is how a conflicting `F_max` went undiagnosed.
+
+### How to actually run it
+
+All five settings are wired end to end, verified by walking the chain:
+`launch_all.sh` variable -> launch arg -> `DeclareLaunchArgument` -> node
+parameter -> dataclass -> controller. Uncomment in `ros2/launch_all.sh`:
+
+```
+NMPC_PROGRESS_ENABLED=true
+NMPC_Q_PROGRESS=5.0            # the band is narrow, see above
+NMPC_SLACK_LINEAR_WEIGHT=1000.0  # required, or it goes off-track
+```
+
+`NMPC_PROGRESS_REACH` and `NMPC_PROGRESS_V_MIN` can stay at their defaults.
+`USE_NMPC=true` is also required, since every one of these is NMPC-only.
+
+The launcher GUI's Settings tab carries the same five: the flag under
+**Feature flags - NMPC only**, and the four numeric values under **NMPC
+progress term (experimental)**. Saving writes both `settings.py` and the
+matching live dataclass field, and the GUI now falls back to
+`nmpc_params.py` for fields that are not in `mpc_params.py` (the progress
+flag is structural, not a weight, so it lives in the former).
+
+### Debug surfaces
+
+- **Live cost bars** (`live_viz.py`): a `progress` bar appears in the
+  tracking panel when the flag is on, and is skipped otherwise since the
+  term tables are filtered allow-lists. Note `e_v` remains in the same slot
+  but changes meaning in progress mode (it is the speed-CAP hinge, normally
+  exactly 0, not a two-sided speed error).
+- **Live stats box** (`live_viz.py`): a `progress term:` block prints
+  `v_cap`, `cap_over` (tagged `CAP BINDING` or `under cap`, the one signal
+  that separates "held back by the cap" from "chose to go slower") and
+  `s_gap_end`. Fed by a new `progress` key on the `debug_weights` topic.
+- **Offline playback** (`tuner.tools.plot_playback`): the three CSV columns
+  plot by name via `--signals`, plus a new derived `v_cap` pair that
+  overlays `v_actual` against `nmpc_v_cap` on one axis.
 
 One pre-existing mirror divergence was found and deliberately left alone per
 the "do not fix unrelated drift" rule: `mpc_controller.py`'s

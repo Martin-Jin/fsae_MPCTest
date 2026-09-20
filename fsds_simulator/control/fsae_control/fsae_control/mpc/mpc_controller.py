@@ -761,12 +761,25 @@ class MPCControllerNode(Node):
         }
 
         msg = String()
-        msg.data = json.dumps({
+        payload = {
             'terms': breakdown,
             'horizon_terms': horizon_terms,
             'solve_ms': tel.get('solve_ms'),
             'total_cost': total_cost,
-        })
+        }
+        # NMPC progress term (nmpc_progress_enabled only). Sent as their own
+        # keys rather than folded into 'terms' because these are raw
+        # diagnostics, not weighted cost shares: v_cap/speed_cap_over answer
+        # "is the cap binding or did the car choose to go slower", and
+        # s_target_gap_end GROWING tick-over-tick is the signature of a
+        # stuck solve. Absent on every other run, so live_viz skips the line.
+        if 'nmpc_v_cap' in tel:
+            payload['progress'] = {
+                'v_cap': tel.get('nmpc_v_cap'),
+                'speed_cap_over': tel.get('nmpc_speed_cap_over'),
+                's_target_gap_end': tel.get('nmpc_s_target_gap_end'),
+            }
+        msg.data = json.dumps(payload)
         self.pub_debug_weights.publish(msg)
 
     # ------------------------------------------------------------------

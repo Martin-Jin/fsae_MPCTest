@@ -242,6 +242,10 @@ class RepoPaths:
     fsae_logs_dir: Path
     settings_py: Path
     mpc_params_py: Path
+    # NMPC structural/solver fields live in their own dataclass, separate
+    # from mpc_params.py's weights -- see nmpc_params.py's own docstring.
+    # Only the fields this GUI actually writes need to be found here.
+    nmpc_params_py: Path
 
 
 def _repo_paths() -> RepoPaths:
@@ -257,6 +261,8 @@ def _repo_paths() -> RepoPaths:
         settings_py=fsae_mpctest / "settings.py",
         mpc_params_py=(fsds_root / "ros2" / "src" / "fsae_planning" / "control"
                        / "fsae_control" / "fsae_control" / "mpc" / "mpc_params.py"),
+        nmpc_params_py=(fsds_root / "ros2" / "src" / "fsae_planning" / "control"
+                        / "fsae_control" / "fsae_control" / "mpc" / "nmpc_params.py"),
     )
 
 
@@ -973,7 +979,40 @@ _FEATURE_GROUPS: list[tuple[str, list[tuple[str, str | None, str]]]] = [
          "nmpc_rrate_zone_enabled"),
         ("Corner rate-blend enabled (experimental)", "NMPC_CORNER_RRATE_BLEND_ENABLED",
          "nmpc_corner_rrate_blend_enabled"),
+        # Lives in nmpc_params.py, not mpc_params.py, so the desc lookup
+        # below finds nothing and the row renders without help text -- the
+        # label carries the warning instead. Enabling this alone is NOT
+        # enough: it also needs NMPC_SLACK_LINEAR_WEIGHT > 0 (see the
+        # numeric fields below) or the car cuts corners and goes off-track.
+        ("Progress term enabled (experimental, offline-only, needs slack_linear > 0)",
+         "NMPC_PROGRESS_ENABLED", "nmpc_progress_enabled"),
     ]),
+]
+
+# NMPC progress-term numeric settings (see settings.py's own block and
+# docs/logs/nmpc_progress_term_investigation.md). Plain scalars, NOT the
+# -1.0-inherit override convention _NMPC_OVERRIDE_FIELDS uses: none of
+# these has a base weight to inherit from, the rows they weight do not
+# exist at all unless NMPC_PROGRESS_ENABLED is on. Only read when it is.
+# (label, settings.py name, help text)
+_NMPC_PROGRESS_FIELDS: list[tuple[str, str, str]] = [
+    ("q_progress", "NMPC_Q_PROGRESS",
+     "Progress-reward weight [1/m^2]. NARROW usable band at r_a_accel=1.0: "
+     "below ~5 the car never breaks static friction and never launches, "
+     "above ~6 it carries too much speed into corners and goes off-track."),
+    ("progress_reach", "NMPC_PROGRESS_REACH",
+     "How far out of reach the progress target sits [-]. The kinematic "
+     "floor term is what lets the car launch at all (the speed cap is "
+     "deliberately small at a standing start); below ~1.8 it stalls."),
+    ("progress_v_min", "NMPC_PROGRESS_V_MIN",
+     "Low-speed floor [m/s] sharing the speed-cap row and weight. Guards "
+     "the standstill trivial solution."),
+    ("slack_linear_weight", "NMPC_SLACK_LINEAR_WEIGHT",
+     "LINEAR track-boundary slack penalty [1/m], on top of the quadratic "
+     "one. 0 = off. Effectively REQUIRED with the progress term: a purely "
+     "quadratic penalty has zero gradient at zero violation and the "
+     "progress reward exploits that. 1000 turned an off-track DNF into a "
+     "completed lap."),
 ]
 
 
@@ -1066,6 +1105,23 @@ class SettingsTab(ttk.Frame):
             self._override_vars[name] = (enabled_var, value_var)
             r += 2 if desc else 1
 
+        progress_card = section(
+            "NMPC progress term (experimental)",
+            "Only read when the NMPC progress term is enabled in the feature flags "
+            "below. OFFLINE-ONLY so far: it completes a lap but does not yet beat "
+            "the tracking controller it would replace. See "
+            "docs/logs/nmpc_progress_term_investigation.md.")
+        self._progress_vars: dict[str, tk.StringVar] = {}
+        r = 0
+        for label, name, desc in _NMPC_PROGRESS_FIELDS:
+            _field_label(progress_card, r, label, desc, label_style="Card.TLabel",
+                         desc_style="CardMuted.TLabel", wraplength=520)
+            var = tk.StringVar(value=_read_var(paths.settings_py, name) or "0.0")
+            ttk.Entry(progress_card, textvariable=var, width=10).grid(
+                row=r, column=1, sticky="w")
+            self._progress_vars[name] = var
+            r += 2 if desc else 1
+
         # Feature flags, grouped by which controller(s) they affect -- see
         # _FEATURE_GROUPS' own comment for why this grouping is trustworthy
         # (it mirrors mpc_params.py's own per-field "controller" metadata).
@@ -1075,6 +1131,11 @@ class SettingsTab(ttk.Frame):
             r = 0
             for label, settings_name, mpc_field in entries:
                 desc = _read_dataclass_field_desc(paths.mpc_params_py, mpc_field)
+                if not desc:
+                    # Structural NMPC flags live in nmpc_params.py, not
+                    # mpc_params.py -- fall back to it so those rows still
+                    # get their help text instead of rendering bare.
+                    desc = _read_dataclass_field_desc(paths.nmpc_params_py, mpc_field)
                 if settings_name is None:
                     desc = (desc + " " if desc else "") + "(live-only, no settings.py equivalent)"
                 _field_label(group_card, r, label, desc, label_style="Card.TLabel",
@@ -1100,12 +1161,15 @@ class SettingsTab(ttk.Frame):
     def _on_save(self) -> None:
         settings_path = self._paths.settings_py
         mpc_params_path = self._paths.mpc_params_py
+        nmpc_params_path = self._paths.nmpc_params_py
         sync_live = mpc_params_path.is_file()
         try:
             errors: list[str] = []
             _backup_once(settings_path, self._backed_up)
             if sync_live:
                 _backup_once(mpc_params_path, self._backed_up)
+                if nmpc_params_path.is_file():
+                    _backup_once(nmpc_params_path, self._backed_up)
             elif not getattr(self, "_warned_no_live_file", False):
                 self._warned_no_live_file = True
                 messagebox.showwarning(
@@ -1173,8 +1237,39 @@ class SettingsTab(ttk.Frame):
                     if not _rewrite_var(settings_path, settings_name, literal):
                         errors.append(f"{settings_name}: assignment not found in settings.py")
                 if sync_live:
+                    # A few NMPC flags are structural, not weights, so they
+                    # live in nmpc_params.py instead -- try that file when
+                    # the field is not in mpc_params.py rather than
+                    # reporting a spurious "field not found".
                     if not _rewrite_dataclass_field(mpc_params_path, mpc_field, literal):
-                        errors.append(f"{mpc_field}: field not found in mpc_params.py")
+                        if not (nmpc_params_path.is_file() and _rewrite_dataclass_field(
+                                nmpc_params_path, mpc_field, literal)):
+                            errors.append(
+                                f"{mpc_field}: field not found in mpc_params.py "
+                                f"or nmpc_params.py")
+
+            # Progress-term scalars. q_progress is a weight (mpc_params.py);
+            # the other three are structural (nmpc_params.py). Each is tried
+            # against both files for the same reason as the flags above.
+            for _label, name, _desc in _NMPC_PROGRESS_FIELDS:
+                var = self._progress_vars[name]
+                try:
+                    literal = repr(float(var.get()))
+                except ValueError:
+                    errors.append(f"{name}: not a number")
+                    continue
+                if not _rewrite_var(settings_path, name, literal):
+                    errors.append(f"{name}: assignment not found in settings.py")
+                if sync_live:
+                    live_field = name.lower()
+                    wrote = _rewrite_dataclass_field(mpc_params_path, live_field, literal)
+                    if not wrote and nmpc_params_path.is_file():
+                        wrote = _rewrite_dataclass_field(
+                            nmpc_params_path, live_field, literal)
+                    if not wrote:
+                        errors.append(
+                            f"{live_field}: field not found in mpc_params.py "
+                            f"or nmpc_params.py")
 
             if errors:
                 messagebox.showerror("Settings tab", "\n".join(errors))
