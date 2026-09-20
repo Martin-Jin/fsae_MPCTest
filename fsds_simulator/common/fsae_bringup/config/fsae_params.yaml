@@ -90,18 +90,18 @@ controller:
     # effort, R_rate penalises tick-to-tick jerk. States x are
     # [e_y, e_yd, e_psi, r, e_v, e_a, delta_act, a_act]; inputs u are
     # [delta_cmd, a_cmd].
-    q_e_y: 6.35                # lateral deviation from path centreline (1/m^2)
-    q_e_yd: 0.1                # rate of change of lateral deviation (1/(m/s)^2)
+    q_e_y: 6.4                # lateral deviation from path centreline (1/m^2)
+    q_e_yd: 0.0                # rate of change of lateral deviation (1/(m/s)^2)
     q_e_psi: 1.65              # heading error relative to path tangent (1/rad^2)
     q_r: 1.0                   # yaw rate (1/(rad/s)^2)
-    q_e_v: 2.0                # speed error: car_speed - desired_speed (1/(m/s)^2)
+    q_e_v: 1.5                # speed error: car_speed - desired_speed (1/(m/s)^2)
     r_delta: 1.8               # steering command effort (1/rad^2)
-    r_a_accel: 1.0             # acceleration command effort, a_cmd >= 0 (1/(m/s^2)^2)
-    r_a_brake: 0.5             # acceleration command effort, a_cmd < 0 -- braking (1/(m/s^2)^2)
+    r_a_accel: 0.9             # acceleration command effort, a_cmd >= 0 (1/(m/s^2)^2)
+    r_a_brake: 0.6             # acceleration command effort, a_cmd < 0 -- braking (1/(m/s^2)^2)
     r_rate_delta: 100.0          # steering rate of change (1/(rad/s)^2)
-    r_rate_a: 2.25             # acceleration rate of change (1/(m/s^3)^2)
+    r_rate_a: 2.0             # acceleration rate of change (1/(m/s^3)^2)
     terminal_q_scale: 1.0      # extra weight on terminal predicted state; 1.0 = no-op
-    speed_target_deficit_max: 2.5   # max the ramped speed target may lead the car's current speed by (m/s); read by both controllers before either's speed-error/cap row sees the target. Was a bare module constant with no ROS param; binding constraint on acceleration for 36.8% of a lap at the old default (2.5). NOT yet live-validated at 5.0
+    speed_target_deficit_max: 2.55   # max the ramped speed target may lead the car's current speed by (m/s); read by both controllers before either's speed-error/cap row sees the target. Was a bare module constant with no ROS param; binding constraint on acceleration for 36.8% of a lap at the old default (2.5). NOT yet live-validated at 5.0
 
     # Feature enable/disable flags
     adaptive_q_scaling_enabled: true              # soften Q[0,0] near centreline to reduce small-error hunting
@@ -178,7 +178,7 @@ controller:
     # (q_e_y, r_delta, ...) -- see mpc_params.py's own section comment for
     # the full reasoning, and this file's "NONLINEAR MPC" block below for
     # the NMPC's remaining (structural/solver, non-weight) settings.
-    nmpc_q_e_y: 7.5          # override q_e_y for the NMPC only (-1 = inherit) (1/m^2)
+    nmpc_q_e_y: -1.0          # override q_e_y for the NMPC only (-1 = inherit) (1/m^2)
     nmpc_q_e_yd: -1.0         # override q_e_yd (-1 = inherit) (1/(m/s)^2)
     nmpc_q_e_psi: -1.0        # override q_e_psi (-1 = inherit) (1/rad^2)
     nmpc_q_epsi_dot: -1.0     # override q_r (-1 = inherit). NOTE this weights HEADING-ERROR rate (r - kappa*s_dot), not absolute yaw rate (1/(rad/s)^2)
@@ -245,7 +245,7 @@ controller:
     nmpc_trust_delta_rad: 0.15707963267948966   # per-iteration trust region on each stage's steering deviation. 9 deg = MPCController's own du_max steering slew per tick (180 deg/s * 0.05 s) — reused, not invented (rad)
     nmpc_trust_a: 0.6   # per-iteration trust region on each stage's accel deviation. 0.6 = MPCController's du_max[1] — reused, not invented (m/s^2)
     nmpc_backtrack_max: 2   # max step halvings if a full SQP step increases the true nonlinear cost (divergence guard). 0 disables backtracking (halvings)
-    nmpc_track_halfwidth: 3.5   # soft |e_y| bound with slack (both quadratic and linear), matching the LTV-QP's own +-3.5m literal. Narrowing to 3.0 was tried 2026-09-21 for the progress-term experiment and reverted the same day: this field is read unconditionally, so it also tightened ordinary tracking mode and measurably hurt it. <=0 removes the constraint entirely (m)
+    nmpc_track_halfwidth: 3.35   # soft |e_y| bound with slack (both quadratic and linear), matching the LTV-QP's own +-3.5m literal. Narrowing to 3.0 was tried 2026-09-21 for the progress-term experiment and reverted the same day: this field is read unconditionally, so it also tightened ordinary tracking mode and measurably hurt it. <=0 removes the constraint entirely (m)
     nmpc_slack_weight: 10000.0   # penalty on the track-bound slack, copied from _build_qp's existing W_slack = 10000.0 (1/m^2)
     nmpc_slack_linear_weight: 500.0   # [NMPC only] LINEAR track-bound slack penalty, additional to the quadratic nmpc_slack_weight above. 0.0 = no-op, and inert anyway while nmpc_progress_enabled is false (nothing else rewards violating the boundary). Set ~1000 alongside any progress-term experiment: necessary there, but measured NOT sufficient
     nmpc_curvature_dense_step: 0.5   # arc-length resampling step for the kappa(s) reference (= curvature_speed()'s dense_step) (m)

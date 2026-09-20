@@ -301,7 +301,7 @@ class NMPCParams:
     # noticeably worse in practice. If the progress experiment needs a
     # tighter boundary again, override it alongside NMPC_PROGRESS_ENABLED
     # rather than changing this default.
-    nmpc_track_halfwidth: float = field(default=3.5, metadata={
+    nmpc_track_halfwidth: float = field(default=3.35, metadata={
         "unit": "m",
         "desc": "soft |e_y| bound with slack (both quadratic and linear). "
                 "<=0 removes the constraint (and its slack variables) entirely",

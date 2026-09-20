@@ -299,6 +299,23 @@ controller-switch transition rather than every redraw frame, so a
 manually moved/resized debug window isn't fought back into place ~50
 times a second by the two figures' animations.
 
+**Every bar-graph panel's row order is fixed for the lifetime of the
+window**, not recomputed each frame. Previously, a panel's y-axis
+category list was built by filtering a fixed name list down to only the
+terms with data THIS tick (`[n for n in names if n in terms]`), and the
+horizon panel additionally re-sorted that filtered list by current value,
+descending, every frame. Both meant the list `ax.barh()` drew from could
+change length or order tick to tick even though the values themselves
+were moving smoothly: a term temporarily absent (e.g. `progress`/
+`v_cap_hinge` outside progress mode) collapsed every row below it upward
+by one slot, and the horizon panel's own sort visibly swapped two rows
+the instant one term's cost share crossed another's. Fixed by always
+drawing one row per name in the full declared table (`DEBUG_BAR_GROUPS`,
+`DEBUG_HORIZON_TERMS`, `STANLEY_ERROR_TERMS`, `STANLEY_LAW_TERMS`), with
+an absent term shown as an empty grey row at its own fixed position
+rather than omitted, and the horizon panel's per-frame sort removed
+entirely in favour of its declared order.
+
 ## Steering system-ID harness: `run_steering_sysid.sh` / `run_steering_step.sh`
 
 Isolating the plant from the controller, commanding fixed steering angles

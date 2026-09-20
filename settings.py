@@ -518,7 +518,7 @@ EPSI_RA_BRAKE_FLOOR = 0.5
 # lower steering saturation, no measured trade-off offline); NOT yet
 # live-validated at this value. See docs/logs/nmpc_progress_term_investigation.md.
 # Mirrors MPCParams.speed_target_deficit_max.
-SPEED_TARGET_DEFICIT_MAX = 2.5
+SPEED_TARGET_DEFICIT_MAX = 2.55
 
 # ------------------------------------------------------------------------------
 # Cost function weights (for simulator only)
@@ -558,7 +558,7 @@ SPEED_TARGET_DEFICIT_MAX = 2.5
 # straights, where a speed-error weight does little. Compare on the approach
 # phase when re-tuning this.
 # Mirrors mpc_params.py's Q_diag.
-Q_diag      = [6.35, 0.1, 1.65, 1.0, 2.0, 0.0, 0.0, 0.0]
+Q_diag      = [6.4, 0.0, 1.65, 1.0, 1.5, 0.0, 0.0, 0.0]
 # [shared] R_diag index -> input penalised:
 #   [0] delta_cmd  steering command effort (rad)
 #   [1] a_cmd      acceleration command effort (m/s^2)
@@ -593,7 +593,7 @@ R_diag      = [1.8, 0.77]
 #   [0] delta_cmd  steering rate of change
 #   [1] a_cmd      acceleration rate of change
 # Mirrors mpc_params.py's R_rate_diag.
-R_rate_diag = [100.0, 2.25]
+R_rate_diag = [100.0, 2.0]
 
 # [shared] R_A_ACCEL / R_A_BRAKE — separate effort weights for acceleration and
 # braking. solve_mpc()'s a_cmd effort cost is r_a_accel*pos(a_cmd)^2 +
@@ -607,8 +607,8 @@ R_rate_diag = [100.0, 2.25]
 # also caps how hard the QP is willing to brake. See `docs/reference/control_mechanisms.md`'s
 # "Accel/brake effort weight split" for the diagnosis and retuning history.
 # Mirrors mpc_params.py's R_A_ACCEL/R_A_BRAKE.
-R_A_ACCEL = 1.0
-R_A_BRAKE = 0.5
+R_A_ACCEL = 0.9
+R_A_BRAKE = 0.6
 
 
 # ------------------------------------------------------------------------------
@@ -667,7 +667,7 @@ USE_NMPC = False
 # on this track sits at ~31.5 drift episodes/min. Normalise by duration, and
 # treat one run's lap time as noisy -- the same config gave 53.29 s and
 # 47.99 s.
-NMPC_Q_E_Y       = 7.5
+NMPC_Q_E_Y       = -1.0
 NMPC_Q_E_YD      = -1.0
 NMPC_Q_E_PSI     = -1.0
 NMPC_Q_EPSI_DOT  = -1.0
@@ -887,7 +887,7 @@ NMPC_TRUST_DELTA_RAD = np.radians(9.0)      # per-iteration steering trust regio
 NMPC_TRUST_A = 0.6                          # per-iteration accel trust region = du_max[1].
 NMPC_BACKTRACK_MAX = 2                      # step halvings if a full SQP step increases the
                                             # true nonlinear cost (divergence guard).
-NMPC_TRACK_HALFWIDTH = 3.5                  # soft |e_y| bound with slack (both quadratic and
+NMPC_TRACK_HALFWIDTH = 3.35                  # soft |e_y| bound with slack (both quadratic and
                                             # linear), matching controller/optimiser.py's LTV-QP
                                             # +-3.5m literal. Was narrowed to 3.0 on 2026-09-21 for
                                             # the progress-term experiment, then REVERTED the same

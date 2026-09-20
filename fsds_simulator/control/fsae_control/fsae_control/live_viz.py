@@ -504,31 +504,56 @@ def main():
         ax.legend(loc='lower right', fontsize=8)
         ax.set_title(f'Live {controller_label} debug view')
 
-    def _draw_pct_bars(ax, present, pcts, details, red_threshold, xlabel):
+    def _draw_pct_bars(ax, all_names, present, pcts, details, red_threshold, xlabel):
         """Shared bar-graph renderer for every debug panel below: a
-        horizontal 0-100% bar per (present[i], pcts[i]), red past
-        red_threshold else blue, with details[i] appended to each bar's
-        label. Centralised so every panel wraps its label text the same
-        way (see the wrap step below, added because long detail strings
-        were being clipped past the figure's right edge)."""
+        horizontal 0-100% bar per name in ALL_NAMES, in that FIXED order,
+        every single frame -- red past red_threshold else blue, with
+        details[i] appended to each present bar's label.
+
+        Takes the full fixed name list, not just the ones with data this
+        tick, and always draws one row per name in ALL_NAMES: a name
+        missing from `present` (this frame's actual mode has no data for
+        it, e.g. 'progress' when nmpc_progress_enabled is off) still gets
+        an empty grey row at its own fixed position instead of being
+        omitted. Omitting it used to collapse every row below it upward by
+        one slot the instant that term's presence changed tick to tick,
+        which is what made the whole panel appear to jump around even
+        though no single term's own value did anything unusual -- ax.clear()
+        every frame plus barh() placing bars in LIST order (not a fixed
+        category axis) means a shorter list is a visually different
+        layout, not just fewer bars. Centralised so every panel wraps its
+        label text the same way (see the wrap step below, added because
+        long detail strings were being clipped past the figure's right
+        edge)."""
         ax.clear()
-        if present:
-            colors = ['tab:red' if p >= red_threshold else 'tab:blue' for p in pcts]
-            bars = ax.barh(present, pcts, color=colors)
-            for bar, detail in zip(bars, details):
-                # Bar labels are drawn in DATA coordinates (x in [0, 100],
-                # not axes-fraction), so a wide label on a near-100% bar
-                # can extend past the axes' right edge and get clipped by
-                # the figure boundary -- clip_on=False lets it draw into
-                # the figure margin instead (tight_layout/subplots_adjust
-                # below reserves that margin), and a fixed-width right
-                # margin is reserved on every panel for exactly this.
-                ax.text(bar.get_width() + 1.5, bar.get_y() + bar.get_height() / 2,
-                        detail, va='center', ha='left', fontsize=7,
-                        family='monospace', clip_on=False)
-        else:
-            ax.text(0.5, 0.5, '(no data yet)', ha='center', va='center',
-                    transform=ax.transAxes, fontsize=9)
+        present_set = set(present)
+        pct_by_name = dict(zip(present, pcts))
+        detail_by_name = dict(zip(present, details))
+        pcts_fixed = [pct_by_name.get(n, 0.0) for n in all_names]
+        colors = ['tab:red' if p >= red_threshold else 'tab:blue'
+                  if n in present_set else 'lightgrey'
+                  for n, p in zip(all_names, pcts_fixed)]
+        # ALL_NAMES passed straight through, not reordered: barh's own
+        # bottom-to-top placement of a fixed list is exactly what the group
+        # panels already rendered before this fix (first declared name at
+        # the bottom), so this keeps their look unchanged and gives the
+        # horizon panel that same fixed, stable order instead of its old
+        # per-frame value sort.
+        bars = ax.barh(all_names, pcts_fixed, color=colors)
+        for name, bar in zip(all_names, bars):
+            if name not in present_set:
+                continue
+            detail = detail_by_name[name]
+            # Bar labels are drawn in DATA coordinates (x in [0, 100],
+            # not axes-fraction), so a wide label on a near-100% bar
+            # can extend past the axes' right edge and get clipped by
+            # the figure boundary -- clip_on=False lets it draw into
+            # the figure margin instead (tight_layout/subplots_adjust
+            # below reserves that margin), and a fixed-width right
+            # margin is reserved on every panel for exactly this.
+            ax.text(bar.get_width() + 1.5, bar.get_y() + bar.get_height() / 2,
+                    detail, va='center', ha='left', fontsize=7,
+                    family='monospace', clip_on=False)
         ax.set_xlim(0, 100)
         ax.set_xlabel(xlabel, fontsize=8)
 
@@ -605,22 +630,24 @@ def main():
                 else:
                     detail = f"{t['pct']:.1f}%  (v={t['error']:+.4f}, w={t['weight']:.2f})"
                 details.append(detail)
-            _draw_pct_bars(ax_bar, present, pcts, details, red_threshold=50.0, xlabel=label)
+            _draw_pct_bars(ax_bar, names, present, pcts, details, red_threshold=50.0, xlabel=label)
 
         # Right-side panel: every term's horizon-summed cost as a share of
         # total_cost, one shared scale (see DEBUG_HORIZON_TERMS' comment).
-        # Sorted descending so the biggest true contributor to the solver's
-        # actual decision is always at the top, regardless of term count.
+        # Fixed row order (DEBUG_HORIZON_TERMS' own declared order), NOT
+        # sorted by current value -- sorting by value every frame was
+        # exactly what made a term's row visibly jump as its cost share
+        # crossed another term's, even though each term's OWN value was
+        # moving smoothly. A reader tracking "is e_y still climbing"
+        # should not have to re-find e_y's row after every redraw.
         horizon_terms = dw.get('horizon_terms', {}) if dw is not None else {}
         present_h = [n for n in DEBUG_HORIZON_TERMS if n in horizon_terms]
-        present_h.sort(key=lambda n: horizon_terms[n]['pct'], reverse=True)
         pcts_h = [horizon_terms[n]['pct'] for n in present_h]
         details_h = [f"{horizon_terms[n]['pct']:.1f}%  (cost={horizon_terms[n]['cost']:.3f})"
                      for n in present_h]
-        _draw_pct_bars(ax_horizon, present_h, pcts_h, details_h, red_threshold=30.0,
+        _draw_pct_bars(ax_horizon, DEBUG_HORIZON_TERMS, present_h, pcts_h, details_h,
+                       red_threshold=30.0,
                        xlabel='Horizon-summed cost (% of true total solver cost)')
-        if present_h:
-            ax_horizon.invert_yaxis()
         ax_horizon.set_title('Every term, full predicted horizon', fontsize=9)
 
         header = []
@@ -649,7 +676,13 @@ def main():
         labels_e = {'e_y': 'lateral error (e_y)', 'e_psi': 'heading error (e_psi)'}
         details_e = [f"{p:.1f}%  (v={error_values[n]:+.4f} rad or m)"
                      for n, p in zip(present_e, pcts_e)]
-        _draw_pct_bars(ax_stanley_error, [labels_e[n] for n in present_e], pcts_e, details_e,
+        # Fixed row per STANLEY_ERROR_TERMS entry (translated to its own
+        # label), not just the ones with data this tick -- same fix as the
+        # MPC panels above, so a term temporarily missing (e.g. e_psi not
+        # yet published) gets an empty row at its own position instead of
+        # collapsing the other row up to fill the gap.
+        _draw_pct_bars(ax_stanley_error, [labels_e[n] for n in STANLEY_ERROR_TERMS],
+                       [labels_e[n] for n in present_e], pcts_e, details_e,
                        red_threshold=60.0, xlabel='Tracking error (% of |e_y| + |e_psi|)')
         ax_stanley_error.set_title('Heading vs. lateral error', fontsize=9)
 
@@ -667,7 +700,8 @@ def main():
         }
         details_l = [f"{law_terms[n]['pct']:.1f}%  (v={law_terms[n]['value']:+.4f} rad)"
                      for n in present_l]
-        _draw_pct_bars(ax_stanley_law, [labels_l[n] for n in present_l], pcts_l, details_l,
+        _draw_pct_bars(ax_stanley_law, [labels_l[n] for n in STANLEY_LAW_TERMS],
+                       [labels_l[n] for n in present_l], pcts_l, details_l,
                        red_threshold=60.0,
                        xlabel='Share of total steering magnitude (|heading| + |atan2| + |damping|)')
         ax_stanley_law.set_title('Control-law term breakdown', fontsize=9)

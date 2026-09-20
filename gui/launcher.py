@@ -73,6 +73,7 @@ class Palette:
     accent_hover = "#6f9bf2"
     accent_text = "#0d1117"
     danger = "#e5626b"
+    success = "#4caf6f"     # save-confirmation flash
     font_family = "Segoe UI"
     font_family_fallback = "Helvetica"
 
@@ -115,6 +116,14 @@ def apply_theme(root: tk.Tk) -> None:
                      font=heading_font)
     style.configure("SectionHeading.TLabel", background=Palette.bg,
                      foreground=Palette.text_muted, font=heading_font)
+    # Save-confirmation flash / unsaved-changes warning on a status label --
+    # a distinct STYLE, not a direct .config(foreground=...) call, since
+    # that is what ttk widgets require for a runtime color change to
+    # actually repaint under the 'clam' theme this app uses throughout.
+    style.configure("Success.TLabel", background=Palette.bg, foreground=Palette.success,
+                     font=small_font)
+    style.configure("Warning.TLabel", background=Palette.bg, foreground=Palette.danger,
+                     font=small_font)
 
     style.configure("TNotebook", background=Palette.bg, borderwidth=0, tabmargins=(0, 6, 0, 0))
     style.configure("TNotebook.Tab", background=Palette.surface, foreground=Palette.text_muted,
@@ -540,6 +549,12 @@ _STOP_LOG_POLL_TIMEOUT_S = 5.0
 # lands before this process exits -- launch_all.sh's cleanup runs in its
 # own process group and finishes regardless of how long this GUI lives.
 _CLOSE_STOP_GRACE_MS = 500
+
+# How long a Settings-tab status message (a save confirmation, or the muted
+# post-flash state) stays on screen before self-clearing. Long enough to
+# read a short sentence without feeling rushed, short enough that it can't
+# be mistaken for describing the CURRENT state after the user keeps editing.
+_STATUS_AUTO_CLEAR_MS = 4000
 
 
 def _insert_run_label(filename: str, label: str | None) -> str:
@@ -1260,6 +1275,33 @@ _LIST_FIELD_INDEX_NAMES: dict[str, list[str]] = {
     "R_rate_diag": ["delta_cmd rate", "a_cmd rate"],
 }
 
+# Per-index unit/meaning, shown as a muted sub-line under each row's name
+# label -- the group-level _LIST_FIELD_DESC below states these once in
+# prose above the whole card, but a bare row label like "e_y" with no unit
+# or meaning next to IT specifically was easy to lose track of while
+# scrolling past 8+ rows. Same content as _LIST_FIELD_DESC, split per row.
+_LIST_FIELD_INDEX_DESC: dict[str, list[str]] = {
+    "Q_diag": [
+        "Lateral deviation from path centreline [1/m^2]",
+        "Rate of change of lateral deviation [1/(m/s)^2]",
+        "Heading error relative to path tangent [1/rad^2]",
+        "Yaw rate [1/(rad/s)^2]",
+        "Speed error: car_speed - desired_speed [1/(m/s)^2]",
+        "Unused, always weighted 0 -- not a live tunable",
+        "Unused, always weighted 0 -- not a live tunable",
+        "Unused, always weighted 0 -- not a live tunable",
+    ],
+    "R_diag": [
+        "Steering command effort [1/rad^2]",
+        "Acceleration command effort -- NOMINAL ONLY, superseded by "
+        "R_A_ACCEL/R_A_BRAKE below, which weight accel/brake independently",
+    ],
+    "R_rate_diag": [
+        "Steering rate of change, i.e. tick-to-tick jerk [1/(rad/s)^2]",
+        "Acceleration rate of change, i.e. tick-to-tick jerk [1/(m/s^3)^2]",
+    ],
+}
+
 # Per-index breakdown for the 3 weight vectors above -- unlike the scalar/
 # override fields, a list field has no single mpc_params.py field to read a
 # desc/unit from, so these are written out by hand (values taken from
@@ -1423,16 +1465,28 @@ class SettingsTab(ttk.Frame):
             # index 1 (a_cmd) is None there but is a real, nominal-only
             # weight, not one that's always 0.
             index_names = _LIST_FIELD_INDEX_NAMES.get(name, mpc_fields)
+            index_descs = _LIST_FIELD_INDEX_DESC.get(name, [])
             vars_for_field = []
             for i, v in enumerate(current):
                 index_label = index_names[i] if i < len(index_names) else f"index {i}"
+                index_desc = index_descs[i] if i < len(index_descs) else ""
+                # Same label+description two-row convention every other
+                # field on this tab uses (_field_label), so a bare row name
+                # like "e_y" always has its unit/meaning directly under it
+                # instead of relying on the one group-level description
+                # above the whole card, which is easy to lose track of
+                # while scrolling past 8+ rows.
                 ttk.Label(weights_card, text=f"  {index_label}", style="CardMuted.TLabel").grid(
-                    row=r, column=0, sticky="w", padx=(16, 0))
+                    row=r, column=0, sticky="nw", padx=(16, 0), pady=(6, 0 if index_desc else 6))
                 var = tk.StringVar(value=str(v))
                 ttk.Entry(weights_card, textvariable=var, width=10).grid(
-                    row=r, column=1, sticky="w")
+                    row=r, column=1, sticky="w", pady=(6, 0 if index_desc else 6))
+                if index_desc:
+                    ttk.Label(weights_card, text=f"  {index_desc}", style="CardMuted.TLabel",
+                              wraplength=440).grid(
+                        row=r + 1, column=0, sticky="nw", padx=(16, 0), pady=(0, 6))
                 vars_for_field.append(var)
-                r += 1
+                r += 2 if index_desc else 1
             self._list_vars[name] = vars_for_field
 
         ttk.Separator(weights_card).grid(row=r, column=0, columnspan=2, sticky="ew", pady=12)
@@ -1528,8 +1582,24 @@ class SettingsTab(ttk.Frame):
         ttk.Button(footer, text="Save", style="Accent.TButton",
                    command=self._on_save).pack(side="left")
         self.status_var = tk.StringVar(value="")
-        ttk.Label(footer, textvariable=self.status_var, style="Muted.TLabel").pack(
-            side="left", padx=(14, 0))
+        self.status_label = ttk.Label(footer, textvariable=self.status_var, style="Muted.TLabel")
+        self.status_label.pack(side="left", padx=(14, 0))
+        # Cancels a pending auto-clear/flash-revert self.after() job when a
+        # newer status message (or another dirty edit) supersedes it before
+        # it fires -- without this, an old timer firing late could blank a
+        # brand new message or drop the flash color back to muted too soon.
+        self._status_clear_job: str | None = None
+
+        # Dirty-state tracking: wired up now that every widget dict above is
+        # fully populated, rather than one trace_add() call per creation
+        # site (7 of them, easy to add an 8th field type later and forget
+        # the trace). is_dirty toggles true the moment ANY tracked Variable
+        # changes; _on_save()'s own success path is the only thing that
+        # clears it, so "dirty" tracks "differs from the last save", not
+        # "differs from the last settings.py import".
+        self._is_dirty = False
+        self._dirty_trace_ids: list[tuple[tk.Variable, str]] = []
+        self._wire_dirty_tracking()
 
     def _sync_live_field(self, mpc_field: str, literal: str, errors: list[str]) -> None:
         """Writes mpc_field's value to every place a launched node could
@@ -1671,16 +1741,83 @@ class SettingsTab(ttk.Frame):
 
             if errors:
                 messagebox.showerror("Settings tab", "\n".join(errors))
-                self.status_var.set("Save had errors, see dialog.")
-            elif sync_live:
-                self.status_var.set(
-                    "Saved to settings.py, the live mpc_params.py/nmpc_params.py, "
-                    "fsae_params.yaml, and their fsds_simulator/ mirrors. Restart the "
-                    "sim to pick up the live change.")
+                self._set_status("Save had errors, see dialog.", style="Warning.TLabel")
+                # Deliberately NOT cleared: an error means at least one field
+                # did not actually reach every file it needed to, so the
+                # in-memory widgets and what's on disk can still disagree.
             else:
-                self.status_var.set("Saved. Takes effect next time settings.py is imported.")
+                if sync_live:
+                    self._set_status(
+                        "Saved to settings.py, the live mpc_params.py/nmpc_params.py, "
+                        "fsae_params.yaml, and their fsds_simulator/ mirrors. Restart the "
+                        "sim to pick up the live change.",
+                        style="Success.TLabel", flash=True, auto_clear=True)
+                else:
+                    self._set_status(
+                        "Saved. Takes effect next time settings.py is imported.",
+                        style="Success.TLabel", flash=True, auto_clear=True)
+                self._is_dirty = False
         except OSError as exc:
             messagebox.showerror("Settings tab", f"Failed to save: {exc!r}")
+
+    def _wire_dirty_tracking(self) -> None:
+        """Attaches a write-trace to every Variable this tab owns, across
+        all five widget dicts, so _is_dirty flips true the instant any
+        field changes -- typing in an Entry counts too, not just committing
+        a value, since StringVar's 'write' trace fires on every keystroke
+        (a false positive here, dirty when nothing SUBSTANTIVE changed yet,
+        is far cheaper than a false negative that fails to warn)."""
+        all_vars: list[tk.Variable] = []
+        for var_list in self._list_vars.values():
+            all_vars.extend(var_list)
+        all_vars.extend(self._scalar_vars.values())
+        for enabled_var, value_var in self._override_vars.values():
+            all_vars.append(enabled_var)
+            all_vars.append(value_var)
+        all_vars.extend(self._progress_vars.values())
+        all_vars.extend(self._feature_vars.values())
+        for var in all_vars:
+            trace_id = var.trace_add("write", self._mark_dirty)
+            self._dirty_trace_ids.append((var, trace_id))
+
+    def _mark_dirty(self, *_args) -> None:
+        self._is_dirty = True
+
+    def _set_status(self, text: str, style: str = "Muted.TLabel",
+                     flash: bool = False, auto_clear: bool = False) -> None:
+        """Central status-line writer for this tab. `flash=True` briefly
+        shows `style` (Success.TLabel on a successful save) before settling
+        back to Muted.TLabel, so a save that lands while the user is looking
+        elsewhere on the card still catches the eye, not just changes some
+        text that was already there. `auto_clear=True` blanks the line a
+        few seconds later so a stale "Saved" message doesn't linger and get
+        mistaken for describing the CURRENT state after further edits."""
+        if self._status_clear_job is not None:
+            self.after_cancel(self._status_clear_job)
+            self._status_clear_job = None
+        self.status_var.set(text)
+        self.status_label.configure(style=style)
+        if flash:
+            self._status_clear_job = self.after(1400, lambda: self._revert_status_style(text))
+        elif auto_clear:
+            self._status_clear_job = self.after(_STATUS_AUTO_CLEAR_MS, self._clear_status)
+
+    def _revert_status_style(self, text_when_scheduled: str) -> None:
+        self._status_clear_job = None
+        # Only revert the FLASH color, not the text -- a newer _set_status()
+        # call already replaced both if one happened in the meantime, and
+        # this job's own auto_clear (if any) is scheduled separately below.
+        if self.status_var.get() == text_when_scheduled:
+            self.status_label.configure(style="Muted.TLabel")
+            self._status_clear_job = self.after(_STATUS_AUTO_CLEAR_MS, self._clear_status)
+
+    def _clear_status(self) -> None:
+        self._status_clear_job = None
+        self.status_var.set("")
+        self.status_label.configure(style="Muted.TLabel")
+
+    def has_unsaved_changes(self) -> bool:
+        return self._is_dirty
 
     def capture_profile_values(self) -> dict[str, str]:
         """Current value of every settings.py NAME this tab manages, as
@@ -1940,9 +2077,18 @@ class LauncherApp(tk.Tk):
         notebook.add(self._launch_tab, text="Launch Sim")
         notebook.add(LogDebugTab(notebook, paths), text="Debug a Log")
         notebook.add(OfflineSimTab(notebook, paths), text="Run Offline Sim")
-        settings_tab = SettingsTab(notebook, paths)
-        notebook.add(settings_tab, text="Settings")
-        notebook.add(ProfilesTab(notebook, paths, settings_tab), text="Profiles")
+        self._settings_tab = SettingsTab(notebook, paths)
+        notebook.add(self._settings_tab, text="Settings")
+        notebook.add(ProfilesTab(notebook, paths, self._settings_tab), text="Profiles")
+
+        # Warn on leaving the Settings tab with unsaved edits, not just on
+        # window close -- switching to Launch Sim/Profiles/etc. and back is
+        # the more common way an edit gets silently forgotten, since nothing
+        # else about the app suggests leaving a tab discards anything.
+        self._notebook = notebook
+        self._last_tab_was_settings = False
+        self._reentering_tab_guard = False
+        notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -1966,12 +2112,53 @@ class LauncherApp(tk.Tk):
     def _on_sigint(self, signum, frame) -> None:
         self._on_close()
 
+    def _on_tab_changed(self, _event=None) -> None:
+        """Fires on EVERY tab switch, both away from and onto Settings, so
+        this only acts the moment the PREVIOUS tab was Settings and it had
+        unsaved edits (checked before _last_tab_was_settings is updated
+        below) -- warning when arriving at Settings, or on every switch
+        regardless of which tab, would fire constantly for no reason.
+
+        ttk.Notebook.select() re-triggers this same virtual event, but NOT
+        synchronously (measured, not assumed): the "No, stay on Settings"
+        branch below calls select() to force the reselect, and Tk only
+        actually DELIVERS that event later, after select() has already
+        returned -- a `finally:`-style guard reset right after the call
+        clears itself before the queued event arrives and does nothing.
+        _reentering_tab_guard is instead cleared via after_idle(), which
+        runs after the current event queue (including the reselect's own
+        queued <<NotebookTabChanged>>) has been drained."""
+        if self._reentering_tab_guard:
+            return
+        if self._last_tab_was_settings and self._settings_tab.has_unsaved_changes():
+            settings_index = self._notebook.index(self._settings_tab)
+            if not messagebox.askyesno(
+                    "Unsaved changes",
+                    "The Settings tab has unsaved changes. Switch away anyway?\n\n"
+                    "Nothing is lost from this tab's own widgets, but settings.py/the "
+                    "live files still hold the OLD values until you press Save."):
+                self._reentering_tab_guard = True
+                self._notebook.select(settings_index)
+                self.after_idle(self._clear_reentering_tab_guard)
+                return
+        self._last_tab_was_settings = (
+            self._notebook.select() == str(self._settings_tab))
+
+    def _clear_reentering_tab_guard(self) -> None:
+        self._reentering_tab_guard = False
+
     def _on_close(self) -> None:
         """Stops a sim still running under the Launch tab before tearing
         down the window. launch_all.sh runs in its own process group and
         is not supervised by this GUI, so without this it would keep
         running (nodes, bridge, diagnostic captures) with the only Stop
         button gone."""
+        if self._settings_tab.has_unsaved_changes() and not messagebox.askyesno(
+                "Unsaved changes",
+                "The Settings tab has unsaved changes that will be lost "
+                "(the widgets, not settings.py, since nothing has written them "
+                "yet). Quit anyway?"):
+            return
         if self._launch_tab.stop_running_sim():
             # Give launch_all.sh's own `trap cleanup` a moment to act on
             # the SIGINT before the interpreter exits. Not a guarantee of
