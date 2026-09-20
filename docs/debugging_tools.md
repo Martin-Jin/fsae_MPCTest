@@ -9,6 +9,7 @@ Catalog of the diagnostic/debugging tools across this repo and the outer
 
 | Tool | Question it answers | Run with |
 |---|---|---|
+| `gui/launcher.py` | Where's the fastest way to launch the sim, debug a log, run the offline sim, or retune a weight, without editing a script or remembering a CLI? | `python -m gui.launcher` |
 | `tuner/recorded_map_rollout.py` | Does a plant/weight change still reproduce the published closed-loop baseline on the recorded map? | `python -m tuner.recorded_map_rollout` |
 | `tuner/checks/plant_openloop_validation.py` | Does the offline plant model reproduce FSDS's measured open-loop behaviour? | `python -m tuner.checks.plant_openloop_validation [--ab] [--robustness]` |
 | `tuner/nmpc_offline_check.py` | Is the offline NMPC (model parity, Jacobians, SQP convergence, LTV-QP-vs-NMPC A/B) still internally consistent? | `python -m tuner.nmpc_offline_check` |
@@ -52,6 +53,137 @@ question, deleted once concluded. Only a stale `.pyc` remains for these.
 Don't try to run them; if the same question comes up again, treat the
 surviving tools above (particularly `plot_playback.py`, which superseded
 `plot_control_log.py`) as the current equivalent.
+
+## Centralized launcher: `gui/launcher.py`
+
+**The main entry point for this project.** One tkinter app, tabbed by tool,
+wrapping every entry point below into a single window instead of a script
+edit plus a separate terminal command each time. It contains no simulation/
+plotting/tuning logic of its own: every button rewrites a config file in
+place (same effect as hand-editing it) and then shells out to the existing
+tool via subprocess. It does not replace any of the CLI usage documented
+elsewhere on this page, it's a faster path to the same tools, not a
+different implementation of them — everything it does remains directly
+reachable the manual way too.
+
+**Required checkout location: `fsae_MPCTest/` must be cloned directly
+inside the outer FSDS simulator repo's root**, i.e.
+`<FSDS repo root>/fsae_MPCTest/`, a sibling of that repo's own `ros2/`
+folder — the same layout this project's `CLAUDE.md` "Git layout" section
+already documents for every other tool here. The launcher locates
+`ros2/launch_all.sh` and `ros2/src/fsae_planning/tracks/` by walking up
+from its own file location (`gui/launcher.py` → `fsae_MPCTest/` → its
+parent), so a `fsae_MPCTest` checked out anywhere else (a sibling
+directory instead of nested inside, a different drive/path entirely) will
+fail to find the live sim to launch, or warn that `mpc_params.py` isn't
+where it expects (see the Settings tab's live-sync note below).
+
+```bash
+cd fsae_MPCTest && python -m gui.launcher
+```
+
+**Config files this tool writes to** (all in place, no new files, `.bak`
+backups as noted below):
+
+| File | Written by | What changes |
+|---|---|---|
+| `ros2/launch_all.sh` | Launch tab's Launch button | `TRACK`, `CONTROLLER`, `USE_NMPC`, `STANDALONE_OUTPUT`, `USE_PRECOMPUTED_SPEED`, `USE_PRECOMPUTED_PATH`, `V_MAX`, `V_MIN` |
+| `fsae_MPCTest/settings.py` | Settings tab's Save button | `Q_diag`, `R_diag`, `R_rate_diag`, `R_A_ACCEL`, `R_A_BRAKE`, every `NMPC_*` weight override, every feature-enable flag listed below |
+| `ros2/src/fsae_planning/.../mpc_params.py` (live) | Settings tab's Save button | the matching field for every one of the above that has a live counterpart (see "Settings tab, and live/offline sync" below for the handful that don't) |
+| `ros2/src/fsae_planning/tracks/<name>/` | Launch tab's Export & Save Track button | writes `speed_profile.csv`/`raceline.csv`/`centerline.csv` for a newly recorded track (only after explicit confirm if the name already exists) |
+| `fsae_MPCTest/fsds_simulator/tracks/<name>/` | same Export & Save Track button | copy of the same new track's files |
+| `~/fsae_logs/*.csv` → `fsds_simulator/recorded_runs/<Controller>/` | Launch tab's Stop button (moves, doesn't create) | only after the confirmation prompt it shows is accepted |
+
+Nothing else in this repo or the outer `ros2/` tree is touched by any tab.
+
+| Tab | What it does |
+|---|---|
+| **Launch Sim** | Rewrites `ros2/launch_all.sh`'s `TRACK`, `CONTROLLER`, `USE_NMPC`, `STANDALONE_OUTPUT`, `USE_PRECOMPUTED_SPEED`, `USE_PRECOMPUTED_PATH`, `V_MAX`, `V_MIN` from a form (with a preview/confirm before writing), then runs it. A **Stop** button sends the same signal a terminal Ctrl+C would (`launch_all.sh`'s own `trap cleanup SIGINT SIGTERM` handles the actual teardown). See "Record a new track" below for its recording mode. |
+| **Debug a Log** | File browser over `~/fsae_logs/` and `fsds_simulator/recorded_runs/` (including per-controller subfolders); select one or more `*_control_*.csv` files and run `tuner.tools.plot_playback` on them, or use "Debug Latest" for that tool's own auto-load-newest behaviour with no selection needed. |
+| **Run Offline Sim** | Launches `gui/simulation.py`. Carries forward its "rough signal only" caveat (see "The offline sim does not yet fully predict the car" in the root `CLAUDE.md`) directly in the tab. |
+| **Settings** | Edits the commonly-retuned `settings.py` constants in place, described in full below. |
+
+### Record a new track
+
+Checking **"Record new track"** on the Launch tab and typing a name switches
+the form into the recording setup this project's own docs already
+recommend (`launch_all.sh`'s "Set BOTH to false (with CONTROLLER=stanley
+below) when recording a NEW track" comment, and
+[developer_guide.md](developer_guide.md#recording-exporting-and-driving-a-track)'s
+step 1): `CONTROLLER=stanley`, `USE_PRECOMPUTED_SPEED=false`,
+`USE_PRECOMPUTED_PATH=false`. Prior values for those three are remembered
+and restored when the checkbox is unchecked, so toggling recording mode on
+and off never clobbers an otherwise-normal drive setup. `launch_all.sh`
+always writes `cone_map.json` for whatever `TRACK` is set to as a side
+effect of driving, recording mode just makes sure it lands in a *new*
+track's folder with a live (not precomputed) drive behind it.
+
+Once stopped (the **Stop** button, or Ctrl+C in the terminal it opened),
+**Export & Save Track** runs the same two exporters
+[developer_guide.md](developer_guide.md#recording-exporting-and-driving-a-track)'s
+step 2 does by hand (`tuner.tools.export_speed_profile`, then
+`tuner.tools.raceline_optimizer` in both `raceline` and `centerline`
+modes), which write directly into
+`ros2/src/fsae_planning/tracks/<name>/` as they already do outside the
+GUI. It then additionally copies that whole track folder into
+`fsae_MPCTest/fsds_simulator/tracks/<name>/`, since that mirror has no
+automatic resync (see "Third copy" in the root `CLAUDE.md`). Re-exporting
+over an existing track name asks to confirm the overwrite first.
+
+Clicking **Stop** on any run (recording or not) also offers to move that
+run's just-written CSV pair from `~/fsae_logs/` into
+`fsds_simulator/recorded_runs/<Controller>/` — the same manual copy step
+described under "Telemetry playback" below, done for you. It only offers
+logs written after the current launch started, so an unrelated older file
+sitting in `fsae_logs/` is never swept up by mistake.
+
+### Settings tab, and live/offline sync
+
+Edits the commonly-retuned `settings.py` constants in place: `Q_diag`,
+`R_diag`, `R_rate_diag`, `R_A_ACCEL`/`R_A_BRAKE`, every `NMPC_*` weight
+override (with an explicit "override vs. inherit (-1.0)" checkbox per
+field, matching `settings.py`'s own sentinel convention), and every
+feature-enable flag, grouped exactly the way `mpc_params.py`'s own
+per-field `"controller"` metadata already classifies them:
+
+- **Both controllers**: `delay_compensation_enabled` (live-only, no
+  `settings.py` equivalent — the offline rollout always has it on).
+- **LTV-QP only**: adaptive Q scaling, steer-rate anti-hunt, adaptive
+  R-rate in corners, reference-heading rate limit, reversal penalty.
+- **NMPC only**: its own steer-rate anti-hunt, reversal penalty, rate-cost
+  stage ramp, rate-cost 3-zone schedule, and corner rate-blend
+  (experimental, all default off).
+
+Every field shows a short description (and unit, where one applies)
+pulled live from `mpc_params.py`'s own field metadata (or, for the 3
+weight vectors, a hand-written per-index breakdown), so the tab's text can
+never drift out of sync with what the field actually means.
+
+**Saving also updates the live simulator**, not just this repo: every
+weight/override/flag that has a matching field in
+`ros2/src/fsae_planning/control/fsae_control/fsae_control/mpc/mpc_params.py`
+is rewritten there too, in the same click, per CLAUDE.md's "Single source
+of truth for MPC tuning" numeric-parity rule (`settings.py`'s
+`Q_diag[0]` ↔ `mpc_params.py`'s `q_e_y`, and so on). A handful of fields
+have no live counterpart and are settings.py-only: `R_diag[1]` (nominal-
+only, superseded by `R_A_ACCEL`/`R_A_BRAKE`) and `Q_diag`'s last three
+entries (`e_a`/`delta_act`/`a_act`, always 0.0). If the live file isn't
+found at the expected path (an unusual repo layout), Settings still saves
+to `settings.py` alone and says so with a warning, rather than silently
+only updating one side.
+
+**What it does NOT expose**: the full commented-out `MPC_*`/`NMPC_*`
+per-tick weight-override shortlist further down `launch_all.sh` (structural
+solver settings like `NMPC_HORIZON`, `NMPC_SQP_ITERS`) — those stay a
+manual edit, deliberately, since they're touched far less often than the
+Launch tab's fields and the enable/disable-by-comment mechanic for that
+whole block isn't worth the UI surface it would need.
+
+**File safety**: the first time a session rewrites `ros2/launch_all.sh`,
+`settings.py`, or the live `mpc_params.py`, it saves a `.bak` copy
+alongside the original (e.g. `launch_all.sh.bak`) before writing, so a bad
+edit has a one-command recovery (`mv launch_all.sh.bak launch_all.sh`)
+independent of git.
 
 ## Steering system-ID harness: `run_steering_sysid.sh` / `run_steering_step.sh`
 

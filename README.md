@@ -10,7 +10,20 @@ trial and error.
 
 This is the offline half of the project, everywhere below that talks about
 developing, tuning, or testing the MPC without needing FSDS running, this
-repo is what does it. Four things live here:
+repo is what does it.
+
+**`python -m gui.launcher` is the main entry point.** It's a single tabbed
+app for the four things below: launching the live sim (with debug windows,
+including a "record a new track" mode), debugging a recorded log, running
+the offline simulator, and editing the commonly-retuned `settings.py`
+constants, all without hand-editing a script or remembering a CLI. See
+"Centralized launcher" under [Quick Start](#quick-start) below and
+[docs/debugging_tools.md](docs/debugging_tools.md#centralized-launcher-guilauncherpy)
+for the full tab-by-tab reference. Everything it does is also directly
+reachable the manual way described throughout this doc, the launcher is a
+faster path to the same tools, not a separate implementation of them.
+
+Four things live here:
 
 - A fast **2D simulator** (`gui/simulation.py`, backed by `sim/`, `model/`,
   `controller/`) for closed-loop testing a controller against a path,
@@ -124,7 +137,32 @@ pip install cvxpy[osqp] cvxpy[clarabel]
 pip install optuna  # optional: only needed for USE_OPTUNA_PRESEARCH in settings.py
 ```
 
-### 2. Launch the simulator
+### 2. Centralized launcher (start here)
+
+**Requires this repo to be cloned directly inside the outer FSDS simulator
+repo's root**, i.e. `<FSDS repo root>/fsae_MPCTest/`, a sibling of that
+repo's `ros2/` folder — the standard layout this whole project assumes.
+The launcher finds `ros2/launch_all.sh` and the live `mpc_params.py`
+relative to its own location, so a different layout (a sibling checkout
+instead of nested inside, or a different drive/path entirely) will fail to
+find them.
+
+```bash
+cd /path/to/project/fsae_MPCTest
+python -m gui.launcher
+```
+
+This is the fastest way into everything in this repo and the outer FSDS/
+`ros2/` tree: a tabbed app for **Launch Sim** (drives `ros2/launch_all.sh`,
+including a "record a new track" mode with its own Stop/Export workflow),
+**Debug a Log** (browse and open a recorded run in `plot_playback.py`),
+**Run Offline Sim** (launches `gui/simulation.py`), and **Settings** (the
+commonly-retuned `Q`/`R` weights, NMPC overrides, and feature flags in
+`settings.py`, kept in sync with the live `mpc_params.py` on save). See
+[docs/debugging_tools.md](docs/debugging_tools.md#centralized-launcher-guilauncherpy)
+for the full reference.
+
+### 3. Or, launch the simulator directly
 
 ```bash
 cd /path/to/project
@@ -163,6 +201,7 @@ for how to run the CMA-ES weight tuner instead.
 
 | File | Purpose |
 |---|---|
+| `gui/launcher.py` | **Main entry point.** Tabbed tkinter app: launch the live sim (incl. recording a new track), debug a recorded log, run the offline simulator, and edit `settings.py`'s commonly-retuned constants, all from one window. See [docs/debugging_tools.md](docs/debugging_tools.md#centralized-launcher-guilauncherpy). |
 | `gui/simulation.py` | Interactive matplotlib GUI, draw/load a path, run one closed-loop rollout, scrub through history, view metrics. Also renders the live planner centreline (magenta) alongside the true target path when `USE_PLANNER=True`. |
 | `sim/track_io.py` | Loads a recorded cone map (JSON, from `fsae_planning`'s `cone_recorder` node) into the same path/cones tuple shape as a synthetic path, for **Load Recorded Track**. |
 | `tuner/offline_tuner.py` | Headless CMA-ES weight search across a library of synthetic corner shapes. |

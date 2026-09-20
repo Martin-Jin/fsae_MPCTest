@@ -45,6 +45,10 @@ cd /path/to/project
 python -m gui.simulation
 ```
 
+Or launch it (plus the live sim, log playback, and settings.py editing) from
+one place: `python -m gui.launcher` — see
+[debugging_tools.md](debugging_tools.md#centralized-launcher-guilauncherpy).
+
 ### 3. Get a path onto the map
 
 Either:
