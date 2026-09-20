@@ -412,6 +412,13 @@ def _sibling_path_csv(control_csv: Path) -> Path | None:
     return candidate if candidate.exists() else None
 
 
+# How long (milliseconds) window teardown waits after signalling a running
+# launch before destroying the window. Only a courtesy pause so the signal
+# lands before this process exits -- launch_all.sh's cleanup runs in its
+# own process group and finishes regardless of how long this GUI lives.
+_CLOSE_STOP_GRACE_MS = 500
+
+
 def _stop_process(proc: subprocess.Popen) -> None:
     """Sends SIGINT to proc's whole process group (it was started with
     start_new_session=True, i.e. it IS its own group leader), the same
@@ -635,13 +642,24 @@ class LaunchTab(ttk.Frame):
         except OSError as exc:
             messagebox.showerror("Launch tab", f"Failed to launch: {exc!r}")
 
-    def _on_stop(self) -> None:
+    def stop_running_sim(self) -> bool:
+        """Signals a running launch and resets the buttons, without any of
+        _on_stop's log-offer follow-up. Separate from _on_stop so window
+        teardown can reuse it: the launched process group survives this
+        GUI (start_new_session=True), so closing the window without this
+        would strand a running sim with no Stop button left to press.
+        Returns True if a live process was actually signalled."""
+        was_running = self._proc is not None and self._proc.poll() is None
         if self._proc is not None:
             _stop_process(self._proc)
-        self.status_var.set("Stop signal sent (same as Ctrl+C). "
-                             "The sim/bridge windows will close themselves.")
         self.launch_button.configure(state="normal")
         self.stop_button.configure(state="disabled")
+        return was_running
+
+    def _on_stop(self) -> None:
+        self.stop_running_sim()
+        self.status_var.set("Stop signal sent (same as Ctrl+C). "
+                             "The sim/bridge windows will close themselves.")
         self._offer_move_log_to_recorded_runs()
 
     def _offer_move_log_to_recorded_runs(self) -> None:
@@ -1233,10 +1251,28 @@ class LauncherApp(tk.Tk):
         notebook = ttk.Notebook(self, padding=(0, 0))
         notebook.pack(fill="both", expand=True, padx=10, pady=10)
 
-        notebook.add(LaunchTab(notebook, paths), text="Launch Sim")
+        self._launch_tab = LaunchTab(notebook, paths)
+        notebook.add(self._launch_tab, text="Launch Sim")
         notebook.add(LogDebugTab(notebook, paths), text="Debug a Log")
         notebook.add(OfflineSimTab(notebook, paths), text="Run Offline Sim")
         notebook.add(SettingsTab(notebook, paths), text="Settings")
+
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _on_close(self) -> None:
+        """Stops a sim still running under the Launch tab before tearing
+        down the window. launch_all.sh runs in its own process group and
+        is not supervised by this GUI, so without this it would keep
+        running (nodes, bridge, diagnostic captures) with the only Stop
+        button gone."""
+        if self._launch_tab.stop_running_sim():
+            # Give launch_all.sh's own `trap cleanup` a moment to act on
+            # the SIGINT before the interpreter exits. Not a guarantee of
+            # completion, just avoids racing teardown against process
+            # exit; cleanup continues independently either way.
+            self.after(_CLOSE_STOP_GRACE_MS, self.destroy)
+            return
+        self.destroy()
 
 
 def main() -> None:
