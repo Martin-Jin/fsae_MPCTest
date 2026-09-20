@@ -260,11 +260,21 @@ class LiveVizNode(Node):
 # stable regardless of dict iteration order.
 DEBUG_BAR_GROUPS = (
     ('tracking', 'Tracking error cost (% of tracking total)',
-     ('e_y', 'e_yd', 'e_psi', 'yaw_rate', 'e_v')),
+     ('e_y', 'e_yd', 'e_psi', 'yaw_rate', 'e_v', 'steering', 'accel')),
     ('effort', 'Input effort cost (% of effort total)',
      ('steer_effort', 'accel_effort')),
     ('rate', 'Input rate-of-change cost (% of rate total)',
      ('delta_u_steer', 'delta_u_accel')),
+)
+
+# Order the horizon-summed panel draws its bars in. Unlike DEBUG_BAR_GROUPS
+# above (step-0-only, one 100% scale per unit-family group), every one of
+# these IS on one shared scale together: each is a share of total_cost, the
+# solver's true full-horizon objective, so they are genuinely comparable
+# (see mpc_controller.py's _publish_debug_weights()'s horizon_terms).
+DEBUG_HORIZON_TERMS = (
+    'e_y', 'e_yd', 'e_psi', 'yaw_rate', 'e_v',
+    'steer_effort', 'accel_effort', 'delta_u_steer', 'delta_u_accel',
 )
 
 
@@ -292,10 +302,16 @@ def main():
 
     # Separate window (per the "too much for one window" call): the weighted
     # cost breakdown has nothing spatial about it and doesn't need to share
-    # a canvas with the map view -- a dedicated figure also gives each of
-    # the three unit-family groups its own full-height panel instead of
-    # squeezing all of them into one narrow sidebar.
-    fig_dbg, ax_bars = plt.subplots(len(DEBUG_BAR_GROUPS), 1, figsize=(7, 9))
+    # a canvas with the map view. Left column: the 3 step-0 unit-family
+    # panels (own 100% scale each). Right column: one tall panel with every
+    # term's horizon-summed share of total_cost, on one shared scale, since
+    # those percentages are genuinely comparable to each other (slack is
+    # deliberately excluded here, unused -- see DEBUG_HORIZON_TERMS, so
+    # these bars fall a little short of summing to total_cost).
+    fig_dbg = plt.figure(figsize=(13, 9))
+    gs = fig_dbg.add_gridspec(len(DEBUG_BAR_GROUPS), 2, width_ratios=[1.0, 1.0])
+    ax_bars = [fig_dbg.add_subplot(gs[i, 0]) for i in range(len(DEBUG_BAR_GROUPS))]
+    ax_horizon = fig_dbg.add_subplot(gs[:, 1])
     fig_dbg.suptitle('MPC weighted-cost breakdown (debug)')
 
     def redraw(_frame):
@@ -396,15 +412,48 @@ def main():
                 bars = ax_bar.barh(present, pcts, color=colors)
                 for bar, name in zip(bars, present):
                     t = terms[name]
+                    # 'steering'/'accel' are synthetic combined bars (effort
+                    # + rate folded together, see _publish_debug_weights())
+                    # with no single error/weight of their own to show.
+                    if t['error'] is None:
+                        detail = '(effort + rate combined)'
+                    else:
+                        detail = f"(v={t['error']:+.4f}, w={t['weight']:.2f})"
                     ax_bar.text(
                         bar.get_width() + 1.5, bar.get_y() + bar.get_height() / 2,
-                        f"{t['pct']:.1f}%  (v={t['error']:+.4f}, w={t['weight']:.2f})",
+                        f"{t['pct']:.1f}%  {detail}",
                         va='center', ha='left', fontsize=7, family='monospace')
             else:
                 ax_bar.text(0.5, 0.5, '(no data yet)', ha='center', va='center',
                             transform=ax_bar.transAxes, fontsize=9)
             ax_bar.set_xlim(0, 100)
             ax_bar.set_xlabel(label, fontsize=8)
+
+        # Right-side panel: every term's horizon-summed cost as a share of
+        # total_cost, one shared scale (see DEBUG_HORIZON_TERMS' comment).
+        # Sorted descending so the biggest true contributor to the solver's
+        # actual decision is always at the top, regardless of term count.
+        ax_horizon.clear()
+        horizon_terms = dw.get('horizon_terms', {}) if dw is not None else {}
+        present_h = [n for n in DEBUG_HORIZON_TERMS if n in horizon_terms]
+        present_h.sort(key=lambda n: horizon_terms[n]['pct'], reverse=True)
+        if present_h:
+            pcts_h = [horizon_terms[n]['pct'] for n in present_h]
+            colors_h = ['tab:red' if p >= 30.0 else 'tab:purple' for p in pcts_h]
+            bars_h = ax_horizon.barh(present_h, pcts_h, color=colors_h)
+            ax_horizon.invert_yaxis()
+            for bar, name in zip(bars_h, present_h):
+                t = horizon_terms[name]
+                ax_horizon.text(
+                    bar.get_width() + 1.0, bar.get_y() + bar.get_height() / 2,
+                    f"{t['pct']:.1f}%  (cost={t['cost']:.3f})",
+                    va='center', ha='left', fontsize=7, family='monospace')
+        else:
+            ax_horizon.text(0.5, 0.5, '(no data yet)', ha='center', va='center',
+                             transform=ax_horizon.transAxes, fontsize=9)
+        ax_horizon.set_xlim(0, 100)
+        ax_horizon.set_xlabel('Horizon-summed cost (% of true total solver cost)', fontsize=8)
+        ax_horizon.set_title('Every term, full predicted horizon', fontsize=9)
 
         header = []
         if dw is not None:

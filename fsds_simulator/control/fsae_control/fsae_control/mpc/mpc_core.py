@@ -731,6 +731,7 @@ class MPCController:
         # value.
         self._last_solver_cost: float | None = None
         self._last_slack0: float | None = None
+        self._last_cost_breakdown: dict | None = None
 
         # Filtered pose age and the currently-committed rollforward depth.
         # See the MPCParams.pose_age_lp_alpha / .n_delay_hysteresis notes above.
@@ -833,6 +834,7 @@ class MPCController:
             "r_a_accel": r_a_accel_param,
             "r_a_brake": r_a_brake_param,
             "weighted_u_prev": weighted_u_prev_param,
+            "x":     x,
             "u":     u,
             "slack": slack,
         }
@@ -1138,11 +1140,13 @@ class MPCController:
             print("[MPC] Warning: OSQP OPTIMAL_INACCURATE — Proceeding with viable solution.")
             self._last_solver_cost = qp["prob"].value
             self._last_slack0 = float(qp["slack"][0].value)
+            self._last_cost_breakdown = self._compute_cost_breakdown(qp)
             return u_val.copy()
 
         if status == cp.OPTIMAL and u_val is not None:
             self._last_solver_cost = qp["prob"].value
             self._last_slack0 = float(qp["slack"][0].value)
+            self._last_cost_breakdown = self._compute_cost_breakdown(qp)
             return u_val.copy()
 
         # ── Fallback: Clarabel ────────────────────────────────────────
@@ -1154,6 +1158,7 @@ class MPCController:
                 print("[MPC] Warning: OSQP failed, Clarabel succeeded.")
                 self._last_solver_cost = qp["prob"].value
                 self._last_slack0 = float(qp["slack"][0].value)
+                self._last_cost_breakdown = self._compute_cost_breakdown(qp)
                 return u_val_fb.copy()
         except cp.error.SolverError as exc:
             print(f"[MPC] Warning: Clarabel also failed: {exc!r}")
@@ -1166,7 +1171,58 @@ class MPCController:
         # unknown rather than silently repeating the previous tick's value.
         self._last_solver_cost = None
         self._last_slack0 = None
+        self._last_cost_breakdown = None
         return np.array([self._u_prev[0], -self.a_max_brake])
+
+    def _compute_cost_breakdown(self, qp: dict) -> dict:
+        """
+        Horizon-summed per-term cost, reproducing _build_qp's cost
+        expression (see that method's "Cost Formulation" block) in plain
+        numpy from the just-solved qp's variable/parameter .value's, term by
+        term instead of as one scalar. Debug-only (live_viz.py's horizon
+        panel): called once per successful solve, never affects the QP
+        itself. Keep in sync with _build_qp() by hand if that cost
+        expression ever changes.
+        """
+        x_val = qp["x"].value
+        u_val = qp["u"].value
+        sqrtQ = qp["sqrtQ"].value[:, 0]
+        sqrtR0 = float(qp["sqrtR"].value[0, 0])
+        sqrtRr = qp["sqrtRr"].value[:, 0]
+        r_a_accel = float(qp["r_a_accel"].value)
+        r_a_brake = float(qp["r_a_brake"].value)
+        weighted_u_prev = qp["weighted_u_prev"].value
+
+        # Tracking terms: state rows are [e_y, e_yd, e_psi, r(yaw_rate), e_v,
+        # e_a, delta_act, a_act] -- see this module's docstring. Terminal
+        # extra (_build_qp lines ~795-798) folded in; a no-op today since
+        # terminal_scale is always 1.0, kept correct in case that changes.
+        state_names = ('e_y', 'e_yd', 'e_psi', 'yaw_rate', 'e_v')
+        horizon_terms = {}
+        for i, name in enumerate(state_names):
+            base = float(np.sum((sqrtQ[i] * x_val[i, :]) ** 2))
+            terminal_extra = 0.0
+            if self.terminal_scale != 1.0:
+                terminal_extra = float(
+                    (self.terminal_scale - 1.0) * (sqrtQ[i] * x_val[i, -1]) ** 2)
+            horizon_terms[name] = base + terminal_extra
+
+        horizon_terms['steer_effort'] = float(np.sum((sqrtR0 * u_val[0, :]) ** 2))
+        horizon_terms['accel_effort'] = float(
+            r_a_accel * np.sum(np.maximum(u_val[1, :], 0.0) ** 2)
+            + r_a_brake * np.sum(np.minimum(u_val[1, :], 0.0) ** 2))
+
+        # Rate cost: step-0 (against u_prev) plus subsequent-steps diff, see
+        # _build_qp's "Step-0 rate cost" / "Subsequent rate cost" blocks.
+        rate0 = (sqrtRr * u_val[:, 0] - weighted_u_prev) ** 2
+        rate_rest = np.zeros(2)
+        if u_val.shape[1] > 1:
+            du = np.diff(u_val, axis=1)
+            rate_rest = np.sum((sqrtRr[:, None] * du) ** 2, axis=1)
+        horizon_terms['delta_u_steer'] = float(rate0[0] + rate_rest[0])
+        horizon_terms['delta_u_accel'] = float(rate0[1] + rate_rest[1])
+
+        return {'horizon_terms': horizon_terms}
 
     def compute(
         self,
@@ -1484,6 +1540,11 @@ class MPCController:
             # None whenever both solvers failed (see _solve_qp's fail-safe
             # branch, which never calls .solve() again after that point).
             "total_cost":    self._last_solver_cost,
+            # Per-term horizon-summed cost breakdown, debug-only (see
+            # _compute_cost_breakdown). Same key/shape nmpc_core.py produces
+            # so mpc_controller.py can read one uniform structure regardless
+            # of which solver is active.
+            "cost_breakdown": self._last_cost_breakdown,
         }
 
         return steering, throttle, brake

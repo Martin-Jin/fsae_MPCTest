@@ -637,15 +637,25 @@ class MPCControllerNode(Node):
         its own group -- comparing within a group is the only comparison
         that's meaningful. live_viz.py draws one 100% bar-graph per group.
 
-        The per-term breakdown is step-0-only (the current tick's
+        The `terms` breakdown is step-0-only (the current tick's
         instantaneous errors/rates/command, not summed over the horizon) for
         both solvers, so it stays an "at a glance, which term is biggest
-        right now" signal, not a horizon-summed one. total_cost, by
-        contrast, IS the exact full-horizon scalar each solver minimised
+        right now" signal, not a horizon-summed one. The tracking group also
+        carries two synthetic combined entries, 'steering' and 'accel',
+        each that input's effort + rate-of-change step-0 cost folded into
+        one bar (their constituent steer_effort/accel_effort/delta_u_steer/
+        delta_u_accel entries are kept too, for the effort/rate panels).
+
+        `horizon_terms`, published separately, IS the true full-horizon
+        per-term cost (see mpc_core.py's _compute_cost_breakdown /
+        nmpc_core.py's _cost_breakdown), each shown as a share of
+        total_cost -- the exact full-horizon scalar each solver minimised
         (cp.Problem.value for the LTV-QP, the SQP's own converged objective
-        for NMPC, see mpc_core.py's _solve_qp / nmpc_core.py's
-        _cost_breakdown) -- it will not visually reconcile with a sum of any
-        group's displayed bars, by design.
+        for NMPC). These percentages are directly comparable to each other
+        (unlike the step-0 `terms` breakdown above), but do NOT sum to
+        exactly 100%/total_cost: the soft track-boundary slack cost is
+        deliberately excluded from horizon_terms (unused in this debug
+        display) even though it's still part of total_cost.
 
         Falls back to the static MPCParams weight when no corner-blended
         "_eff" value is in last_telemetry (always true for NMPC, which has
@@ -674,6 +684,19 @@ class MPCControllerNode(Node):
             'delta_u_accel': ('rate', tel.get('delta_u_accel', 0.0), params.r_rate_a),
         }
         costs = {name: weight * error ** 2 for name, (group, error, weight) in terms.items()}
+
+        # Two combined bars for the top (tracking) panel: 'steering' and
+        # 'accel' each fold that input's effort + rate-of-change step-0 cost
+        # into one bar, so the tracking panel shows how much the two inputs
+        # are costing overall alongside the 5 tracking-error terms. The
+        # underlying steer_effort/accel_effort/delta_u_steer/delta_u_accel
+        # entries stay as their own bars too (still needed by the effort/
+        # rate panels) -- these are additional entries, not replacements.
+        costs['steering'] = costs['steer_effort'] + costs['delta_u_steer']
+        costs['accel'] = costs['accel_effort'] + costs['delta_u_accel']
+        terms['steering'] = ('tracking', None, None)
+        terms['accel'] = ('tracking', None, None)
+
         group_totals: dict[str, float] = {}
         for name, (group, _error, _weight) in terms.items():
             group_totals[group] = group_totals.get(group, 0.0) + costs[name]
@@ -688,11 +711,29 @@ class MPCControllerNode(Node):
             }
             for name, (group, error, weight) in terms.items()
         }
+
+        # Every term's horizon-summed cost (mpc_core.py's
+        # _compute_cost_breakdown / nmpc_core.py's _cost_breakdown, both
+        # under last_telemetry['cost_breakdown']['horizon_terms']), each as
+        # a share of total_cost -- one shared scale, unlike the step-0
+        # groups above, since these are all genuinely comparable: exactly
+        # the terms the solver actually summed to reach total_cost.
+        total_cost = tel.get('total_cost')
+        horizon_terms_raw = (tel.get('cost_breakdown') or {}).get('horizon_terms', {})
+        horizon_terms = {
+            name: {
+                'cost': cost,
+                'pct': (100.0 * cost / total_cost) if total_cost else 0.0,
+            }
+            for name, cost in horizon_terms_raw.items()
+        }
+
         msg = String()
         msg.data = json.dumps({
             'terms': breakdown,
+            'horizon_terms': horizon_terms,
             'solve_ms': tel.get('solve_ms'),
-            'total_cost': tel.get('total_cost'),
+            'total_cost': total_cost,
         })
         self.pub_debug_weights.publish(msg)
 

@@ -1512,7 +1512,7 @@ class NMPCController:
             slack = float(self.nmpc.nmpc_slack_weight * np.sum(over ** 2))
         return stage + eff + rate + jerk + slack
 
-    def _cost_breakdown(self, X, U, H):
+    def _cost_breakdown(self, X, U, H, u_prev, u_prev2):
         """
         Same arithmetic as _cost(), split into named components instead of
         summed to one scalar. Debug-only (live_viz.py's weighted-error
@@ -1521,6 +1521,14 @@ class NMPCController:
         accepted. Keep in sync with _cost() by hand if that method's terms
         ever change; duplicated rather than refactoring _cost() to return
         both, to avoid touching the hot backtracking path at all.
+
+        u_prev/u_prev2 are taken as explicit arguments rather than read from
+        self._u_prev/self._u_prev2: compute() calls this AFTER already
+        advancing both (for the next tick's warm start), so reading the
+        instance attributes here would score du/the jerk term against the
+        wrong reference and silently distort the rate/jerk split -- pass
+        the same u_prev/u_prev2 _cost()/_solve_step() actually solved
+        against (compute()'s local, pre-advance copies).
         """
         w = self.w_out
         H = H[:, :NH]
@@ -1538,7 +1546,7 @@ class NMPCController:
                     + (self._r_delta_stage0(X) - self.r_delta) * U[0, 0] ** 2
                     + self.r_a_accel * np.sum(np.maximum(a, 0.0) ** 2)
                     + self.r_a_brake * np.sum(np.minimum(a, 0.0) ** 2))
-        du = np.vstack([U[0] - self._u_prev, np.diff(U, axis=0)])
+        du = np.vstack([U[0] - u_prev, np.diff(U, axis=0)])
         _rr = getattr(self, '_Rr_flat', None)
         if _rr is None or _rr.shape[0] != du.size:
             rate = float(np.sum(self.r_rate * du ** 2))
@@ -1546,7 +1554,7 @@ class NMPCController:
             rate = float(np.sum(_rr * du.reshape(-1) ** 2))
         jerk = 0.0
         if self._E2rE2 is not None:
-            d2 = np.vstack([du[0] - (self._u_prev - self._u_prev2),
+            d2 = np.vstack([du[0] - (u_prev - u_prev2),
                             np.diff(du, axis=0)])
             jerk = float(np.sum(np.array([self.rjerk_delta, self.rjerk_a]) * d2 ** 2))
         slack = 0.0
@@ -1554,6 +1562,32 @@ class NMPCController:
             over = np.maximum(np.abs(X[1:, IDX_EY]) - self.nmpc.nmpc_track_halfwidth,
                                0.0)
             slack = float(self.nmpc.nmpc_slack_weight * np.sum(over ** 2))
+
+        # Per-term horizon-summed breakdown (unlike stage/eff/rate above,
+        # which merge all 5 output terms / both inputs together) -- for
+        # live_viz.py's horizon panel. _rr reshaped to (N, nu) rather than
+        # flattened: np.tile(self.r_rate, N) interleaves [steer, accel] per
+        # stage, so column 0/1 of the reshape is exactly steer/accel's own
+        # per-stage weight, matching du's own (N, nu) column layout.
+        steer_names = ('e_y', 'e_yd', 'e_psi', 'yaw_rate', 'e_v')
+        horizon_terms = {
+            name: float(w[i] * np.sum(H[:-1, i] ** 2)
+                        + self.terminal_scale * w[i] * H[-1, i] ** 2)
+            for i, name in enumerate(steer_names)
+        }
+        horizon_terms['steer_effort'] = float(
+            self.r_delta * np.sum(U[:, 0] ** 2)
+            + (self._r_delta_stage0(X) - self.r_delta) * U[0, 0] ** 2)
+        horizon_terms['accel_effort'] = float(
+            self.r_a_accel * np.sum(np.maximum(a, 0.0) ** 2)
+            + self.r_a_brake * np.sum(np.minimum(a, 0.0) ** 2))
+        if _rr is None or _rr.shape[0] != du.size:
+            rate_cols = self.r_rate[None, :] * du ** 2
+        else:
+            rate_cols = _rr.reshape(du.shape) * du ** 2
+        horizon_terms['delta_u_steer'] = float(np.sum(rate_cols[:, 0]))
+        horizon_terms['delta_u_accel'] = float(np.sum(rate_cols[:, 1]))
+
         return {
             'step0_terms': out_terms,     # step-0 output errors, for the per-error bar graph
             'stage_total': stage,         # full-horizon output-tracking cost
@@ -1561,6 +1595,7 @@ class NMPCController:
             'rate_total': rate,           # full-horizon input rate-of-change cost
             'jerk_total': jerk,           # full-horizon input jerk cost (0.0 if disabled)
             'slack_total': slack,         # full-horizon soft-boundary slack cost (0.0 if disabled)
+            'horizon_terms': horizon_terms,  # per-term horizon sums, for live_viz.py's horizon panel
         }
 
     def _solve_step(self, X, U, ref, v_ref):
@@ -1992,6 +2027,10 @@ class NMPCController:
         exp_a = math.exp(-self.dt / self.plant.tau_a)
         self._delta_act = self._delta_act * exp_delta + u_opt[0] * (1.0 - exp_delta)
         self._a_act = self._a_act * exp_a + u_opt[1] * (1.0 - exp_a)
+        # Captured before self._u_prev/self._u_prev2 advance below -- these
+        # are the exact values _cost()/_solve_step() solved against this
+        # tick, needed by _cost_breakdown() afterward (see its docstring).
+        u_prev_for_breakdown, u_prev2_for_breakdown = self._u_prev, self._u_prev2
         self._u_prev2 = self._u_prev.copy()
         self._u_prev = u_opt.copy()
 
@@ -2006,7 +2045,8 @@ class NMPCController:
             brake = float(np.clip(-a_cmd / self.a_max_brake, 0.0, 1.0))
 
         solve_ms = (time.perf_counter() - t0) * 1e3
-        cost_breakdown = self._cost_breakdown(X, U, H)
+        cost_breakdown = self._cost_breakdown(
+            X, U, H, u_prev_for_breakdown, u_prev2_for_breakdown)
 
         # Telemetry: the keys mpc_core publishes keep their exact meaning (so
         # every existing offline analysis script and telemetry_logger column
