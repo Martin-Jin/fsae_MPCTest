@@ -302,6 +302,11 @@ class NMPCParams:
                 "existing W_slack = 10000.0",
         "controller": "nmpc_only",
     })
+    # Back to 0.0, following nmpc_progress_enabled back to False. Inert
+    # without the progress reward anyway (nothing else rewards violating the
+    # boundary), so this is a no-op in the shipped configuration rather than
+    # a behaviour change. Set it to ~1000 alongside any progress-term
+    # experiment; it is necessary there, just not sufficient.
     nmpc_slack_linear_weight: float = field(default=0.0, metadata={
         "unit": "1/m",
         "desc": "LINEAR track-bound slack penalty, additional to the "
@@ -433,9 +438,28 @@ class NMPCParams:
     # late_turn_in_investigation.md §16.2 DEFERRED (on merit, explicitly
     # "the right thing to try after tracking works") rather than rejected.
     #
-    # STATUS: offline only, and it does NOT yet beat the tracking controller
-    # it would replace (best progress-mode score 0.892 against the
-    # baseline's 0.757, lower is better). Do not enable on the car.
+    # STATUS: OFF. Turning it on by default was requested (2026-09-21) and
+    # attempted, then reverted the same day when the shipped configuration
+    # was measured end to end: it does not complete a lap at ANY setting
+    # tried, so enabling it would have driven the car off track on the first
+    # corner of every run.
+    #
+    # Measured on comp_test_map_3 at the current SPEED_TARGET_DEFICIT_MAX of
+    # 5.0, all with the linear track slack active:
+    #   q_progress 4.0  -> never launches at all (progress 0.000)
+    #   q_progress 5.0  -> off track at 9.9% of a lap
+    #   q_progress 6.0  -> off track at 9.8% of a lap
+    # Raising nmpc_slack_linear_weight 1000 -> 50000 changed nothing at any
+    # of those, so the boundary penalty is not the missing piece.
+    #
+    # The usable band NARROWED when SPEED_TARGET_DEFICIT_MAX went 2.5 -> 5.0:
+    # the higher speed cap hands the progress reward more headroom to spend,
+    # and it spends it into corners. Any future attempt has to be re-measured
+    # against the deficit value actually in force, not an older one.
+    #
+    # Tracking (this flag False) completes cleanly and scores 0.714 on the
+    # same map, so there is no configuration in which turning this on is
+    # currently the better choice.
     nmpc_progress_enabled: bool = field(default=False, metadata={
         "unit": "bool",
         "desc": "true -> row 4 of h() switches from the two-sided "

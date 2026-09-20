@@ -1,4 +1,4 @@
-# Progress-term NMPC: implemented, and it drives, but it does not beat tracking yet
+# Progress-term NMPC: implemented, but it does not reliably complete a lap
 
 ## The most useful result here is not the progress term
 
@@ -10,14 +10,18 @@ lateral error and lower steering saturation, and makes run to run scores 40x
 more repeatable. That change is independent of the progress term, applies to
 both controllers, and is already applied. See "Accel authority" below.
 
-The progress term itself works but is not yet worth enabling.
+The progress term itself is implemented and wired end to end, but it does not
+reliably complete a lap and is not worth enabling.
 
 ## Summary
 
 The NMPC can be made to choose its own speed from an arc-length progress
-reward instead of tracking a speed profile, and it completes a lap. It does
-not currently beat the tracking controller it would replace, and it only
-completes a lap at all inside a narrow weight band.
+reward instead of tracking a speed profile. It launches and drives, but on a
+repeat measurement it does NOT reliably complete a lap at any weight tried,
+and it never beats the tracking controller it would replace. The table below
+is the first sweep, kept because the failure modes in it are real; the
+repeatability check that supersedes its one passing row is the section after
+it.
 
 | configuration | score | progress | DNF | off-track | \|e_y\| mean/p90 | a_cmd max |
 |---|---|---|---|---|---|---|
@@ -30,9 +34,10 @@ completes a lap at all inside a narrow weight band.
 Lower score is better. `comp_test_map_3`, oracle path, `USE_NMPC=True`,
 otherwise settings.py defaults.
 
-Only one configuration finishes: `q_progress=5` with the linear track-boundary
-slack enabled. It scores **0.892 against the baseline's 0.757**, i.e. about
-18% worse, and carries a 55% higher `|e_y|` p90.
+One configuration finished in the first sweep: `q_progress=5` with the linear
+track-boundary slack enabled, scoring 0.892 against the baseline's 0.757.
+**That result did not hold up** (see "The completing run was not repeatable"
+below) and should not be quoted as the feature's standing result.
 
 **The feature is implemented, defaults off, and is not recommended for live
 testing in its current state.** The two measured obstacles below are specific
@@ -47,11 +52,44 @@ must not exceed. The idea is that the controller works out its own speed,
 going quickly where the track allows and slowing where it does not, instead of
 following a speed profile computed in advance.
 
-It works, in the sense that the car launches, drives, and completes a lap. But
-it is worse at staying on the intended line than the version it replaces, and
-the range of reward strengths that produce a finished lap is narrow: too weak
-and the car never pulls away from a standstill, too strong and it leaves the
-circuit.
+It works in the sense that the car launches and drives. It does not work in
+the sense that matters: on repeat measurement it leaves the track before
+finishing a lap at every reward strength tried. Too weak and the car never
+pulls away from a standstill, too strong and it runs wide at a corner, and the
+gap between those two turned out not to contain a setting that reliably
+finishes.
+
+## The completing run was not repeatable, and the default stays OFF
+
+Turning the progress term on by default was requested on 2026-09-21,
+attempted, and **reverted the same day** after measuring the exact shipped
+configuration end to end rather than trusting the earlier sweep.
+
+At the current `SPEED_TARGET_DEFICIT_MAX = 5.0`, with the linear track slack
+active, nothing completes a lap:
+
+| `q_progress` | slack_linear 1000 | 10000 | 50000 |
+|---|---|---|---|
+| 4.0 | never launches (progress 0.000) | same | same |
+| 5.0 | off track at 9.9% | same | same |
+| 6.0 | off track at 9.8% | same | same |
+
+Raising the boundary penalty 50x changes nothing at any weight, so the slack
+term is not the missing piece. Tracking on the same map completes cleanly and
+scores **0.714**.
+
+**Two corrections to the earlier write-up:**
+
+1. **The single "completed lap" at `q_progress=5` was not repeatable.** Re-run
+   at `DEFICIT_MAX = 2.5` (the value it was originally measured at) it goes
+   off track at 57% of a lap. The original pass was a lucky draw from this
+   rollout's run to run variance, not a property of the configuration, and
+   reporting it as a result was wrong.
+2. **The usable band NARROWED when `SPEED_TARGET_DEFICIT_MAX` went 2.5 to
+   5.0.** The higher speed cap hands the progress reward more headroom, and it
+   spends it going into corners. The two changes interact, so any future
+   progress-term measurement has to be taken against the deficit value
+   actually in force.
 
 ## The weight band is narrow and both edges are hard failures
 
@@ -71,7 +109,7 @@ is *better* than the baseline (`|e_y|` mean 0.187 against 0.418): it is not
 wandering, it is carrying too much speed into a corner and running out of
 road. This is the documented corner-cutting incentive, below.
 
-## The corner-cutting incentive is real and the linear slack term fixes it
+## The corner-cutting incentive is real, and the linear slack term helps but does not fix it
 
 In Frenet coordinates the rate of progress is
 
@@ -89,16 +127,19 @@ first small amount of boundary violation is nearly free.
 
 Adding a linear term to the boundary slack (Liniger's MPCC reference
 implementation carries both a quadratic `sc_quad_track` and a linear
-`sc_lin_track` for this reason) converts a `q_progress=5` off-track DNF into a
-completed lap:
+`sc_lin_track` for this reason) measurably delays the excursion, and in one
+run it produced a completed lap:
 
 | | score | progress | off-track |
 |---|---|---|---|
 | `q_progress=5`, quadratic slack only | 12.583 | 0.570 | yes |
 | `q_progress=5`, plus `slack_linear_weight=1000` | 0.892 | 0.995 | no |
 
-It does not rescue `q_progress=7`, which fails for a different reason (too much
-speed, not too little boundary pressure).
+**That completed lap did not reproduce**, and raising the linear weight from
+1000 to 50000 does not rescue any weight (see the repeatability section
+above). So the mechanism is real and worth keeping in any future attempt, but
+it is not sufficient on its own, and it was a mistake to describe it as a
+fix.
 
 ## The unreachable target must be floored, or the car cannot launch
 
@@ -243,7 +284,10 @@ In rough order of expected value:
 
 ## Status
 
-`NMPC_PROGRESS_ENABLED = False` / `nmpc_progress_enabled: false` everywhere.
+`NMPC_PROGRESS_ENABLED = False` / `nmpc_progress_enabled: false` everywhere,
+and `nmpc_slack_linear_weight` back to `0.0` alongside it (inert without the
+progress reward). Enabling by default was tried on 2026-09-21 and reverted
+the same day, see "The completing run was not repeatable" above.
 
 Flags-off is bit-identical to the pre-change controller on **both** sides:
 offline (same `u_opt`, same solved cost) and live (all 6 test ticks and the
