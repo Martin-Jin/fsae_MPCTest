@@ -95,6 +95,8 @@ from settings import (
     NMPC_RJERK_DELTA, NMPC_RJERK_A,
     NMPC_RRATE_ZONE_ENABLED, NMPC_RRATE_ZONE_BOOST_STRAIGHT,
     NMPC_RRATE_ZONE_EASE_APPROACH, NMPC_RRATE_ZONE_FLOOR_CORNER,
+    NMPC_PROGRESS_ENABLED, NMPC_Q_PROGRESS, NMPC_PROGRESS_REACH,
+    NMPC_PROGRESS_V_MIN, NMPC_SLACK_LINEAR_WEIGHT,
 )
 
 
@@ -741,6 +743,7 @@ def run_core_rollout(
             trust_delta_rad=NMPC_TRUST_DELTA_RAD, trust_a=NMPC_TRUST_A,
             backtrack_max=NMPC_BACKTRACK_MAX,
             track_halfwidth=NMPC_TRACK_HALFWIDTH, slack_weight=NMPC_SLACK_WEIGHT,
+            slack_linear_weight=_ov('slack_linear_weight', NMPC_SLACK_LINEAR_WEIGHT),
             osqp_max_iter=NMPC_OSQP_MAX_ITER, osqp_eps=NMPC_OSQP_EPS,
             alat_ceiling_enabled=NMPC_ALAT_CEILING_ENABLED,
             alat_flat=ALAT_CEILING_FLAT, alat_slope=ALAT_CEILING_SLOPE,
@@ -768,6 +771,10 @@ def run_core_rollout(
             latency_compensation_enabled=NMPC_LATENCY_COMPENSATION_ENABLED,
             latency_compensation_ms=NMPC_LATENCY_COMPENSATION_MS,
             kappa_rate_max=NMPC_KAPPA_RATE_MAX,
+            progress_enabled=_ov('progress_enabled', NMPC_PROGRESS_ENABLED),
+            q_progress=_ov('q_progress', NMPC_Q_PROGRESS),
+            progress_reach=_ov('progress_reach', NMPC_PROGRESS_REACH),
+            progress_v_min=_ov('progress_v_min', NMPC_PROGRESS_V_MIN),
         )
 
     metrics = RolloutMetrics()

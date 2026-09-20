@@ -1618,16 +1618,43 @@ class NMPCController:
 
         # Progress mode: `desired_speed` becomes a CAP (row 4 of h(), see
         # _outputs) rather than a two-sided target, and s_target_N is an
-        # UNREACHABLE arc-length goal (s0 + v_cap*N*dt*progress_reach,
-        # reach>1 so it is never actually reached) that turns "maximise s"
-        # into a GN-native least-squares residual -- see _outputs' docstring
-        # for why a bare linear reward is unsafe for this solver. Computed
-        # ONCE per tick (not per backtracking trial): it depends only on
-        # s0/desired_speed, both fixed for this whole compute_step() call.
+        # UNREACHABLE arc-length goal that turns "maximise s" into a
+        # GN-native least-squares residual -- see _outputs' docstring for why
+        # a bare linear reward is unsafe for this solver. Computed ONCE per
+        # tick (not per backtracking trial): it depends only on
+        # s0/desired_speed/v_x, all fixed for this whole compute_step() call.
+        #
+        # The unreachable gap is v_cap*N*dt*progress_reach, EXCEPT it is
+        # floored at a KINEMATIC distance (0.5*a_max*(N*dt)^2*progress_reach,
+        # the horizon's own maximum reach under full commanded accel from
+        # rest) rather than scaled off v_cap alone. This matters specifically
+        # at launch: SPEED_TARGET_DEFICIT_MAX holds v_cap near ~2.5 m/s while
+        # the car is still stationary (see settings.py), which on its own
+        # makes v_cap*N*dt*reach a few metres -- too close for the residual
+        # to stay "unreachable" once a_cmd approaches the ~2.3 m/s^2 needed
+        # to break static friction (measured: F_stiction=600N / m=255kg in
+        # model/vehicle_physics.py). The reward then saturates at a tiny gap
+        # and settles well below the accel stiction needs, so the car never
+        # launches (measured live in this repo's own offline rollout: a_cmd
+        # plateaus at ~0.6-1.2 forever, v_x stays exactly 0). The kinematic
+        # floor is a property of the CONTROLLER's own known authority
+        # (u_max[1], already available), not the plant's stiction constant --
+        # deliberately not coupled to that, since a real car's launch
+        # friction is not something the cost design should need to know.
+        # Anchored on X[0, IDX_S], NOT the raw projected s0: when delay
+        # compensation or pending_cmds rolled x0 forward above, the rollout
+        # starts further along the path than s0 measured, and anchoring the
+        # target to the stale s0 shrinks the gap by exactly that rollforward
+        # distance -- enough to stop the car launching at all when the gap is
+        # already small (measured: a_cmd plateaus ~1.3, below the ~2.3 needed
+        # for stiction). X[0] is the same trajectory the residual scores.
         v_cap = desired_speed
         s_target_N = None
         if self.progress_enabled:
-            s_target_N = s0 + v_cap * self.N * self.dt * self.progress_reach
+            gap = v_cap * self.N * self.dt * self.progress_reach
+            kinematic_floor = (0.5 * self.u_max[1] * (self.N * self.dt) ** 2
+                              * self.progress_reach)
+            s_target_N = float(X[0, IDX_S]) + max(gap, kinematic_floor)
 
         H = _outputs(X, ref, self.plant, desired_speed,
                      friction_circle_enabled=self.friction_circle_enabled,
