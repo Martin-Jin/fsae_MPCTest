@@ -184,6 +184,12 @@ def find_all_logs(log_dir=RECORDED_RUNS_DIR):
 # {name: (col_a, col_b, label)} -> plotted as two lines sharing one row.
 DERIVED_PAIRS = {
     'v': ('v_actual', 'v_desired', ('v_actual', 'v_desired')),
+    # nmpc_progress_enabled only: the whole point of the progress term is
+    # that the car picks its own speed BELOW a cap rather than tracking a
+    # target, so "did it sit on the cap or choose to go slower" is the
+    # question, and that only reads off the two plotted together. Empty
+    # columns on any other run, same warn-and-skip as every other signal.
+    'v_cap': ('v_actual', 'nmpc_v_cap', ('v_actual', 'nmpc_v_cap')),
 }
 
 COLORS = plt.rcParams['axes.prop_cycle'].by_key()['color']

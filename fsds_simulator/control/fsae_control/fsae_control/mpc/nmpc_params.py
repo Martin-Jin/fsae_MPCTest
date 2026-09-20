@@ -302,6 +302,27 @@ class NMPCParams:
                 "existing W_slack = 10000.0",
         "controller": "nmpc_only",
     })
+    # Back to 0.0, following nmpc_progress_enabled back to False. Inert
+    # without the progress reward anyway (nothing else rewards violating the
+    # boundary), so this is a no-op in the shipped configuration rather than
+    # a behaviour change. Set it to ~1000 alongside any progress-term
+    # experiment; it is necessary there, just not sufficient.
+    nmpc_slack_linear_weight: float = field(default=0.0, metadata={
+        "unit": "1/m",
+        "desc": "LINEAR track-bound slack penalty, additional to the "
+                "quadratic nmpc_slack_weight above. 0.0 (default) is a "
+                "no-op. A purely quadratic penalty has ZERO gradient at "
+                "zero violation, so the first small boundary violation is "
+                "nearly free; that matters once nmpc_progress_enabled gives "
+                "the solver an unbounded incentive to find it (corner "
+                "cutting: s_dot rises as e_y moves to the inside of a bend, "
+                "a direct analytic incentive, not a tuning artifact). "
+                "Liniger's MPCC reference carries both a quadratic and a "
+                "linear track penalty for exactly this reason. Measured "
+                "offline: 1000.0 turns a q_progress=5 off-track DNF into a "
+                "completed lap",
+        "controller": "nmpc_only",
+    })
 
     # ── Curvature reference construction ────────────────────────────────
     # Both defaults are control_utils.curvature_speed()'s existing denoise
@@ -406,6 +427,78 @@ class NMPCParams:
                 "_output_jacobians/_solve_step produce IDENTICAL output "
                 "(including array shapes) to before this feature existed. "
                 "Default False: genuine experiment, not yet validated",
+        "controller": "nmpc_only",
+    })
+
+    # ── Progress term (EXPERIMENTAL, default off) ───────────────────────
+    # Lets the NMPC choose its own speed from an arc-length progress reward
+    # instead of tracking a speed profile. See
+    # fsae_MPCTest/docs/logs/nmpc_progress_term_investigation.md for the
+    # full design, the measured results, and why this revisits an idea
+    # late_turn_in_investigation.md §16.2 DEFERRED (on merit, explicitly
+    # "the right thing to try after tracking works") rather than rejected.
+    #
+    # STATUS: OFF. Turning it on by default was requested (2026-09-21) and
+    # attempted, then reverted the same day when the shipped configuration
+    # was measured end to end: it does not complete a lap at ANY setting
+    # tried, so enabling it would have driven the car off track on the first
+    # corner of every run.
+    #
+    # Measured on comp_test_map_3 at the current SPEED_TARGET_DEFICIT_MAX of
+    # 5.0, all with the linear track slack active:
+    #   q_progress 4.0  -> never launches at all (progress 0.000)
+    #   q_progress 5.0  -> off track at 9.9% of a lap
+    #   q_progress 6.0  -> off track at 9.8% of a lap
+    # Raising nmpc_slack_linear_weight 1000 -> 50000 changed nothing at any
+    # of those, so the boundary penalty is not the missing piece.
+    #
+    # The usable band NARROWED when SPEED_TARGET_DEFICIT_MAX went 2.5 -> 5.0:
+    # the higher speed cap hands the progress reward more headroom to spend,
+    # and it spends it into corners. Any future attempt has to be re-measured
+    # against the deficit value actually in force, not an older one.
+    #
+    # Tracking (this flag False) completes cleanly and scores 0.714 on the
+    # same map, so there is no configuration in which turning this on is
+    # currently the better choice.
+    nmpc_progress_enabled: bool = field(default=False, metadata={
+        "unit": "bool",
+        "desc": "true -> row 4 of h() switches from the two-sided "
+                "v_x - v_ref residual to a ONE-SIDED speed-CAP hinge (plus "
+                "a low-speed floor hinge sharing the same weight), and a "
+                "6th row rewards progress toward an unreachable arc-length "
+                "target (nmpc_q_progress in mpc_params.py). desired_speed "
+                "keeps acting as the CAP, so the precomputed profile stays "
+                "loaded and the scoring baseline (time_bonus, "
+                "LapProgressTracker) stays valid -- this is NOT full MPCC "
+                "with the speed reference removed. Changes the cost's row "
+                "count, so it is read once at construction time, not "
+                "per-tick. When False every array shape and numeric result "
+                "is IDENTICAL to before this feature existed",
+        "controller": "nmpc_only",
+    })
+    nmpc_progress_reach: float = field(default=2.0, metadata={
+        "unit": "-",
+        "desc": "s_target_N = X[0,s] + max(v_cap*N*dt*REACH, "
+                "0.5*a_max*(N*dt)^2*REACH); >1 keeps the target always out "
+                "of reach so minimising the residual is monotone-equivalent "
+                "to maximising s_N. The second (kinematic) term floors the "
+                "gap at launch, when v_cap is deliberately small "
+                "(SPEED_TARGET_DEFICIT_MAX) and the first term alone would "
+                "be reachable almost immediately -- measured offline to "
+                "stall the car indefinitely below the acceleration static "
+                "friction needs. 2.0 gives ~1.3x margin over the measured "
+                "minimum at the current weight set",
+        "controller": "nmpc_only",
+    })
+    nmpc_progress_v_min: float = field(default=0.5, metadata={
+        "unit": "m/s",
+        "desc": "low-speed floor in the same row/weight as the speed cap: "
+                "defence against the standstill trivial solution (v_x=0 "
+                "locally optimal), compounded by the known v_x=0 tyre-force "
+                "behaviour in this model. Liniger's MPCC reference uses a "
+                "hard Vx>=0.05 bound for the same reason; this car sits "
+                "higher off the mark than an RC car so the floor is larger. "
+                "Only read when nmpc_progress_enabled",
         "controller": "nmpc_only",
     })
 

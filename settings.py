@@ -933,6 +933,76 @@ NMPC_SPLINE_REFERENCE_ENABLED = True
 # before this feature existed -- not just "the extra rows are empty".
 NMPC_FRICTION_CIRCLE_ENABLED = False
 
+# [NMPC only] NMPC_PROGRESS_ENABLED -- False (default, EXPERIMENTAL): let the
+# NMPC choose its own speed via an arc-length progress reward instead of
+# tracking an externally supplied v_ref. See
+# docs/logs/nmpc_progress_term_investigation.md for the full design and why
+# this revisits a previously-deferred (not rejected-on-merit) idea from
+# late_turn_in_investigation.md §16.2.
+#
+# When True: row 4 of the NMPC's cost switches from the two-sided speed-
+# error residual (v_x - v_ref, symmetric, pulls the car UP to a target) to a
+# ONE-SIDED cap (penalises v_x only ABOVE desired_speed, nothing pulls it
+# up), and a 6th cost row rewards progress toward an unreachable arc-length
+# target (NMPC_Q_PROGRESS below), written as a least-squares residual so it
+# stays native to the Gauss-Newton solver (see nmpc_optimiser.py's
+# _outputs() docstring -- a bare linear reward contributes nothing to the
+# Hessian and lets a single SQP step bang to a bound). desired_speed (the
+# existing curvature-limited/precomputed-profile pipeline, UNCHANGED) keeps
+# acting as the cap, so the scoring baseline (time_bonus, LapProgressTracker)
+# stays valid -- this is NOT full MPCC with the speed reference removed.
+#
+# NMPC_Q_E_V above then weights the CAP hinge, not a two-sided tracking
+# error -- same slot, different regressor, needs its own value rather than
+# inheriting the tracking-mode tuned q_e_v unchanged.
+#
+# Two landmines this design answers (both established by LIVE failures, not
+# theory, see control_mechanisms.md's "Horizon speed profile" writeup):
+#   1. A cost summed over the WHOLE horizon lost the safety property that
+#      makes kappa(s) safe (nmpc_horizon_speed_profile_enabled, removed).
+#      Here the progress reward only ever scores the TERMINAL stage, so a
+#      later stage's target cannot pay for an earlier stage's violation.
+#   2. A hard per-stage speed constraint reported itself satisfied (0.0
+#      violation) while the real car was measurably over target
+#      (nmpc_speed_limit_enabled, removed) -- the model's own prediction was
+#      wrong, not the constraint mechanism. The cap here is a soft penalty
+#      with gradient everywhere, not a hard inequality that can go inert.
+NMPC_PROGRESS_ENABLED = False
+NMPC_Q_PROGRESS = 1.0        # weight on the progress-reward row (row 5), UNTUNED
+NMPC_PROGRESS_REACH = 2.0    # s_target_N = s0 + max(v_cap*N*DT*REACH,
+                             # 0.5*a_max*(N*DT)^2*REACH); >1 keeps it always
+                             # out of reach so minimising the residual is
+                             # monotone-equivalent to maximising s_N. The
+                             # second (kinematic) term floors the gap at
+                             # launch, when v_cap is deliberately small
+                             # (SPEED_TARGET_DEFICIT_MAX) and v_cap*N*DT*REACH
+                             # alone would be reachable almost immediately --
+                             # measured to stall the car indefinitely below
+                             # the ~2.3 m/s^2 needed to break static friction
+                             # at REACH=1.5 with no floor. 2.0 gives ~1.3x
+                             # margin over the measured 11 m minimum at this
+                             # weight set; see nmpc_optimiser.py's
+                             # compute_step() comment for the full mechanism.
+NMPC_PROGRESS_V_MIN = 0.5    # hard-ish low-speed floor (hinge, same row/weight
+                             # as the cap): defence against the standstill
+                             # trivial solution, compounded by the known
+                             # v_x=0 tyre-force bug elsewhere in this model.
+                             # Liniger's MPCC reference uses 0.05; this repo's
+                             # cars sit higher off the mark than an RC car so
+                             # a slightly larger floor is a reasonable start.
+NMPC_SLACK_LINEAR_WEIGHT = 0.0   # additional LINEAR term on the soft track-
+                             # boundary slack, on top of the existing
+                             # quadratic NMPC_SLACK_WEIGHT. 0.0 (default) is
+                             # a no-op. A purely quadratic penalty has ZERO
+                             # gradient at zero violation, which matters once
+                             # NMPC_PROGRESS_ENABLED gives the solver an
+                             # unbounded incentive to find that gap (corner-
+                             # cutting: s_dot rises for e_y toward the inside
+                             # of a bend, a direct analytic incentive). Only
+                             # meaningful with NMPC_PROGRESS_ENABLED; harmless
+                             # otherwise since nothing then rewards violating
+                             # the boundary in the first place.
+
 # [NMPC only] NMPC_LATENCY_COMPENSATION_ENABLED -- False (default, EXPERIMENTAL): roll x0
 # forward by NMPC_LATENCY_COMPENSATION_MS (held at the last applied control, same
 # nonlinear _step_scalar rollforward the existing pose-age delay compensation

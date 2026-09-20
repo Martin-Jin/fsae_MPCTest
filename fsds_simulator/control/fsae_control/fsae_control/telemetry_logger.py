@@ -137,6 +137,15 @@ ADAPTIVE_COLUMNS = (
     # MPCC-inspired additions" section.
     'nmpc_fyf_max_abs',        # peak |front-axle lateral tyre force| anywhere in the horizon (N)
     'nmpc_fyr_max_abs',        # peak |rear-axle lateral tyre force| anywhere in the horizon (N)
+    # nmpc_progress_enabled only (empty otherwise, same convention as every
+    # other column above). Declared here BEFORE the feature is used live on
+    # purpose: nmpc_friction_circle_enabled shipped without its two columns
+    # and its own diagnostics silently never reached a CSV, which is how a
+    # conflicting F_max went undiagnosed. See
+    # fsae_MPCTest/docs/logs/nmpc_progress_term_investigation.md.
+    'nmpc_v_cap',              # the speed CAP the cost used this tick (m/s)
+    'nmpc_speed_cap_over',     # max(0, v_x - v_cap): 0 = car chose to go slower than the cap, >0 = cap binding (m/s)
+    'nmpc_s_target_gap_end',   # s_target_N - s at the horizon end. GROWING tick-over-tick means a stuck/regressing solve (m)
 )
 
 

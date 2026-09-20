@@ -305,6 +305,11 @@ NMPC_Q_E_Y=7.5
 # NMPC_ALAT_CEILING_ENABLED=true      # [NMPC only] models FSDS's measured sustained a_lat ceiling inside the prediction. Keep true for FSDS; disabling it let the NMPC oscillate and eventually spin offline
 # NMPC_SPLINE_REFERENCE_ENABLED=true         # [NMPC only] default true; analytic-spline kappa(s)/psi_ref(s) instead of moving-average+finite-difference. Numerical-quality fix, not a tuning knob -- see docs/reference/control_mechanisms.md's "Three MPCC-inspired additions"
 # NMPC_FRICTION_CIRCLE_ENABLED=false         # [NMPC only, EXPERIMENTAL] hard per-axle tyre-force bound, additional to the soft alat-ceiling saturation. REJECTED live with no offline A/B first ("pretty much doesn't work anymore"). Do not re-enable without an offline A/B (tuner.nmpc_offline_check) first.
+# NMPC_PROGRESS_ENABLED=false                # [NMPC only, EXPERIMENTAL] ON was attempted 2026-09-21 and REVERTED the same day: it does not complete a lap at any setting tried (q_progress 4.0 never launches, 5.0/6.0 go off track at ~10%, raising the slack weight 50x changes nothing). Tracking scores 0.714 and completes. See fsae_MPCTest/docs/logs/nmpc_progress_term_investigation.md.
+# NMPC_Q_PROGRESS=5.0                        # [NMPC only] progress-reward weight; only read when NMPC_PROGRESS_ENABLED=true. NARROW usable band at r_a_accel=1.0: below ~5 the car never breaks static friction and never launches, above ~6 it carries too much speed into corners and goes off-track
+# NMPC_PROGRESS_REACH=2.0                    # [NMPC only] how far out of reach the progress target sits: s_target = s0 + max(v_cap*N*dt*REACH, 0.5*a_max*(N*dt)^2*REACH). The kinematic floor is what lets the car launch at all (v_cap is deliberately small at a standing start); below ~1.8 it stalls indefinitely
+# NMPC_PROGRESS_V_MIN=0.5                    # [NMPC only] low-speed floor sharing the speed-cap row/weight, guards the standstill trivial solution. Only read when NMPC_PROGRESS_ENABLED=true
+# NMPC_SLACK_LINEAR_WEIGHT=0.0               # [NMPC only] set ~1000 alongside any progress-term experiment: necessary there, measured NOT sufficient. Inert while the progress term is off.
 # NMPC_STEER_RATE_ANTI_HUNT_ENABLED=false    # [NMPC only, EXPERIMENTAL] reuses the LTV-QP's steer_rate_anti_hunt penalty on the NMPC, independent of MPC_STEER_RATE_ANTI_HUNT_ENABLED above. Mutually exclusive with NMPC_CORNER_RRATE_BLEND_ENABLED below -- blend takes priority if both are set. Not yet live-tested; offline A/B first.
 # NMPC_ANTI_HUNT_BOOST_MAX=-1.0               # [NMPC only] -1 = inherit anti_hunt_boost_max; only read when NMPC_STEER_RATE_ANTI_HUNT_ENABLED=true
 # CAUTION: enabling NMPC_CORNER_RRATE_BLEND_ENABLED below OVERWRITES
@@ -491,6 +496,11 @@ _append_mpc_arg nmpc_alat_ceiling_enabled "$NMPC_ALAT_CEILING_ENABLED"
 _append_mpc_arg nmpc_v_des_filter_alpha "$NMPC_V_DES_FILTER_ALPHA"
 _append_mpc_arg nmpc_spline_reference_enabled "$NMPC_SPLINE_REFERENCE_ENABLED"
 _append_mpc_arg nmpc_friction_circle_enabled "$NMPC_FRICTION_CIRCLE_ENABLED"
+_append_mpc_arg nmpc_progress_enabled "$NMPC_PROGRESS_ENABLED"
+_append_mpc_arg nmpc_q_progress "$NMPC_Q_PROGRESS"
+_append_mpc_arg nmpc_progress_reach "$NMPC_PROGRESS_REACH"
+_append_mpc_arg nmpc_progress_v_min "$NMPC_PROGRESS_V_MIN"
+_append_mpc_arg nmpc_slack_linear_weight "$NMPC_SLACK_LINEAR_WEIGHT"
 _append_mpc_arg nmpc_steer_rate_anti_hunt_enabled "$NMPC_STEER_RATE_ANTI_HUNT_ENABLED"
 _append_mpc_arg nmpc_anti_hunt_boost_max "$NMPC_ANTI_HUNT_BOOST_MAX"
 _append_mpc_arg nmpc_corner_rrate_blend_enabled "$NMPC_CORNER_RRATE_BLEND_ENABLED"

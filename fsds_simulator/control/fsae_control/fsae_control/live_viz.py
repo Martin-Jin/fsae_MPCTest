@@ -308,8 +308,15 @@ class LiveVizNode(Node):
 # order/label table here (not derived from the message) so panel order is
 # stable regardless of dict iteration order.
 DEBUG_BAR_GROUPS = (
+    # 'progress' and 'v_cap_hinge' are NMPC-only and only present when
+    # nmpc_progress_enabled; absent terms are skipped, so listing them here
+    # is inert in every other configuration. 'v_cap_hinge' REPLACES 'e_v'
+    # in that mode rather than reusing its name (see mpc_controller.py's
+    # _publish_debug_weights), so a bar labelled e_v is always a real
+    # two-sided speed error and never a cap hinge sitting at zero.
     ('tracking', 'Tracking error cost (% of tracking total)',
-     ('e_y', 'e_yd', 'e_psi', 'yaw_rate', 'e_v', 'steering', 'accel')),
+     ('e_y', 'e_yd', 'e_psi', 'yaw_rate', 'e_v', 'v_cap_hinge', 'progress',
+      'steering', 'accel')),
     ('effort', 'Input effort cost (% of effort total)',
      ('steer_effort', 'accel_effort')),
     ('rate', 'Input rate-of-change cost (% of rate total)',
@@ -322,7 +329,7 @@ DEBUG_BAR_GROUPS = (
 # solver's true full-horizon objective, so they are genuinely comparable
 # (see mpc_controller.py's _publish_debug_weights()'s horizon_terms).
 DEBUG_HORIZON_TERMS = (
-    'e_y', 'e_yd', 'e_psi', 'yaw_rate', 'e_v',
+    'e_y', 'e_yd', 'e_psi', 'yaw_rate', 'e_v', 'v_cap_hinge', 'progress',
     'steer_effort', 'accel_effort', 'delta_u_steer', 'delta_u_accel',
 )
 
@@ -471,6 +478,25 @@ def main():
         # rather than printing a permanently-"no" line for a Stanley run.
         if controller != 'stanley':
             stats += f"NMPC horizon: {'yes' if node.nmpc_pred_path.size else 'no'}"
+        # Progress-term diagnostics (nmpc_progress_enabled only; the key is
+        # absent on every other run, so nothing is printed then). cap_over
+        # separates "the cap is holding the car back" from "the car chose to
+        # go slower than it was allowed", which is the question the progress
+        # term exists to change the answer to. s_gap GROWING tick-over-tick
+        # means the solve is stuck or regressing, not converging.
+        prog = (node.debug_weights or {}).get('progress')
+        if prog:
+            v_cap = prog.get('v_cap')
+            over = prog.get('speed_cap_over')
+            gap = prog.get('s_target_gap_end')
+            stats += "\nprogress term:"
+            if v_cap is not None:
+                stats += f"\n  v_cap = {v_cap:.2f} m/s"
+            if over is not None:
+                state = 'CAP BINDING' if over > 0.05 else 'under cap'
+                stats += f"\n  cap_over = {over:+.2f} m/s ({state})"
+            if gap is not None:
+                stats += f"\n  s_gap_end = {gap:.2f} m"
         ax.text(0.02, 0.98, stats.rstrip('\n'), transform=ax.transAxes, va='top', ha='left',
                 fontsize=9, family='monospace',
                 bbox=dict(boxstyle='round', fc='white', alpha=0.85))
