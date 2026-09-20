@@ -15,9 +15,9 @@ repo is what does it. Four things live here:
 - A fast **2D simulator** (`gui/simulation.py`, backed by `sim/`, `model/`,
   `controller/`) for closed-loop testing a controller against a path,
   independent of FSDS.
-- A **debugging tool** (`tuner/tools/plot_playback.py`) that graphs exported
-  telemetry CSVs, from this simulator or from a real/FSDS run, for
-  inspection after the fact.
+- A catalog of **debugging tools** (`tuner/tools/plot_playback.py` for
+  graphing exported telemetry CSVs, plus offline correctness checks and
+  live-vs-sim diagnostics), see "Debugging tools" below.
 - The **automatic tuner** (`tuner/offline_tuner.py`) that searches the
   simulator for good cost-function weights via CMA-ES.
 - **`fsds_simulator/`**, a staging mirror of the live `fsae_planning` ROS 2
@@ -97,6 +97,21 @@ the live car uses.
 fsds simulator repo: https://github.com/FS-Driverless/Formula-Student-Driverless-Simulator (current implementation uses commit 59f03fa, and the V2.20 release)
 fsae planning repo: https://github.com/UOA-FSAE/fsae_planning (current implementation uses commit 28dcd4d)
 
+## Debugging tools
+
+Beyond the interactive simulator, this repo (plus a few scripts in the
+outer `ros2/` folder) has a set of standalone diagnostic tools for
+answering specific questions when tuning or investigating a bug: does a
+plant/weight change still reproduce a known baseline
+(`tuner.recorded_map_rollout`, `tuner.nmpc_offline_check`), where does a
+live run diverge from an offline one
+(`tuner/checks/live_vs_sim_diagnostics.py`), what does FSDS's actual
+steering response look like (`ros2/run_steering_sysid.sh`/
+`run_steering_step.sh`), and how did a specific run behave, signal by
+signal and on the map (`tuner/tools/plot_playback.py`). See
+[docs/debugging_tools.md](docs/debugging_tools.md) for the full catalog
+and how to run each one.
+
 ---
 
 ## Quick Start
@@ -132,7 +147,8 @@ for how to run the CMA-ES weight tuner instead.
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | How the system works: the closed-loop architecture, `settings.py`/`model/vehicle_physics.py` configuration reference, the full MPC and NMPC formulations (state vector, cost function, solver), how the offline CMA-ES tuner works, the composite scoring function, and a per-file module reference. |
 | [docs/tuning.md](docs/tuning.md) | Practical tuning reference: what each `Q`/`R`/`R_rate` weight and adaptive-gain constant actually does, the corner-factor scheduler's fields, and how to change/validate a weight set, the "which knob, and why" companion to architecture.md's "how it works." |
-| [docs/developer_guide.md](docs/developer_guide.md) | How to use and extend the project: running the simulator and offline tuner, FSDS/ROS 2 integration (including Windows/WSL/Docker setup from scratch), manual drive mode, dependencies, adding a new synthetic path, recording/exporting a track, and debugging solver failures. |
+| [docs/developer_guide.md](docs/developer_guide.md) | How to use and extend the project: running the simulator and offline tuner, FSDS/ROS 2 integration (including Windows/WSL/Docker setup from scratch), manual drive mode, dependencies, adding a new synthetic path, and recording/exporting a track. |
+| [docs/debugging_tools.md](docs/debugging_tools.md) | Catalog of diagnostic/debugging tools (offline correctness checks, live-vs-sim comparison, steering system-ID, telemetry playback, pose/RPC diagnostics) and which question each answers. |
 | [docs/reference/reference_path_and_speed.md](docs/reference/reference_path_and_speed.md) | Where the car drives and how fast: the three-pass speed profile, the raceline/centreline exporters, which exported file supplies speed vs geometry, and how to switch either. |
 | [docs/vehicle_physics_guide.md](docs/vehicle_physics_guide.md) | Plain-English walkthrough of the 24-state nonlinear plant in `model/vehicle_physics.py` (tyres, suspension, weight transfer, aero) for readers who don't already know vehicle dynamics. |
 | [`docs/reference/`](`docs/reference/`) | Reference for re-syncing `planning/` and `fsds_simulator/` against a newer `fsae_planning` upstream clone: file mapping, deliberate non-mirrors, numeric-parity constants, and the resync procedure. |
@@ -150,7 +166,7 @@ for how to run the CMA-ES weight tuner instead.
 | `gui/simulation.py` | Interactive matplotlib GUI, draw/load a path, run one closed-loop rollout, scrub through history, view metrics. Also renders the live planner centreline (magenta) alongside the true target path when `USE_PLANNER=True`. |
 | `sim/track_io.py` | Loads a recorded cone map (JSON, from `fsae_planning`'s `cone_recorder` node) into the same path/cones tuple shape as a synthetic path, for **Load Recorded Track**. |
 | `tuner/offline_tuner.py` | Headless CMA-ES weight search across a library of synthetic corner shapes. |
-| `tuner/tools/plot_playback.py` | Time-scrubbing map/telemetry viewer for one or more exported control-telemetry CSVs, signals + slider on the left (one line per signal per run, with a per-run checkbox when comparing multiple), full trajectory and live planner-path overlay top right, zoomed current-section view (with live e_y/e_psi) bottom right. Each run gets its own colour, consistent across all panels. Run with no args to auto-load and overlay every CSV dropped into `fsds_simulator/recorded_runs/` (`--latest-only` for just the newest). See [docs/developer_guide.md#plotting-and-scrubbing-exported-csv-telemetry](docs/developer_guide.md#plotting-and-scrubbing-exported-csv-telemetry). |
+| `tuner/tools/plot_playback.py` | Time-scrubbing map/telemetry viewer for one or more exported control-telemetry CSVs, signals + slider on the left (one line per signal per run, with a per-run checkbox when comparing multiple), full trajectory and live planner-path overlay top right, zoomed current-section view (with live e_y/e_psi) bottom right. Each run gets its own colour, consistent across all panels. Run with no args to auto-load and overlay every CSV dropped into `fsds_simulator/recorded_runs/` (`--latest-only` for just the newest). See [docs/debugging_tools.md#telemetry-playback-tunertoolsplot_playbackpy](docs/debugging_tools.md#telemetry-playback-tunertoolsplot_playbackpy). |
 | `sim/rollout_core.py` | The single shared closed-loop rollout loop used by both `gui/simulation.py` and `tuner/offline_tuner.py`. |
 | `model/vehicle_physics.py` | `VehicleParams`, the single source of truth for vehicle physics (mass, geometry, tyres, suspension, aero, actuator limits). |
 | `model/bicycle_model.py` / `controller/optimiser.py` / `controller/model_utils.py` | The MPC's linear prediction model, QP formulation/solve, and adaptive gain scheduling. |

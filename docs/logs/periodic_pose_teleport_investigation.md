@@ -402,7 +402,10 @@ every RPC response simultaneously regardless of which method was called.
 on `/fsds/testing_only/odom`, `/fsae/slam/car_position`, `/clock`, and
 `/fsds/imu`, plus `ros2/clock_drift_check.py` subscribing to `/clock` for
 its value-drift check — all logging into `fsae_logs/topic_hz_diagnostics/`,
-torn down alongside the bridge in `cleanup()`. Four sessions have now been
+torn down alongside the bridge in `cleanup()`. See
+[debugging_tools.md](../debugging_tools.md#live-poserpc-diagnostics-clock_drift_checkpy-and-the-topic_hz-capture-block)
+for what each capture checks and how to run `clock_drift_check.py`
+standalone. Four sessions have now been
 captured and analysed (see all four "Capture result" sections above) —
 `sim_perception.py`, FSDS's own simulation clock, "specific to
 `getCarState()`", and "two calls coincidentally overlapping" are all

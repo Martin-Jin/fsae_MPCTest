@@ -209,80 +209,13 @@ offline. See the log's §9-§13 for the full derivation, the two false starts
 in the ceiling's control law, and the quantified ledger of what each tested
 factor explains.
 
-**Validated with:**
-
-| tool | answers |
-|---|---|
-| `tuner/checks/steering_sysid_analysis.py`, `tuner/checks/steering_step_analysis.py` | what does FSDS do? |
-| `tuner/checks/plant_openloop_validation.py` | does the plant model reproduce it? (`--ab`, `--robustness`) |
-| `tuner/recorded_map_rollout.py` | the closed-loop table above, headless and reproducible |
-| `tuner/checks/live_vs_sim_diagnostics.py` | conditional + reference-heading decomposition of live vs sim |
-
-Reproduce the closed-loop table with
+**Validated with** the open-loop steering system-ID harness
+(`ros2/run_steering_sysid.sh`/`run_steering_step.sh`) and the
+`plant_openloop_validation.py`/`recorded_map_rollout.py`/
+`live_vs_sim_diagnostics.py` checks; see
+[debugging_tools.md](../debugging_tools.md) for what each answers and how
+to run it. Reproduce the closed-loop table with
 `python -m tuner.recorded_map_rollout [--mode p --gain 700 | --tau 0.25 | --no-ceiling]`.
-
-### The open-loop system-ID experiment (reusable methodology)
-
-Isolating the plant from the controller, commanding fixed steering angles at
-fixed speeds on an empty map and recording the achieved yaw rate, is what
-found the ceiling above. Reuse this whenever a plant-vs-car discrepancy is
-suspected; a closed-loop lap log cannot separate a plant defect from a
-controller/reference one.
-
-**Where the pieces live** (the node and harness are working-tree-only files
-in the live ROS 2 workspace, no mirror in this repo):
-
-| file | repo | role |
-|---|---|---|
-| `control/fsae_control/fsae_control/steering_sysid.py` | `fsae_planning` (live ROS 2 ws) | the node, drives FSDS directly |
-| `ros2/run_steering_sysid.sh` | **FSDS repo root**, next to `launch_all.sh` | one-command harness |
-| `tuner/checks/steering_sysid_analysis.py` | `fsae_MPCTest` | reads the log, names the mechanism |
-| `fsae_control/steering_step.py` / `ros2/run_steering_step.sh` / `tuner/checks/steering_step_analysis.py` | same split | the step-input companion test (50 Hz, isolates the transient) |
-
-**Run it with one command** (starts FSDS, waits for RPC, starts the bridge,
-waits for odom, runs the sweep, analyses the log, tears everything down,
-including on Ctrl+C):
-
-    cd <FSDS repo>/ros2 && ./run_steering_sysid.sh
-
-Flags: `--no-sim` (FSDS already running), `--quick` (fewer points), and any
-`-p name:=value` passes through to the node. **Run it on an empty map**: it
-circles at up to 14 m/s and does not brake for cones. The harness refuses to
-start if `mpc_controller`, `fsds_bridge`, or `stanley` is already running,
-since two publishers on `/fsds/control_command` would interleave and corrupt
-the log.
-
-**Geometry is bounded automatically.** The node reaches target speed while
-already turning (so it orbits rather than travelling), checks a geofence
-(`home_radius`/`max_radius`) from every phase, and predicts each point's orbit
-size in advance (using a deliberately pessimistic `K_US_ESTIMATE = 0.05`) to
-skip any (speed, steering) pair whose orbit won't fit in the geofence,
-logging what it dropped. Default steering commands
-(`[0.5, 0.65, 0.8, 1.0]`) are biased high since low-angle, high-speed points
-are both the least informative and the least likely to fit.
-
-**Reading the log.** It records the raw normalised `cmd.steering` alongside
-the roadwheel angle it's assumed to map to, since recording only the assumed
-angle would beg the question the test exists to answer. A falling
-`s = δ_ach/δ_cmd` is not by itself diagnostic (a speed-scaled rack, genuine
-understeer, and grip saturation all produce one), so the analyser fits all
-five candidate mechanisms to achieved yaw rate and reports the margin to the
-runner-up:
-
-| winning model | meaning |
-|---|---|
-| neutral (s≈1) | steering path is fine; look at the controller/reference |
-| constant scale | `MAX_STEER_RAD` wrong, fix in all three copies |
-| speed-scaled rack | FSDS reduces lock with speed; model it in the plant |
-| understeer (v²) | real vehicle dynamics |
-| grip saturation | yaw capped by lateral grip |
-
-The default speed sweep is **3–14 m/s**, wide enough to separate speed-scaled
-rack from understeer (near-degenerate over a narrow band). If the analyser
-prints a margin warning, widen the speed range and re-run rather than
-trusting the verdict; it also refuses a verdict when fewer than 3 windows
-contain real motion (a car wedged against a wall otherwise reports a
-confident, meaningless answer from all-zero data).
 
 ### Checked: the longitudinal path is not mis-scaled
 

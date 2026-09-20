@@ -341,9 +341,9 @@ this family.
 
 This is a measured property of the simulator, not a tuning knob. See
 `docs/reference/simulator_fidelity.md`'s "The sim-to-real gap" section for
-the measurement, and re-measure with `ros2/run_steering_sysid.sh` /
-`ros2/run_steering_step.sh` if it's ever suspected wrong, rather than
-guessing.
+the measurement, and re-measure with the
+[steering system-ID harness](debugging_tools.md#steering-system-id-harness-run_steering_sysidsh-run_steering_stepsh)
+if it's ever suspected wrong, rather than guessing.
 
 ---
 

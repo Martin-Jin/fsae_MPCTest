@@ -2,9 +2,10 @@
 
 Practical how-to content: running the simulator and offline tuner, FSDS/ROS 2
 integration, manual drive mode, dependencies, and guidelines for extending the
-project (new synthetic paths, debugging solver failures). For the deep
-technical explanation of *why* the system is built this way, see
-[Architecture](architecture.md).
+project (new synthetic paths, working with the NMPC). For the deep technical
+explanation of *why* the system is built this way, see
+[Architecture](architecture.md). For diagnostic/debugging tools, see
+[debugging_tools.md](debugging_tools.md).
 
 ## Table of Contents
 
@@ -14,14 +15,13 @@ technical explanation of *why* the system is built this way, see
    - [Recording, exporting and driving a track](#recording-exporting-and-driving-a-track)
    - [CSV telemetry logging](#csv-telemetry-logging)
    - [The tuner/ layout at a glance](#the-tuner-layout-at-a-glance)
-   - [Plotting and scrubbing exported CSV telemetry](#plotting-and-scrubbing-exported-csv-telemetry)
    - [Launching nodes with FSDS on Windows (WSL + Docker)](#launching-nodes-with-fsds-on-windows-wsl--docker)
 4. [Manual Drive Mode](#manual-drive-mode)
 5. [Dependencies](#dependencies)
 6. [Extending and Debugging](#extending-and-debugging)
    - [Modifying vehicle parameters](#modifying-vehicle-parameters)
    - [Adding a new synthetic path](#adding-a-new-synthetic-path)
-   - [Debugging solver failures](#debugging-solver-failures)
+   - [Working with the NMPC (`USE_NMPC`)](#working-with-the-nmpc-use_nmpc)
 
 ---
 
@@ -703,198 +703,31 @@ sim-to-real investigation scripts. Three tiers:
 | `csv_log.py` | Shared CSV parsing helpers (comment-header stripping, malformed-row filtering, column loading) used by every script below that reads a telemetry CSV. |
 | `recorded_map_rollout.py` | Headless rollout baseline against the default recorded map (`comp_test_map_3`), the shared "run the sim against this map" entry point `tuner/checks/` scripts build on. |
 
-**`tuner/tools/`, reusable standalone diagnostic tools:**
+**`tuner/tools/`, reusable standalone tools:**
 
 | File | Purpose |
 |---|---|
-| `plot_playback.py` | Time-scrubbing map/telemetry viewer, see [Plotting and scrubbing exported CSV telemetry](#plotting-and-scrubbing-exported-csv-telemetry) below. |
+| `plot_playback.py` | Time-scrubbing map/telemetry viewer, see [debugging_tools.md](debugging_tools.md#telemetry-playback-tunertoolsplot_playbackpy). |
 | `export_speed_profile.py` | Exports a recorded cone map's oracle path + speed profile to CSV, see [Export the speed profile and raceline](#2-export-the-speed-profile-and-raceline) above. |
 | `raceline_optimizer.py` | Minimum-time racing line optimiser, same CSV output, see the same section above. `--mode centerline` exports the centreline instead. |
+| `doc_lint.py` | Flags docs that break this project's writing conventions, see [debugging_tools.md](debugging_tools.md#doc-conventions-tunertoolsdoc_lintpy). |
 
-**`tuner/checks/`, one-off and reusable investigation scripts from
-sim-to-real debugging.** These came out of the saturation-gap investigation
-in [`docs/reference/`](`docs/reference/`) and
-[docs/logs/sim_to_real_investigation.md](logs/sim_to_real_investigation.md),
-see those docs for the investigation narrative behind any of them rather than
-duplicating it here:
-
-| File | Purpose |
-|---|---|
-| `analyze_adaptive_log.py` | Attributes tracking error to individual adaptive-gain features from a live control CSV, per corner, re-run on any new log carrying the adaptive-feature trace columns. |
-| `live_vs_sim_diagnostics.py` | Like-for-like live-vs-sim comparison on speed-tracking error and saturation-episode structure, not just aggregate saturation %. |
-| `plant_openloop_validation.py` | Replays measured open-loop FSDS experiments through `model/vehicle_physics.py` and reports residuals, the check for whether the plant model reproduces what FSDS does. |
-| `ref_heading_limiter_ab.py` / `ref_heading_limiter_suite_check.py` | A/B and suite-wide checks for `REF_HEADING_RATE_LIMIT` (see [tuning.md](tuning.md)'s §3), re-run both before re-enabling that limiter. |
-| `steering_response.py` | Fits the live car's steering→yaw response from a control CSV (understeer coefficient, full-lock deficit). |
-| `steering_step_analysis.py` | Identifies which mechanism caps FSDS's yaw rate from step-input transients (hard limit / scaled authority / active damping). |
-| `steering_sysid_analysis.py` | Analyses an open-loop steering system-ID sweep log and names the steering-response gap mechanism. |
+**`tuner/checks/`, one-off and reusable diagnostic scripts from sim-to-real
+debugging**, plus a few similar scripts at `tuner/` root
+(`steering_chatter_check.py`, `reference_heading_geometry_check.py`,
+`reference_excess_mechanism_check.py`, `nmpc_offline_check.py`,
+`recorded_map_rollout.py`). See
+[debugging_tools.md](debugging_tools.md#which-tool-for-which-question) for
+what question each answers and how to run it, and
+[docs/logs/sim_to_real_investigation.md](logs/sim_to_real_investigation.md)
+for the investigation narrative behind them.
 
 ### Plotting and scrubbing exported CSV telemetry
 
-`tuner/tools/plot_playback.py` turns one or more of the control CSVs above into an
-interactive matplotlib figure that answers both "what did this signal do
-over the whole run" and "where was the car, and what did the path look
-like, at this specific moment" at once. It shows, side by side:
-
-- **left:** the scored signals (`e_y`, `e_psi_deg`, `kappa`, `steer_deg`,
-  `v`) stacked on a shared time axis, one line per signal per run when
-  comparing multiple logs, with a vertical cursor marking "now"
-- **top right:** each run's full driven trajectory, plus the planner's
-  most-recent path snapshot at "now", with a triangle marking that run's
-  car position/heading
-- **bottom right:** the same scene zoomed tightly to the car's current
-  section of track (with `e_y`/`e_psi` in its title)
-
-A slider under the metrics panel scrubs a shared "now" time through the
-run; dragging it updates every run's cursor, triangle, and path overlay
-together. Each run gets its own colour, used consistently for its signal
-lines, driven trajectory, path overlay, and car marker, and, when more
-than one log is given, its own checkbox to show/hide it everywhere at
-once. Built for eyeballing a single run or comparing two controllers
-head-to-head (e.g. an MPC log against a Stanley log recorded on the same
-`map_path`) without writing a one-off script each time.
-
-```bash
-# no CSV given -> auto-loads and overlays every run in
-# fsds_simulator/recorded_runs/ (one CSV -> single-run playback,
-# several -> automatic comparison with a checkbox per run)
-python -m tuner.tools.plot_playback
-
-# same, but only the newest run if recorded_runs/ has several and you
-# just want the latest one
-python -m tuner.tools.plot_playback --latest-only
-
-# default signal set: e_y, e_psi_deg, kappa, steer_deg, v (actual + desired)
-python -m tuner.tools.plot_playback ~/fsae_logs/mpc_standalone_control_<ts>.csv
-
-# overlay two explicit runs -- each gets its own colour, signal lines,
-# marker, trajectory, and path overlay, plus a checkbox to hide/show it
-python -m tuner.tools.plot_playback \
-    ~/fsae_logs/mpc_standalone_control_<ts>.csv \
-    ~/fsae_logs/stanley_control_<ts>.csv
-
-# choose your own signals (any numeric column the log has)
-python -m tuner.tools.plot_playback run.csv --signals e_y,yaw_rate,solve_ms
-```
-
-On Windows PowerShell, drop the `\` line continuations (use backtick `` ` ``
-or put everything on one line) and don't rely on `~`, PowerShell doesn't
-expand either the way bash does, and a bad path there fails with a raw
-`FileNotFoundError` from `csv_log.py`'s `open()`, not a friendlier CLI error.
-The multi-run examples above are bash syntax; on PowerShell write e.g.
-`python -m tuner.tools.plot_playback $HOME\fsae_logs\mpc_standalone_control_<ts>.csv $HOME\fsae_logs\stanley_control_<ts>.csv`
-on one line, or use the backtick continuation character in place of `\`.
-
-Run from `fsae_MPCTest/` (so `tuner` resolves as a package). A signal
-missing from a given log (e.g. the `m_Q_*`/`m_R_*` adaptive-weight columns,
-`solve_ms`, on a Stanley run) is skipped for that run with a warning rather
-than plotting an empty line, runs don't need identical columns to overlay
-the ones they share. The figure title and each line's legend label include
-the run's short label (its controller subfolder name, e.g. `LMPC`/`NMPC`/
-`Stanley`), so a comparison plot is self-labelled without cross-referencing
-the raw CSV.
-
-Each run's sibling `<tag>_path_<stamp>.csv` (same directory, same timestamp,
-the file `ControlLogger` writes alongside every control CSV) is loaded
-automatically if present, to draw that run's path as it looked at each
-moment, copy both files together into `recorded_runs/`, not just the
-`_control_` one, or that run's map/zoom views fall back to showing only its
-own driven trajectory with no live path overlay. The path CSV is a time
-series of path snapshots (see `telemetry_logger.py`'s `log_path()`); the
-slider always shows the most recent snapshot at or before the selected
-time, not an interpolation between two snapshots.
-
-Runs may have different `t` sampling or length (e.g. an 80-sample Stanley
-log next to a 50-sample MPC log), the slider drives one shared time
-value, and each run independently looks up its own nearest sample, so
-mismatched logs still overlay correctly. The slider itself still scrubs
-the full range up to the **longest** run's end (so the map/zoom views can
-follow it to completion), but the left-hand signal plots' x-axis is
-clipped to the **shortest** run's end, past that point only one run has
-data left, which would otherwise dwarf the overlapping (comparable) part
-of the plot with a stretch that isn't a comparison anymore.
-
-**Auto-search folder: `fsds_simulator/recorded_runs/`.** Running the script
-with no CSV argument searches this folder **recursively** for
-`*_control_*.csv` files, including one level of per-controller subfolders,
-e.g. `recorded_runs/LMPC/`, `recorded_runs/NMPC/`, `recorded_runs/Stanley/`,
-by the timestamp `ControlLogger` stamps into the filename (not file mtime).
-That stamp is either the current local `%Y%m%d-%H%M%S` form or the older
-epoch-seconds form. `plot_playback.py`'s `_stamp()` decodes both to epoch
-seconds so a folder holding runs from either era sorts correctly as one set.
-
-By default it loads just the **newest run from each subfolder** (one
-representative LMPC run, one NMPC run, one Stanley run, ...; runs left flat
-directly in `recorded_runs/` are grouped as one "folder" for this purpose),
-pass `--all` to overlay every run in every subfolder instead, or
-`--latest-only` to load only the single newest run across the whole tree
-(which may leave other controllers unrepresented).
-
-Each run's plot label is its `recorded_runs/<folder>/` name (e.g. `LMPC`,
-`NMPC`, `Stanley`) rather than the raw filename tag, since the tag alone is
-often ambiguous (both LMPC and NMPC logs use the same `mpc_standalone`
-tag). Runs left flat directly in `recorded_runs/` fall back to the
-filename tag; if a folder has multiple loaded runs (e.g. under `--all`),
-duplicates get a ` #2`, ` #3`, ... suffix. The CSVs under this folder are
-tracked in git (not gitignored) so reference runs for each controller
-travel with the repo.
-
-A live run's actual output location is `log_dir` (default `~/fsae_logs`,
-or whatever `ros2/launch_all.sh`'s `log_dir:=` argument points at, in the
-outer `fsae_planning`-adjacent launch script, outside this repo, not
-modified by this feature), so after a run, the CSV pair needs to be copied
-or moved into the right controller subfolder manually:
-
-```bash
-cp ~/fsae_logs/mpc_standalone_control_<stamp>.csv \
-   ~/fsae_logs/mpc_standalone_path_<stamp>.csv \
-   fsds_simulator/recorded_runs/LMPC/
-python -m tuner.tools.plot_playback       # picks up the file just copied in
-```
-
-The recorded filenames under `recorded_runs/` may also carry a descriptive
-topic segment between the tag and the stamp (e.g.
-`mpc_standalone_postjitterfix_best_control_1787527398.csv`), added by hand
-when a run is stored specifically for later comparison. `plot_playback.py`
-only looks for `_control_`/`_path_` and the trailing stamp, so an inserted
-topic segment does not affect discovery or sibling pairing.
-
-**Curated drop zone: `recorded_runs/graph/`.** If this folder contains any
-`*_control_*.csv` files (directly, it's not scanned for further
-subfolders), auto-load uses **only** what's in `graph/` instead of scanning
-`LMPC/`/`NMPC/`/`Stanley/`/etc. This is the easiest way to control exactly
-what a plain `python -m tuner.tools.plot_playback` shows: move (or copy) the
-specific run(s) of interest into `graph/`, without deleting them
-from their controller subfolder or passing a path on the command line each
-time. It's empty by default (tracked via `.gitkeep`), drop files in, run
-the command, and it just works:
-
-```bash
-cp fsds_simulator/recorded_runs/NMPC/mpc_standalone_control_<ts>.csv \
-   fsds_simulator/recorded_runs/NMPC/mpc_standalone_path_<ts>.csv \
-   fsds_simulator/recorded_runs/graph/
-python -m tuner.tools.plot_playback       # loads every run in graph/, overlaid
-```
-
-`graph/` is flat by design (no per-controller subfolders of its own), so
-**every** run dropped into it loads and overlays, unlike the full-tree
-default, which keeps only the newest run per controller subfolder. This is
-what makes it useful for comparing runs across different controllers (e.g.
-an NMPC run against a Stanley run) without `--all`. `--latest-only` still
-narrows a populated `graph/` down to its single newest run when that's the
-desired result instead. Each run's label falls back to its filename tag rather
-than the folder name `graph` (which would be true of every run in it and so
-useless for telling them apart), same rule as a run left loose directly in
-`recorded_runs/` itself.
-
-Point the search elsewhere with `--recorded-runs <dir>` (e.g. to auto-load
-straight out of `~/fsae_logs` without copying, or to compare two specific
-takes kept in their own directories). This bypasses the `graph/`
-override too, since it changes the root being searched. When two or more
-runs are loaded, a **"Zoom focus"** radio-button widget appears bottom-left of the figure,
-pick a run there to change which one the bottom-right zoomed view tracks
-(it defaults to the first-loaded run). The separate **"Show/hide"**
-checkbox widget above it toggles each run's visibility everywhere
-(signals, map, zoom) without changing zoom focus.
+`tuner/tools/plot_playback.py` turns one or more of the control CSVs above
+into an interactive, time-scrubbing map/telemetry viewer. See
+[debugging_tools.md](debugging_tools.md#telemetry-playback-tunertoolsplot_playbackpy)
+for the full usage, flags, and auto-search-folder behaviour.
 
 ### Launching nodes with FSDS on Windows (WSL + Docker)
 
@@ -1192,27 +1025,6 @@ will silently diverge from the plant it's controlling.
    want the tuner to optimise against it, see
    [Configuring the Project](architecture.md#configuring-the-project-settingspy).
 
-### Debugging solver failures
-
-If the live simulator reports `consecutive_solver_failures` or the console
-frequently shows `OPTIMAL_INACCURATE`:
-
-- **Weight scaling**: OSQP is sensitive to poorly-conditioned matrices. If
-  any entry of `Q`, `R`, or `R_rate` exceeds `1e4` or drops below `1e-4`,
-  convergence can suffer. Check `controller/model_utils.py`'s
-  `adaptive_R_scaling()`'s output at your test speed isn't blowing up the
-  steering cost unexpectedly.
-- **Kinematic vs. dynamic gap**: if the car consistently fails at tight
-  hairpins, `sim/speed_profile.py` may be commanding a speed that demands more
-  lateral force than the Pacejka friction circle can supply at that
-  curvature. Lower `mu` in `compute_speed_profile()` to force more
-  conservative corner-entry speeds.
-- **Model-plant mismatch at extremes**: remember the MPC's internal model
-  is linear and only blends kinematic/dynamic behaviour between 1-2.5 m/s;
-  well outside that (very low speed under load, or very high lateral
-  acceleration near the tyre limit) is where the biggest prediction error
-  will show up, and where `adaptive_R_scaling`/`adaptive_R_rate` matter most.
-
 ### Working with the NMPC (`USE_NMPC`)
 
 To try the nonlinear controller during development, flip `settings.USE_NMPC =
@@ -1224,11 +1036,14 @@ re-verifies model parity, Jacobians, SQP convergence, and a closed-loop
 LTV-QP-vs-NMPC A/B on every call, so a broken change fails loudly instead
 of silently degrading a tuning run.
 
-If the SQP misbehaves (non-improving steps, oscillation), the usual
-suspects are the same as the LTV-QP's solver failures above, plus two
-NMPC-specific ones: `nmpc_solve_budget_ms`/`nmpc_sqp_iters` too tight for the
-horizon, or a weight override (`NMPC_Q_E_Y` etc. in `settings.py`, `-1`
-inherits from the base weight) pushing the cost badly out of scale. See
+If the LTV-QP's solver fails (`consecutive_solver_failures`,
+`OPTIMAL_INACCURATE`) or the NMPC's SQP misbehaves (non-improving steps,
+oscillation), see
+[debugging_tools.md](debugging_tools.md#debugging-solver-failures) for the
+checklist, plus, for the NMPC specifically, `nmpc_solve_budget_ms`/
+`nmpc_sqp_iters` too tight for the horizon, or a weight override
+(`NMPC_Q_E_Y` etc. in `settings.py`, `-1` inherits from the base weight)
+pushing the cost badly out of scale. See
 `docs/reference/control_mechanisms.md`'s "Nonlinear MPC (`use_nmpc`)" section for the
 model and weight-mapping details, and `tuning.md` §4.5d for the tuning
 surface.

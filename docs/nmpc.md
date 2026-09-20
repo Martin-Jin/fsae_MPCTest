@@ -537,7 +537,9 @@ never actually runs it to convergence.
 
 Two test suites exist for this controller's numerics specifically, both
 referenced from `docs/lmpc.md`'s testing pointers and CLAUDE.md's "Testing"
-section:
+section (see also [debugging_tools.md](debugging_tools.md#which-tool-for-which-question)
+for how `tuner.nmpc_offline_check` fits alongside the live-side
+`nmpc_offline_check.py` port):
 
 - **`tuner.nmpc_offline_check`** (offline repo): re-verifies `_step_scalar
   == _step` model parity, forward-vs-central-difference Jacobian agreement,

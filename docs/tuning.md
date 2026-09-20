@@ -339,8 +339,9 @@ no longer exist on `MPCParams`. **The law itself is not gone**, it moved
 to `nmpc_core.py`'s `_Plant` (hardcoded there, since only the NMPC path
 uses it now) and `model/vehicle_physics.py`'s `alat_ceiling_at()`, see §5.
 This is a measured property of the simulator, not a free tuning knob; if
-it's ever suspected wrong, re-measure with `ros2/run_steering_sysid.sh` /
-`ros2/run_steering_step.sh`, don't guess. Full history:
+it's ever suspected wrong, re-measure with the
+[steering system-ID harness](debugging_tools.md#steering-system-id-harness-run_steering_sysidsh-run_steering_stepsh),
+don't guess. Full history:
 [`removed_mechanisms.md` §10](removed_mechanisms.md#10-fsds-lateral-acceleration-ceiling-as-a-lookahead-input).
 
 ### 4.9 Historical: low-speed steering-rate boost (removed)
