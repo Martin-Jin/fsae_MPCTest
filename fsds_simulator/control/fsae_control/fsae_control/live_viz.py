@@ -308,13 +308,15 @@ class LiveVizNode(Node):
 # order/label table here (not derived from the message) so panel order is
 # stable regardless of dict iteration order.
 DEBUG_BAR_GROUPS = (
-    # 'progress' is NMPC-only and only present when nmpc_progress_enabled
-    # (see nmpc_core.py's _cost_breakdown); absent terms are skipped, so
-    # listing it here is inert in every other configuration. Note that in
-    # progress mode 'e_v' is the speed-CAP hinge (normally 0), not a
-    # two-sided speed error -- same bar, different meaning.
+    # 'progress' and 'v_cap_hinge' are NMPC-only and only present when
+    # nmpc_progress_enabled; absent terms are skipped, so listing them here
+    # is inert in every other configuration. 'v_cap_hinge' REPLACES 'e_v'
+    # in that mode rather than reusing its name (see mpc_controller.py's
+    # _publish_debug_weights), so a bar labelled e_v is always a real
+    # two-sided speed error and never a cap hinge sitting at zero.
     ('tracking', 'Tracking error cost (% of tracking total)',
-     ('e_y', 'e_yd', 'e_psi', 'yaw_rate', 'e_v', 'progress', 'steering', 'accel')),
+     ('e_y', 'e_yd', 'e_psi', 'yaw_rate', 'e_v', 'v_cap_hinge', 'progress',
+      'steering', 'accel')),
     ('effort', 'Input effort cost (% of effort total)',
      ('steer_effort', 'accel_effort')),
     ('rate', 'Input rate-of-change cost (% of rate total)',
@@ -327,7 +329,7 @@ DEBUG_BAR_GROUPS = (
 # solver's true full-horizon objective, so they are genuinely comparable
 # (see mpc_controller.py's _publish_debug_weights()'s horizon_terms).
 DEBUG_HORIZON_TERMS = (
-    'e_y', 'e_yd', 'e_psi', 'yaw_rate', 'e_v', 'progress',
+    'e_y', 'e_yd', 'e_psi', 'yaw_rate', 'e_v', 'v_cap_hinge', 'progress',
     'steer_effort', 'accel_effort', 'delta_u_steer', 'delta_u_accel',
 )
 

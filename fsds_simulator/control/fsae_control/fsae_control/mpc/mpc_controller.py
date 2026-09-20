@@ -696,7 +696,17 @@ class MPCControllerNode(Node):
             'e_yd':     ('tracking', tel.get('e_yd', 0.0),      params.q_e_yd),
             'e_psi':    ('tracking', tel.get('e_psi', 0.0),    tel.get('Q_epsi_eff', params.q_e_psi)),
             'yaw_rate': ('tracking', tel.get('yaw_rate', 0.0), tel.get('Q_r_eff', params.q_r)),
-            'e_v':      ('tracking', tel.get('e_v', 0.0),      params.q_e_v),
+            # Row 4's NAME follows the mode, because its MEANING does. Under
+            # tracking it is the two-sided speed error e_v. Under the NMPC
+            # progress term it is a one-sided speed-CAP hinge that reads
+            # exactly 0.0 whenever the car is under the cap, i.e. most of a
+            # lap -- reporting that as "e_v" makes a working controller look
+            # like it has zero speed error, which is the opposite of what a
+            # flat bar there means. Keyed off the telemetry the controller
+            # actually published, not the parameter, so the label cannot
+            # disagree with the running controller.
+            ('v_cap_hinge' if 'nmpc_v_cap' in tel else 'e_v'):
+                        ('tracking', tel.get('e_v', 0.0),      params.q_e_v),
             'steer_effort': ('effort', tel.get('delta_cmd', 0.0),
                               tel.get('R_steer_eff', params.r_delta)),
             'accel_effort': ('effort', a_cmd, r_a_eff),

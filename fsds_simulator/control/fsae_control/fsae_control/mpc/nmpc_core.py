@@ -1624,20 +1624,23 @@ class NMPCController:
         """
         w = self.w_out
         H = H[:, :self.NH]
-        # The 'e_v' KEY is kept in both modes so live_viz.py's fixed column
-        # layout needs no branch, but its MEANING follows self.NH: in
-        # progress mode row 4 is the speed-CAP hinge (normally exactly 0,
-        # since the car is usually under the cap), not a two-sided speed
-        # error. The progress row is reported separately below rather than
-        # folded into 'e_v', which would make a large progress residual
-        # masquerade as a speed-tracking error in the display.
+        # The progress row is reported separately below rather than folded
+        # into row 4, which would make a large progress residual masquerade
+        # as a speed-tracking error in the display.
         out_terms = {
             'e_y':      float(w[0] * H[0, 0] ** 2),
             'e_yd':     float(w[1] * H[0, 1] ** 2),
             'e_psi':    float(w[2] * H[0, 2] ** 2),
             'yaw_rate': float(w[3] * H[0, 3] ** 2),
-            'e_v':      float(w[4] * H[0, 4] ** 2),
         }
+        # Row 4's KEY follows the mode, matching mpc_controller.py's step-0
+        # bar: 'e_v' is a two-sided speed error, 'v_cap_hinge' is the
+        # one-sided cap penalty that sits at exactly 0 whenever the car is
+        # under the cap. Same slot, different quantity, so the same name for
+        # both would report "no speed error" on a lap where speed is not
+        # being tracked at all.
+        out_terms['v_cap_hinge' if self.progress_enabled else 'e_v'] = float(
+            w[4] * H[0, 4] ** 2)
         if self.progress_enabled:
             # Scored at the TERMINAL stage (H[-1]), not stage 0: h_prog is
             # zero at every other stage by construction (see _outputs), so
@@ -1674,7 +1677,14 @@ class NMPCController:
         # flattened: np.tile(self.r_rate, N) interleaves [steer, accel] per
         # stage, so column 0/1 of the reshape is exactly steer/accel's own
         # per-stage weight, matching du's own (N, nu) column layout.
-        steer_names = ('e_y', 'e_yd', 'e_psi', 'yaw_rate', 'e_v')
+        # Row 4/5 names follow the mode, exactly as the step-0 breakdown
+        # above does -- this tuple used to be hardcoded to the 5 tracking
+        # rows, so in progress mode the horizon panel silently mislabelled
+        # the cap hinge as 'e_v' AND omitted the progress row entirely.
+        # Built from self.NH so it cannot fall out of step with w_out again.
+        steer_names = (('e_y', 'e_yd', 'e_psi', 'yaw_rate', 'v_cap_hinge',
+                        'progress') if self.progress_enabled
+                       else ('e_y', 'e_yd', 'e_psi', 'yaw_rate', 'e_v'))
         horizon_terms = {
             name: float(w[i] * np.sum(H[:-1, i] ** 2)
                         + self.terminal_scale * w[i] * H[-1, i] ** 2)
