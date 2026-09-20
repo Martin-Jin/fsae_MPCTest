@@ -289,11 +289,22 @@ class NMPCParams:
     })
 
     # ── Soft track constraint (mirrors MPCController's own) ─────────────
+    # Back to 3.5, matching the LTV-QP's own +-3.5 m literal. Was narrowed
+    # to 3.0 on 2026-09-21 for the progress-term experiment (both the
+    # quadratic and linear slack read this same bound, see nmpc_core.py's
+    # _cost()/_solve_step()), on the reasoning that progress's analytic
+    # incentive to hug the boundary (kappa(s)'s 1/(1-kappa*e_y) metric
+    # factor rises toward the inside) needs slack headroom before the car
+    # reaches the true track edge. REVERTED the same day: narrowing this
+    # also tightens ORDINARY TRACKING mode (this field is read unconditionally,
+    # not gated on nmpc_progress_enabled), and was found to make tracking
+    # noticeably worse in practice. If the progress experiment needs a
+    # tighter boundary again, override it alongside NMPC_PROGRESS_ENABLED
+    # rather than changing this default.
     nmpc_track_halfwidth: float = field(default=3.5, metadata={
         "unit": "m",
-        "desc": "soft |e_y| bound with slack, copied from _build_qp's existing "
-                "+-3.5 m literal. <=0 removes the constraint (and its slack "
-                "variables) entirely",
+        "desc": "soft |e_y| bound with slack (both quadratic and linear). "
+                "<=0 removes the constraint (and its slack variables) entirely",
         "controller": "nmpc_only",
     })
     nmpc_slack_weight: float = field(default=10000.0, metadata={
@@ -307,7 +318,7 @@ class NMPCParams:
     # boundary), so this is a no-op in the shipped configuration rather than
     # a behaviour change. Set it to ~1000 alongside any progress-term
     # experiment; it is necessary there, just not sufficient.
-    nmpc_slack_linear_weight: float = field(default=0.0, metadata={
+    nmpc_slack_linear_weight: float = field(default=500.0, metadata={
         "unit": "1/m",
         "desc": "LINEAR track-bound slack penalty, additional to the "
                 "quadratic nmpc_slack_weight above. 0.0 (default) is a "
@@ -476,7 +487,7 @@ class NMPCParams:
                 "is IDENTICAL to before this feature existed",
         "controller": "nmpc_only",
     })
-    nmpc_progress_reach: float = field(default=2.0, metadata={
+    nmpc_progress_reach: float = field(default=3.0, metadata={
         "unit": "-",
         "desc": "s_target_N = X[0,s] + max(v_cap*N*dt*REACH, "
                 "0.5*a_max*(N*dt)^2*REACH); >1 keeps the target always out "
@@ -490,7 +501,7 @@ class NMPCParams:
                 "minimum at the current weight set",
         "controller": "nmpc_only",
     })
-    nmpc_progress_v_min: float = field(default=0.5, metadata={
+    nmpc_progress_v_min: float = field(default=3.0, metadata={
         "unit": "m/s",
         "desc": "low-speed floor in the same row/weight as the speed cap: "
                 "defence against the standstill trivial solution (v_x=0 "

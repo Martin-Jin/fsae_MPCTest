@@ -91,16 +91,17 @@ controller:
     # [e_y, e_yd, e_psi, r, e_v, e_a, delta_act, a_act]; inputs u are
     # [delta_cmd, a_cmd].
     q_e_y: 6.35                # lateral deviation from path centreline (1/m^2)
-    q_e_yd: 0.5                # rate of change of lateral deviation (1/(m/s)^2)
+    q_e_yd: 0.1                # rate of change of lateral deviation (1/(m/s)^2)
     q_e_psi: 1.65              # heading error relative to path tangent (1/rad^2)
     q_r: 1.0                   # yaw rate (1/(rad/s)^2)
-    q_e_v: 5.40                # speed error: car_speed - desired_speed (1/(m/s)^2)
+    q_e_v: 2.0                # speed error: car_speed - desired_speed (1/(m/s)^2)
     r_delta: 1.8               # steering command effort (1/rad^2)
-    r_a_accel: 2.25            # acceleration command effort, a_cmd >= 0 (1/(m/s^2)^2)
+    r_a_accel: 1.0             # acceleration command effort, a_cmd >= 0 (1/(m/s^2)^2)
     r_a_brake: 0.5             # acceleration command effort, a_cmd < 0 -- braking (1/(m/s^2)^2)
-    r_rate_delta: 2.5          # steering rate of change (1/(rad/s)^2)
+    r_rate_delta: 100.0          # steering rate of change (1/(rad/s)^2)
     r_rate_a: 2.25             # acceleration rate of change (1/(m/s^3)^2)
     terminal_q_scale: 1.0      # extra weight on terminal predicted state; 1.0 = no-op
+    speed_target_deficit_max: 2.5   # max the ramped speed target may lead the car's current speed by (m/s); read by both controllers before either's speed-error/cap row sees the target. Was a bare module constant with no ROS param; binding constraint on acceleration for 36.8% of a lap at the old default (2.5). NOT yet live-validated at 5.0
 
     # Feature enable/disable flags
     adaptive_q_scaling_enabled: true              # soften Q[0,0] near centreline to reduce small-error hunting
@@ -125,6 +126,14 @@ controller:
 
     # Straight-line R_rate[0,0] (steering rate) anti-hunt boost
     anti_hunt_boost_max: 6.0   # ceiling on the steer_rate_anti_hunt multiplier
+
+    # Steering-reversal penalty -- EXPERIMENTAL, not yet validated. Soft-
+    # constrains steering reversals by boosting R_rate[0,0] whenever last
+    # tick's steering was already close to zero. Composes with
+    # steer_rate_anti_hunt_enabled, does not replace it.
+    reversal_penalty_enabled: false   # default false, unvalidated
+    reversal_penalty_boost_max: 4.0   # ceiling on the reversal-penalty multiplier, applied when last tick's steering was exactly zero
+    reversal_penalty_k: 8.0           # fade rate of the boost as |last tick's steering| grows; 8.0 sets half-boost at ~7.2 deg (1/rad)
 
     # Current-state corner-factor scheduler -- replaces the whole deleted
     # lookahead gain-scheduling family (see mpc_params.py's/mpc_core.py's
@@ -169,7 +178,7 @@ controller:
     # (q_e_y, r_delta, ...) -- see mpc_params.py's own section comment for
     # the full reasoning, and this file's "NONLINEAR MPC" block below for
     # the NMPC's remaining (structural/solver, non-weight) settings.
-    nmpc_q_e_y: -1.0          # override q_e_y for the NMPC only (-1 = inherit) (1/m^2)
+    nmpc_q_e_y: 7.5          # override q_e_y for the NMPC only (-1 = inherit) (1/m^2)
     nmpc_q_e_yd: -1.0         # override q_e_yd (-1 = inherit) (1/(m/s)^2)
     nmpc_q_e_psi: -1.0        # override q_e_psi (-1 = inherit) (1/rad^2)
     nmpc_q_epsi_dot: -1.0     # override q_r (-1 = inherit). NOTE this weights HEADING-ERROR rate (r - kappa*s_dot), not absolute yaw rate (1/(rad/s)^2)
@@ -180,7 +189,29 @@ controller:
     nmpc_r_rate_delta: -1.0   # override r_rate_delta (-1 = inherit) (1/rad^2)
     nmpc_r_rate_a: -1.0       # override r_rate_a (-1 = inherit) (1/(m/s^2)^2)
     nmpc_terminal_scale: -1.0 # override terminal_q_scale (-1 = inherit)
-    nmpc_q_progress: 5.0      # [NMPC only] progress-reward weight, read ONLY when nmpc_progress_enabled. Not an override, so no -1 inherit convention (the row does not exist in tracking mode). Narrow usable band measured offline at r_a_accel=1.0: below ~5 the car never breaks static friction, above ~6 it goes off-track (1/m^2)
+    nmpc_q_progress: 4.25      # [NMPC only] progress-reward weight, read ONLY when nmpc_progress_enabled. Not an override, so no -1 inherit convention (the row does not exist in tracking mode). Narrow usable band measured offline at r_a_accel=1.0: below ~5 the car never breaks static friction, above ~6 it goes off-track (1/m^2)
+
+    # NMPC-only rate-cost experiments (steer_rate_anti_hunt/reversal-penalty
+    # ported to the NMPC, plus rrate stage-ramp/3-zone schedule, steering-
+    # jerk, and corner-rrate-blend). All EXPERIMENTAL, default off/inherit;
+    # see nmpc_params.py's own field comments for validation status.
+    nmpc_steer_rate_anti_hunt_enabled: false   # apply steer_rate_anti_hunt's R_rate[0,0] penalty to the NMPC too. Default false, unvalidated
+    nmpc_anti_hunt_boost_max: -1.0             # override anti_hunt_boost_max for the NMPC only (-1 = inherit). Only read when nmpc_steer_rate_anti_hunt_enabled is true
+    nmpc_reversal_penalty_enabled: false       # apply reversal_penalty_boost's R_rate[0,0] penalty to the NMPC too. Default false, unvalidated
+    nmpc_reversal_penalty_boost_max: -1.0      # override reversal_penalty_boost_max for the NMPC only (-1 = inherit). Only read when nmpc_reversal_penalty_enabled is true
+    nmpc_reversal_penalty_k: -1.0              # override reversal_penalty_k for the NMPC only (-1 = inherit). Only read when nmpc_reversal_penalty_enabled is true (1/rad)
+    nmpc_rrate_stage_ramp_enabled: false       # discount steering-RATE cost at NEAR horizon stages (linear ramp). OFFLINE-REJECTED as a fix for shallow-corner jerk; default false, unvalidated live
+    nmpc_rrate_stage_near: 0.15                # stage-0 multiplier for the steering-rate cost ramp; 1.0 = no-op. Only read when nmpc_rrate_stage_ramp_enabled is true
+    nmpc_rrate_zone_enabled: true               # continuous three-zone schedule on steering-RATE cost (boost straight / ease approach / floor corner). MULTIPLIES r_rate_delta
+    nmpc_rrate_zone_boost_straight: 2.0        # x r_rate on a true straight
+    nmpc_rrate_zone_ease_approach: 0.35        # x r_rate when a corner is ahead in the horizon but not here yet
+    nmpc_rrate_zone_floor_corner: 0.15         # x r_rate mid-corner
+    nmpc_rjerk_delta: 0.0                      # steering-JERK weight (second difference of steering command). 0.0 disables the term entirely (1/(rad/s^2)^2)
+    nmpc_rjerk_a: 0.0                          # acceleration-jerk weight (second difference of a_cmd). 0.0 disables (1/(m/s^4)^2)
+    nmpc_corner_rrate_blend_enabled: false      # blend R_rate[0,0] between nmpc_rrate_steer_straight/_corner by CURRENT curvature. Takes priority over nmpc_steer_rate_anti_hunt_enabled if both set. Default false, unvalidated
+    nmpc_corner_factor_k: -1.0                  # override corner_factor_k for the NMPC only (-1 = inherit). Read by BOTH nmpc_corner_rrate_blend_enabled AND nmpc_rrate_zone_enabled
+    nmpc_rrate_steer_straight: -1.0             # override rrate_steer_straight for the NMPC only (-1 = inherit). Only read when nmpc_corner_rrate_blend_enabled is true (1/(rad/s)^2)
+    nmpc_rrate_steer_corner: -1.0               # override rrate_steer_corner for the NMPC only (-1 = inherit). Only read when nmpc_corner_rrate_blend_enabled is true (1/(rad/s)^2)
 
     # ── NONLINEAR MPC (nmpc_core.py's NMPCController) ────────────────────
     # use_nmpc=false (default) means none of this is used and the LTV-QP
@@ -214,9 +245,9 @@ controller:
     nmpc_trust_delta_rad: 0.15707963267948966   # per-iteration trust region on each stage's steering deviation. 9 deg = MPCController's own du_max steering slew per tick (180 deg/s * 0.05 s) — reused, not invented (rad)
     nmpc_trust_a: 0.6   # per-iteration trust region on each stage's accel deviation. 0.6 = MPCController's du_max[1] — reused, not invented (m/s^2)
     nmpc_backtrack_max: 2   # max step halvings if a full SQP step increases the true nonlinear cost (divergence guard). 0 disables backtracking (halvings)
-    nmpc_track_halfwidth: 3.5   # soft |e_y| bound with slack, copied from _build_qp's existing +-3.5 m literal. <=0 removes the constraint (and its slack variables) entirely (m)
+    nmpc_track_halfwidth: 3.5   # soft |e_y| bound with slack (both quadratic and linear), matching the LTV-QP's own +-3.5m literal. Narrowing to 3.0 was tried 2026-09-21 for the progress-term experiment and reverted the same day: this field is read unconditionally, so it also tightened ordinary tracking mode and measurably hurt it. <=0 removes the constraint entirely (m)
     nmpc_slack_weight: 10000.0   # penalty on the track-bound slack, copied from _build_qp's existing W_slack = 10000.0 (1/m^2)
-    nmpc_slack_linear_weight: 0.0   # [NMPC only] LINEAR track-bound slack penalty, additional to the quadratic nmpc_slack_weight above. 0.0 = no-op, and inert anyway while nmpc_progress_enabled is false (nothing else rewards violating the boundary). Set ~1000 alongside any progress-term experiment: necessary there, but measured NOT sufficient
+    nmpc_slack_linear_weight: 500.0   # [NMPC only] LINEAR track-bound slack penalty, additional to the quadratic nmpc_slack_weight above. 0.0 = no-op, and inert anyway while nmpc_progress_enabled is false (nothing else rewards violating the boundary). Set ~1000 alongside any progress-term experiment: necessary there, but measured NOT sufficient
     nmpc_curvature_dense_step: 0.5   # arc-length resampling step for the kappa(s) reference (= curvature_speed()'s dense_step) (m)
     nmpc_curvature_smooth_w: 3   # moving-average width applied before differencing headings (= curvature_speed()'s w). 1 disables smoothing (samples)
     nmpc_kappa_clip: 0.5   # hard clamp on |kappa(s)|. GUARD, not a tuning knob: 0.5 = a 2 m radius, the tightest corner curvature_speed()'s own docstring contemplates, so it is inert on any real track line and only catches a ... (1/m)
@@ -229,8 +260,8 @@ controller:
     nmpc_spline_reference_enabled: true   # [NMPC only] true (default) -> PathReference builds kappa(s)/psi_ref(s) from an analytic CubicSpline fit to the raw waypoints instead of the dense-resample + moving-average + finite-difference pipeline. Numerical-quality fix, no new solver coupling, defaults on unlike every other flag in this block. False restores the old moving-average path exactly, for A/B comparison (bool)
     nmpc_friction_circle_enabled: false   # [NMPC only, EXPERIMENTAL] true -> add a HARD |F_yf|/|F_yr| <= F_max bound to the condensed QP, ADDITIONAL to (not a replacement for) the existing SOFT alat-ceiling tanh saturation. F_max derived from the same measured ceiling law via F_max = m * ceiling(v_x) / 2 per axle. Default false: unvalidated, do not enable for a live run without an offline A/B first (bool)
     nmpc_progress_enabled: false   # [NMPC only, EXPERIMENTAL] ON was attempted 2026-09-21 and REVERTED the same day: the shipped config does not complete a lap at any setting tried (q_progress 4.0 never launches, 5.0/6.0 go off track at ~10% of a lap, and raising the slack weight 50x changes nothing). Tracking (false) completes and scores 0.714 on the same map. See fsae_MPCTest/docs/logs/nmpc_progress_term_investigation.md
-    nmpc_progress_reach: 2.0   # [NMPC only] s_target_N = X[0,s] + max(v_cap*N*dt*REACH, 0.5*a_max*(N*dt)^2*REACH). >1 keeps the target out of reach so minimising the residual is monotone-equivalent to maximising s_N. The kinematic term floors the gap at launch, where v_cap is deliberately small and the first term alone would be reachable immediately (measured: stalls the car indefinitely without it)
-    nmpc_progress_v_min: 0.5   # [NMPC only] low-speed floor sharing the speed-cap row/weight: defence against the standstill trivial solution. Only read when nmpc_progress_enabled (m/s)
+    nmpc_progress_reach: 3.0   # [NMPC only] s_target_N = X[0,s] + max(v_cap*N*dt*REACH, 0.5*a_max*(N*dt)^2*REACH). >1 keeps the target out of reach so minimising the residual is monotone-equivalent to maximising s_N. The kinematic term floors the gap at launch, where v_cap is deliberately small and the first term alone would be reachable immediately (measured: stalls the car indefinitely without it)
+    nmpc_progress_v_min: 3.0   # [NMPC only] low-speed floor sharing the speed-cap row/weight: defence against the standstill trivial solution. Only read when nmpc_progress_enabled (m/s)
     nmpc_osqp_max_iter: 500   # OSQP iteration cap for the SQP subproblem. Bounded well below MPCController's 8000 on purpose: this is a step DIRECTION that the true-cost backtracking test validates before it is kept, so a hard s... (iterations)
     nmpc_osqp_eps: 0.0001   # OSQP eps_abs/eps_rel for the SQP subproblem. Looser than MPCController's 1e-5 on purpose: an SQP subproblem is a STEP direction that the next iteration corrects, not the final answer, so sub-1e-4 a...
     nmpc_latency_compensation_enabled: false   # [NMPC only, EXPERIMENTAL] true -> roll x0 forward by nmpc_latency_compensation_ms (held at the last applied control, same nonlinear rollforward as pose-age delay compensation) before linearising, to compensate for the solve's own wall-clock time rather than pose staleness. Runs EVERY tick regardless of path source (not gated like nmpc_kappa_rate_max), a live suspect (not yet isolated) for the 2026-09-15 evening smoothness regression alongside a too-fast nmpc_v_des_filter_alpha. Off pending isolation testing (bool)

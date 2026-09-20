@@ -26,3 +26,10 @@ todo.md
 # that module's code still lives here, not the data. Regenerate/export a
 # track with the commands above -- they now write across the repo boundary.
 /tracks/*/
+
+# gui/launcher.py's own pre-write safety copies (settings.py.bak,
+# launch_all.sh.bak, the live/mirror mpc_params.py.bak/nmpc_params.py.bak/
+# fsae_params.yaml.bak), one per session the first time each file is
+# rewritten. Local recovery copies (`mv X.bak X`), not project history --
+# git already has that.
+*.bak

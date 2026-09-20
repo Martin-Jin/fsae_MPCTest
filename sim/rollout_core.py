@@ -97,6 +97,7 @@ from settings import (
     NMPC_RRATE_ZONE_EASE_APPROACH, NMPC_RRATE_ZONE_FLOOR_CORNER,
     NMPC_PROGRESS_ENABLED, NMPC_Q_PROGRESS, NMPC_PROGRESS_REACH,
     NMPC_PROGRESS_V_MIN, NMPC_SLACK_LINEAR_WEIGHT,
+    SPEED_TARGET_DEFICIT_MAX,
 )
 
 
@@ -126,8 +127,10 @@ PLANNER_V_MIN = 1.5
 SPEED_TARGET_RISE_RATE = 7.0
 
 # Max speed error (m/s) the rise limiter is allowed to open up before it stops
-# ramping and waits for the car. Mirrors mpc_controller.SPEED_TARGET_DEFICIT_MAX
-# — keep the two in sync.
+# ramping and waits for the car. Promoted to MPCParams.speed_target_deficit_max
+# on the live side (ROS param/YAML/launch arg/GUI tunable); imported here from
+# settings.py's SPEED_TARGET_DEFICIT_MAX, which is the offline mirror of that
+# same field, kept in sync by hand like every other entry in that file.
 #
 # SPEED_TARGET_RISE_RATE alone assumes the car can accelerate at that rate. From
 # a standing start it cannot: the car does not break static friction for ~1 s,
@@ -169,7 +172,6 @@ SPEED_TARGET_RISE_RATE = 7.0
 # keep raising. Do not read it as "the clamp was wrong": it is a real guard
 # and still needed, it was simply set tight enough to bind far outside the
 # regime it was designed for.
-SPEED_TARGET_DEFICIT_MAX = 5.0
 
 # Max rate (gate-units/s) at which tracking_error_speed_gate()'s output may
 # change per tick, in either direction. Mirrors

@@ -532,6 +532,22 @@ def main():
         ax.set_xlim(0, 100)
         ax.set_xlabel(xlabel, fontsize=8)
 
+    def _set_window_visible(fig, visible: bool) -> None:
+        """Figure.set_visible() only controls whether the figure's ARTISTS
+        draw onto its own canvas -- it does not touch the OS-level window
+        the TkAgg backend opened for it, so the inactive controller's debug
+        figure (fig_stanley under MPC/NMPC, or vice versa) was left on
+        screen showing nothing, a blank numbered "Figure" window with no
+        way to tell why it was empty. Tk's own window object, reached via
+        the canvas manager, is what actually needs withdraw()/deiconify()."""
+        window = fig.canvas.manager.window
+        if visible:
+            window.deiconify()
+        else:
+            window.withdraw()
+
+    _debug_visibility_state = {'show_stanley': None}
+
     def _sync_debug_visibility():
         """Which of the two debug figures is actually meaningful right now
         -- called from both figures' own animations (each figure needs its
@@ -544,6 +560,15 @@ def main():
             ax_.set_visible(not show_stanley)
         for ax_ in stanley_axes:
             ax_.set_visible(show_stanley)
+        # withdraw()/deiconify() are window-manager calls, not cheap artist
+        # toggles -- only issue them on an actual transition (this function
+        # runs at REDRAW_HZ from TWO animations, ~50 calls/sec combined),
+        # or a manually moved/resized debug window gets fought back into
+        # place every frame even while the controller never changes.
+        if _debug_visibility_state['show_stanley'] != show_stanley:
+            _debug_visibility_state['show_stanley'] = show_stanley
+            _set_window_visible(fig_dbg, not show_stanley)
+            _set_window_visible(fig_stanley, show_stanley)
         return show_stanley
 
     def redraw_debug(_frame):

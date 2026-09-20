@@ -168,7 +168,11 @@ SPEED_TARGET_RISE_RATE = 7.0
 # sim-to-real gap (live saturates ~4x more often than the sim) is exactly
 # the failure mode of trusting one. Faster corner entry is the specific risk
 # to watch on the car. See docs/logs/nmpc_progress_term_investigation.md.
-SPEED_TARGET_DEFICIT_MAX = 5.0
+#
+# Promoted to a real MPCParams field (params.speed_target_deficit_max,
+# tunable via ROS param/YAML/launch arg/GUI) rather than this module
+# constant; see mpc_params.py's "Speed-target deficit clamp" section for
+# the current default and rationale. No module-level constant remains.
 # Max rate (m/s^2) at which curvature_speed()'s OWN output (v_curv, the live
 # per-tick geometry-derived target, NOT the precomputed-track oracle lookup)
 # may fall, applied before the tracking-error gate. curvature_speed() is a
@@ -920,14 +924,15 @@ class MPCControllerNode(Node):
         desired_speed = min(desired_speed,
                             self._v_des_prev + SPEED_TARGET_RISE_RATE / CONTROL_HZ)
         # Stop ramping once the target has run this far ahead of the car; see
-        # SPEED_TARGET_DEFICIT_MAX. Never DROPS the target (max against the
-        # previous value), so a car that is merely slow does not get the target
-        # dragged down to meet it, and a genuine brake request still passes
-        # through the min() above untouched.
-        if desired_speed - self._car_speed > SPEED_TARGET_DEFICIT_MAX:
+        # params.speed_target_deficit_max (mpc_params.py). Never DROPS the
+        # target (max against the previous value), so a car that is merely
+        # slow does not get the target dragged down to meet it, and a genuine
+        # brake request still passes through the min() above untouched.
+        deficit_max = self._mpc.params.speed_target_deficit_max
+        if desired_speed - self._car_speed > deficit_max:
             desired_speed = min(desired_speed,
                                 max(self._v_des_prev,
-                                    self._car_speed + SPEED_TARGET_DEFICIT_MAX))
+                                    self._car_speed + deficit_max))
         self._v_des_prev = desired_speed
 
         # Age of the pose the MPC is about to solve against — how long ago it

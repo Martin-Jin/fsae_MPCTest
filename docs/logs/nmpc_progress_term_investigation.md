@@ -334,9 +334,13 @@ flag is structural, not a weight, so it lives in the former).
 
 - **Live cost bars** (`live_viz.py`): a `progress` bar appears in the
   tracking panel when the flag is on, and is skipped otherwise since the
-  term tables are filtered allow-lists. Note `e_v` remains in the same slot
-  but changes meaning in progress mode (it is the speed-CAP hinge, normally
-  exactly 0, not a two-sided speed error).
+  term tables are filtered allow-lists. Row 4 is relabelled `v_cap_hinge`
+  in progress mode (normally exactly 0, not a two-sided speed error) rather
+  than staying `e_v`, which would otherwise make a working controller look
+  like it had zero speed error. `horizon_terms` was found hardcoded to the
+  5-name tracking-mode tuple, which mislabelled the hinge AND silently
+  dropped the progress row from the horizon panel entirely; both are now
+  mode-aware.
 - **Live stats box** (`live_viz.py`): a `progress term:` block prints
   `v_cap`, `cap_over` (tagged `CAP BINDING` or `under cap`, the one signal
   that separates "held back by the cap" from "chose to go slower") and
@@ -349,3 +353,57 @@ One pre-existing mirror divergence was found and deliberately left alone per
 the "do not fix unrelated drift" rule: `mpc_controller.py`'s
 `DISABLE_LIVE_CURVATURE_SPEED` block exists live but not in
 `fsds_simulator/`. Only the specific change made here was propagated.
+
+## `speed_target_deficit_max` promoted to a real parameter (2026-09-21)
+
+Was a bare module constant (`SPEED_TARGET_DEFICIT_MAX`) hand-synced across
+three files with no ROS param, launch arg, or GUI entry, the only way to
+change it was editing code in all three at once. Promoted to
+`MPCParams.speed_target_deficit_max`, following the exact path
+`nmpc_q_progress` already uses: dataclass field (`controller: both`, since
+it shapes the target before either controller's own speed-error/cap row
+sees it) -> `fsae_params.yaml` -> `launch_all.sh` shortlist
+(`MPC_SPEED_TARGET_DEFICIT_MAX`) -> GUI Settings-tab scalar ->
+`settings.py` on the offline side. Default unchanged at 5.0.
+`tuner.nmpc_offline_check` and `tuner.recorded_map_rollout` both reproduce
+their pre-change numbers exactly (score 0.442), confirming the promotion
+is wiring only, not a behaviour change.
+
+## `nmpc_track_halfwidth` narrowed 3.5 -> 3.0 m, and a GUI launch checkbox added (2026-09-21)
+
+Two changes made together while extending the progress-term GUI surface:
+
+- **`nmpc_track_halfwidth` (both the quadratic and linear slack boundary)
+  narrowed from 3.5 m to 3.0 m.** Requested to give the slack headroom to
+  catch a mistake before the car reaches the true track edge, not right at
+  it, given the progress reward's analytic incentive to hug the boundary
+  (kappa(s)'s `1/(1-kappa*e_y)` metric factor rises toward the inside, see
+  the design doc's landmine #2). Already a fully-plumbed `nmpc_only`
+  dataclass field; only the default changed, plus adding it to
+  `launch_all.sh`'s shortlist (missing until now) and the GUI Settings
+  tab's progress-term card, since both were absent despite the field
+  itself being wired. `tuner.nmpc_offline_check`'s tracking-mode numbers
+  move slightly (|e_y| p90 0.922 -> 0.811 deg, |e_psi| mean 5.65 -> 4.76
+  deg), improving, since the tighter boundary pulls the car back sooner;
+  the LTV-QP path (which does not read this field) is bit-identical.
+  NOT yet re-measured with the progress term itself on.
+- **GUI checkbox to launch with the progress term on**, on the Launch tab,
+  visible only when NMPC is selected. `NMPC_PROGRESS_ENABLED` ships as a
+  commented-out `launch_all.sh` shortlist line, which the existing
+  `_read_var`/`_rewrite_var` pair cannot see or edit (their regex requires
+  the line to already be uncommented) -- new `_read_shortlist_var`/
+  `_rewrite_shortlist_var` helpers handle the commented case, matched
+  against real file content, not just synthetic test strings. Checking the
+  box also force-sets `NMPC_SLACK_LINEAR_WEIGHT=1000.0`, measured
+  necessary (not just helpful) once the progress term is on. The
+  confirmation dialog before launch lists both so neither is a silent
+  side effect.
+
+**Found in passing: `ros2/launch_all.sh` had `NMPC_PROGRESS_ENABLED=true`
+live-enabled**, contradicting its own comment ("ON was attempted
+2026-09-21 and REVERTED the same day") and the mirror copy in
+`fsds_simulator/launch_all.sh`, which correctly had it commented out.
+Corrected to match the documented, measured-off-track-at-every-weight
+verdict. Root cause not established (manual edit while testing, most
+likely); flagged rather than silently fixed given more than one session
+works in this checkout.

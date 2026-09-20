@@ -38,6 +38,7 @@ that same root (`_repo_paths()` below).
 
 from __future__ import annotations
 
+import json
 import os
 import queue
 import re
@@ -246,11 +247,32 @@ class RepoPaths:
     # from mpc_params.py's weights -- see nmpc_params.py's own docstring.
     # Only the fields this GUI actually writes need to be found here.
     nmpc_params_py: Path
+    # fsae_params.yaml is what ROS actually loads a field's RUNTIME value
+    # from -- it overrides the dataclass default the GUI edits above, so a
+    # value the GUI "saved" could silently keep running at the OLD number
+    # until this file was found and fixed by hand (r_a_accel 2.25 vs 1.0,
+    # nmpc_track_halfwidth 3.0 vs 3.5 both did this). The mirror copies
+    # under fsds_simulator/ are the change-ledger for fsae_planning (see
+    # CLAUDE.md's "Third copy" section) and must track the live ones.
+    fsae_params_yaml: Path
+    mirror_mpc_params_py: Path
+    mirror_nmpc_params_py: Path
+    mirror_fsae_params_yaml: Path
+    # Named snapshots of the Settings tab's full field set (see
+    # _PROFILE_FIELD_NAMES), one JSON file per profile. Lives in
+    # fsae_MPCTest (offline repo), not ros2/ or its mirror -- a profile is
+    # a GUI/tuning convenience, not part of the change ledger for
+    # fsae_planning, so it does not belong under fsds_simulator/.
+    profiles_dir: Path
 
 
 def _repo_paths() -> RepoPaths:
     fsae_mpctest = Path(__file__).resolve().parent.parent
     fsds_root = fsae_mpctest.parent
+    fsae_planning_mpc = (fsds_root / "ros2" / "src" / "fsae_planning" / "control"
+                         / "fsae_control" / "fsae_control" / "mpc")
+    mirror_root = fsae_mpctest / "fsds_simulator"
+    mirror_mpc = mirror_root / "control" / "fsae_control" / "fsae_control" / "mpc"
     return RepoPaths(
         fsae_mpctest=fsae_mpctest,
         fsds_root=fsds_root,
@@ -266,10 +288,15 @@ def _repo_paths() -> RepoPaths:
         # "save this run?" prompt able to find anything at all.
         fsae_logs_dir=fsds_root / "fsae_logs",
         settings_py=fsae_mpctest / "settings.py",
-        mpc_params_py=(fsds_root / "ros2" / "src" / "fsae_planning" / "control"
-                       / "fsae_control" / "fsae_control" / "mpc" / "mpc_params.py"),
-        nmpc_params_py=(fsds_root / "ros2" / "src" / "fsae_planning" / "control"
-                        / "fsae_control" / "fsae_control" / "mpc" / "nmpc_params.py"),
+        mpc_params_py=fsae_planning_mpc / "mpc_params.py",
+        nmpc_params_py=fsae_planning_mpc / "nmpc_params.py",
+        fsae_params_yaml=(fsds_root / "ros2" / "src" / "fsae_planning" / "common"
+                          / "fsae_bringup" / "config" / "fsae_params.yaml"),
+        mirror_mpc_params_py=mirror_mpc / "mpc_params.py",
+        mirror_nmpc_params_py=mirror_mpc / "nmpc_params.py",
+        mirror_fsae_params_yaml=(mirror_root / "common" / "fsae_bringup"
+                                 / "config" / "fsae_params.yaml"),
+        profiles_dir=fsae_mpctest / "settings_profiles",
     )
 
 
@@ -302,6 +329,79 @@ def _rewrite_var(path: Path, name: str, new_value: str) -> bool:
     False (no-op, file untouched) if NAME's assignment line isn't found."""
     text = path.read_text()
     pattern = _var_pattern(name)
+    if not pattern.search(text):
+        return False
+    new_text = pattern.sub(lambda m: f"{m.group(1)}{new_value}{m.group(3)}", text, count=1)
+    path.write_text(new_text)
+    return True
+
+
+def _shortlist_var_pattern(name: str) -> re.Pattern:
+    """Like _var_pattern, but also matches a shortlist entry that is
+    currently COMMENTED OUT (`# NAME=value  # ...`), which is how most of
+    launch_all.sh's NMPC-only shortlist ships by default (see that file's
+    own "commented-out overrides" convention, CLAUDE.md's "Single source
+    of truth for MPC tuning"). Group 1 captures the optional leading
+    `# ` so callers can toggle it on/off independently of the value."""
+    return re.compile(
+        rf"^(\s*# ?)?({re.escape(name)}\b\s*=\s*)([^#\n]*?)(\s*(?:#.*)?)$",
+        re.MULTILINE)
+
+
+def _read_shortlist_var(path: Path, name: str) -> tuple[bool, str] | None:
+    """(enabled, value) for a shortlist var that may be commented out, or
+    None if NAME's assignment line isn't found at all. enabled=False means
+    the line is currently `# NAME=value`."""
+    text = path.read_text()
+    m = _shortlist_var_pattern(name).search(text)
+    if m is None:
+        return None
+    return (m.group(1) is None, m.group(3).strip())
+
+
+def _rewrite_shortlist_var(path: Path, name: str, enabled: bool, new_value: str) -> bool:
+    """Set NAME's shortlist line to `NAME=new_value` (enabled) or
+    `# NAME=new_value` (disabled), preserving alignment/trailing comment.
+    Returns False (no-op) if NAME's line isn't found at all."""
+    text = path.read_text()
+    pattern = _shortlist_var_pattern(name)
+    if not pattern.search(text):
+        return False
+    prefix = "" if enabled else "# "
+    new_text = pattern.sub(lambda m: f"{prefix}{m.group(2)}{new_value}{m.group(4)}",
+                            text, count=1)
+    path.write_text(new_text)
+    return True
+
+
+def _yaml_field_pattern(name: str) -> re.Pattern:
+    """Matches a `controller:` block field in fsae_params.yaml: 4-space
+    indented `name: value    # comment`. \\b after the name prevents
+    r_a_accel's pattern matching a field with the same prefix (there is no
+    such collision today, but nmpc_q_e_y/nmpc_q_e_yd already burned this
+    once for the shell/dataclass patterns above, so the same guard is
+    applied here on the same reasoning). The indent is fixed at 4 spaces
+    (this file's own convention, verified against every field under
+    `controller:`), not \\s*, so this cannot match a same-named key that
+    might exist under a different top-level node's ros__parameters block."""
+    return re.compile(rf"^(    {re.escape(name)}\b:\s*)([^#\n]*?)(\s*(?:#.*)?)$",
+                       re.MULTILINE)
+
+
+def _read_yaml_field(path: Path, name: str) -> str | None:
+    """Current raw value text of NAME's `controller:`-block YAML field, or
+    None if NAME's line isn't found in path."""
+    text = path.read_text()
+    m = _yaml_field_pattern(name).search(text)
+    return m.group(2).strip() if m else None
+
+
+def _rewrite_yaml_field(path: Path, name: str, new_value: str) -> bool:
+    """Rewrite NAME's `controller:`-block YAML field to new_value, preserving
+    indentation and any trailing inline comment. Returns False (no-op) if
+    NAME's line isn't found in path."""
+    text = path.read_text()
+    pattern = _yaml_field_pattern(name)
     if not pattern.search(text):
         return False
     new_text = pattern.sub(lambda m: f"{m.group(1)}{new_value}{m.group(3)}", text, count=1)
@@ -547,7 +647,39 @@ class LaunchTab(ttk.Frame):
         controller_frame.grid(row=row, column=1, sticky="w")
         for text, value in (("Stanley", "stanley"), ("MPC · LTV-QP", "ltv"), ("MPC · NMPC", "nmpc")):
             ttk.Radiobutton(controller_frame, text=text, value=value,
-                            variable=self.controller_var).pack(side="left", padx=(0, 14))
+                            variable=self.controller_var,
+                            command=self._on_controller_changed).pack(side="left", padx=(0, 14))
+
+        # NMPC progress term: OFF by default and hidden unless NMPC is
+        # selected, see NMPC_PROGRESS_ENABLED's own launch_all.sh comment
+        # for why -- measured 2026-09-21 to go off-track at ~10% of a lap
+        # at every weight tried, so this is an experiment to opt INTO, not
+        # a normal driving mode. launch_all.sh ships this shortlist entry
+        # commented out, so read/write goes through the
+        # _read_shortlist_var/_rewrite_shortlist_var pair (plain
+        # _read_var/_rewrite_var only handle an already-uncommented line).
+        # Label/desc/checkbox are captured (not built via _field_label) so
+        # the whole row can be grid_remove()'d as a unit when hidden,
+        # rather than leaving an orphaned label above an empty row.
+        row += 2
+        self.progress_row = row
+        self.progress_label = ttk.Label(body, text="Progress term (NMPC only, experimental)")
+        self.progress_label.grid(row=row, column=0, sticky="nw", pady=(8, 0))
+        self.progress_desc = ttk.Label(
+            body, style="Muted.TLabel", wraplength=420,
+            text="Replaces the two-sided speed-error cost with a one-sided speed cap plus a "
+                 "progress reward, letting the NMPC pick its own speed below the cap instead "
+                 "of tracking a target. NOT validated: goes off-track at ~10% of a lap at "
+                 "every weight tried so far. Set the linear track-boundary slack weight "
+                 "(Settings tab) yourself before using this -- measured NECESSARY, not just "
+                 "helpful, once this is on, but this checkbox no longer sets it for you.")
+        self.progress_desc.grid(row=row + 1, column=0, sticky="nw", pady=(0, 8))
+        progress_state = _read_shortlist_var(paths.launch_all_sh, "NMPC_PROGRESS_ENABLED")
+        self.progress_var = tk.BooleanVar(
+            value=bool(progress_state and progress_state[0] and progress_state[1] == "true"))
+        self.progress_check = ttk.Checkbutton(body, variable=self.progress_var)
+        self.progress_check.grid(row=row, column=1, sticky="w")
+        self._set_progress_row_visible(initial == "nmpc")
 
         row += 2
         ttk.Separator(body).grid(row=row, column=0, columnspan=2, sticky="ew", pady=16)
@@ -618,6 +750,18 @@ class LaunchTab(ttk.Frame):
         else:
             self.new_track_entry.grid_remove()
 
+    def _set_progress_row_visible(self, visible: bool) -> None:
+        widgets = (self.progress_label, self.progress_desc, self.progress_check)
+        if visible:
+            for w in widgets:
+                w.grid()
+        else:
+            for w in widgets:
+                w.grid_remove()
+
+    def _on_controller_changed(self) -> None:
+        self._set_progress_row_visible(self.controller_var.get() == "nmpc")
+
     def _on_record_toggle(self) -> None:
         self._set_record_row_visible(self.record_var.get())
         if self.record_var.get():
@@ -634,6 +778,9 @@ class LaunchTab(ttk.Frame):
             self.precomp_speed_var.set(self._pre_record_state["precomp_speed"])
             self.precomp_path_var.set(self._pre_record_state["precomp_path"])
             self._pre_record_state = None
+        # tk.StringVar.set() does not fire a Radiobutton's own `command`,
+        # so the progress-row visibility needs an explicit refresh here too.
+        self._on_controller_changed()
 
     def _bool_row(self, row: int, label: str, desc: str, var_name: str) -> tk.BooleanVar:
         _field_label(self._body, row, label, desc)
@@ -663,7 +810,14 @@ class LaunchTab(ttk.Frame):
             messagebox.showerror("Launch tab", "Enter a name for the new track first.")
             return
         values = self._pending_values()
-        preview = "\n".join(f"  {k}={v}" for k, v in values.items())
+        preview_lines = [f"  {k}={v}" for k, v in values.items()]
+        if self.controller_var.get() == "nmpc" and self.progress_var.get():
+            preview_lines.append("  NMPC_PROGRESS_ENABLED=true (EXPERIMENTAL, not validated)")
+            preview_lines.append(
+                "  NMPC_SLACK_LINEAR_WEIGHT left as-is -- set it from the Settings tab; "
+                "measured NECESSARY (not just helpful) with the progress term on, or the "
+                "car cuts corners and goes off-track")
+        preview = "\n".join(preview_lines)
         if not messagebox.askyesno(
                 "Confirm launch",
                 f"About to rewrite ros2/launch_all.sh with:\n\n{preview}\n\n"
@@ -673,6 +827,24 @@ class LaunchTab(ttk.Frame):
             _backup_once(self._paths.launch_all_sh, self._backed_up)
             missing = [name for name, value in values.items()
                        if not _rewrite_var(self._paths.launch_all_sh, name, value)]
+            # NMPC_PROGRESS_ENABLED ships as a commented-out shortlist entry
+            # (off by default, see the checkbox's own on-screen warning), so
+            # it needs the comment-toggling rewrite, not the plain one above
+            # which only handles an already-uncommented line.
+            #
+            # Does NOT touch NMPC_SLACK_LINEAR_WEIGHT (previously force-set
+            # to 1000.0 here) -- the user asked to tune that one manually
+            # from the Settings tab instead of having this checkbox override
+            # it. Still measured NECESSARY (not just helpful) with the
+            # progress term on, or the car cuts corners and goes off-track;
+            # that warning now lives only in the confirmation dialog, not
+            # enforced here.
+            progress_on = self.controller_var.get() == "nmpc" and self.progress_var.get()
+            shortlist_ok = _rewrite_shortlist_var(
+                self._paths.launch_all_sh, "NMPC_PROGRESS_ENABLED",
+                progress_on, "true" if progress_on else "false")
+            if not shortlist_ok:
+                missing.append("NMPC_PROGRESS_ENABLED")
             if missing:
                 messagebox.showerror(
                     "Launch tab",
@@ -1033,6 +1205,8 @@ class OfflineSimTab(ttk.Frame):
 _SCALAR_FIELDS: list[tuple[str, str, str | None, str]] = [
     ("R_A_ACCEL", "R_A_ACCEL", "r_a_accel", "float"),
     ("R_A_BRAKE", "R_A_BRAKE", "r_a_brake", "float"),
+    ("SPEED_TARGET_DEFICIT_MAX", "SPEED_TARGET_DEFICIT_MAX",
+     "speed_target_deficit_max", "float"),
 ]
 
 # NMPC weight overrides: -1.0 means "inherit the base weight", any other
@@ -1066,6 +1240,25 @@ _LIST_FIELDS: list[tuple[str, str, int, list[str | None]]] = [
     ("R_diag", "R_diag", 2, ["r_delta", None]),
     ("R_rate_diag", "R_rate_diag", 2, ["r_rate_delta", "r_rate_a"]),
 ]
+
+# Per-index DISPLAY name for each _LIST_FIELDS entry, shown as the row label
+# in the Settings tab -- separate from _LIST_FIELDS' own mpc_fields column,
+# whose None entries are load-bearing (the save loop uses `mpc_field is
+# None` to skip syncing that index to mpc_params.py, since it has no live
+# dataclass field). An index with no LIVE field can still be a real,
+# always-0 STATE, so it gets the state/input name instead of a generic
+# "unused" repeated with no way to tell which state each one is -- and
+# R_diag[1] (a_cmd) is not unused at all, just nominal-only (superseded by
+# R_A_ACCEL/R_A_BRAKE), so labelling it "unused" was actively wrong, not
+# just uninformative. Names from mpc_core.py's own state/input vector
+# docstring: x = [e_y, e_yd, e_psi, r, e_v, e_a, delta_act, a_act],
+# u = [delta_cmd, a_cmd].
+_LIST_FIELD_INDEX_NAMES: dict[str, list[str]] = {
+    "Q_diag": ["e_y", "e_yd", "e_psi", "r", "e_v", "e_a (always 0)",
+               "delta_act (always 0)", "a_act (always 0)"],
+    "R_diag": ["delta_cmd", "a_cmd (nominal only, see R_A_ACCEL/R_A_BRAKE)"],
+    "R_rate_diag": ["delta_cmd rate", "a_cmd rate"],
+}
 
 # Per-index breakdown for the 3 weight vectors above -- unlike the scalar/
 # override fields, a list field has no single mpc_params.py field to read a
@@ -1149,7 +1342,36 @@ _NMPC_PROGRESS_FIELDS: list[tuple[str, str, str]] = [
      "quadratic penalty has zero gradient at zero violation and the "
      "progress reward exploits that. 1000 turned an off-track DNF into a "
      "completed lap."),
+    ("track_halfwidth", "NMPC_TRACK_HALFWIDTH",
+     "Soft |e_y| bound [m] where BOTH the quadratic and linear slack above "
+     "start penalising. Narrowed from the LTV-QP's 3.5 m to 3.0 m for the "
+     "progress-term experiment: progress has an analytic incentive to hug "
+     "the boundary, so the slack needs headroom to catch a mistake before "
+     "the car reaches the true track edge, not right at it."),
 ]
+
+
+def _profile_field_names() -> list[str]:
+    """Every settings.py NAME the Settings tab reads/writes, derived from
+    the same field-group tables the tab itself builds its widgets from
+    (rather than a separately hand-maintained list, which would silently
+    drift the moment a new field is added to one table but not the other).
+    A profile snapshot is exactly this set of NAME=value assignments, so
+    saving/loading one is guaranteed to cover the tab's whole surface."""
+    names: list[str] = []
+    for _label, name, _length, _mpc_fields in _LIST_FIELDS:
+        names.append(name)
+    for _label, name, _mpc_field, _kind in _SCALAR_FIELDS:
+        names.append(name)
+    for _label, name, _mpc_field in _NMPC_OVERRIDE_FIELDS:
+        names.append(name)
+    for _label, name, _desc in _NMPC_PROGRESS_FIELDS:
+        names.append(name)
+    for _group_title, entries in _FEATURE_GROUPS:
+        for _label, settings_name, _mpc_field in entries:
+            if settings_name is not None:
+                names.append(settings_name)
+    return names
 
 
 class SettingsTab(ttk.Frame):
@@ -1184,21 +1406,34 @@ class SettingsTab(ttk.Frame):
             "from these per-weight).")
         self._list_vars: dict[str, list[tk.StringVar]] = {}
         r = 0
-        for label, name, length, _mpc_fields in _LIST_FIELDS:
+        for label, name, length, mpc_fields in _LIST_FIELDS:
             desc = _LIST_FIELD_DESC.get(name, "")
             _field_label(weights_card, r, label, desc, label_style="Card.TLabel",
                          desc_style="CardMuted.TLabel", wraplength=520)
+            r += 2 if desc else 1
             raw = _read_var(paths.settings_py, name) or "[]"
             current = _parse_float_list(raw, length)
-            entry_frame = ttk.Frame(weights_card, style="Card.TFrame")
-            entry_frame.grid(row=r, column=1, sticky="w")
+            # One labelled row per index, not one wide horizontal row -- the
+            # old layout packed up to 8 entries side by side in a fixed-width
+            # card, which ran off the visible window with no way to see or
+            # reach the tail entries. Row label is the actual state/input
+            # name (_LIST_FIELD_INDEX_NAMES), NOT mpc_fields[i] -- mpc_fields'
+            # own None entries mean "no live dataclass field to sync to",
+            # which is a different thing from "this index is unused": R_diag
+            # index 1 (a_cmd) is None there but is a real, nominal-only
+            # weight, not one that's always 0.
+            index_names = _LIST_FIELD_INDEX_NAMES.get(name, mpc_fields)
             vars_for_field = []
             for i, v in enumerate(current):
+                index_label = index_names[i] if i < len(index_names) else f"index {i}"
+                ttk.Label(weights_card, text=f"  {index_label}", style="CardMuted.TLabel").grid(
+                    row=r, column=0, sticky="w", padx=(16, 0))
                 var = tk.StringVar(value=str(v))
-                ttk.Entry(entry_frame, textvariable=var, width=7).grid(row=0, column=i, padx=3)
+                ttk.Entry(weights_card, textvariable=var, width=10).grid(
+                    row=r, column=1, sticky="w")
                 vars_for_field.append(var)
+                r += 1
             self._list_vars[name] = vars_for_field
-            r += 2 if desc else 1
 
         ttk.Separator(weights_card).grid(row=r, column=0, columnspan=2, sticky="ew", pady=12)
         r += 1
@@ -1242,10 +1477,12 @@ class SettingsTab(ttk.Frame):
             r += 2 if desc else 1
 
         progress_card = section(
-            "NMPC progress term (experimental)",
-            "Only read when the NMPC progress term is enabled in the feature flags "
-            "below. OFFLINE-ONLY so far: it completes a lap but does not yet beat "
-            "the tracking controller it would replace. See "
+            "NMPC progress term (experimental) and track-boundary slack",
+            "The first three rows are only read when the NMPC progress term is enabled in "
+            "the feature flags below; OFFLINE-ONLY so far, it completes a lap but does not "
+            "yet beat the tracking controller it would replace. track_halfwidth is always "
+            "read by the NMPC (progress mode or not) -- it is the soft track boundary both "
+            "slack terms above are measured against. See "
             "docs/logs/nmpc_progress_term_investigation.md.")
         self._progress_vars: dict[str, tk.StringVar] = {}
         r = 0
@@ -1294,6 +1531,49 @@ class SettingsTab(ttk.Frame):
         ttk.Label(footer, textvariable=self.status_var, style="Muted.TLabel").pack(
             side="left", padx=(14, 0))
 
+    def _sync_live_field(self, mpc_field: str, literal: str, errors: list[str]) -> None:
+        """Writes mpc_field's value to every place a launched node could
+        actually read it from, not just the dataclass default the rest of
+        this tab edits. fsae_params.yaml OVERRIDES the dataclass default at
+        ROS param declaration time, so a field saved here without also
+        fixing the YAML can keep running at the OLD number indefinitely --
+        this is exactly how r_a_accel (2.25 vs the corrected 1.0) and
+        nmpc_track_halfwidth (3.0 vs the reverted 3.5) both went silently
+        stale after a GUI save. Tries the live dataclass fields first (one
+        of mpc_params.py/nmpc_params.py will have it, never both), then the
+        matching fsds_simulator/ mirror copies (the change-ledger for
+        fsae_planning, see CLAUDE.md's "Third copy" section), then both
+        fsae_params.yaml copies. Missing files (e.g. a layout this tool
+        doesn't recognise) are skipped rather than reported as errors --
+        only a field that SHOULD exist somewhere but was found nowhere at
+        all is an error, mirroring the existing per-call-site behaviour.
+
+        `literal` is Python syntax (True/False/repr(float)), matching what
+        the dataclass writers need. YAML's own boolean spelling is lowercase
+        (true/false); this file's other booleans are already lowercase (one
+        pre-existing `steer_rate_anti_hunt_enabled: True` is drift, not the
+        convention to match), so the YAML writes below use a translated
+        `yaml_literal` instead of `literal` directly."""
+        p = self._paths
+        wrote_dataclass = (
+            _rewrite_dataclass_field(p.mpc_params_py, mpc_field, literal)
+            or _rewrite_dataclass_field(p.nmpc_params_py, mpc_field, literal))
+        if not wrote_dataclass:
+            errors.append(f"{mpc_field}: field not found in mpc_params.py or nmpc_params.py")
+        if p.mirror_mpc_params_py.is_file() or p.mirror_nmpc_params_py.is_file():
+            wrote_mirror = (
+                _rewrite_dataclass_field(p.mirror_mpc_params_py, mpc_field, literal)
+                or _rewrite_dataclass_field(p.mirror_nmpc_params_py, mpc_field, literal))
+            if not wrote_mirror:
+                errors.append(f"{mpc_field}: field not found in the fsds_simulator/ mirror")
+        yaml_literal = {"True": "true", "False": "false"}.get(literal, literal)
+        if p.fsae_params_yaml.is_file():
+            if not _rewrite_yaml_field(p.fsae_params_yaml, mpc_field, yaml_literal):
+                errors.append(f"{mpc_field}: key not found in fsae_params.yaml")
+        if p.mirror_fsae_params_yaml.is_file():
+            if not _rewrite_yaml_field(p.mirror_fsae_params_yaml, mpc_field, yaml_literal):
+                errors.append(f"{mpc_field}: key not found in the mirror fsae_params.yaml")
+
     def _on_save(self) -> None:
         settings_path = self._paths.settings_py
         mpc_params_path = self._paths.mpc_params_py
@@ -1303,9 +1583,11 @@ class SettingsTab(ttk.Frame):
             errors: list[str] = []
             _backup_once(settings_path, self._backed_up)
             if sync_live:
-                _backup_once(mpc_params_path, self._backed_up)
-                if nmpc_params_path.is_file():
-                    _backup_once(nmpc_params_path, self._backed_up)
+                for path in (mpc_params_path, nmpc_params_path,
+                             self._paths.mirror_mpc_params_py, self._paths.mirror_nmpc_params_py,
+                             self._paths.fsae_params_yaml, self._paths.mirror_fsae_params_yaml):
+                    if path.is_file():
+                        _backup_once(path, self._backed_up)
             elif not getattr(self, "_warned_no_live_file", False):
                 self._warned_no_live_file = True
                 messagebox.showwarning(
@@ -1329,8 +1611,7 @@ class SettingsTab(ttk.Frame):
                     for value, mpc_field in zip(values, mpc_fields):
                         if mpc_field is None:
                             continue
-                        if not _rewrite_dataclass_field(mpc_params_path, mpc_field, repr(value)):
-                            errors.append(f"{mpc_field}: field not found in mpc_params.py")
+                        self._sync_live_field(mpc_field, repr(value), errors)
 
             for _label, name, mpc_field, kind in _SCALAR_FIELDS:
                 var = self._scalar_vars[name]
@@ -1345,8 +1626,7 @@ class SettingsTab(ttk.Frame):
                 if not _rewrite_var(settings_path, name, literal):
                     errors.append(f"{name}: assignment not found in settings.py")
                 if sync_live and mpc_field is not None:
-                    if not _rewrite_dataclass_field(mpc_params_path, mpc_field, literal):
-                        errors.append(f"{mpc_field}: field not found in mpc_params.py")
+                    self._sync_live_field(mpc_field, literal, errors)
 
             for name, (enabled_var, value_var) in self._override_vars.items():
                 mpc_field = next(f for _l, n, f in _NMPC_OVERRIDE_FIELDS if n == name)
@@ -1361,8 +1641,7 @@ class SettingsTab(ttk.Frame):
                 if not _rewrite_var(settings_path, name, literal):
                     errors.append(f"{name}: assignment not found in settings.py")
                 if sync_live:
-                    if not _rewrite_dataclass_field(mpc_params_path, mpc_field, literal):
-                        errors.append(f"{mpc_field}: field not found in mpc_params.py")
+                    self._sync_live_field(mpc_field, literal, errors)
 
             for mpc_field, var in self._feature_vars.items():
                 settings_name = next(
@@ -1373,16 +1652,7 @@ class SettingsTab(ttk.Frame):
                     if not _rewrite_var(settings_path, settings_name, literal):
                         errors.append(f"{settings_name}: assignment not found in settings.py")
                 if sync_live:
-                    # A few NMPC flags are structural, not weights, so they
-                    # live in nmpc_params.py instead -- try that file when
-                    # the field is not in mpc_params.py rather than
-                    # reporting a spurious "field not found".
-                    if not _rewrite_dataclass_field(mpc_params_path, mpc_field, literal):
-                        if not (nmpc_params_path.is_file() and _rewrite_dataclass_field(
-                                nmpc_params_path, mpc_field, literal)):
-                            errors.append(
-                                f"{mpc_field}: field not found in mpc_params.py "
-                                f"or nmpc_params.py")
+                    self._sync_live_field(mpc_field, literal, errors)
 
             # Progress-term scalars. q_progress is a weight (mpc_params.py);
             # the other three are structural (nmpc_params.py). Each is tried
@@ -1397,27 +1667,229 @@ class SettingsTab(ttk.Frame):
                 if not _rewrite_var(settings_path, name, literal):
                     errors.append(f"{name}: assignment not found in settings.py")
                 if sync_live:
-                    live_field = name.lower()
-                    wrote = _rewrite_dataclass_field(mpc_params_path, live_field, literal)
-                    if not wrote and nmpc_params_path.is_file():
-                        wrote = _rewrite_dataclass_field(
-                            nmpc_params_path, live_field, literal)
-                    if not wrote:
-                        errors.append(
-                            f"{live_field}: field not found in mpc_params.py "
-                            f"or nmpc_params.py")
+                    self._sync_live_field(name.lower(), literal, errors)
 
             if errors:
                 messagebox.showerror("Settings tab", "\n".join(errors))
                 self.status_var.set("Save had errors, see dialog.")
             elif sync_live:
                 self.status_var.set(
-                    "Saved to settings.py and the live mpc_params.py. "
-                    "Restart the sim to pick up the live change.")
+                    "Saved to settings.py, the live mpc_params.py/nmpc_params.py, "
+                    "fsae_params.yaml, and their fsds_simulator/ mirrors. Restart the "
+                    "sim to pick up the live change.")
             else:
                 self.status_var.set("Saved. Takes effect next time settings.py is imported.")
         except OSError as exc:
             messagebox.showerror("Settings tab", f"Failed to save: {exc!r}")
+
+    def capture_profile_values(self) -> dict[str, str]:
+        """Current value of every settings.py NAME this tab manages, as
+        {name: raw-literal-text}, read straight from each field's own
+        widget (not from settings.py) so an unsaved in-progress edit is
+        captured too. Used by the Profiles tab's "Save current as profile".
+        Keys match _profile_field_names() exactly."""
+        values: dict[str, str] = {}
+        for _label, name, _length, _mpc_fields in _LIST_FIELDS:
+            floats = [_to_float(v.get()) for v in self._list_vars[name]]
+            values[name] = "[" + ", ".join(repr(f if f is not None else 0.0)
+                                            for f in floats) + "]"
+        for _label, name, _mpc_field, kind in _SCALAR_FIELDS:
+            var = self._scalar_vars[name]
+            values[name] = "True" if (kind == "bool" and var.get()) else (
+                "False" if kind == "bool" else repr(_to_float(var.get()) or 0.0))
+        for _label, name, _mpc_field in _NMPC_OVERRIDE_FIELDS:
+            enabled_var, value_var = self._override_vars[name]
+            values[name] = repr(_to_float(value_var.get()) or 0.0) if enabled_var.get() else "-1.0"
+        for _label, name, _desc in _NMPC_PROGRESS_FIELDS:
+            values[name] = repr(_to_float(self._progress_vars[name].get()) or 0.0)
+        for _group_title, entries in _FEATURE_GROUPS:
+            for _label, settings_name, mpc_field in entries:
+                if settings_name is not None:
+                    values[settings_name] = "True" if self._feature_vars[mpc_field].get() else "False"
+        return values
+
+    def apply_profile_values(self, values: dict[str, str]) -> None:
+        """Inverse of capture_profile_values(): pushes a {name: raw-literal}
+        dict (as loaded from a profile JSON file) into every matching
+        widget, then calls _on_save() unchanged so the write path (settings.py,
+        live dataclasses, both YAMLs, both mirrors) is EXACTLY the one normal
+        editing already uses -- no separate load-time file-writing logic to
+        keep in sync with _on_save's own. A name present in the profile but
+        not recognised by any field table (e.g. a profile saved by an older
+        GUI version before a field was added or removed) is silently
+        skipped, not an error: profiles are a convenience snapshot, not a
+        strict schema."""
+        for _label, name, length, _mpc_fields in _LIST_FIELDS:
+            if name in values:
+                floats = _parse_float_list(values[name], length)
+                for var, f in zip(self._list_vars[name], floats):
+                    var.set(str(f))
+        for _label, name, _mpc_field, kind in _SCALAR_FIELDS:
+            if name not in values:
+                continue
+            var = self._scalar_vars[name]
+            if kind == "bool":
+                var.set(values[name].strip() == "True")
+            else:
+                var.set(str(_to_float(values[name]) or 0.0))
+        for _label, name, _mpc_field in _NMPC_OVERRIDE_FIELDS:
+            if name not in values:
+                continue
+            enabled_var, value_var = self._override_vars[name]
+            f = _to_float(values[name])
+            is_override = f is not None and f >= 0.0
+            enabled_var.set(is_override)
+            value_var.set(values[name] if is_override else "")
+        for _label, name, _desc in _NMPC_PROGRESS_FIELDS:
+            if name in values:
+                self._progress_vars[name].set(str(_to_float(values[name]) or 0.0))
+        for _group_title, entries in _FEATURE_GROUPS:
+            for _label, settings_name, mpc_field in entries:
+                if settings_name is not None and settings_name in values:
+                    self._feature_vars[mpc_field].set(values[settings_name].strip() == "True")
+        self._on_save()
+
+
+# ---------------------------------------------------------------------------
+# Tab 5: Profiles
+# ---------------------------------------------------------------------------
+
+class ProfilesTab(ttk.Frame):
+    """Named snapshots of every field the Settings tab manages (see
+    _profile_field_names()), stored as one JSON file per profile under
+    RepoPaths.profiles_dir. Save/Load go through SettingsTab's own
+    capture_profile_values()/apply_profile_values() so a loaded profile is
+    written to settings.py, the live dataclasses, both fsae_params.yaml
+    copies, and both fsds_simulator/ mirrors -- exactly like a normal
+    Settings-tab edit, via the exact same code path, not a second one."""
+
+    def __init__(self, parent: ttk.Notebook, paths: RepoPaths, settings_tab: "SettingsTab") -> None:
+        super().__init__(parent, padding=24)
+        self._paths = paths
+        self._settings_tab = settings_tab
+
+        ttk.Label(self, text="Profiles", style="Heading.TLabel").pack(anchor="w")
+        ttk.Label(
+            self,
+            text=f"settings_profiles/ — full snapshots of every Settings-tab field "
+                 f"({len(_profile_field_names())} values).",
+            style="Muted.TLabel").pack(anchor="w", pady=(2, 16))
+
+        toolbar = ttk.Frame(self)
+        toolbar.pack(fill="x", pady=(0, 12))
+        ttk.Button(toolbar, text="Refresh", command=self._refresh).pack(side="left")
+        ttk.Button(toolbar, text="Delete Selected",
+                   command=self._delete_selected).pack(side="left", padx=(8, 0))
+        ttk.Button(toolbar, text="Load Selected", style="Accent.TButton",
+                   command=self._load_selected).pack(side="right")
+        ttk.Button(toolbar, text="Save Current As Profile...",
+                   command=self._save_current).pack(side="right", padx=(0, 8))
+
+        list_frame = ttk.Frame(self, style="Card.TFrame")
+        list_frame.pack(fill="both", expand=True)
+        list_frame.rowconfigure(0, weight=1)
+        list_frame.columnconfigure(0, weight=1)
+
+        self.listbox = tk.Listbox(
+            list_frame, selectmode="browse", height=20,
+            background=Palette.surface_alt, foreground=Palette.text,
+            selectbackground=Palette.accent, selectforeground=Palette.accent_text,
+            activestyle="none", borderwidth=0, highlightthickness=0,
+            relief="flat",
+        )
+        self.listbox.grid(row=0, column=0, sticky="nsew", padx=1, pady=1)
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.listbox.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.listbox.configure(yscrollcommand=scrollbar.set)
+
+        self.status_var = tk.StringVar(value="")
+        ttk.Label(self, textvariable=self.status_var, style="Muted.TLabel").pack(
+            anchor="w", pady=(10, 0))
+
+        self._entries: list[Path] = []
+        self._refresh()
+
+    def _refresh(self) -> None:
+        self.listbox.delete(0, tk.END)
+        self._entries = sorted(
+            self._paths.profiles_dir.glob("*.json")) if self._paths.profiles_dir.is_dir() else []
+        for path in self._entries:
+            self.listbox.insert(tk.END, f"  {path.stem}")
+        self.status_var.set(f"{len(self._entries)} profile(s) in {self._paths.profiles_dir}")
+
+    def _selected_path(self) -> Path | None:
+        selection = self.listbox.curselection()
+        if not selection:
+            messagebox.showinfo("Profiles", "Select a profile first.")
+            return None
+        return self._entries[selection[0]]
+
+    def _save_current(self) -> None:
+        name = simpledialog.askstring(
+            "Save profile", "Profile name:", parent=self)
+        if not name:
+            return
+        name = name.strip()
+        if not name:
+            return
+        # Keep the on-disk filename obviously tied to the name typed in,
+        # while still being a safe filename on every OS this GUI runs on
+        # (Windows forbids \\/:*?"<>| in a filename; POSIX only really
+        # cares about / and NUL, but the stricter set costs nothing here).
+        safe_name = re.sub(r'[\\/:*?"<>|]', "_", name).strip()
+        if not safe_name:
+            messagebox.showerror("Profiles", "That name has no valid characters left.")
+            return
+        target = self._paths.profiles_dir / f"{safe_name}.json"
+        if target.exists() and not messagebox.askyesno(
+                "Save profile", f"'{safe_name}' already exists. Overwrite it?"):
+            return
+        try:
+            self._paths.profiles_dir.mkdir(parents=True, exist_ok=True)
+            values = self._settings_tab.capture_profile_values()
+            payload = {"name": name, "values": values}
+            target.write_text(json.dumps(payload, indent=2, sort_keys=True))
+        except OSError as exc:
+            messagebox.showerror("Profiles", f"Failed to save profile: {exc!r}")
+            return
+        self._refresh()
+        self.status_var.set(f"Saved '{safe_name}' ({len(values)} values).")
+
+    def _load_selected(self) -> None:
+        path = self._selected_path()
+        if path is None:
+            return
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            messagebox.showerror("Profiles", f"Failed to read profile: {exc!r}")
+            return
+        values = payload.get("values", {})
+        if not messagebox.askyesno(
+                "Load profile",
+                f"Overwrite EVERY current Settings-tab value with '{path.stem}' "
+                f"({len(values)} values)? This writes settings.py, the live "
+                "dataclasses, both fsae_params.yaml copies, and both "
+                "fsds_simulator/ mirrors immediately, the same as pressing "
+                "Save on the Settings tab."):
+            return
+        self._settings_tab.apply_profile_values(values)
+        self.status_var.set(f"Loaded '{path.stem}'. Restart the sim to pick up the live change.")
+
+    def _delete_selected(self) -> None:
+        path = self._selected_path()
+        if path is None:
+            return
+        if not messagebox.askyesno("Delete profile", f"Delete profile '{path.stem}'? "
+                                    "This cannot be undone."):
+            return
+        try:
+            path.unlink()
+        except OSError as exc:
+            messagebox.showerror("Profiles", f"Failed to delete profile: {exc!r}")
+            return
+        self._refresh()
+        self.status_var.set(f"Deleted '{path.stem}'.")
 
 
 def _to_float(text: str) -> float | None:
@@ -1468,9 +1940,31 @@ class LauncherApp(tk.Tk):
         notebook.add(self._launch_tab, text="Launch Sim")
         notebook.add(LogDebugTab(notebook, paths), text="Debug a Log")
         notebook.add(OfflineSimTab(notebook, paths), text="Run Offline Sim")
-        notebook.add(SettingsTab(notebook, paths), text="Settings")
+        settings_tab = SettingsTab(notebook, paths)
+        notebook.add(settings_tab, text="Settings")
+        notebook.add(ProfilesTab(notebook, paths, settings_tab), text="Profiles")
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # Ctrl+C in the terminal that started this GUI used to just kill
+        # this process outright (Tk's mainloop() blocks in C and never
+        # calls _on_close), leaving launch_all.sh's whole process group
+        # (nodes, bridge, diagnostic captures) running with no Stop button
+        # left to press -- the exact strand _on_close's own docstring
+        # describes for the window-close path, but via SIGINT instead.
+        # signal.signal() only queues the Python-level handler; it will not
+        # actually run until the interpreter next checks for one, which a
+        # blocked C mainloop never does on its own. The periodic no-op
+        # self.after() below is what forces that check often enough for
+        # Ctrl+C to feel immediate.
+        signal.signal(signal.SIGINT, self._on_sigint)
+        self._pump_for_signals()
+
+    def _pump_for_signals(self) -> None:
+        self.after(200, self._pump_for_signals)
+
+    def _on_sigint(self, signum, frame) -> None:
+        self._on_close()
 
     def _on_close(self) -> None:
         """Stops a sim still running under the Launch tab before tearing

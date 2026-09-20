@@ -44,13 +44,13 @@ class MPCParams:
     # ── Core cost weights ───────────────────────────────────────────────
     # Q_diag index -> state penalised (states x are [e_y, e_yd, e_psi, r,
     # e_v, e_a, delta_act, a_act]; see mpc_core.py module docstring):
-    q_e_y:   float = field(default=5.0, metadata={"unit": "1/m^2",   "desc": "lateral deviation from path centreline", "controller": "both"})
-    q_e_yd:  float = field(default=0.0,  metadata={"unit": "1/(m/s)^2", "desc": "rate of change of lateral deviation", "controller": "both"})
+    q_e_y:   float = field(default=6.35, metadata={"unit": "1/m^2",   "desc": "lateral deviation from path centreline", "controller": "both"})
+    q_e_yd:  float = field(default=0.1,  metadata={"unit": "1/(m/s)^2", "desc": "rate of change of lateral deviation", "controller": "both"})
     q_e_psi: float = field(default=1.65, metadata={"unit": "1/rad^2", "desc": "heading error relative to path tangent", "controller": "both"})
-    q_r:     float = field(default=1.40, metadata={"unit": "1/(rad/s)^2", "desc": "yaw rate (LTV-QP). Shared base value the NMPC also reads (see nmpc_q_epsi_dot below), but under the NMPC it weights heading-error RATE, not absolute yaw rate -- same slot, different regressor", "controller": "both"})
+    q_r:     float = field(default=1.0, metadata={"unit": "1/(rad/s)^2", "desc": "yaw rate (LTV-QP). Shared base value the NMPC also reads (see nmpc_q_epsi_dot below), but under the NMPC it weights heading-error RATE, not absolute yaw rate -- same slot, different regressor", "controller": "both"})
     q_e_v:   float = field(default=2.0,  metadata={"unit": "1/(m/s)^2", "desc": "speed error: car_speed - desired_speed", "controller": "both"})
     # R_diag index -> input penalised (inputs u are [delta_cmd, a_cmd]):
-    r_delta: float = field(default=1.35, metadata={"unit": "1/rad^2",     "desc": "steering command effort", "controller": "both"})
+    r_delta: float = field(default=1.8, metadata={"unit": "1/rad^2",     "desc": "steering command effort", "controller": "both"})
     # a_cmd>=0 (accel) and a_cmd<0 (brake) get independent effort weights
     # instead of one weight applied symmetrically to |a_cmd| -- a single
     # shared weight cannot be tuned for acceleration and braking
@@ -61,7 +61,7 @@ class MPCParams:
     r_a_brake: float = field(default=0.5, metadata={"unit": "1/(m/s^2)^2", "desc": "acceleration command effort, a_cmd < 0 (braking)", "controller": "both"})
     # R_rate_diag index -> input RATE-OF-CHANGE penalised (tick-to-tick jerk):
     r_rate_delta: float = field(default=100.0, metadata={"unit": "1/(rad/s)^2",     "desc": "steering rate of change", "controller": "both"})
-    r_rate_a:     float = field(default=5.0, metadata={"unit": "1/(m/s^3)^2",     "desc": "acceleration rate of change", "controller": "both"})
+    r_rate_a:     float = field(default=2.25, metadata={"unit": "1/(m/s^3)^2",     "desc": "acceleration rate of change", "controller": "both"})
     # Extra weight on the final predicted state x[:,N]. 1.0 = no-op, the
     # only value ever validated against the Q_diag/R_diag/R_rate_diag above.
     terminal_q_scale: float = field(default=1.0, metadata={"unit": "unitless", "desc": "extra weight on terminal predicted state", "controller": "both"})
@@ -83,6 +83,19 @@ class MPCParams:
     # ── n_delay stabilisation ────────────────────────────────────────────
     pose_age_lp_alpha: float = field(default=0.15, metadata={"unit": "unitless", "desc": "per-tick low-pass coefficient on pose_age_s", "controller": "both"})
     n_delay_hysteresis: float = field(default=0.25, metadata={"unit": "steps", "desc": "deadband either side of an n_delay bin boundary", "controller": "both"})
+
+    # ── Speed-target deficit clamp ───────────────────────────────────────
+    # Caps how far the RAMPED speed target (mpc_controller.py's
+    # desired_speed, after the rise-rate limiter) may run ahead of the
+    # car's own current speed. Read by both controllers because it shapes
+    # the target BEFORE either the LTV-QP's q_e_v row or the NMPC's e_v/
+    # progress-cap row ever sees it. Measured 2026-09-20 (see
+    # fsae_MPCTest/docs/logs, "DEFICIT_MAX was the real accel ceiling"):
+    # at 2.5 this clamp, not r_a_accel or the NMPC trust region, was the
+    # binding constraint on acceleration for 36.8% of a lap. Raised to 5.0
+    # offline (faster lap, lower |e_y|, lower steering saturation, no
+    # measured trade-off); not yet live-validated at this value.
+    speed_target_deficit_max: float = field(default=2.5, metadata={"unit": "m/s", "desc": "max the ramped speed target may lead the car's current speed by", "controller": "both"})
 
     # ── Adaptive R_rate corner softening floor ──────────────────────────
     adaptive_r_rate_during_floor: float = field(default=0.625, metadata={"unit": "unitless", "desc": "R_rate[0,0] floor driven by CURRENT-position curvature", "controller": "ltv_qp_only"})
@@ -191,7 +204,7 @@ class MPCParams:
     # NMPC exists to remove. Same slot, different regressor: expect this
     # one to need its own sweep rather than inheriting q_r unchanged. See
     # late_turn_in_investigation.md Part 16 §16.3 choice (1).
-    nmpc_q_e_y: float = field(default=-1.0, metadata={"unit": "1/m^2", "desc": "override q_e_y for the NMPC only (-1 = inherit)", "controller": "nmpc_only"})
+    nmpc_q_e_y: float = field(default=7.5, metadata={"unit": "1/m^2", "desc": "override q_e_y for the NMPC only (-1 = inherit)", "controller": "nmpc_only"})
     nmpc_q_e_yd: float = field(default=-1.0, metadata={"unit": "1/(m/s)^2", "desc": "override q_e_yd (-1 = inherit)", "controller": "nmpc_only"})
     nmpc_q_e_psi: float = field(default=-1.0, metadata={"unit": "1/rad^2", "desc": "override q_e_psi (-1 = inherit)", "controller": "nmpc_only"})
     nmpc_q_epsi_dot: float = field(default=-1.0, metadata={
@@ -216,7 +229,7 @@ class MPCParams:
     # breaks static friction and never launches, above ~6 it carries too
     # much speed into corners and goes off-track. See
     # fsae_MPCTest/docs/logs/nmpc_progress_term_investigation.md.
-    nmpc_q_progress: float = field(default=5.0, metadata={"unit": "1/m^2", "desc": "progress-reward weight (nmpc_progress_enabled only; no inherit)", "controller": "nmpc_only"})
+    nmpc_q_progress: float = field(default=4.25, metadata={"unit": "1/m^2", "desc": "progress-reward weight (nmpc_progress_enabled only; no inherit)", "controller": "nmpc_only"})
 
     # steer_rate_anti_hunt_enabled/anti_hunt_boost_max above are LTV-QP-only
     # in nmpc_core.py's own docstring ("no adaptive gain schedule ... layering
@@ -249,7 +262,7 @@ class MPCParams:
     nmpc_reversal_penalty_k: float = field(default=-1.0, metadata={"unit": "1/rad", "desc": "override reversal_penalty_k for the NMPC only (-1 = inherit). Only read when nmpc_reversal_penalty_enabled is True", "controller": "nmpc_only"})
     nmpc_rrate_stage_ramp_enabled: bool = field(default=False, metadata={"unit": "bool", "desc": "EXPERIMENTAL: discount the steering-RATE cost at the NEAR horizon stages (linear ramp from nmpc_rrate_stage_near at stage 0 to 1.0 at the last stage) so a first turn-in input is cheap while a sustained oscillation still pays close to full price. Keyed on horizon POSITION, not measured state. OFFLINE-REJECTED as a fix for the shallow-corner jerk (moved slew-limited ticks 8.4%% -> 12-15%%, the wrong way) but it IS the only change found that clears the offline nmpc_offline_check DNF. Default False, unvalidated live", "controller": "nmpc_only"})
     nmpc_rrate_stage_near: float = field(default=0.15, metadata={"unit": "unitless", "desc": "stage-0 multiplier for the steering-rate cost ramp; 1.0 is an exact no-op. Lower = cheaper to move the wheel at the near horizon stages. Only read when nmpc_rrate_stage_ramp_enabled is True", "controller": "nmpc_only"})
-    nmpc_rrate_zone_enabled: bool = field(default=False, metadata={"unit": "bool", "desc": "EXPERIMENTAL: continuous three-zone schedule on the steering-RATE cost -- boost on a true straight, ease on the approach to a corner the HORIZON predicts, floor through the corner. Smooth (no thresholds), degrades to the corner value on a continuously-winding road. MULTIPLIES r_rate_delta, unlike nmpc_corner_rrate_blend_enabled which overwrites it. Default False", "controller": "nmpc_only"})
+    nmpc_rrate_zone_enabled: bool = field(default=True, metadata={"unit": "bool", "desc": "EXPERIMENTAL: continuous three-zone schedule on the steering-RATE cost -- boost on a true straight, ease on the approach to a corner the HORIZON predicts, floor through the corner. Smooth (no thresholds), degrades to the corner value on a continuously-winding road. MULTIPLIES r_rate_delta, unlike nmpc_corner_rrate_blend_enabled which overwrites it. Default False", "controller": "nmpc_only"})
     nmpc_rrate_zone_boost_straight: float = field(default=2.0, metadata={"unit": "unitless", "desc": "x r_rate on a true straight (nothing now, nothing ahead)", "controller": "nmpc_only"})
     nmpc_rrate_zone_ease_approach: float = field(default=0.35, metadata={"unit": "unitless", "desc": "x r_rate when a corner is AHEAD in the horizon but not here yet -- the turn-in release", "controller": "nmpc_only"})
     nmpc_rrate_zone_floor_corner: float = field(default=0.15, metadata={"unit": "unitless", "desc": "x r_rate mid-corner", "controller": "nmpc_only"})

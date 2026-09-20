@@ -310,6 +310,7 @@ NMPC_Q_E_Y=7.5
 # NMPC_PROGRESS_REACH=2.0                    # [NMPC only] how far out of reach the progress target sits: s_target = s0 + max(v_cap*N*dt*REACH, 0.5*a_max*(N*dt)^2*REACH). The kinematic floor is what lets the car launch at all (v_cap is deliberately small at a standing start); below ~1.8 it stalls indefinitely
 # NMPC_PROGRESS_V_MIN=0.5                    # [NMPC only] low-speed floor sharing the speed-cap row/weight, guards the standstill trivial solution. Only read when NMPC_PROGRESS_ENABLED=true
 # NMPC_SLACK_LINEAR_WEIGHT=0.0               # [NMPC only] set ~1000 alongside any progress-term experiment: necessary there, measured NOT sufficient. Inert while the progress term is off.
+# NMPC_TRACK_HALFWIDTH=3.5                   # [NMPC only] soft |e_y| bound with slack (both quadratic and linear); <=0 removes the constraint entirely. Matches the LTV-QP's own 3.5m. Narrowing to 3.0 was tried 2026-09-21 for the progress-term experiment and reverted the same day: this field is read unconditionally, so it also tightened ordinary tracking mode and measurably hurt it
 # NMPC_STEER_RATE_ANTI_HUNT_ENABLED=false    # [NMPC only, EXPERIMENTAL] reuses the LTV-QP's steer_rate_anti_hunt penalty on the NMPC, independent of MPC_STEER_RATE_ANTI_HUNT_ENABLED above. Mutually exclusive with NMPC_CORNER_RRATE_BLEND_ENABLED below -- blend takes priority if both are set. Not yet live-tested; offline A/B first.
 # NMPC_ANTI_HUNT_BOOST_MAX=-1.0               # [NMPC only] -1 = inherit anti_hunt_boost_max; only read when NMPC_STEER_RATE_ANTI_HUNT_ENABLED=true
 # CAUTION: enabling NMPC_CORNER_RRATE_BLEND_ENABLED below OVERWRITES
@@ -420,6 +421,7 @@ NMPC_REVERSAL_PENALTY_ENABLED=false
 # MPC_R_DELTA=1.8                       # [shared] steering-effort weight
 # MPC_R_A_ACCEL=3.0                     # [shared] acceleration-effort weight, a_cmd >= 0
 # MPC_R_A_BRAKE=0.5                     # [shared] acceleration-effort weight, a_cmd < 0 (braking); separate from r_a_accel so braking effort can be tuned independently
+# MPC_SPEED_TARGET_DEFICIT_MAX=5.0      # [shared] max the ramped speed target may lead the car's current speed by [m/s]; was a bare module constant in mpc_controller.py/rollout_core.py, now a real param. Binding constraint on acceleration for 36.8% of a lap at the old default (2.5); NOT yet live-validated at 5.0
 # MPC_ADAPTIVE_R_RATE_DURING_FLOOR=0.625   # [LTV-QP only] R_rate softening floor, mid-corner
 # MPC_ADAPTIVE_R_RATE_ENTERING_FLOOR=0.85  # [LTV-QP only] R_rate softening floor, corner approach
 # MPC_CORNER_FACTOR_K=8.0                   # [LTV-QP only] corner_factor curve sharpness vs CURRENT |kappa|
@@ -465,6 +467,7 @@ _append_mpc_arg q_e_psi "$MPC_Q_E_PSI"
 _append_mpc_arg r_delta "$MPC_R_DELTA"
 _append_mpc_arg r_a_accel "$MPC_R_A_ACCEL"
 _append_mpc_arg r_a_brake "$MPC_R_A_BRAKE"
+_append_mpc_arg speed_target_deficit_max "$MPC_SPEED_TARGET_DEFICIT_MAX"
 _append_mpc_arg adaptive_r_rate_during_floor "$MPC_ADAPTIVE_R_RATE_DURING_FLOOR"
 _append_mpc_arg adaptive_r_rate_entering_floor "$MPC_ADAPTIVE_R_RATE_ENTERING_FLOOR"
 _append_mpc_arg corner_factor_k "$MPC_CORNER_FACTOR_K"
@@ -501,6 +504,7 @@ _append_mpc_arg nmpc_q_progress "$NMPC_Q_PROGRESS"
 _append_mpc_arg nmpc_progress_reach "$NMPC_PROGRESS_REACH"
 _append_mpc_arg nmpc_progress_v_min "$NMPC_PROGRESS_V_MIN"
 _append_mpc_arg nmpc_slack_linear_weight "$NMPC_SLACK_LINEAR_WEIGHT"
+_append_mpc_arg nmpc_track_halfwidth "$NMPC_TRACK_HALFWIDTH"
 _append_mpc_arg nmpc_steer_rate_anti_hunt_enabled "$NMPC_STEER_RATE_ANTI_HUNT_ENABLED"
 _append_mpc_arg nmpc_anti_hunt_boost_max "$NMPC_ANTI_HUNT_BOOST_MAX"
 _append_mpc_arg nmpc_corner_rrate_blend_enabled "$NMPC_CORNER_RRATE_BLEND_ENABLED"

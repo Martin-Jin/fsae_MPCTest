@@ -88,9 +88,12 @@ backups as noted below):
 
 | File | Written by | What changes |
 |---|---|---|
-| `ros2/launch_all.sh` | Launch tab's Launch button | `TRACK`, `CONTROLLER`, `USE_NMPC`, `STANDALONE_OUTPUT`, `USE_PRECOMPUTED_SPEED`, `USE_PRECOMPUTED_PATH`, `V_MAX`, `V_MIN` |
-| `fsae_MPCTest/settings.py` | Settings tab's Save button | `Q_diag`, `R_diag`, `R_rate_diag`, `R_A_ACCEL`, `R_A_BRAKE`, every `NMPC_*` weight override, every feature-enable flag listed below |
-| `ros2/src/fsae_planning/.../mpc_params.py` (live) | Settings tab's Save button | the matching field for every one of the above that has a live counterpart (see "Settings tab, and live/offline sync" below for the handful that don't) |
+| `ros2/launch_all.sh` | Launch tab's Launch button | `TRACK`, `CONTROLLER`, `USE_NMPC`, `STANDALONE_OUTPUT`, `USE_PRECOMPUTED_SPEED`, `USE_PRECOMPUTED_PATH`, `V_MAX`, `V_MIN`, and (NMPC only, when checked) `NMPC_PROGRESS_ENABLED` |
+| `fsae_MPCTest/settings.py` | Settings tab's Save button (also Profiles tab's Load, see below) | `Q_diag`, `R_diag`, `R_rate_diag`, `R_A_ACCEL`, `R_A_BRAKE`, `SPEED_TARGET_DEFICIT_MAX`, every `NMPC_*` weight override, every feature-enable flag listed below |
+| `ros2/src/fsae_planning/.../mpc_params.py` / `nmpc_params.py` (live) | Settings tab's Save button (also Profiles tab's Load) | the matching field for every one of the above that has a live counterpart (see "Settings tab, and live/offline sync" below for the handful that don't) |
+| `ros2/src/fsae_planning/common/fsae_bringup/config/fsae_params.yaml` (live) | Settings tab's Save button (also Profiles tab's Load) | the same fields as the live dataclass row above. This is the file ROS actually loads a field's RUNTIME default from at node startup (it OVERRIDES the dataclass default), so a save that skipped this file could leave the car running the OLD value indefinitely with no visible sign of it -- this happened twice (`r_a_accel`, `nmpc_track_halfwidth`) before this file was added to the write path |
+| `fsae_MPCTest/fsds_simulator/.../mpc_params.py` / `nmpc_params.py` / `fsae_params.yaml` (mirror) | Settings tab's Save button (also Profiles tab's Load) | the same fields again, kept identical to the live copies above per CLAUDE.md's "Third copy" change-ledger rule |
+| `fsae_MPCTest/settings_profiles/<name>.json` | Profiles tab's Save/Delete | a full snapshot of every field above, see "Profiles tab" below |
 | `ros2/src/fsae_planning/tracks/<name>/` | Launch tab's Export & Save Track button | writes `speed_profile.csv`/`raceline.csv`/`centerline.csv` for a newly recorded track (only after explicit confirm if the name already exists) |
 | `fsae_MPCTest/fsds_simulator/tracks/<name>/` | same Export & Save Track button | copy of the same new track's files |
 | `<FSDS repo root>/fsae_logs/*.csv` → `fsds_simulator/recorded_runs/<Controller>/` | Launch tab's Stop button (moves, doesn't create) | only after the confirmation prompt it shows is accepted |
@@ -99,10 +102,11 @@ Nothing else in this repo or the outer `ros2/` tree is touched by any tab.
 
 | Tab | What it does |
 |---|---|
-| **Launch Sim** | Rewrites `ros2/launch_all.sh`'s `TRACK`, `CONTROLLER`, `USE_NMPC`, `STANDALONE_OUTPUT`, `USE_PRECOMPUTED_SPEED`, `USE_PRECOMPUTED_PATH`, `V_MAX`, `V_MIN` from a form (with a preview/confirm before writing), then runs it. A **Stop** button sends the same signal a terminal Ctrl+C would (`launch_all.sh`'s own `trap cleanup SIGINT SIGTERM` handles the actual teardown). See "Record a new track" below for its recording mode. |
+| **Launch Sim** | Rewrites `ros2/launch_all.sh`'s `TRACK`, `CONTROLLER`, `USE_NMPC`, `STANDALONE_OUTPUT`, `USE_PRECOMPUTED_SPEED`, `USE_PRECOMPUTED_PATH`, `V_MAX`, `V_MIN` from a form (with a preview/confirm before writing), then runs it. A **Stop** button sends the same signal a terminal Ctrl+C would (`launch_all.sh`'s own `trap cleanup SIGINT SIGTERM` handles the actual teardown). NMPC-only: a "Progress term (experimental)" checkbox, visible only when NMPC is selected, toggles the commented-out `NMPC_PROGRESS_ENABLED` shortlist line; it does NOT set `NMPC_SLACK_LINEAR_WEIGHT` for you (tune that from the Settings tab), even though the progress term is measured to need it set well above 0. See "Record a new track" below for its recording mode. |
 | **Debug a Log** | File browser over `<FSDS repo root>/fsae_logs/` (matching `launch_all.sh`'s own `log_dir:=` — NOT `~/fsae_logs`, `ControlLogger`'s fallback default when no `log_dir` is given) and `fsds_simulator/recorded_runs/` (including per-controller subfolders); select one or more `*_control_*.csv` files and run `tuner.tools.plot_playback` on them, or use "Debug Latest" for that tool's own auto-load-newest behaviour with no selection needed. |
 | **Run Offline Sim** | Launches `gui/simulation.py`. Carries forward its "rough signal only" caveat (see "The offline sim does not yet fully predict the car" in the root `CLAUDE.md`) directly in the tab. |
 | **Settings** | Edits the commonly-retuned `settings.py` constants in place, described in full below. |
+| **Profiles** | Named snapshots of every field the Settings tab manages, described in full below. |
 
 ### Record a new track
 
@@ -178,15 +182,30 @@ never drift out of sync with what the field actually means.
 **Saving also updates the live simulator**, not just this repo: every
 weight/override/flag that has a matching field in
 `ros2/src/fsae_planning/control/fsae_control/fsae_control/mpc/mpc_params.py`
-is rewritten there too, in the same click, per CLAUDE.md's "Single source
-of truth for MPC tuning" numeric-parity rule (`settings.py`'s
-`Q_diag[0]` ↔ `mpc_params.py`'s `q_e_y`, and so on). A handful of fields
-have no live counterpart and are settings.py-only: `R_diag[1]` (nominal-
-only, superseded by `R_A_ACCEL`/`R_A_BRAKE`) and `Q_diag`'s last three
-entries (`e_a`/`delta_act`/`a_act`, always 0.0). If the live file isn't
-found at the expected path (an unusual repo layout), Settings still saves
-to `settings.py` alone and says so with a warning, rather than silently
-only updating one side.
+or `nmpc_params.py` is rewritten there too, in the same click, per
+CLAUDE.md's "Single source of truth for MPC tuning" numeric-parity rule
+(`settings.py`'s `Q_diag[0]` ↔ `mpc_params.py`'s `q_e_y`, and so on). A
+handful of fields have no live counterpart and are settings.py-only:
+`R_diag[1]` (nominal-only, superseded by `R_A_ACCEL`/`R_A_BRAKE`) and
+`Q_diag`'s last three entries (`e_a`/`delta_act`/`a_act`, always 0.0). If
+the live file isn't found at the expected path (an unusual repo layout),
+Settings still saves to `settings.py` alone and says so with a warning,
+rather than silently only updating one side.
+
+**The same click also writes `fsae_params.yaml` and the `fsds_simulator/`
+mirror** (both dataclasses, both YAMLs), not just the live dataclass
+default. This matters because `fsae_params.yaml` is what a launched node
+actually reads its runtime value from -- it OVERRIDES the dataclass
+default at ROS param declaration time, so writing only the dataclass could
+leave the car silently running an old value with the GUI showing the new
+one and nothing to say they'd diverged. This is not a hypothetical: it
+happened twice before this file was added to the write path (`r_a_accel`
+stuck at 2.25 instead of a corrected 1.0, `nmpc_track_halfwidth` stuck at
+3.0 instead of a reverted 3.5), each time discovered only by reading the
+YAML directly rather than trusting the dataclass. A field missing from
+`fsae_params.yaml` entirely (20 experimental NMPC fields were, until this
+was fixed) is reported the same way a missing dataclass field is, not
+silently skipped.
 
 **What it does NOT expose**: the full commented-out `MPC_*`/`NMPC_*`
 per-tick weight-override shortlist further down `launch_all.sh` (structural
@@ -200,6 +219,39 @@ whole block isn't worth the UI surface it would need.
 alongside the original (e.g. `launch_all.sh.bak`) before writing, so a bad
 edit has a one-command recovery (`mv launch_all.sh.bak launch_all.sh`)
 independent of git.
+
+### Profiles tab
+
+Named snapshots of every field the Settings tab manages (the same set the
+"Saving also updates the live simulator" section above describes, derived
+from the Settings tab's own field tables so a profile can never drift out
+of covering less than a Settings-tab Save does), stored one JSON file per
+profile under `fsae_MPCTest/settings_profiles/<name>.json`. Tracked in git
+like any other project file, not gitignored -- a profile is meant to be a
+shareable, reusable tuning configuration, not a personal scratch file.
+
+- **Save Current As Profile...** prompts for a name, reads the CURRENT
+  value out of every Settings-tab widget (not `settings.py` -- this
+  captures an unsaved in-progress edit too), and writes it as
+  `{"name": ..., "values": {...}}`. An existing profile with the same name
+  asks to confirm the overwrite first.
+- **Load Selected** pushes a profile's values into every matching
+  Settings-tab widget, then runs the exact same save routine the Settings
+  tab's own Save button uses -- settings.py, both live dataclasses, both
+  `fsae_params.yaml` copies, and both `fsds_simulator/` mirrors are all
+  rewritten immediately, precisely as if every field had been retyped by
+  hand and Save clicked. There is no separate, second write path to keep
+  in sync with the Settings tab's own. A name in the profile that no field
+  table currently recognises (e.g. a profile saved by an older GUI version
+  before a field was renamed or removed) is skipped silently rather than
+  reported as an error, since a profile is a convenience snapshot, not a
+  strict schema every version must satisfy.
+- **Delete Selected** removes the profile's JSON file. Not recoverable
+  except via git history if the file had already been committed.
+
+Loading a profile only writes files; it does not restart a running sim.
+The confirmation dialog says so, matching the Settings tab's own "restart
+the sim to pick up the live change" reminder.
 
 ## Live debug window: `live_viz.py`
 
@@ -235,6 +287,17 @@ debug figure is shown accordingly:
 Both figures are built once at startup and shown/hidden as a whole rather
 than rebuilt each frame, so switching controllers mid-session (stopping
 one run and launching the other) updates the display without a restart.
+"Shown/hidden" means the actual OS window, not just the figure's own
+artists: `Figure.set_visible()` alone only controls whether a figure's
+contents draw onto ITS OWN canvas, it does not touch the window the TkAgg
+backend opened for it, so the inactive controller's debug figure was left
+on screen the whole time showing nothing -- a third, unlabelled, empty
+window with no visible reason to be there. Fixed by calling
+`fig.canvas.manager.window.withdraw()`/`.deiconify()` (Tk's own window
+object) on top of `set_visible()`, gated to fire only on an actual
+controller-switch transition rather than every redraw frame, so a
+manually moved/resized debug window isn't fought back into place ~50
+times a second by the two figures' animations.
 
 ## Steering system-ID harness: `run_steering_sysid.sh` / `run_steering_step.sh`
 

@@ -509,6 +509,17 @@ EPSI_RA_HALF_RAD = np.radians(10.0)
 EPSI_RA_ACCEL_BOOST_MAX = 2.0
 EPSI_RA_BRAKE_FLOOR = 0.5
 
+# ── Speed-target deficit clamp ────────────────────────────────────────────────
+# [Both controllers] Caps how far the ramped speed target may run ahead of the
+# car's own current speed, before either the LTV-QP's q_e_v row or the NMPC's
+# e_v/progress-cap row ever sees it. Measured 2026-09-20: at 2.5 this was the
+# binding constraint on acceleration for 36.8% of a lap, not the launch/
+# recovery guard it was written as. Raised to 5.0 (faster lap, lower |e_y|,
+# lower steering saturation, no measured trade-off offline); NOT yet
+# live-validated at this value. See docs/logs/nmpc_progress_term_investigation.md.
+# Mirrors MPCParams.speed_target_deficit_max.
+SPEED_TARGET_DEFICIT_MAX = 2.5
+
 # ------------------------------------------------------------------------------
 # Cost function weights (for simulator only)
 # ------------------------------------------------------------------------------
@@ -547,7 +558,7 @@ EPSI_RA_BRAKE_FLOOR = 0.5
 # straights, where a speed-error weight does little. Compare on the approach
 # phase when re-tuning this.
 # Mirrors mpc_params.py's Q_diag.
-Q_diag      = [6.35, 0.5, 1.65, 1.0, 5.40, 0.0, 0.0, 0.0]
+Q_diag      = [6.35, 0.1, 1.65, 1.0, 2.0, 0.0, 0.0, 0.0]
 # [shared] R_diag index -> input penalised:
 #   [0] delta_cmd  steering command effort (rad)
 #   [1] a_cmd      acceleration command effort (m/s^2)
@@ -582,7 +593,7 @@ R_diag      = [1.8, 0.77]
 #   [0] delta_cmd  steering rate of change
 #   [1] a_cmd      acceleration rate of change
 # Mirrors mpc_params.py's R_rate_diag.
-R_rate_diag = [2.5, 2.25]
+R_rate_diag = [100.0, 2.25]
 
 # [shared] R_A_ACCEL / R_A_BRAKE — separate effort weights for acceleration and
 # braking. solve_mpc()'s a_cmd effort cost is r_a_accel*pos(a_cmd)^2 +
@@ -876,8 +887,13 @@ NMPC_TRUST_DELTA_RAD = np.radians(9.0)      # per-iteration steering trust regio
 NMPC_TRUST_A = 0.6                          # per-iteration accel trust region = du_max[1].
 NMPC_BACKTRACK_MAX = 2                      # step halvings if a full SQP step increases the
                                             # true nonlinear cost (divergence guard).
-NMPC_TRACK_HALFWIDTH = 3.5                  # soft |e_y| bound with slack, matching
-                                            # controller/optimiser.py's own +-3.5m literal.
+NMPC_TRACK_HALFWIDTH = 3.5                  # soft |e_y| bound with slack (both quadratic and
+                                            # linear), matching controller/optimiser.py's LTV-QP
+                                            # +-3.5m literal. Was narrowed to 3.0 on 2026-09-21 for
+                                            # the progress-term experiment, then REVERTED the same
+                                            # day: this field is read unconditionally (not gated on
+                                            # progress_enabled), so narrowing it also tightened
+                                            # ordinary tracking mode and measurably hurt it.
 NMPC_SLACK_WEIGHT = 10000.0                 # matches controller/optimiser.py's W_SLACK.
 NMPC_CURVATURE_DENSE_STEP = 0.5             # kappa(s)/heading-reference smoothing -- same
 NMPC_CURVATURE_SMOOTH_W = 3                 # denoise precedent as sim/speed_profile.py's
@@ -968,8 +984,8 @@ NMPC_FRICTION_CIRCLE_ENABLED = False
 #      wrong, not the constraint mechanism. The cap here is a soft penalty
 #      with gradient everywhere, not a hard inequality that can go inert.
 NMPC_PROGRESS_ENABLED = False
-NMPC_Q_PROGRESS = 1.0        # weight on the progress-reward row (row 5), UNTUNED
-NMPC_PROGRESS_REACH = 2.0    # s_target_N = s0 + max(v_cap*N*DT*REACH,
+NMPC_Q_PROGRESS = 4.25        # weight on the progress-reward row (row 5), UNTUNED
+NMPC_PROGRESS_REACH = 3.0    # s_target_N = s0 + max(v_cap*N*DT*REACH,
                              # 0.5*a_max*(N*DT)^2*REACH); >1 keeps it always
                              # out of reach so minimising the residual is
                              # monotone-equivalent to maximising s_N. The
@@ -983,14 +999,14 @@ NMPC_PROGRESS_REACH = 2.0    # s_target_N = s0 + max(v_cap*N*DT*REACH,
                              # margin over the measured 11 m minimum at this
                              # weight set; see nmpc_optimiser.py's
                              # compute_step() comment for the full mechanism.
-NMPC_PROGRESS_V_MIN = 0.5    # hard-ish low-speed floor (hinge, same row/weight
+NMPC_PROGRESS_V_MIN = 3.0    # hard-ish low-speed floor (hinge, same row/weight
                              # as the cap): defence against the standstill
                              # trivial solution, compounded by the known
                              # v_x=0 tyre-force bug elsewhere in this model.
                              # Liniger's MPCC reference uses 0.05; this repo's
                              # cars sit higher off the mark than an RC car so
                              # a slightly larger floor is a reasonable start.
-NMPC_SLACK_LINEAR_WEIGHT = 0.0   # additional LINEAR term on the soft track-
+NMPC_SLACK_LINEAR_WEIGHT = 500.0   # additional LINEAR term on the soft track-
                              # boundary slack, on top of the existing
                              # quadratic NMPC_SLACK_WEIGHT. 0.0 (default) is
                              # a no-op. A purely quadratic penalty has ZERO
