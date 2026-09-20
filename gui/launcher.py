@@ -51,7 +51,7 @@ import tkinter as tk
 from dataclasses import dataclass
 from pathlib import Path
 from tkinter import font as tkfont
-from tkinter import messagebox, ttk
+from tkinter import messagebox, simpledialog, ttk
 
 
 # ---------------------------------------------------------------------------
@@ -253,7 +253,14 @@ def _repo_paths() -> RepoPaths:
         launch_all_sh=fsds_root / "ros2" / "launch_all.sh",
         tracks_dir=fsds_root / "ros2" / "src" / "fsae_planning" / "tracks",
         recorded_runs_dir=fsae_mpctest / "fsds_simulator" / "recorded_runs",
-        fsae_logs_dir=Path.home() / "fsae_logs",
+        # Matches launch_all.sh's own `log_dir:='$HOST_REPO_ROOT/fsae_logs'`
+        # exactly (HOST_REPO_ROOT is that script's own outer-FSDS-repo-root
+        # variable) -- NOT the user's home directory, which only coincides
+        # with the repo root by accident. ControlLogger (telemetry_logger.py)
+        # opens its CSV here at node startup, not lazily at shutdown, so
+        # getting this directory right is what makes the Stop button's
+        # "save this run?" prompt able to find anything at all.
+        fsae_logs_dir=fsds_root / "fsae_logs",
         settings_py=fsae_mpctest / "settings.py",
         mpc_params_py=(fsds_root / "ros2" / "src" / "fsae_planning" / "control"
                        / "fsae_control" / "fsae_control" / "mpc" / "mpc_params.py"),
@@ -412,11 +419,40 @@ def _sibling_path_csv(control_csv: Path) -> Path | None:
     return candidate if candidate.exists() else None
 
 
+# How long (seconds) the Launch tab's Stop button polls fsae_logs/ for a
+# freshly-written CSV before giving up silently. ControlLogger.close()
+# reliably finishes in well under a second in the normal single-Ctrl+C
+# case (file close + optional header rewrite), but runs from the node's
+# own signal handler asynchronously with this button's click, not
+# synchronously with it -- a single immediate check routinely found
+# nothing. A few seconds' margin comfortably covers the normal case
+# without leaving the user waiting on a genuinely stuck/crashed node.
+_STOP_LOG_POLL_TIMEOUT_S = 5.0
+
 # How long (milliseconds) window teardown waits after signalling a running
 # launch before destroying the window. Only a courtesy pause so the signal
 # lands before this process exits -- launch_all.sh's cleanup runs in its
 # own process group and finishes regardless of how long this GUI lives.
 _CLOSE_STOP_GRACE_MS = 500
+
+
+def _insert_run_label(filename: str, label: str | None) -> str:
+    """Splices LABEL between the tag and `_control_`/`_path_` in filename,
+    e.g. `mpc_standalone_control_123.csv` + "best" ->
+    `mpc_standalone_best_control_123.csv` -- the same hand-labelled-run
+    convention this project's own recorded_runs/ folder already uses (see
+    debugging_tools.md's "descriptive topic segment... added by hand"
+    note), which plot_playback.py's discovery already tolerates since it
+    only looks for `_control_`/`_path_` plus the trailing stamp. Returns
+    filename unchanged if label is empty/None or the expected marker isn't
+    present."""
+    if not label:
+        return filename
+    label = re.sub(r"\s+", "_", label.strip())
+    for marker in ("_control_", "_path_"):
+        if marker in filename:
+            return filename.replace(marker, f"_{label}{marker}", 1)
+    return filename
 
 
 def _stop_process(proc: subprocess.Popen) -> None:
@@ -560,6 +596,15 @@ class LaunchTab(ttk.Frame):
         self.export_button = ttk.Button(button_row, text="Export & Save Track",
                                          command=self._on_export, state="disabled")
         self.export_button.pack(side="left", padx=(10, 0))
+        # TEMPORARY (2026-09-20): runs run_brake_sysid.sh instead of the
+        # normal stack, via launch_all.sh's own RUN_BRAKE_SYSID toggle --
+        # see that variable's comment in launch_all.sh for why this can't
+        # just be another checkbox alongside the normal launch options (it
+        # must run INSTEAD OF sim.launch.py, not alongside it). Remove this
+        # button once the brake system-ID investigation is closed out.
+        self.brake_sysid_button = ttk.Button(
+            button_row, text="Run Brake Sysid", command=self._on_run_brake_sysid)
+        self.brake_sysid_button.pack(side="left", padx=(10, 0))
 
     def _set_record_row_visible(self, visible: bool) -> None:
         if visible:
@@ -642,6 +687,41 @@ class LaunchTab(ttk.Frame):
         except OSError as exc:
             messagebox.showerror("Launch tab", f"Failed to launch: {exc!r}")
 
+    def _on_run_brake_sysid(self) -> None:
+        if not messagebox.askyesno(
+                "Confirm brake system-ID",
+                "This drives FSDS directly with fixed throttle/brake "
+                "(accelerate, coast, hard-brake, repeat) to measure real "
+                "achieved deceleration. It bypasses the controller entirely "
+                "and does NOT steer or avoid cones -- run it in an open area.\n\n"
+                "Continue?"):
+            return
+        try:
+            _backup_once(self._paths.launch_all_sh, self._backed_up)
+            # Flip the flag on just long enough to launch, then immediately
+            # write it back to false -- launch_all.sh has already read its
+            # own source by the time the child process starts, so the file
+            # at rest never claims sysid mode is the current default. Mirrors
+            # how _on_launch never leaves a one-off override sitting live.
+            if not _rewrite_var(self._paths.launch_all_sh, "RUN_BRAKE_SYSID", "true"):
+                messagebox.showerror(
+                    "Launch tab",
+                    "Could not find RUN_BRAKE_SYSID in launch_all.sh -- "
+                    "the script may have changed shape; edit it directly for now.")
+                return
+            self._proc = _run_detached(["bash", "launch_all.sh"],
+                                        cwd=self._paths.fsds_root / "ros2")
+            _rewrite_var(self._paths.launch_all_sh, "RUN_BRAKE_SYSID", "false")
+            self._launch_started_at = time.time()
+            self._launch_controller_label = "Brake Sysid"
+            self.status_var.set(
+                "Brake sysid running. Check the terminal/log window it opened; "
+                "the log lands in fsae_logs/brake_sysid_*.csv.")
+            self.launch_button.configure(state="disabled")
+            self.stop_button.configure(state="normal")
+        except OSError as exc:
+            messagebox.showerror("Launch tab", f"Failed to launch: {exc!r}")
+
     def stop_running_sim(self) -> bool:
         """Signals a running launch and resets the buttons, without any of
         _on_stop's log-offer follow-up. Separate from _on_stop so window
@@ -660,27 +740,52 @@ class LaunchTab(ttk.Frame):
         self.stop_running_sim()
         self.status_var.set("Stop signal sent (same as Ctrl+C). "
                              "The sim/bridge windows will close themselves.")
-        self._offer_move_log_to_recorded_runs()
+        # The node's telemetry file isn't necessarily flushed/closed the
+        # instant the signal is sent -- ControlLogger.close() runs from the
+        # node's own SIGINT handler, not synchronously with this click, so
+        # checking fsae_logs/ exactly once here routinely found nothing.
+        # Poll for up to _STOP_LOG_POLL_TIMEOUT_S instead of a single
+        # synchronous check.
+        self._poll_for_stopped_run(deadline=time.time() + _STOP_LOG_POLL_TIMEOUT_S)
 
-    def _offer_move_log_to_recorded_runs(self) -> None:
-        """After Stop, offers to move the run's just-written CSV pair from
-        ~/fsae_logs/ into fsds_simulator/recorded_runs/<Controller>/, the
-        same manual step debugging_tools.md's "Telemetry playback" section
-        already documents doing by hand. Only offers logs whose mtime is
-        after this launch started, so an unrelated older log sitting in
+    def _poll_for_stopped_run(self, deadline: float) -> None:
+        control_csv = self._find_new_control_csv()
+        if control_csv is not None:
+            self._offer_move_log_to_recorded_runs(control_csv)
+            return
+        if time.time() >= deadline:
+            return  # gave it a few seconds; no new log appeared, say nothing
+        self.after(300, self._poll_for_stopped_run, deadline)
+
+    def _find_new_control_csv(self) -> Path | None:
+        """Newest `*_control_*.csv` in fsae_logs/ written since this launch
+        started, or None if none yet -- only considers logs from THIS
+        launch (by mtime), so an unrelated older file sitting in
         fsae_logs/ is never swept up by mistake."""
         if self._launch_started_at is None:
-            return
+            return None
         logs_dir = self._paths.fsae_logs_dir
         if not logs_dir.is_dir():
-            return
+            return None
+        # 1 s tolerance: filesystem mtime resolution can be coarser than
+        # time.time()'s float precision, so a file written a few hundred ms
+        # after this launch started can still report an mtime a hair
+        # *before* self._launch_started_at on some filesystems/platforms.
+        cutoff = self._launch_started_at - 1.0
         new_controls = [
             p for p in logs_dir.glob("*_control_*.csv")
-            if p.stat().st_mtime >= self._launch_started_at
+            if p.stat().st_mtime >= cutoff
         ]
         if not new_controls:
-            return
-        control_csv = max(new_controls, key=lambda p: p.stat().st_mtime)
+            return None
+        return max(new_controls, key=lambda p: p.stat().st_mtime)
+
+    def _offer_move_log_to_recorded_runs(self, control_csv: Path) -> None:
+        """After Stop finds a freshly-written CSV, offers to move it (and
+        its sibling path CSV) into fsds_simulator/recorded_runs/<Controller>/,
+        the same manual step debugging_tools.md's "Telemetry playback"
+        section already documents doing by hand, and offers to rename it
+        first."""
         path_csv = _sibling_path_csv(control_csv)
         label = getattr(self, "_launch_controller_label", "Stanley")
         if not messagebox.askyesno(
@@ -689,13 +794,26 @@ class LaunchTab(ttk.Frame):
                 f"  {control_csv.name}"
                 + (f"\n  {path_csv.name}" if path_csv else "")):
             return
+
+        custom_label = simpledialog.askstring(
+            "Name this run",
+            "Optional label for this run (leave blank to keep the default name).\n"
+            "Inserted between the tag and timestamp, e.g. "
+            "mpc_standalone_<label>_control_<stamp>.csv — matches this project's "
+            "own convention for a hand-labelled run (see debugging_tools.md).",
+            parent=self,
+        )
+        dest_control_name = _insert_run_label(control_csv.name, custom_label)
+        dest_path_name = _insert_run_label(path_csv.name, custom_label) if path_csv else None
+
         dest_dir = self._paths.recorded_runs_dir / label
         dest_dir.mkdir(parents=True, exist_ok=True)
         try:
-            shutil.move(str(control_csv), str(dest_dir / control_csv.name))
+            shutil.move(str(control_csv), str(dest_dir / dest_control_name))
             if path_csv is not None:
-                shutil.move(str(path_csv), str(dest_dir / path_csv.name))
-            self.status_var.set(f"Run moved to fsds_simulator/recorded_runs/{label}/.")
+                shutil.move(str(path_csv), str(dest_dir / dest_path_name))
+            self.status_var.set(
+                f"Run saved as fsds_simulator/recorded_runs/{label}/{dest_control_name}.")
         except OSError as exc:
             messagebox.showerror("Launch tab", f"Failed to move log: {exc!r}")
 

@@ -14,6 +14,7 @@ steering, GO gating) lives downstream in fsds_bridge, mirroring how the real car
 turns cmd_vel into CAN frames.  Speed feedback comes from the simulator odometry
 (the real car reads it from CAN); the steering pose comes from car_position.
 """
+import json
 import time
 
 import numpy as np
@@ -24,6 +25,7 @@ from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from ackermann_msgs.msg import AckermannDriveStamped
 from geometry_msgs.msg import PoseArray, PoseStamped
 from nav_msgs.msg import Odometry
+from std_msgs.msg import String
 
 from fsae_control.control_utils import (
     StanleyController, curvature_speed, load_path_profile_csv,
@@ -141,6 +143,14 @@ class StanleyControllerNode(Node):
         self.create_subscription(Odometry, '/fsds/testing_only/odom', self._odom_cb, sensor_qos)
 
         self.pub_cmd = self.create_publisher(AckermannDriveStamped, '/fsae/control/cmd_vel', 10)
+        # Debug-only: per-tick weighted breakdown of Stanley's own three
+        # additive terms, for live_viz.py's debug window. Also doubles as
+        # this project's only positive "Stanley is active" signal -- MPC
+        # and Stanley share the same ROS node name and, in cmd_vel mode,
+        # the same output topic, so live_viz.py cannot otherwise tell them
+        # apart (see mpc_controller.py's own /fsae/control/debug_weights).
+        self.pub_debug_stanley = self.create_publisher(
+            String, '/fsae/control/debug_stanley', 10)
 
         self._path: np.ndarray = (
             self._static_path if self._static_path is not None else np.empty((0, 2))
@@ -190,6 +200,42 @@ class StanleyControllerNode(Node):
         self._car_yaw = float(msg.pose.orientation.w)
         self._control_step()
 
+    def _publish_debug_stanley(self, steering: float) -> None:
+        """
+        Weighted-cost-style breakdown of Stanley's three additive terms
+        (heading error, cross-track atan2 correction, yaw-rate damping),
+        each as a share of the sum of their absolute values, plus the raw
+        values themselves. Debug-only, for live_viz.py's Stanley panel;
+        mirrors mpc_controller.py's _publish_debug_weights() in spirit but
+        Stanley has no cost weights to report, only its own control-law
+        terms, so "percentage" here means "share of total steering
+        magnitude", not "share of a QP cost".
+        """
+        heading = self._stanley.last_heading_term
+        atan = self._stanley.last_atan_term
+        damping = self._stanley.last_damping_term
+        terms = {
+            'heading_error': heading,
+            'atan_cross_track': atan,
+            'yaw_rate_damping': damping,
+        }
+        total_abs = sum(abs(v) for v in terms.values())
+        breakdown = {
+            name: {
+                'value': value,
+                'pct': (100.0 * abs(value) / total_abs) if total_abs > 0.0 else 0.0,
+            }
+            for name, value in terms.items()
+        }
+        msg = String()
+        msg.data = json.dumps({
+            'terms': breakdown,
+            'e_y': self._stanley.last_e_y,
+            'e_psi': self._stanley.last_e_psi,
+            'steering': steering,
+        })
+        self.pub_debug_stanley.publish(msg)
+
     # ------------------------------------------------------------------
     # Control step (triggered by car_position)
     # ------------------------------------------------------------------
@@ -211,6 +257,7 @@ class StanleyControllerNode(Node):
             self._path, self._car_pos, self._car_yaw,
             self._car_speed, self._car_yaw_rate,
         )
+        self._publish_debug_stanley(steering)
 
         now = time.perf_counter()
         dt = (now - self._last_tick_time) if self._last_tick_time is not None else None

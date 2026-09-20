@@ -80,6 +80,12 @@ class StanleyController:
         # not used internally by compute() itself.
         self.last_e_y: float = 0.0
         self.last_e_psi: float = 0.0
+        # Last tick's three additive terms of delta itself (radians, BEFORE
+        # the final clip), for debug telemetry only -- see live_viz.py's
+        # weighted-error panel for Stanley. Not used internally.
+        self.last_heading_term: float = 0.0   # theta_e
+        self.last_atan_term: float = 0.0      # atan2(k_cte*e, v+k_soft)
+        self.last_damping_term: float = 0.0   # -k_d*yaw_rate
 
     def compute(
         self,
@@ -141,9 +147,10 @@ class StanleyController:
         # Stanley angle — positive = left turn (standard convention).  Damper
         # subtracts k_d·ω: when the car is already swinging left (ω > 0), this
         # reduces δ so the next tick steers less left, preventing overshoot.
-        delta = (theta_e
-                 + math.atan2(self.k_cte * e, car_speed + self.k_soft)
-                 - self.k_d * car_yaw_rate)
+        self.last_heading_term = theta_e
+        self.last_atan_term = math.atan2(self.k_cte * e, car_speed + self.k_soft)
+        self.last_damping_term = -self.k_d * car_yaw_rate
+        delta = self.last_heading_term + self.last_atan_term + self.last_damping_term
 
         # Return the steering ANGLE in radians (positive = left), clamped to the
         # physical limit.  FSDS normalisation (+1 = right) is done by fsds_bridge.

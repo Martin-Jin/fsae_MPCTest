@@ -17,6 +17,22 @@ CONTAINER_ROS2_DIR="/root/Formula-Student-Driverless-Simulator/ros2"
 HOST_REPO_ROOT="$(dirname "$HOST_ROS2_DIR")"
 CONTAINER_REPO_ROOT="$(dirname "$CONTAINER_ROS2_DIR")"
 
+# TEMPORARY (2026-09-20): run the open-loop braking system-ID sweep instead
+# of the normal planning/control stack, then exit -- see
+# run_brake_sysid.sh's own docstring for why this measurement exists
+# (verifying an assumption behind two previously-rejected NMPC speed-profile
+# fixes). This must run INSTEAD OF, not alongside, sim.launch.py: two
+# publishers on /fsds/control_command would interleave and corrupt the
+# measurement, so this exits before any of the normal stack starts, using
+# run_brake_sysid.sh's own independent FSDS+bridge startup rather than
+# interleaving with this script's. Remove this block (and
+# run_brake_sysid.sh/brake_sysid.py themselves, once the sweep has been run
+# and analysed) once the investigation this exists for is closed out.
+RUN_BRAKE_SYSID=false
+if [ "$RUN_BRAKE_SYSID" = true ]; then
+    exec "$HOST_ROS2_DIR/run_brake_sysid.sh" "$@"
+fi
+
 # Which recorded track the car drives. Selects BOTH precomputed CSVs at once
 # from fsae_planning's own ros2/src/fsae_planning/tracks/<TRACK>/ --
 # speed_profile.csv and the geometry file (centerline.csv if present, else

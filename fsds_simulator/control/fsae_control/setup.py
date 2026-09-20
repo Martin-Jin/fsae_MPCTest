@@ -24,6 +24,7 @@ setup(
             'mpc_controller = fsae_control.mpc.mpc_controller:main',
             'fsds_bridge    = fsae_control.fsds_bridge:main',
             'live_viz       = fsae_control.live_viz:main',
+            'brake_sysid    = fsae_control.brake_sysid:main',
         ],
     },
 )

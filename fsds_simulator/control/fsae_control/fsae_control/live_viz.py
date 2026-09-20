@@ -15,7 +15,12 @@ Topics subscribed (see this repo's fsae_planning per-file docstrings for the
 authoritative topic table):
     /fsae/slam/left_track            fsae_interfaces/Track          blue boundary, global frame
     /fsae/slam/right_track           fsae_interfaces/Track          yellow boundary, global frame
-    /fsae/slam/car_position           geometry_msgs/PoseStamped      car pose, global frame
+    /fsae/slam/car_position           geometry_msgs/PoseStamped      car pose, global frame.
+                                                                     orientation is NOT a real
+                                                                     quaternion: .w carries raw
+                                                                     yaw (radians) directly, see
+                                                                     sim_perception.py's
+                                                                     _car_pose_msg()
     /fsae/slam/car_odom               nav_msgs/Odometry              car speed/yaw rate
     /fsae/planning/selected_trajectory  geometry_msgs/PoseArray      live planner's centreline
                                                                      (empty in precomputed-path
@@ -42,6 +47,16 @@ authoritative topic table):
                                                                        + solve_ms, debug-only, see
                                                                        mpc_controller.py's
                                                                        _publish_debug_weights()
+    /fsae/control/debug_stanley       std_msgs/String                 JSON: Stanley's own three
+                                                                       control-law terms (heading
+                                                                       error, atan2 cross-track,
+                                                                       yaw-rate damping) + e_y/
+                                                                       e_psi/steering, debug-only.
+                                                                       Also this node's only
+                                                                       positive "Stanley is
+                                                                       active" signal, see
+                                                                       stanley_controller.py's
+                                                                       _publish_debug_stanley()
 
 Both control-output topics are subscribed; whichever one is actually being
 published (depends on the `standalone_output` launch arg) is the one that
@@ -51,6 +66,7 @@ updates the stats panel, the other simply never fires.
 import json
 import os
 import signal
+import time
 from collections import deque
 
 import matplotlib
@@ -153,6 +169,16 @@ class LiveVizNode(Node):
         self.cmd_speed_target = None   # cmd_vel mode only
         self.control_topic = None      # which of the two actually fired, for the stats panel
         self.debug_weights = None      # parsed JSON dict from /fsae/control/debug_weights, or None
+        self.debug_stanley = None      # parsed JSON dict from /fsae/control/debug_stanley, or None
+        # Which debug topic fired most recently -- the only positive signal
+        # this node has for "which controller is actually active" (MPC and
+        # Stanley share one ROS node name and, in cmd_vel mode, one output
+        # topic). Compared by wall-clock arrival, not message content, so a
+        # stale topic from a controller that's no longer running (e.g. left
+        # over from an earlier launch this session) stops winning once the
+        # other one starts publishing.
+        self._debug_weights_at = 0.0
+        self._debug_stanley_at = 0.0
 
         # Bumped by every callback below (see _counted), so redraw() can
         # detect "nothing new arrived" and stop draining without needing a
@@ -176,6 +202,8 @@ class LiveVizNode(Node):
             AckermannDriveStamped, '/fsae/control/cmd_vel', self._cmd_vel_cb, 10)
         self._subscribe(
             String, '/fsae/control/debug_weights', self._debug_weights_cb, 10)
+        self._subscribe(
+            String, '/fsae/control/debug_stanley', self._debug_stanley_cb, 10)
 
     def _subscribe(self, msg_type, topic, callback, qos):
         """
@@ -209,12 +237,16 @@ class LiveVizNode(Node):
     def _pose_cb(self, msg: PoseStamped) -> None:
         self.car_x = msg.pose.position.x
         self.car_y = msg.pose.position.y
-        q = msg.pose.orientation
-        # Yaw from quaternion (planar, matches sim_perception.py's own
-        # convention: FSDS/ENU, z-axis rotation only).
-        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
-        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
-        self.car_yaw = float(np.arctan2(siny_cosp, cosy_cosp))
+        # NOT a real quaternion: sim_perception.py's _car_pose_msg()
+        # repurposes orientation.w to carry raw yaw (radians) directly,
+        # x=y=z=0 always (see that file's own "Upstream convention"
+        # comment). Every real consumer of this topic (mpc_controller.py,
+        # stanley_controller.py, centerline_planner.py, skidpad_planner.py)
+        # already reads it this way -- a standard atan2 quaternion decode
+        # here was wrong (always evaluated to 0 against x=y=z=0) and is why
+        # the debug triangle was stuck pointing at yaw=0 regardless of the
+        # car's actual heading.
+        self.car_yaw = float(msg.pose.orientation.w)
         self.have_pose = True
         self.trail.append((self.car_x, self.car_y))
 
@@ -244,8 +276,25 @@ class LiveVizNode(Node):
     def _debug_weights_cb(self, msg: String) -> None:
         try:
             self.debug_weights = json.loads(msg.data)
+            self._debug_weights_at = time.monotonic()
         except (json.JSONDecodeError, TypeError):
             self.debug_weights = None
+
+    def _debug_stanley_cb(self, msg: String) -> None:
+        try:
+            self.debug_stanley = json.loads(msg.data)
+            self._debug_stanley_at = time.monotonic()
+        except (json.JSONDecodeError, TypeError):
+            self.debug_stanley = None
+
+    def active_controller(self) -> str:
+        """'mpc' or 'stanley', whichever debug topic fired most recently,
+        or 'unknown' if neither has fired yet this session. Wall-clock
+        arrival, not message content -- see the two _at fields' own
+        comment for why."""
+        if self._debug_weights_at == 0.0 and self._debug_stanley_at == 0.0:
+            return 'unknown'
+        return 'mpc' if self._debug_weights_at >= self._debug_stanley_at else 'stanley'
 
 
 # Which terms (mpc_controller.py's _publish_debug_weights() dict keys)
@@ -276,6 +325,23 @@ DEBUG_HORIZON_TERMS = (
     'e_y', 'e_yd', 'e_psi', 'yaw_rate', 'e_v',
     'steer_effort', 'accel_effort', 'delta_u_steer', 'delta_u_accel',
 )
+
+# Stanley's debug_stanley terms shown on its own error panel (NOT its
+# control-law-term panel below): just its two tracking errors, one shared
+# 100% scale -- heading error and cross-track (lateral) error are both
+# radians/metres-squared-weighted-free raw values here (Stanley has no QP
+# cost weights), so "percentage" is share of |e_y|+|e_psi|, a simple
+# at-a-glance "which error dominates" signal, analogous to MPC's tracking
+# panel but with only the two terms Stanley actually has.
+STANLEY_ERROR_TERMS = ('e_y', 'e_psi')
+
+# Stanley's three additive control-law terms (see
+# stanley_controller.py's _publish_debug_stanley()) -- percentage of the
+# sum of their absolute values, i.e. "how much of this tick's total
+# steering effort came from which term", matching the user's own framing
+# ("atan term vs heading error term... as a percentage of total control
+# input to steering").
+STANLEY_LAW_TERMS = ('heading_error', 'atan_cross_track', 'yaw_rate_damping')
 
 
 def main():
@@ -312,7 +378,20 @@ def main():
     gs = fig_dbg.add_gridspec(len(DEBUG_BAR_GROUPS), 2, width_ratios=[1.0, 1.0])
     ax_bars = [fig_dbg.add_subplot(gs[i, 0]) for i in range(len(DEBUG_BAR_GROUPS))]
     ax_horizon = fig_dbg.add_subplot(gs[:, 1])
+    mpc_axes = ax_bars + [ax_horizon]
+
+    # Stanley's own debug figure -- separate from fig_dbg (built once,
+    # same as fig_dbg, then shown/hidden as a whole depending on which
+    # controller is actually active, see redraw_debug()). Two panels: the
+    # user's own two asks, one shared window each.
+    fig_stanley = plt.figure(figsize=(8, 6))
+    gs_stanley = fig_stanley.add_gridspec(2, 1)
+    ax_stanley_error = fig_stanley.add_subplot(gs_stanley[0, 0])
+    ax_stanley_law = fig_stanley.add_subplot(gs_stanley[1, 0])
+    stanley_axes = [ax_stanley_error, ax_stanley_law]
+
     fig_dbg.suptitle('MPC weighted-cost breakdown (debug)')
+    fig_stanley.suptitle('Stanley control-law breakdown (debug)')
 
     def redraw(_frame):
         # Process every callback queued since the last frame, not just one:
@@ -375,7 +454,11 @@ def main():
                         max(forward_span[1], backward_span[1]) + VIEW_HALF_WIDTH)
             del right  # reserved for a future car-relative (rotated) view
 
+        controller = node.active_controller()
+        controller_label = {'mpc': 'MPC', 'stanley': 'Stanley', 'unknown': '(unknown)'}[controller]
+
         stats = (
+            f"controller = {controller_label}\n"
             f"v = {node.car_speed:.2f} m/s\n"
             f"steer = {node.steering:+.3f}\n"
             f"throttle = {node.throttle:.2f}  brake = {node.brake:.2f}\n"
@@ -383,15 +466,69 @@ def main():
         if node.cmd_speed_target is not None:
             stats += f"cmd v_target = {node.cmd_speed_target:.2f} m/s\n"
         stats += f"control topic: {node.control_topic or '(none yet)'}\n"
-        stats += f"NMPC horizon: {'yes' if node.nmpc_pred_path.size else 'no'}"
-        ax.text(0.02, 0.98, stats, transform=ax.transAxes, va='top', ha='left',
+        # NMPC horizon line is MPC-specific (Stanley never predicts a
+        # horizon at all) -- only shown when MPC is the one actually active,
+        # rather than printing a permanently-"no" line for a Stanley run.
+        if controller != 'stanley':
+            stats += f"NMPC horizon: {'yes' if node.nmpc_pred_path.size else 'no'}"
+        ax.text(0.02, 0.98, stats.rstrip('\n'), transform=ax.transAxes, va='top', ha='left',
                 fontsize=9, family='monospace',
                 bbox=dict(boxstyle='round', fc='white', alpha=0.85))
 
         ax.legend(loc='lower right', fontsize=8)
-        ax.set_title('Live MPC debug view')
+        ax.set_title(f'Live {controller_label} debug view')
+
+    def _draw_pct_bars(ax, present, pcts, details, red_threshold, xlabel):
+        """Shared bar-graph renderer for every debug panel below: a
+        horizontal 0-100% bar per (present[i], pcts[i]), red past
+        red_threshold else blue, with details[i] appended to each bar's
+        label. Centralised so every panel wraps its label text the same
+        way (see the wrap step below, added because long detail strings
+        were being clipped past the figure's right edge)."""
+        ax.clear()
+        if present:
+            colors = ['tab:red' if p >= red_threshold else 'tab:blue' for p in pcts]
+            bars = ax.barh(present, pcts, color=colors)
+            for bar, detail in zip(bars, details):
+                # Bar labels are drawn in DATA coordinates (x in [0, 100],
+                # not axes-fraction), so a wide label on a near-100% bar
+                # can extend past the axes' right edge and get clipped by
+                # the figure boundary -- clip_on=False lets it draw into
+                # the figure margin instead (tight_layout/subplots_adjust
+                # below reserves that margin), and a fixed-width right
+                # margin is reserved on every panel for exactly this.
+                ax.text(bar.get_width() + 1.5, bar.get_y() + bar.get_height() / 2,
+                        detail, va='center', ha='left', fontsize=7,
+                        family='monospace', clip_on=False)
+        else:
+            ax.text(0.5, 0.5, '(no data yet)', ha='center', va='center',
+                    transform=ax.transAxes, fontsize=9)
+        ax.set_xlim(0, 100)
+        ax.set_xlabel(xlabel, fontsize=8)
+
+    def _sync_debug_visibility():
+        """Which of the two debug figures is actually meaningful right now
+        -- called from both figures' own animations (each figure needs its
+        own FuncAnimation to redraw its own canvas; a single animation
+        tied to one figure does not repaint a different figure's canvas)."""
+        show_stanley = node.active_controller() == 'stanley'
+        fig_dbg.set_visible(not show_stanley)
+        fig_stanley.set_visible(show_stanley)
+        for ax_ in mpc_axes:
+            ax_.set_visible(not show_stanley)
+        for ax_ in stanley_axes:
+            ax_.set_visible(show_stanley)
+        return show_stanley
 
     def redraw_debug(_frame):
+        if not _sync_debug_visibility():
+            _redraw_mpc_debug()
+
+    def redraw_debug_stanley(_frame):
+        if _sync_debug_visibility():
+            _redraw_stanley_debug()
+
+    def _redraw_mpc_debug():
         # Weighted-cost breakdown, one bar-graph panel per unit-family group
         # (see DEBUG_BAR_GROUPS) -- which term is costing the solver the
         # most right now, as a share of ITS OWN GROUP's sum. See
@@ -404,55 +541,35 @@ def main():
         dw = node.debug_weights
         terms = dw.get('terms', {}) if dw is not None else {}
         for ax_bar, (_group, label, names) in zip(ax_bars, DEBUG_BAR_GROUPS):
-            ax_bar.clear()
             present = [n for n in names if n in terms]
-            if present:
-                pcts = [terms[n]['pct'] for n in present]
-                colors = ['tab:red' if p >= 50.0 else 'tab:blue' for p in pcts]
-                bars = ax_bar.barh(present, pcts, color=colors)
-                for bar, name in zip(bars, present):
-                    t = terms[name]
-                    # 'steering'/'accel' are synthetic combined bars (effort
-                    # + rate folded together, see _publish_debug_weights())
-                    # with no single error/weight of their own to show.
-                    if t['error'] is None:
-                        detail = '(effort + rate combined)'
-                    else:
-                        detail = f"(v={t['error']:+.4f}, w={t['weight']:.2f})"
-                    ax_bar.text(
-                        bar.get_width() + 1.5, bar.get_y() + bar.get_height() / 2,
-                        f"{t['pct']:.1f}%  {detail}",
-                        va='center', ha='left', fontsize=7, family='monospace')
-            else:
-                ax_bar.text(0.5, 0.5, '(no data yet)', ha='center', va='center',
-                            transform=ax_bar.transAxes, fontsize=9)
-            ax_bar.set_xlim(0, 100)
-            ax_bar.set_xlabel(label, fontsize=8)
+            pcts = [terms[n]['pct'] for n in present]
+            details = []
+            for name in present:
+                t = terms[name]
+                # 'steering'/'accel' are synthetic combined bars (effort
+                # + rate folded together, see _publish_debug_weights())
+                # with no single error/weight of their own to show.
+                if t['error'] is None:
+                    detail = f"{t['pct']:.1f}%  (effort + rate combined)"
+                else:
+                    detail = f"{t['pct']:.1f}%  (v={t['error']:+.4f}, w={t['weight']:.2f})"
+                details.append(detail)
+            _draw_pct_bars(ax_bar, present, pcts, details, red_threshold=50.0, xlabel=label)
 
         # Right-side panel: every term's horizon-summed cost as a share of
         # total_cost, one shared scale (see DEBUG_HORIZON_TERMS' comment).
         # Sorted descending so the biggest true contributor to the solver's
         # actual decision is always at the top, regardless of term count.
-        ax_horizon.clear()
         horizon_terms = dw.get('horizon_terms', {}) if dw is not None else {}
         present_h = [n for n in DEBUG_HORIZON_TERMS if n in horizon_terms]
         present_h.sort(key=lambda n: horizon_terms[n]['pct'], reverse=True)
+        pcts_h = [horizon_terms[n]['pct'] for n in present_h]
+        details_h = [f"{horizon_terms[n]['pct']:.1f}%  (cost={horizon_terms[n]['cost']:.3f})"
+                     for n in present_h]
+        _draw_pct_bars(ax_horizon, present_h, pcts_h, details_h, red_threshold=30.0,
+                       xlabel='Horizon-summed cost (% of true total solver cost)')
         if present_h:
-            pcts_h = [horizon_terms[n]['pct'] for n in present_h]
-            colors_h = ['tab:red' if p >= 30.0 else 'tab:purple' for p in pcts_h]
-            bars_h = ax_horizon.barh(present_h, pcts_h, color=colors_h)
             ax_horizon.invert_yaxis()
-            for bar, name in zip(bars_h, present_h):
-                t = horizon_terms[name]
-                ax_horizon.text(
-                    bar.get_width() + 1.0, bar.get_y() + bar.get_height() / 2,
-                    f"{t['pct']:.1f}%  (cost={t['cost']:.3f})",
-                    va='center', ha='left', fontsize=7, family='monospace')
-        else:
-            ax_horizon.text(0.5, 0.5, '(no data yet)', ha='center', va='center',
-                             transform=ax_horizon.transAxes, fontsize=9)
-        ax_horizon.set_xlim(0, 100)
-        ax_horizon.set_xlabel('Horizon-summed cost (% of true total solver cost)', fontsize=8)
         ax_horizon.set_title('Every term, full predicted horizon', fontsize=9)
 
         header = []
@@ -466,11 +583,58 @@ def main():
         fig_dbg.suptitle('MPC weighted-cost breakdown (debug)'
                           + ('\n' + '   |   '.join(header) if header else ''))
 
+    def _redraw_stanley_debug():
+        # Panel 1: Stanley's own two tracking errors (heading, cross-track/
+        # lateral), one shared 0-100% scale -- see STANLEY_ERROR_TERMS'
+        # comment for why "percentage" here is share of |e_y|+|e_psi|.
+        ds = node.debug_stanley
+        e_y = ds.get('e_y') if ds is not None else None
+        e_psi = ds.get('e_psi') if ds is not None else None
+        error_values = {'e_y': e_y, 'e_psi': e_psi}
+        total_abs = sum(abs(v) for v in error_values.values() if v is not None)
+        present_e = [n for n in STANLEY_ERROR_TERMS if error_values.get(n) is not None]
+        pcts_e = [(100.0 * abs(error_values[n]) / total_abs) if total_abs > 0.0 else 0.0
+                  for n in present_e]
+        labels_e = {'e_y': 'lateral error (e_y)', 'e_psi': 'heading error (e_psi)'}
+        details_e = [f"{p:.1f}%  (v={error_values[n]:+.4f} rad or m)"
+                     for n, p in zip(present_e, pcts_e)]
+        _draw_pct_bars(ax_stanley_error, [labels_e[n] for n in present_e], pcts_e, details_e,
+                       red_threshold=60.0, xlabel='Tracking error (% of |e_y| + |e_psi|)')
+        ax_stanley_error.set_title('Heading vs. lateral error', fontsize=9)
+
+        # Panel 2: Stanley's own three additive control-law terms, as a
+        # share of the total steering magnitude they combine to produce --
+        # see stanley_controller.py's _publish_debug_stanley() and
+        # STANLEY_LAW_TERMS' own comment.
+        law_terms = ds.get('terms', {}) if ds is not None else {}
+        present_l = [n for n in STANLEY_LAW_TERMS if n in law_terms]
+        pcts_l = [law_terms[n]['pct'] for n in present_l]
+        labels_l = {
+            'heading_error': 'heading error term',
+            'atan_cross_track': 'atan2 cross-track term',
+            'yaw_rate_damping': 'yaw-rate damping term',
+        }
+        details_l = [f"{law_terms[n]['pct']:.1f}%  (v={law_terms[n]['value']:+.4f} rad)"
+                     for n in present_l]
+        _draw_pct_bars(ax_stanley_law, [labels_l[n] for n in present_l], pcts_l, details_l,
+                       red_threshold=60.0,
+                       xlabel='Share of total steering magnitude (|heading| + |atan2| + |damping|)')
+        ax_stanley_law.set_title('Control-law term breakdown', fontsize=9)
+
+        header = []
+        if ds is not None and ds.get('steering') is not None:
+            header.append(f"steering command = {ds['steering']:+.4f} rad")
+        fig_stanley.suptitle('Stanley control-law breakdown (debug)'
+                              + ('\n' + '   |   '.join(header) if header else ''))
+
     fig.tight_layout()
-    fig_dbg.tight_layout(rect=(0, 0, 1, 0.94))  # leave room for suptitle's two lines
+    fig_dbg.tight_layout(rect=(0, 0, 0.92, 0.94))  # leave room for suptitle + right-margin labels
+    fig_stanley.tight_layout(rect=(0, 0, 0.85, 0.92))  # narrower figure, wider label margin needed
     ani = FuncAnimation(fig, redraw, interval=1000.0 / REDRAW_HZ, cache_frame_data=False)
     ani_dbg = FuncAnimation(fig_dbg, redraw_debug, interval=1000.0 / REDRAW_HZ,
                              cache_frame_data=False)
+    ani_stanley = FuncAnimation(fig_stanley, redraw_debug_stanley, interval=1000.0 / REDRAW_HZ,
+                                 cache_frame_data=False)
     plt.show()
 
     node.destroy_node()

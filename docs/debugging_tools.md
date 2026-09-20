@@ -10,6 +10,7 @@ Catalog of the diagnostic/debugging tools across this repo and the outer
 | Tool | Question it answers | Run with |
 |---|---|---|
 | `gui/launcher.py` | Where's the fastest way to launch the sim, debug a log, run the offline sim, or retune a weight, without editing a script or remembering a CLI? | `python -m gui.launcher` |
+| `live_viz.py` | Which tracking error or control-law term is actually driving the car's steering/throttle right now, live, whichever controller is running? | launched automatically by `ros2/launch_all.sh` (or the launcher's Launch Sim tab); standalone: `ros2 run fsae_control live_viz` |
 | `tuner/recorded_map_rollout.py` | Does a plant/weight change still reproduce the published closed-loop baseline on the recorded map? | `python -m tuner.recorded_map_rollout` |
 | `tuner/checks/plant_openloop_validation.py` | Does the offline plant model reproduce FSDS's measured open-loop behaviour? | `python -m tuner.checks.plant_openloop_validation [--ab] [--robustness]` |
 | `tuner/nmpc_offline_check.py` | Is the offline NMPC (model parity, Jacobians, SQP convergence, LTV-QP-vs-NMPC A/B) still internally consistent? | `python -m tuner.nmpc_offline_check` |
@@ -92,14 +93,14 @@ backups as noted below):
 | `ros2/src/fsae_planning/.../mpc_params.py` (live) | Settings tab's Save button | the matching field for every one of the above that has a live counterpart (see "Settings tab, and live/offline sync" below for the handful that don't) |
 | `ros2/src/fsae_planning/tracks/<name>/` | Launch tab's Export & Save Track button | writes `speed_profile.csv`/`raceline.csv`/`centerline.csv` for a newly recorded track (only after explicit confirm if the name already exists) |
 | `fsae_MPCTest/fsds_simulator/tracks/<name>/` | same Export & Save Track button | copy of the same new track's files |
-| `~/fsae_logs/*.csv` → `fsds_simulator/recorded_runs/<Controller>/` | Launch tab's Stop button (moves, doesn't create) | only after the confirmation prompt it shows is accepted |
+| `<FSDS repo root>/fsae_logs/*.csv` → `fsds_simulator/recorded_runs/<Controller>/` | Launch tab's Stop button (moves, doesn't create) | only after the confirmation prompt it shows is accepted |
 
 Nothing else in this repo or the outer `ros2/` tree is touched by any tab.
 
 | Tab | What it does |
 |---|---|
 | **Launch Sim** | Rewrites `ros2/launch_all.sh`'s `TRACK`, `CONTROLLER`, `USE_NMPC`, `STANDALONE_OUTPUT`, `USE_PRECOMPUTED_SPEED`, `USE_PRECOMPUTED_PATH`, `V_MAX`, `V_MIN` from a form (with a preview/confirm before writing), then runs it. A **Stop** button sends the same signal a terminal Ctrl+C would (`launch_all.sh`'s own `trap cleanup SIGINT SIGTERM` handles the actual teardown). See "Record a new track" below for its recording mode. |
-| **Debug a Log** | File browser over `~/fsae_logs/` and `fsds_simulator/recorded_runs/` (including per-controller subfolders); select one or more `*_control_*.csv` files and run `tuner.tools.plot_playback` on them, or use "Debug Latest" for that tool's own auto-load-newest behaviour with no selection needed. |
+| **Debug a Log** | File browser over `<FSDS repo root>/fsae_logs/` (matching `launch_all.sh`'s own `log_dir:=` — NOT `~/fsae_logs`, `ControlLogger`'s fallback default when no `log_dir` is given) and `fsds_simulator/recorded_runs/` (including per-controller subfolders); select one or more `*_control_*.csv` files and run `tuner.tools.plot_playback` on them, or use "Debug Latest" for that tool's own auto-load-newest behaviour with no selection needed. |
 | **Run Offline Sim** | Launches `gui/simulation.py`. Carries forward its "rough signal only" caveat (see "The offline sim does not yet fully predict the car" in the root `CLAUDE.md`) directly in the tab. |
 | **Settings** | Edits the commonly-retuned `settings.py` constants in place, described in full below. |
 
@@ -131,11 +132,26 @@ automatic resync (see "Third copy" in the root `CLAUDE.md`). Re-exporting
 over an existing track name asks to confirm the overwrite first.
 
 Clicking **Stop** on any run (recording or not) also offers to move that
-run's just-written CSV pair from `~/fsae_logs/` into
+run's just-written CSV pair from `<FSDS repo root>/fsae_logs/` (matching
+`launch_all.sh`'s own `log_dir:=`) into
 `fsds_simulator/recorded_runs/<Controller>/` — the same manual copy step
 described under "Telemetry playback" below, done for you. It only offers
 logs written after the current launch started, so an unrelated older file
-sitting in `fsae_logs/` is never swept up by mistake.
+sitting in `fsae_logs/` is never swept up by mistake. Since the node's own
+telemetry file isn't necessarily flushed and closed the instant Stop is
+clicked (`ControlLogger.close()` runs from the node's own signal handler,
+asynchronously with the click), the launcher polls for up to 5 seconds
+before giving up silently, rather than checking once and missing a file
+written moments later.
+
+Accepting the move prompt then asks for an optional label for the run.
+Leaving it blank keeps the original filename; typing one splices it in
+between the tag and `_control_`/`_path_`
+(`mpc_standalone_<label>_control_<stamp>.csv`), the same hand-labelled-run
+convention `recorded_runs/` already uses for runs saved for later
+comparison (see "Telemetry playback" below) — `plot_playback.py`'s own
+discovery already tolerates this, it only looks for `_control_`/`_path_`
+plus the trailing stamp.
 
 ### Settings tab, and live/offline sync
 
@@ -184,6 +200,41 @@ whole block isn't worth the UI surface it would need.
 alongside the original (e.g. `launch_all.sh.bak`) before writing, so a bad
 edit has a one-command recovery (`mv launch_all.sh.bak launch_all.sh`)
 independent of git.
+
+## Live debug window: `live_viz.py`
+
+Sim-only debug visualiser (car, cone map, reference path, driven trail,
+and a live weighted-error breakdown), redrawn from live ROS2 topics on a
+timer. Never launched by `fsae_autonomous`, only by `ros2/launch_all.sh`
+alongside the sim, or the launcher's Launch Sim tab.
+
+```bash
+ros2 run fsae_control live_viz
+```
+
+**Adapts to whichever controller is actually running.** MPC and Stanley
+share one ROS node name and, in `cmd_vel` output mode, one output topic,
+so `live_viz.py` cannot tell them apart by topic alone — it identifies the
+active controller by which debug topic last published
+(`/fsae/control/debug_weights` for MPC, `/fsae/control/debug_stanley` for
+Stanley), and switches both the main window's title/stats text and which
+debug figure is shown accordingly:
+
+- **MPC active**: the weighted-cost breakdown described under "Centralized
+  launcher" above — grouped step-0 panels (tracking/effort/rate) plus the
+  horizon-summed panel, all against `total_cost`.
+- **Stanley active**: a separate two-panel figure —
+  1. **Heading vs. lateral error**: Stanley's own two tracking errors
+     (`e_y`, `e_psi`), one shared scale, share of `|e_y| + |e_psi|`.
+  2. **Control-law term breakdown**: Stanley's three additive terms
+     (`δ = heading_error + atan2(k_cte·e, v+k_soft) − k_d·yaw_rate`, see
+     `control_utils.py`'s `StanleyController`), each as a share of the sum
+     of their absolute values — "how much of this tick's steering command
+     came from which term."
+
+Both figures are built once at startup and shown/hidden as a whole rather
+than rebuilt each frame, so switching controllers mid-session (stopping
+one run and launching the other) updates the display without a restart.
 
 ## Steering system-ID harness: `run_steering_sysid.sh` / `run_steering_step.sh`
 

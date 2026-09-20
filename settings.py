@@ -595,14 +595,8 @@ R_rate_diag = [2.5, 2.25]
 # post-exit recovery -- because the same weight that frees up acceleration
 # also caps how hard the QP is willing to brake. See `docs/reference/control_mechanisms.md`'s
 # "Accel/brake effort weight split" for the diagnosis and retuning history.
-# Mirrors mpc_params.py's R_A_ACCEL/R_A_BRAKE. R_A_ACCEL being large is a
-# big change from the diagnosis above (which argued for CHEAPER accel
-# effort, not more expensive) -- this may be a response to a
-# separately-diagnosed speed-tracking-lag issue (car slow to convert a
-# falling v_desired into actual braking, see
-# late_turn_in_investigation.md Part 11), not a reversal of that reasoning.
-# Re-read Part 11 before assuming this number is settled.
-R_A_ACCEL = 2.25
+# Mirrors mpc_params.py's R_A_ACCEL/R_A_BRAKE.
+R_A_ACCEL = 1.0
 R_A_BRAKE = 0.5
 
 
