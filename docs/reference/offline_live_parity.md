@@ -347,13 +347,13 @@ longer exist on either side.
 | `q_e_y` | `Q_diag[0]` | `6.35` both sides, synced |
 | `q_e_yd` | `Q_diag[1]` | `0.5` both sides, synced |
 | `q_e_psi` | `Q_diag[2]` | `1.65` both sides, synced |
-| `q_r` | `Q_diag[3]` | `1.20` both sides, synced |
-| `q_e_v` | `Q_diag[4]` | `5.5` both sides, synced |
-| `r_delta` | `R_diag[0]` | `1.35` both sides, synced |
+| `q_r` | `Q_diag[3]` | `1.0` both sides, synced (2026-09-20: re-synced from live, which had drifted to `1.0` while this table and `settings.py` still said `1.20`/`1.40`) |
+| `q_e_v` | `Q_diag[4]` | `5.40` both sides, synced |
+| `r_delta` | `R_diag[0]` | `1.8` both sides, synced (2026-09-20: re-synced from live, `settings.py` still said `1.35`) |
 | `r_a_accel` | `R_diag`/`R_A_ACCEL` | `2.25` both sides, synced; see "Accel/brake effort weight split" below |
 | `r_a_brake` | `R_A_BRAKE`/`R_diag[1]` | `0.5` both sides, synced |
-| `r_rate_delta` | `R_rate_diag[0]` | `52.5` both sides, synced (raised from ~2.8/2.0, see the steering-chatter fix below) |
-| `r_rate_a` | `R_rate_diag[1]` | `5.0` both sides, synced |
+| `r_rate_delta` | `R_rate_diag[0]` | `2.5` both sides, synced (2026-09-20: live had moved to `2.5`, down from the `52.5` this table and `settings.py` still recorded) |
+| `r_rate_a` | `R_rate_diag[1]` | `2.25` both sides, synced (2026-09-20: re-synced from live, which had drifted to `2.25` while this table and `settings.py` still said `5.0`) |
 | `terminal_q_scale` | `TERMINAL_Q_SCALE` | `1.0` (matched) |
 | `adaptive_q_scaling_enabled` | `ADAPTIVE_Q_SCALING_ENABLED` | `True` (matched) |
 | `steer_rate_anti_hunt_enabled` | `STEER_RATE_ANTI_HUNT_ENABLED` | `True` (matched) |

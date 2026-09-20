@@ -547,7 +547,7 @@ EPSI_RA_BRAKE_FLOOR = 0.5
 # straights, where a speed-error weight does little. Compare on the approach
 # phase when re-tuning this.
 # Mirrors mpc_params.py's Q_diag.
-Q_diag      = [5.0, 0.0, 1.65, 1.40, 2.0, 0.0, 0.0, 0.0]
+Q_diag      = [6.35, 0.5, 1.65, 1.0, 5.40, 0.0, 0.0, 0.0]
 # [shared] R_diag index -> input penalised:
 #   [0] delta_cmd  steering command effort (rad)
 #   [1] a_cmd      acceleration command effort (m/s^2)
@@ -576,13 +576,13 @@ Q_diag      = [5.0, 0.0, 1.65, 1.40, 2.0, 0.0, 0.0, 0.0]
 # Mirrors mpc_params.py's R_diag. R_diag[1] is nominal-only (see comment
 # above) -- the live side's R_A_ACCEL/R_A_BRAKE split (below) is what
 # actually matters for a_cmd's effort cost.
-R_diag      = [1.35, 0.77]
+R_diag      = [1.8, 0.77]
 # [shared] R_rate_diag index -> input RATE-OF-CHANGE penalised (tick-to-tick jerk, not
 # the input itself):
 #   [0] delta_cmd  steering rate of change
 #   [1] a_cmd      acceleration rate of change
 # Mirrors mpc_params.py's R_rate_diag.
-R_rate_diag = [100.0, 5.0]
+R_rate_diag = [2.5, 2.25]
 
 # [shared] R_A_ACCEL / R_A_BRAKE — separate effort weights for acceleration and
 # braking. solve_mpc()'s a_cmd effort cost is r_a_accel*pos(a_cmd)^2 +
@@ -602,7 +602,7 @@ R_rate_diag = [100.0, 5.0]
 # falling v_desired into actual braking, see
 # late_turn_in_investigation.md Part 11), not a reversal of that reasoning.
 # Re-read Part 11 before assuming this number is settled.
-R_A_ACCEL = 1.0
+R_A_ACCEL = 2.25
 R_A_BRAKE = 0.5
 
 
