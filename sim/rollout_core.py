@@ -146,7 +146,30 @@ SPEED_TARGET_RISE_RATE = 7.0
 #
 # Not specific to launch: the same rule stops the target running away after a
 # spin or a heavy brake, for the same reason.
-SPEED_TARGET_DEFICIT_MAX = 2.5
+#
+# 5.0, not the original 2.5. At 2.5 the clamp is not a launch/recovery guard
+# at all, it is the binding constraint on acceleration for a THIRD of a
+# normal lap: measured 36.8% of ticks pinned at exactly the limit, holding
+# a_cmd to 4.45 against a plant that delivers ~12. Raising it to 5.0 drops
+# the pinned fraction to 2.3%, nearly doubles peak a_cmd to 8.32, and
+# improves every metric at once rather than trading any against another:
+#
+#   DEFICIT_MAX   score (3 runs)        lap steps   a_cmd max   |e_y| mean   steer sat
+#   2.5           0.757/0.804/0.757     1081-1117   4.45        0.418        4.71%
+#   5.0           0.693/0.692/0.693     1033-1034   8.32        0.402        3.77%
+#
+# Lower score is better. The launch behaviour the clamp exists to protect is
+# unchanged (launch at step 9 either way, launch-phase |e_y| 0.27 m against
+# a 3.5 m boundary), which is why the guard still does its job at 5.0. Run
+# to run spread also collapses (0.001 vs 0.047), because the clamp is no
+# longer arbitrating most of the lap.
+#
+# Values above ~5 buy nothing further (10.0 and 100.0 both plateau at
+# a_cmd 8.87 and score no better), so this is the knee, not a ceiling to
+# keep raising. Do not read it as "the clamp was wrong": it is a real guard
+# and still needed, it was simply set tight enough to bind far outside the
+# regime it was designed for.
+SPEED_TARGET_DEFICIT_MAX = 5.0
 
 # Max rate (gate-units/s) at which tracking_error_speed_gate()'s output may
 # change per tick, in either direction. Mirrors

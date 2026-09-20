@@ -126,13 +126,20 @@ IDX_DELTA = 6   # actuator-lagged steering angle (rad)
 IDX_A     = 7   # actuator-lagged acceleration (m/s^2)
 NX = 8
 NU = 2
-NH = 5          # h() rows: e_y, e_y_dot, e_psi, e_psi_dot, e_v
+# h() row 4 is EITHER the two-sided speed-error residual (v_x - v_ref, the
+# original NH=5 layout) OR, when NMPCController.progress_enabled is True, a
+# one-sided speed-CAP hinge (see _outputs' docstring) plus one extra
+# progress-reward row -- NH becomes 6 in that case. Both layouts are fixed
+# for the lifetime of a controller instance (set once in __init__, not
+# per-tick), so w_out/NH never disagree mid-run.
+NH_TRACKING = 5   # e_y, e_y_dot, e_psi, e_psi_dot, e_v (original, default)
+NH_PROGRESS = 6   # e_y, e_y_dot, e_psi, e_psi_dot, speed-cap hinge, progress
 # Extra _outputs()/_output_jacobians() rows appended ONLY when
 # NMPCController.friction_circle_enabled (NMPCParams.nmpc_friction_circle_enabled)
 # is True: F_yf, F_yr (front/rear axle lateral tyre force, N). Rides along
 # through the SAME finite-difference Jacobian pass that produces C for the
 # cost rows above, at zero extra rollout cost -- see _outputs()'s docstring.
-# NEVER weighted into the cost (w_out has NH=5 entries, not NH+NH_FRICTION);
+# NEVER weighted into the cost (w_out has NH entries, not NH+NH_FRICTION);
 # used only to build the friction-circle QP constraint rows in _solve_step.
 NH_FRICTION = 2
 
@@ -753,23 +760,69 @@ def _step(X, U, ref, p, dt, n_sub):
     return Xk
 
 
-def _outputs(X, ref, p, v_ref, friction_circle_enabled=False):
+def _outputs(X, ref, p, v_ref, friction_circle_enabled=False,
+             progress_enabled=False, v_cap=None, s_target_N=None,
+             progress_v_min=0.0):
     """
-    Stage output h(x) = [e_y, e_y_dot, e_psi, e_psi_dot, v_x - v_ref],
-    vectorised over stages. e_psi_dot = r - kappa(s)*s_dot is the
-    heading-error RATE — see nmpc_params.py on why q_r weights this rather
-    than absolute yaw rate.
+    Stage output h(x), vectorised over stages. Two mutually exclusive
+    layouts for row 4 onward, fixed per NMPCController instance (see
+    NH_TRACKING/NH_PROGRESS):
 
-    v_ref is the caller's single scalar, broadcast to every stage.
+    Default (progress_enabled=False), NH_TRACKING=5 rows:
+        [e_y, e_y_dot, e_psi, e_psi_dot, v_x - v_ref]
+    Row 4 is the original two-sided speed-error residual, v_ref broadcast
+    to every stage. e_psi_dot = r - kappa(s)*s_dot is the heading-error
+    RATE — see nmpc_params.py on why q_r weights this rather than absolute
+    yaw rate.
+
+    Progress mode (progress_enabled=True), NH_PROGRESS=6 rows:
+        [e_y, e_y_dot, e_psi, e_psi_dot, hinge(v_x), h_prog]
+    Row 4 combines TWO one-sided hinges in one residual (sum, not stacked
+    as separate rows -- both are weighted by the same q_e_v, and neither is
+    ever simultaneously nonzero since v_cap > progress_v_min always):
+        max(0, v_x - v_cap) - max(0, progress_v_min - v_x)
+    The first term is the speed CAP: zero penalty below v_cap, quadratic
+    above it once squared by the caller's weight. This replaces the
+    two-sided residual because a two-sided cost pulls the car UP to v_ref;
+    a bare upper hinge only ever pushes it back DOWN, leaving nothing to
+    stop the car slowing down except the progress reward below. The second
+    term is a LOW-SPEED FLOOR guard, zero above progress_v_min, growing as
+    v_x drops below it: defence-in-depth against the standstill trivial
+    solution (v_x=0 locally optimal, compounded by the known v_x=0
+    tyre-force behaviour in this model) -- Liniger's MPCC reference
+    implementation uses a hard Vx>=0.05 bound for the same reason.
+    Subtracting rather than adding the second term keeps both hinges in a
+    SINGLE signed residual so squaring it still produces a pure
+    hinge-quadratic penalty on each side independently, with no cross term
+    (the two conditions are mutually exclusive, one is always exactly
+    zero). `v_cap` may be a per-stage array or a scalar broadcast like
+    v_ref above.
+
+    Row 5 (h_prog) is the progress reward, written as an UNREACHABLE-
+    TARGET least-squares residual rather than a bare linear -q_s*s_N: a
+    linear term contributes nothing to the Gauss-Newton Hessian (only the
+    gradient), which starves the QP of curvature in the one direction
+    nothing else opposes and lets a single SQP step bang straight to a
+    bound (Zanon, "A Gauss-Newton-Like Hessian Approximation for Economic
+    NMPC", IEEE TAC, arXiv:2007.13519; acados documents the identical
+    zero-Hessian-block case). `s_target_N` is set by the caller to
+    something always out of reach, so minimising (s_target_N - s)^2 is
+    monotone-equivalent to maximising s while staying GN-native. h_prog is
+    zero at every stage except the terminal one (index M-1 of this call's
+    X) -- the reward is a horizon-end goal, not a per-stage summed cost, so
+    it cannot reproduce the rejected nmpc_horizon_speed_profile_enabled
+    loophole where a later stage's target paid for an earlier stage's
+    violation (that mechanism summed a per-stage residual across the WHOLE
+    horizon; this one only ever scores the last stage).
 
     When `friction_circle_enabled` is True, TWO EXTRA rows (F_yf, F_yr, see
-    NH_FRICTION) are appended, returning shape (M, NH + NH_FRICTION) instead
-    of (M, NH). These ride along through the exact same finite-difference
-    Jacobian pass _output_jacobians already runs for the cost rows, but are
-    NEVER part of the cost themselves (see NMPCController._solve_step's
-    w_out slicing) -- only used to build the friction-circle QP constraint.
-    Shape is IDENTICAL to before this feature existed when the flag is
-    False (not just "the extra rows are empty").
+    NH_FRICTION) are appended after whichever layout is active. These ride
+    along through the exact same finite-difference Jacobian pass
+    _output_jacobians already runs for the cost rows, but are NEVER part of
+    the cost themselves (see NMPCController._solve_step's w_out slicing) --
+    only used to build the friction-circle QP constraint. Shape is
+    IDENTICAL to before either feature existed when both flags are False
+    (not just "the extra rows are empty").
     """
     e_y   = X[:, IDX_EY]
     e_psi = X[:, IDX_EPSI]
@@ -784,17 +837,25 @@ def _outputs(X, ref, p, v_ref, friction_circle_enabled=False):
     cos_ep = np.cos(e_psi)
     sin_ep = np.sin(e_psi)
     s_dot = (v_x * cos_ep - v_y * sin_ep) / denom
-    n_cols = NH + NH_FRICTION if friction_circle_enabled else NH
+    nh = NH_PROGRESS if progress_enabled else NH_TRACKING
+    n_cols = nh + NH_FRICTION if friction_circle_enabled else nh
     H = np.empty((X.shape[0], n_cols))
     H[:, 0] = e_y
     H[:, 1] = v_x * sin_ep + v_y * cos_ep
     H[:, 2] = e_psi
     H[:, 3] = r - kap * s_dot
-    H[:, 4] = v_x - v_ref
+    if progress_enabled:
+        H[:, 4] = (np.maximum(0.0, v_x - v_cap)
+                   - np.maximum(0.0, progress_v_min - v_x))
+        h_prog = np.zeros(X.shape[0])
+        h_prog[-1] = s_target_N - X[-1, IDX_S]
+        H[:, 5] = h_prog
+    else:
+        H[:, 4] = v_x - v_ref
     if friction_circle_enabled:
         F_yf, F_yr = _tyre_forces(X, p)
-        H[:, NH] = F_yf
-        H[:, NH + 1] = F_yr
+        H[:, nh] = F_yf
+        H[:, nh + 1] = F_yr
     return H
 
 
@@ -954,6 +1015,13 @@ class NMPCController:
         # ── Experimental feature flags (see nmpc_params.py's comments) ───
         self.spline_reference_enabled = bool(nm0.nmpc_spline_reference_enabled)
         self.friction_circle_enabled = bool(nm0.nmpc_friction_circle_enabled)
+        # See NH_TRACKING/NH_PROGRESS and _outputs' docstring. Fixed for the
+        # controller's lifetime (read once here), never toggled per-tick --
+        # w_out's length and _build_qp's fixed sparsity both depend on it.
+        self.progress_enabled = bool(nm0.nmpc_progress_enabled)
+        self.NH = NH_PROGRESS if self.progress_enabled else NH_TRACKING
+        self.progress_reach = float(nm0.nmpc_progress_reach)
+        self.progress_v_min = float(nm0.nmpc_progress_v_min)
         if self.friction_circle_enabled:
             # F_max = m * ceiling(v_x) / 2 per axle: the measured ceiling law
             # bounds TOTAL lateral force (F_yf*cos(d) + F_yr) / m, split
@@ -986,13 +1054,20 @@ class NMPCController:
             return float(inherited if override is None or override < 0.0 else override)
 
         pm = self.params
-        self.w_out = np.array([
+        # In progress mode nmpc_q_e_v weights the speed-CAP hinge (row 4,
+        # see _outputs), not a two-sided target-tracking error -- same slot,
+        # different regressor, so expect it to need its own value rather
+        # than inheriting the tracking-mode tuned q_e_v unchanged.
+        w_out = [
             _pick(pm.nmpc_q_e_y,      pm.q_e_y),
             _pick(pm.nmpc_q_e_yd,     pm.q_e_yd),
             _pick(pm.nmpc_q_e_psi,    pm.q_e_psi),
             _pick(pm.nmpc_q_epsi_dot, pm.q_r),
             _pick(pm.nmpc_q_e_v,      pm.q_e_v),
-        ])
+        ]
+        if self.progress_enabled:
+            w_out.append(float(pm.nmpc_q_progress))
+        self.w_out = np.array(w_out)
         self.r_delta = _pick(pm.nmpc_r_delta, pm.r_delta)
         self.r_a_accel = _pick(pm.nmpc_r_a_accel, pm.r_a_accel)
         self.r_a_brake = _pick(pm.nmpc_r_a_brake, pm.r_a_brake)
@@ -1392,7 +1467,7 @@ class NMPCController:
             B[:, :, j] = (_step(Xs, Up, ref, p, dt, n_sub) - F0) / _FD_EPS_U[j]
         return A, B
 
-    def _output_jacobians(self, X, ref, v_ref):
+    def _output_jacobians(self, X, ref, v_ref, v_cap=None, s_target_N=None):
         """
         Output Jacobians C_k = d h/d x at every stage (including the terminal
         one), same vectorised forward-difference scheme as _jacobians.
@@ -1402,16 +1477,27 @@ class NMPCController:
         SAME finite-difference pass at no extra rollout cost. Shape is
         (stages, NH, NX) when the flag is False, IDENTICAL to before this
         feature existed.
+
+        When self.progress_enabled, v_cap/s_target_N are threaded through to
+        _outputs unchanged (see that function's docstring) -- perturbing
+        X[:, IDX_S] here naturally captures h_prog's sensitivity to the
+        terminal arc length through the SAME pass, no extra rollout.
         """
         H0 = _outputs(X, ref, self.plant, v_ref,
-                      friction_circle_enabled=self.friction_circle_enabled)
+                      friction_circle_enabled=self.friction_circle_enabled,
+                      progress_enabled=self.progress_enabled,
+                      v_cap=v_cap, s_target_N=s_target_N,
+                      progress_v_min=self.progress_v_min)
         n_rows = H0.shape[1]
         C = np.empty((X.shape[0], n_rows, NX))
         for j in range(NX):
             Xp = X.copy()
             Xp[:, j] += _FD_EPS_X[j]
             Hp = _outputs(Xp, ref, self.plant, v_ref,
-                         friction_circle_enabled=self.friction_circle_enabled)
+                         friction_circle_enabled=self.friction_circle_enabled,
+                         progress_enabled=self.progress_enabled,
+                         v_cap=v_cap, s_target_N=s_target_N,
+                         progress_v_min=self.progress_v_min)
             C[:, :, j] = (Hp - H0) / _FD_EPS_X[j]
         return H0, C
 
@@ -1474,7 +1560,7 @@ class NMPCController:
         itself never includes the friction rows, per the feature's spec.
         """
         w = self.w_out
-        H = H[:, :NH]
+        H = H[:, :self.NH]
         stage = float(np.sum(w * H[:-1] ** 2)) + float(
             self.terminal_scale * np.sum(w * H[-1] ** 2))
         a = U[:, 1]
@@ -1509,7 +1595,13 @@ class NMPCController:
         if self._use_slack:
             over = np.maximum(np.abs(X[1:, IDX_EY]) - self.nmpc.nmpc_track_halfwidth,
                               0.0)
-            slack = float(self.nmpc.nmpc_slack_weight * np.sum(over ** 2))
+            # Quadratic + linear, matching _solve_step's q[idx] line -- the
+            # QP's own slack variable is driven to exactly this `over` at
+            # the optimum (nothing else rewards it being larger), so scoring
+            # it here as max(0, |e_y|-hw) is the true-cost equivalent of the
+            # QP's slack decision variable, not an approximation of it.
+            slack = float(self.nmpc.nmpc_slack_weight * np.sum(over ** 2)
+                          + self.nmpc.nmpc_slack_linear_weight * np.sum(over))
         return stage + eff + rate + jerk + slack
 
     def _cost_breakdown(self, X, U, H, u_prev, u_prev2):
@@ -1531,7 +1623,14 @@ class NMPCController:
         against (compute()'s local, pre-advance copies).
         """
         w = self.w_out
-        H = H[:, :NH]
+        H = H[:, :self.NH]
+        # The 'e_v' KEY is kept in both modes so live_viz.py's fixed column
+        # layout needs no branch, but its MEANING follows self.NH: in
+        # progress mode row 4 is the speed-CAP hinge (normally exactly 0,
+        # since the car is usually under the cap), not a two-sided speed
+        # error. The progress row is reported separately below rather than
+        # folded into 'e_v', which would make a large progress residual
+        # masquerade as a speed-tracking error in the display.
         out_terms = {
             'e_y':      float(w[0] * H[0, 0] ** 2),
             'e_yd':     float(w[1] * H[0, 1] ** 2),
@@ -1539,6 +1638,11 @@ class NMPCController:
             'yaw_rate': float(w[3] * H[0, 3] ** 2),
             'e_v':      float(w[4] * H[0, 4] ** 2),
         }
+        if self.progress_enabled:
+            # Scored at the TERMINAL stage (H[-1]), not stage 0: h_prog is
+            # zero at every other stage by construction (see _outputs), so
+            # reading H[0, 5] would always report exactly 0.
+            out_terms['progress'] = float(w[5] * H[-1, 5] ** 2)
         stage = float(np.sum(w * H[:-1] ** 2)) + float(
             self.terminal_scale * np.sum(w * H[-1] ** 2))
         a = U[:, 1]
@@ -1561,7 +1665,8 @@ class NMPCController:
         if self._use_slack:
             over = np.maximum(np.abs(X[1:, IDX_EY]) - self.nmpc.nmpc_track_halfwidth,
                                0.0)
-            slack = float(self.nmpc.nmpc_slack_weight * np.sum(over ** 2))
+            slack = float(self.nmpc.nmpc_slack_weight * np.sum(over ** 2)
+                          + self.nmpc.nmpc_slack_linear_weight * np.sum(over))
 
         # Per-term horizon-summed breakdown (unlike stage/eff/rate above,
         # which merge all 5 output terms / both inputs together) -- for
@@ -1598,7 +1703,7 @@ class NMPCController:
             'horizon_terms': horizon_terms,  # per-term horizon sums, for live_viz.py's horizon panel
         }
 
-    def _solve_step(self, X, U, ref, v_ref):
+    def _solve_step(self, X, U, ref, v_ref, v_cap=None, s_target_N=None):
         """
         One Gauss-Newton SQP iteration: condense, solve the QP, return the
         input-deviation trajectory dU (N, NU) and the OSQP status string.
@@ -1612,6 +1717,9 @@ class NMPCController:
         (unweighted) rows (see _outputs) -- G/g below are built from ONLY
         the first NH rows (the cost), and the friction rows are sliced out
         separately further down to build the hard QP constraint.
+
+        v_cap/s_target_N are ignored unless self.progress_enabled -- see
+        _outputs' docstring.
         """
         N = self.N
         qp = self._qp
@@ -1619,8 +1727,8 @@ class NMPCController:
             qp['n_du'], qp['n_slack'], qp['nz'], qp['n_rows'])
 
         A_k, B_k = self._jacobians(X, U, ref)
-        H, C = self._output_jacobians(X, ref, v_ref)
-        Hc, Cc = H[:, :NH], C[:, :NH, :]
+        H, C = self._output_jacobians(X, ref, v_ref, v_cap=v_cap, s_target_N=s_target_N)
+        Hc, Cc = H[:, :self.NH], C[:, :self.NH, :]
 
         # Condensing: S[k] = d x_k / d U_flat, (NX, n_du).
         S = np.zeros((N + 1, NX, n_du))
@@ -1634,7 +1742,7 @@ class NMPCController:
         scale = np.ones(N + 1)
         scale[N] = math.sqrt(max(self.terminal_scale, 0.0))
         WC = (sw[None, :, None] * Cc) * scale[:, None, None]
-        G = np.einsum('kij,kjl->kil', WC, S).reshape((N + 1) * NH, n_du)
+        G = np.einsum('kij,kjl->kil', WC, S).reshape((N + 1) * self.NH, n_du)
         g = ((sw[None, :] * Hc) * scale[:, None]).reshape(-1)
 
         # Input effort: accel/brake weight chosen per stage by the sign of the
@@ -1677,6 +1785,7 @@ class NMPCController:
         if n_slack:
             idx = np.arange(n_du, n_du + n_slack)
             P_dense[idx, idx] = 2.0 * self.nmpc.nmpc_slack_weight
+            q[idx] = self.nmpc.nmpc_slack_linear_weight
 
         A_dense = np.zeros((n_rows, nz))
         l = np.empty(n_rows)
@@ -1729,8 +1838,8 @@ class NMPCController:
             # ONE row per axle per stage (both l and u set), hence n_fric =
             # 2 (axles) * N (stages).
             rf0 = 2 * n_du + (3 * N if n_slack else 0)
-            F0 = H[1:, NH:NH + 2]                    # (N, 2): F_yf, F_yr at x0
-            dF_dU = np.einsum('kij,kjl->kil', C[1:, NH:NH + 2, :], S[1:])  # (N,2,n_du)
+            F0 = H[1:, self.NH:self.NH + 2]          # (N, 2): F_yf, F_yr at x0
+            dF_dU = np.einsum('kij,kjl->kil', C[1:, self.NH:self.NH + 2, :], S[1:])  # (N,2,n_du)
             v_x_pred = X[1:, IDX_VX]
             F_max = np.maximum(self._fmax_flat,
                                self._fmax_slope * np.abs(v_x_pred) + self._fmax_intercept)
@@ -1971,8 +2080,45 @@ class NMPCController:
             self._Rr_flat = self._Rr_flat * np.tile(
                 np.array([m_rrate_zone, 1.0]), self.N)
             self._ErE = self._E.T @ (self._Rr_flat[:, None] * self._E)
+        # Progress mode: v_ref becomes a CAP (row 4 of h(), see _outputs)
+        # rather than a two-sided target, and s_target_N is an UNREACHABLE
+        # arc-length goal that turns "maximise s" into a GN-native
+        # least-squares residual -- see _outputs' docstring for why a bare
+        # linear reward is unsafe for this solver. Computed ONCE per tick
+        # (not per backtracking trial): it depends only on X[0]/v_ref, both
+        # fixed for this whole compute() call.
+        #
+        # The unreachable gap is v_cap*N*dt*progress_reach, EXCEPT it is
+        # floored at a KINEMATIC distance (0.5*a_max*(N*dt)^2*progress_reach,
+        # the horizon's own maximum reach under full commanded accel from
+        # rest) rather than scaled off v_cap alone. This matters specifically
+        # at launch: SPEED_TARGET_DEFICIT_MAX holds v_cap low while the car
+        # is still stationary, which on its own makes the gap a few metres --
+        # too close for the residual to stay "unreachable" once a_cmd
+        # approaches what static friction needs, so the reward saturates and
+        # the car never launches (measured offline: a_cmd plateaus ~1.3,
+        # v_x stays exactly 0 forever). The floor is a property of the
+        # CONTROLLER's own known authority (u_max[1]), not the plant's
+        # stiction constant, deliberately: a real car's launch friction is
+        # not something the cost design should need to know.
+        #
+        # Anchored on X[0, IDX_S], NOT the raw projected s0: when delay
+        # compensation rolled x0 forward above, the rollout starts further
+        # along the path than s0 measured, and anchoring to the stale s0
+        # shrinks the gap by exactly that rollforward distance.
+        v_cap = v_ref
+        s_target_N = None
+        if self.progress_enabled:
+            gap = v_cap * self.N * self.dt * self.progress_reach
+            kinematic_floor = (0.5 * self.u_max[1] * (self.N * self.dt) ** 2
+                               * self.progress_reach)
+            s_target_N = float(X[0, IDX_S]) + max(gap, kinematic_floor)
+
         H = _outputs(X, ref, self.plant, v_ref,
-                     friction_circle_enabled=self.friction_circle_enabled)
+                     friction_circle_enabled=self.friction_circle_enabled,
+                     progress_enabled=self.progress_enabled,
+                     v_cap=v_cap, s_target_N=s_target_N,
+                     progress_v_min=self.progress_v_min)
         cost = self._cost(X, U, H)
         iters = 0
         status = 'warm-start-only'
@@ -1980,7 +2126,8 @@ class NMPCController:
             if time.perf_counter() - t0 > budget_s:
                 status = 'budget'
                 break
-            dU, status = self._solve_step(X, U, ref, v_ref)
+            dU, status = self._solve_step(X, U, ref, v_ref,
+                                          v_cap=v_cap, s_target_N=s_target_N)
             if dU is None:
                 break
             step = 1.0
@@ -1989,7 +2136,10 @@ class NMPCController:
                 U_try = np.clip(U + step * dU, self.u_min, self.u_max)
                 X_try = self._rollout(x0, U_try, ref)
                 H_try = _outputs(X_try, ref, self.plant, v_ref,
-                                 friction_circle_enabled=self.friction_circle_enabled)
+                                 friction_circle_enabled=self.friction_circle_enabled,
+                                 progress_enabled=self.progress_enabled,
+                                 v_cap=v_cap, s_target_N=s_target_N,
+                                 progress_v_min=self.progress_v_min)
                 cost_try = self._cost(X_try, U_try, H_try)
                 # ONLY a genuine improvement is accepted. Accepting the
                 # smallest trial regardless (an earlier version of this loop
@@ -2120,8 +2270,22 @@ class NMPCController:
         if self.friction_circle_enabled:
             # H's two extra (unweighted) rows -- realized per-axle force at
             # the FINAL accepted trajectory, see _outputs' docstring.
-            self.last_telemetry['nmpc_fyf_max_abs'] = float(np.abs(H[:, NH]).max())
-            self.last_telemetry['nmpc_fyr_max_abs'] = float(np.abs(H[:, NH + 1]).max())
+            self.last_telemetry['nmpc_fyf_max_abs'] = float(np.abs(H[:, self.NH]).max())
+            self.last_telemetry['nmpc_fyr_max_abs'] = float(np.abs(H[:, self.NH + 1]).max())
+        if self.progress_enabled:
+            # nmpc_speed_cap_over distinguishes "car chose to go slower than
+            # the cap" (0.0) from "cap is binding" (>0), the single most
+            # useful signal for whether the cap or the progress reward is in
+            # charge on a given tick. nmpc_s_target_gap_end is how far short
+            # of the (deliberately unreachable) target the horizon ends: a
+            # stuck or regressing solve shows this GROWING tick over tick,
+            # not shrinking, which is what the offline launch stall looked
+            # like before it was fixed.
+            self.last_telemetry['nmpc_v_cap'] = float(v_cap)
+            self.last_telemetry['nmpc_speed_cap_over'] = float(
+                max(0.0, float(X[0, IDX_VX]) - v_cap))
+            self.last_telemetry['nmpc_s_target_gap_end'] = float(
+                s_target_N - X[-1, IDX_S])
         return steering, throttle, brake
 
     def _path_reference(self, path) -> PathReference | None:

@@ -1,5 +1,17 @@
 # Progress-term NMPC: implemented, and it drives, but it does not beat tracking yet
 
+## The most useful result here is not the progress term
+
+Investigating why the progress term could not raise commanded acceleration
+found that **`SPEED_TARGET_DEFICIT_MAX = 2.5` was the binding constraint on
+acceleration for 36.8% of a normal lap**, not the launch guard it was written
+as. Raising it to 5.0 makes the car about 2.5 s faster per lap with lower
+lateral error and lower steering saturation, and makes run to run scores 40x
+more repeatable. That change is independent of the progress term, applies to
+both controllers, and is already applied. See "Accel authority" below.
+
+The progress term itself works but is not yet worth enabling.
+
 ## Summary
 
 The NMPC can be made to choose its own speed from an arc-length progress
@@ -151,27 +163,56 @@ tuning:
   a soft penalty with gradient everywhere, not a hard inequality that can
   report itself satisfied.
 
-## Accel authority: the cost shape was the binding constraint, not the trust region
+## Accel authority: the real ceiling is `SPEED_TARGET_DEFICIT_MAX`, and raising it is a free win
 
 Standing question from the plan: `a_cmd` peaks at about 2.3 m/s² under
 tracking against a plant capable of roughly 12, and it was unclear whether
 `NMPC_TRUST_A = 0.6` with one SQP iteration was the real ceiling.
 
-It is not. Under the progress term `a_cmd` scales cleanly with the reward
-weight, well past the old plateau:
+**Two candidates were eliminated by direct measurement**, each swept over a
+10x range with every other setting held fixed:
 
-| `q_progress` | a_cmd max |
-|---|---|
-| 2 | 1.30 (never launches) |
-| 5 | 2.48 |
-| 10 | 5.09 |
-| 20 | 8.55 |
+| swept | values | `a_cmd` max | score |
+|---|---|---|---|
+| `trust_a` | 0.6, 2.0, 6.0 | **4.45 at every value** | 0.757 at every value |
+| `r_a_accel` | 1.0, 0.5, 0.25, 0.1 | **4.43-4.45** | 0.757-0.759 |
 
-The trust region limits how fast `a_cmd` may *change* per tick, but the warm
-start carries it across ticks, so it is not what caps the steady value. The
-old ceiling was the shape of the speed-error cost, not solver machinery. This
-answers the question the plan flagged, independently of whether the progress
-term itself is adopted.
+Neither moves a single digit. The trust region bounds how fast `a_cmd` may
+*change* per tick, but the warm start carries the value across ticks, so it
+never caps the steady state.
+
+**The actual constraint is `SPEED_TARGET_DEFICIT_MAX`.** It holds the speed
+target at `car_speed + 2.5`, and the measured speed error sits at exactly
+-2.500 at p05 with **36.8% of the lap pinned there**. The controller is not
+choosing 4.45 m/s², it is being handed a target only 2.5 m/s away and
+correctly declining to accelerate harder than that requires.
+
+Raising it to 5.0 improves everything at once, with no trade:
+
+| `DEFICIT_MAX` | score (3 runs) | mean | lap steps | `a_cmd` max | pinned | \|e_y\| mean | steer sat |
+|---|---|---|---|---|---|---|---|
+| **2.5** | 0.757 / 0.804 / 0.757 | 0.772 | 1081-1117 | 4.45 | 36.8% | 0.418 | 4.71% |
+| **5.0** | 0.693 / 0.692 / 0.693 | **0.693** | 1033-1034 | **8.32** | 2.3% | 0.402 | 3.77% |
+
+10% better score, about 2.5 s faster, nearly double the peak acceleration,
+and *lower* lateral error and steering saturation. Run to run spread also
+collapses from 0.047 to 0.001, because the clamp is no longer arbitrating
+most of the lap.
+
+Launch, the behaviour the clamp exists to protect, is unchanged: launch at
+step 9 at both values, launch-phase `|e_y|` 0.27 m against a 3.5 m boundary.
+Values above 5 buy nothing (10.0 and 100.0 both plateau at `a_cmd` 8.87), so
+5.0 is the knee.
+
+**This is not "the clamp was wrong".** It is a real guard and still needed
+(removing it entirely re-introduces the launch excursion it was written for).
+It was simply set tight enough to bind far outside the regime it was designed
+for, and nobody had measured how often it was active during normal driving.
+
+Changed to 5.0 in all three copies (`sim/rollout_core.py`, the live
+`mpc_controller.py`, and the `fsds_simulator` mirror). **Offline only, not yet
+live-validated.** Faster corner entry is the specific risk to watch on the
+car, given the documented sim-to-real gap.
 
 ## `R_A_ACCEL` was stale during part of this work
 
@@ -202,12 +243,30 @@ In rough order of expected value:
 
 ## Status
 
-`NMPC_PROGRESS_ENABLED = False`. Flags-off is bit-identical to the
-pre-change controller (same `u_opt`, same solved cost, to full float64
-precision) and `tuner.nmpc_offline_check` passes unchanged. The feature is
-present, wired through `settings.py` and `sim/rollout_core.py`'s
-`nmpc_overrides`, and not enabled anywhere.
+`NMPC_PROGRESS_ENABLED = False` / `nmpc_progress_enabled: false` everywhere.
 
-Live-side (`nmpc_core.py`) port not yet done, deliberately: there is no point
-mirroring a mechanism across the parity boundary until it beats the controller
-it would replace.
+Flags-off is bit-identical to the pre-change controller on **both** sides:
+offline (same `u_opt`, same solved cost) and live (all 6 test ticks and the
+cost match to full float64 precision against `git HEAD`).
+`tuner.nmpc_offline_check` passes all four sections.
+
+Ported across the full parity boundary, all defaults off:
+
+| side | files |
+|---|---|
+| offline | `controller/nmpc_optimiser.py`, `settings.py`, `sim/rollout_core.py` |
+| live | `mpc/nmpc_core.py`, `mpc/nmpc_params.py`, `mpc/mpc_params.py`, `mpc/mpc_controller.py`, `live_viz.py`, `telemetry_logger.py`, `fsae_params.yaml`, `launch_all.sh` |
+| mirror | the same eight files under `fsds_simulator/` |
+
+Three telemetry columns (`nmpc_v_cap`, `nmpc_speed_cap_over`,
+`nmpc_s_target_gap_end`) are declared in `telemetry_logger.py` **before** the
+feature is used live, deliberately: `nmpc_friction_circle_enabled` shipped
+without its two columns and its own diagnostics silently never reached a CSV,
+which is how a conflicting `F_max` went undiagnosed. The GUI
+(`live_viz.py`) shows a `progress` cost bar when the flag is on and skips it
+otherwise, since its term tables are filtered allow-lists.
+
+One pre-existing mirror divergence was found and deliberately left alone per
+the "do not fix unrelated drift" rule: `mpc_controller.py`'s
+`DISABLE_LIVE_CURVATURE_SPEED` block exists live but not in
+`fsds_simulator/`. Only the specific change made here was propagated.

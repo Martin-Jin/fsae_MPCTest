@@ -146,7 +146,29 @@ SPEED_TARGET_RISE_RATE = 7.0
 #
 # Not specific to launch: the same rule stops the target running away after a
 # spin or a heavy brake, for the same reason.
-SPEED_TARGET_DEFICIT_MAX = 2.5
+#
+# 5.0, not the original 2.5. At 2.5 the clamp is not a launch/recovery guard
+# at all, it is the binding constraint on acceleration for a THIRD of a
+# normal lap: measured OFFLINE 36.8% of ticks pinned at exactly the limit,
+# holding a_cmd to 4.45 against a plant that delivers ~12. Raising it to 5.0
+# drops the pinned fraction to 2.3%, nearly doubles peak a_cmd to 8.32, and
+# improves every metric at once rather than trading any against another:
+#
+#   DEFICIT_MAX   score (3 runs)        lap steps   a_cmd max   |e_y| mean   steer sat
+#   2.5           0.757/0.804/0.757     1081-1117   4.45        0.418        4.71%
+#   5.0           0.693/0.692/0.693     1033-1034   8.32        0.402        3.77%
+#
+# Lower score is better. The launch behaviour the clamp exists to protect is
+# unchanged (launch at step 9 either way, launch-phase |e_y| 0.27 m against
+# a 3.5 m boundary). Values above ~5 buy nothing further (10.0 and 100.0
+# both plateau at a_cmd 8.87), so this is the knee, not a ceiling to keep
+# raising.
+#
+# NOT YET LIVE-VALIDATED. This is an offline-only result, and the documented
+# sim-to-real gap (live saturates ~4x more often than the sim) is exactly
+# the failure mode of trusting one. Faster corner entry is the specific risk
+# to watch on the car. See docs/logs/nmpc_progress_term_investigation.md.
+SPEED_TARGET_DEFICIT_MAX = 5.0
 # Max rate (m/s^2) at which curvature_speed()'s OWN output (v_curv, the live
 # per-tick geometry-derived target, NOT the precomputed-track oracle lookup)
 # may fall, applied before the tracking-error gate. curvature_speed() is a
@@ -683,6 +705,16 @@ class MPCControllerNode(Node):
                                       tel.get('Rrate_steer_corner_blend', params.r_rate_delta))),
             'delta_u_accel': ('rate', tel.get('delta_u_accel', 0.0), params.r_rate_a),
         }
+        # NMPC progress term (nmpc_progress_enabled only). Keyed off the
+        # telemetry the controller actually published rather than the
+        # parameter, so this stays correct if the flag and the running
+        # controller ever disagree. The residual is the horizon-END gap
+        # (see nmpc_core.py's _outputs: h_prog is zero at every other
+        # stage), which is why it is read from nmpc_s_target_gap_end rather
+        # than a step-0 quantity like every other row here.
+        if 'nmpc_s_target_gap_end' in tel:
+            terms['progress'] = ('tracking', tel['nmpc_s_target_gap_end'],
+                                 params.nmpc_q_progress)
         costs = {name: weight * error ** 2 for name, (group, error, weight) in terms.items()}
 
         # Two combined bars for the top (tracking) panel: 'steering' and

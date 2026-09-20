@@ -208,6 +208,15 @@ class MPCParams:
     nmpc_r_rate_delta: float = field(default=-1.0, metadata={"unit": "1/rad^2", "desc": "override r_rate_delta (-1 = inherit)", "controller": "nmpc_only"})
     nmpc_r_rate_a: float = field(default=-1.0, metadata={"unit": "1/(m/s^2)^2", "desc": "override r_rate_a (-1 = inherit)", "controller": "nmpc_only"})
     nmpc_terminal_scale: float = field(default=-1.0, metadata={"unit": "unitless", "desc": "override terminal_q_scale (-1 = inherit)", "controller": "nmpc_only"})
+    # Weight on the progress-reward row, read ONLY when
+    # nmpc_progress_enabled (nmpc_params.py). NOT an override of an
+    # LTV-QP weight, so no -1.0 inherit convention: there is no base field
+    # to inherit from, the row does not exist in tracking mode. Narrow
+    # usable band measured offline at r_a_accel=1.0: below ~5 the car never
+    # breaks static friction and never launches, above ~6 it carries too
+    # much speed into corners and goes off-track. See
+    # fsae_MPCTest/docs/logs/nmpc_progress_term_investigation.md.
+    nmpc_q_progress: float = field(default=5.0, metadata={"unit": "1/m^2", "desc": "progress-reward weight (nmpc_progress_enabled only; no inherit)", "controller": "nmpc_only"})
 
     # steer_rate_anti_hunt_enabled/anti_hunt_boost_max above are LTV-QP-only
     # in nmpc_core.py's own docstring ("no adaptive gain schedule ... layering
