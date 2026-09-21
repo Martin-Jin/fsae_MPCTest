@@ -807,7 +807,7 @@ embedded hardware (gap E2, unchanged).
 (off-track, `|e_y|=2.35 m`, step 409) where the shipped `rk=2` completes.
 That is not evidence the fix is harmful, for three measured reasons:
 
-| `nmpc_rk_substeps` | DNF | `|e_y|` mean | p90 | max |
+| `nmpc_rk_substeps` | DNF | `\|e_y\|` mean | p90 | max |
 |---|---|---|---|---|
 | 2 (shipped) | False | 0.4875 | 1.126 | 2.029 |
 | 3 | False | 0.4889 | 1.150 | 2.150 |

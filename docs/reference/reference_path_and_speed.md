@@ -157,7 +157,7 @@ impossible braking, measured at ~273 m/s² before they were added.
 |---|---|---|
 | 0 | corner speed from curvature | delegated to `curvature_speed()` at every point |
 | 1 | forward, acceleration limit | `v[i] ≤ √(v[i−1]² + 2·a_accel_max·ds)` |
-| 2 | backward, braking limit | `v[i] ≤ √(v[i+1]² + 2·|a_brake_max|·ds)` |
+| 2 | backward, braking limit | `v[i] ≤ √(v[i+1]² + 2·\|a_brake_max\|·ds)` |
 
 Points worth knowing:
 
