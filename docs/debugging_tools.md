@@ -316,6 +316,24 @@ an absent term shown as an empty grey row at its own fixed position
 rather than omitted, and the horizon panel's per-frame sort removed
 entirely in favour of its declared order.
 
+**`fig_dbg`/`fig_stanley` use `layout='constrained'`, not a one-shot
+`tight_layout()` call.** `tight_layout()` computes fixed axes-position
+fractions once, right before `plt.show()`, and never again -- a window
+later resized smaller than its requested `figsize` (dragged by the user,
+or placed smaller by the window manager) has no way to re-reserve margin
+for the y-axis category labels at the new size, and the longer ones get
+clipped by the figure's own left edge. Measured directly against a
+screenshot showing exactly that on both figures (`"g error (e_psi)"`,
+`"eral error (e_y)"`, MPC panel names losing their first several
+characters). `constrained_layout` re-solves the whole layout on every
+draw, including a resize, so labels always get the margin the CURRENT
+window size actually needs; confirmed offline at both the intended
+figsize and a synthetic resize to under half of it, no label clipped
+either way. The stacked panels' gridspecs were also given explicit
+`hspace`/`wspace` (0.6/0.35), since once labels started reserving real
+margin instead of being clipped away, the default spacing let adjacent
+panels' rows visually run into each other.
+
 ## Steering system-ID harness: `run_steering_sysid.sh` / `run_steering_step.sh`
 
 Isolating the plant from the controller, commanding fixed steering angles

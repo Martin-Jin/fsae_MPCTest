@@ -381,8 +381,25 @@ def main():
     # those percentages are genuinely comparable to each other (slack is
     # deliberately excluded here, unused -- see DEBUG_HORIZON_TERMS, so
     # these bars fall a little short of summing to total_cost).
-    fig_dbg = plt.figure(figsize=(13, 9))
-    gs = fig_dbg.add_gridspec(len(DEBUG_BAR_GROUPS), 2, width_ratios=[1.0, 1.0])
+    #
+    # layout='constrained' (NOT the one-shot tight_layout() this used to
+    # call once before plt.show()) on both this figure and fig_stanley
+    # below: tight_layout() computes fixed axes-position fractions ONCE at
+    # startup and never again, so a window later resized smaller than its
+    # requested figsize (dragged by the user, or placed smaller by the
+    # window manager) has no way to re-reserve room for the y-axis category
+    # labels, and they get clipped by the figure's own left edge -- measured
+    # directly against a screenshot showing exactly that. constrained_layout
+    # re-solves the layout on every draw, including a resize, so the labels
+    # always get the margin they actually need at the CURRENT window size.
+    # hspace/wspace widened from the gridspec default: the per-panel y-axis
+    # labels (particularly the horizon panel's, one shared tall column) were
+    # visually overlapping the panel above/beside them at the default
+    # spacing once labels started reserving real margin instead of being
+    # clipped away.
+    fig_dbg = plt.figure(figsize=(13, 9), layout='constrained')
+    gs = fig_dbg.add_gridspec(len(DEBUG_BAR_GROUPS), 2, width_ratios=[1.0, 1.0],
+                              hspace=0.6, wspace=0.35)
     ax_bars = [fig_dbg.add_subplot(gs[i, 0]) for i in range(len(DEBUG_BAR_GROUPS))]
     ax_horizon = fig_dbg.add_subplot(gs[:, 1])
     mpc_axes = ax_bars + [ax_horizon]
@@ -391,8 +408,8 @@ def main():
     # same as fig_dbg, then shown/hidden as a whole depending on which
     # controller is actually active, see redraw_debug()). Two panels: the
     # user's own two asks, one shared window each.
-    fig_stanley = plt.figure(figsize=(8, 6))
-    gs_stanley = fig_stanley.add_gridspec(2, 1)
+    fig_stanley = plt.figure(figsize=(8, 6), layout='constrained')
+    gs_stanley = fig_stanley.add_gridspec(2, 1, hspace=0.6)
     ax_stanley_error = fig_stanley.add_subplot(gs_stanley[0, 0])
     ax_stanley_law = fig_stanley.add_subplot(gs_stanley[1, 0])
     stanley_axes = [ax_stanley_error, ax_stanley_law]
@@ -713,8 +730,11 @@ def main():
                               + ('\n' + '   |   '.join(header) if header else ''))
 
     fig.tight_layout()
-    fig_dbg.tight_layout(rect=(0, 0, 0.92, 0.94))  # leave room for suptitle + right-margin labels
-    fig_stanley.tight_layout(rect=(0, 0, 0.85, 0.92))  # narrower figure, wider label margin needed
+    # fig_dbg/fig_stanley do NOT call tight_layout() here -- both were
+    # created with layout='constrained' above, which re-solves margins on
+    # every draw instead of once at startup, and calling tight_layout() on
+    # top of that either raises or silently fights it depending on
+    # matplotlib version, neither of which is wanted.
     ani = FuncAnimation(fig, redraw, interval=1000.0 / REDRAW_HZ, cache_frame_data=False)
     ani_dbg = FuncAnimation(fig_dbg, redraw_debug, interval=1000.0 / REDRAW_HZ,
                              cache_frame_data=False)
