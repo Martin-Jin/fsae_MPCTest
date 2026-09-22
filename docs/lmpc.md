@@ -87,6 +87,16 @@ At every control tick (20 Hz), the controller:
 5. Throws the rest of the plan away and repeats from measurement at the next
    tick.
 
+```mermaid
+flowchart TD
+    A["Measure tracking error x0"]
+    B["Predict N_HORIZON steps ahead<br/>with the LINEAR 8-state model"]
+    C["Solve for the cost-minimising<br/>command sequence (QP)"]
+    D["Apply only the FIRST command<br/>to the real nonlinear plant"]
+    E["Discard the rest of the plan"]
+    A --> B --> C --> D --> E -->|"next tick"| A
+```
+
 This "solve a plan, use only the first step, replan" pattern is the
 *receding horizon* principle, and it's what makes MPC robust to the fact
 that its internal model (linear, 8-state) is not a perfect match for the

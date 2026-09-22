@@ -251,6 +251,11 @@ for what they control.
 
 ## Simulator integration
 
+For the high-level picture of how FSDS, the `fsds_ros2_bridge`, and this
+project's ROS 2 nodes connect (where each piece runs, what crosses the
+bridge), see [docs/fsds_ros_integration.md](fsds_ros_integration.md). The
+rest of this section covers the workspace/package layout and setup steps.
+
 `fsds_simulator/` in this repo is a full staging mirror of `fsae_planning`'s
 own ROS 2 workspace, every package (`fsae_interfaces`, `fsae_bringup`,
 `fsae_sim_perception`, `fsae_planning`, `fsae_control`), not just the
@@ -305,28 +310,29 @@ files/executables:
 
 **Topic map for the control node:**
 
-```
-/fsds/testing_only/track       → sim_perception   → /fsae/slam/left_track
-                                                   → /fsae/slam/right_track
-                                                   → /fsae/perception/cone_detection
-/fsds/testing_only/odom        → sim_perception   → /fsae/slam/car_odom
-                                  centerline_planner (via car_position)
+```mermaid
+flowchart LR
+    T1["/fsds/testing_only/track"] --> PERC["sim_perception"]
+    O1["/fsds/testing_only/odom"] --> PERC
+    PERC --> LT["/fsae/slam/left_track"]
+    PERC --> RT["/fsae/slam/right_track"]
+    PERC --> CD["/fsae/perception/cone_detection"]
+    PERC --> CO["/fsae/slam/car_odom"]
+    PERC --> CP["/fsae/slam/car_position"]
 
-/fsae/slam/left_track,
-/fsae/slam/right_track,
-/fsae/slam/car_position        → centerline_planner → /fsae/planning/selected_trajectory
+    LT --> PLAN["centerline_planner"]
+    RT --> PLAN
+    CP --> PLAN
+    PLAN --> TRAJ["/fsae/planning/selected_trajectory"]
 
-/fsae/planning/selected_trajectory  → mpc_controller   → /fsds/control_command (standalone_output=true)
-                                                        → /fsae/control/cmd_vel (standalone_output=false)
-/fsae/slam/car_position             → mpc_controller
-/fsae/slam/car_odom                 → mpc_controller  (SAME snapshot as car_position;
-                                                         see sim_perception.py's "Speed/
-                                                         yaw-rate synchronisation" note.
-                                                         Do NOT use the raw
-                                                         /fsds/testing_only/odom directly)
-/fsae/perception/cone_detection     → mpc_controller  (cone proximity brake, standalone_output=true only)
+    TRAJ --> MPC["mpc_controller"]
+    CP --> MPC
+    CO -.->|"SAME snapshot as car_position,<br/>NOT the raw odom topic directly<br/>(see sim_perception.py)"| MPC
+    CD -.->|"cone-proximity brake,<br/>standalone_output=true only"| MPC
+    GO["/fsds/signal/go"] -.->|"unlock,<br/>standalone_output=true only"| MPC
 
-/fsds/signal/go                → mpc_controller  (unlock, standalone_output=true only)
+    MPC -->|"standalone_output=true"| CC["/fsds/control_command"]
+    MPC -->|"standalone_output=false"| CV["/fsae/control/cmd_vel"]
 ```
 
 Note: `mpc_controller` does not subscribe to a desired-speed

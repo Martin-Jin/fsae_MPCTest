@@ -73,6 +73,18 @@ Implementation, `control_utils.StanleyController.compute()`
    the path's right-normal (positive when the axle is right of the path).
 6. Assemble `δ` per the formula above, clip to `±MAX_STEER_RAD`.
 
+```mermaid
+flowchart TD
+    A["Project rear-axle position<br/>to front axle fa"]
+    B["Find nearest path waypoint to fa<br/>(raw argmin, no lookahead)"]
+    C["Take unit tangent of that<br/>path segment"]
+    D["θ_e = tangent angle − car yaw<br/>(wrapped to (−π, π))"]
+    E["e = signed distance, fa to<br/>nearest waypoint (right-normal)"]
+    F["δ = θ_e + atan2(k_cte·e, v+k_soft)<br/>− k_d·ω, clipped to ±MAX_STEER_RAD"]
+    A --> B --> C --> D --> F
+    B --> E --> F
+```
+
 **Why the yaw-rate damper exists.** The textbook cross-track term alone has
 no memory of how fast the heading is already changing, so it overshoots on
 a correction and induces a left-right sway. Subtracting `k_d · ω` (yaw rate,

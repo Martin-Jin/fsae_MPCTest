@@ -101,6 +101,15 @@ each (the full derivation of every step is below):
    convergence within a single tick, which would risk missing the 50 ms
    deadline.
 
+```mermaid
+flowchart TD
+    A["Roll the nonlinear model forward<br/>from the measured state"]
+    B["Linearise around that rollout<br/>(finite-difference Jacobians)"]
+    C["Condense into a QP<br/>(solve for input CHANGES)"]
+    D["Solve with a trust region<br/>(OSQP)"]
+    A --> B --> C --> D -->|"one iteration per tick,<br/>warm-started next tick"| A
+```
+
 Horizon 20 steps (1.0 s); measured solve time mean 8.9 ms, p95 11.6 ms.
 
 **Consequences for the rest of the architecture**: when `use_nmpc=true` the

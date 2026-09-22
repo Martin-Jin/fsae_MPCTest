@@ -45,81 +45,55 @@ simulator/tuner reconstructs the track from cones, like the real car would).
 When `USE_PLANNER = False`, the Perception/Planner boxes are skipped and the
 true reference path is used directly for tracking error.
 
-```
-USER INPUT (draw path / load synthetic path)
-        │
-        ▼
-  path_X, path_Y, path_Psi
-  speed_profile.compute_speed_profile()
-  sim_track.place_cones()
-        │
-        ▼
-┌─────────────────────────────────────────────────────────┐
-│                     SIMULATION LOOP (20 Hz)             │
-│                                                         │
-│  ┌──────────────┐     visible      ┌─────────────────┐  │
-│  │ SimPerception│◄─── cones ───────│  Static cone    │  │
-│  │ (FOV filter) │                  │  map (full      │  │
-│  └──────┬───────┘                  │  track layout)  │  │
-│         │ blue[], yellow[]         └─────────────────┘  │
-│         ▼                                               │
-│  ┌──────────────┐     centreline   ┌─────────────────┐  │
-│  │  SimPlanner  │─────────────────►│  ConeMap        │  │
-│  │  (boundary + │  + speed profile │  (accumulates   │  │
-│  │   ConeMap +  │                  │  observations)  │  │
-│  │   speed prof)│                  └─────────────────┘  │
-│  └──────┬───────┘                                       │
-│         │ waypoints[], v_target                         │
-│         ▼                                               │
-│  ┌──────────────┐     x0 (8-state  ┌─────────────────┐  │
-│  │ Error State  │─────error vec)──►│   MPC Solver    │  │
-│  │ Extraction   │                  │   (OSQP /       │  │
-│  │ + Adaptive   │                  │   Clarabel)     │  │
-│  │ Gain Scaling │                  └────────┬────────┘  │
-│  └──────────────┘                           │ u=[δ, a]  │
-│         ▲                                   |           |
-|         |                          ▼        |           |
-│  ┌──────────────┐                           |           │
-│  │ 24-State     │◄──────────────────────────┘           │
-│  │ Nonlinear    │  step_nonlinear_plant(state, u, dt)   │
-│  │ Plant        │                                       │
-│  └──────────────┘                                       │
-└─────────────────────────────────────────────────────────┘
-        │
-        ▼
-  history dict → scrub viewer + tuner/performance_stats.py (Show Metrics / Benchmark All Paths)
+```mermaid
+flowchart TD
+    INPUT["User input<br/>(draw path / load synthetic path)"]
+    PREP["path_X, path_Y, path_Psi<br/>speed_profile.compute_speed_profile()<br/>sim_track.place_cones()"]
+    INPUT --> PREP
+    PREP --> LOOP
+
+    subgraph LOOP["Simulation loop (20 Hz)"]
+        direction TD
+        CONEMAP["Static cone map<br/>(full track layout)"]
+        PERCEPTION["SimPerception<br/>(FOV filter)"]
+        PLANNER["SimPlanner<br/>(boundary + ConeMap + speed profile)"]
+        CONEACCUM["ConeMap<br/>(accumulates observations)"]
+        ERRSTATE["Error State Extraction<br/>+ Adaptive Gain Scaling"]
+        SOLVER["MPC Solver<br/>(OSQP / Clarabel)"]
+        PLANT["24-State Nonlinear Plant<br/>step_nonlinear_plant(state, u, dt)"]
+
+        CONEMAP -->|"visible cones"| PERCEPTION
+        PERCEPTION -->|"blue[], yellow[]"| PLANNER
+        PLANNER -->|"centreline + speed profile"| CONEACCUM
+        PLANNER -->|"waypoints[], v_target"| ERRSTATE
+        ERRSTATE -->|"x0 (8-state error vec)"| SOLVER
+        SOLVER -->|"u = [δ, a]"| PLANT
+        PLANT -->|"new state"| ERRSTATE
+    end
+
+    LOOP --> HIST["history dict → scrub viewer +<br/>tuner/performance_stats.py<br/>(Show Metrics / Benchmark All Paths)"]
 ```
 
 ### Controller / Plant Architecture
 
-```
-                    ┌──────────────────────────────────────────┐
-                    │   rollout_core.run_core_rollout()         │
-                    │   (sim/rollout_core.py — see below)       │
-                    │                                          │
-  path waypoints ──►│  bicycle_model.get_8state_discrete_model │
-  car state      ──►│  → Ad, Bd  (ZOH linearised bicycle model)│
-                    │                                          │
-                    │  model_utils.adaptive_R_scaling(vx, R)   │
-                    │  model_utils.adaptive_R_rate(κ, R_rate)  │
-                    │  → speed- and curvature-adjusted weights │
-                    │                                          │
-                    │  optimiser.solve_mpc()                   │
-                    │  → OSQP QP → u* = [δ_cmd, a_cmd]         │
-                    │                                          │
-                    │  scoring.RolloutMetrics.add_step()       │
-                    │  → accumulates the 12 score metrics      │
-                    └──────────────┬───────────────────────────┘
-                                   │
-                    ┌──────────────▼───────────────────────────┐
-                    │            Plant (truth layer)           │
-                    │                                          │
-                    │  vehicle_physics.step_nonlinear_plant    │
-                    │  24 states: X, Y, ψ, vx, vy, r,          │
-                    │  δ_act, a_act, ω×4, z×4, dz×4,           │
-                    │  Fy_rlx×4, ω_FL, ω_FR                    │
-                    │  4 sub-steps per control tick            │
-                    └──────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    INPUTS["path waypoints<br/>car state"]
+
+    subgraph ROLLOUT["rollout_core.run_core_rollout() (sim/rollout_core.py)"]
+        direction LR
+        MODEL["bicycle_model.get_8state_discrete_model()<br/>&rarr; Ad, Bd (ZOH linearised bicycle model)"]
+        GAINS["model_utils.adaptive_R_scaling(vx, R)<br/>model_utils.adaptive_R_rate(&kappa;, R_rate)<br/>&rarr; speed- and curvature-adjusted weights"]
+        SOLVE["optimiser.solve_mpc()<br/>&rarr; OSQP QP &rarr; u* = [&delta;_cmd, a_cmd]"]
+        SCORE["scoring.RolloutMetrics.add_step()<br/>&rarr; accumulates the 13 score metrics"]
+        MODEL --> GAINS --> SOLVE --> SCORE
+    end
+
+    PLANT["Plant (truth layer)<br/>vehicle_physics.step_nonlinear_plant<br/>24 states: X, Y, &psi;, vx, vy, r, &delta;_act, a_act,<br/>&omega;&times;4, z&times;4, dz&times;4, Fy_rlx&times;4, &omega;_FL, &omega;_FR<br/>4 sub-steps per control tick"]
+
+    INPUTS --> MODEL
+    SOLVE -->|"u*"| PLANT
+    PLANT -.->|"next state"| INPUTS
 ```
 
 Both `offline_tuner.run_headless_rollout()` and `simulation.simulate_closed_loop()`
@@ -389,58 +363,31 @@ minimising a single scalar score. This section covers the search algorithm;
 see [The Composite Score](#the-composite-score) for exactly what's being
 minimised.
 
-```
-settings.py: Q/R/R_rate templates, VALIDATION_SUITE, INITIAL_CONDITIONS
-        │
-        ▼
-┌───────────────────────────────────────────────────────────┐
-│  USE_OPTUNA_PRESEARCH (optional, default True)             │
-│  Optuna TPE search, OPTUNA_PRE_PASS_EVALS trials            │
-│  → cheap, coarse scan of the 9-dim scale-factor space       │
-└──────────────────────────┬───────────────────────────────┘
-                            │ seeds x0 (else x0 = geometric
-                            │ midpoint of [0.1, 10.0] per dim)
-                            ▼
-┌───────────────────────────────────────────────────────────┐
-│  CMA-ES (cma.fmin_lq_surr2), BIPOP restarts,                │
-│  local-quadratic surrogate assistance                       │
-│                                                             │
-│   for each generation:                                     │
-│     sample a population of candidate weight-scale vectors  │
-│         │                                                   │
-│         ▼                                                   │
-│   ┌─────────────────────────────────────────────────────┐  │
-│   │ per candidate: parallel_evaluate_candidate()          │  │
-│   │                                                       │  │
-│   │  EVAL_TASKS = VALIDATION_SUITE × INITIAL_CONDITIONS   │  │
-│   │  → one rollout_core.run_core_rollout() per task,      │  │
-│   │    fanned out across cpu_count-1 worker processes     │  │
-│   │         │                                             │  │
-│   │         ▼                                             │  │
-│   │  scoring.compute_composite_score() per task           │  │
-│   │         │                                             │  │
-│   │         ▼                                             │  │
-│   │  objective = 0.7·weighted_mean(scores)                │  │
-│   │            + 0.3·quantile(scores, TAIL_QUANTILE)      │  │
-│   └─────────────────────────────────────────────────────┘  │
-│         │                                                   │
-│         ▼                                                   │
-│   adapt distribution mean/covariance toward better regions │
-│   (surrogate model filters which candidates get a real     │
-│   rollout vs. a predicted score)                            │
-│         │                                                   │
-│         └──── repeat until MAX_EVALS budget exhausted, or   │
-│               Ctrl+C ─────────────────────────────────────►┘
-└──────────────────────────┬───────────────────────────────┘
-                            ▼
-┌───────────────────────────────────────────────────────────┐
-│  Post-optimisation: clean serial re-evaluation              │
-│  xbest (best single candidate) vs.                          │
-│  xfavorite (mean of final search distribution)               │
-│  → lower-scoring one is the result                          │
-└──────────────────────────┬───────────────────────────────┘
-                            ▼
-              printed result + appended to tuning_history.txt
+```mermaid
+flowchart TD
+    SETTINGS["settings.py: Q/R/R_rate templates,<br/>VALIDATION_SUITE, INITIAL_CONDITIONS"]
+    OPTUNA["USE_OPTUNA_PRESEARCH (optional, default True)<br/>Optuna TPE search, OPTUNA_PRE_PASS_EVALS trials<br/>&rarr; cheap, coarse scan of the 9-dim scale-factor space"]
+    SETTINGS --> OPTUNA
+
+    subgraph CMAES["CMA-ES (cma.fmin_lq_surr2), BIPOP restarts, local-quadratic surrogate assistance"]
+        direction TD
+        SAMPLE["Sample a population of<br/>candidate weight-scale vectors"]
+        subgraph EVAL["per candidate: parallel_evaluate_candidate()"]
+            direction TD
+            TASKS["EVAL_TASKS = VALIDATION_SUITE &times; INITIAL_CONDITIONS<br/>&rarr; one run_core_rollout() per task,<br/>fanned out across cpu_count-1 workers"]
+            SCORE["scoring.compute_composite_score() per task"]
+            OBJ["objective = 0.7&middot;weighted_mean(scores)<br/>+ 0.3&middot;quantile(scores, TAIL_QUANTILE)"]
+            TASKS --> SCORE --> OBJ
+        end
+        ADAPT["Adapt distribution mean/covariance toward<br/>better regions (surrogate model filters which<br/>candidates get a real rollout vs. a predicted score)"]
+        SAMPLE --> EVAL --> ADAPT
+        ADAPT -->|"repeat until MAX_EVALS<br/>budget exhausted, or Ctrl+C"| SAMPLE
+    end
+    OPTUNA -->|"seeds x0 (else x0 = geometric<br/>midpoint of [0.1, 10.0] per dim)"| CMAES
+
+    POST["Post-optimisation: clean serial re-evaluation<br/>xbest (best single candidate) vs.<br/>xfavorite (mean of final search distribution)<br/>&rarr; lower-scoring one is the result"]
+    CMAES --> POST
+    POST --> RESULT["printed result +<br/>appended to tuning_history.txt"]
 ```
 
 ### Search space

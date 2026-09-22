@@ -6,6 +6,55 @@ with a Model Predictive Controller, and provides CMA-ES-based automated weight
 optimisation so the controller's cost weights don't have to be hand-tuned by
 trial and error.
 
+## How it runs, at a glance
+
+Either controller family can drive **with** the live perception/planner
+pipeline, or **without** it against a precomputed path — the two are
+independent choices, not tied to a specific controller. The one exception
+is recording a brand-new track: that specifically needs the live planner
+(there's no map yet to precompute from) and defaults to Stanley for it,
+see [Recording, exporting and driving a
+track](docs/developer_guide.md#recording-exporting-and-driving-a-track).
+
+Stanley and the two MPC controllers (LTV-QP, NMPC) differ in what they
+output, not just how they steer: Stanley always produces a steering angle
+plus a desired speed and hands throttle/brake off to `fsds_bridge`; the
+MPC controllers solve for steering AND throttle/brake themselves.
+
+**Stanley:**
+
+```mermaid
+flowchart LR
+    PATH["Path + speed target<br/>(live planner or<br/>precomputed CSV)"]
+    POSE["Car pose + speed<br/>(perception)"]
+    PATH --> STANLEY(("Stanley"))
+    POSE --> STANLEY
+    STANLEY -->|"steering + desired speed"| BRIDGE["fsds_bridge<br/>(→ throttle/brake)"]
+    BRIDGE --> VEHICLE["Vehicle"]
+    VEHICLE -.->|"next tick's pose"| POSE
+```
+
+**LTV-QP / NMPC:**
+
+```mermaid
+flowchart LR
+    PATH["Path + speed target<br/>(live planner or<br/>precomputed CSV)"]
+    POSE["Car pose + speed<br/>(perception)"]
+    PATH --> MPC(("MPC solve<br/>(LTV-QP or NMPC)"))
+    POSE --> MPC
+    MPC -->|"steering + throttle/brake"| VEHICLE["Vehicle"]
+    VEHICLE -.->|"next tick's pose"| POSE
+```
+
+See [docs/architecture.md](docs/architecture.md#architecture-overview) for
+the full closed-loop diagram (perception/planner internals, the MPC solve
+loop), [docs/fsds_ros_integration.md](docs/fsds_ros_integration.md) for
+how this connects to FSDS and ROS 2 when running live, and
+[docs/lmpc.md](docs/lmpc.md#what-mpc-means-here) /
+[docs/nmpc.md](docs/nmpc.md#structure-and-solve-method-in-brief) /
+[docs/stanley.md](docs/stanley.md#the-steering-law) for each controller's
+own per-tick flow.
+
 ## What's in this repo
 
 This is the offline half of the project, everywhere below that talks about
@@ -186,6 +235,7 @@ for how to run the CMA-ES weight tuner instead.
 | [docs/architecture.md](docs/architecture.md) | How the system works: the closed-loop architecture, `settings.py`/`model/vehicle_physics.py` configuration reference, the full MPC and NMPC formulations (state vector, cost function, solver), how the offline CMA-ES tuner works, the composite scoring function, and a per-file module reference. |
 | [docs/tuning.md](docs/tuning.md) | Practical tuning reference: what each `Q`/`R`/`R_rate` weight and adaptive-gain constant actually does, the corner-factor scheduler's fields, and how to change/validate a weight set, the "which knob, and why" companion to architecture.md's "how it works." |
 | [docs/developer_guide.md](docs/developer_guide.md) | How to use and extend the project: running the simulator and offline tuner, FSDS/ROS 2 integration (including Windows/WSL/Docker setup from scratch), manual drive mode, dependencies, adding a new synthetic path, and recording/exporting a track. |
+| [docs/fsds_ros_integration.md](docs/fsds_ros_integration.md) | High-level map of how FSDS (Unreal/AirSim), the `fsds_ros2_bridge`, and this project's ROS 2 nodes connect: where each piece runs, what topics cross the bridge, and how to work with it without needing to modify it. |
 | [docs/debugging_tools.md](docs/debugging_tools.md) | Catalog of diagnostic/debugging tools (offline correctness checks, live-vs-sim comparison, steering system-ID, telemetry playback, pose/RPC diagnostics) and which question each answers. |
 | [docs/reference/reference_path_and_speed.md](docs/reference/reference_path_and_speed.md) | Where the car drives and how fast: the three-pass speed profile, the raceline/centreline exporters, which exported file supplies speed vs geometry, and how to switch either. |
 | [docs/vehicle_physics_guide.md](docs/vehicle_physics_guide.md) | Plain-English walkthrough of the 24-state nonlinear plant in `model/vehicle_physics.py` (tyres, suspension, weight transfer, aero) for readers who don't already know vehicle dynamics. |
