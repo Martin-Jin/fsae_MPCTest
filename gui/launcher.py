@@ -1581,6 +1581,18 @@ class SettingsTab(ttk.Frame):
         footer.pack(fill="x", pady=(24, 0))
         ttk.Button(footer, text="Save", style="Accent.TButton",
                    command=self._on_save).pack(side="left")
+        # Separate button, separate destinations: Save (above) writes
+        # settings.py + the live dataclasses/YAML + the fsds_simulator
+        # mirror, all files THIS GUI itself edits. "Overwrite All Params"
+        # instead pushes the live checkout's CURRENT on-disk param files
+        # (tuner/tools/sync_mpc_params.py's own source) into fsae_autonomous
+        # and the fsds_simulator mirror -- it does not read anything this
+        # tab's widgets hold, and in particular can run with unsaved
+        # Settings-tab edits still pending (those are a separate, later
+        # sync once THIS session's edits are themselves saved and pushed).
+        self.overwrite_all_button = ttk.Button(
+            footer, text="Overwrite All Params...", command=self._on_overwrite_all_params)
+        self.overwrite_all_button.pack(side="left", padx=(10, 0))
         self.status_var = tk.StringVar(value="")
         self.status_label = ttk.Label(footer, textvariable=self.status_var, style="Muted.TLabel")
         self.status_label.pack(side="left", padx=(14, 0))
@@ -1818,6 +1830,124 @@ class SettingsTab(ttk.Frame):
 
     def has_unsaved_changes(self) -> bool:
         return self._is_dirty
+
+    def _on_overwrite_all_params(self) -> None:
+        """Runs tuner.tools.sync_mpc_params --apply: overwrites
+        mpc_params.py/nmpc_params.py/fsae_params.yaml in fsae_autonomous
+        and the fsds_simulator mirror with the LIVE checkout's current
+        copies. See that script's own module docstring for the full
+        rationale; this handler only wires it into the GUI and adds the
+        confirmation step. A plain subprocess call (matching this file's
+        own "every button shells out, no tuner-package imports" design),
+        not a library call into sync_mpc_params's own functions.
+
+        Two-step: dry run first (background thread, since it's touching 6
+        files, however briefly), then a CONFIRM dialog stating exactly
+        what the apply run will overwrite, built from the dry run's own
+        output so the destinations named are the ones that will actually
+        be touched (e.g. if fsae_autonomous is not found at any known
+        path, that's reflected here too, not just discovered after the
+        fact)."""
+        self.overwrite_all_button.configure(state="disabled")
+        self._set_status("Checking what would change...", style="Muted.TLabel")
+        self._run_sync_script(apply=False, on_done=self._on_overwrite_dry_run_done)
+
+    def _run_sync_script(self, apply: bool, on_done) -> None:
+        result_queue: "queue.Queue" = queue.Queue()
+
+        def run() -> None:
+            cmd = [sys.executable, "-m", "tuner.tools.sync_mpc_params"]
+            if apply:
+                cmd.append("--apply")
+            try:
+                result = subprocess.run(cmd, cwd=str(self._paths.fsae_mpctest),
+                                         capture_output=True, text=True)
+                result_queue.put(result)
+            except OSError as exc:
+                result_queue.put(exc)
+
+        threading.Thread(target=run, daemon=True).start()
+        self._poll_sync_queue(result_queue, on_done)
+
+    def _poll_sync_queue(self, result_queue: "queue.Queue", on_done) -> None:
+        try:
+            outcome = result_queue.get_nowait()
+        except queue.Empty:
+            self.after(100, self._poll_sync_queue, result_queue, on_done)
+            return
+        on_done(outcome)
+
+    def _on_overwrite_dry_run_done(self, outcome) -> None:
+        if isinstance(outcome, OSError):
+            self.overwrite_all_button.configure(state="normal")
+            messagebox.showerror("Overwrite All Params", f"Failed to run: {outcome!r}")
+            self._set_status("Overwrite failed, see dialog.", style="Warning.TLabel")
+            return
+        output = (outcome.stdout or "") + (outcome.stderr or "")
+        if outcome.returncode != 0:
+            self.overwrite_all_button.configure(state="normal")
+            messagebox.showerror(
+                "Overwrite All Params",
+                "sync_mpc_params could not run cleanly:\n\n" + output.strip())
+            self._set_status("Overwrite failed, see dialog.", style="Warning.TLabel")
+            return
+        if "Already in sync" in output:
+            self.overwrite_all_button.configure(state="normal")
+            messagebox.showinfo(
+                "Overwrite All Params",
+                "fsae_autonomous and the fsds_simulator mirror already match "
+                "the live checkout's current mpc_params.py/nmpc_params.py/"
+                "fsae_params.yaml. Nothing to overwrite.")
+            self._set_status("Already in sync, nothing to overwrite.", style="Muted.TLabel")
+            return
+        # Destination labels come from sync_mpc_params's own machine-
+        # readable "SYNC-TARGET: <label> = changed/unchanged/missing" lines
+        # (one per destination, always printed, dry run or not), not by
+        # parsing the diff output's file paths -- a path-parsing regex
+        # cannot reliably recover "fsae_autonomous" from an arbitrary
+        # discovered checkout path, and this way the warning always names
+        # exactly what THIS run found (e.g. omits fsae_autonomous entirely
+        # if that checkout was not found at any known path).
+        changed = re.findall(r'^SYNC-TARGET: (.+) = changed$', output, re.MULTILINE)
+        dest_text = ", ".join(changed) if changed else "the destinations listed above"
+        proceed = messagebox.askyesno(
+            "Overwrite All Params -- confirm",
+            "This will OVERWRITE mpc_params.py, nmpc_params.py, and "
+            "fsae_params.yaml in:\n\n"
+            f"  {dest_text}\n\n"
+            "with the CURRENT files from the live checkout "
+            "(ros2/src/fsae_planning/), one-way. Any local edits in those "
+            "destinations to those 3 files will be LOST, except for a "
+            "one-time .bak backup saved alongside each overwritten file.\n\n"
+            "This does NOT touch settings.py, this Settings tab's own "
+            "unsaved edits, or any file other than those 3 per destination.\n\n"
+            "fsae_autonomous is never committed or pushed by this tool -- "
+            "only its local working tree is overwritten. Review the change "
+            "there yourself before committing.\n\n"
+            "Proceed?")
+        if not proceed:
+            self.overwrite_all_button.configure(state="normal")
+            self._set_status("Overwrite cancelled.", style="Muted.TLabel")
+            return
+        self._set_status("Overwriting...", style="Muted.TLabel")
+        self._run_sync_script(apply=True, on_done=self._on_overwrite_apply_done)
+
+    def _on_overwrite_apply_done(self, outcome) -> None:
+        self.overwrite_all_button.configure(state="normal")
+        if isinstance(outcome, OSError):
+            messagebox.showerror("Overwrite All Params", f"Failed to run: {outcome!r}")
+            self._set_status("Overwrite failed, see dialog.", style="Warning.TLabel")
+            return
+        output = (outcome.stdout or "") + (outcome.stderr or "")
+        if outcome.returncode != 0:
+            messagebox.showerror(
+                "Overwrite All Params",
+                "sync_mpc_params failed partway through:\n\n" + output.strip())
+            self._set_status("Overwrite failed partway, see dialog.", style="Warning.TLabel")
+            return
+        self._set_status(
+            "Params overwritten in fsae_autonomous and the fsds_simulator mirror.",
+            style="Success.TLabel", flash=True, auto_clear=True)
 
     def capture_profile_values(self) -> dict[str, str]:
         """Current value of every settings.py NAME this tab manages, as

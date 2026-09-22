@@ -28,6 +28,7 @@ Catalog of the diagnostic/debugging tools across this repo and the outer
 | `ros2/clock_drift_check.py` | Is FSDS's own simulation clock falling behind wall time (a genuine sim-side slowdown), separate from message-delivery timing? | launched by `ros2/launch_all.sh`, or standalone: `python3 clock_drift_check.py <output_csv_path>` |
 | `ros2 topic hz` capture block in `ros2/launch_all.sh` | Are `/fsds/testing_only/odom`, `/fsae/slam/car_position`, `/clock`, `/fsds/imu` arriving at their expected rate? | launched automatically by `ros2/launch_all.sh`, logs to `fsae_logs/topic_hz_diagnostics/` |
 | `tuner/tools/doc_lint.py` | Does a doc break this project's own writing conventions (long unstructured prose, stray AI-instruction-file references)? | `python -m tuner.tools.doc_lint [--max N]` |
+| `tuner/tools/sync_mpc_params.py` | After a param change is live-tested and confirmed good, is `fsae_autonomous` (and the `fsds_simulator` mirror) still running the OLD weights? | `python -m tuner.tools.sync_mpc_params [--apply]`, or the Settings tab's "Overwrite All Params..." button |
 
 `tuner.offline_tuner` (the CMA-ES weight search) and `sim/`'s modules are
 core simulation infrastructure, not diagnostic tools, and are covered in
@@ -220,6 +221,31 @@ alongside the original (e.g. `launch_all.sh.bak`) before writing, so a bad
 edit has a one-command recovery (`mv launch_all.sh.bak launch_all.sh`)
 independent of git.
 
+### "Overwrite All Params..." button
+
+A different sync direction from everything else on this tab. Save (above)
+writes what THIS GUI session's widgets currently hold, outward, to
+`settings.py`/the live dataclasses/YAML/the `fsds_simulator` mirror.
+"Overwrite All Params" instead runs `tuner/tools/sync_mpc_params.py` (its
+own section further down this doc has the full mechanism; a plain
+subprocess call, matching this file's "every button shells out" design),
+pushing the LIVE checkout's CURRENT on-disk `mpc_params.py`/
+`nmpc_params.py`/`fsae_params.yaml` into `fsae_autonomous` and the
+`fsds_simulator` mirror.
+It does not read this tab's own widgets at all, and works regardless of
+whether the Settings tab has unsaved edits pending (those are a separate,
+earlier step: save/push live first, run this after).
+
+Two-step, both against a background thread so the window stays responsive:
+1. A dry run first, to find out which destinations actually differ.
+   "Already in sync" short-circuits to an info dialog with nothing written.
+2. If anything differs, a confirmation dialog names exactly which
+   destinations (by the script's own labels, e.g. `fsae_autonomous`) will
+   be overwritten, states plainly that local edits to those 3 files there
+   are lost except for a `.bak` backup, and that `fsae_autonomous` itself
+   is never committed or pushed by this tool, only its local tree is
+   touched. Declining leaves every file untouched.
+
 ### Profiles tab
 
 Named snapshots of every field the Settings tab manages (the same set the
@@ -252,6 +278,58 @@ shareable, reusable tuning configuration, not a personal scratch file.
 Loading a profile only writes files; it does not restart a running sim.
 The confirmation dialog says so, matching the Settings tab's own "restart
 the sim to pick up the live change" reminder.
+
+## Pushing live-tested params to `fsae_autonomous` and the `fsds_simulator` mirror: `tuner/tools/sync_mpc_params.py`
+
+**What it answers**: a param has been retuned and validated on a live/FSDS
+run in `fsae_planning` (the ONLY place params get tuned, per this
+project's stated workflow) — is `fsae_autonomous` (the production repo)
+or the `fsds_simulator` mirror still running the old value?
+
+```bash
+python -m tuner.tools.sync_mpc_params            # dry run, prints a diff per file per destination
+python -m tuner.tools.sync_mpc_params --apply     # actually overwrite
+```
+
+Or from the GUI: Settings tab's "Overwrite All Params..." button, see
+that tab's own section above.
+
+**Scope**: exactly the 3 files CLAUDE.md's "Single source of truth for
+MPC tuning" section names as the live side of the parity boundary —
+`mpc_params.py`, `nmpc_params.py`, `fsae_params.yaml`. Nothing else; a
+code change to `mpc_core.py`/`nmpc_core.py`/`mpc_controller.py`/
+`live_viz.py` still needs the ordinary manual propagation step (see
+CLAUDE.md's "Third copy" section for the mirror, and the standing
+`fsae_autonomous`/`fsae_MPCRos` workflow for that side).
+
+**Direction: one-way, from `fsae_planning` only.** `ros2/src/fsae_planning/`
+is always the source; `fsae_autonomous` and `fsae_MPCTest/fsds_simulator/`
+are always the destinations. This script never reads either destination's
+current values as a source for anything — it does not matter what they
+currently hold, only what live currently holds.
+
+**Why `fsae_params.yaml` is in scope, not just the two `.py` files**: the
+YAML overrides the dataclass `default=` at ROS param declaration time (see
+the Settings tab's own writeup above for the two times this caused a
+value to go silently stale), so syncing only the `.py` files would leave
+`fsae_autonomous`/the mirror running an old number even after their
+`mpc_params.py` looked updated.
+
+**Safety**: dry run by default, nothing written until `--apply`. Each
+destination file gets a one-time `.bak` backup (skipped if one from this
+run already exists) before being overwritten, same convention as
+`gui/launcher.py`'s own file-safety mechanism. `fsae_autonomous` is a
+production repo this project's CLAUDE.md never lets an agent commit or
+push — this script only ever writes into its LOCAL working tree; review
+and commit there stays a separate, deliberate, human step.
+
+**`fsae_autonomous`'s actual checkout location isn't fixed** — it moved at
+least once (CLAUDE.md's documented sibling-checkout path
+`fsae_autonomous/` was found stale on 2026-09-23; the real checkout was at
+`ros2_autonomous/src/fsae_autonomous/`). The script searches a short list
+of known-observed locations and prints a clear warning (skipping that
+destination, not failing outright) if neither is found, rather than
+silently doing nothing or hardcoding a path that can go stale again.
 
 ## Live debug window: `live_viz.py`
 
