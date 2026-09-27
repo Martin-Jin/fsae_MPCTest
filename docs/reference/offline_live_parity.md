@@ -288,6 +288,7 @@ writing, re-confirm before relying on them, since a resync can move them.
 | `A_BRAKE_PLAN` (braking-distance propagation in `curvature_speed`) | `sim/speed_profile.py` | `fsds_simulator/.../control_utils.py` | `5.0` m/s², positive magnitude |
 | Dynamic speed cap enable/gains | `settings.py` (`ENABLE_DYNAMIC_SPEED_CAP`, `DYNAMIC_CAP_A_LAT_MAX`, `DYNAMIC_CAP_SAFETY`) | `mpc/mpc_controller.py` (`enable_dynamic_speed_cap`/`dynamic_cap_a_lat_max`/`dynamic_cap_safety` ROS params) | `True` / `3.2` m/s² / `0.9`, see "Dynamic speed cap" section below |
 | Latency telemetry columns | (offline has no equivalent) | `fsds_simulator/.../telemetry_logger.py` | `pose_age_s`, `path_age_s`, `n_delay`, `solve_ms`, `cmd_latency_ms` |
+| Lap / horizon-accuracy telemetry columns | (offline `rollout_core.py` records no predicted horizon for NMPC at all, and has no multi-lap concept — see "Live/offline score parity" below) | `fsds_simulator/.../telemetry_logger.py` (`LapProgressTracker`, `HorizonAccuracyTracker`) | `lap_idx`, `pred_err_m`, `pred_acc_pct` (per-tick), `lap_score`, `lap_pred_acc_pct` (filled only on the tick a lap completes). Live-only, diagnostics, not fed back into control |
 | Pose-feed hold model | `settings.py` (`POSE_HOLD_*`) + `sim/rollout_core.PoseFeedHold` | (offline-only; models a live fault) | `PROB 0.05`, `MEAN_TICKS 2.1`, `MAX_TICKS 5` |
 | Accel/brake effort split (`R[1,1]`) | `settings.py` (`R_A_ACCEL`, `R_A_BRAKE`), read by `controller/optimiser.py`'s `solve_mpc(r_a_accel=, r_a_brake=)` | `mpc_params.py` (`r_a_accel`, `r_a_brake`), read by `mpc_core.py`'s `_solve_qp` | actively being live-tuned, re-check both sides' current values before trusting this row; see "Accel/brake effort weight split" below |
 | NMPC rate-shaping family (zone / jerk / stage ramp / `k`) | `settings.py` (`NMPC_RRATE_ZONE_*`, `NMPC_RJERK_DELTA`/`_A`, `NMPC_RRATE_STAGE_*`, `NMPC_CORNER_FACTOR_K`), threaded through `sim/rollout_core.py` into `controller/nmpc_optimiser.py` | `mpc_params.py` (same names, lowercase), read by `nmpc_core.py` | zone `True` @ `2.0`/`0.80`/`0.15` (the intended `0.35` ease DNFs offline), `rjerk_delta` `150.0`, `rjerk_a` `0.0`, stage ramp `False`, `nmpc_corner_factor_k` `27.0`, `nmpc_q_e_y` `7.5`. **`k` is load-bearing for the zone, not cosmetic**: at the inherited `8.0` the ease/floor bands are unreachable on a track with `κ_max`~0.2, so a divergence here silently disables the schedule offline while leaving it on live. See "Three-zone rate schedule" below |
@@ -452,6 +453,16 @@ The weighted-metric component (the 13 metrics × `SCORE_WEIGHTS`, see the
 way; only the bonus/penalty terms differ, and only `offtrack` is
 unconditionally unavailable.
 
+**A multi-lap run also gets one score PER lap**, in addition to this
+whole-run header score — see "Multi-lap scoring and prediction-horizon
+accuracy are live-only" below for the mechanism. The whole-run
+`composite_score` in the header is unaffected: it is still exactly what
+`close()` computes over the run's own `RolloutMetrics` accumulator, same as
+before per-lap scoring existed (in a single-lap run, the two numbers are
+usually close but not identical, since the header's `progress`/
+`reached_end` describe the FINAL lap's tracker state, and the whole-run
+accumulator is never reset the way each lap's own accumulator is).
+
 ## Lap timing starts at 0.5 m/s, not at the first tick
 
 **Plain version:** a run's clock used to start the moment the software began,
@@ -485,6 +496,59 @@ budget.
 `self._lap_tracker.update(self._car_pos, t, self._car_speed)` regardless of
 `standalone_output`. A caller that omits it silently reverts to timing from
 tick 0.
+
+## Multi-lap scoring and prediction-horizon accuracy are live-only
+
+**Plain version:** the live car can now drive several laps in one run and
+gets a separate score for each one, shown as it happens in `live_viz.py`'s
+lap panel and afterward in `plot_playback.py`. A second, independent
+number, prediction-horizon accuracy, answers "how well did the controller's
+own look-ahead predict where the car actually went" as a percentage. Both
+are diagnostics: neither feeds back into control, and neither exists on the
+offline side.
+
+**Multi-lap.** `LapProgressTracker` (`telemetry_logger.py`) previously
+tracked one lap for the whole run and never reset. It now re-arms after
+each finish: the forward-bounded index search restarts, the lap timer
+restarts (a flying lap, not a stopped one), and `update()` returns a
+completed-lap dict the instant a lap finishes rather than only at
+`close()`. `ControlLogger.finish_lap()` finalises that lap's own
+`RolloutMetrics` accumulator (separate from the whole-run one `close()`
+still uses) into a per-lap `composite_score`, then resets it for the next
+lap. The re-arm guard is real distance travelled since the last finish
+(not the search index, which can advance with zero car motion, or a
+closed-loop path's own start/finish coincidence, which made an earlier,
+index-based guard mistake "car is still sitting at the finish line" for
+"car has lapped again" — caught by a synthetic closed-loop test before it
+shipped).
+
+**Prediction-horizon accuracy** compares the NMPC's own predicted horizon
+(front-axle Cartesian points 1 second into the future, already published
+live for `live_viz.py`'s red horizon line, see `nmpc_core.py`'s `xy_at()`)
+against where the car actually was once enough time has passed for the
+prediction to "come true". Per prediction: mean Euclidean error between
+each predicted point and the car's actual (time-interpolated) position at
+that same instant, divided by the horizon's own arc length, giving
+`100% × (1 − mean_error / horizon_length)` clipped to `[0, 100]`. NMPC-only
+— the LTV-QP path never exposes a Cartesian horizon (only Frenet error
+states), so its runs always report horizon accuracy as `n/a`. See
+`telemetry_logger.py`'s `HorizonAccuracyTracker` for the implementation.
+
+**No offline equivalent, by design, not oversight:**
+- `sim/rollout_core.py` records a predicted horizon only for the LTV-QP
+  path (`want_horizon_pred`, itself marked "GUI-only, cosmetic" in that
+  file), and stores **empty arrays** for NMPC. There is nothing to compare
+  against offline for the one controller this metric actually targets.
+- The offline tuner has no concept of "multiple laps in one rollout" at
+  all; `recorded_map_rollout` and `offline_tuner.py` both score one
+  traversal of the track per run.
+
+If a future need arises to validate this metric's numbers offline (e.g.
+suspecting the live formula itself is wrong, not just untested), the
+smallest correct addition would be recording an NMPC horizon in
+`rollout_core.py` (removing the current empty-array shortcut) and porting
+`HorizonAccuracyTracker` unchanged — not reimplementing the formula a
+second time by hand.
 
 ## Resync procedure
 

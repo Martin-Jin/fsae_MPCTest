@@ -57,6 +57,17 @@ authoritative topic table):
                                                                        active" signal, see
                                                                        stanley_controller.py's
                                                                        _publish_debug_stanley()
+    /fsae/control/lap_summary         std_msgs/String                 JSON: per-lap composite
+                                                                       score + horizon-accuracy
+                                                                       %, published once per
+                                                                       completed lap by either
+                                                                       controller node (see
+                                                                       ControlLogger.finish_lap()
+                                                                       in telemetry_logger.py).
+                                                                       pred_acc_pct is n/a
+                                                                       (absent) for Stanley/
+                                                                       LTV-QP runs -- NMPC-only,
+                                                                       see HorizonAccuracyTracker
 
 Both control-output topics are subscribed; whichever one is actually being
 published (depends on the `standalone_output` launch arg) is the one that
@@ -170,6 +181,12 @@ class LiveVizNode(Node):
         self.control_topic = None      # which of the two actually fired, for the stats panel
         self.debug_weights = None      # parsed JSON dict from /fsae/control/debug_weights, or None
         self.debug_stanley = None      # parsed JSON dict from /fsae/control/debug_stanley, or None
+        # Completed-lap summaries (see ControlLogger.finish_lap()), newest
+        # last -- the lap panel (see _redraw's stats box) shows the whole
+        # list, most recent highlighted. Bounded so a very long multi-lap
+        # session doesn't grow this without limit; the panel only has room
+        # to show the last handful anyway.
+        self.lap_summaries: deque = deque(maxlen=20)
         # Which debug topic fired most recently -- the only positive signal
         # this node has for "which controller is actually active" (MPC and
         # Stanley share one ROS node name and, in cmd_vel mode, one output
@@ -204,6 +221,18 @@ class LiveVizNode(Node):
             String, '/fsae/control/debug_weights', self._debug_weights_cb, 10)
         self._subscribe(
             String, '/fsae/control/debug_stanley', self._debug_stanley_cb, 10)
+        # RELIABLE + KEEP_LAST(10), matching the publisher's QoS (see
+        # mpc_controller.py's pub_lap_summary comment) -- a lap completion
+        # is a rare, one-shot event and must not be silently dropped the
+        # way a BEST_EFFORT subscription could under momentary congestion.
+        self._subscribe(
+            String, '/fsae/control/lap_summary', self._lap_summary_cb,
+            QoSProfile(
+                reliability=ReliabilityPolicy.RELIABLE,
+                history=HistoryPolicy.KEEP_LAST,
+                depth=10,
+            ),
+        )
 
     def _subscribe(self, msg_type, topic, callback, qos):
         """
@@ -286,6 +315,12 @@ class LiveVizNode(Node):
             self._debug_stanley_at = time.monotonic()
         except (json.JSONDecodeError, TypeError):
             self.debug_stanley = None
+
+    def _lap_summary_cb(self, msg: String) -> None:
+        try:
+            self.lap_summaries.append(json.loads(msg.data))
+        except (json.JSONDecodeError, TypeError):
+            pass
 
     def active_controller(self) -> str:
         """'mpc' or 'stanley', whichever debug topic fired most recently,
@@ -517,6 +552,32 @@ def main():
         ax.text(0.02, 0.98, stats.rstrip('\n'), transform=ax.transAxes, va='top', ha='left',
                 fontsize=9, family='monospace',
                 bbox=dict(boxstyle='round', fc='white', alpha=0.85))
+
+        # Lap panel: one line per completed lap (score + horizon accuracy,
+        # see ControlLogger.finish_lap()), most recent highlighted. Shown
+        # bottom-left so it doesn't compete with the top-left stats box.
+        # "none completed" explains an otherwise-silent panel for a
+        # live-planner run (no precomputed speed profile -> no
+        # LapProgressTracker -> lap_summary never publishes, see
+        # mpc_controller.py's own _lap_tracker construction).
+        if node.lap_summaries:
+            lines = []
+            for i, lap in enumerate(node.lap_summaries):
+                marker = '>' if i == len(node.lap_summaries) - 1 else ' '
+                score = lap.get('composite_score')
+                lap_time = lap.get('lap_time_s')
+                acc = lap.get('pred_acc_pct')
+                acc_s = f"{acc:.1f}%" if acc is not None else "n/a"
+                time_s = f"{lap_time:.1f}s" if lap_time is not None else "?"
+                lines.append(
+                    f"{marker} Lap {lap.get('lap_idx', '?')}  {time_s}  "
+                    f"score {score:.3f}  horizon {acc_s}")
+            lap_text = "Laps:\n" + "\n".join(lines)
+        else:
+            lap_text = "Laps: none completed (needs precomputed path)"
+        ax.text(0.02, 0.02, lap_text, transform=ax.transAxes, va='bottom', ha='left',
+                fontsize=8, family='monospace',
+                bbox=dict(boxstyle='round', fc='lightyellow', alpha=0.85))
 
         ax.legend(loc='lower right', fontsize=8)
         ax.set_title(f'Live {controller_label} debug view')

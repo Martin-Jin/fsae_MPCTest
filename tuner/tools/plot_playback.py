@@ -344,6 +344,8 @@ class _Run:
             print(f'{self.label}: no sibling path CSV found -- map/zoom views will '
                   'show the driven trajectory only, with no live planner-path overlay.')
 
+        self.laps = self._extract_laps()
+
         # Populated by Playback._draw_static().
         self.lines = []          # every Line2D belonging to this run (signals)
         self.map_traj_line = None
@@ -354,6 +356,59 @@ class _Run:
         self.zoom_marker = None
         self.cursors = []
         self.visible = True
+
+    def _extract_laps(self):
+        """
+        Return a list of {'lap_idx', 't', 'score', 'pred_acc_pct'} dicts,
+        one per completed lap, sorted by time. Two sources, in order of
+        preference:
+
+        1. The CSV columns lap_score/lap_pred_acc_pct (added alongside
+           lap_idx/pred_err_m/pred_acc_pct -- see telemetry_logger.py's
+           log_control()): a lap_score cell is non-empty ONLY on the tick
+           that lap completed, so this is a straight column scan.
+        2. Older logs predating those columns have no per-lap rows at all
+           -- fall back to parsing the header's `# lap_N_score=...` /
+           `# lap_N_time_s=...` / `# lap_N_pred_acc_pct=...` lines (see
+           ControlLogger._write_score_header()), using each lap's OWN
+           lap_time_s summed cumulatively as its 't' (no per-tick lap_idx
+           to look up an exact tick against).
+
+        A log with neither (the common case before this metric existed at
+        all) returns [] and callers fall back to the whole-run
+        composite_score header field, same as always.
+        """
+        laps = []
+        if 'lap_score' in self.cols:
+            scores = self.cols['lap_score']
+            accs = self.cols.get('lap_pred_acc_pct')
+            idxs = self.cols.get('lap_idx')
+            valid = ~np.isnan(scores)
+            for i in np.nonzero(valid)[0]:
+                laps.append({
+                    'lap_idx': int(idxs[i]) if idxs is not None and not np.isnan(idxs[i]) else len(laps) + 1,
+                    't': float(self.t[i]),
+                    'score': float(scores[i]),
+                    'pred_acc_pct': (float(accs[i])
+                                     if accs is not None and not np.isnan(accs[i]) else None),
+                })
+            return laps
+
+        # Header fallback for older logs -- reconstruct lap_N_* keys.
+        t_cursor = 0.0
+        n = 1
+        while f'lap_{n}_score' in self.meta:
+            lap_time = self.meta.get(f'lap_{n}_time_s')
+            t_cursor += float(lap_time) if lap_time is not None else 0.0
+            acc = self.meta.get(f'lap_{n}_pred_acc_pct')
+            laps.append({
+                'lap_idx': n,
+                't': t_cursor,
+                'score': float(self.meta[f'lap_{n}_score']),
+                'pred_acc_pct': float(acc) if acc not in (None, 'n/a') else None,
+            })
+            n += 1
+        return laps
 
     def index_for_time(self, t_now):
         return int(np.clip(np.searchsorted(self.t, t_now), 0, self.n - 1))
@@ -381,12 +436,22 @@ class Playback:
     """
 
     def __init__(self, control_csvs, signals=DEFAULT_SIGNALS):
-        self.signals = signals
         self.runs = [
             _Run(path, COLORS[i % len(COLORS)])
             for i, path in enumerate(control_csvs)
         ]
         self._dedupe_labels()
+
+        # pred_acc_pct (horizon accuracy, NMPC-only -- see
+        # telemetry_logger.py's HorizonAccuracyTracker) is not in
+        # DEFAULT_SIGNALS: most existing logs (Stanley, LTV-QP, or NMPC runs
+        # recorded before this metric existed) have no such column, and a
+        # bare 'not present' row for every one of those would be noise. Only
+        # auto-add it when the CALLER left signals at the default AND at
+        # least one loaded run actually has the column.
+        if signals is DEFAULT_SIGNALS and any('pred_acc_pct' in run.cols for run in self.runs):
+            signals = [*signals, 'pred_acc_pct']
+        self.signals = signals
         # Shared "now" ranges over the union of every run's time span, so
         # the slider can always reach the start/end of the longest run.
         self.t_min = min(run.t[0] for run in self.runs)
@@ -471,6 +536,8 @@ class Playback:
                 for ax in self.signal_axes
             ]
 
+        self._draw_lap_markers()
+
         self.map_ax.set_aspect('equal', adjustable='datalim')
         self.map_ax.set_title('Map', fontsize=9)
         self.map_ax.tick_params(labelsize=7)
@@ -506,6 +573,15 @@ class Playback:
                 [], [], color=run.color, zorder=3,
             )[0]
         self.map_ax.legend(fontsize=6, loc='upper right')
+
+        # Per-lap score/accuracy table, updated in _update() to only show
+        # laps completed by "now" -- so scores "appear" one at a time during
+        # playback, matching how live_viz.py's own lap panel fills in live.
+        self.lap_table_text = self.map_ax.text(
+            0.02, 0.02, '', transform=self.map_ax.transAxes,
+            va='bottom', ha='left', fontsize=7, family='monospace',
+            bbox=dict(boxstyle='round', fc='lightyellow', alpha=0.85),
+        )
 
         self.slider = Slider(
             self.slider_ax, 't', float(self.t_min), float(self.t_max),
@@ -606,6 +682,32 @@ class Playback:
 
         self.checks.on_clicked(_on_click)
 
+    def _draw_lap_markers(self):
+        """
+        Vertical dashed line + label at each completed lap's end time, drawn
+        on every signal axis (same idea as run.cursors' "now" line, but
+        static instead of scrubbing). Labelled only on the TOP axis to avoid
+        repeating the same text on every row -- the line itself still
+        appears on all of them so a lap boundary is visible against any
+        signal. Runs with no lap data (see _Run._extract_laps) draw nothing.
+        """
+        if not self.signal_axes:
+            return
+        top_ax = self.signal_axes[0]
+        for run in self.runs:
+            for lap in run.laps:
+                for ax in self.signal_axes:
+                    ax.axvline(lap['t'], color=run.color, linewidth=0.8,
+                               linestyle='--', alpha=0.5, zorder=0)
+                acc = lap['pred_acc_pct']
+                acc_s = f"{acc:.0f}%" if acc is not None else "n/a"
+                top_ax.annotate(
+                    f"L{lap['lap_idx']} {lap['score']:.3f}/{acc_s}",
+                    xy=(lap['t'], 1.0), xycoords=('data', 'axes fraction'),
+                    xytext=(2, 2), textcoords='offset points',
+                    fontsize=6, color=run.color, rotation=90, va='bottom', ha='left',
+                )
+
     def _plot_signal(self, ax, sig):
         plotted_any = False
         for run in self.runs:
@@ -677,6 +779,35 @@ class Playback:
             f'Current section (zoomed){focus_tag} — e_y={e_y:.2f} m, e_psi={e_psi:.1f}°',
             fontsize=9,
         )
+
+        self._update_lap_table(t_now)
+
+    def _update_lap_table(self, t_now):
+        """
+        Show every lap completed by t_now, across all visible runs -- laps
+        beyond "now" are withheld so scrubbing backward hides them again,
+        the same way live_viz.py's panel only ever shows laps that have
+        actually happened. Falls back to each run's whole-run
+        composite_score header field when it has no per-lap data at all
+        (see _Run._extract_laps' older-log fallback and its own docstring).
+        """
+        lines = []
+        for run in self.runs:
+            if not run.visible:
+                continue
+            done = [lap for lap in run.laps if lap['t'] <= t_now]
+            tag = f' [{run.label}]' if len(self.runs) > 1 else ''
+            if not done:
+                if not run.laps and 'composite_score' in run.meta:
+                    lines.append(f"{tag or run.label}: score {run.meta['composite_score']} "
+                                 "(no per-lap data in this log)")
+                continue
+            for lap in done:
+                acc = lap['pred_acc_pct']
+                acc_s = f"{acc:.1f}%" if acc is not None else "n/a"
+                lines.append(f"{tag} Lap {lap['lap_idx']}  score {lap['score']:.3f}  "
+                             f"horizon {acc_s}")
+        self.lap_table_text.set_text('\n'.join(lines) if lines else 'Laps: none yet')
 
     def show(self):
         plt.show()

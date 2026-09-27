@@ -362,6 +362,27 @@ debug figure is shown accordingly:
      of their absolute values — "how much of this tick's steering command
      came from which term."
 
+**Per-lap score + horizon accuracy.** A yellow panel in the bottom-left of
+the main map window lists every completed lap: lap number, lap time,
+composite score, and prediction-horizon accuracy. It fills in live as the
+car crosses the finish line, fed by `/fsae/control/lap_summary` (JSON,
+published by whichever controller node is running — see
+`telemetry_logger.py`'s `ControlLogger.finish_lap()`). Reads "none
+completed (needs precomputed path)" until the first lap finishes; a
+live-planner run (no precomputed speed profile, hence no
+`LapProgressTracker`) never publishes to this topic at all.
+
+**Horizon accuracy** answers "how well did the controller's own 1-second
+look-ahead actually predict where the car went", as a percentage (100% =
+predicted path matched the driven path exactly). It is independent of the
+composite score: a car can drive well with a model that predicts itself
+poorly, or vice versa. NMPC-only — the LTV-QP path never exposes a
+Cartesian predicted trajectory (only Frenet error states), so its lap rows
+always show "horizon n/a". See `telemetry_logger.py`'s
+`HorizonAccuracyTracker` docstring for the exact formula (mean predicted-
+vs-actual position error over the horizon, divided by the horizon's own
+arc length).
+
 Both figures are built once at startup and shown/hidden as a whole rather
 than rebuilt each frame, so switching controllers mid-session (stopping
 one run and launching the other) updates the display without a restart.
@@ -584,6 +605,22 @@ follow it to completion), but the left-hand signal plots' x-axis is
 clipped to the **shortest** run's end, past that point only one run has
 data left, which would otherwise dwarf the overlapping (comparable) part
 of the plot with a stretch that isn't a comparison anymore.
+
+**Per-lap score + horizon accuracy.** Each completed lap gets a vertical
+dashed marker on every signal plot (labelled `L<n> <score>/<horizon%>` at
+the top), and a running table in the bottom-left of the map panel that
+fills in as the slider crosses each lap's finish time, same as
+`live_viz.py`'s own lap panel does live. Lap data comes from the control
+CSV's `lap_score`/`lap_pred_acc_pct` columns (see
+`telemetry_logger.py`'s `ControlLogger.finish_lap()`); an older log
+recorded before these columns existed falls back to the header's
+whole-run `composite_score` instead, with no per-lap breakdown. Horizon
+accuracy is NMPC-only (see the live-viz section above for what it means)
+and shows "n/a" for Stanley/LTV-QP runs, or for an NMPC run with no
+completed laps. `pred_acc_pct` (the per-tick, not per-lap, horizon
+accuracy) is also selectable as a `--signals` entry, and gets appended to
+the default signal set automatically when at least one loaded log has the
+column.
 
 **Auto-search folder: `fsds_simulator/recorded_runs/`.** Running the script
 with no CSV argument searches this folder **recursively** for

@@ -82,6 +82,7 @@ CONTROL LOOP PHASES (see _control_step)
   Phase 5 — Publish.
 """
 import json
+import math
 import time
 
 import numpy as np
@@ -106,7 +107,9 @@ from fsae_control.mpc.mpc_core import MAX_STEER_RAD, MPCController
 from fsae_control.mpc.nmpc_core import NMPCController
 from fsae_control.mpc.mpc_params import declare_mpc_params, mpc_params_from_node
 from fsae_control.mpc.nmpc_params import declare_nmpc_params, nmpc_params_from_node
-from fsae_control.telemetry_logger import ControlLogger, LapProgressTracker, build_config_lines
+from fsae_control.telemetry_logger import (
+    ControlLogger, LapProgressTracker, HorizonAccuracyTracker, build_config_lines,
+)
 
 CONTROL_HZ = 20.0   # must match MPCController(dt=0.05); dt = 1 / CONTROL_HZ
 
@@ -418,6 +421,23 @@ class MPCControllerNode(Node):
         self.pub_debug_weights = self.create_publisher(
             String, '/fsae/control/debug_weights', 10)
 
+        # Per-lap score + horizon-accuracy summary, published the instant a
+        # lap completes (see LapProgressTracker.update()'s return value) --
+        # live_viz.py's lap panel. JSON over a plain String, same rationale
+        # as pub_debug_weights above (debug-only, best-effort, no schema
+        # worth a dedicated .msg). RELIABLE + KEEP_LAST(10): a lap
+        # completion is a one-shot, low-rate event (once per lap, not once
+        # per tick like debug_weights), so it must not be silently dropped
+        # the way a BEST_EFFORT publish could under momentary congestion.
+        self.pub_lap_summary = self.create_publisher(
+            String, '/fsae/control/lap_summary',
+            QoSProfile(
+                reliability=ReliabilityPolicy.RELIABLE,
+                history=HistoryPolicy.KEEP_LAST,
+                depth=10,
+            ),
+        )
+
         self._path: np.ndarray = (
             self._static_path if self._static_path is not None else np.empty((0, 2))
         )
@@ -524,6 +544,16 @@ class MPCControllerNode(Node):
                 self._mpc.set_static_path(self._static_path)
         else:
             self._mpc = MPCController(dt=dt, N=35, params=mpc_params)
+
+        # Prediction-horizon accuracy: NMPC-only (see HorizonAccuracyTracker's
+        # docstring for why -- the LTV-QP path never exposes a Cartesian
+        # horizon). Constructed unconditionally (cheap, no ROS deps) but
+        # only ever fed when nmpc_params.use_nmpc, so a non-NMPC run's
+        # tracker just sits empty and every pred_err_m/pred_acc_pct column
+        # stays blank.
+        self._horizon_acc: HorizonAccuracyTracker | None = None
+        if nmpc_params.use_nmpc:
+            self._horizon_acc = HorizonAccuracyTracker()
 
         if self._heading_profile is not None:
             self._mpc.set_heading_profile(self._heading_profile)
@@ -646,6 +676,62 @@ class MPCControllerNode(Node):
     # ------------------------------------------------------------------
     # Debug telemetry (live_viz.py's weighted-error breakdown panel)
     # ------------------------------------------------------------------
+
+    def _process_lap_and_horizon(self, t: float, tel: dict) -> tuple[float | None, float | None, dict | None]:
+        """
+        One call per tick, shared by both output modes (standalone/cmd_vel)
+        below: feeds this tick's pose + (if NMPC) predicted horizon into
+        self._horizon_acc, advances self._lap_tracker, and — on the tick a
+        lap completes — finalises that lap's score via
+        self._telemetry.finish_lap().
+
+        Must be called AFTER self._mpc.compute() (needs tel/last_telemetry)
+        and BEFORE self._telemetry.log_control() (its return values feed
+        straight into that call's pred_err_m/pred_acc_pct/lap_summary
+        kwargs, so the lap's own completing tick logs its score on the same
+        row — see log_control()'s docstring for why that ordering matters).
+
+        Returns (pred_err_m, pred_acc_pct, lap_summary): the first two are
+        this tick's own OWN matured prediction comparison (None most ticks —
+        maturity is ~1 s after the prediction was made, not immediate), the
+        third is finish_lap()'s return value on the tick a lap completes,
+        else None.
+        """
+        pred_err_m = pred_acc_pct = None
+        if self._horizon_acc is not None:
+            fa = self._car_pos + self._mpc.lf * np.array(
+                [math.cos(self._car_yaw), math.sin(self._car_yaw)])
+            self._horizon_acc.add_pose(t, fa[0], fa[1])
+            pred_xy = tel.get('nmpc_pred_xy')
+            if pred_xy is not None:
+                pose_age_s = tel.get('pose_age_s') or 0.0
+                n_delay = tel.get('n_delay') or 0
+                n_latency = tel.get('n_latency') or 0
+                t_stage0 = t - pose_age_s + (n_delay + n_latency) * self._mpc.dt
+                pred_x, pred_y = pred_xy
+                self._horizon_acc.add_prediction(
+                    t_stage0, self._mpc.dt, pred_x, pred_y, self._car_speed)
+            matured = self._horizon_acc.update(t)
+            if matured is not None:
+                pred_err_m, pred_acc_pct = matured
+
+        lap_summary = None
+        if self._lap_tracker is not None:
+            lap = self._lap_tracker.update(self._car_pos, t, self._car_speed)
+            if lap is not None:
+                lap_err = lap_acc = None
+                if self._horizon_acc is not None:
+                    lap_mean = self._horizon_acc.pop_lap_mean()
+                    if lap_mean is not None:
+                        lap_err, lap_acc = lap_mean
+                lap_summary = self._telemetry.finish_lap(
+                    lap, pred_acc_pct=lap_acc, pred_err_m=lap_err)
+                lap_summary['lap_idx'] = lap['lap_idx']
+                msg = String()
+                msg.data = json.dumps(lap_summary)
+                self.pub_lap_summary.publish(msg)
+
+        return pred_err_m, pred_acc_pct, lap_summary
 
     def _publish_debug_weights(self, tel: dict) -> None:
         """
@@ -1033,6 +1119,7 @@ class MPCControllerNode(Node):
                     path_age_s = (self.get_clock().now() - self._path_stamp).nanoseconds * 1e-9
                 else:
                     path_age_s = None
+                pred_err_m, pred_acc_pct, lap_summary = self._process_lap_and_horizon(t, tel)
                 self._telemetry.log_control(
                     t, self._car_pos[0], self._car_pos[1], self._car_yaw,
                     self._car_speed, desired_speed, steer_rad,
@@ -1043,10 +1130,11 @@ class MPCControllerNode(Node):
                     n_delay=tel.get('n_delay'),
                     solve_ms=tel.get('solve_ms'),
                     cmd_latency_ms=(time.perf_counter() - _t_loop0) * 1e3,
-                    adaptive=tel)
+                    adaptive=tel,
+                    lap_idx=self._lap_tracker.lap_idx if self._lap_tracker is not None else None,
+                    pred_err_m=pred_err_m, pred_acc_pct=pred_acc_pct,
+                    lap_summary=lap_summary)
                 self._telemetry.log_path(t, self._path)
-                if self._lap_tracker is not None:
-                    self._lap_tracker.update(self._car_pos, t, self._car_speed)
 
             # ── Phase 5: publish ──────────────────────────────────────────
             cmd.header.stamp = self.get_clock().now().to_msg()
@@ -1077,6 +1165,7 @@ class MPCControllerNode(Node):
                     path_age_s = (self.get_clock().now() - self._path_stamp).nanoseconds * 1e-9
                 else:
                     path_age_s = None
+                pred_err_m, pred_acc_pct, lap_summary = self._process_lap_and_horizon(t, tel)
                 self._telemetry.log_control(
                     t, self._car_pos[0], self._car_pos[1], self._car_yaw,
                     self._car_speed, desired_speed, steering,
@@ -1087,10 +1176,11 @@ class MPCControllerNode(Node):
                     n_delay=tel.get('n_delay'),
                     solve_ms=tel.get('solve_ms'),
                     cmd_latency_ms=(time.perf_counter() - _t_loop0) * 1e3,
-                    adaptive=tel)
+                    adaptive=tel,
+                    lap_idx=self._lap_tracker.lap_idx if self._lap_tracker is not None else None,
+                    pred_err_m=pred_err_m, pred_acc_pct=pred_acc_pct,
+                    lap_summary=lap_summary)
                 self._telemetry.log_path(t, self._path)
-                if self._lap_tracker is not None:
-                    self._lap_tracker.update(self._car_pos, t, self._car_speed)
 
             self.get_logger().info(
                 f'cmd_vel: speed={desired_speed:.2f} m/s  steer={steering:.3f} rad  '

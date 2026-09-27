@@ -29,6 +29,18 @@ solve_ms/cmd_latency_ms. delta_cmd/a_cmd are logged in the MPC's own units
 rather than normalised FSDS command units so the score can be recomputed from
 the file without re-deriving the scaling.
 
+Lap / horizon-accuracy columns (trailing the latency block): lap_idx (which
+lap this tick belongs to, 0-indexed until the first completion),
+pred_err_m/pred_acc_pct (this tick's own matured prediction-vs-actual
+comparison from HorizonAccuracyTracker, empty on every tick for a
+non-NMPC run), lap_score/lap_pred_acc_pct (filled ONLY on the row where a
+lap completes -- see ControlLogger.finish_lap()). "Horizon accuracy" here
+means how closely the NMPC's predicted path over the next ~1 s matched
+where the car actually went; 100% is a perfect prediction, see
+HorizonAccuracyTracker's docstring for the exact formula. This metric is
+independent of composite_score: a run can drive well (low score) with a
+model that predicts itself poorly, or vice versa.
+
 Trailing the above is the adaptive-feature trace — curvature/demand context
 plus one column per adaptive multiplier and the resulting absolute weights.
 See ADAPTIVE_COLUMNS below for the full list and what each one means
@@ -224,6 +236,144 @@ def build_config_lines(
     return lines
 
 
+class HorizonAccuracyTracker:
+    """
+    Compares the NMPC's predicted horizon (published each tick as Cartesian
+    front-axle points, see nmpc_core.py's xy_at()) against where the car
+    actually was once enough time has passed for the prediction to "come
+    true". NMPC-only: the LTV-QP path never exposes a Cartesian horizon (see
+    mpc_core.py), so a caller with no predictions to feed just never calls
+    add_prediction() and update() always returns None.
+
+    A prediction made at tick k covers stages j=0..N at times
+    t_stage0 + j*dt (t_stage0 already accounts for pose age and any
+    rollforward delay — see the caller). It "matures" once the pose history
+    covers its last stage's time, at which point the mean Euclidean distance
+    between each predicted point and the car's actual (interpolated)
+    position at that same time is computed. That mean error, divided by the
+    horizon's own arc length, is what turns into the accuracy percentage
+    (see the caller / docs/debugging_tools.md for the exact formula) — this
+    class only produces the raw mean error and lets the caller apply that
+    formula, so the percentage definition lives in one place.
+    """
+
+    # Below this speed a "prediction" is really just "stay where you are"
+    # and would score as near-perfect for the wrong reason (no motion to get
+    # wrong). Same gate as LapProgressTracker.LAUNCH_SPEED_MPS, so a run's
+    # lap accuracy and its lap timer agree on what counts as "actually
+    # driving".
+    LAUNCH_SPEED_MPS = 0.5
+
+    # How much pose history to retain for interpolating "where was the car
+    # at time t". Must exceed the horizon length (dt*N, currently 1.0 s)
+    # with margin for pose_age_s/n_delay/n_latency pushing t_stage0 earlier
+    # than "now".
+    _POSE_HISTORY_S = 3.0
+
+    def __init__(self):
+        self._pose_t: list[float] = []
+        self._pose_xy: list[tuple[float, float]] = []
+        # Pending predictions not yet matured: each is (t_stage0, dt, xs, ys).
+        self._pending: list[tuple[float, float, np.ndarray, np.ndarray]] = []
+        self.last_err_m: float | None = None
+        self.last_acc_pct: float | None = None
+        # Running sum for the CURRENT lap's mean accuracy (what
+        # pop_lap_mean() reports at finish_lap() time) — kept separately
+        # from last_err_m/last_acc_pct (this tick's own value) because the
+        # per-lap figure the plan calls for is the mean over every
+        # prediction that matured DURING the lap, not just the last one.
+        self._lap_err_sum = 0.0
+        self._lap_acc_sum = 0.0
+        self._lap_n = 0
+
+    def add_pose(self, t: float, x_front: float, y_front: float) -> None:
+        self._pose_t.append(float(t))
+        self._pose_xy.append((float(x_front), float(y_front)))
+        cutoff = t - self._POSE_HISTORY_S
+        while len(self._pose_t) > 2 and self._pose_t[1] < cutoff:
+            self._pose_t.pop(0)
+            self._pose_xy.pop(0)
+
+    def add_prediction(self, t_stage0: float, dt: float, xs, ys, v0: float) -> None:
+        if v0 < self.LAUNCH_SPEED_MPS:
+            return
+        xs = np.asarray(xs, dtype=float)
+        ys = np.asarray(ys, dtype=float)
+        if xs.size < 2:
+            return
+        self._pending.append((float(t_stage0), float(dt), xs, ys))
+
+    def _actual_at(self, t: float) -> tuple[float, float] | None:
+        ts = self._pose_t
+        if len(ts) < 2 or t < ts[0] or t > ts[-1]:
+            return None
+        idx = int(np.searchsorted(ts, t))
+        idx = min(max(idx, 1), len(ts) - 1)
+        t0, t1 = ts[idx - 1], ts[idx]
+        x0, y0 = self._pose_xy[idx - 1]
+        x1, y1 = self._pose_xy[idx]
+        if t1 <= t0:
+            return x0, y0
+        frac = (t - t0) / (t1 - t0)
+        return x0 + frac * (x1 - x0), y0 + frac * (y1 - y0)
+
+    def update(self, now: float) -> tuple[float, float] | None:
+        """
+        Evaluate any predictions that have fully matured by `now`. Returns
+        the most recently matured (err_m, acc_pct), or None if nothing
+        matured this call (the pending prediction still needs more pose
+        history, or there was nothing to evaluate). Also accumulates into
+        a running per-lap sum — see pop_lap_mean(), which the caller uses
+        at lap-end instead of this per-tick return value, since a single
+        tick's result would only reflect the last prediction to mature,
+        not the lap as a whole.
+        """
+        result = None
+        still_pending = []
+        for t_stage0, dt, xs, ys in self._pending:
+            t_last = t_stage0 + dt * (len(xs) - 1)
+            if t_last > now or not self._pose_t or t_last > self._pose_t[-1]:
+                still_pending.append((t_stage0, dt, xs, ys))
+                continue
+            errs = []
+            path_len = 0.0
+            prev = None
+            for j in range(len(xs)):
+                actual = self._actual_at(t_stage0 + dt * j)
+                if actual is not None:
+                    errs.append(math.hypot(xs[j] - actual[0], ys[j] - actual[1]))
+                if prev is not None:
+                    path_len += math.hypot(xs[j] - prev[0], ys[j] - prev[1])
+                prev = (xs[j], ys[j])
+            if not errs:
+                continue
+            err_m = float(np.mean(errs))
+            acc_pct = float(np.clip(1.0 - err_m / max(path_len, 1.0), 0.0, 1.0)) * 100.0
+            self.last_err_m, self.last_acc_pct = err_m, acc_pct
+            self._lap_err_sum += err_m
+            self._lap_acc_sum += acc_pct
+            self._lap_n += 1
+            result = (err_m, acc_pct)
+        self._pending = still_pending
+        return result
+
+    def pop_lap_mean(self) -> tuple[float, float] | None:
+        """
+        Mean (err_m, acc_pct) over every prediction that matured since the
+        last call (i.e. during the just-completed lap), then resets the
+        running sums for the next lap. Returns None if nothing matured
+        during the lap (e.g. a very short lap, or a run that never reached
+        launch speed) — the caller (finish_lap()) then logs pred_acc_pct as
+        n/a for that lap rather than a misleading 0%/100%.
+        """
+        if self._lap_n == 0:
+            return None
+        mean = (self._lap_err_sum / self._lap_n, self._lap_acc_sum / self._lap_n)
+        self._lap_err_sum = self._lap_acc_sum = 0.0
+        self._lap_n = 0
+        return mean
+
+
 class LapProgressTracker:
     """
     Turns a precomputed (path_X, path_Y, path_V) speed profile plus a stream
@@ -268,6 +418,22 @@ class LapProgressTracker:
         self._end_wall: float | None = None
         self._reached_end = False
 
+        # Multi-lap: once a lap finishes, _idx/_reached_end/_start_wall are
+        # re-armed for the next lap (see update()) rather than staying
+        # latched forever. lap_idx counts COMPLETED laps (0 during the
+        # first lap). _armed guards the re-finish check: right after a
+        # reset the car is still sitting in the finish zone that just
+        # triggered, so the finish check must not fire again until the car
+        # has actually travelled a real distance since (see update()'s
+        # _dist_since_reset -- NOT index progress, which can advance with
+        # zero real motion or jump straight back to the finish on a
+        # closed-loop path; both failure modes were caught by synthetic
+        # tests before this landed on distance).
+        self.lap_idx = 0
+        self._armed = True
+        self._dist_since_reset = 0.0
+        self._reset_car_pos: tuple[float, float] | None = None
+
     # Speed (m/s) above which the car counts as having launched, for the
     # lap-timer start. The clock MUST NOT start on the first control tick:
     # the node logs from the moment it comes up, which is before the GO
@@ -280,7 +446,7 @@ class LapProgressTracker:
     # triggering within one or two ticks of a real launch.
     LAUNCH_SPEED_MPS = 0.5
 
-    def update(self, car_pos, now: float, car_speed: float | None = None) -> None:
+    def update(self, car_pos, now: float, car_speed: float | None = None) -> dict | None:
         """
         Advance the forward-bounded nearest-index search by one sample.
 
@@ -289,18 +455,56 @@ class LapProgressTracker:
         LAUNCH_SPEED_MPS), not on the first tick. Omitted (None) falls back
         to starting on the first call, preserving the old behaviour for any
         caller that has no speed to hand.
+
+        Returns a completed-lap dict (see result()'s return shape, plus
+        'lap_idx') the instant a lap finishes, so the caller can score and
+        log it immediately rather than waiting for close(). Returns None on
+        every other tick. The tracker then re-arms for the next lap: index
+        search restarts from the beginning, the timer restarts from this
+        finish instant (a flying lap), and lap_idx increments.
         """
-        if self._reached_end or len(self._path_X) < 2:
-            return
+        if len(self._path_X) < 2:
+            return None
+
         if self._start_wall is None:
             if car_speed is None or abs(car_speed) >= self.LAUNCH_SPEED_MPS:
                 self._start_wall = now
 
+        # Track real distance travelled since the last reset FIRST (using
+        # the car's raw position, independent of the index search below) --
+        # see the _armed block for why this, not the index, is what gates
+        # re-arming.
+        if self._reset_car_pos is not None:
+            self._dist_since_reset += math.hypot(
+                car_pos[0] - self._reset_car_pos[0], car_pos[1] - self._reset_car_pos[1])
+        self._reset_car_pos = (float(car_pos[0]), float(car_pos[1]))
+
         # Forward-bounded: only search from the current index onward, same
         # rationale as rollout_core.py's find_closest_reference_bounded — it
         # can't jump backward onto a spatially-close-but-lapped-already point.
-        window = self._path_X[self._idx:]
-        d2 = (window - car_pos[0]) ** 2 + (self._path_Y[self._idx:] - car_pos[1]) ** 2
+        #
+        # While not yet _armed, the search is ADDITIONALLY capped to how far
+        # the car has actually travelled since the reset (plus margin) --
+        # not the whole remaining array. On a CLOSED-LOOP path (start/finish
+        # coincide), resetting _idx to 0 does not relocate the CAR: it's
+        # still spatially closest to the path's LAST few points, not its
+        # first, so an UNCAPPED search relocks straight back onto index
+        # ~N-1 within a couple of ticks regardless of real progress,
+        # multi-second before the car has gone anywhere -- confirmed by a
+        # synthetic closed-loop test that kept re-finishing every ~2.6 s
+        # (one tenth of a real lap) instead of once per real lap. Capping
+        # the window to (distance travelled + a fixed margin) means the
+        # index literally cannot outrun the car's own odometry, so it can
+        # only reach the finish zone once the car actually has.
+        if self._armed:
+            window_end = len(self._path_X)
+        else:
+            reachable = self._dist_since_reset + 5.0   # margin: path curvature vs. straight-line odometry
+            idx_cap = self._idx + int(np.searchsorted(
+                self._cum_len[self._idx:] - self._cum_len[self._idx], reachable))
+            window_end = min(len(self._path_X), max(self._idx + 1, idx_cap))
+        window = self._path_X[self._idx:window_end]
+        d2 = (window - car_pos[0]) ** 2 + (self._path_Y[self._idx:window_end] - car_pos[1]) ** 2
         self._idx += int(np.argmin(d2))
 
         # 10% window / 3 m radius: mirrors fsae_MPCTest/sim/rollout_core.py's
@@ -311,9 +515,52 @@ class LapProgressTracker:
         dist_to_finish = math.hypot(
             car_pos[0] - self._path_X[-1], car_pos[1] - self._path_Y[-1]
         )
-        if self._idx >= len(self._path_X) - 1 or (near_end and dist_to_finish <= 3.0):
-            self._reached_end = True
-            self._end_wall = now
+        in_finish_zone = self._idx >= len(self._path_X) - 1 or (near_end and dist_to_finish > 0.0 and dist_to_finish <= 3.0)
+
+        # _armed prevents an immediate re-finish right after a reset. Gated
+        # on actual distance travelled (see above), which -- combined with
+        # the capped search window above -- means the car has to have
+        # covered a meaningful fraction of the track (not merely "the
+        # search index says so") before the next finish can be recognised.
+        # A car sitting still at a point-to-point path's end (no capped
+        # window needed there, distance never advances) also never
+        # re-arms, so it stays finished rather than re-triggering on tiny
+        # index jitter -- caught by a synthetic point-to-point test.
+        if not self._armed:
+            if self._dist_since_reset >= 0.2 * self._path_length:
+                self._armed = True
+            return None
+
+        if in_finish_zone:
+            lap_time_s = None
+            if self._start_wall is not None:
+                lap_time_s = float(now - self._start_wall)
+            time_bonus = 0.0
+            if self._optimal_time > 0.0 and lap_time_s and lap_time_s > 0.0:
+                time_bonus = float(np.clip(self._optimal_time / lap_time_s, 0.0, 1.0))
+
+            self.lap_idx += 1
+            completed = {
+                'lap_idx': self.lap_idx,
+                'progress': 1.0,
+                'reached_end': True,
+                'time_bonus': time_bonus,
+                'lap_time_s': lap_time_s,
+                'optimal_time_s': self._optimal_time,
+            }
+
+            # Re-arm: flying-lap timer (next lap starts timing at this
+            # finish instant), index search restarts from the top, distance
+            # accumulator restarts from zero (see the _armed gate above).
+            self._idx = 0
+            self._start_wall = now
+            self._end_wall = None
+            self._reached_end = False
+            self._armed = False
+            self._dist_since_reset = 0.0
+            return completed
+
+        return None
 
     def result(self, now: float) -> dict:
         """
@@ -321,6 +568,14 @@ class LapProgressTracker:
         call at any time (e.g. mid-run on an early shutdown) — reached_end
         stays False and time_bonus stays 0.0 until update() has actually
         seen the car cross the finish check.
+
+        Reflects whatever lap is CURRENTLY in progress, not the whole run:
+        once a lap completes, update() reports it directly (see its
+        docstring) and re-arms this tracker for the next lap, so a call to
+        result() after N completed laps describes lap N+1 (partial if the
+        run ends mid-lap). Multi-lap runs should use update()'s returned
+        per-lap dicts for completed laps and this method only for the
+        trailing partial lap at shutdown.
         """
         progress = float(np.clip(
             self._cum_len[min(self._idx, len(self._cum_len) - 1)] / self._path_length, 0.0, 1.0
@@ -389,6 +644,17 @@ class ControlLogger:
              'n_delay',         # rollforward depth the controller chose
              'solve_ms',        # QP solve wall time
              'cmd_latency_ms',  # loop start -> command published
+             # ── Lap / horizon-accuracy diagnostics ───────────────────────
+             # lap_idx: which lap this tick belongs to (0 during the first
+             # lap, matching LapProgressTracker.lap_idx before its first
+             # completion). pred_err_m/pred_acc_pct: this tick's OWN matured
+             # prediction-vs-actual comparison (empty when none matured this
+             # tick, or always empty on a non-NMPC run — see
+             # HorizonAccuracyTracker). lap_score/lap_pred_acc_pct: filled
+             # ONLY on the row where a lap just completed — see
+             # ControlLogger.finish_lap().
+             'lap_idx', 'pred_err_m', 'pred_acc_pct',
+             'lap_score', 'lap_pred_acc_pct',
              ] + list(ADAPTIVE_COLUMNS))
         self._path_w.writerow(['t', 'idx', 'x', 'y'])
 
@@ -402,7 +668,17 @@ class ControlLogger:
         self._t0_epoch: float = now_epoch
 
         # Live scoring accumulator (fsae_control.scoring == offline scoring).
+        # Whole-run accumulator, used by close()'s header score exactly as
+        # before multi-lap existed.
         self._metrics = RolloutMetrics()
+        # Per-lap accumulator: reset every time finish_lap() is called, so
+        # each lap's composite_score reflects only that lap's ticks rather
+        # than the whole run's running sums (several of RolloutMetrics'
+        # fields are max/count, not plain sums, so this has to be a
+        # SEPARATE accumulator rather than a snapshot-and-difference of
+        # the whole-run one).
+        self._lap_metrics = RolloutMetrics()
+        self._lap_summaries: list[dict] = []
         self._max_steer_rad = float(max_steer_rad)
         self._closed = False
 
@@ -446,7 +722,9 @@ class ControlLogger:
                     delta_cmd=None, a_cmd=None,
                     solver_failed=False, inaccurate=False,
                     pose_age_s=None, path_age_s=None, n_delay=None,
-                    solve_ms=None, cmd_latency_ms=None, adaptive=None) -> None:
+                    solve_ms=None, cmd_latency_ms=None, adaptive=None,
+                    lap_idx=None, pred_err_m=None, pred_acc_pct=None,
+                    lap_summary=None) -> None:
         """
         Record one control step.  See the module docstring for the units and
         frame of every argument.
@@ -468,6 +746,18 @@ class ControlLogger:
         the ADAPTIVE_COLUMNS keys are pulled out of it and everything else is
         ignored, so mpc_core can add telemetry keys without touching this
         file. Omit it (Stanley) and those cells are written empty.
+
+        lap_idx/pred_err_m/pred_acc_pct come from the caller's
+        LapProgressTracker/HorizonAccuracyTracker (see mpc_controller.py);
+        omitted entirely (Stanley, or an NMPC run before its first matured
+        prediction) they write empty cells, same convention as the rest of
+        this method's optional columns.
+
+        lap_summary is the dict finish_lap() returns, passed on the SAME
+        tick a lap completes so its composite_score/pred_acc_pct land on
+        the row that completed it (a CSV writer can't go back and fill an
+        earlier row, so this has to happen before that row is written, not
+        after). Every other tick omits it and those two cells are empty.
         """
         def _f(x, fmt='.4f'):
             return '' if x is None else format(float(x), fmt)
@@ -477,6 +767,8 @@ class ControlLogger:
             a_cmd = 0.0
 
         t_rel = self._rel(t)
+        lap_score = lap_summary.get('composite_score') if lap_summary else None
+        lap_pred_acc = lap_summary.get('pred_acc_pct') if lap_summary else None
         self._ctrl_w.writerow([
             f'{t_rel:.4f}', f'{car_x:.4f}', f'{car_y:.4f}', f'{car_yaw:.5f}',
             f'{v_actual:.3f}', f'{v_desired:.3f}', f'{math.degrees(steer_rad):.3f}',
@@ -486,20 +778,28 @@ class ControlLogger:
             _f(pose_age_s), _f(path_age_s),
             '' if n_delay is None else int(n_delay),
             _f(solve_ms, '.3f'), _f(cmd_latency_ms, '.3f'),
+            '' if lap_idx is None else int(lap_idx),
+            _f(pred_err_m, '.4f'), _f(pred_acc_pct, '.2f'),
+            _f(lap_score, '.6f'), _f(lap_pred_acc, '.2f'),
             # A key absent from `adaptive` writes an empty cell rather than a
             # default, so "this feature was disabled/not reported" stays
             # distinguishable from "this feature reported exactly 1.0".
             *[_f((adaptive or {}).get(k), '.5f') for k in ADAPTIVE_COLUMNS],
         ])
 
-        # Same accumulation the offline tuner runs, step for step.
-        self._metrics.add_step(
+        # Same accumulation the offline tuner runs, step for step. Fed into
+        # BOTH accumulators: _metrics for the whole-run header score (as
+        # before multi-lap existed), _lap_metrics for the CURRENT lap only
+        # (reset by finish_lap() each time a lap completes).
+        step_kwargs = dict(
             e_y=e_y, e_psi=e_psi_rad, r=yaw_rate,
             u_opt=(delta_cmd, a_cmd),
             v_target=v_desired, v_actual=v_actual,
             u_max_steer=self._max_steer_rad,
             solver_failed=bool(solver_failed), inaccurate=bool(inaccurate),
         )
+        self._metrics.add_step(**step_kwargs)
+        self._lap_metrics.add_step(**step_kwargs)
 
         self._n += 1
         if self._n % 20 == 0:          # flush ~1 s so a Ctrl-C leaves valid data
@@ -531,6 +831,40 @@ class ControlLogger:
             progress=progress, time_bonus=time_bonus, dnf=dnf, offtrack=offtrack,
             reached_end=reached_end,
         )
+
+    def finish_lap(self, lap: dict, pred_acc_pct: float | None = None,
+                   pred_err_m: float | None = None) -> dict:
+        """
+        Finalise the JUST-COMPLETED lap's own accumulator into a score, then
+        reset it so the next lap starts from zero. Called by the node the
+        instant LapProgressTracker.update() returns a completed-lap dict
+        (see that method's docstring), on the SAME tick — its return value
+        is meant to be passed straight into log_control()'s `lap_summary`
+        kwarg so the score lands on the row that completed the lap.
+
+        `lap` is that completed-lap dict: {'lap_idx', 'progress',
+        'reached_end', 'time_bonus', 'lap_time_s', 'optimal_time_s'}.
+        pred_acc_pct/pred_err_m are this lap's mean HorizonAccuracyTracker
+        result (None for a non-NMPC run, or an NMPC run where nothing
+        matured during the lap — e.g. a very short lap).
+
+        Returns a dict: everything RolloutMetrics.finalize() returns (same
+        shape as score()'s return value) plus 'lap_idx', 'lap_time_s',
+        'pred_acc_pct', 'pred_err_m'. Stored in self._lap_summaries for the
+        header at close().
+        """
+        result = self._lap_metrics.finalize(
+            progress=lap.get('progress', 1.0),
+            time_bonus=lap.get('time_bonus', 0.0),
+            reached_end=lap.get('reached_end', True),
+        )
+        result['lap_idx'] = lap.get('lap_idx')
+        result['lap_time_s'] = lap.get('lap_time_s')
+        result['pred_acc_pct'] = pred_acc_pct
+        result['pred_err_m'] = pred_err_m
+        self._lap_summaries.append(result)
+        self._lap_metrics = RolloutMetrics()
+        return result
 
     def _write_score_header(self, result: dict, partial: bool,
                              lap_time_s: float | None = None,
@@ -572,6 +906,28 @@ class ControlLogger:
             lines.append(f'# optimal_time_s={optimal_time_s:.4f}'
                          '  (ds/v_target integral over the precomputed speed'
                          ' profile, scaled by progress -- see LapProgressTracker)')
+
+        # Per-lap lines, one lap's worth of score + horizon accuracy per
+        # completed lap (see finish_lap()). Named lap_N_* (1-indexed) so a
+        # human/script can grep a specific lap without parsing the whole
+        # header. This is IN ADDITION to the whole-run composite_score
+        # below (the current, in-progress-or-final lap at close() time),
+        # not a replacement for it -- a single-lap run still gets the same
+        # composite_score= line it always has, for backward compatibility
+        # with anything that already parses that key.
+        if self._lap_summaries:
+            lines.append('# ── per-lap scores ──')
+            for lap in self._lap_summaries:
+                idx = lap.get('lap_idx')
+                lap_time = lap.get('lap_time_s')
+                acc = lap.get('pred_acc_pct')
+                lines.append(f'# lap_{idx}_score={lap["composite_score"]:.6f}')
+                if lap_time is not None:
+                    lines.append(f'# lap_{idx}_time_s={lap_time:.4f}')
+                lines.append(
+                    f'# lap_{idx}_pred_acc_pct='
+                    + (f'{acc:.2f}' if acc is not None else 'n/a'))
+
         for key in (
             'composite_score', 'n_steps', 'rmse', 'peak_lateral_error_m',
             'speed_rmse_mps', 'yaw_rms_radps', 'max_yaw_rate_radps',
@@ -584,6 +940,18 @@ class ControlLogger:
                 val = result[key]
                 val_s = f'{val:.6f}' if isinstance(val, float) else str(val)
                 lines.append(f'# {key}={val_s}')
+
+        # Whole-run horizon accuracy: mean of each completed lap's own mean
+        # accuracy (NOT re-derived from the raw per-tick values -- those
+        # aren't retained past finish_lap()'s reset). NMPC-only; absent
+        # entirely on a Stanley/LTV-QP run or a run with zero completed
+        # laps, same "column/line just doesn't exist" convention as the
+        # rest of this header.
+        lap_accs = [lap['pred_acc_pct'] for lap in self._lap_summaries
+                    if lap.get('pred_acc_pct') is not None]
+        if lap_accs:
+            lines.append(f'# pred_acc_pct={float(np.mean(lap_accs)):.2f}'
+                         '  (mean of each completed lap\'s own mean horizon accuracy)')
 
         tmp = self._ctrl_path + '.tmp'
         try:

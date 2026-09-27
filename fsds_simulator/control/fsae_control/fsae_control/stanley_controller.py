@@ -151,6 +151,19 @@ class StanleyControllerNode(Node):
         # apart (see mpc_controller.py's own /fsae/control/debug_weights).
         self.pub_debug_stanley = self.create_publisher(
             String, '/fsae/control/debug_stanley', 10)
+        # Per-lap score summary -- live_viz.py's lap panel. Same topic/QoS
+        # as mpc_controller.py's own publisher (see its comment for the
+        # RELIABLE rationale); no horizon accuracy here (Stanley has no
+        # predicted horizon at all — see HorizonAccuracyTracker's docstring),
+        # so pred_acc_pct is always None/n/a in this node's summaries.
+        self.pub_lap_summary = self.create_publisher(
+            String, '/fsae/control/lap_summary',
+            QoSProfile(
+                reliability=ReliabilityPolicy.RELIABLE,
+                history=HistoryPolicy.KEEP_LAST,
+                depth=10,
+            ),
+        )
 
         self._path: np.ndarray = (
             self._static_path if self._static_path is not None else np.empty((0, 2))
@@ -316,16 +329,29 @@ class StanleyControllerNode(Node):
                 (self.get_clock().now() - self._path_stamp).nanoseconds * 1e-9
                 if self._path_stamp is not None else None
             )
+            lap_summary = None
+            if self._lap_tracker is not None:
+                lap = self._lap_tracker.update(self._car_pos, t, self._car_speed)
+                if lap is not None:
+                    # No horizon accuracy on Stanley -- no predicted
+                    # trajectory exists at all (see HorizonAccuracyTracker's
+                    # docstring), so pred_acc_pct/pred_err_m stay None and
+                    # every reader (live_viz.py, plot_playback.py) shows n/a.
+                    lap_summary = self._telemetry.finish_lap(lap)
+                    lap_summary['lap_idx'] = lap['lap_idx']
+                    msg = String()
+                    msg.data = json.dumps(lap_summary)
+                    self.pub_lap_summary.publish(msg)
             self._telemetry.log_control(
                 t, self._car_pos[0], self._car_pos[1], self._car_yaw,
                 self._car_speed, speed, steering,
                 self._stanley.last_e_y, self._stanley.last_e_psi, self._car_yaw_rate,
                 path_age_s=path_age_s,
                 cmd_latency_ms=(time.perf_counter() - _t_loop0) * 1e3,
+                lap_idx=self._lap_tracker.lap_idx if self._lap_tracker is not None else None,
+                lap_summary=lap_summary,
             )
             self._telemetry.log_path(t, self._path)
-            if self._lap_tracker is not None:
-                self._lap_tracker.update(self._car_pos, t, self._car_speed)
 
         self.get_logger().info(
             f'cmd_vel: speed={speed:.2f} m/s  steer={steering:.3f} rad  '
