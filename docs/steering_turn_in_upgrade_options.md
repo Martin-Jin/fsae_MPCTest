@@ -54,7 +54,7 @@ self._ErE = self._E.T @ (Rr_flat[:, None] * self._E)
 
 ### IMPLEMENTED AND OFFLINE-REJECTED
 
-Built as `nmpc_rrate_stage_ramp_enabled` / `nmpc_rrate_stage_near` (`_rrate_stage_ramp()` in `nmpc_optimiser.py`/`nmpc_core.py`). Flag-off verified byte-identical. Offline on `comp_test_map_3` (a_lat_max 5.5, r_rate_delta 52.5):
+Built as `nmpc_rrate_stage_ramp_enabled` / `nmpc_rrate_stage_near` (`_rrate_stage_ramp()` in `controller/nmpc/weight_schedule.py`/`nmpc_core.py`). Flag-off verified byte-identical. Offline on `comp_test_map_3` (a_lat_max 5.5, r_rate_delta 52.5):
 
 | config | n | slew% | mean\|d\| | \|e_y\| | dnf |
 |---|---|---|---|---|---|

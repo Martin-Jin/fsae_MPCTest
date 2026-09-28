@@ -23,6 +23,13 @@ gui/simulation.py builds a matplotlib GUI at import time. tuner/offline_tuner.py
 rollouts inside multiprocessing worker processes — importing gui/simulation.py
 there would try to open a GUI window in every worker. This module imports
 nothing GUI-related, so it's safe to import from anywhere.
+
+LAYOUT
+------
+  sim/rollout_core.py    this file: rollout state, the tick loop, termination
+  sim/rollout_phases.py  the loop's per-tick phases (reference + speed target,
+                         LTV/NMPC solves, history recording, time bonus)
+  sim/sensor_noise.py    SLAM noise, cone noise, pose-feed hold models
 """
 
 import math
@@ -30,464 +37,35 @@ import numpy as np
 from collections import deque
 
 from model.vehicle_physics import (
-    step_nonlinear_plant, init_plant_state, plant_to_tracking_error,
-    find_closest_reference_bounded,
+    step_nonlinear_plant, init_plant_state, find_closest_reference_bounded,
 )
-from controller.optimiser import solve_mpc
-from controller.nmpc_optimiser import NMPCController
 from sim.sim_track import SimPerception, SimPlanner, calculate_dynamic_max_steps
-from controller.model_utils import (
-    curvature_estimate, adaptive_R_rate, adaptive_R_scaling, adaptive_Q_scaling,
-    steer_rate_anti_hunt, reversal_penalty_boost, _corner_factor, _blend,
-    _low_speed_corner_boost,
-)
 from sim.scoring import RolloutMetrics
-import sim.speed_profile as sp
-import cvxpy as cp
 
 from settings import (
     USE_PLANNER, DELAY_STEPS, OFFTRACK_LIMIT, MAX_FAILS, DT,
-    ROLLOUT_EPS, ROLLOUT_MAX_ITER, N_HORIZON,
-    DELAY_JITTER_STEPS, DELAY_JITTER_SEED,
+    ROLLOUT_EPS, ROLLOUT_MAX_ITER, N_HORIZON, DELAY_JITTER_SEED,
     SLAM_NOISE_ENABLED, SLAM_POS_JITTER_STD, SLAM_YAW_JITTER_STD,
     SLAM_POS_DRIFT_STD, SLAM_YAW_DRIFT_STD, SLAM_DRIFT_TAU, SLAM_NOISE_SEED,
     POSE_HOLD_ENABLED, POSE_HOLD_PROB, POSE_HOLD_MEAN_TICKS,
     POSE_HOLD_MAX_TICKS, POSE_HOLD_SEED,
     CONE_NOISE_ENABLED, CONE_POS_JITTER_STD, CONE_NOISE_SEED,
-    REF_HEADING_RATE_LIMIT_ENABLED, REF_HEADING_RISE_RATE,
-    TERMINAL_Q_SCALE, ADAPTIVE_Q_SCALING_ENABLED,
-    USE_PRECOMPUTED_SPEED_PROFILE, STEER_RATE_ANTI_HUNT_ENABLED,
-    REVERSAL_PENALTY_ENABLED, REVERSAL_PENALTY_BOOST_MAX, REVERSAL_PENALTY_K,
-    ENABLE_DYNAMIC_SPEED_CAP, DYNAMIC_CAP_A_LAT_MAX, DYNAMIC_CAP_SAFETY,
-    ADAPTIVE_R_RATE_ENABLE_IN_CORNERS,
-    ADAPTIVE_R_RATE_DURING_FLOOR,
-    ALAT_CEILING_FLAT, ALAT_CEILING_SLOPE, ALAT_CEILING_INTERCEPT,
-    R_A_ACCEL, R_A_BRAKE,
-    CORNER_FACTOR_K,
-    Q_EY_STRAIGHT, Q_EY_CORNER, Q_EPSI_STRAIGHT, Q_EPSI_CORNER,
-    Q_R_STRAIGHT, Q_R_CORNER, RRATE_STEER_STRAIGHT, RRATE_STEER_CORNER,
-    R_STEER_CORNER_MID,
-    LOW_SPEED_CORNER_BOOST_V_HALF, LOW_SPEED_CORNER_BOOST_MAX_EXTRA,
-    EPSI_RA_HALF_RAD, EPSI_RA_ACCEL_BOOST_MAX, EPSI_RA_BRAKE_FLOOR,
-    USE_NMPC, NMPC_HORIZON, NMPC_SQP_ITERS, NMPC_SOLVE_BUDGET_MS,
-    NMPC_RK_SUBSTEPS, NMPC_JAC_SUBSTEPS, NMPC_JAC_GATE_SPEED, NMPC_JAC_SUBSTEPS_FAST,
-    NMPC_RK_GATE_SPEED, NMPC_RK_SUBSTEPS_FAST,
-    NMPC_STANDSTILL_STEER_DAMP_ENABLED, NMPC_STANDSTILL_SPEED,
-    NMPC_STANDSTILL_FADE_SPEED,
-    NMPC_STANDSTILL_STEER_R_SCALE,
-    NMPC_TRUST_DELTA_RAD, NMPC_TRUST_A,
-    NMPC_BACKTRACK_MAX, NMPC_TRACK_HALFWIDTH, NMPC_SLACK_WEIGHT,
-    NMPC_CURVATURE_DENSE_STEP, NMPC_CURVATURE_SMOOTH_W, NMPC_KAPPA_CLIP,
-    NMPC_KAPPA_RATE_MAX,
-    NMPC_OSQP_MAX_ITER, NMPC_OSQP_EPS, NMPC_ALAT_CEILING_ENABLED,
-    NMPC_Q_E_Y, NMPC_Q_E_YD, NMPC_Q_E_PSI, NMPC_Q_EPSI_DOT, NMPC_Q_E_V,
-    NMPC_R_DELTA, NMPC_R_A_ACCEL, NMPC_R_A_BRAKE,
-    NMPC_R_RATE_DELTA, NMPC_R_RATE_A, NMPC_TERMINAL_SCALE,
-    NMPC_SPLINE_REFERENCE_ENABLED,
-    NMPC_FRICTION_CIRCLE_ENABLED,
-    NMPC_LATENCY_COMPENSATION_ENABLED, NMPC_LATENCY_COMPENSATION_MS,
-    NMPC_STEER_RATE_ANTI_HUNT_ENABLED,
-    NMPC_CORNER_RRATE_BLEND_ENABLED, NMPC_CORNER_FACTOR_K,
-    NMPC_RRATE_STEER_STRAIGHT, NMPC_RRATE_STEER_CORNER,
-    NMPC_REVERSAL_PENALTY_ENABLED, NMPC_REVERSAL_PENALTY_BOOST_MAX,
-    NMPC_REVERSAL_PENALTY_K,
-    NMPC_RRATE_STAGE_RAMP_ENABLED, NMPC_RRATE_STAGE_NEAR,
-    NMPC_RJERK_DELTA, NMPC_RJERK_A,
-    NMPC_RRATE_ZONE_ENABLED, NMPC_RRATE_ZONE_BOOST_STRAIGHT,
-    NMPC_RRATE_ZONE_EASE_APPROACH, NMPC_RRATE_ZONE_FLOOR_CORNER,
-    NMPC_PROGRESS_ENABLED, NMPC_Q_PROGRESS, NMPC_PROGRESS_REACH,
-    NMPC_PROGRESS_V_MIN, NMPC_SLACK_LINEAR_WEIGHT,
-    SPEED_TARGET_DEFICIT_MAX,
+    USE_NMPC,
 )
+from sim.rollout_phases import (  # noqa: F401 (predict_ahead is public API)
+    _normalize_angle, predict_ahead, build_nmpc, reference_and_speed_target,
+    gate_and_rate_limit_speed_target, true_tracking_error,
+    believed_pending_cmds, solve_nmpc_tick, solve_ltv_tick,
+    record_solve_history, record_horizon_prediction, compute_time_bonus,
+)
+from sim.sensor_noise import SlamNoise, ConeNoise, PoseFeedHold
 
-
-def _nmpc_pick(override, base):
-    """-1.0 (or None) = inherit `base`; otherwise use `override`. See
-    settings.py's "NMPC weight overrides" comment."""
-    return base if override is None or override < 0.0 else override
 
 # Conservative defaults, not independently measured/tuned: 3 s / 3 m is slow
 # even for a car recovering from a bad line, so this only catches a genuine
 # stall (stuck oscillating, not actually progressing), not normal driving.
 STALL_CHECK_INTERVAL = 60   # Steps between rolling stall checks (3 s at 20 Hz)
 STALL_MIN_DISTANCE = 3.0    # Minimum distance (m) expected per interval
-
-# v_max/v_min for the live-planner branch's speed_profile.curvature_speed() call.
-# Mirror fsds_simulator/control/fsae_control/fsae_control/mpc/mpc_controller.py's
-# v_max/v_min ROS parameters (default V_MAX/V_MIN) — and the old SimPlanner
-# defaults these replace — so offline-tuned weights see the same speed targets
-# the live node will command.
-PLANNER_V_MAX = 20.0
-PLANNER_V_MIN = 1.5
-
-# Max rate (m/s^2) at which the speed TARGET may rise. Mirrors
-# mpc_controller.SPEED_TARGET_RISE_RATE — keep the two in sync.
-# Decreases are never rate-limited; only the rise is damped, to suppress the
-# planner's frame-to-frame curvature jitter without capping real acceleration.
-SPEED_TARGET_RISE_RATE = 7.0
-
-# Max speed error (m/s) the rise limiter is allowed to open up before it stops
-# ramping and waits for the car. Promoted to MPCParams.speed_target_deficit_max
-# on the live side (ROS param/YAML/launch arg/GUI tunable); imported here from
-# settings.py's SPEED_TARGET_DEFICIT_MAX, which is the offline mirror of that
-# same field, kept in sync by hand like every other entry in that file.
-#
-# SPEED_TARGET_RISE_RATE alone assumes the car can accelerate at that rate. From
-# a standing start it cannot: the car does not break static friction for ~1 s,
-# so the target ramps to ~7 m/s while the car is still stationary and banks a
-# deficit it spends the next second chasing. The NMPC minimises one scalar cost
-# over the horizon, so a speed error that large swamps the lateral term and the
-# optimiser trades e_y away for speed it was never going to get — measured as a
-# sideways excursion at launch that self-corrects once the car is rolling.
-#
-# Capping the DEFICIT rather than gating on measured speed is deliberate. A gate
-# of the form "hold the target while v_actual is near zero" deadlocks: no target
-# means no speed error, which means no throttle, which means the car never moves
-# and the gate never opens. Holding at v_actual + DEFICIT_MAX always leaves a
-# real speed error, so throttle still commands and the launch still happens; the
-# ramp resumes by itself as the car closes the gap.
-#
-# Not specific to launch: the same rule stops the target running away after a
-# spin or a heavy brake, for the same reason.
-#
-# 5.0, not the original 2.5. At 2.5 the clamp is not a launch/recovery guard
-# at all, it is the binding constraint on acceleration for a THIRD of a
-# normal lap: measured 36.8% of ticks pinned at exactly the limit, holding
-# a_cmd to 4.45 against a plant that delivers ~12. Raising it to 5.0 drops
-# the pinned fraction to 2.3%, nearly doubles peak a_cmd to 8.32, and
-# improves every metric at once rather than trading any against another:
-#
-#   DEFICIT_MAX   score (3 runs)        lap steps   a_cmd max   |e_y| mean   steer sat
-#   2.5           0.757/0.804/0.757     1081-1117   4.45        0.418        4.71%
-#   5.0           0.693/0.692/0.693     1033-1034   8.32        0.402        3.77%
-#
-# Lower score is better. The launch behaviour the clamp exists to protect is
-# unchanged (launch at step 9 either way, launch-phase |e_y| 0.27 m against
-# a 3.5 m boundary), which is why the guard still does its job at 5.0. Run
-# to run spread also collapses (0.001 vs 0.047), because the clamp is no
-# longer arbitrating most of the lap.
-#
-# Values above ~5 buy nothing further (10.0 and 100.0 both plateau at
-# a_cmd 8.87 and score no better), so this is the knee, not a ceiling to
-# keep raising. Do not read it as "the clamp was wrong": it is a real guard
-# and still needed, it was simply set tight enough to bind far outside the
-# regime it was designed for.
-
-# Max rate (gate-units/s) at which tracking_error_speed_gate()'s output may
-# change per tick, in either direction. Mirrors
-# mpc_controller.GATE_RATE_LIMIT — keep the two in sync. See that
-# constant's own comment for the full rationale.
-GATE_RATE_LIMIT = 2.0
-
-# Max rate (m/s^2) at which curvature_speed()'s OWN output (the live,
-# per-step centreline-derived target, NOT the precomputed-profile oracle
-# lookup) may fall. Mirrors mpc_controller.V_CURV_FALL_RATE — keep the two
-# in sync. See that constant's own comment for the full history: an initial
-# 5.0 (speed_profile.A_BRAKE_PLAN, the PLANNING-time deceleration
-# curvature_speed()'s braking-distance propagation assumes) capped genuine
-# hard braking below what the car can do (measured live 2026-09-15: car
-# entered the first corner at ~17 m/s, took 3+ s to reach the real ~2.5 m/s
-# target, spun out before arriving). Now 7.0, matching mpc_core.MAX_BRAKE /
-# vehicle_physics.max_accel_brake, the car's actual achievable braking
-# deceleration rather than a conservative planning assumption.
-V_CURV_FALL_RATE = 7.0
-
-
-def _normalize_angle(angle):
-    """Wrap an angle to (−π, π] using atan2."""
-    return np.arctan2(np.sin(angle), np.cos(angle))
-
-
-def _rate_limit_ref_psi(ref_psi_raw, ref_psi_prev, max_rate_rad_per_s, dt):
-    """
-    Cap how fast the reference heading (ref_psi) is allowed to change per
-    tick, same shape as SPEED_TARGET_RISE_RATE's cap on v_target.
-
-    Why this exists: most of the planner's reference-heading swing is real
-    track geometry, but a tail-concentrated excess — the reference correctly
-    anticipating a sharp corner earlier than the car has actually yawed — is
-    strongly linked to steering saturation. Limiting only the RATE (never
-    the final direction — once the car catches up, the raw reference is
-    reached again) trades slightly later turn-in commitment for not asking
-    the controller to snap onto a heading the car has no chance of reaching
-    yet.
-
-    Symmetric (limits swings in either direction) — unlike
-    SPEED_TARGET_RISE_RATE, which only limits increases because slowing down
-    is always safe. There is no equivalent "always safe" direction for a
-    heading reference: swinging the target toward straight ahead just as
-    hard as toward the apex can be equally premature relative to where the
-    car has actually turned.
-
-    Parameters
-    ----------
-    ref_psi_raw : float
-        This tick's actual reference heading (rad), unwrapped-compatible with
-        ref_psi_prev (i.e. already continuous, not wrapped to [-pi, pi]).
-    ref_psi_prev : float or None
-        Previous tick's LIMITED reference heading. None on the first tick
-        after start/reset, in which case the raw value passes through
-        unlimited (mirrors v_des_prev's None handling).
-    max_rate_rad_per_s : float
-        Maximum |d(ref_psi)/dt|, rad/s.
-    dt : float
-        Tick period, s.
-
-    Returns
-    -------
-    float — the limited reference heading (rad, unwrapped-compatible).
-    """
-    if ref_psi_prev is None:
-        return ref_psi_raw
-    max_step = max_rate_rad_per_s * dt
-    delta = _normalize_angle(ref_psi_raw - ref_psi_prev)
-    delta = np.clip(delta, -max_step, max_step)
-    return ref_psi_prev + delta
-
-
-class SlamNoise:
-    """
-    Corrupts the pose the controller/planner SEE, leaving the true plant
-    state untouched.
-
-    Why this exists
-    ---------------
-    FSDS has no real SLAM. Its `sim_perception` node republishes ground-truth
-    `/fsds/testing_only/odom` straight onto `/fsae/slam/car_position`, and the
-    cone map is a latched oracle map cropped to a forward window — the only
-    modelled limitation is sensor RANGE, not accuracy. This rollout mirrored
-    that by feeding exact plant state back into the planner and the
-    tracking-error maths, which makes the simulator systematically easier than
-    the real car, whose pose comes from ZED visual odometry + cone_mapper.
-
-    Localisation error matters here specifically because it lands directly in
-    e_y/e_psi — the signals the MPC steers on. A pose that jitters makes the
-    measured error jitter, and an under-damped controller chases it.
-
-    NOT the cause of the observed FSDS chatter: FSDS's pose is already exact,
-    so pose noise cannot explain steering reversal chatter seen there. That
-    was instead caused by (a) the steering slew limit binding on a large
-    fraction of steps and (b) sim_perception publishing the pose at a lower
-    rate than the control loop, so many MPC solves re-used an unchanged
-    pose. Both are fixed elsewhere; this class is for the REAL car's
-    localisation error, and defaults to off.
-
-    Model
-    -----
-    Two additive components, matching how real SLAM misbehaves:
-
-      jitter — zero-mean white noise, redrawn every step. Causes chatter.
-      drift  — a first-order (Ornstein-Uhlenbeck) process pulled back toward
-               zero with time constant SLAM_DRIFT_TAU. Wanders over seconds
-               and self-corrects, like a SLAM estimate between loop closures,
-               instead of random-walking away over a long rollout.
-
-    The OU update uses the exact discrete-time form
-    ``d <- a*d + sqrt(1-a^2)*sigma*w`` with ``a = exp(-dt/tau)``, whose
-    stationary standard deviation is exactly ``sigma`` regardless of dt — so
-    SLAM_POS_DRIFT_STD means what it says and does not change meaning if DT
-    changes.
-
-    IMPORTANT: this is deliberately NOT applied to the state handed to the
-    plant or to scoring. The car is judged on where it actually ended up, not
-    where it believed it was — the same asymmetry real localisation error has.
-    """
-
-    def __init__(self, dt, seed, pos_jitter_std, yaw_jitter_std,
-                 pos_drift_std, yaw_drift_std, drift_tau):
-        self._rng = np.random.default_rng(seed)
-        self._pos_jitter_std = float(pos_jitter_std)
-        self._yaw_jitter_std = float(yaw_jitter_std)
-        self._pos_drift_std = float(pos_drift_std)
-        self._yaw_drift_std = float(yaw_drift_std)
-
-        tau = max(float(drift_tau), 1e-6)
-        self._a = float(np.exp(-float(dt) / tau))
-        # Scale that makes the OU process's stationary std equal *_drift_std.
-        self._q = float(np.sqrt(max(0.0, 1.0 - self._a * self._a)))
-
-        # Start the drift at a stationary sample rather than 0, so step 0 isn't
-        # artificially better-localised than the rest of the run.
-        self._drift = self._rng.normal(0.0, 1.0, size=3)
-
-    def corrupt(self, x, y, yaw):
-        """Return (x_est, y_est, yaw_est) as the controller would measure them."""
-        self._drift = self._a * self._drift + self._q * self._rng.normal(0.0, 1.0, size=3)
-        jitter = self._rng.normal(0.0, 1.0, size=3)
-
-        x_est = x + self._drift[0] * self._pos_drift_std + jitter[0] * self._pos_jitter_std
-        y_est = y + self._drift[1] * self._pos_drift_std + jitter[1] * self._pos_jitter_std
-        yaw_est = yaw + self._drift[2] * self._yaw_drift_std + jitter[2] * self._yaw_jitter_std
-        return float(x_est), float(y_est), float(_normalize_angle(yaw_est))
-
-
-class ConeNoise:
-    """
-    Corrupts cone positions AFTER SimPerception's FOV filter, modelling real
-    per-detection vision noise on top of FSDS's noise-free oracle cone map.
-
-    Why this exists
-    ---------------
-    sim_track.SimPerception.visible_cones() returns exact ground-truth cone
-    coordinates, only cropped by range/FOV — see `docs/reference/simulator_fidelity.md`,
-    "Simulator fidelity limits": the cone map was, until this class existed,
-    the one aspect of the sim/real gap with literally no model at all. This
-    adds the minimum needed to make perception-side hypotheses testable
-    offline: independent per-cone, per-frame position jitter. It does NOT
-    model false positives/negatives or range-dependent noise growth — both
-    are real, both are still unmodelled, this only closes the position-jitter
-    gap. See settings.CONE_NOISE_ENABLED for the full rationale.
-
-    Unlike SlamNoise, there is no drift/bias component: a vision cone detector
-    re-estimates each cone's position independently every frame rather than
-    tracking one belief over time, so there is nothing that should carry over
-    between frames the way SLAM's OU drift does. If a future measurement shows
-    real cone detections DO carry frame-to-frame correlated error (e.g. from a
-    slowly-drifting camera calibration), add a drift term the same way
-    SlamNoise does rather than repurposing jitter for it.
-
-    Deliberately applied to EACH CONE INDEPENDENTLY, not once per frame as a
-    shared offset — SlamNoise corrupts a single pose shared by the whole cone
-    set, which is correct for localisation error, but detection error is
-    per-object (each cone has its own range/angle/occlusion to the sensor).
-    """
-
-    def __init__(self, seed, pos_jitter_std):
-        self._rng = np.random.default_rng(seed)
-        self._pos_jitter_std = float(pos_jitter_std)
-
-    def corrupt(self, cones):
-        """Return a copy of `cones` (n, 2) with independent per-point jitter."""
-        if len(cones) == 0 or self._pos_jitter_std <= 0.0:
-            return cones
-        return cones + self._rng.normal(0.0, self._pos_jitter_std, size=cones.shape)
-
-
-class PoseFeedHold:
-    """
-    Models the live pose feed REPEATING the previous measurement instead of
-    delivering a fresh one — the dominant sim-to-real gap.
-
-    WHY THIS EXISTS
-    ---------------
-    The offline rollout gave the controller a brand-new, exact pose every
-    single tick. DELAY_STEPS models a fixed 50 ms lag, but the controller
-    still learns something new every step, so its heading error can never
-    accumulate. The real car does not work that way: `/fsae/slam/car_position`
-    intermittently stops publishing, and the controller re-uses the last pose
-    it received while the car keeps moving.
-
-    Measured from live telemetry across runs on the same track and same
-    tuned gains, differing only in how badly the feed stalled: a healthy run
-    has a low repeated-tick rate and short holds, while a degraded run can
-    see the majority of ticks repeating with holds approaching a second. In
-    one such degraded run the pose froze for roughly a second at speed —
-    enough distance travelled with no positional update that, when the feed
-    resumed, the heading error was unrecoverable and the car spun. Both runs
-    used identical weights on identical track; the only difference was the
-    feed.
-
-    This is NOT the same thing as DELAY_STEPS or DELAY_JITTER_STEPS:
-      - DELAY_STEPS delays a pose that is still FRESH each tick.
-      - DELAY_JITTER_STEPS perturbs only the controller's BELIEF about the lag.
-      - This repeats the DATA, so pose_age genuinely ramps and the controller
-        is flying blind. Nothing in the previous model produced that.
-
-    MODEL
-    -----
-    Two-state Markov chain over "fresh" and "held":
-      - each tick, with probability `p_hold`, a hold begins
-      - hold length is drawn geometrically, mean `mean_hold_ticks`, capped at
-        `max_hold_ticks`
-    A geometric hold length reproduces the measured histogram shape well: many
-    short 2-tick holds, a thin tail of long ones. Fitting anything more
-    elaborate to two runs would be overfitting.
-
-    The whole ESTIMATED state is frozen, not just x/y — the live log shows
-    v_actual and yaw repeating alongside position, because they come from the
-    same odometry message. Freezing position while letting speed update would
-    model a failure mode that does not exist.
-
-    Seeded, so rollouts stay reproducible and CMA-ES still gets a stable score
-    per candidate (see settings.POSE_HOLD_SEED).
-    """
-
-    def __init__(self, p_hold, mean_hold_ticks, max_hold_ticks, seed):
-        self._rng = np.random.default_rng(seed)
-        self._p_hold = float(np.clip(p_hold, 0.0, 1.0))
-        # Geometric success prob giving the requested mean hold length.
-        # Repeats per hold average mean_hold - 1 (see apply()); guard the
-        # degenerate mean_hold <= 1 case, which means "never actually hold".
-        self._mean_hold = max(float(mean_hold_ticks), 1.0)
-        self._q_repeat = 1.0 / max(self._mean_hold - 1.0, 1e-6)
-        self._q_repeat = float(np.clip(self._q_repeat, 1e-6, 1.0))
-        self._max_hold = int(max(1, max_hold_ticks))
-        self._remaining = 0          # ticks still to hold
-        self._held = None            # the frozen (state, X, Y, psi) tuple
-
-    def apply(self, state_est, X_est, Y_est, psi_est):
-        """
-        Return the pose the controller actually sees this tick, plus how many
-        ticks old it is.
-
-        Returns (state_est, X, Y, psi, age_ticks). age_ticks is 0 on a fresh
-        sample and increments through a hold, mirroring the live pose_age_s.
-        """
-        if self._remaining > 0:
-            self._remaining -= 1
-            s, x, y, psi, age = self._held
-            self._held = (s, x, y, psi, age + 1)
-            return s, x, y, psi, age + 1
-
-        # Fresh sample this tick; decide whether the NEXT ticks are held.
-        # A "hold of length L" spans L ticks TOTAL (this fresh one plus L-1
-        # repeats), matching how the live histogram was counted, so the number
-        # of repeat ticks to schedule is L-1. np.random.geometric returns >= 1,
-        # hence the -1: without it every hold ran one tick long and the mean
-        # came out at 2.94 against a measured 2.08.
-        if self._rng.random() < self._p_hold:
-            # A hold spans `mean_hold_ticks` ticks TOTAL (this fresh one plus
-            # the repeats), matching how the live histogram was counted, so the
-            # number of REPEATS to schedule averages mean_hold - 1. A geometric
-            # draw has mean 1/q, hence q = 1/(mean_hold - 1).
-            self._remaining = int(np.clip(
-                self._rng.geometric(self._q_repeat), 1, self._max_hold - 1))
-
-        self._held = (state_est.copy(), float(X_est), float(Y_est), float(psi_est), 0)
-        return state_est, X_est, Y_est, psi_est, 0
-
-
-_PREDICT_EPSI_CLIP = 0.5   # rad (~28.6°) — small-angle bound, see predict_ahead below
-
-
-def predict_ahead(x0, Ad, Bd, pending_cmds):
-    """
-    Roll the linear error-state model forward through commands already
-    committed but not yet applied to the plant, so the MPC solves against
-    the state it will actually face when its new output takes effect
-    instead of the stale current state (delay compensation).
-
-    pending_cmds must be ordered oldest-first (the order they will be
-    applied to the plant). Same x_p = Ad @ x_p + Bd @ u mechanics as the
-    horizon-prediction preview below.
-
-    Ad's e_psi -> e_y_dot coupling is the kinematic relation e_y_dot ~= vx *
-    sin(e_psi), linearised to vx * e_psi (bicycle_model.py). That's only
-    valid for small e_psi (sin(x) ~= x). Unlike the closed-loop MPC horizon
-    (which re-measures every real step), this rollforward is open-loop over
-    several steps with no ground-truth correction in between, so a large
-    e_psi here (sharp corner + a perturbed initial heading) compounds every
-    step instead of getting corrected — observed to blow up e_y_dot and
-    saturate steering on PATH_SUDDEN_TURN. Clip e_psi to a small-angle range
-    before each step's matrix multiply so the rollforward can't leave the
-    regime the linear model is actually valid in; the real (unclipped) e_psi
-    is still what the QP solves against afterwards via x0_mpc.
-    """
-    x_p = x0.copy()
-    for u in pending_cmds:
-        x_p[2] = np.clip(x_p[2], -_PREDICT_EPSI_CLIP, _PREDICT_EPSI_CLIP)
-        x_p = Ad @ x_p + Bd @ u
-    return x_p
 
 
 def compute_step_budget(path_X, path_Y, path_v_profile):
@@ -564,9 +142,9 @@ def run_core_rollout(
         Planner-in-the-loop vs. oracle tracking against the global path.
     use_nmpc : bool
         False (default, = settings.USE_NMPC) -> controller/optimiser.py's
-        linear time-varying QP, as always. True -> controller/
-        nmpc_optimiser.py's Frenet-frame nonlinear MPC instead -- see that
-        module's docstring. Explicit parameter (not read from settings.py
+        linear time-varying QP, as always. True -> controller/nmpc/'s
+        Frenet-frame nonlinear MPC instead -- see that package's
+        docstring. Explicit parameter (not read from settings.py
         at call time) so a caller (e.g. an A/B script) can toggle it without
         relying on module-attribute mutation after settings.py has already
         been imported elsewhere, which has no effect on an already-bound
@@ -621,15 +199,6 @@ def run_core_rollout(
         "time_bonus"      : float
         "history"         : dict or None — populated iff want_history=True
     """
-    # Per-call NMPC field overrides. settings.py constants are bound into this
-    # module by name at import time, so mutating settings after import cannot
-    # reach them; this dict is the supported way to evaluate several
-    # configurations from one process. See the nmpc_overrides docstring entry.
-    _nmpc_ov = nmpc_overrides or {}
-
-    def _ov(name, default):
-        return _nmpc_ov.get(name, default)
-
     if model_lookup is None:
         raise ValueError("model_lookup must be provided (e.g. offline_tuner.get_cached_model)")
     if dynamic_max_steps is None:
@@ -651,6 +220,7 @@ def run_core_rollout(
     if CONE_NOISE_ENABLED:
         cone_noise = ConeNoise(seed=CONE_NOISE_SEED, pos_jitter_std=CONE_POS_JITTER_STD)
 
+    perception = planner = None
     if use_planner:
         perception = SimPerception(blue_cones, yellow_cones)
         planner = SimPlanner()
@@ -678,29 +248,25 @@ def run_core_rollout(
     # through. Live, that count comes from a noisy pose timestamp divided by
     # a jittering loop period, so it is regularly wrong by a step; this jitter
     # is modelled offline too, so predict_ahead() cannot look more effective
-    # in the tuner than it can ever be on the car.
+    # in the tuner than it can ever be on the car. See believed_pending_cmds.
     # Seeded so each rollout is reproducible and CMA-ES still gets a stable
     # score per candidate (see settings.DELAY_JITTER_SEED).
     delay_rng = np.random.default_rng(DELAY_JITTER_SEED)
 
-    # Previous step's speed target, for the rise-rate limiter above.
-    v_des_prev = None
-
-    # Stacked (N,2) path array, built once (not per-step) -- shared by the
-    # NMPC path below.
+    # Stacked (N,2) path array, built once (not per-step), for the NMPC's
+    # oracle-path reference.
     path_xy = np.column_stack([path_X, path_Y])
 
-    # Previous step's tracking-error speed gate, for GATE_RATE_LIMIT above.
-    gate_prev = None
-
-    # Previous step's LIVE curvature_speed() output, for V_CURV_FALL_RATE
-    # above. Only used in the live-planner (non-precomputed-profile) branch.
-    v_curv_prev = None
-
-    # Previous step's LIMITED reference heading, for REF_HEADING_RATE_LIMIT.
-    # Unwrapped/continuous (not [-pi, pi]) so consecutive limiting steps
-    # compose correctly across the wrap boundary.
-    ref_psi_prev = None
+    # Values carried from one tick to the next by the per-tick phases, each
+    # None until its first tick:
+    #   v_des_prev    speed target, for SPEED_TARGET_RISE_RATE
+    #   gate_prev     tracking-error speed gate, for GATE_RATE_LIMIT
+    #   v_curv_prev   live curvature_speed() output, for V_CURV_FALL_RATE
+    #                 (live-planner, non-precomputed-profile branch only)
+    #   ref_psi_prev  LIMITED reference heading, for REF_HEADING_RATE_LIMIT;
+    #                 unwrapped/continuous so consecutive limiting steps
+    #                 compose correctly across the wrap boundary
+    v_des_prev = gate_prev = v_curv_prev = ref_psi_prev = None
 
     # ── SLAM / localisation noise ─────────────────────────────────────────
     # Corrupts only the pose fed to perception/planner/tracking-error; the
@@ -732,75 +298,9 @@ def run_core_rollout(
             seed=POSE_HOLD_SEED,
         )
 
-    # ── Nonlinear MPC (settings.USE_NMPC) ──────────────────────────────────
-    # Constructed ONCE per rollout, same as command_queue above, so its
-    # warm-started SQP solution persists tick to tick exactly
-    # like the LTV path's u_prev/command_queue do. See controller/
-    # nmpc_optimiser.py's module docstring for the full design, and
-    # settings.py's "NMPC weight overrides" comment for why Q/R/R_rate (the
-    # CURRENT weight set -- settings.py's tuned values or a CMA-ES candidate,
-    # whichever this rollout was called with) rather than settings.py's
-    # constants directly are what the overrides inherit from.
     nmpc = None
     if use_nmpc:
-        nmpc = NMPCController(
-            dt=DT, N=NMPC_HORIZON, vehicle_params=vehicle_params,
-            u_min=u_min, u_max=u_max, du_max=du_max,
-            q_e_y=_nmpc_pick(NMPC_Q_E_Y, Q[0, 0]),
-            q_e_yd=_nmpc_pick(NMPC_Q_E_YD, Q[1, 1]),
-            q_e_psi=_nmpc_pick(NMPC_Q_E_PSI, Q[2, 2]),
-            q_epsi_dot=_nmpc_pick(NMPC_Q_EPSI_DOT, Q[3, 3]),
-            q_e_v=_nmpc_pick(NMPC_Q_E_V, Q[4, 4]),
-            r_delta=_nmpc_pick(NMPC_R_DELTA, R[0, 0]),
-            r_a_accel=_nmpc_pick(NMPC_R_A_ACCEL, R_A_ACCEL),
-            r_a_brake=_nmpc_pick(NMPC_R_A_BRAKE, R_A_BRAKE),
-            r_rate_delta=_nmpc_pick(NMPC_R_RATE_DELTA, R_rate[0, 0]),
-            r_rate_a=_nmpc_pick(NMPC_R_RATE_A, R_rate[1, 1]),
-            terminal_scale=_nmpc_pick(NMPC_TERMINAL_SCALE, TERMINAL_Q_SCALE),
-            sqp_iters=NMPC_SQP_ITERS, solve_budget_ms=NMPC_SOLVE_BUDGET_MS,
-            rk_substeps=NMPC_RK_SUBSTEPS, jac_substeps=NMPC_JAC_SUBSTEPS,
-            jac_gate_speed=NMPC_JAC_GATE_SPEED, jac_substeps_fast=NMPC_JAC_SUBSTEPS_FAST,
-            rk_gate_speed=NMPC_RK_GATE_SPEED, rk_substeps_fast=NMPC_RK_SUBSTEPS_FAST,
-            standstill_steer_damp_enabled=NMPC_STANDSTILL_STEER_DAMP_ENABLED,
-            standstill_speed=NMPC_STANDSTILL_SPEED,
-            standstill_fade_speed=NMPC_STANDSTILL_FADE_SPEED,
-            standstill_steer_r_scale=NMPC_STANDSTILL_STEER_R_SCALE,
-            trust_delta_rad=NMPC_TRUST_DELTA_RAD, trust_a=NMPC_TRUST_A,
-            backtrack_max=NMPC_BACKTRACK_MAX,
-            track_halfwidth=NMPC_TRACK_HALFWIDTH, slack_weight=NMPC_SLACK_WEIGHT,
-            slack_linear_weight=_ov('slack_linear_weight', NMPC_SLACK_LINEAR_WEIGHT),
-            osqp_max_iter=NMPC_OSQP_MAX_ITER, osqp_eps=NMPC_OSQP_EPS,
-            alat_ceiling_enabled=NMPC_ALAT_CEILING_ENABLED,
-            alat_flat=ALAT_CEILING_FLAT, alat_slope=ALAT_CEILING_SLOPE,
-            alat_intercept=ALAT_CEILING_INTERCEPT,
-            spline_reference_enabled=NMPC_SPLINE_REFERENCE_ENABLED,
-            friction_circle_enabled=NMPC_FRICTION_CIRCLE_ENABLED,
-            steer_rate_anti_hunt_enabled=NMPC_STEER_RATE_ANTI_HUNT_ENABLED,
-            corner_rrate_blend_enabled=NMPC_CORNER_RRATE_BLEND_ENABLED,
-            corner_factor_k=_ov('corner_factor_k',
-                                _nmpc_pick(NMPC_CORNER_FACTOR_K, CORNER_FACTOR_K)),
-            rrate_steer_straight=_nmpc_pick(NMPC_RRATE_STEER_STRAIGHT, RRATE_STEER_STRAIGHT),
-            rrate_steer_corner=_nmpc_pick(NMPC_RRATE_STEER_CORNER, RRATE_STEER_CORNER),
-            reversal_penalty_enabled=NMPC_REVERSAL_PENALTY_ENABLED,
-            reversal_penalty_boost_max=_nmpc_pick(
-                NMPC_REVERSAL_PENALTY_BOOST_MAX, REVERSAL_PENALTY_BOOST_MAX),
-            reversal_penalty_k=_nmpc_pick(NMPC_REVERSAL_PENALTY_K, REVERSAL_PENALTY_K),
-            rrate_stage_ramp_enabled=_ov('rrate_stage_ramp_enabled', NMPC_RRATE_STAGE_RAMP_ENABLED),
-            rrate_stage_near=_ov('rrate_stage_near', NMPC_RRATE_STAGE_NEAR),
-            rrate_zone_enabled=_ov('rrate_zone_enabled', NMPC_RRATE_ZONE_ENABLED),
-            rrate_zone_boost_straight=_ov('rrate_zone_boost_straight', NMPC_RRATE_ZONE_BOOST_STRAIGHT),
-            rrate_zone_ease_approach=_ov('rrate_zone_ease_approach', NMPC_RRATE_ZONE_EASE_APPROACH),
-            rrate_zone_floor_corner=_ov('rrate_zone_floor_corner', NMPC_RRATE_ZONE_FLOOR_CORNER),
-            rjerk_delta=_ov('rjerk_delta', NMPC_RJERK_DELTA),
-            rjerk_a=_ov('rjerk_a', NMPC_RJERK_A),
-            latency_compensation_enabled=NMPC_LATENCY_COMPENSATION_ENABLED,
-            latency_compensation_ms=NMPC_LATENCY_COMPENSATION_MS,
-            kappa_rate_max=NMPC_KAPPA_RATE_MAX,
-            progress_enabled=_ov('progress_enabled', NMPC_PROGRESS_ENABLED),
-            q_progress=_ov('q_progress', NMPC_Q_PROGRESS),
-            progress_reach=_ov('progress_reach', NMPC_PROGRESS_REACH),
-            progress_v_min=_ov('progress_v_min', NMPC_PROGRESS_V_MIN),
-        )
+        nmpc = build_nmpc(Q, R, R_rate, u_min, u_max, du_max, vehicle_params, nmpc_overrides)
 
     metrics = RolloutMetrics()
     idx = 0
@@ -826,7 +326,7 @@ def run_core_rollout(
             "e_y_true": [], "e_psi_true": [],
             "pred_X": [], "pred_Y": [], "solver_failed": [],
             "failed": False, "offtrack": False, "fail_reason": None,
-            # NMPC-only diagnostics (see controller/nmpc_optimiser.py's
+            # NMPC-only diagnostics (see controller/nmpc/solver.py's
             # compute_step() diag dict) -- always present, None on every
             # LTV-QP-controlled step, exactly like "planner_X"/"planner_Y"
             # are only meaningful in planner mode. Distinct from "e_y"/
@@ -860,8 +360,7 @@ def run_core_rollout(
         # ── Estimated (SLAM) pose vs true pose ────────────────────────────
         # Everything the controller and planner consume below uses the
         # ESTIMATED pose; the plant integration and the score keep using the
-        # true `state`. With SLAM noise disabled the two are identical, so
-        # this is a no-op relative to the previous behaviour.
+        # true `state`. With SLAM noise disabled the two are identical.
         if slam_noise is not None:
             X_est, Y_est, psi_est = slam_noise.corrupt(X_g, Y_g, psi_g)
         else:
@@ -892,198 +391,22 @@ def run_core_rollout(
             history["v"].append(state[3])
             history["r"].append(state[5])
 
-        # ── Tracking error + speed target (planner or oracle) ─────────────────
-        rpsi = None
-        if use_planner:
-            # Skip perception/planning entirely while the pose is held. On the
-            # car, a stalled pose feed stalls everything downstream of it: the
-            # planner is triggered by car_position, so no new pose means no new
-            # centreline AND no new tracking error. Re-planning here from a
-            # frozen pose would still hand the controller a subtly different
-            # centreline each tick (the fit is not a pure function of pose), so
-            # e_y would keep changing and the controller would never actually
-            # be blind — which is exactly what the first version of this model
-            # got wrong (measured: e_y repeated on 0.0% of ticks instead of the
-            # intended ~5%).
-            if pose_age_ticks == 0:
-                b_vis, y_vis = perception.visible_cones(X_est, Y_est, psi_est)
-                if cone_noise is not None:
-                    b_vis, y_vis = cone_noise.corrupt(b_vis), cone_noise.corrupt(y_vis)
-                planner.update(b_vis, y_vis, car_pos_np, psi_est)
-
-            cl = planner.centreline
-            if cl is not None and len(cl) >= 2:
-                cl_x, cl_y = cl[:, 0], cl[:, 1]
-                cl_psi = np.zeros_like(cl_x)
-                cl_psi[:-1] = np.arctan2(np.diff(cl_y), np.diff(cl_x))
-                cl_psi[-1] = cl_psi[-2] if len(cl_psi) > 1 else state[2]
-
-                e_y, _, e_psi, _, _, _, _ = plant_to_tracking_error(
-                    state_est, path_x=cl_x, path_y=cl_y, path_psi=cl_psi
-                )
-                rpsi = psi_est - e_psi
-
-                # ── Reference-heading rate limit (settings.REF_HEADING_RATE_LIMIT_ENABLED) ──
-                # See _rate_limit_ref_psi's own docstring for the mechanism.
-                # Only applied here (the live planner branch) — the
-                # fallback/oracle branches below reference path_X/path_Y/
-                # path_Psi, the fixed geometric path that does NOT carry this
-                # excess, so there is nothing to limit there.
-                if REF_HEADING_RATE_LIMIT_ENABLED:
-                    rpsi_limited = _rate_limit_ref_psi(
-                        rpsi, ref_psi_prev, np.radians(REF_HEADING_RISE_RATE), DT
-                    )
-                    ref_psi_prev = rpsi_limited
-                    e_psi = _normalize_angle(psi_est - rpsi_limited)
-                    rpsi = rpsi_limited
-                else:
-                    ref_psi_prev = rpsi
-
-                if USE_PRECOMPUTED_SPEED_PROFILE:
-                    # Track is already fully mapped (settings.py's
-                    # USE_PRECOMPUTED_SPEED_PROFILE) -- use the oracle speed
-                    # profile computed once from the WHOLE path (path_v_profile,
-                    # non-causal, see speed_profile.compute_speed_profile()) at
-                    # the car's current position, instead of re-deriving from
-                    # only the live-built sub-path. Bypasses the perception-FOV
-                    # lookahead shortfall entirely (the live centreline is
-                    # typically shorter than curvature_speed()'s own scan
-                    # horizon), since it needs no live cone visibility at all
-                    # for the speed target. idx is one step stale here
-                    # (updated later this loop, same as the path_v_profile[idx]
-                    # fallback below) -- accepted, not new.
-                    v_target = float(path_v_profile[idx])
-
-                    # The oracle lookup above has no notion of the car's
-                    # actual current speed relative to how much runway is
-                    # left to brake for the upcoming corner — see
-                    # settings.ENABLE_DYNAMIC_SPEED_CAP's docstring. Layer a
-                    # live curvature-lookahead cap under it (min, never above
-                    # the oracle target) so a corner reached faster than
-                    # planned still gets braked for in time. Mirrors
-                    # mpc_controller.py's identical logic.
-                    if ENABLE_DYNAMIC_SPEED_CAP:
-                        dists = np.linalg.norm(cl - car_pos_np, axis=1)
-                        cl_idx = int(np.argmin(dists))
-                        v_cap = sp.curvature_speed(
-                            cl[cl_idx:], v_max=PLANNER_V_MAX, v_min=PLANNER_V_MIN,
-                            a_lat_max=DYNAMIC_CAP_A_LAT_MAX, safety=DYNAMIC_CAP_SAFETY,
-                        )
-                        v_target = min(v_target, v_cap)
-                else:
-                    # No pre-computed profile exists for a live-built centreline
-                    # (see SimPlanner) -- derive the target speed on-demand each
-                    # step from the sub-path ahead of the car, exactly as the
-                    # live ROS node does via control_utils.curvature_speed().
-                    dists = np.linalg.norm(cl - car_pos_np, axis=1)
-                    cl_idx = int(np.argmin(dists))
-                    v_target = sp.curvature_speed(
-                        cl[cl_idx:], v_max=PLANNER_V_MAX, v_min=PLANNER_V_MIN
-                    )
-                    # curvature_speed() has no memory of its own last output
-                    # and the live centreline is rebuilt every step, so a
-                    # single noisy sample can swing v_target down far faster
-                    # than any real corner's own braking-distance curve would
-                    # ask for -- see V_CURV_FALL_RATE's own comment. Mirrors
-                    # mpc_controller.py's identical fix.
-                    if v_curv_prev is not None:
-                        max_fall = V_CURV_FALL_RATE * DT
-                        v_target = max(v_target, v_curv_prev - max_fall)
-                    v_curv_prev = v_target
-
-                if want_history:
-                    history["planner_X"].append(cl_x)
-                    history["planner_Y"].append(cl_y)
-            else:
-                # Planner not yet ready — fall back to the global reference path.
-                # Without this fallback, e_y/e_psi/v_target would silently
-                # reuse stale values from the previous step whenever the
-                # planner isn't ready.
-                e_y, _, e_psi, _, _, _, _ = plant_to_tracking_error(
-                    state_est, path_x=path_X, path_y=path_Y, path_psi=path_Psi
-                )
-                v_target = float(path_v_profile[idx])
-
-                if want_history:
-                    # No planner centreline yet this step — record an empty
-                    # snapshot rather than skipping the index, so history["planner_X"]
-                    # stays aligned index-for-index with history["X"]/pred_X.
-                    history["planner_X"].append(np.empty(0))
-                    history["planner_Y"].append(np.empty(0))
-        else:
-            e_y, _, e_psi, _, _, _, _ = plant_to_tracking_error(
-                state_est, path_x=path_X, path_y=path_Y, path_psi=path_Psi
+        # ── Tracking error + speed target ─────────────────────────────────
+        e_y, e_psi, v_target, rpsi, planner_cl, ref_psi_prev, v_curv_prev = (
+            reference_and_speed_target(
+                use_planner, perception, planner, cone_noise, pose_age_ticks,
+                state, state_est, X_est, Y_est, psi_est, car_pos_np,
+                path_X, path_Y, path_Psi, path_v_profile, idx,
+                ref_psi_prev, v_curv_prev, history,
             )
-            v_target = float(path_v_profile[idx])
-
-        # ── Tracking-error speed gate + rise-rate limit ────────────────────
-        # Mirrors mpc_controller.py's Phase 3 exactly (see
-        # control_utils.tracking_error_speed_gate for the rationale and the
-        # live measurements behind the thresholds). curvature_speed() reads
-        # only path SHAPE, so without this the target stays high — and can even
-        # command acceleration — while the car is badly off-line with steering
-        # already saturated, which is unrecoverable.
-        #
-        # Applied to the oracle branch via GATE_RATE_LIMIT -- see
-        # mpc_controller.py's identical comment for the full
-        # rationale (disabling the gate outright trades away its whole
-        # purpose; smoothing its rate of change removes the sharp-cliff
-        # side effect that motivated disabling it in the first place).
-        raw_gate = sp.tracking_error_speed_gate(e_y, e_psi)
-        if gate_prev is not None:
-            max_step = GATE_RATE_LIMIT * DT
-            raw_gate = float(np.clip(raw_gate, gate_prev - max_step, gate_prev + max_step))
-        gate_prev = raw_gate
-        gate = raw_gate
-        v_target = max(PLANNER_V_MIN, v_target * gate)
-        # Seed the ramp from the car's ACTUAL speed on the first tick, not
-        # from an unlimited jump straight to v_target -- see mpc_controller.py's
-        # identical fix and CLAUDE.md's standstill steering-saturation note.
-        # Without this, a standing start (vx0=0.0 above) asks the NMPC to
-        # track the full-speed target from tick 0 via its e_v cost term,
-        # which is the actual root cause of the "steers hard at startup"
-        # symptom -- not a plant/tyre-force bug.
-        if v_des_prev is None:
-            v_des_prev = state[3]
-        v_target = min(v_target, v_des_prev + SPEED_TARGET_RISE_RATE * DT)
-        # Stop ramping once the target has run this far ahead of the car; see
-        # SPEED_TARGET_DEFICIT_MAX. Never DROPS the target (max against
-        # v_des_prev), so a car that is merely slow does not get the target
-        # dragged down to meet it, and a genuine brake request still passes
-        # through the min() above untouched.
-        if v_target - state[3] > SPEED_TARGET_DEFICIT_MAX:
-            v_target = min(v_target, max(v_des_prev, state[3] + SPEED_TARGET_DEFICIT_MAX))
-        v_des_prev = v_target
-
-        # ── TRUE tracking error, for scoring only ──────────────────────────
-        # e_y/e_psi above are what the CONTROLLER perceives, and they are not
-        # where the car actually is whenever its reference differs from the
-        # true path. Scoring and the off-track check must use ground truth,
-        # otherwise a car could score well by tracking its own wrong belief —
-        # the exact asymmetry real perception/localisation error has. Always
-        # measured against the true reference path, never the planner's
-        # estimated centreline.
-        #
-        # TWO independent sources make the controller's view diverge from
-        # ground truth, and both must trigger this:
-        #   1. SLAM noise      — the pose fed to the tracking-error helper is
-        #                        corrupted (state_est != state).
-        #   2. USE_PLANNER     — the REFERENCE is the planner's cone-derived,
-        #                        FOV-limited, EMA-blended centreline rather
-        #                        than path_X/path_Y, so e_y is a distance to
-        #                        an estimated line even with a perfect pose.
-        # Case 2 must trigger this even with SLAM noise off (the default):
-        # otherwise e_y_true would alias the planner-relative error, so most
-        # of the score (rmse + peak_lateral_error) would measure
-        # controller-vs-planner agreement with no ground-truth anchor, and a
-        # drifting planner would read as good tracking while also
-        # suppressing the off-track trigger.
-        if slam_noise is not None or use_planner:
-            e_y_true, _, e_psi_true, _, _, _, _ = plant_to_tracking_error(
-                state, path_x=path_X, path_y=path_Y, path_psi=path_Psi
-            )
-        else:
-            e_y_true, e_psi_true = e_y, e_psi
+        )
+        v_target, gate_prev, v_des_prev = gate_and_rate_limit_speed_target(
+            v_target, e_y, e_psi, state[3], gate_prev, v_des_prev,
+        )
+        e_y_true, e_psi_true = true_tracking_error(
+            state, e_y, e_psi, path_X, path_Y, path_Psi,
+            diverged=(slam_noise is not None or use_planner),
+        )
 
         # ── Progress tracking (unconditional, every step) ──────────────────────
         idx, _, _, idx_rpsi = find_closest_reference_bounded(
@@ -1115,261 +438,39 @@ def run_core_rollout(
             e_y, e_y_dot, e_psi, state[5], vx_true - v_target, 0.0, state[6], state[7],
         ])
 
+        # ── Solve ─────────────────────────────────────────────────────────
+        pending_cmds = believed_pending_cmds(command_queue, delay_rng, u_prev)
+        nmpc_diag = None
         if use_nmpc:
-            # ── Nonlinear MPC path ───────────────────────────────────────────
-            # Deliberately skips the WHOLE adaptive-gain-schedule block the
-            # `else` branch below runs (current-state corner-factor
-            # scheduler, adaptive_R_rate/_scaling, steer_rate_anti_hunt,
-            # adaptive_Q_scaling, heading-error accel/brake asymmetry): all
-            # of it exists to synthesise anticipation the LINEAR model
-            # cannot produce on its own. The nonlinear model anticipates a bend
-            # structurally (kappa(s) is looked up from a STATE, arc length,
-            # not reweighted after the fact), so applying the same
-            # mechanisms on top would double-count an effect that's now
-            # built into the prediction. See settings.py's USE_NMPC comment.
-            pending_cmds = list(command_queue)[1:]
-            if DELAY_JITTER_STEPS > 0.0:
-                # Same delay-belief-error model as the LTV branch below —
-                # see that branch's identical comment for the rationale.
-                n_true = len(pending_cmds)
-                n_believed = int(round(n_true + delay_rng.normal(0.0, DELAY_JITTER_STEPS)))
-                n_believed = int(np.clip(n_believed, 0, max(n_true, 0) + 2))
-                if n_believed <= n_true:
-                    pending_cmds = pending_cmds[n_true - n_believed:] if n_believed else []
-                else:
-                    pad = n_believed - n_true
-                    oldest = pending_cmds[0] if pending_cmds else u_prev
-                    pending_cmds = [oldest] * pad + pending_cmds
-
-            # The NMPC tracks its own Frenet path reference and needs the
-            # SAME path source e_y/e_psi were just computed against above
-            # (the live planner's centreline when one is ready, otherwise
-            # the oracle path) -- not the LTV-only path_xy array reused
-            # blindly regardless of mode.
-            if use_planner and cl is not None and len(cl) >= 2:
-                nmpc_path_xy = np.column_stack([cl_x, cl_y])
-            else:
-                nmpc_path_xy = path_xy
-
-            u_opt, nmpc_diag = nmpc.compute_step(
-                nmpc_path_xy, car_pos_np, psi_est, vx_true, v_target,
-                car_yaw_rate=state_est[5], car_vy=state_est[4],
-                pending_cmds=(pending_cmds if pending_cmds else None),
-                dense_step=NMPC_CURVATURE_DENSE_STEP,
-                smooth_w=NMPC_CURVATURE_SMOOTH_W, kappa_clip=NMPC_KAPPA_CLIP,
-                step_index=step,
+            u_opt, nmpc_diag = solve_nmpc_tick(
+                nmpc, planner_cl, path_xy, car_pos_np, psi_est, state_est,
+                vx_true, v_target, pending_cmds, step,
             )
-            # The warm-start-projection invariant (see NMPCController.
-            # _project_feasible) means compute_step() always ships a
-            # feasible u_opt, even on a tick where the SQP subproblem itself
-            # didn't solve -- so "solver failed" in the LTV sense (fall back
-            # to u_prev, count toward consecutive_fails/MAX_FAILS) does not
-            # apply here. nmpc_diag['status']/['solved'] carry the SQP's own
-            # per-tick outcome for diagnostic purposes instead.
             solver_failed = False
             inaccurate = False
-            x0_mpc = None   # no linear x0 here -- guards the cosmetic block below
-            corner_frac = nmpc_diag['corner_frac']
+            x0_mpc = Ad = Bd = None   # no linear model -- see record_horizon_prediction
         else:
-            # ── Linear time-varying QP path ──────────────────────────────────
-            # ── Current-state corner factor ───────────────────────────────────
-            # Replaces the deleted lookahead gain-scheduling family (see
-            # model_utils.py's module docstring): 0 (straight) -> 1 (full
-            # corner), a single continuous saturating curve of the CURRENT
-            # ~instantaneous curvature `kappa` -- the same signal
-            # adaptive_R_rate/steer_rate_anti_hunt already use. No forward
-            # scan, no separate decay-distance timer/hysteresis state: entry
-            # and exit are symmetric, driven purely by how `kappa` itself
-            # rises and falls.
-            kappa = curvature_estimate(state)
-            corner_factor = _corner_factor(kappa, CORNER_FACTOR_K)
-
-            # Extra push in the SAME direction as corner_factor's "full
-            # corner" endpoint, active only when BOTH corner_factor > 0 AND
-            # speed is low -- gated on corner_factor (multiplicatively) so
-            # this cannot fire on low speed alone with no corner, unlike the
-            # deleted low_speed_steer_rate_boost (which fired on speed alone
-            # and ended up taxing wanted low-speed turn-in indistinguishably
-            # from unwanted post-exit wobble).
-            low_speed_boost = _low_speed_corner_boost(
-                vx_true, corner_factor,
-                v_half=LOW_SPEED_CORNER_BOOST_V_HALF,
-                max_extra=LOW_SPEED_CORNER_BOOST_MAX_EXTRA,
+            u_opt, solver_failed, inaccurate, x0_mpc, Ad, Bd = solve_ltv_tick(
+                state, x0_mpc, e_y, e_psi, vx, vx_true, u_prev, pending_cmds,
+                Q, R, R_rate, u_min, u_max, du_max, model_lookup,
+                n_horizon, eps, max_iter, step,
             )
-            # Combined corner fraction driving every blend below:
-            # corner_factor itself, boosted further (never past 1.0) at low
-            # speed in-corner.
-            corner_frac = float(np.clip(corner_factor + low_speed_boost, 0.0, 1.0))
-
-            # ── Adaptive gain scaling ────────────────────────────────────────
-            R_rate_scaled = adaptive_R_rate(
-                kappa, R_rate, enable_in_corners=ADAPTIVE_R_RATE_ENABLE_IN_CORNERS,
-                during_floor=ADAPTIVE_R_RATE_DURING_FLOOR,
-            )
-            _rr_before_hunt = float(R_rate_scaled[0, 0])
-            R_rate_scaled = steer_rate_anti_hunt(
-                kappa, e_y, R_rate_scaled, enabled=STEER_RATE_ANTI_HUNT_ENABLED, e_psi=e_psi,
-            )
-            m_rrate_antihunt = (
-                float(R_rate_scaled[0, 0] / _rr_before_hunt) if _rr_before_hunt else 1.0
-            )
-            _rr_before_reversal = float(R_rate_scaled[0, 0])
-            R_rate_scaled = reversal_penalty_boost(
-                float(u_prev[0]), R_rate_scaled, enabled=REVERSAL_PENALTY_ENABLED,
-                boost_max=REVERSAL_PENALTY_BOOST_MAX, k=REVERSAL_PENALTY_K,
-            )
-            m_rrate_reversal = (
-                float(R_rate_scaled[0, 0] / _rr_before_reversal) if _rr_before_reversal else 1.0
-            )
-            R_scaled = adaptive_R_scaling(vx, R)
-
-            # ── Current-state Q[0,0]/Q[2,2]/Q[3,3] and R_rate[0,0] blend ─────
-            # Straight-line-blend, PER WEIGHT, between a "straight" endpoint
-            # and a "full corner" endpoint, driven by corner_frac above.
-            # Replaces the deleted per-mechanism multiplicative lookahead
-            # gates with one shared current-state schedule. R[0,0] (steering
-            # effort) is a special case: blended toward a MIDDLE value, not
-            # the same corner-floor extreme as R_rate/Q[3,3], per the user's
-            # own framing ("should be somewhere in between the two extremes
-            # to discourage saturation").
-            Q_base = np.array(Q, copy=True)
-            Q_base[0, 0] = _blend(Q_EY_STRAIGHT, Q_EY_CORNER, corner_frac)
-            Q_base[2, 2] = _blend(Q_EPSI_STRAIGHT, Q_EPSI_CORNER, corner_frac)
-            Q_base[3, 3] = _blend(Q_R_STRAIGHT, Q_R_CORNER, corner_frac)
-
-            # CAUTION: this line sets R_rate_scaled[0,0]'s BASE value, so
-            # every multiplier computed above (m_rrate_antihunt,
-            # m_rrate_reversal, and any future one) must be explicitly
-            # reapplied here too -- an assignment that omits one silently
-            # discards its effect even though the multiplier's own value is
-            # still correctly logged elsewhere. See mpc_core.py's matching
-            # comment; this exact class of bug has recurred more than once.
-            R_rate_scaled = R_rate_scaled.copy()
-            R_rate_scaled[0, 0] = _blend(
-                RRATE_STEER_STRAIGHT, RRATE_STEER_CORNER, corner_frac
-            ) * m_rrate_antihunt * m_rrate_reversal
-
-            R_scaled = R_scaled.copy()
-            R_scaled[0, 0] = _blend(R_scaled[0, 0], R_STEER_CORNER_MID, corner_frac)
-
-            Q_scaled = adaptive_Q_scaling(e_y, Q_base, enabled=ADAPTIVE_Q_SCALING_ENABLED)
-            Ad, Bd = model_lookup(vx, DT)
-
-            # ── Delay compensation ───────────────────────────────────────────
-            # command_queue[0] is applied to the plant THIS step; everything after
-            # it (DELAY_STEPS commands) is already committed but still in transit
-            # and will land before the u_opt computed below ever reaches the
-            # plant. Predict the state forward through those so the solve isn't
-            # reacting to a stale x0 (see settings.py DELAY_STEPS note).
-            pending_cmds = list(command_queue)[1:]
-            if DELAY_JITTER_STEPS > 0.0:
-                # Perturb only the controller's BELIEF about how many commands are
-                # in flight — the queue itself (and so the plant's real lag) is
-                # untouched. Rounding a Gaussian gives the live failure mode: the
-                # estimate is usually right, occasionally off by a step, which is
-                # what makes x0 jump between rollforward depths on the real car.
-                n_true = len(pending_cmds)
-                n_believed = int(round(n_true + delay_rng.normal(0.0, DELAY_JITTER_STEPS)))
-                # Cap over-estimates at the live MAX_DELAY_COMPENSATION_STEPS
-                # equivalent so a tail draw can't roll forward absurdly far.
-                n_believed = int(np.clip(n_believed, 0, max(n_true, 0) + 2))
-                if n_believed <= n_true:
-                    pending_cmds = pending_cmds[n_true - n_believed:] if n_believed else []
-                else:
-                    # Over-estimating: the controller thinks more commands are in
-                    # flight than there are, so it rolls forward through the
-                    # oldest one extra times — the same over-compensation a
-                    # too-large pose_age_s produces live.
-                    pad = n_believed - n_true
-                    oldest = pending_cmds[0] if pending_cmds else u_prev
-                    pending_cmds = [oldest] * pad + pending_cmds
-            if pending_cmds:
-                x0_mpc = predict_ahead(x0_mpc, Ad, Bd, pending_cmds)
-
-            # ── Heading-error-driven accel/brake asymmetry ────────────────────
-            # Always-on, independent of the corner_frac scheduler above: a
-            # continuous 0->1 fraction of CURRENT |e_psi| scales r_a_accel
-            # toward EPSI_RA_ACCEL_BOOST_MAX (more expensive, so the MPC
-            # doesn't keep accelerating through a heading error it should be
-            # correcting) and r_a_brake toward EPSI_RA_BRAKE_FLOOR (cheaper,
-            # so braking authority is freed up specifically when heading
-            # error is large). Not a replacement for adaptive_R_scaling
-            # (current-speed-driven R[0,0] scaling), which is left untouched.
-            epsi_abs = abs(e_psi)
-            epsi_half = max(EPSI_RA_HALF_RAD, 1e-6)
-            frac_epsi = epsi_abs / (epsi_abs + epsi_half)
-            r_a_accel_eff = R_A_ACCEL * (
-                1.0 + (EPSI_RA_ACCEL_BOOST_MAX - 1.0) * frac_epsi)
-            r_a_brake_eff = R_A_BRAKE * (
-                1.0 - (1.0 - EPSI_RA_BRAKE_FLOOR) * frac_epsi)
-
-            # ── MPC solve ─────────────────────────────────────────────────────
-            mpc_result = solve_mpc(
-                x0_mpc, Ad, Bd, n_horizon, Q_scaled, R_scaled, u_min, u_max,
-                R_rate=R_rate_scaled, u_prev=u_prev, silent=True,
-                return_status=True, eps_abs=eps, eps_rel=eps,
-                max_iter=max_iter, warm_start=(step != 0),
-                du_max=du_max, terminal_scale=TERMINAL_Q_SCALE,
-                r_a_accel=r_a_accel_eff, r_a_brake=r_a_brake_eff,
-            )
-
-            solver_failed = mpc_result is None
-            inaccurate = False
-            if solver_failed:
-                consecutive_fails += 1
-                u_opt = u_prev.copy()
-            else:
-                u_opt, status = mpc_result
-                consecutive_fails = 0
-                inaccurate = status in (cp.OPTIMAL_INACCURATE, "optimal_inaccurate")
+            consecutive_fails = consecutive_fails + 1 if solver_failed else 0
             if inaccurate:
                 inaccurate_count_total += 1
 
         if want_history:
-            history["solver_failed"].append(solver_failed)
-            history["u_steer"].append(u_opt[0])
-            history["u_accel"].append(u_opt[1])
-            if use_nmpc:
-                history["nmpc_iters"].append(nmpc_diag['iters'])
-                history["nmpc_status"].append(nmpc_diag['status'])
-                history["nmpc_cost"].append(nmpc_diag['cost'])
-                history["nmpc_e_y"].append(nmpc_diag['e_y'])
-                history["nmpc_e_psi"].append(nmpc_diag['e_psi'])
-                history["nmpc_solve_ms"].append(nmpc_diag['solve_ms'])
-            else:
-                history["nmpc_iters"].append(None)
-                history["nmpc_status"].append(None)
-                history["nmpc_cost"].append(None)
-                history["nmpc_e_y"].append(None)
-                history["nmpc_e_psi"].append(None)
-                history["nmpc_solve_ms"].append(None)
+            record_solve_history(history, u_opt, solver_failed, nmpc_diag)
 
         # ── Apply transport delay ────────────────────────────────────────────
         command_queue.append(u_opt)
         delayed_u_cmd = command_queue[0]
 
-        # ── Horizon prediction (GUI-only, cosmetic — plant never uses this) ───
         if want_history and want_horizon_pred:
-            if use_nmpc:
-                # No linear Ad/Bd model exists to build this cosmetic line
-                # from when the NMPC is active -- empty snapshot, same
-                # precedent as the "planner not ready" case above, rather
-                # than a misleading LTV-based prediction. The NMPC's own
-                # predicted trajectory is not cosmetic-plotted here (it
-                # predicts in Frenet coordinates, not global X/Y) -- left as
-                # a possible future GUI addition, not attempted here.
-                history["pred_X"].append(np.empty(0))
-                history["pred_Y"].append(np.empty(0))
-            else:
-                px, py = [], []
-                x_p_tmp = x0_mpc.copy()
-                for k in range(n_horizon):
-                    e_y_pred = x_p_tmp[0]
-                    px.append(X_g + (k + 1) * state[3] * np.cos(psi_g) * DT - e_y_pred * np.sin(rpsi))
-                    py.append(Y_g + (k + 1) * state[3] * np.sin(psi_g) * DT + e_y_pred * np.cos(rpsi))
-                    x_p_tmp = Ad @ x_p_tmp + Bd @ u_opt
-                history["pred_X"].append(px)
-                history["pred_Y"].append(py)
+            record_horizon_prediction(
+                history, x0_mpc, Ad, Bd, u_opt, n_horizon,
+                X_g, Y_g, psi_g, state[3], rpsi,
+            )
 
         # ── Termination checks ──────────────────────────────────────────────
         # idx (from find_closest_reference_bounded's forward-bounded search,
@@ -1423,7 +524,7 @@ def run_core_rollout(
             dist_at_last_stall_check = cumulative_distance
 
         # ── Metric accumulation (single source of truth: scoring.RolloutMetrics) ──
-        # Scored on the TRUE error (see "TRUE tracking error" above), not the
+        # Scored on the TRUE error (see true_tracking_error), not the
         # controller's possibly-mislocalised belief.
         metrics.add_step(
             e_y=e_y_true, e_psi=e_psi_true, r=state[5], u_opt=u_opt,
@@ -1454,44 +555,9 @@ def run_core_rollout(
     # Falls back to the full count if the car never moved, so a stalled run
     # still reports the whole elapsed time rather than 0.
     sim_time = (n_ran - (launch_step or 0)) * DT
-    if reached_end:
-        # Anchor the time bonus to the path's PHYSICAL optimum where available.
-        #
-        # Dividing by a placeholder step budget (e.g. some multiple of
-        # arc_length / assumed_speed) has no physical meaning, can be several
-        # times the actual optimum, and varies by path — which would make
-        # TIME_BONUS_WEIGHT (0.25, the second-largest score term) a reward
-        # against an arbitrary constant and make the bonus non-comparable
-        # BETWEEN paths: the same driving would earn wildly different bonuses
-        # depending on which track it was on.
-        #
-        # optimal_lap_time() is a quasi-steady-state bound (corner limit ->
-        # forward accel pass -> backward brake pass -> integrate ds/v), so
-        # time_bonus is "how close to physically-fastest", in [0, 1] and
-        # directly comparable across paths. Because the bound ignores transient
-        # dynamics it is not quite attainable, so a real run scores below 1.0.
-        # Ratio form, NOT (1 - sim/optimal): sim_time is always >= optimal_time
-        # (it's a lower bound), so that subtraction would clip to 0 on every
-        # run and the term would carry no information at all. optimal/sim is 1.0
-        # at the physical limit and decays toward 0 as the run gets slower —
-        # e.g. taking twice the optimal time scores 0.5.
-        #
-        # optimal_time covers the WHOLE path, but the rollout stops as soon as
-        # the car is within 3 m of the finish and past ~90% of the points (see
-        # the reached_end check above), so it is only timed over `progress` of
-        # the distance. Comparing a partial-path run against a full-path
-        # reference makes the car look faster than physically possible and
-        # can saturate the bonus at exactly 1.000 for many runs, destroying
-        # all discrimination in the primary objective. Scale the reference to
-        # the distance actually covered.
-        if optimal_time is not None and optimal_time > 0.0 and sim_time > 0.0:
-            ref_time = optimal_time * max(progress, 1e-6)
-            time_bonus = float(np.clip(ref_time / sim_time, 0.0, 1.0))
-        else:
-            expected_time = dynamic_max_steps * DT
-            time_bonus = max(0.0, 1.0 - (sim_time / expected_time))
-    else:
-        time_bonus = 0.0
+    time_bonus = compute_time_bonus(
+        reached_end, sim_time, progress, optimal_time, dynamic_max_steps,
+    )
 
     metrics_result = metrics.finalize(
         progress=progress, time_bonus=time_bonus, dnf=dnf, offtrack=offtrack,

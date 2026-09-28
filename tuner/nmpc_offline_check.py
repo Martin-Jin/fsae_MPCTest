@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-tuner/nmpc_offline_check.py — offline validation for controller/nmpc_optimiser.py,
+tuner/nmpc_offline_check.py — offline validation for controller/nmpc/,
 mirroring the live repo's ros2/.../test/nmpc_offline_check.py structure so the
 two can be read/compared side by side (see docs/tuning.md's NMPC section).
 
@@ -11,7 +11,7 @@ import sys
 
 import numpy as np
 
-from controller import nmpc_optimiser as no
+from controller import nmpc as no
 from model.vehicle_physics import VehicleParams
 from controller.optimiser import solve_mpc
 from model.bicycle_model import get_8state_discrete_model
@@ -243,7 +243,7 @@ def test_closed_loop():
 
 
 def main():
-    print('nmpc_offline_check (offline sim) — see controller/nmpc_optimiser.py')
+    print('nmpc_offline_check (offline sim) — see controller/nmpc/')
     test_model_parity()
     test_convergence()
     test_turn_in()

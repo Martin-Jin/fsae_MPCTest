@@ -174,7 +174,7 @@ No fields remain on either side (`mpc_params.py`, `settings.py`). This mechanism
 
 ### 4.5d Nonlinear MPC (`use_nmpc`)
 
-`use_nmpc=true` swaps `mpc_core.MPCController` (linear time-varying QP) for `nmpc_core.NMPCController` (Frenet-frame nonlinear MPC, Gauss-Newton SQP). Default **false**. This repo now has its own offline port too (`controller/nmpc_optimiser.py`, selected by `settings.USE_NMPC`, same default false), see `docs/reference/README.md`'s "Nonlinear MPC (`use_nmpc`)" section for the full description, and `tuner/nmpc_offline_check.py` for the reproducible validation suite (`python -m tuner.nmpc_offline_check`, no ROS/FSDS session needed).
+`use_nmpc=true` swaps `mpc_core.MPCController` (linear time-varying QP) for `nmpc_core.NMPCController` (Frenet-frame nonlinear MPC, Gauss-Newton SQP). Default **false**. This repo now has its own offline port too (`controller/nmpc/` package, selected by `settings.USE_NMPC`, same default false), see `docs/reference/README.md`'s "Nonlinear MPC (`use_nmpc`)" section for the full description, and `tuner/nmpc_offline_check.py` for the reproducible validation suite (`python -m tuner.nmpc_offline_check`, no ROS/FSDS session needed).
 
 **Tuning implications, which is what this doc is for:**
 

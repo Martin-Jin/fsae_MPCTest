@@ -341,7 +341,7 @@ def reversal_penalty_boost(u_prev_steer, R_rate_base, enabled=False,
         R[0,0] boosted when the previous steering command was near zero.
 
     Called by: sim/rollout_core.py (run_core_rollout, LTV-QP path) and
-    controller/nmpc_optimiser.py (compute_step, NMPC path) -- opt-in only,
+    controller/nmpc/solver.py (compute_step, NMPC path) -- opt-in only,
     via REVERSAL_PENALTY_ENABLED / NMPC_REVERSAL_PENALTY_ENABLED respectively.
     """
     if not enabled:
