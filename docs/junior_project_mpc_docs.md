@@ -28,7 +28,8 @@ The core idea behind MPC: every tick, ask "if the car did X for the next second 
 
 ### Controller comparison
 
-Early on, both MPC variants (LMPC and NMPC, introduced in Sections 2 and 3) had noticeably noisier steering than Stanley, small-amplitude chatter, not a tracking failure, but enough to rank Stanley ahead overall on the composite score. Two causes were found and fixed: the steering-rate cost was badly undertuned, and the tracked reference line was asking for more grip than the car has. See `docs/logs/steering_chatter_investigation.md` for the investigation. With both fixed, NMPC and Stanley now perform similarly.
+Currently both controller perform "similarly". There is a performance metric / score that is calculated per that quantifies this.
+Both controllers are compared using a single performance metric, a composite score computed the same way for every run, see [5.3 How a Run Gets Scored](#53-how-a-run-gets-scored) for how it's calculated. The underlying logic lives in `sim/scoring.py` of the repo.
 
 That chatter fix is unrelated to NMPC's other advantage over LMPC: a structural difference in what the two controllers' models can represent, specifically around corner turn-in (Section 4). Fixing the chatter did not change that difference, it removed a separate, noisier symptom that was masking the comparison.
 
@@ -47,6 +48,7 @@ That chatter fix is unrelated to NMPC's other advantage over LMPC: a structural 
 - [Junior Project: MPC Path Tracking Controller](#junior-project-mpc-path-tracking-controller)
   - [Skills covered](#skills-covered)
   - [Overview](#overview)
+    - [Controller comparison](#controller-comparison)
     - [What this project delivers](#what-this-project-delivers)
   - [Index](#index)
   - [1. How MPC Works](#1-how-mpc-works)
@@ -69,6 +71,10 @@ That chatter fix is unrelated to NMPC's other advantage over LMPC: a structural 
     - [5.1 Why an Automatic Tuner?](#51-why-an-automatic-tuner)
     - [5.2 How the Tuner Works (CMA-ES)](#52-how-the-tuner-works-cma-es)
     - [5.3 How a Run Gets Scored](#53-how-a-run-gets-scored)
+      - [5.3.1 The 13 Raw Metrics](#531-the-13-raw-metrics)
+      - [5.3.2 Combining Into One Score, in Three Steps](#532-combining-into-one-score-in-three-steps)
+      - [5.3.3 Normalising and Weighting the Metrics](#533-normalising-and-weighting-the-metrics)
+      - [5.3.4 Where Results Are Logged](#534-where-results-are-logged)
     - [5.4 Running the Tuner](#54-running-the-tuner)
     - [5.5 Manual Tuning Guide](#55-manual-tuning-guide)
     - [5.6 Adding a New Test Track](#56-adding-a-new-test-track)
