@@ -37,8 +37,8 @@ That chatter fix is unrelated to NMPC's other advantage over LMPC: a structural 
 ### What this project delivers
 
 - **A working MPC controller**: takes in odometry (position, heading, speed) and outputs a throttle + steering command.
-- **A working 2D simulator**: used to visualise and test the controller, and to run the offline tuner against. (This is a separate, lightweight simulator from FSDS, see [Section 6](#6-repo-contents-fsae_mpctest) for how the two compare.)
-- **A working auto-tuner**: the controller's cost function has ~9 numbers that need tuning for it to drive well; this searches for good values automatically instead of by hand.
+- **A working 2D simulator**: used to visualise and test the controller, and to run the offline tuner against. (This is a separate, lightweight simulator from FSDS, and its dynamics do not match FSDS or the real car, see [Section 6](#6-repo-contents-fsae_mpctest) for how the two compare.)
+- **A working auto-tuner**: the controller's cost function has ~9 numbers that need tuning for it to drive well; this searches for good values automatically instead of by hand. It tunes against the 2D simulator only, so it is not confirmed to be accurate against FSDS or the real car; it gets the weights into the right ball park, and further manual tuning against FSDS (Section 7) and the real car is still required to get the desired performance.
 - **Working ROS 2 nodes**: drop-in replacements for the old Stanley controller nodes in the FSDS/planning stack, so the MPC can be validated against the real simulator.
 - **Documentation**: the repo [README](https://github.com/Martin-Jin/fsae_MPCTest) and this docs page.
 
@@ -233,7 +233,7 @@ For the exact formulas and a full feature-by-feature comparison verified against
 
 Section 1's cost function has weights ($Q$, $R$, $R_{rate}$) that decide what "good driving" means to the solver. This section covers finding good values for those weights: why that's hard to do by hand, the automatic tuner that does it instead, how a candidate weight set gets scored, and how to run and read the tuner in practice.
 
-Tuning runs against the offline 2D simulator, not the real car or FSDS directly. See Section 6 for that simulator and why weights tuned here transfer to FSDS.
+Tuning runs against the offline 2D simulator, not the real car or FSDS directly, and that simulator's dynamics do not match FSDS or the real car. A tuned weight set is a starting point, not a validated one; see Section 6 for how the two simulators differ, and Section 7 for validating against FSDS before trusting a weight set on the real car.
 
 
 ### 5.1 Why an Automatic Tuner?
@@ -356,9 +356,9 @@ The rest of this section is what `fsae_MPCTest` itself contains.
 There are two separate vehicle models in play here, each built for a different job:
 
 - **LMPC's internal model** (Section 2) is a simplified, linear 8-state bicycle model. It has to be simple because the solver evaluates it many times per second, and this is the model the controller uses to plan.
-- **`fsae_MPCTest`'s simulator** drives a separate, detailed 24-state nonlinear "ground truth" model (`model/vehicle_physics.py`: real tyre curves, suspension, weight transfer, aerodynamics) as the simulated car. The controller only ever gets this model's tracking error, never its internal state, exactly like a real controller only has GPS/odometry, not X-ray vision into the tyres.
+- **`fsae_MPCTest`'s simulator** drives a separate, detailed 24-state nonlinear model (`model/vehicle_physics.py`: real tyre curves, suspension, weight transfer, aerodynamics) as the simulated car, more detailed than LMPC's internal model but still an approximation, not the real car. The controller only ever gets this model's tracking error, never its internal state, exactly like a real controller only has GPS/odometry, not X-ray vision into the tyres.
 
-Having both is what lets the simulator stand in for the real car: the simple model is what the controller *thinks* the car is, and the detailed model is what the car *actually is*, and testing the first against the second is what "developing and tuning offline" means in this project.
+Having both is what lets the simulator stand in for a rough approximation of the real car during offline development: the simple model is what the controller *thinks* the car is, and the detailed model is a closer but still imperfect stand-in for what the car *actually is*, and testing the first against the second is what "developing and tuning offline" means in this project. This offline simulator's dynamics are not confirmed to match FSDS or the real car (see [What this project delivers](#what-this-project-delivers)); a weight set that scores well here still needs to be validated against FSDS (Section 7) and the real car before it's trusted.
 
 > If you ever import new real tyre test data into `vehicle_physics.py`, you **must** also
 > recompute `Cf`/`Cr` (used by the MPC's *internal* model) to match the new curve's initial slope,
@@ -383,7 +383,7 @@ Having both is what lets the simulator stand in for the real car: the simple mod
 | `sim/speed_profile.py` | Curvature-based target speed for a given path |
 | `sim/sim_track.py` | Cone placement + simulated perception/planning (mirrors the ROS 2 nodes) |
 | `model/bicycle_model.py` | Builds LMPC's linear 8-state internal model (Section 2) |
-| `model/vehicle_physics.py` | The 24-state nonlinear "ground truth" simulated vehicle (above; full physics in [`docs/vehicle_physics_guide.md`](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/vehicle_physics_guide.md)) |
+| `model/vehicle_physics.py` | The 24-state nonlinear simulated vehicle (above; an approximation, not a validated match to FSDS or the real car; full physics in [`docs/vehicle_physics_guide.md`](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/vehicle_physics_guide.md)) |
 | `controller/optimiser.py` | The QP formulation and OSQP/Clarabel solve (Section 1.4) |
 | `controller/model_utils.py` | Adaptive gain scheduling, delay/noise-related gain features (Section 1.5) |
 | `tuner/offline_tuner.py` | The CMA-ES auto-tuner and synthetic path library (Section 5) |
