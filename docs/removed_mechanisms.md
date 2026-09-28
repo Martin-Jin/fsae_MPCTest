@@ -1,7 +1,7 @@
 # Removed Mechanisms: The Lookahead Gain-Scheduling Family
 
 This doc is the single home for a whole family of mechanisms that **no
-longer exist in the code**, removed in the 2026-08-13 corner-factor rewrite.
+longer exist in the code**, removed in the corner-factor rewrite.
 They're preserved here, in one place, for two reasons:
 
 - **The elimination reasoning is the direct motivation for the nonlinear MPC
@@ -60,7 +60,7 @@ from this doc.
 **Consequence:** every boost/relaxation below only helps once *some* real
 tracking error already exists to reweight. None of them can make the
 controller *start* turning while `e_y ≈ e_psi ≈ 0`, no matter how cheap
-steering is made. This was measured directly on 2026-08-12: `kappa_max_abs`
+steering is made. Measured directly: `kappa_max_abs`
 and the derived boosts moved correctly and over a full second early
 (`m_R_steer_relax` falling to ~0.55, `Q_ey_eff` climbing from 2.5 to 4.5+),
 while `steer_deg` stayed at ≈0° the entire time, because `e_y`/`e_psi`
@@ -227,7 +227,7 @@ softening.
 
 ## 7. Precomputed corner segmentation (`CornerMap`)
 
-**`use_precomputed_corner_map`, added 2026-08-12, removed the next day**
+**`use_precomputed_corner_map`, added and removed within a day**
 
 A `CornerMap` dataclass, built once per static path (`mpc_core.py`'s
 `_segment_corners`), replaced the live per-tick forward scan with an exact
@@ -244,8 +244,8 @@ for what replaced it.
 
 ## 8. Curvature forcing: the closest attempt, and why it still failed
 
-**`curvature_forcing_enabled` / `CURVATURE_FORCING_ENABLED`, added and
-disabled 2026-08-12, fully removed 2026-08-13**
+**`curvature_forcing_enabled` / `CURVATURE_FORCING_ENABLED`: tried, disabled,
+then fully removed**
 
 Every mechanism above only reweighted the *cost* of an existing tracking
 error. This one tried something structurally different: injecting the
@@ -330,14 +330,13 @@ section for the current-state pointer.
 
 ## 10. FSDS lateral-acceleration ceiling as a lookahead input
 
-The measured ceiling law (`a_lat_max(v) = max(FLAT, SLOPE·|v| + INTERCEPT)`)
-used to live on `MPCParams` as three fields
-(`alat_ceiling_flat`/`_slope`/`_intercept`) so it could feed the demand
-normalisation in Section 4. **The ceiling law itself is not removed**; it
-moved to `nmpc_core.py`'s `_Plant` class (hardcoded there, since only the
-NMPC path uses it now) and `model/vehicle_physics.py`'s `alat_ceiling_at()`.
-Only its role as a *lookahead-scan input* is gone, along with the rest of
-this family.
+**The measured ceiling law itself is not removed.** It lives in
+`nmpc_core.py`'s `_Plant` class (hardcoded there, since only the NMPC path
+uses it) and `model/vehicle_physics.py`'s `alat_ceiling_at()`, not on
+`MPCParams` as three separate fields
+(`alat_ceiling_flat`/`_slope`/`_intercept`) the way it did when it fed the
+demand normalisation in Section 4. Only its role as a *lookahead-scan
+input* is gone, along with the rest of this family.
 
 This is a measured property of the simulator, not a tuning knob. See
 `docs/reference/simulator_fidelity.md`'s "The sim-to-real gap" section for

@@ -23,7 +23,7 @@ sign convention so a Stanley log and an MPC log plot on the same axis.
 2. [The steering law](#the-steering-law)
 3. [Where speed comes from](#where-speed-comes-from)
 4. [What Stanley does NOT have, compared to the MPC controllers](#what-stanley-does-not-have-compared-to-the-mpc-controllers)
-5. [Speed-target smoothing, added 2026-09-16](#speed-target-smoothing-added-2026-09-16)
+5. [Speed-target smoothing](#speed-target-smoothing-added-2026-09-16)
 6. [Sign conventions and telemetry parity](#sign-conventions-and-telemetry-parity)
 
 ---
@@ -117,17 +117,11 @@ mechanism; it is not repeated here since it is not Stanley-specific.
 
 ## What Stanley does NOT have, compared to the MPC controllers
 
-Stanley is deliberately much smaller than either MPC controller. As of
-writing, before the fix below, it had none of the following that
-`mpc_controller.py` has always had around the same shared
-`curvature_speed()` output:
+Stanley is deliberately much smaller than either MPC controller. It shares
+`curvature_speed()`'s three speed-smoothing safeguards with
+`mpc_controller.py` (see "Speed-target smoothing" below), but still differs
+structurally in two ways that safeguard does not touch:
 
-- No rate limiting on `curvature_speed()`'s tick-to-tick fall
-  (`V_CURV_FALL_RATE`).
-- No `tracking_error_speed_gate()` call at all — nothing scaled speed down
-  when tracking was already bad.
-- No rate limiting on the composed target's rise
-  (`SPEED_TARGET_RISE_RATE`).
 - No fixed control-loop timer: `mpc_controller.py` runs `_control_step` off
   a 20 Hz timer (`CONTROL_HZ`) decoupled from pose arrival; Stanley's
   `_control_step` fires directly from `_pose_cb`, once per incoming
@@ -139,10 +133,10 @@ writing, before the fix below, it had none of the following that
   solver and forces a brake when the path is stale or pose is missing
   (`PATH_TIMEOUT`, `path_stale`); Stanley's `_control_step` only early-returns
   when the path has fewer than 2 points, with no timeout-based staleness
-  check. Not addressed by the fix below — flagged here as a known gap, not
-  fixed since it wasn't the reported symptom.
+  check. Flagged here as a known gap, since it wasn't the symptom that
+  motivated the speed-target smoothing below.
 
-## Speed-target smoothing, added 2026-09-16
+## Speed-target smoothing <a id="speed-target-smoothing-added-2026-09-16"></a>
 
 **Symptom.** Live testing (no precomputed speed profile, live planner
 active) produced a spin-out within the first few seconds of a run: steering
@@ -193,12 +187,12 @@ unaffected — none of the three limiters apply there, matching
 `mpc_controller.py`'s identical exemption (that branch is not re-derived
 from a noisy live path, so there is nothing to smooth).
 
-**Status: live-tested once, 2026-09-16, on a full recording lap of
+**Status: live-tested once, on a full recording lap of
 `comp_test_map_2`** (`fsae_logs/stanley_control_20260916-081934.csv`). The
 car reached a corner with `e_y` growing to -1.03 m and `e_psi` to 24 deg,
 steering saturating at the 25 deg lock, then recovered and finished the lap
-normally — a materially better outcome than the pre-fix run on the same
-track family, which spun out under similar tracking-error growth. One run
+normally, without the spin-out that tracking-error growth of this size
+produces without these safeguards (see "Symptom" above). One run
 is not exhaustive validation; treat this as a first positive signal, not a
 closed investigation, and re-check on further tracks/conditions before
 treating it as fully proven the way `dynamic_speed_cap()` has been.

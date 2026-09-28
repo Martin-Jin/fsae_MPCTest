@@ -35,9 +35,10 @@ quality becomes the limiting factor, that's the next thing to build.
 
 ## Measurement rate: pose must keep up with the controller
 
-`sim_perception` used to publish pose **and** cones on one 10 Hz timer while
-the MPC ran at 20 Hz, so every second control step re-solved against a pose
-that had not changed. Measured in `mpc_standalone_control_1785976976.csv`:
+`sim_perception` publishes `pose_rate` and `cone_rate` on two independent
+timers (see below) specifically because a single shared 10 Hz timer, with
+the MPC running at 20 Hz, left every second control step re-solving against
+a pose that had not changed. Measured in `mpc_standalone_control_1785976976.csv`:
 `car_x`/`car_y` were byte-identical to the previous row on **50.5%** of control
 steps (effective pose rate 9.9 Hz), and the freeze runs were almost all exactly
 one tick long (766 of 829), the signature of a 2:1 rate mismatch rather than
@@ -57,42 +58,42 @@ compensates actuation lag, not a missing measurement.
 Data availability was never the constraint: the FSDS bridge publishes odom at
 250 Hz (`update_odom_every_n_sec: 0.004`). `sim_perception` was the bottleneck.
 
-**Fixed** by splitting into two timers: `pose_rate` (default 20 Hz, must be
->= the controller's `CONTROL_HZ`) and `cone_rate` (default 10 Hz). Cones stay
-slower deliberately: cropping the oracle map and building three messages is
-that node's expensive path, and the planner gains nothing from running it at
-the control rate. The node logs a warning if `pose_rate < 20`.
+`pose_rate` (default 20 Hz, must be >= the controller's `CONTROL_HZ`) and
+`cone_rate` (default 10 Hz) run as two separate timers. Cones stay slower
+deliberately: cropping the oracle map and building three messages is that
+node's expensive path, and the planner gains nothing from running it at the
+control rate. The node logs a warning if `pose_rate < 20`.
 
-Note the offline rollout never modelled this at all. It calls
+The offline rollout does not model this at all: it calls
 `perception.visible_cones()` and `planner.update()` every step with a fresh
-pose, i.e. it always assumed the 20 Hz behaviour the fix now delivers. So this
-was a live-only defect, and the sim needs no mirrored change. Reproducing a
-slow-pose regime offline would require a **pose zero-order hold at a
-configurable rate**, not more `DELAY_JITTER_STEPS`, since jitter models a
-*varying* delay, whereas this was a *systematically halved measurement
-rate*. Those are different failure modes and the jitter knob will not
-reproduce it.
+pose, always assuming the 20 Hz behaviour the live split-timer design
+delivers. This is a live-only concern, and the sim needs no mirrored change.
+Reproducing a slow-pose regime offline would require a **pose zero-order
+hold at a configurable rate**, not more `DELAY_JITTER_STEPS`, since jitter
+models a *varying* delay, whereas a shared-timer rate mismatch is a
+*systematically halved measurement rate*. Those are different failure modes
+and the jitter knob will not reproduce it.
 
-**A sibling bug of the same root-cause class, also fixed** (see
-`docs/logs/sim_to_real_investigation.md` §55): the fix above makes
-`pose_rate` keep up with the controller, but it did not guarantee that a
-given `car_position` sample and the `car_speed`/`car_yaw_rate` the
-controller read *at the same tick* came from the same underlying odom
-instant. `mpc_controller.py`/`mpc_controller_standalone.py` subscribed to
-the raw 250 Hz `/fsds/testing_only/odom` directly for speed/yaw-rate, a
-second, independent subscription racing `sim_perception.py`'s own separate
-subscription to the same publisher (the one that produces `car_position`).
-
-This is a **cross-topic snapshot mismatch**, not a rate mismatch: a different
-mechanism, but the same underlying cause (`sim_perception.py`'s publish timing not
-actually delivering what a downstream consumer assumes). Fixed by adding
+**A sibling of the same root-cause class** (see
+`docs/logs/sim_to_real_investigation.md` §55): keeping `pose_rate` at the
+controller rate does not by itself guarantee that a given `car_position`
+sample and the `car_speed`/`car_yaw_rate` the controller reads *at the same
+tick* come from the same underlying odom instant.
+`mpc_controller.py`/`mpc_controller_standalone.py` read speed/yaw-rate from
 `/fsae/slam/car_odom` (`nav_msgs/Odometry`), published from the exact same
 `_odom_cb`-updated state and the exact same 20 Hz timer tick as
-`car_position`, and switching both MPC controllers to read speed/yaw-rate
-from it instead of the raw topic. Same "no offline mirror needed" reasoning
+`car_position`, rather than subscribing to the raw 250 Hz
+`/fsds/testing_only/odom` directly, which would be a second, independent
+subscription racing `sim_perception.py`'s own separate subscription to the
+same publisher (the one that produces `car_position`).
+
+That alternative would be a **cross-topic snapshot mismatch**, not a rate
+mismatch: a different mechanism, but the same underlying cause
+(`sim_perception.py`'s publish timing not actually delivering what a
+downstream consumer assumes). Same "no offline mirror needed" reasoning
 applies: `sim/rollout_core.py` has one single, internally-consistent plant
-state at every instant, so it never had an equivalent of two racing
-subscriptions to begin with.
+state at every instant, so it has no equivalent of two racing subscriptions
+to begin with.
 
 ## Delay realism: why the tuner under-reproduces live chatter
 
@@ -241,9 +242,8 @@ saturates to a usable value when the target speed is large (a 20 m/s target
 gives throttle 1.0 from a stop; a 3 m/s target gives only 0.18).
 
 Measured live: a 3 m/s low-speed test left `v_actual` at ~0 for a full 54 s
-run, not merely "accelerates slowly."
-
-Fixed with a stiction-breaking throttle floor
+run, not merely "accelerates slowly," which is why the P-loop needs a
+stiction-breaking throttle floor
 (`STICTION_KICK_SPEED`/`STICTION_KICK_THROTTLE`, both in `fsds_bridge.py`):
 below 1.0 m/s car speed the throttle is floored at 0.35 while accelerating,
 then the floor stops applying and the normal P-loop tapers it down as the
@@ -317,17 +317,19 @@ removed without re-measuring against a repaired planner:
    See `fsae_autonomous/docs/NMPC_INTEGRATION_GAPS.md` gap E8 for the live
    measurement.
 
-   **The value was 2.5 and is now 5.0.** At 2.5 this clamp was not acting as
-   the launch/recovery guard described above, it was the binding constraint
-   on acceleration for a third of a normal lap: measured 36.8% of ticks
-   pinned at exactly the limit, holding `a_cmd` to 4.45 m/s² against a plant
-   that delivers ~12. At 5.0 the pinned fraction falls to 2.3%, peak `a_cmd`
-   nearly doubles to 8.32, the lap is ~2.5 s faster, and lateral error and
-   steering saturation both fall slightly, so nothing is traded away. Launch
-   behaviour is unchanged (launch at step 9 either way, launch-phase `|e_y|`
-   0.27 m against a 3.5 m boundary), which is why the guard still does its
-   job. Values above ~5 buy nothing further. Offline measurement only, NOT
-   yet live-validated: see `docs/logs/nmpc_progress_term_investigation.md`.
+   **`5.0`, not a lower value, because a lower value binds acceleration
+   instead of just guarding launch/recovery.** At `2.5` this clamp was not
+   acting as the launch/recovery guard described above, it was the binding
+   constraint on acceleration for a third of a normal lap: measured 36.8% of
+   ticks pinned at exactly the limit, holding `a_cmd` to 4.45 m/s² against a
+   plant that delivers ~12. At `5.0` the pinned fraction falls to 2.3%, peak
+   `a_cmd` nearly doubles to 8.32, the lap is ~2.5 s faster, and lateral
+   error and steering saturation both fall slightly, so nothing is traded
+   away. Launch behaviour is unchanged (launch at step 9 either way,
+   launch-phase `|e_y|` 0.27 m against a 3.5 m boundary), which is why the
+   guard still does its job at this value. Values above ~5 buy nothing
+   further. Offline measurement only, NOT yet live-validated: see
+   `docs/logs/nmpc_progress_term_investigation.md`.
 
 Combined, these bound tick-to-tick `v_desired` volatility and cap commanded
 speed in the unrecoverable `|e_y| > 1.5 m` regime, at a small cost on
@@ -414,17 +416,18 @@ pairings that imply a sub-3.7 m radius.
 
 ### A cone-map duplication bug in `_absorb()`, fixed here, still open upstream
 
-`planning/cone_map.py::ConeMap._absorb()` had a genuine bug: two detections
-of one physical cone in the same frame, both farther than `MERGE_DIST`
-(0.8 m) from anything already in the map, i.e. that cone's first sighting,
-were both appended as separate, permanent entries. This was deterministic
-and independent of `MERGE_DIST` tuning, since it only compared each candidate
-against the existing map, never against other candidates in the same batch.
+The upstream `fsae_planning` version of `_absorb()` (see below) carries a
+genuine bug: two detections of one physical cone in the same frame, both
+farther than `MERGE_DIST` (0.8 m) from anything already in the map, i.e.
+that cone's first sighting, both get appended as separate, permanent
+entries. This is deterministic and independent of `MERGE_DIST` tuning,
+since it only compares each candidate against the existing map, never
+against other candidates in the same batch.
 
-Fixed in both copies within this repo (offline `planning/cone_map.py` and the
-`fsds_simulator` mirror's `cone_map.py`) by also checking candidates against
-each other before appending. **Not ported upstream**: the live
-`fsae_planning` repo's `cone_map.py::_absorb()` still carries the
+Both copies within this repo (offline `planning/cone_map.py` and the
+`fsds_simulator` mirror's `cone_map.py`) also check candidates against
+each other before appending, which closes the bug. **Not ported upstream**:
+the live `fsae_planning` repo's `cone_map.py::_absorb()` still carries the
 same-frame-duplicate-prone version; porting it there is a resync TODO, not
 something this repo can apply directly.
 

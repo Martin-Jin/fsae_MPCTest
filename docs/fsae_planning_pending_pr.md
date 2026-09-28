@@ -100,11 +100,11 @@ working-tree-only.
 
 ## Control — nodes
 
-- New `mpc_controller_standalone.py`, which sends MPC throttle/brake directly, so
+- `mpc_controller_standalone.py`, which sends MPC throttle/brake directly so
   offline longitudinal tuning actually reaches the car (bypasses
-  `fsds_bridge`'s separate P-loop). **Since merged** into `mpc_controller.py`
+  `fsds_bridge`'s separate P-loop), is merged into `mpc_controller.py`
   as its `standalone_output=true` mode (a boolean parameter, not a separate
-  file/executable), so the pending diff no longer adds a second file here, see
+  file/executable); the pending diff does not add a second file here, see
   `fsae_planning/CHANGES.md`'s "Control — merged MPC controller nodes" entry.
 - Tracking-error gate + speed-rise-rate limiter added to both controller
   nodes.

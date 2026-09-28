@@ -76,7 +76,7 @@ Either:
   `sim/track_io.py`). With `USE_PLANNER = True`, the actual driving line
   during the rollout instead comes from `SimPlanner` rebuilding it
   cone-by-cone, exactly as for a synthetic path, but `USE_PLANNER = False`
-  is now the default (2026-08-08), so by default the rollout tracks this
+  is the default, so by default the rollout tracks this
   reconstructed oracle path/speed profile directly, matching the live ROS
   side's `path_map_path` mode.
 
@@ -144,8 +144,8 @@ Before running, confirm:
 - `USE_PLANNER` reflects whether the tuner should test the full
   perception/planning pipeline (`True`, see
   [Simulated Perception and Planning](architecture.md#simulated-perception-and-planning-use_planner))
-  or drive on the perfect reference line (`False`, default as of
-  2026-08-08, also faster).
+  or drive on the perfect reference line (`False`, the default, also
+  faster).
 - The `Q_diag`/`R_diag`/`R_rate_diag` cost weights and `SCORE_WEIGHTS`/
   `METRIC_SCALES` the tuner optimises against, see
   [tuning.md](tuning.md) for what each one does and how to tune it.
@@ -154,8 +154,7 @@ Before running, confirm:
   point, falling back instead to the fixed geometric midpoint (see
   [Optional Optuna TPE pre-search](architecture.md#optional-optuna-tpe-pre-search)).
   Requires `optuna` to be installed (see
-  [Dependencies](#dependencies)). Set `False` for the exact pre-2026-08-05
-  behaviour.
+  [Dependencies](#dependencies)).
 
 ### 3. Launch
 
@@ -215,11 +214,11 @@ Copy the values into **both**:
   `MPCParams` dataclass (`q_e_y`, `q_e_yd`, `q_e_psi`, `q_r`, `q_e_v`,
   `r_delta`, `r_a_accel`/`r_a_brake`, `r_rate_delta`, `r_rate_a`). `mpc_core.py`
   builds its own `Q_diag`/`R_diag`/`R_rate_diag` from `self.params.*` at
-  `MPCController.__init__` time. It no longer hardcodes them, so `mpc_params.py`
+  `MPCController.__init__` time, with no hardcoded weights, so `mpc_params.py`
   is the file to edit, not `mpc_core.py` itself.
 
-Both must stay in sync manually. The tuner was designed against the same
-plant and horizon used by both, but there is currently no single shared
+Both must stay in sync manually. The tuner runs against the same
+plant and horizon used by both, but there is no single shared
 import between them (the live ROS 2 node has no simulator dependencies). See
 [`docs/reference/`](`docs/reference/`)'s "MPC weight/gain
 parity" table for the full field-by-field mapping.
@@ -300,8 +299,8 @@ ros2 launch fsae_bringup sim.launch.py record_cones:=false          # skip cone_
 ```
 
 `mpc_controller.py` (the `controller:=mpc` node) has two output modes,
-selected by its own `standalone_output` parameter, no longer two separate
-files/executables:
+selected by its own `standalone_output` parameter, a single file/executable
+rather than two:
 
 - `standalone_output:=false`: `mpc` (like `stanley`) publishes the shared
   `cmd_vel` interface; `fsds_bridge` converts it to `fs_msgs/ControlCommand`
@@ -377,8 +376,7 @@ and 4 apply only in `standalone_output=true` mode):
 This is the full pipeline from "no map of this track exists" to "the car
 drives the precomputed line/speed on it": recording, the two export tools,
 the on-disk layout they share, and the one switch that puts a track on the
-car. Each stage used to be documented (or not) in a different file; this
-section is now the single place that chains them. For the concept rather
+car, chained together in one place. For the concept rather
 than the steps: `docs/reference/offline_live_parity.md`'s parity rule and
 `tracks/__init__.py`'s module docstring cover *why* the layout looks like
 this; this section covers *how* to use it.
@@ -686,10 +684,10 @@ reference and units.
 When a precomputed speed profile is loaded (`map_path` set), the score header
 also includes `lap_time_s`/`optimal_time_s`: `telemetry_logger.LapProgressTracker`
 derives real `progress`/`reached_end`/`time_bonus` from the car's position
-against the precomputed track path, fixing a bug (2026-08-11) where every live
-run's composite score was permanently pinned at the DNF floor regardless of how
-the car drove, see `docs/reference/offline_live_parity.md`'s "Live/offline score parity"
-section. `stanley_controller.py` gained `map_path` support (2026-08-11, see
+against the precomputed track path (without this, a live run's composite
+score is pinned at the DNF floor regardless of how the car drove), see
+`docs/reference/offline_live_parity.md`'s "Live/offline score parity"
+section. `stanley_controller.py` supports `map_path` (see
 `docs/logs/sim_to_real_investigation.md` §57) alongside the two MPC nodes, so a Stanley
 run with a precomputed profile scores fully too. Any run against the live
 planner topic instead (no precomputed path, either controller) still has no

@@ -92,7 +92,7 @@ backups as noted below):
 | `ros2/launch_all.sh` | Launch tab's Launch button | `TRACK`, `CONTROLLER`, `USE_NMPC`, `STANDALONE_OUTPUT`, `USE_PRECOMPUTED_SPEED`, `USE_PRECOMPUTED_PATH`, `V_MAX`, `V_MIN`, and (NMPC only, when checked) `NMPC_PROGRESS_ENABLED` |
 | `fsae_MPCTest/settings.py` | Settings tab's Save button (also Profiles tab's Load, see below) | `Q_diag`, `R_diag`, `R_rate_diag`, `R_A_ACCEL`, `R_A_BRAKE`, `SPEED_TARGET_DEFICIT_MAX`, every `NMPC_*` weight override, every feature-enable flag listed below |
 | `ros2/src/fsae_planning/.../mpc_params.py` / `nmpc_params.py` (live) | Settings tab's Save button (also Profiles tab's Load) | the matching field for every one of the above that has a live counterpart (see "Settings tab, and live/offline sync" below for the handful that don't) |
-| `ros2/src/fsae_planning/common/fsae_bringup/config/fsae_params.yaml` (live) | Settings tab's Save button (also Profiles tab's Load) | the same fields as the live dataclass row above. This is the file ROS actually loads a field's RUNTIME default from at node startup (it OVERRIDES the dataclass default), so a save that skipped this file could leave the car running the OLD value indefinitely with no visible sign of it -- this happened twice (`r_a_accel`, `nmpc_track_halfwidth`) before this file was added to the write path |
+| `ros2/src/fsae_planning/common/fsae_bringup/config/fsae_params.yaml` (live) | Settings tab's Save button (also Profiles tab's Load) | the same fields as the live dataclass row above. This is the file ROS actually loads a field's RUNTIME default from at node startup (it OVERRIDES the dataclass default), so a save that skipped this file leaves the car running the OLD value indefinitely with no visible sign of it -- writing this file is not optional, skipping it is exactly how `r_a_accel`/`nmpc_track_halfwidth` can silently stick on a stale value |
 | `fsae_MPCTest/fsds_simulator/.../mpc_params.py` / `nmpc_params.py` / `fsae_params.yaml` (mirror) | Settings tab's Save button (also Profiles tab's Load) | the same fields again, kept identical to the live copies above per CLAUDE.md's "Third copy" change-ledger rule |
 | `fsae_MPCTest/settings_profiles/<name>.json` | Profiles tab's Save/Delete | a full snapshot of every field above, see "Profiles tab" below |
 | `ros2/src/fsae_planning/tracks/<name>/` | Launch tab's Export & Save Track button | writes `speed_profile.csv`/`raceline.csv`/`centerline.csv` for a newly recorded track (only after explicit confirm if the name already exists) |
@@ -197,16 +197,14 @@ rather than silently only updating one side.
 mirror** (both dataclasses, both YAMLs), not just the live dataclass
 default. This matters because `fsae_params.yaml` is what a launched node
 actually reads its runtime value from -- it OVERRIDES the dataclass
-default at ROS param declaration time, so writing only the dataclass could
-leave the car silently running an old value with the GUI showing the new
-one and nothing to say they'd diverged. This is not a hypothetical: it
-happened twice before this file was added to the write path (`r_a_accel`
-stuck at 2.25 instead of a corrected 1.0, `nmpc_track_halfwidth` stuck at
-3.0 instead of a reverted 3.5), each time discovered only by reading the
-YAML directly rather than trusting the dataclass. A field missing from
-`fsae_params.yaml` entirely (20 experimental NMPC fields were, until this
-was fixed) is reported the same way a missing dataclass field is, not
-silently skipped.
+default at ROS param declaration time, so writing only the dataclass
+leaves the car silently running an old value with the GUI showing the new
+one and nothing to say they'd diverged (`r_a_accel` stuck at 2.25 instead
+of a corrected 1.0, `nmpc_track_halfwidth` stuck at 3.0 instead of a
+reverted 3.5, each only caught by reading the YAML directly rather than
+trusting the dataclass). Every field, including the 20 experimental NMPC
+ones, is written to `fsae_params.yaml`; a field missing from that file is
+reported the same way a missing dataclass field is, not silently skipped.
 
 **What it does NOT expose**: the full commented-out `MPC_*`/`NMPC_*`
 per-tick weight-override shortlist further down `launch_all.sh` (structural
@@ -323,13 +321,13 @@ production repo this project's CLAUDE.md never lets an agent commit or
 push — this script only ever writes into its LOCAL working tree; review
 and commit there stays a separate, deliberate, human step.
 
-**`fsae_autonomous`'s actual checkout location isn't fixed** — it moved at
-least once (CLAUDE.md's documented sibling-checkout path
-`fsae_autonomous/` was found stale on 2026-09-23; the real checkout was at
-`ros2_autonomous/src/fsae_autonomous/`). The script searches a short list
+**`fsae_autonomous`'s actual checkout location isn't fixed** — it has
+already moved once (from the sibling-checkout path `fsae_autonomous/` to
+`ros2_autonomous/src/fsae_autonomous/`), and CLAUDE.md's documented path
+can go stale again the same way. The script searches a short list
 of known-observed locations and prints a clear warning (skipping that
-destination, not failing outright) if neither is found, rather than
-silently doing nothing or hardcoding a path that can go stale again.
+destination, not failing outright) if none are found, rather than
+silently doing nothing or hardcoding a single path.
 
 ## Live debug window: `live_viz.py`
 

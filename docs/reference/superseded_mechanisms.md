@@ -35,12 +35,11 @@ Historical tuning path and full measurements: `docs/logs/sim_to_real_investigati
 ## Low-speed steering-rate boost (removed)
 
 A mechanism that scaled `R_rate[0,0]` up at low speed
-(`_low_speed_steer_rate_boost`, `boost_max=2.5, k=0.35`) was tried,
-live-tested, and disabled the same day for regressing turn-in; it no longer
-exists in either codebase at all, having been removed along with the rest of
-the lookahead gain-scheduling family when the corner-factor scheduler
-replaced it. See `control_mechanisms.md`'s "Corner-factor scheduler" section
-for what replaced it and the current mechanism, and
+(`_low_speed_steer_rate_boost`, `boost_max=2.5, k=0.35`) regressed turn-in
+under live test and does not exist in either codebase, removed along with
+the rest of the lookahead gain-scheduling family when the corner-factor
+scheduler replaced it. See `control_mechanisms.md`'s "Corner-factor
+scheduler" section for the current mechanism, and
 `docs/logs/late_turn_in_investigation.md`'s "Appendix, Low-speed
 steering-rate boost: full incident" for the full incident history.
 
@@ -60,8 +59,8 @@ the bend. It is **structurally unsound and disabled**: because the term
 perturbs the same recursion the QP minimizes cost over, the solver is free
 to choose *how* to spend the disturbance across the horizon, and at any
 gain large enough to matter it commits to a transient steer *away* from the
-corner before correcting. This was reproduced in a clean, noise-free
-synthetic QP test across a full gain sweep, not a live-noise artifact.
+corner before correcting. A clean, noise-free synthetic QP test across a
+full gain sweep reproduces this, so it is not a live-noise artifact.
 
 **Do not re-enable `curvature_forcing_enabled` by flipping the flag alone.**
 A future redesign should shift the *reference*/error definition (curve the

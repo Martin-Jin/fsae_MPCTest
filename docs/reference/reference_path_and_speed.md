@@ -37,10 +37,9 @@ PATH_CSV="$TRACK_DIR/centerline.csv"      # or raceline.csv
 ```
 
 **The speed file and the geometry file deliberately describe different lines.**
-That looks wrong and has been "fixed" once by pointing both at the same file,
-which regressed the car badly and was reverted. See "Speed-profile
-aggressiveness" below and `launch_all.sh`'s own comment before changing the
-pairing.
+That looks wrong, but pointing both at the same file regresses the car
+badly. See "Speed-profile aggressiveness" below and `launch_all.sh`'s own
+comment before changing the pairing.
 
 ## Which file the car actually loads at launch, auto-discovery, newest by default
 
@@ -400,8 +399,8 @@ than it can physically turn, so the steering slams over, the car runs wide,
 and it feels like a sudden jerk. Lowering it slightly made the steering much
 smoother at a small cost in lap time.
 
-Currently **4.75**, reduced from 5.5 after 5.5 was traced to a specific
-sudden-steering-jump symptom. At 5.5 the car arrived at the track's hardest
+Currently **4.75**. A higher value (5.5) produces a specific
+sudden-steering-jump symptom: at 5.5 the car arrives at the track's hardest
 curvature ramp (s0≈43→46, where the geometrically-required angle climbs
 8.5°→15.2° in 2.7 m) carrying ~3 m/s more than its own target, which needs
 roughly 15 m/s² of lateral acceleration, twice the plant's ~7.5 ceiling.
@@ -442,22 +441,15 @@ that failure.
 ## `launch_all.sh` has two launch branches; both must honour `SPEED_CSV`/`PATH_CSV`
 
 **Plain version:** the launch script can start the software in two ways
-depending on whether it is running inside a container. One of those two ways
-used to ignore the setting that chooses which path file to drive, so changing
-that setting appeared to do nothing.
+depending on whether it is running inside a container. Both ways must respect
+the setting that chooses which path file to drive, or changing that setting
+appears to do nothing.
 
 `launch_all.sh` ends in an `if [ "$USE_DOCKER" = true ]` split, and
 `USE_DOCKER` is **auto-detected**, not set by hand, so which branch runs is
 not obvious from reading the config at the top of the file.
 
-The Docker branch previously hard-coded the filenames:
-
-```bash
-map_path:=$CONTAINER_TRACK_DIR/speed_profile.csv
-path_map_path:=$CONTAINER_TRACK_DIR/raceline.csv      # ignored PATH_CSV
-```
-
-It now derives them, matching the non-Docker branch:
+The Docker branch derives the filenames, matching the non-Docker branch:
 
 ```bash
 map_path:=$CONTAINER_TRACK_DIR/$(basename "$SPEED_CSV")
@@ -468,9 +460,9 @@ The container mounts the repo at a different root, so the host-side
 `$SPEED_CSV`/`$PATH_CSV` paths cannot be passed through verbatim, only their
 basenames, re-rooted at `$CONTAINER_TRACK_DIR`.
 
-**Why this matters beyond the one-line fix:** with the old code, switching
-`PATH_CSV` to `centerline.csv` silently drove the raceline on any Docker run,
-and the telemetry header would have reported the raceline correctly while the
-operator believed otherwise. **When a config change appears to have no effect,
+**If a Docker branch ever hard-codes a filename instead of deriving it from
+`$SPEED_CSV`/`$PATH_CSV`, switching `PATH_CSV` will silently drive the wrong
+file on any Docker run, while the telemetry header still reports whichever
+file was actually loaded.** **When a config change appears to have no effect,
 check the launch header in the telemetry CSV**: `launch.path_map_path` and
 `launch.map_path` record what the controller actually received.

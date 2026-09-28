@@ -714,11 +714,11 @@ The tuned `Q`, `R`, `R_rate` weights are optimised as if for a single
 authority changes with speed and curvature, without needing a separate
 tuned weight set for every regime.
 
-**This section describes two generations of that idea.** The mechanism used
-to be a family of ~15 interacting functions that scanned *forward* along the
+**This section describes two generations of that idea.** An earlier, now
+removed, family of ~15 interacting functions scanned *forward* along the
 path (a "lookahead" scan producing a peak curvature ahead, `kappa_max_abs`)
 and reweighted the cost matrices in anticipation of a corner not yet
-reached. That whole family was deleted and replaced by three simpler,
+reached. The current mechanism replaces all of it with three simpler,
 **current-state-only** factors, no forward scan at all.
 
 "Current-state gain scheduling" below documents what runs today;
@@ -769,9 +769,9 @@ smoothness penalty applies. In a tight corner, the penalty is floored rather
 than removed entirely, enough softening to let the controller make the fast
 steering changes a tight corner demands, without ever allowing the rate cost
 to vanish completely (which would permit arbitrarily rapid, oscillatory
-steering). (This function used to also combine a second, lookahead-driven
-floor via `min()`, see "Historical" below; the corner-factor rewrite
-removed that half, leaving only the current-position floor shown above.)
+steering). Only the current-position floor shown above remains; a removed
+lookahead-driven floor once combined with it via `min()`, see "Historical"
+below.
 
 Both functions return a **copy** of the base matrix, the tuned weights in
 `settings.py` are never mutated, only scaled per-tick on top of.
@@ -838,9 +838,9 @@ r_a_brake_eff = r_a_brake · (1 - (1 - epsi_ra_brake_floor) · frac_epsi)
 Not a replacement for `adaptive_R_scaling`'s current-speed-driven `R[0,0]`
 scaling above, which this leaves untouched: the two compose.
 
-`adaptive_R_rate`'s current-position floor above used to combine with a
-second, lookahead-driven floor via `min()` (whichever was more aggressive
-won), see "Historical" below for that half.
+A removed, lookahead-driven floor once combined with `adaptive_R_rate`'s
+current-position floor above via `min()` (whichever was more aggressive
+won), see "Historical" below.
 
 **`adaptive_Q_scaling(e_y, Q, enabled)`** softens the lateral-error cost
 `Q[0,0]` when the car is already close to the centreline, to reduce
@@ -867,17 +867,16 @@ scale = 1.0                                               |e_y| >= ey_hi
   against `VALIDATION_SUITE`/the recorded map before any further re-tuning
   around it.
 
-**`enable_in_corners` (an `adaptive_R_rate` parameter, on by default)** is
-renamed from `disable_in_corners`, whose `True`/`False` polarity was inverted
-from what the name suggested. Setting it `False` *undoes* `adaptive_R_rate`'s
-softening once estimated curvature exceeds a small "cornering" threshold
-(`kappa_straight = 0.03`), restoring the full unscaled `R_rate[0,0]` baseline
-instead. Tried disabled and reverted the same day: it caused severe lag
-specifically in corners, most likely because the discontinuous cost jump at
-the threshold crossing spikes QP solver iterations and invalidates
-warm-starts on ticks straddling it. Kept in the code, gated on (softening
-active, the setting that avoids the discontinuity), as a documented dead end
-rather than deleted, so it isn't accidentally re-tried without this context.
+**`enable_in_corners` (an `adaptive_R_rate` parameter, on by default)**
+controls whether `adaptive_R_rate`'s softening applies once estimated
+curvature exceeds a small "cornering" threshold (`kappa_straight = 0.03`).
+Setting it `False` *undoes* that softening, restoring the full unscaled
+`R_rate[0,0]` baseline instead, and causes severe lag specifically in
+corners, most likely because the discontinuous cost jump at the threshold
+crossing spikes QP solver iterations and invalidates warm-starts on ticks
+straddling it. Kept in the code, gated on (softening active, the setting
+that avoids the discontinuity), as a documented dead end rather than
+deleted, so it isn't accidentally re-tried without this context.
 
 **`steer_rate_anti_hunt(kappa, e_y, R_rate, enabled, e_psi=0.0)`** stacks on
 top of `adaptive_R_rate` (not a replacement): multiplies `R_rate[0,0]` **up**
@@ -984,15 +983,13 @@ structure in one location must be mirrored in the other**, or weights tuned
 by `tuner/offline_tuner.py` will not transfer faithfully to the live controller.
 
 Both QPs enforce a hard per-step slew-rate limit (`du_max`) on top of the soft
-`R_rate` cost. This used to be a live-only constraint, which meant the tuner
-was optimising against a plant that could change steering arbitrarily fast
-while the real car was clamped, a silent parity break independent of any
-weight choice.
+`R_rate` cost, on both sides: without it, the tuner would be optimising
+against a plant that could change steering arbitrarily fast while the real
+car stays clamped, a silent parity break independent of any weight choice.
 
-`controller/optimiser.py` now takes a `du_max` too (baked into
+`controller/optimiser.py` takes a `du_max` (baked into
 the cached QP alongside `u_min`/`u_max`, and participating in the same
 cache-staleness check), and `sim/rollout_core.py` derives it from
 `VehicleParams.max_steer_rate * DT` so both sides agree. See
 [`docs/reference/`](reference/)'s "Slew-rate limit"
-section for the measurement behind the current 180 deg/s value and why the
-previous 80 deg/s was the direct cause of live steering chatter.
+section for the measurement behind the current 180 deg/s value.

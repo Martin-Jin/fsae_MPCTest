@@ -248,7 +248,7 @@ default to keep each tuning run faster.
 
 `PoseFeedHold` in `sim/rollout_core.py` models the live pose feed **repeating**
 its last measurement instead of delivering a fresh one. Measured on live
-telemetry 2026-08-06 (two runs, same track, same tuned weights, differing only
+telemetry (two runs, same track, same tuned weights, differing only
 in how badly the feed stalled):
 
 | | normal run | failed run |
@@ -296,11 +296,11 @@ measured 5.3% / 2.08.
 
 ### Bonus weights
 
-`TIME_BONUS_WEIGHT` is a legacy weight, no longer used by the score itself.
-Time is now the *primary objective* (tier 2), scaled by
-`TIME_OBJECTIVE_WEIGHT`, not a bonus subtracted from a metric sum.
+`TIME_BONUS_WEIGHT` is unused by the score itself, a vestigial field. Time is
+the *primary objective* (tier 2), scaled by `TIME_OBJECTIVE_WEIGHT`, not a
+bonus subtracted from a metric sum.
 
-`COMPLETION_BONUS_WEIGHT`: **no longer used by the score.** Completion is a
+`COMPLETION_BONUS_WEIGHT` is likewise **unused by the score.** Completion is a
 hard constraint (tier 1), not something rewarded: a run that doesn't finish
 is scored above `CONSTRAINT_FLOOR` regardless of how well it drove. Both
 constants are retained only so the live copy's CSV header and
@@ -498,12 +498,13 @@ CMA-ES phase, and its result (trial count, best score, seeded x0) is logged
 to `tuning history.txt` alongside the run's weights so it's traceable which
 runs used it.
 
-> **Closed book before 2026-08-06.** The Optuna pre-pass is one of several
-> things that changed partway through the recorded tuning history (alongside
-> `SCORE_WEIGHTS` edits and the scoring/simulation unification), which is why
-> entries above the `COMPARABLE HISTORY RESUMES HERE` marker in
-> `tuning history.txt` are not comparable to each other or to later runs.
-> See the header of that file for the full list and consequences.
+> **Entries above the `COMPARABLE HISTORY RESUMES HERE` marker in
+> `tuning history.txt` are not comparable to each other or to later runs.**
+> The Optuna pre-pass is one of several things that differ across that
+> marker (alongside `SCORE_WEIGHTS` and the scoring/simulation
+> unification), so runs logged before it used a different search and
+> scoring setup than runs logged after. See the header of that file for
+> the full list and consequences.
 
 Requires the optional `optuna` package (see
 [Dependencies](developer_guide.md#dependencies)), only needed if this flag
@@ -681,26 +682,26 @@ made the smoothness terms bite (normalisation amplifies the tracking terms
 too). Re-weighting cannot fix that, because the hunting set is genuinely better
 on the dominant term.
 
-- **Constraints are no longer prices.** Previously a DNF added a flat `+3.0` on
-  the same axis as the metrics, so a sufficiently tight-tracking run could
-  *buy its way out of a crash*. Now infeasible runs occupy a band strictly
-  above `CONSTRAINT_FLOOR` and no quality score can promote them. Ordering
-  *within* the band still improves with `progress`, so the optimiser keeps a
-  gradient rather than hitting a flat wall.
+- **Constraints are not prices.** A flat `+3.0` DNF penalty on the same axis
+  as the metrics would let a sufficiently tight-tracking run *buy its way out
+  of a crash*. Instead, infeasible runs occupy a band strictly above
+  `CONSTRAINT_FLOOR` and no quality score can promote them out of it.
+  Ordering *within* the band still improves with `progress`, so the
+  optimiser keeps a gradient rather than hitting a flat wall.
 - **The objective is time, in real units.** `time_bonus` is
   `optimal_lap_time / actual_time` (see `speed_profile.optimal_lap_time()`), so
   `time_cost = 0.15` means the lap took ~18% longer than physically possible.
   This is what kills the hunting exploit: hunting cannot buy lap time, so it
   only ever costs.
 - **`reached_end`, not `progress`, decides completion.** `progress` comes from
-  a bounded nearest-index search that stops short of the final path point, so a
-  fully-completed run reports ~0.90. Thresholding on it marked every successful
-  run infeasible. `COMPLETION_THRESHOLD` remains only as a fallback for callers
-  that cannot supply `reached_end`, that no longer includes
-  the live car when it's running against a precomputed speed profile (see
-  `LapProgressTracker` in `docs/reference/README.md`'s "Live/offline score
-  parity" section); a run against the live planner topic instead still has no
-  known path end and falls back to this threshold.
+  a bounded nearest-index search that stops short of the final path point, so
+  a fully-completed run reports ~0.90; thresholding completion on `progress`
+  would mark every successful run infeasible. `COMPLETION_THRESHOLD` remains
+  only as a fallback for callers that cannot supply `reached_end`. The live
+  car does not need that fallback when running against a precomputed speed
+  profile (see `LapProgressTracker` in `docs/reference/README.md`'s
+  "Live/offline score parity" section); a run against the live planner topic
+  instead still has no known path end and falls back to this threshold.
 - `COMPLETION_BONUS_WEIGHT` is now unused by the score, completion is a
   precondition, not a reward. The constant is retained for the live copy's
   header compatibility.
@@ -715,9 +716,9 @@ bite no matter how their weights were set. `tuner/performance_stats.py` now
 prints each metric's **effective contribution** (`weight × metric / scale`) and
 percentage share, so this is visible directly in a benchmark report.
 
-Consequence: post-2026-08-06 scores are on a different scale (a run with every
-metric at its reference scores exactly 1.0 before bonuses) and are **not**
-comparable to earlier logged scores.
+Consequence: a run with every metric at its reference scores exactly 1.0
+before bonuses. Scores logged under an earlier `METRIC_SCALES`/`SCORE_WEIGHTS`
+normalisation are **not** comparable to current scores.
 
 **Lower is always better.** A good finishing run typically scores in
 `[-0.5, -0.3]`, negative because the completion/time bonuses usually

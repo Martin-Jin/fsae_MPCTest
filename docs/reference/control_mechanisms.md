@@ -132,11 +132,10 @@ control tick. This cap has to be identical on both sides, or weights tuned
 offline will ask more of the real car than it can deliver.
 
 The hard per-step slew-rate constraint on `[delta_cmd, a_cmd]` must exist on
-both sides. It was once live-only, with `controller/optimiser.py` carrying no
-such constraint at all, so the offline tuner was optimising against a plant
-that could change steering arbitrarily fast while the real car was clamped,
-so weights tuned offline did not transfer faithfully, independent of any weight
-choice. Keep both sides constrained.
+both sides. Without it in `controller/optimiser.py`, the offline tuner
+optimises against a plant that can change steering arbitrarily fast while the
+real car is clamped, so weights tuned offline do not transfer faithfully,
+independent of any weight choice. Keep both sides constrained.
 
 How it is formulated:
 
@@ -600,11 +599,11 @@ all NMPC-only and implemented identically in `nmpc_core.py` (live) and
    all stages, which let a high `v_ref` at a later stage offset a low
    `v_ref` at an earlier one within the same solve, defeating the
    non-schedulability property this feature was meant to inherit from
-   `kappa(s)`; live-tested 2026-08-19, produced a 16.7 m/s corner overspeed
+   `kappa(s)`; live-tested, produced a 16.7 m/s corner overspeed
    against a 3-5 m/s target. A follow-up hard-constraint version
    (`nmpc_speed_limit_enabled`) replaced the cost term with a per-stage
-   inequality specifically to close that loophole, but failed live twice
-   (2026-08-19, 2026-09-15) for a different reason: the constraint is keyed
+   inequality specifically to close that loophole, but failed live on two
+   separate tests for a different reason: the constraint is keyed
    to the solver's own predicted trajectory, so a wrong prediction satisfies
    it on paper while the real car is still measurably over target,
    producing the same corner-overspeed/off-track outcome the inequality was
@@ -729,27 +728,23 @@ Reproduce the offline closed-loop comparison with
 (no ROS/FSDS session needed; the closed-loop section self-skips without an
 `fsae_MPCTest` sibling checkout) or `python -m tuner.nmpc_offline_check`.
 
-**Resolved: NMPC steering chatter while cornering** (magnitude hunting
-tick-to-tick, not a sign-flip reversal, distinct from both the
-reversal-penalty feature above and the two standstill bugs). Two
-independent causes, both fixed, see
-`docs/logs/steering_chatter_investigation.md`'s "Resolution summary" for
-the full history, including everything ruled out along the way:
+**NMPC steering chatter while cornering** (magnitude hunting tick-to-tick,
+not a sign-flip reversal, distinct from both the reversal-penalty feature
+above and the two standstill bugs) is controlled by two settings. See
+`docs/logs/steering_chatter_investigation.md`'s "Resolution summary" for the
+full history, including everything ruled out along the way:
 
-1. **`r_rate_delta` was ~18x too low** (2.8, raised to 52.5), so the
-   steering-rate cost barely charged for rapid changes. Live A/B:
-   `mean|d_steer|` per tick 2.538° → 1.173°, sign-flip rate 66% → 55.5%
-   (the first intervention that moved it off ~65% at all).
-2. **The tracked reference line was a confound for the rest of it.**
-   Switching from `raceline.csv` to `centerline.csv`, weights unchanged,
-   took steering reversals 13 → 1 and both saturation and slew-limited
-   ticks to exactly 0 (see "Centreline beats raceline": the raceline's
-   own geometry was demanding grip the simulator's tyre model can't supply
-   at that speed, which no controller-side weight can fix).
+1. **`r_rate_delta=52.5`**: the steering-rate cost weight. At the much lower
+   2.8 the cost barely charges for rapid changes; 52.5 is what keeps
+   `mean|d_steer|` and the sign-flip rate down.
+2. **The tracked reference line matters independently of weights.**
+   `centerline.csv`, not `raceline.csv`, holds steering reversals and both
+   saturation and slew-limited ticks near zero: the raceline's own geometry
+   demands grip the simulator's tyre model can't supply at that speed, which
+   no controller-side weight can fix (see "Centreline beats raceline").
 
 A small residual remains, clustered at corner **exits**: ~9.8 stutters/min,
-amplitude 1.5-3.2° (down from 5.9-7.9° pre-fix); the signature is heading
-still unwinding (`|e_psi|` 13-16°) while lateral error is already small and
-shrinking. Distinct from the two fixes above, not yet chased further at
-this amplitude; the next lever would be `q_e_psi`/`q_r` at corner exit.
-Reproduce/extend with `python -m tuner.steering_chatter_check`.
+amplitude 1.5-3.2°; the signature is heading still unwinding (`|e_psi|`
+13-16°) while lateral error is already small and shrinking. Not yet chased
+further at this amplitude; the next lever to try is `q_e_psi`/`q_r` at
+corner exit. Reproduce/extend with `python -m tuner.steering_chatter_check`.

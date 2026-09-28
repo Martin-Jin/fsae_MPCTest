@@ -94,25 +94,23 @@ separately holds an algorithm-only mirror, see the file mapping below),
 (`fsds_bridge.py`, `stanley_controller.py`, `mpc/mpc_controller.py`,
 `telemetry_logger.py`).
 
-Notes on how the current state differs from what an older checkout may show:
+A few points worth stating explicitly, since they're easy to get wrong from
+file naming alone:
 
 - There is no frozen `fsds_simulator/stanley_controller/` reference
-  implementation any more (`stanley_control.py` /
-  `stanely_control_utils.py`). It targeted an old `/fsds/planned_path`+`Track`
-  interface and imported a never-defined `separate_cones_by_color`; the real,
+  implementation (`stanley_control.py` / `stanely_control_utils.py`); see
+  "Deliberately not mirrored" below for why one isn't kept. The real,
   current `stanley_controller.py` (which uses `control_utils.py`'s
-  `StanleyController`) is mirrored instead.
+  `StanleyController`) is what's mirrored.
 - The root `planning/` mirror tracks the `fsae_planning` checkout in
   `ros2/src/fsae_planning/`. It carries no `build_path_trace` ft-fsd
-  trace-sort planner (upstream removed it, see "Deliberately not mirrored"
-  below), exposes `build_wall_segments`/`segment_crosses_walls` as public,
-  and includes `roll_loop_to_car` (a skidpad-support helper, see its own
-  note below).
+  trace-sort planner (see "Deliberately not mirrored" below), exposes
+  `build_wall_segments`/`segment_crosses_walls` as public, and includes
+  `roll_loop_to_car` (a skidpad-support helper, see its own note below).
 - `fsds_simulator/` uses the mirrored package hierarchy described above, not
-  a flat folder. It has no `control_node.py`; upstream's
-  `mpc/mpc_controller.py` fills that role via its `standalone_output=true`
-  mode (see "What replaced `control_node.py`" below, a same-design,
-  different-file swap, not a rename). MPC-related files
+  a flat folder. It has no `control_node.py`; `mpc/mpc_controller.py` fills
+  that role via its `standalone_output=true` mode (see "The MPC controller's
+  two output modes" below). MPC-related files
   (`mpc_core.py`/`mpc_params.py`/`nmpc_core.py`/`nmpc_params.py`/
   `mpc_controller.py`) live in a `control/fsae_control/fsae_control/mpc/`
   subpackage, not the package's top level.
@@ -147,15 +145,15 @@ offline tuner cares about:
 |---|---|---|
 | `common/fsae_interfaces/` (whole package) | `common/fsae_interfaces/` | Direct mirror. Message definitions (`Track`, `ConeDetection`, `CAN`, …) every other package depends on. |
 | `common/fsae_bringup/` (whole package) | `common/fsae_bringup/` | Direct mirror. `config/fsae_params.yaml` (central tunables), all 5 launch files (`sim.launch.py`, `control.launch.py`, `planning.launch.py`, `perception.launch.py`, `cone_recorder.launch.py`). |
-| `perception/fsae_sim_perception/` (whole package) | `perception/fsae_sim_perception/` | `sim_perception.py` is a direct mirror (FSDS oracle+odom → `/fsae/*`). `cone_recorder.py` and `common/fsae_bringup/launch/cone_recorder.launch.py` have **never existed in upstream `fsae_planning`'s git history**. Despite the "Direct mirror" label this table used to give the whole package, these two files are this repo's own addition, staged here to be upstreamed later, not copied from an existing upstream file. |
+| `perception/fsae_sim_perception/` (whole package) | `perception/fsae_sim_perception/` | `sim_perception.py` is a direct mirror (FSDS oracle+odom → `/fsae/*`). `cone_recorder.py` and `common/fsae_bringup/launch/cone_recorder.launch.py` have **never existed in upstream `fsae_planning`'s git history**. Despite the "Direct mirror" label on this row, these two files are this repo's own addition, staged here to be upstreamed later, not copied from an existing upstream file. |
 | `planning/fsae_planning/` (whole package) | `planning/fsae_planning/` | Direct mirror. `centerline_planner.py` (the actual ROS 2 node, see the row above for why the root `planning/` folder doesn't have this), `boundary.py`, `cone_map.py`, `cone_sorting.py`, `path_utils.py`, `special_utils/` (skidpad). |
 | `control/fsae_control/fsae_control/mpc/mpc_core.py` | `control/fsae_control/fsae_control/mpc/mpc_core.py` | Direct mirror. The `MPCController` class, QP-based MPC, kept in byte-for-byte parity with `sim/rollout_core.py`/`controller/optimiser.py` per the parity rule and numeric-parity tables in this document. |
 | `control/fsae_control/fsae_control/mpc/mpc_params.py` | `control/fsae_control/fsae_control/mpc/mpc_params.py` | Direct mirror. `MPCParams` dataclass, every MPC weight/gain/flag, ~56 fields, the single source of truth for MPC tuning on the live side. |
 | `control/fsae_control/fsae_control/mpc/nmpc_core.py` | `control/fsae_control/fsae_control/mpc/nmpc_core.py` | Direct mirror. `NMPCController`, the Frenet-frame nonlinear MPC (`use_nmpc=true`), kept in numeric parity with `controller/nmpc_optimiser.py`. |
 | `control/fsae_control/fsae_control/mpc/nmpc_params.py` | `control/fsae_control/fsae_control/mpc/nmpc_params.py` | Direct mirror. `NMPCParams` dataclass, the NMPC's own tunables, separate from `MPCParams` (see that file's own note on why). |
 | `control/fsae_control/fsae_control/control_utils.py` | `control/fsae_control/fsae_control/control_utils.py` | Direct mirror, includes both `curvature_speed()` and `StanleyController`. |
-| `control/fsae_control/fsae_control/stanley_controller.py` | `control/fsae_control/fsae_control/stanley_controller.py` | Direct mirror. The actual current `controller:=stanley` node (publishes `cmd_vel`, routes through `fsds_bridge`). Replaces the old frozen reference implementation, see "Current mirror scope" above. |
-| `control/fsae_control/fsae_control/mpc/mpc_controller.py` | `control/fsae_control/fsae_control/mpc/mpc_controller.py` | Direct mirror. The `controller:=mpc` node: its `standalone_output` ROS2 parameter (default `true`) selects between the two output modes a `false`/`true` value used to be two separate files for; see "The MPC controller's two output modes" below. |
+| `control/fsae_control/fsae_control/stanley_controller.py` | `control/fsae_control/fsae_control/stanley_controller.py` | Direct mirror. The `controller:=stanley` node (publishes `cmd_vel`, routes through `fsds_bridge`), see "Current mirror scope" above. |
+| `control/fsae_control/fsae_control/mpc/mpc_controller.py` | `control/fsae_control/fsae_control/mpc/mpc_controller.py` | Direct mirror. The `controller:=mpc` node: its `standalone_output` ROS2 parameter (default `true`) selects between two output modes in the same file; see "The MPC controller's two output modes" below. |
 | `control/fsae_control/fsae_control/fsds_bridge.py` | `control/fsae_control/fsae_control/fsds_bridge.py` | Direct mirror. Needed by `stanley_controller.py` always, and by `mpc_controller.py` only when `standalone_output=false` (skipped when `true`, which bypasses it). |
 | `control/fsae_control/fsae_control/telemetry_logger.py` | `control/fsae_control/fsae_control/telemetry_logger.py` | Direct mirror. CSV telemetry shared by all controller nodes. Also computes the run's composite score (via `scoring.py`) and prepends it to the control CSV as a `#`-commented header on `close()`. Includes `LapProgressTracker`, which computes real `progress`/`reached_end`/`time_bonus` from the precomputed track path; see "Live/offline score parity" below. |
 | `control/fsae_control/fsae_control/scoring.py` | *(no upstream counterpart, never existed in `fsae_planning`'s git history)* | **Not a direct mirror.** Staged here for upstreaming. It **is** a verbatim copy of this repo's own `sim/scoring.py`, see "Live/offline score parity" below. Changes must be made in `sim/scoring.py` first, then re-copied here (and eventually upstreamed). |
@@ -171,42 +169,24 @@ offline tuner cares about:
 
 `planning/` (root) and `mpc/mpc_core.py` are shared algorithm code and
 should track upstream closely. `mpc/mpc_controller.py`'s
-`standalone_output=true` code path traces back to this repo's own
-integration pattern (see "What replaced `control_node.py`" below) but is now
-a direct mirror like every other file in the table above, and it's expected to
-diverge from the `standalone_output=false` path in upstream-specific ways
-(topic names, message types) while keeping the same behavioural design.
+`standalone_output=true` code path (see "The MPC controller's two output
+modes, plus Stanley" below) is a direct mirror like every other file in the
+table above, and it's expected to diverge from the `standalone_output=false`
+path in upstream-specific ways (topic names, message types) while keeping
+the same behavioural design.
 
 ### The MPC controller's two output modes, plus Stanley
 
-### What replaced `control_node.py`
+`mpc_controller.py`'s `standalone_output` parameter (default `true`) selects
+between two output modes in one node file, rather than two separate
+launchable executables:
 
-This repo used to have its own `fsds_simulator/control_node.py`, targeting an
-older ROS 2 topic/message interface (`/fsds/planned_path` as `nav_msgs/Path`,
-`/FusionCones` as `fs_msgs/Track`) that no longer exists in current
-`fsae_planning`. It was retired and its design ported into upstream's
-package as a new node, `mpc_controller_standalone.py`, updated for the
-current topics (`/fsae/planning/selected_trajectory`, `/fsae/slam/
-car_position`, `/fsae/perception/cone_detection`).
-
-That node has since been **merged into `mpc_controller.py`** as its
-`standalone_output=true` mode (alongside `mpc_controller.py`'s own
-pre-existing `standalone_output=false` mode), one node file selected by a
-boolean parameter, instead of two launchable executables selected by a
-controller-name string. There is no separate `control_node.py` or
-`mpc_controller_standalone.py` anymore, in either repo.
-
-`mpc_controller.py`'s `standalone_output` parameter (default `true`) picks
-between the two output modes that used to be two separate files:
-
-- **`standalone_output=false`**: the original `mpc_controller.py` design.
-  Publishes `ackermann_msgs/AckermannDriveStamped` (steering + target speed)
-  on the shared `cmd_vel` interface and lets `fsds_bridge.py`'s simple
-  speed-error P-loop compute throttle/brake, and own GO-gating/cone-braking,
-  identically to the Stanley controller. It **discards** the MPC's own
-  throttle/brake output.
-- **`standalone_output=true`** (default): the design this repo's old
-  `control_node.py` was ported into. Publishes `fs_msgs/ControlCommand`
+- **`standalone_output=false`**: publishes `ackermann_msgs/AckermannDriveStamped`
+  (steering + target speed) on the shared `cmd_vel` interface and lets
+  `fsds_bridge.py`'s simple speed-error P-loop compute throttle/brake, and own
+  GO-gating/cone-braking, identically to the Stanley controller. It
+  **discards** the MPC's own throttle/brake output.
+- **`standalone_output=true`** (default): publishes `fs_msgs/ControlCommand`
   directly, using `MPCController.compute()`'s `(steering, throttle, brake)`
   output unchanged (preserving the offline-tuned longitudinal behaviour this
   repo's tuner produces), and re-implements GO-hold/stale-path-brake/
@@ -214,29 +194,28 @@ between the two output modes that used to be two separate files:
   Selected via `standalone_output:=true` (the default) in `control.launch.py`,
   which skips `fsds_bridge` for that mode.
 
-When resyncing this repo's mirror against a newer `fsae_planning`, diff
-`mpc_controller.py` against `mpc_controller.py`; both modes live in the same
-file now, so there's only one file to resync. The two modes' code paths
-inside it are deliberately different (see the file's own module docstring
-for exactly which parts branch on `standalone_output` and which are shared),
-reusing the same `MPCController` QP core; don't unify them further without a
-specific reason to.
+There is a single node file (`mpc_controller.py`) in both repos; when
+resyncing this repo's mirror against a newer `fsae_planning`, diff
+`mpc_controller.py` against `mpc_controller.py`, there's only one file to
+resync. The two modes' code paths inside it are deliberately different (see
+the file's own module docstring for exactly which parts branch on
+`standalone_output` and which are shared), reusing the same `MPCController`
+QP core; don't unify them further without a specific reason to.
 
 ## Deliberately not mirrored
 
-- **The old frozen Stanley reference** (previously at
-  `fsds_simulator/stanley_controller/stanely_control_utils.py` +
-  `stanley_control.py`), **removed**. It targeted an old
-  `/fsds/planned_path`+`Track` interface, was not kept in sync with upstream,
-  and imported a `separate_cones_by_color` helper that isn't defined anywhere
-  in either repo. The real, current `StanleyController` (in
-  `control_utils.py`) and `stanley_controller.py` node are now mirrored
-  instead, kept in sync like everything else under `fsds_simulator/`. An
-  older local copy of this repo with the frozen reference still present
-  reflects the *previous* state, don't resurrect it.
-- **`roll_loop_to_car`** (added to upstream's `path_utils.py`), a
+- **A frozen Stanley reference implementation does not belong in
+  `fsds_simulator/`.** No such file exists there (or anywhere in either
+  repo): the real, current `StanleyController` (in `control_utils.py`) and
+  `stanley_controller.py` node are what's mirrored, kept in sync like
+  everything else under `fsds_simulator/`. Don't add a separate frozen
+  reference copy: a prior one targeted an old `/fsds/planned_path`+`Track`
+  interface, was never kept in sync with upstream, and imported a
+  `separate_cones_by_color` helper that isn't defined anywhere in either
+  repo.
+- **`roll_loop_to_car`** (in upstream's `path_utils.py`), a
   closed-loop-reordering helper upstream's skidpad planner uses to follow a
-  known figure-8. Ported here for parity (see "Last resynced" above). In the
+  known figure-8. Ported here for parity. In the
   root-level `planning/path_utils.py` copy (used by `gui/simulation.py` /
   `tuner/offline_tuner.py`), **this repo has no skidpad mode**, so nothing
   calls it there yet, keep it on resync rather than stripping it as dead
@@ -246,10 +225,8 @@ specific reason to.
   since that mirror carries the whole upstream workspace including its
   skidpad planner, don't treat that copy as unreferenced.
 - **The ft-fsd trace-sort planner (`build_path_trace` and its private
-  helpers)**: upstream removed this entirely (see "Last resynced" above);
-  it is gone from this repo's `boundary.py` too as of the same resync. If an
-  older local copy of this repo still has it, that's the *previous* state,
-  not something to re-add.
+  helpers)** does not exist upstream and is not in this repo's `boundary.py`
+  either. Don't re-add it from an older local copy that still has it.
 - **The offline oracle speed-profile array** (`sim/speed_profile.py`'s
   `compute_speed_profile()` / `smooth_profile()`), used only for the
   synthetic/oracle path in `tuner/offline_tuner.py` and `gui/simulation.py`'s
@@ -280,7 +257,7 @@ writing, re-confirm before relying on them, since a resync can move them.
 | Accel slew-rate limit (`du_max[1]`) | `sim/rollout_core.py` (`du_max` second element) | `fsds_simulator/control/fsae_control/fsae_control/mpc/mpc_core.py` (`self.du_max` second element) | `0.6` per step |
 | `tracking_error_speed_gate()` thresholds | `sim/speed_profile.py` | `fsds_simulator/.../control_utils.py` | `ey_lo/hi` 0.5/2.0 m, `epsi_lo/hi` 20/60 deg, `floor` 0.3 |
 | Speed-target rise limit | `sim/rollout_core.py` (`SPEED_TARGET_RISE_RATE`) | `fsds_simulator/.../mpc/mpc_controller.py` (same name, shared by both `standalone_output` modes) | `7.0` m/s² |
-| Speed-target deficit cap | `settings.py` (`SPEED_TARGET_DEFICIT_MAX`), imported into `sim/rollout_core.py` | `MPCParams.speed_target_deficit_max` (`mpc_params.py`), read via `self._mpc.params.speed_target_deficit_max` in `mpc_controller.py` | `5.0` m/s (was 2.5). Promoted from a bare module constant to a real `MPCParams` field: now a ROS param, YAML default (`fsae_params.yaml`), `launch_all.sh` shortlist entry (`MPC_SPEED_TARGET_DEFICIT_MAX`), and GUI Settings-tab scalar, the same path every other shared weight follows. Raised from 2.5 after measuring it as the binding constraint on acceleration for 36.8% of a lap, not the launch guard it was written as: see `docs/logs/nmpc_progress_term_investigation.md`. Offline-validated only, NOT yet live-tested |
+| Speed-target deficit cap | `settings.py` (`SPEED_TARGET_DEFICIT_MAX`), imported into `sim/rollout_core.py` | `MPCParams.speed_target_deficit_max` (`mpc_params.py`), read via `self._mpc.params.speed_target_deficit_max` in `mpc_controller.py` | `5.0` m/s. A real `MPCParams` field, not a bare module constant: a ROS param, YAML default (`fsae_params.yaml`), `launch_all.sh` shortlist entry (`MPC_SPEED_TARGET_DEFICIT_MAX`), and GUI Settings-tab scalar, the same path every other shared weight follows. Set well above what a launch guard needs because at `2.5` it binds as the constraint on acceleration for 36.8% of a lap: see `docs/logs/nmpc_progress_term_investigation.md`. Offline-validated only, NOT yet live-tested |
 | `curvature_speed()` κ reduction | `sim/speed_profile.py` | `fsds_simulator/.../control_utils.py` | max of 3-point running mean |
 | Score weights / bonuses / penalties | `settings.py` (`SCORE_WEIGHTS`, `COMPLETION_BONUS_WEIGHT`, `TIME_BONUS_WEIGHT`, `DNF_PENALTY`, `DNF_OFFTRACK_PENALTY`) | `fsds_simulator/control/fsae_control/fsae_control/scoring.py` (inlined as module constants) | weights sum to `1.0`; `0.5` / `0.25` / `3.0` / `3.0` |
 | Metric normalisation scales | `settings.py` (`METRIC_SCALES`) | `fsds_simulator/control/fsae_control/fsae_control/scoring.py` (inlined as module constant) | 13 entries, `[0.40, 0.45, 0.30, 0.18, 1.50, 0.40, 0.02, 0.30, 1.00, 0.015, 0.70, 2.30, 0.08]` |
@@ -293,9 +270,9 @@ writing, re-confirm before relying on them, since a resync can move them.
 | Accel/brake effort split (`R[1,1]`) | `settings.py` (`R_A_ACCEL`, `R_A_BRAKE`), read by `controller/optimiser.py`'s `solve_mpc(r_a_accel=, r_a_brake=)` | `mpc_params.py` (`r_a_accel`, `r_a_brake`), read by `mpc_core.py`'s `_solve_qp` | actively being live-tuned, re-check both sides' current values before trusting this row; see "Accel/brake effort weight split" below |
 | NMPC rate-shaping family (zone / jerk / stage ramp / `k`) | `settings.py` (`NMPC_RRATE_ZONE_*`, `NMPC_RJERK_DELTA`/`_A`, `NMPC_RRATE_STAGE_*`, `NMPC_CORNER_FACTOR_K`), threaded through `sim/rollout_core.py` into `controller/nmpc_optimiser.py` | `mpc_params.py` (same names, lowercase), read by `nmpc_core.py` | zone `True` @ `2.0`/`0.80`/`0.15` (the intended `0.35` ease DNFs offline), `rjerk_delta` `150.0`, `rjerk_a` `0.0`, stage ramp `False`, `nmpc_corner_factor_k` `27.0`, `nmpc_q_e_y` `7.5`. **`k` is load-bearing for the zone, not cosmetic**: at the inherited `8.0` the ease/floor bands are unreachable on a track with `κ_max`~0.2, so a divergence here silently disables the schedule offline while leaving it on live. See "Three-zone rate schedule" below |
 | Corner-factor scheduler + heading-error accel/brake asymmetry | `settings.py` (`CORNER_FACTOR_K`, `Q_EY_*`/`Q_EPSI_*`/`Q_R_*`/`RRATE_STEER_*`/`R_STEER_CORNER_MID`, `LOW_SPEED_CORNER_BOOST_*`, `EPSI_RA_*`) | `mpc_params.py` (same names, lowercase) | see the "MPC weight/gain parity" table above for the full current field list. The lookahead gain-scheduling family this row replaces (exit-boost decay distance/peak-tracker, low-speed steering-rate boost, steering-effort relaxation, curvature forcing, anti-hunt lookahead gate, exit-boost `\|e_psi\|` hold threshold) no longer exists on either side, see "Corner-factor scheduler" below |
-| `nmpc_kappa_rate_max` (curvature-reference rate limiter) | `settings.py` (`NMPC_KAPPA_RATE_MAX`), wired into `NMPCController.__init__`'s `kappa_rate_max=` kwarg | `nmpc_params.py` (`nmpc_kappa_rate_max`), applied in `nmpc_core.py`'s `_rate_limit_kappa` | `2.0` (1/m per s), both sides. Live-planner-mode only: structurally inert whenever a static/precomputed path is set (`_path_reference` returns the cached static ref before ever reaching this), confirmed 2026-09-15 |
-| `nmpc_v_des_filter_alpha` (speed-target low-pass) | `settings.py` (`NMPC_V_DES_FILTER_ALPHA`) — **placeholder only, NOT wired into any offline consumer** | `nmpc_params.py` (`nmpc_v_des_filter_alpha`), applied in `nmpc_core.py`'s `compute()` | `0.09` both sides (offline constant unused). `controller/nmpc_optimiser.py`'s `compute_step()` feeds `desired_speed` straight in, unfiltered — this is a genuine, long-standing live-only mechanism (introduced 2026-06-29), not a fresh parity gap. See `planner_only_lap2_corner_spinout.md` for the 2026-09-15 tuning sweep |
-| `nmpc_latency_compensation_enabled`/`_ms` (solve-time rollforward) | `settings.py` (`NMPC_LATENCY_COMPENSATION_ENABLED`/`_MS`), wired into `NMPCController.__init__` | `nmpc_params.py` (same names, lowercase), applied in `nmpc_core.py`'s `compute()` | `False` / `25.0` ms, both sides. Live-tested, does not close the lap-2 corner margin it was built for, and is an un-isolated suspect (alongside a too-fast `nmpc_v_des_filter_alpha`) for a separate 2026-09-15 smoothness regression — see `planner_only_lap2_corner_spinout.md` |
+| `nmpc_kappa_rate_max` (curvature-reference rate limiter) | `settings.py` (`NMPC_KAPPA_RATE_MAX`), wired into `NMPCController.__init__`'s `kappa_rate_max=` kwarg | `nmpc_params.py` (`nmpc_kappa_rate_max`), applied in `nmpc_core.py`'s `_rate_limit_kappa` | `2.0` (1/m per s), both sides. Live-planner-mode only: structurally inert whenever a static/precomputed path is set (`_path_reference` returns the cached static ref before ever reaching this) |
+| `nmpc_v_des_filter_alpha` (speed-target low-pass) | `settings.py` (`NMPC_V_DES_FILTER_ALPHA`) — **placeholder only, NOT wired into any offline consumer** | `nmpc_params.py` (`nmpc_v_des_filter_alpha`), applied in `nmpc_core.py`'s `compute()` | `0.09` both sides (offline constant unused). `controller/nmpc_optimiser.py`'s `compute_step()` feeds `desired_speed` straight in, unfiltered: this is a genuine, long-standing live-only mechanism, not a fresh parity gap. See `planner_only_lap2_corner_spinout.md` for the tuning sweep behind this row |
+| `nmpc_latency_compensation_enabled`/`_ms` (solve-time rollforward) | `settings.py` (`NMPC_LATENCY_COMPENSATION_ENABLED`/`_MS`), wired into `NMPCController.__init__` | `nmpc_params.py` (same names, lowercase), applied in `nmpc_core.py`'s `compute()` | `False` / `25.0` ms, both sides. Live-tested, does not close the lap-2 corner margin it was built for, and is an un-isolated suspect (alongside a too-fast `nmpc_v_des_filter_alpha`) for a separate smoothness regression, see `planner_only_lap2_corner_spinout.md` |
 
 Notes on how these are actually used:
 
@@ -345,16 +322,16 @@ longer exist on either side.
 
 | `MPCParams` field | `settings.py` constant | Current value |
 |---|---|---|
-| `q_e_y` | `Q_diag[0]` | `6.35` both sides, synced |
-| `q_e_yd` | `Q_diag[1]` | `0.5` both sides, synced |
+| `q_e_y` | `Q_diag[0]` | `6.4` both sides, synced |
+| `q_e_yd` | `Q_diag[1]` | `0.0` both sides, synced |
 | `q_e_psi` | `Q_diag[2]` | `1.65` both sides, synced |
-| `q_r` | `Q_diag[3]` | `1.0` both sides, synced (2026-09-20: re-synced from live, which had drifted to `1.0` while this table and `settings.py` still said `1.20`/`1.40`) |
-| `q_e_v` | `Q_diag[4]` | `5.40` both sides, synced |
-| `r_delta` | `R_diag[0]` | `1.8` both sides, synced (2026-09-20: re-synced from live, `settings.py` still said `1.35`) |
-| `r_a_accel` | `R_diag`/`R_A_ACCEL` | `2.25` both sides, synced; see "Accel/brake effort weight split" below |
-| `r_a_brake` | `R_A_BRAKE`/`R_diag[1]` | `0.5` both sides, synced |
-| `r_rate_delta` | `R_rate_diag[0]` | `2.5` both sides, synced (2026-09-20: live had moved to `2.5`, down from the `52.5` this table and `settings.py` still recorded) |
-| `r_rate_a` | `R_rate_diag[1]` | `2.25` both sides, synced (2026-09-20: re-synced from live, which had drifted to `2.25` while this table and `settings.py` still said `5.0`) |
+| `q_r` | `Q_diag[3]` | `1.0` both sides, synced |
+| `q_e_v` | `Q_diag[4]` | `1.5` both sides, synced |
+| `r_delta` | `R_diag[0]` | `1.8` both sides, synced |
+| `r_a_accel` | `R_diag`/`R_A_ACCEL` | `0.9` both sides, synced; see "Accel/brake effort weight split" below |
+| `r_a_brake` | `R_A_BRAKE`/`R_diag[1]` | `0.6` both sides, synced |
+| `r_rate_delta` | `R_rate_diag[0]` | `100.0` both sides, synced |
+| `r_rate_a` | `R_rate_diag[1]` | `2.0` both sides, synced |
 | `terminal_q_scale` | `TERMINAL_Q_SCALE` | `1.0` (matched) |
 | `adaptive_q_scaling_enabled` | `ADAPTIVE_Q_SCALING_ENABLED` | `True` (matched) |
 | `steer_rate_anti_hunt_enabled` | `STEER_RATE_ANTI_HUNT_ENABLED` | `True` (matched) |
@@ -390,8 +367,8 @@ relying on tuning one of these offline, if that ever becomes relevant.
 copy** of `sim/scoring.py`: `compute_composite_score()`, `RolloutMetrics.
 add_step()` and `RolloutMetrics.finalize()` are identical, so a score produced
 on the live car is directly comparable to one produced by
-`tuner/offline_tuner.py`. This was verified by running both implementations
-over 500 identical synthetic steps: all 18 returned fields matched to within
+`tuner/offline_tuner.py`. Running both implementations over 500 identical
+synthetic steps confirms this: all 18 returned fields match to within
 1e-12 (bit-identical composite score).
 
 The one intentional difference is the settings import. `sim/scoring.py` pulls
@@ -416,7 +393,8 @@ with no arguments, `progress` defaults to `0.0` and `reached_end` to `None`,
 `compute_composite_score()` reads that as "never finished," and every live run
 scores exactly `CONSTRAINT_FLOOR + DNF_PENALTY = 13.0` regardless of how the
 car actually drove (the 13 underlying quality metrics stay correct; only the
-composite number goes dead). This was a real defect once, see the "Live
+composite number goes dead), which is exactly why `close()` must always be
+called with real progress/completion data. See the "Live
 scorer reports `13.0`" row in
 [`docs/logs/sim_to_real_investigation.md`](logs/sim_to_real_investigation.md)'s
 findings table.
@@ -465,11 +443,11 @@ accumulator is never reset the way each lap's own accumulator is).
 
 ## Lap timing starts at 0.5 m/s, not at the first tick
 
-**Plain version:** a run's clock used to start the moment the software began,
-which included about a second of the car sitting still before it moved. Every
-lap time was that much too slow, and the offline and live numbers were not
-measuring the same thing. The clock now starts when the car actually starts
-moving.
+**Plain version:** a run's clock starts only once the car is actually
+moving, not the moment the software began. If it started at tick 0, every
+lap time would include the roughly one second the car spends sitting still
+before launch, and the offline and live numbers would not be measuring the
+same thing.
 
 `LAUNCH_SPEED_MPS = 0.5` is the threshold, defined on both sides:
 
@@ -480,16 +458,16 @@ moving.
 
 - **Live**: `LapProgressTracker.update()` takes `car_speed` and defers
   `_start_wall` until `abs(car_speed) >= LAUNCH_SPEED_MPS`. Passing
-  `car_speed=None` falls back to the old first-tick behaviour, so an older
-  caller still works.
+  `car_speed=None` falls back to timing from tick 0, so a caller that omits
+  it still works.
 - **Offline**: `sim_time = (n_ran - launch_step) * DT`, where `launch_step` is
   the first step above the threshold.
 
-**Consequence for comparing numbers:** a lap time recorded before this change
+**Consequence for comparing numbers:** a lap time timed from tick 0 instead
 includes the standstill and is roughly 0.95 s slower than the same drive
-measured after it. The two are not directly comparable. This also cleared a
-spurious DNF in `nmpc_offline_check`, where the standstill was consuming step
-budget.
+timed from launch speed. The two are not directly comparable. Excluding the
+standstill also avoids it consuming step budget that would otherwise cause a
+spurious DNF in `nmpc_offline_check`.
 
 **Both output modes must pass `car_speed`**: `mpc_controller.py`'s
 `_control_step` calls
@@ -507,20 +485,19 @@ own look-ahead predict where the car actually went" as a percentage. Both
 are diagnostics: neither feeds back into control, and neither exists on the
 offline side.
 
-**Multi-lap.** `LapProgressTracker` (`telemetry_logger.py`) previously
-tracked one lap for the whole run and never reset. It now re-arms after
+**Multi-lap.** `LapProgressTracker` (`telemetry_logger.py`) re-arms after
 each finish: the forward-bounded index search restarts, the lap timer
 restarts (a flying lap, not a stopped one), and `update()` returns a
 completed-lap dict the instant a lap finishes rather than only at
 `close()`. `ControlLogger.finish_lap()` finalises that lap's own
 `RolloutMetrics` accumulator (separate from the whole-run one `close()`
 still uses) into a per-lap `composite_score`, then resets it for the next
-lap. The re-arm guard is real distance travelled since the last finish
-(not the search index, which can advance with zero car motion, or a
-closed-loop path's own start/finish coincidence, which made an earlier,
-index-based guard mistake "car is still sitting at the finish line" for
-"car has lapped again" — caught by a synthetic closed-loop test before it
-shipped).
+lap. The re-arm guard is real distance travelled since the last finish, not
+the search index: an index-based guard can't distinguish "car is still
+sitting at the finish line" from "car has lapped again", since the index can
+advance with zero car motion, or coincide with a closed-loop path's own
+start/finish point. A synthetic closed-loop test catches this distinction
+before trusting any change here.
 
 **Prediction-horizon accuracy** compares the NMPC's own predicted horizon
 (front-axle Cartesian points 1 second into the future, already published

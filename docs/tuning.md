@@ -140,8 +140,8 @@ fast the *target* is allowed to change; it never reverses a correction's
 sign.
 
 **Known constraints**: **do not re-enable without a specific reason to
-re-test.** This was tried live and found to make saturation/heading-error
-*worse*, not better, despite being a reasonable-sounding hypothesis. See
+re-test.** Live testing found it makes saturation/heading-error *worse*, not
+better, despite being a reasonable-sounding hypothesis. See
 `docs/logs/sim_to_real_investigation.md` for the investigation. It remains
 in the codebase as a validated-off feature, not a half-finished one.
 Lowering `ref_heading_rise_rate_deg_s` much below ~85 deg/s risks holding
@@ -199,9 +199,10 @@ needed for cornering.
 only via current curvature/`e_y`/`e_psi` (reactive); these three alone
 cannot anticipate a corner before the car is already turning into it. Not
 validated against `VALIDATION_SUITE`/recorded-map or any live log as a
-whole mechanism; treat as experimental. (This section used to also carry
-`anti_hunt_k_lookahead`, a lookahead-curvature fade gate, removed along
-with the rest of the lookahead family in the corner-factor rewrite; see §4.4.)
+whole mechanism; treat as experimental. (`anti_hunt_k_lookahead`, a
+lookahead-curvature fade gate that once paired with this mechanism, does not
+exist on `MPCParams`, removed along with the rest of the lookahead family
+in the corner-factor rewrite; see §4.4.)
 
 ### 4.3 Adaptive R-rate corner softening (`adaptive_r_rate_enable_in_corners`)
 
@@ -220,10 +221,11 @@ caused severe lag specifically in corners (likely from the discontinuous
 `R_rate[0,0]` jump spiking QP solver iterations / invalidating warm-starts
 near the threshold). Lowering `adaptive_r_rate_during_floor` too far
 reintroduces steering sign-reversal chatter mid-corner. This is the
-mechanism that keeps that in check, not just a free knob. (This section
-used to also carry a second, lookahead-driven floor,
-`adaptive_r_rate_entering_floor`/`_k_entering`, removed along with the
-rest of the lookahead family in the corner-factor rewrite; see §4.4.)
+mechanism that keeps that in check, not just a free knob. (A second,
+lookahead-driven floor that once paired with this one,
+`adaptive_r_rate_entering_floor`/`_k_entering`, does not exist on
+`MPCParams`, removed along with the rest of the lookahead family in the
+corner-factor rewrite; see §4.4.)
 
 ### 4.3b Corner-factor scheduler
 
@@ -348,9 +350,9 @@ don't guess. Full history:
 
 No fields remain on either side (`mpc_params.py`, `settings.py`). This
 mechanism, which made `R_rate[0,0]` more expensive at low speed to damp a
-post-corner-exit wobble, was tried, live-tested, disabled, and has since
-been removed entirely along with the rest of the lookahead gain-scheduling
-family. It gated purely on speed with no curvature/lookahead signal, so it
+post-corner-exit wobble, was tried and live-tested, then removed entirely
+along with the rest of the lookahead gain-scheduling family. It gated
+purely on speed with no curvature/lookahead signal, so it
 could not distinguish "post-exit overcorrection at low speed" (the case it
 was built for) from "turn-in at low speed" (also low speed, but wanted), so
 it suppressed both identically. Full incident and the tuned values it used
@@ -360,7 +362,7 @@ point): [`removed_mechanisms.md` §9](removed_mechanisms.md#9-low-speed-steering
 ### 4.10 Historical: curvature forcing term, removed, structurally unsound
 
 `curvature_forcing_enabled`/`curvature_forcing_gain` and the code behind
-them no longer exist. This was the one attempt in the whole removed family
+them no longer exist. Of the whole removed family, this is the one attempt
 that tried to fix the *actual* structural limit (injecting curvature into
 the predicted dynamics, not just reweighting cost), and the reason it
 still failed (the solver can defer a forcing term added to its own
