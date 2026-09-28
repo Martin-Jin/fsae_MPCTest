@@ -28,10 +28,16 @@ The core idea behind MPC: every tick, ask "if the car did X for the next second 
 
 ### Controller comparison
 
-Currently both controller perform "similarly". There is a performance metric / score that is calculated per that quantifies this.
-Both controllers are compared using a single performance metric, a composite score computed the same way for every run, see [5.3 How a Run Gets Scored](#53-how-a-run-gets-scored) for how it's calculated. The underlying logic lives in `sim/scoring.py` of the repo.
+NMPC and Stanley currently perform similarly overall. LMPC has a structural
+disadvantage the other two don't: it can't see the road bend ahead, which
+shows up specifically around corner turn-in (Section 4).
 
-That chatter fix is unrelated to NMPC's other advantage over LMPC: a structural difference in what the two controllers' models can represent, specifically around corner turn-in (Section 4). Fixing the chatter did not change that difference, it removed a separate, noisier symptom that was masking the comparison.
+Both controllers are compared using a single performance metric, a composite
+score computed the same way for every run, see
+[5.3 How a Run Gets Scored](#53-how-a-run-gets-scored) for how it's
+calculated. The underlying logic lives in `sim/scoring.py`. See
+`docs/logs/steering_chatter_investigation.md` for the investigation behind an
+earlier steering-chatter issue that once separately skewed this comparison.
 
 
 ### What this project delivers
