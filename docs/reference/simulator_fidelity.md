@@ -132,10 +132,10 @@ the slew limit together do not close that gap. Note also that `use_planner`
 matters far more than either: with `use_planner=False` the peak commanded slew
 is 88 deg/s, with `use_planner=True` it is 397 deg/s.
 
-The dominant missing factor turned out to be the **10 Hz pose against a 20 Hz
-controller** described in the section above, not modelled offline because the
-rollout always used a fresh pose every step. That is a live-only defect and is
-now fixed in `sim_perception` rather than modelled here.
+The dominant missing factor is the **10 Hz pose against a 20 Hz
+controller** described in the section above, not modelled offline because
+the rollout always uses a fresh pose every step. That is a live-only
+concern, fixed in `sim_perception` rather than modelled here.
 
 **SLAM pose noise is not the remaining cause, despite being an intuitive
 guess.** The log came from FSDS, where `sim_perception` republishes
