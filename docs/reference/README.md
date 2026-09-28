@@ -6,7 +6,8 @@ sections covering five unrelated topics.
 
 | document | covers |
 |---|---|
-| [../lmpc.md](../lmpc.md) | Full technical reference for the default linear controller (LTV-QP): state vector, model matrices, cost function, solver, adaptive gain scheduling. |
+| [simulator_glossary.md](simulator_glossary.md) | What "FSDS," "offline rollout," and "2D GUI" mean, how trustworthy each is as a stand-in for the real car, and which doc to read for each side of any question. Start here if the FSDS-vs-offline distinction is unclear. |
+| [../lmpc.md](../lmpc.md) | Full technical reference for the original linear controller (LTV-QP): state vector, model matrices, cost function, solver, adaptive gain scheduling. |
 | [../nmpc.md](../nmpc.md) | Full technical reference for the alternative nonlinear controller (NMPC): structural difference from the LTV-QP, Gauss-Newton SQP, feature-comparison table. |
 | [../debugging_tools.md](../debugging_tools.md) | Catalog of diagnostic/debugging tools across this repo and the outer `ros2/` scripts: which question each answers and how to run it. |
 | [offline_live_parity.md](offline_live_parity.md) | What must stay matched between this repo and the live `fsae_planning` nodes: the `fsds_simulator/` mirror, the numeric-parity tables, score parity, and the resync procedure. |
@@ -14,16 +15,20 @@ sections covering five unrelated topics.
 | [control_mechanisms.md](control_mechanisms.md) | Per-mechanism reference for what exists in the control stack today and why each is shaped as it is. |
 | [simulator_fidelity.md](simulator_fidelity.md) | Where the offline simulator and the live car diverge, and which gaps are explained. |
 | [superseded_mechanisms.md](superseded_mechanisms.md) | Mechanisms built and then removed, superseded or rejected. |
+| [../fsds/](../fsds/) | FSDS/live-only docs: integration guide, live settings surface, FSDS↔ROS 2↔control topic map. See [simulator_glossary.md](simulator_glossary.md) for how this folder relates to the offline-side docs. |
 
 ## Where new content belongs
 
 | content | document |
 |---|---|
+| what "FSDS"/"offline"/"2D GUI" mean, or which doc covers which side | `simulator_glossary.md` |
 | a weight, gain or flag and how to tune it | `docs/tuning.md` |
 | how a subsystem is built | `docs/architecture.md` |
 | the LTV-QP controller's own model/cost/solver detail | `docs/lmpc.md` |
 | the NMPC controller's own model/solve-procedure detail | `docs/nmpc.md` |
-| how to run or export something | `docs/developer_guide.md` |
+| how to run the offline 2D GUI or tuner | `docs/offline_guide.md` |
+| how to run/integrate against FSDS, or export/drive a track | `docs/fsds/fsds_integration_guide.md` |
+| the live-side settings surface (`fsae_params.yaml`, launch args, `launch_all.sh` shortlist) | `docs/fsds/fsds_settings.md` |
 | a diagnostic tool or how to run it | `docs/debugging_tools.md` |
 | an offline/live matching obligation | `offline_live_parity.md` |
 | what a live mechanism does | `control_mechanisms.md` |

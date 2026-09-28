@@ -1,9 +1,17 @@
 # Architecture
 
-Deep technical reference for how the simulator, MPC, and offline tuner work.
-For quick-start usage, tuning workflow, and FSDS integration steps, see
-[Developer Guide](developer_guide.md) instead, this document explains the
-system, that one explains how to operate/extend it.
+**This doc covers the offline (`fsae_MPCTest`) side.** Deep technical
+reference for how the offline rollout, MPC, and offline tuner work. For the
+live/FSDS equivalent, see [docs/fsds/](fsds/), starting with
+[docs/fsds/fsds_settings.md](fsds/fsds_settings.md); for what "offline" vs.
+"FSDS" mean, see
+[docs/reference/simulator_glossary.md](reference/simulator_glossary.md).
+The one exception is the "ROS 2 vs Simulator Mapping" section below, which
+is explicitly about the live/FSDS side, not the rest of this file.
+
+For quick-start usage on the offline side, see [Offline Guide](offline_guide.md)
+instead, this document explains the system, that one explains how to
+operate/extend it.
 
 **Two MPC implementations exist**, selected by one flag (`use_nmpc`): the
 default linear time-varying MPC (LTV-QP, `mpc_core.MPCController`), full
@@ -109,7 +117,9 @@ in the live simulator and the same path benchmarked offline produce
 
 ### ROS 2 vs Simulator Mapping
 
-How each component maps to its ROS 2 equivalent in the `fsae_planning` package:
+**This section specifically describes the live/FSDS side** (the
+`fsae_planning` ROS 2 package), unlike the rest of this file. How each
+component maps to its ROS 2 equivalent:
 
 ```
 ROS 2 Node (fsae_planning)      │  Simulator Equivalent
@@ -507,7 +517,7 @@ runs used it.
 > the full list and consequences.
 
 Requires the optional `optuna` package (see
-[Dependencies](developer_guide.md#dependencies)), only needed if this flag
+[Dependencies](offline_guide.md#dependencies)), only needed if this flag
 is enabled.
 
 ### CMA-ES: what it's doing and why
@@ -759,11 +769,11 @@ not here.
 | `tuner/offline_tuner.py` | Headless CMA-ES weight search. See [How the Offline Tuner Works](#how-the-offline-tuner-works). Also exports the synthetic path library (`SYNTHETIC_PATHS`, `PATH_NAMES`) and the speed-keyed model cache (`get_cached_model`) used by both the tuner and the simulator. |
 | `sim/speed_profile.py` | Curvature-based per-point target speed (`compute_speed_profile`), with a moving-average smoothing pass (`smooth_profile`). Uses the friction-circle approximation `v = sqrt(a_lat_max / κ)` over a forward look-ahead window. |
 | `sim/sim_track.py` | Simulator-side mirrors of the real perception/planner nodes: `place_cones()` (static track layout), `SimPerception` (FOV filter), `SimPlanner` (cone accumulation → centreline + speed profile). See [Simulated Perception and Planning](#simulated-perception-and-planning-use_planner). |
-| `sim/track_io.py` | Loads a `fsae_planning` `cone_recorder` JSON cone map into the same `(path_X, path_Y, path_Psi, path_v, blue, yellow)` tuple shape as a synthetic path, see [Recording, exporting and driving a track](developer_guide.md#recording-exporting-and-driving-a-track). |
+| `sim/track_io.py` | Loads a `fsae_planning` `cone_recorder` JSON cone map into the same `(path_X, path_Y, path_Psi, path_v, blue, yellow)` tuple shape as a synthetic path, see [Recording, exporting and driving a track](fsds/fsds_integration_guide.md#recording-exporting-and-driving-a-track). |
 | `tuner/performance_stats.py` | Scores a completed simulator run for the **Show Metrics** button by replaying its stored history through the exact same `scoring.RolloutMetrics` accumulator the tuner uses. Also exposes `benchmark_weights()` for **Benchmark All Paths**. |
-| `gui/manual_drive.py` | Standalone WASD/mouse drive mode against the 24-state nonlinear plant, no MPC, no scoring, purely open-loop human control for building intuition or sanity-checking a track. See [Manual Drive Mode](developer_guide.md#manual-drive-mode). |
+| `gui/manual_drive.py` | Standalone WASD/mouse drive mode against the 24-state nonlinear plant, no MPC, no scoring, purely open-loop human control for building intuition or sanity-checking a track. See [Manual Drive Mode](offline_guide.md#manual-drive-mode). |
 | `settings.py` | All project-level tuning/scoring/DNF configuration. See [Configuring the Project](#configuring-the-project-settingspy). |
-| `mpc_controller.py` / `mpc_core.py` / `control_utils.py` (staged under `fsds_simulator/control/fsae_control/fsae_control/mpc/` and `.../fsae_control/`) | The live ROS 2 MPC controller for FSDS, `mpc_controller.py`'s `standalone_output` parameter selects its output mode. See [Simulator Integration](developer_guide.md#simulator-integration). |
+| `mpc_controller.py` / `mpc_core.py` / `control_utils.py` (staged under `fsds_simulator/control/fsae_control/fsae_control/mpc/` and `.../fsae_control/`) | The live ROS 2 MPC controller for FSDS, `mpc_controller.py`'s `standalone_output` parameter selects its output mode. See [FSDS Integration Guide](fsds/fsds_integration_guide.md#choosing-the-controller-and-planner). |
 | `fsds_simulator/` (whole tree) | Full staging mirror of upstream's ROS 2 workspace, every package, not just control, so a clone of this repo plus FSDS can build and run the complete stack (`stanley` or `mpc`, either `standalone_output` mode) with no separate `fsae_planning` checkout. See [`docs/reference/`](`docs/reference/`) and [fsds_simulator/README.md](../fsds_simulator/README.md). |
 
 ---

@@ -32,7 +32,7 @@ Catalog of the diagnostic/debugging tools across this repo and the outer
 
 `tuner.offline_tuner` (the CMA-ES weight search) and `sim/`'s modules are
 core simulation infrastructure, not diagnostic tools, and are covered in
-[developer_guide.md](developer_guide.md) instead.
+[offline_guide.md](offline_guide.md) instead.
 
 **Two different scripts share the name `nmpc_offline_check.py`.** One lives
 in this repo (`tuner/nmpc_offline_check.py`, offline plant), the other in
@@ -115,7 +115,7 @@ Checking **"Record new track"** on the Launch tab and typing a name switches
 the form into the recording setup this project's own docs already
 recommend (`launch_all.sh`'s "Set BOTH to false (with CONTROLLER=stanley
 below) when recording a NEW track" comment, and
-[developer_guide.md](developer_guide.md#recording-exporting-and-driving-a-track)'s
+[fsds/fsds_integration_guide.md](fsds/fsds_integration_guide.md#recording-exporting-and-driving-a-track)'s
 step 1): `CONTROLLER=stanley`, `USE_PRECOMPUTED_SPEED=false`,
 `USE_PRECOMPUTED_PATH=false`. Prior values for those three are remembered
 and restored when the checkbox is unchecked, so toggling recording mode on
@@ -126,7 +126,7 @@ track's folder with a live (not precomputed) drive behind it.
 
 Once stopped (the **Stop** button, or Ctrl+C in the terminal it opened),
 **Export & Save Track** runs the same two exporters
-[developer_guide.md](developer_guide.md#recording-exporting-and-driving-a-track)'s
+[fsds/fsds_integration_guide.md](fsds/fsds_integration_guide.md#recording-exporting-and-driving-a-track)'s
 step 2 does by hand (`tuner.tools.export_speed_profile`, then
 `tuner.tools.raceline_optimizer` in both `raceline` and `centerline`
 modes), which write directly into
@@ -521,7 +521,7 @@ guess, this is a measured property of the simulator, not a tuning knob
 ## Telemetry playback: `tuner/tools/plot_playback.py`
 
 Turns one or more control-telemetry CSVs (see
-[developer_guide.md](developer_guide.md#csv-telemetry-logging) for how
+[fsds/fsds_integration_guide.md](fsds/fsds_integration_guide.md#csv-telemetry-logging) for how
 those get written) into an interactive matplotlib figure that answers both
 "what did this signal do over the whole run" and "where was the car, and
 what did the path look like, at this specific moment" at once:

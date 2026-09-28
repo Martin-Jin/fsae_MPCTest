@@ -1,12 +1,19 @@
 # Simulator Fidelity and Known Defects
 
-Where the offline simulator and the live car diverge, and which divergences
-are understood.
+Where the offline simulator, FSDS, and the live car diverge, and which
+divergences are understood. See
+[simulator_glossary.md](simulator_glossary.md) for what "offline simulator"
+and "FSDS" mean and how trustworthy each is on its own; this doc covers the
+specific, measured gaps between them.
 
-**Plain version:** the offline simulator is a good enough model to tune
-against, but it is not the car. This document records every place the two are
-known to disagree, how large each gap is, and which are explained versus still
-open. Read it before trusting an offline-only result.
+**Plain version:** the offline simulator is a rough model, good enough to
+get weights into the right ballpark, but it is not matched against reality
+and carries no accuracy guarantee. FSDS is a closer approximation, a real
+physics engine rather than an offline plant model, but it is not itself
+confirmed accurate against the real car either. This document records
+every place the offline simulator, FSDS, and the real car are known to
+disagree, how large each gap is, and which are explained versus still
+open. Read it before trusting an offline-only, or FSDS-only, result.
 
 The headline caution: the live car saturates its steering far more often than
 the offline rollout and carries roughly twice the heading error, on the same

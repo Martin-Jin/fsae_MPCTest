@@ -1,10 +1,15 @@
 # The LTV-QP Controller (LMPC)
 
-Full technical reference for the default controller, `mpc_core.MPCController`:
-a linear time-varying MPC (LTV-QP) solved as one convex Quadratic Program per
-tick. Split out of `architecture.md` because this material (state vector,
-every matrix entry, the cost function, the solver) is large enough to be its
-own document; that file now only summarises and links here.
+Full technical reference for this project's original controller,
+`mpc_core.MPCController`: a linear time-varying MPC (LTV-QP) solved as one
+convex Quadratic Program per tick. NMPC (see below) fixes a structural
+blind spot this controller has and currently performs better on corner
+turn-in; check `settings.py` (offline) or the current launch configuration
+(live) for which is actually selected on a given run, since the two sides
+are not required to default the same way. Split out of `architecture.md`
+because this material (state vector, every matrix entry, the cost function,
+the solver) is large enough to be its own document; that file now only
+summarises and links here.
 
 For the nonlinear alternative controller, see [`nmpc.md`](nmpc.md). For the
 third, non-MPC controller, see [`stanley.md`](stanley.md). For the

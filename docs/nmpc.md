@@ -1,11 +1,14 @@
 # The Nonlinear MPC Controller (NMPC)
 
 Full technical reference for the second, separately selectable controller,
-`nmpc_core.NMPCController`, chosen by the node parameter `use_nmpc` (default
-false). Split out of `architecture.md` because this material is large enough
-to be its own document; that file now only summarises and links here.
+`nmpc_core.NMPCController`, chosen by the node parameter `use_nmpc`
+(`false` in the `NMPCParams` dataclass default, but check the actual launch
+configuration in use, e.g. `ros2/launch_all.sh`'s shortlist, which is not
+required to leave this at the dataclass default). Split out of
+`architecture.md` because this material is large enough to be its own
+document; that file now only summarises and links here.
 
-For the default linear controller, see [`lmpc.md`](lmpc.md). For the third,
+For the original linear controller, see [`lmpc.md`](lmpc.md). For the third,
 non-MPC controller, see [`stanley.md`](stanley.md). For the worked-by-hand
 arithmetic behind `e_y`/`e_psi`, see
 [`error_state_reference.md`](error_state_reference.md).

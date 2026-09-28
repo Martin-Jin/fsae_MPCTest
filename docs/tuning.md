@@ -3,7 +3,8 @@
 This is the single canonical reference for tuning the MPC: every weight,
 adaptive-gain shape constant, and feature flag, what it does, how to adjust
 it, and anything specific to keep in mind when changing it. Other docs
-(`architecture.md`, `developer_guide.md`, `docs/reference/`) link
+(`architecture.md`, `offline_guide.md`, `fsds/fsds_integration_guide.md`,
+`docs/reference/`) link
 here instead of repeating this material. Check those docs only for things
 tuning doesn't cover (system architecture, how to run the tuner, live/offline
 resync procedure).
@@ -873,8 +874,10 @@ link here for anything about what to change and why:
 
 - `architecture.md`: system architecture and module reference; points here
   for weight/gain guidance.
-- `developer_guide.md`: how to run the tuner and simulator; points here for
-  what the tuner is optimizing.
+- `offline_guide.md`: how to run the offline tuner and 2D GUI; points here
+  for what the tuner is optimizing.
+- `fsds/fsds_integration_guide.md` / `fsds/fsds_settings.md`: how to run
+  and configure the live/FSDS side; points here for what each weight does.
 - `docs/reference/`: the live/offline field-mapping table (which
   `settings.py` constant matches which `MPCParams` field) and the
   upstream-resync procedure; not a tuning-values guide.

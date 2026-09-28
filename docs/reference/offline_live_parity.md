@@ -561,7 +561,7 @@ second time by hand.
    the offline (`sim/speed_profile.py`, `sim/rollout_core.py`) and live
    (`control_utils.py`, `mpc/mpc_controller.py`) copies need the same
    update.
-6. Run the smoke-test pattern from `docs/developer_guide.md`'s testing section: confirm
+6. Run the smoke-test pattern from `docs/offline_guide.md`: confirm
    changed files import cleanly, then run `python -m gui.simulation` (or a
    short `python -m tuner.offline_tuner` run with `FAST_TEST_MODE = True` in
    `settings.py`) against one synthetic path and check the rollout still

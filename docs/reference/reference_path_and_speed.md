@@ -10,8 +10,8 @@ the live planner and a per-tick curvature speed estimate.
 
 **Related documents**
 
-- `docs/developer_guide.md`, "Recording, exporting and driving a track", for the
-  step-by-step workflow for producing these files.
+- `docs/fsds/fsds_integration_guide.md`, "Recording, exporting and driving a
+  track", for the step-by-step workflow for producing these files.
 - `docs/tuning.md`, for the controller weights that track the reference.
 - `docs/reference/offline_live_parity.md`, for the offline/live parity rules the numbers
   here are subject to.

@@ -18,6 +18,18 @@
 
 ## Overview
 
+**This project has two separate simulators, easy to conflate.** FSDS is the
+AirSim/UE4-based 3D simulator this whole project targets, the closest
+available stand-in for the real car. `fsae_MPCTest` (this repo) also has
+its own offline 2D GUI and headless rollout, used for automatic tuning,
+with different (lower-fidelity, unvalidated against FSDS) dynamics. Neither
+offline tool is validated against the real car either; FSDS is a closer
+approximation since it runs a real physics engine, but is not itself
+confirmed accurate against the real car. See
+[docs/reference/simulator_glossary.md](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/reference/simulator_glossary.md)
+for the full explanation and which docs cover which side, and
+[Section 6](#6-repo-contents-fsae_mpctest) below for how the models compare.
+
 The car runs a track in two laps. The first lap maps it: a live planner reconstructs the track from cones as the car drives, recording the result. The second lap drives the same track again using that recorded map, and because the whole path is now known in advance instead of being discovered lap-by-lap, a controller can plan ahead instead of only reacting. That second lap is what this project's MPC (Model Predictive Control) controller is for. MPC runs alongside the existing Stanley controller, not as a replacement for it, both remain available options on the second lap.
 
 The core idea behind MPC: every tick, ask "if the car did X for the next second or so, where would it end up, and how well would that track the path?" for lots of possible X, and pick the best one. Two properties fall out of that naturally:
@@ -43,9 +55,9 @@ earlier steering-chatter issue that once separately skewed this comparison.
 ### What this project delivers
 
 - **A working MPC controller**: takes in odometry (position, heading, speed) and outputs a throttle + steering command.
-- **A working 2D simulator**: a matplotlib GUI used to visualise and manually test the controller against a drawn or loaded path. (This is a separate, lightweight tool from FSDS, and its dynamics do not match FSDS or the real car, see [Section 6](#6-repo-contents-fsae_mpctest) for how the two compare.)
-- **A working auto-tuner**: the controller's cost function has ~9 numbers that need tuning for it to drive well; this searches for good values automatically instead of by hand. It doesn't tune against the 2D GUI simulator, it runs a headless closed-loop rollout that simulates the car with a separate, higher-fidelity vehicle model (`model/vehicle_physics.py`, Section 6.2), which is itself still an approximation, not confirmed to be accurate against FSDS or the real car. This gets the weights into the right ball park; further manual tuning against FSDS (Section 7) and the real car is still required to get the desired performance.
-- **Working ROS 2 nodes**: drop-in replacements for the old Stanley controller nodes in the FSDS/planning stack, so the MPC can be validated against the real simulator.
+- **A working 2D simulator**: a matplotlib GUI used to visualise and manually test the controller against a drawn or loaded path. (This is a separate, lightweight tool from FSDS, and its dynamics do not match FSDS, see [Section 6](#6-repo-contents-fsae_mpctest) for how the two compare.)
+- **A working auto-tuner**: the controller's cost function has ~9 numbers that need tuning for it to drive well; this searches for good values automatically instead of by hand. It doesn't tune against the 2D GUI simulator, it runs a headless closed-loop rollout that simulates the car with a separate, higher-fidelity vehicle model (`model/vehicle_physics.py`, Section 6.2), which is itself still an approximation, not matched against reality and carrying no measured accuracy figure. Offline tuning (both the GUI and this headless rollout) is rough validation only: it checks the control math behaves sensibly and gets the weights into the right ball park, it is not a prediction of real-world performance. Further tuning against FSDS (Section 7), which is a closer approximation but also not itself confirmed accurate against the real car, and against the real car itself, is still required to get the desired performance.
+- **Working ROS 2 nodes**: drop-in replacements for the old Stanley controller nodes in the FSDS/planning stack, so the MPC can be tested against FSDS, mainly used to validate new features before they're trusted further.
 - **Documentation**: the repo [README](https://github.com/Martin-Jin/fsae_MPCTest) and this docs page.
 
 
@@ -63,6 +75,7 @@ earlier steering-chatter issue that once separately skewed this comparison.
     - [1.3 Cost Function: What "Good Driving" Means](#13-cost-function-what-good-driving-means)
     - [1.4 The Solver](#14-the-solver)
     - [1.5 Adaptive Gain Scheduling and Safety Features](#15-adaptive-gain-scheduling-and-safety-features)
+    - [1.6 Two Kinds of MPC: Linear vs. Nonlinear](#16-two-kinds-of-mpc-linear-vs-nonlinear)
   - [2. LMPC: The Linear Controller](#2-lmpc-the-linear-controller)
     - [2.1 The Model](#21-the-model)
     - [2.2 Why Linear Is Good Enough](#22-why-linear-is-good-enough)
@@ -161,9 +174,41 @@ The tuned weights are optimised for one "average" operating point. A handful of 
 Full detail on each of these: [`docs/reference/control_mechanisms.md`](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/reference/control_mechanisms.md).
 
 
+### 1.6 Two Kinds of MPC: Linear vs. Nonlinear
+
+Two versions of this MPC controller exist in this project, LMPC and NMPC,
+covered in Sections 2 and 3. Both share everything in Section 1: receding
+horizon, error state, cost function, solver. What differs is the internal
+model each uses to predict "if the car did X, where would it end up,"
+which is what "linear" vs "nonlinear" means here:
+
+- **A linear model's predictions scale proportionally.** Every entry in its
+  internal matrices is a fixed multiplier, doubling an error input exactly
+  doubles its predicted effect, at any speed or state. This is what keeps
+  the optimisation a **Quadratic Program (QP)**, solvable in one pass with a
+  guaranteed answer (Section 1.4).
+- **A nonlinear model's predictions don't scale proportionally**, some
+  quantity in the model depends on another state-dependent quantity (e.g.
+  two things multiplied together, both of which change as the car moves),
+  so doubling an error doesn't cleanly double the effect. This is more
+  accurate in principle, but it can no longer be solved as a single QP;
+  it needs to be re-linearised and solved iteratively instead (Section 3.2),
+  which costs more time per tick and gives up the QP's solve-time guarantee.
+
+**LMPC** (Section 2) uses a linear model. **NMPC** (Section 3) uses a
+nonlinear one specifically to fix a blind spot LMPC's linear model has no
+way to represent (Section 2.3). Both are real implementations in this
+project, not a theoretical comparison; Section 4 compares them directly.
+
+
 ## 2. LMPC: The Linear Controller
 
-**LMPC (linear MPC)** is this project's main, default controller.
+**LMPC (linear MPC)**, also called LTV-QP in some of this project's other
+docs, was this project's original controller. NMPC (Section 3) fixes a
+structural blind spot LMPC has (Section 2.3) and currently performs better
+on corner turn-in; see [Controller comparison](#controller-comparison)
+above for how the two compare. Both remain available, selected by a single
+flag, see Section 3 for the mechanics.
 
 
 ### 2.1 The Model
@@ -185,7 +230,7 @@ Feeding curvature into the cost function as a lookahead signal doesn't fix this 
 
 ## 3. NMPC: The Nonlinear Controller
 
-**NMPC (nonlinear MPC)** is a second controller, built on the live ROS 2 side, switched on with a flag (`use_nmpc`, off by default).
+**NMPC (nonlinear MPC)** is a second controller, a better type of MPC that fixes LMPC's cornering problem (Section 2.3). Both LMPC and NMPC run on both the offline side and the live ROS 2 side (Section 4's table gives the file for each), selected by a single flag, `use_nmpc`. Check `settings.py` (offline) or the current launch configuration (live, see `docs/fsds/fsds_settings.md`) for which is actually active on a given run, since the two sides are not required to default the same way.
 
 
 ### 3.1 The Fix
@@ -375,7 +420,7 @@ Having both is what lets the simulator stand in for a rough approximation of the
 
 ### 6.3 The GUI
 
-`gui/simulation.py` is the interactive matplotlib GUI: draw or load a path, run one closed-loop MPC rollout, then scrub through the result frame by frame and score it (**Show Metrics**, **Benchmark All Paths**; see Section 5.3). For the full step-by-step, see [developer_guide.md's Running the Simulator](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/developer_guide.md#running-the-simulator). There's also a keyboard-driven **manual drive mode** (`gui/manual_drive.py`), rarely needed day to day; see [developer_guide.md's Manual Drive Mode](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/developer_guide.md#manual-drive-mode) for details.
+`gui/simulation.py` is the interactive matplotlib GUI: draw or load a path, run one closed-loop MPC rollout, then scrub through the result frame by frame and score it (**Show Metrics**, **Benchmark All Paths**; see Section 5.3). For the full step-by-step, see [offline_guide.md's Running the 2D GUI](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/offline_guide.md#running-the-2d-gui). There's also a keyboard-driven **manual drive mode** (`gui/manual_drive.py`), rarely needed day to day; see [offline_guide.md's Manual Drive Mode](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/offline_guide.md#manual-drive-mode) for details.
 
 
 ### 6.4 Module Reference
@@ -432,7 +477,7 @@ The live ROS 2 side of this project lives as a proper ROS 2 package, `fsae_contr
 
 `fsds_bridge` converts the shared `cmd_vel` interface into `fs_msgs/ControlCommand`, and owns GO-gating plus cone-proximity e-braking for `stanley` and for `mpc` in its `standalone_output=false` mode. `mpc` in `standalone_output=true` mode owns all of that itself instead, since it talks to FSDS directly, so `fsds_bridge` is skipped automatically when `standalone_output:=true` (the default) is selected (running both would leave `fsds_bridge`'s output unused, and race the MPC node for the same output topic).
 
-For the full topic map (including the perception to planning chain upstream of the controller), see [developer_guide.md's Topic map for the control node](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/developer_guide.md#simulator-integration). Kept there as the canonical version, not duplicated here. In short: `mpc_controller` in `standalone_output=true` mode subscribes to the planner's centreline, the car's pose/odometry, the race-start signal, and cone-proximity detections, and publishes `fs_msgs/ControlCommand` directly. It does **not** subscribe to a separate desired-speed topic; it computes `desired_speed` itself every tick from the current path via `control_utils.curvature_speed()`.
+For the full topic map (including the perception to planning chain upstream of the controller), see [fsds_integration_guide.md's Choosing the controller and planner](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/fsds/fsds_integration_guide.md#choosing-the-controller-and-planner). Kept there as the canonical version, not duplicated here. In short: `mpc_controller` in `standalone_output=true` mode subscribes to the planner's centreline, the car's pose/odometry, the race-start signal, and cone-proximity detections, and publishes `fs_msgs/ControlCommand` directly. It does **not** subscribe to a separate desired-speed topic; it computes `desired_speed` itself every tick from the current path via `control_utils.curvature_speed()`.
 
 **Control loop phases** (`mpc/mpc_controller.py`'s `_control_step`; phases 1 and 4 apply only in `standalone_output=true` mode):
 
@@ -443,11 +488,11 @@ For the full topic map (including the perception to planning chain upstream of t
 5. **Telemetry logging** (optional): logs the *final*, post-override command.
 6. **Publish.**
 
-For the full from-scratch Windows/WSL/Docker setup (cloning FSDS, building the ROS 2 bridge, installing the solver stack inside the container, rebuilding after edits, etc.), see `docs/developer_guide.md#simulator-integration` in the repo. It's a long, mechanical set of steps kept there rather than duplicated here.
+For the full from-scratch Windows/WSL/Docker setup (cloning FSDS, building the ROS 2 bridge, installing the solver stack inside the container, rebuilding after edits, etc.), see `docs/fsds/fsds_integration_guide.md#launching-nodes-with-fsds-on-windows-wsl--docker` in the repo. It's a long, mechanical set of steps kept there rather than duplicated here.
 
 
 ### 7.1 Driving a Precomputed Track Instead of the Live Planner
 
 `mpc` (either `standalone_output` mode) can also skip the live planner entirely and track a precomputed path/speed CSV recorded from an earlier lap, useful for isolating controller/plant tracking error from planner-induced path error, or for driving a known track at its (offline-computed) minimum-time line instead of the planner's live centreline. Each such track lives in its own `tracks/<name>/` directory (cone map + two exported CSVs) inside the separate `fsae_planning` repo, so FSDS + `fsae_planning` alone can drive any already-recorded track with no `fsae_MPCTest` checkout needed. Switching which one the car drives is one variable, `TRACK=` near the top of `ros2/launch_all.sh`.
 
-Full record, export, drive steps, the CSV format, and every launch arg involved: `docs/developer_guide.md`'s [Recording, exporting and driving a track](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/developer_guide.md#recording-exporting-and-driving-a-track). Kept there as the canonical version rather than duplicated here.
+Full record, export, drive steps, the CSV format, and every launch arg involved: `docs/fsds/fsds_integration_guide.md`'s [Recording, exporting and driving a track](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/fsds/fsds_integration_guide.md#recording-exporting-and-driving-a-track). Kept there as the canonical version rather than duplicated here.
