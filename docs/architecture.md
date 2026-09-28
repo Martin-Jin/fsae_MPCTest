@@ -1,25 +1,10 @@
 # Architecture
 
-**This doc covers the offline (`fsae_MPCTest`) side.** Deep technical
-reference for how the offline rollout, MPC, and offline tuner work. For the
-live/FSDS equivalent, see [docs/fsds/](fsds/), starting with
-[docs/fsds/fsds_settings.md](fsds/fsds_settings.md); for what "offline" vs.
-"FSDS" mean, see
-[docs/reference/simulator_glossary.md](reference/simulator_glossary.md).
-The one exception is the "ROS 2 vs Simulator Mapping" section below, which
-is explicitly about the live/FSDS side, not the rest of this file.
+**This doc covers the offline (`fsae_MPCTest`) side.** Deep technical reference for how the offline rollout, MPC, and offline tuner work. For the live/FSDS equivalent, see [docs/fsds/](fsds/), starting with [docs/fsds/fsds_settings.md](fsds/fsds_settings.md); for what "offline" vs. "FSDS" mean, see [docs/reference/simulator_glossary.md](reference/simulator_glossary.md). The one exception is the "ROS 2 vs Simulator Mapping" section below, which is explicitly about the live/FSDS side, not the rest of this file.
 
-For quick-start usage on the offline side, see [Offline Guide](offline_guide.md)
-instead, this document explains the system, that one explains how to
-operate/extend it.
+For quick-start usage on the offline side, see [Offline Guide](offline_guide.md) instead, this document explains the system, that one explains how to operate/extend it.
 
-**Two MPC implementations exist**, selected by one flag (`use_nmpc`): the
-default linear time-varying MPC (LTV-QP, `mpc_core.MPCController`), full
-reference in **[`lmpc.md`](lmpc.md)**; and the alternative Frenet-frame
-nonlinear MPC (`nmpc_core.NMPCController`), full reference in
-**[`nmpc.md`](nmpc.md)**. Both moved out of this file because they had grown
-too large for an overview document; sections 4 and 8 below are now short
-pointers into those two docs, not the full material.
+**Two MPC implementations exist**, selected by one flag (`use_nmpc`): the default linear time-varying MPC (LTV-QP, `mpc_core.MPCController`), full reference in **[`lmpc.md`](lmpc.md)**; and the alternative Frenet-frame nonlinear MPC (`nmpc_core.NMPCController`), full reference in **[`nmpc.md`](nmpc.md)**. Both moved out of this file because they had grown too large for an overview document; sections 4 and 8 below are now short pointers into those two docs, not the full material.
 
 ## Table of Contents
 
@@ -38,21 +23,9 @@ pointers into those two docs, not the full material.
 
 ### Full System Flow
 
-This is the closed loop the simulator runs at 20 Hz. The same loop runs
-headless (no plotting) thousands of times during tuning in
-`tuner/offline_tuner.py`, and also runs live against the real/FSDS vehicle
-as `mpc_controller.py` (in its `standalone_output=true` mode; mirrored
-under `fsds_simulator/`, pasted into `fsae_planning`, see
-[`docs/reference/`](docs/reference/)). All three share one implementation:
-`sim/rollout_core.run_core_rollout()` for the first two, and
-`mpc_core.MPCController` for the live node, kept in numeric parity with
-`rollout_core`.
+This is the closed loop the simulator runs at 20 Hz. The same loop runs headless (no plotting) thousands of times during tuning in `tuner/offline_tuner.py`, and also runs live against the real/FSDS vehicle as `mpc_controller.py` (in its `standalone_output=true` mode; mirrored under `fsds_simulator/`, pasted into `fsae_planning`, see [`docs/reference/`](docs/reference/)). All three share one implementation: `sim/rollout_core.run_core_rollout()` for the first two, and `mpc_core.MPCController` for the live node, kept in numeric parity with `rollout_core`.
 
-Note: the diagram below shows the case where `USE_PLANNER = True` (the
-simulator/tuner reconstructs the track from cones, like the real car would,
-see [Simulated Perception and Planning](#simulated-perception-and-planning-use_planner)
-below for how). When `USE_PLANNER = False`, the Perception/Planner boxes are
-skipped and the true reference path is used directly for tracking error.
+Note: the diagram below shows the case where `USE_PLANNER = True` (the simulator/tuner reconstructs the track from cones, like the real car would, see [Simulated Perception and Planning](#simulated-perception-and-planning-use_planner) below for how). When `USE_PLANNER = False`, the Perception/Planner boxes are skipped and the true reference path is used directly for tracking error.
 
 ```mermaid
 flowchart TD
@@ -105,21 +78,11 @@ flowchart LR
     PLANT -.->|"next state"| INPUTS
 ```
 
-Both `offline_tuner.run_headless_rollout()` and `simulation.simulate_closed_loop()`
-are thin wrappers around `rollout_core.run_core_rollout()` (`sim/rollout_core.py`),
-the single implementation of the tracking-error computation, progress tracking,
-MPC solve, delay queue, termination checks, and metric accumulation.
-`gui/simulation.py` calls it with `want_history=True` to get a full
-step-by-step history dict for the GUI; `tuner/offline_tuner.py` calls it with
-`want_history=False` for a fast, scoring-only path. This guarantees a path run
-in the live simulator and the same path benchmarked offline produce
-(near-)identical composite scores.
+Both `offline_tuner.run_headless_rollout()` and `simulation.simulate_closed_loop()` are thin wrappers around `rollout_core.run_core_rollout()` (`sim/rollout_core.py`), the single implementation of the tracking-error computation, progress tracking, MPC solve, delay queue, termination checks, and metric accumulation. `gui/simulation.py` calls it with `want_history=True` to get a full step-by-step history dict for the GUI; `tuner/offline_tuner.py` calls it with `want_history=False` for a fast, scoring-only path. This guarantees a path run in the live simulator and the same path benchmarked offline produce (near-)identical composite scores.
 
 ### ROS 2 vs Simulator Mapping
 
-**This section specifically describes the live/FSDS side** (the
-`fsae_planning` ROS 2 package), unlike the rest of this file. How each
-component maps to its ROS 2 equivalent:
+**This section specifically describes the live/FSDS side** (the `fsae_planning` ROS 2 package), unlike the rest of this file. How each component maps to its ROS 2 equivalent:
 
 ```
 ROS 2 Node (fsae_planning)      │  Simulator Equivalent
@@ -135,131 +98,53 @@ mpc_controller.py (standalone_output=true) │  gui/simulation.py's rollout loop
 cone_recorder.py                │  sim/track_io.py + gui/simulation.py's Load Recorded Track  (recorder writes what the loader reads)
 ```
 
-See [Simulated Perception and Planning (`USE_PLANNER`)](#simulated-perception-and-planning-use_planner)
-below for how `SimPerception`/`SimPlanner` actually work.
+See [Simulated Perception and Planning (`USE_PLANNER`)](#simulated-perception-and-planning-use_planner) below for how `SimPerception`/`SimPlanner` actually work.
 
-`fsds_simulator/control/fsae_control/fsae_control/stanley_controller.py` is
-the actual current Stanley controller (mirrored from upstream, kept in sync
-like everything else under `fsds_simulator/`, see
-[`docs/reference/`](docs/reference/)), not just a
-structural reference. This project's tuner and offline simulator only ever
-drive against the MPC (`mpc_controller.py`'s `standalone_output=true` mode /
-`mpc_core.py`, same directory). Stanley is mirrored purely so `fsds_simulator/` can stand
-up the full live stack, not because this repo's own simulator exercises it.
-See [`docs/stanley.md`](stanley.md) for its steering law and the speed-target
-smoothing added on top of it.
+`fsds_simulator/control/fsae_control/fsae_control/stanley_controller.py` is the actual current Stanley controller (mirrored from upstream, kept in sync like everything else under `fsds_simulator/`, see [`docs/reference/`](docs/reference/)), not just a structural reference. This project's tuner and offline simulator only ever drive against the MPC (`mpc_controller.py`'s `standalone_output=true` mode / `mpc_core.py`, same directory). Stanley is mirrored purely so `fsds_simulator/` can stand up the full live stack, not because this repo's own simulator exercises it. See [`docs/stanley.md`](stanley.md) for its steering law and the speed-target smoothing added on top of it.
 
 ### Simulated Perception and Planning (`USE_PLANNER`)
 
 `USE_PLANNER` (in `settings.py`) picks which reference the controller tracks:
 
-- **`False` (default)**: the controller tracks the true, precomputed path
-  directly, no perception or planning simulated at all. Faster, and isolates
-  controller behaviour from planner mistakes.
-- **`True`**: the controller only ever sees a **reconstructed** path, built
-  the same way the real car would build one from cones, cone-by-cone, one
-  simulation step at a time. This is what "simulating perception and
-  planning" means concretely: two classes in `sim/sim_track.py`,
-  `SimPerception` and `SimPlanner`, mirror the two real ROS 2 nodes
-  (`sim_perception.py`, `centerline_planner.py`) closely enough that a bug
-  reproduced with `USE_PLANNER=True` offline is a real perception/planning
-  bug, not a simulator artifact. Turn it on specifically to test how the
-  controller behaves when fed a noisy, incrementally-built path instead of a
-  perfect one; leave it off for pure controller/weight tuning.
+- **`False` (default)**: the controller tracks the true, precomputed path directly, no perception or planning simulated at all. Faster, and isolates controller behaviour from planner mistakes.
+- **`True`**: the controller only ever sees a **reconstructed** path, built the same way the real car would build one from cones, cone-by-cone, one simulation step at a time. This is what "simulating perception and planning" means concretely: two classes in `sim/sim_track.py`, `SimPerception` and `SimPlanner`, mirror the two real ROS 2 nodes (`sim_perception.py`, `centerline_planner.py`) closely enough that a bug reproduced with `USE_PLANNER=True` offline is a real perception/planning bug, not a simulator artifact. Turn it on specifically to test how the controller behaves when fed a noisy, incrementally-built path instead of a perfect one; leave it off for pure controller/weight tuning.
 
-**`SimPerception`: what the car can currently see.** Every step, it takes the
-full static cone map for the track (known only to the simulator, never to the
-controller) and returns just the cones inside a forward field-of-view cone
-from the vehicle's current position and heading: further than `MIN_AHEAD`
-(0.5 m, drops cones behind the car), closer than `LOOK_AHEAD` (25 m), and
-within `LOOK_WIDE` (10 m) to either side. This is a direct port of
-`sim_perception.py`'s own visibility filter, so the sequence of cone
-observations the simulated planner receives is shaped the same way the real
-one is, cones appear only as the car gets close enough, not all at once.
+**`SimPerception`: what the car can currently see.** Every step, it takes the full static cone map for the track (known only to the simulator, never to the controller) and returns just the cones inside a forward field-of-view cone from the vehicle's current position and heading: further than `MIN_AHEAD` (0.5 m, drops cones behind the car), closer than `LOOK_AHEAD` (25 m), and within `LOOK_WIDE` (10 m) to either side. This is a direct port of `sim_perception.py`'s own visibility filter, so the sequence of cone observations the simulated planner receives is shaped the same way the real one is, cones appear only as the car gets close enough, not all at once.
 
 **`SimPlanner`: turning observed cones into a path.** Each step it:
 
-1. Adds the newly visible cones to a persistent `ConeMap` (from
-   `planning/cone_map.py`, shared with the live stack), which de-duplicates
-   repeat sightings of the same cone as the car drives past it again.
-2. Rebuilds a centreline from every cone accumulated so far, via
-   `build_path_walls()` (boundary-matching between paired blue/yellow cones);
-   if that fails, typically too few cones seen yet, it falls back to
-   `build_local_path()`, a simpler cone-midpoint heuristic.
-3. Blends that freshly-rebuilt centreline with the previous step's
-   (`blend_paths()`, an exponential moving average), because rebuilding from
-   scratch every step would otherwise make the tracked path jump around
-   step to step.
+1. Adds the newly visible cones to a persistent `ConeMap` (from `planning/cone_map.py`, shared with the live stack), which de-duplicates repeat sightings of the same cone as the car drives past it again.
+2. Rebuilds a centreline from every cone accumulated so far, via `build_path_walls()` (boundary-matching between paired blue/yellow cones); if that fails, typically too few cones seen yet, it falls back to `build_local_path()`, a simpler cone-midpoint heuristic.
+3. Blends that freshly-rebuilt centreline with the previous step's (`blend_paths()`, an exponential moving average), because rebuilding from scratch every step would otherwise make the tracked path jump around step to step.
 
-The result: the centreline the controller tracks starts incomplete near the
-back of the visible cones and firms up as the car advances and accumulates
-more observations, exactly the shape of behaviour the real planner exhibits,
-not a simplification of it. `SimPlanner` emits path only; speed targets still
-come from `speed_profile.curvature_speed()` run over that reconstructed
-centreline, same as the `USE_PLANNER=False` case.
+The result: the centreline the controller tracks starts incomplete near the back of the visible cones and firms up as the car advances and accumulates more observations, exactly the shape of behaviour the real planner exhibits, not a simplification of it. `SimPlanner` emits path only; speed targets still come from `speed_profile.curvature_speed()` run over that reconstructed centreline, same as the `USE_PLANNER=False` case.
 
-Both classes are used identically by `gui/simulation.py` and
-`tuner/offline_tuner.py` (see [Full System Flow](#full-system-flow) above),
-so an offline test with `USE_PLANNER=True` exercises the same
-perception/planning code path whether run interactively or during tuning.
+Both classes are used identically by `gui/simulation.py` and `tuner/offline_tuner.py` (see [Full System Flow](#full-system-flow) above), so an offline test with `USE_PLANNER=True` exercises the same perception/planning code path whether run interactively or during tuning.
 
 ---
 ## Configuring the Project (`settings.py`)
 
-`settings.py` is the single place to change tuning knobs, cost weights, and
-DNF/validation configuration shared by `gui/simulation.py`,
-`tuner/offline_tuner.py`, `sim/scoring.py`, `sim/rollout_core.py`, and
-`tuner/performance_stats.py`. It has no vehicle physics in it, that lives
-in `model/vehicle_physics.py` (see next section). Every setting has a
-detailed, plain-language explanation directly above it in the file itself.
+`settings.py` is the single place to change tuning knobs, cost weights, and DNF/validation configuration shared by `gui/simulation.py`, `tuner/offline_tuner.py`, `sim/scoring.py`, `sim/rollout_core.py`, and `tuner/performance_stats.py`. It has no vehicle physics in it, that lives in `model/vehicle_physics.py` (see next section). Every setting has a detailed, plain-language explanation directly above it in the file itself.
 
-For what every weight/gain/flag in `settings.py` does, how to tune it, and
-known constraints (including `N_HORIZON`, `DELAY_STEPS`/`DELAY_JITTER_STEPS`,
-`SLAM_NOISE_ENABLED` and the rest of the simulator-fidelity settings, the
-`Q_diag`/`R_diag`/`R_rate_diag` cost weights, and `SCORE_WEIGHTS`/
-`METRIC_SCALES`), see [tuning.md](tuning.md); this section instead covers
-the parts of `settings.py` that are about tuner *mechanics* (DNF detection,
-solver settings, the pose-feed-hold sim-to-real model) rather than tuning
-values themselves.
+For what every weight/gain/flag in `settings.py` does, how to tune it, and known constraints (including `N_HORIZON`, `DELAY_STEPS`/`DELAY_JITTER_STEPS`, `SLAM_NOISE_ENABLED` and the rest of the simulator-fidelity settings, the `Q_diag`/`R_diag`/`R_rate_diag` cost weights, and `SCORE_WEIGHTS`/ `METRIC_SCALES`), see [tuning.md](tuning.md); this section instead covers the parts of `settings.py` that are about tuner *mechanics* (DNF detection, solver settings, the pose-feed-hold sim-to-real model) rather than tuning values themselves.
 
 ### DNF penalty configuration
 
-`DNF_PENALTY` and `DNF_OFFTRACK_PENALTY` are flat score penalties added when a
-tuning rollout doesn't finish the track, and an additional penalty
-specifically when the reason was leaving the track boundary. These exist so
-the tuner can't find a deceptively good score by having the car crawl
-slowly and carefully without ever finishing.
+`DNF_PENALTY` and `DNF_OFFTRACK_PENALTY` are flat score penalties added when a tuning rollout doesn't finish the track, and an additional penalty specifically when the reason was leaving the track boundary. These exist so the tuner can't find a deceptively good score by having the car crawl slowly and carefully without ever finishing.
 
 ### Solver settings for headless rollouts
 
-`ROLLOUT_EPS` / `ROLLOUT_MAX_ITER` are OSQP convergence tolerance and iteration
-cap used only during offline tuning rollouts (looser than the live
-simulator's defaults for faster mass evaluation, at negligible accuracy
-cost). `MAX_EVALS` is the total true-rollout budget for one tuning run.
-`PATH_N_POINTS` is how many points each synthetic test track is resampled to.
-`USE_OPTUNA_PRESEARCH` / `OPTUNA_PRE_PASS_EVALS` configure an optional TPE
-pre-search that seeds CMA-ES's starting point; see
-[Optional Optuna TPE pre-search](#optional-optuna-tpe-pre-search).
+`ROLLOUT_EPS` / `ROLLOUT_MAX_ITER` are OSQP convergence tolerance and iteration cap used only during offline tuning rollouts (looser than the live simulator's defaults for faster mass evaluation, at negligible accuracy cost). `MAX_EVALS` is the total true-rollout budget for one tuning run. `PATH_N_POINTS` is how many points each synthetic test track is resampled to. `USE_OPTUNA_PRESEARCH` / `OPTUNA_PRE_PASS_EVALS` configure an optional TPE pre-search that seeds CMA-ES's starting point; see [Optional Optuna TPE pre-search](#optional-optuna-tpe-pre-search).
 
 ### Scoring weights
 
-`SCORE_WEIGHTS`/`METRIC_SCALES` define what "good driving" means to the
-tuner. See [tuning.md](tuning.md#6-scoring-metric_scales-and-score_weights)
-for how to tune these; see [The Composite Score](#the-composite-score) below
-for exactly what each of the 13 metrics measures and how they combine into
-one score.
+`SCORE_WEIGHTS`/`METRIC_SCALES` define what "good driving" means to the tuner. See [tuning.md](tuning.md#6-scoring-metric_scales-and-score_weights) for how to tune these; see [The Composite Score](#the-composite-score) below for exactly what each of the 13 metrics measures and how they combine into one score.
 
-`VALIDATION_SUITE` is which of the synthetic corner-shape paths (defined in
-`tuner/offline_tuner.build_synthetic_paths()`) the tuner actually evaluates
-candidates against. Commented-out paths are available but excluded by
-default to keep each tuning run faster.
+`VALIDATION_SUITE` is which of the synthetic corner-shape paths (defined in `tuner/offline_tuner.build_synthetic_paths()`) the tuner actually evaluates candidates against. Commented-out paths are available but excluded by default to keep each tuning run faster.
 
 ### Pose-feed hold (sim-to-real)
 
-`PoseFeedHold` in `sim/rollout_core.py` models the live pose feed **repeating**
-its last measurement instead of delivering a fresh one. Measured on live
-telemetry (two runs, same track, same tuned weights, differing only
-in how badly the feed stalled):
+`PoseFeedHold` in `sim/rollout_core.py` models the live pose feed **repeating** its last measurement instead of delivering a fresh one. Measured on live telemetry (two runs, same track, same tuned weights, differing only in how badly the feed stalled):
 
 | | normal run | failed run |
 |---|---|---|
@@ -268,73 +153,41 @@ in how badly the feed stalled):
 | longest hold | 5 ticks (0.25 s) | 20 ticks (0.99 s) |
 | peak `pose_age_s` | 347 ms | 1242 ms |
 
-In the failed run the pose froze for ~1 s at 14 m/s, about 17 m travelled blind,
-and the car spun on resume with 105° of heading error.
+In the failed run the pose froze for ~1 s at 14 m/s, about 17 m travelled blind, and the car spun on resume with 105° of heading error.
 
-This is distinct from the two existing delay knobs, and none of them substitute
-for it:
+This is distinct from the two existing delay knobs, and none of them substitute for it:
 
 - `DELAY_STEPS` delays a pose that is still **fresh** every tick.
 - `DELAY_JITTER_STEPS` perturbs only the controller's **belief** about the lag.
-- `PoseFeedHold` repeats the **data**, so `pose_age` genuinely ramps and the
-  controller is briefly blind.
+- `PoseFeedHold` repeats the **data**, so `pose_age` genuinely ramps and the controller is briefly blind.
 
-While a hold is active the rollout also **skips perception and planning**, since
-on the car the planner is triggered by `car_position`, and a stalled pose stalls
-the whole chain. Without that, re-planning from a frozen pose still yields a
-slightly different centreline each tick and the controller is never blind
-(measured: `e_y` repeated on 0.0% of ticks instead of the intended ~5%).
+While a hold is active the rollout also **skips perception and planning**, since on the car the planner is triggered by `car_position`, and a stalled pose stalls the whole chain. Without that, re-planning from a frozen pose still yields a slightly different centreline each tick and the controller is never blind (measured: `e_y` repeated on 0.0% of ticks instead of the intended ~5%).
 
-Tuned to the normal run: `POSE_HOLD_PROB = 0.05`, `MEAN_TICKS = 2.1`,
-`MAX_TICKS = 5` reproduces 5.8% repeated ticks / mean hold 2.10 against the
-measured 5.3% / 2.08.
+Tuned to the normal run: `POSE_HOLD_PROB = 0.05`, `MEAN_TICKS = 2.1`, `MAX_TICKS = 5` reproduces 5.8% repeated ticks / mean hold 2.10 against the measured 5.3% / 2.08.
 
 > **This does NOT close the sim-to-real gap.**
->
-> - With the model on and firing correctly, steering saturation moves only
->   3.4% → 4.4% against a live 21.1%, and heading error 6.0° → 6.3° against
->   a live 15.9°.
-> - The pose hold is real and now faithfully reproduced, but it is **not**
->   the cause of the gap.
-> - Also tested and eliminated: plant grip, corner entry speed, planner
->   centreline quality, SLAM pose noise, extra actuation delay, and planner
->   update rate.
-> - The cause remains open. Do not treat offline scores as predictive of
->   live behaviour until it is found.
+> - With the model on and firing correctly, steering saturation moves only 3.4% → 4.4% against a live 21.1%, and heading error 6.0° → 6.3° against a live 15.9°.
+> - The pose hold is real and now faithfully reproduced, but it is **not** the cause of the gap.
+> - Also tested and eliminated: plant grip, corner entry speed, planner centreline quality, SLAM pose noise, extra actuation delay, and planner update rate.
+> - The cause remains open. Do not treat offline scores as predictive of live behaviour until it is found.
 
 ---
 
 ### Bonus weights
 
-`TIME_BONUS_WEIGHT` is unused by the score itself, a vestigial field. Time is
-the *primary objective* (tier 2), scaled by `TIME_OBJECTIVE_WEIGHT`, not a
-bonus subtracted from a metric sum.
+`TIME_BONUS_WEIGHT` is unused by the score itself, a vestigial field. Time is the *primary objective* (tier 2), scaled by `TIME_OBJECTIVE_WEIGHT`, not a bonus subtracted from a metric sum.
 
-`COMPLETION_BONUS_WEIGHT` is likewise **unused by the score.** Completion is a
-hard constraint (tier 1), not something rewarded: a run that doesn't finish
-is scored above `CONSTRAINT_FLOOR` regardless of how well it drove. Both
-constants are retained only so the live copy's CSV header and
-`tuning history.txt` logging keep their existing fields.
+`COMPLETION_BONUS_WEIGHT` is likewise **unused by the score.** Completion is a hard constraint (tier 1), not something rewarded: a run that doesn't finish is scored above `CONSTRAINT_FLOOR` regardless of how well it drove. Both constants are retained only so the live copy's CSV header and `tuning history.txt` logging keep their existing fields.
 
 ---
 
 ## Configuring the Vehicle (`model/vehicle_physics.py`)
 
-The single source of truth for all vehicle physics (mass, geometry, tyre
-grip, suspension, aerodynamics, actuator limits) is the `VehicleParams`
-class in `model/vehicle_physics.py`. This is what the nonlinear 24-state
-plant (the "truth" simulation) uses, and several of these values (`Cf`,
-`Cr`, `tau_delta`, `tau_a`, `lf`, `lr`, `m`, `Iz`) also feed directly into
-the MPC's own internal linear model in `model/bicycle_model.py`, see
-[`lmpc.md`](lmpc.md) for how those specific values are
-used mathematically.
+The single source of truth for all vehicle physics (mass, geometry, tyre grip, suspension, aerodynamics, actuator limits) is the `VehicleParams` class in `model/vehicle_physics.py`. This is what the nonlinear 24-state plant (the "truth" simulation) uses, and several of these values (`Cf`, `Cr`, `tau_delta`, `tau_a`, `lf`, `lr`, `m`, `Iz`) also feed directly into the MPC's own internal linear model in `model/bicycle_model.py`, see [`lmpc.md`](lmpc.md) for how those specific values are used mathematically.
 
 ### Global scaling knobs
 
-Three constants at the top of `VehicleParams.__init__` proportionally scale
-groups of related parameters, removing the need to hand-tune every
-individual tyre/inertia constant to make the car noticeably grippier,
-heavier-feeling, or coast further:
+Three constants at the top of `VehicleParams.__init__` proportionally scale groups of related parameters, removing the need to hand-tune every individual tyre/inertia constant to make the car noticeably grippier, heavier-feeling, or coast further:
 
 ```python
 GRIP_SCALE     = 1.1   # Scales tyre stiffness (B) and peak grip (D) together
@@ -342,94 +195,39 @@ INERTIA_SCALE  = 0.8   # Scales yaw inertia and wheel rotational mass together
 COASTING_SCALE = 3.0   # Scales rolling resistance / drivetrain drag only, NOT aero drag (Cd_A is a fixed physical value) — < 1.0 = rolls further, > 1.0 = stops faster
 ```
 
-These three should generally be adjusted in preference to individual
-Pacejka/inertia constants, unless real tyre test data (TTC) or measured
-chassis inertia is available to plug in directly.
+These three should generally be adjusted in preference to individual Pacejka/inertia constants, unless real tyre test data (TTC) or measured chassis inertia is available to plug in directly.
 
 ### Importing new tyre data
 
-The plant uses a Pacejka **MF94** tyre model (`B`, `C`, `D`, `E`, `Sv`, `Sh`
-per axle, see [The Pacejka Tyre Model](#the-pacejka-tyre-model) below for
-what each coefficient physically means). Replacing these with real TTC
-data requires one additional step:
+The plant uses a Pacejka **MF94** tyre model (`B`, `C`, `D`, `E`, `Sv`, `Sh` per axle, see [The Pacejka Tyre Model](#the-pacejka-tyre-model) below for what each coefficient physically means). Replacing these with real TTC data requires one additional step:
 
-> **You must also recompute `Cf` and `Cr`**, the *linear* cornering
-> stiffnesses used by the MPC's internal bicycle model in
-> `model/bicycle_model.py`, a completely separate pair of constants from
-> the Pacejka coefficients above.
->
-> - **Why:** `Cf`/`Cr` need to match the new Pacejka curve's initial slope
->   near zero slip angle, via `C_eff ≈ mu * Fz_nominal * B * C * D`.
-> - **What happens if you skip this:** the MPC's internal prediction model
->   quietly stops matching the plant it's controlling. It doesn't
->   error out, it just produces degraded tracking with no obvious cause,
->   since nothing flags the mismatch directly.
+> **You must also recompute `Cf` and `Cr`**, the *linear* cornering stiffnesses used by the MPC's internal bicycle model in `model/bicycle_model.py`, a completely separate pair of constants from the Pacejka coefficients above.
+> - **Why:** `Cf`/`Cr` need to match the new Pacejka curve's initial slope near zero slip angle, via `C_eff ≈ mu * Fz_nominal * B * C * D`.
+> - **What happens if you skip this:** the MPC's internal prediction model quietly stops matching the plant it's controlling. It doesn't error out, it just produces degraded tracking with no obvious cause, since nothing flags the mismatch directly.
 
 ### Actuator limits
 
-`max_steer`, `max_accel`, `max_accel_brake`: changing these automatically
-propagates to the MPC's hard QP constraints in `controller/optimiser.py` and
-`mpc_core.py` (both read `VehicleParams` directly), so the controller
-will never be asked to command something the (simulated) vehicle physically
-can't do.
+`max_steer`, `max_accel`, `max_accel_brake`: changing these automatically propagates to the MPC's hard QP constraints in `controller/optimiser.py` and `mpc_core.py` (both read `VehicleParams` directly), so the controller will never be asked to command something the (simulated) vehicle physically can't do.
 
 ### The Pacejka Tyre Model
 
-The plant computes tyre grip using the Pacejka **MF94** "Magic Formula",
-an empirical curve fit to real tyre test data, rather than a physics-derived
-equation:
-Fy = mu · Fz · sin(C · atan(B·α − E·(B·α − atan(B·α))))
+The plant computes tyre grip using the Pacejka **MF94** "Magic Formula", an empirical curve fit to real tyre test data, rather than a physics-derived equation: Fy = mu · Fz · sin(C · atan(B·α − E·(B·α − atan(B·α))))
 
-Where `α` is slip angle (lateral) or slip ratio (longitudinal), and `Fz` is
-the tyre's current normal load. See
-[vehicle_physics_guide.md §4](vehicle_physics_guide.md#4-what-is-full-mf94-pacejka-and-what-is-a-tyre-model-at-all)
-for what each coefficient (`B`/`C`/`D`/`E`/`Sv`/`Sh`), `mu`/`k_sens`, tyre
-relaxation, and the friction ellipse physically mean, not repeated here.
+Where `α` is slip angle (lateral) or slip ratio (longitudinal), and `Fz` is the tyre's current normal load. See [vehicle_physics_guide.md §4](vehicle_physics_guide.md#4-what-is-full-mf94-pacejka-and-what-is-a-tyre-model-at-all) for what each coefficient (`B`/`C`/`D`/`E`/`Sv`/`Sh`), `mu`/`k_sens`, tyre relaxation, and the friction ellipse physically mean, not repeated here.
 
-This curve is where the plant's nonlinearity shows up numerically.
-Near `α = 0` it's *approximately* a straight line through the origin, and
-that local slope is exactly the linear cornering-stiffness `Cf`/`Cr` the
-MPC's internal model assumes holds everywhere (see "Linear vs nonlinear" in
-[`lmpc.md`](lmpc.md#linear-vs-nonlinear-in-plain-english)). Push `α` out past roughly 5-8° of
-slip, though, and the real curve visibly bends over: each extra degree of
-slip buys noticeably less extra force than the last, until it saturates at
-`D` and can even fall past that (a tyre that's broken traction). Doubling
-the slip angle out here does **not** double the force: it might only add
-20% more, or none at all, which is exactly the behaviour a fixed-multiplier
-linear model cannot represent.
+This curve is where the plant's nonlinearity shows up numerically. Near `α = 0` it's *approximately* a straight line through the origin, and that local slope is exactly the linear cornering-stiffness `Cf`/`Cr` the MPC's internal model assumes holds everywhere (see "Linear vs nonlinear" in [`lmpc.md`](lmpc.md#linear-vs-nonlinear-in-plain-english)). Push `α` out past roughly 5-8° of slip, though, and the real curve visibly bends over: each extra degree of slip buys noticeably less extra force than the last, until it saturates at `D` and can even fall past that (a tyre that's broken traction). Doubling the slip angle out here does **not** double the force: it might only add 20% more, or none at all, which is exactly the behaviour a fixed-multiplier linear model cannot represent.
 
 ---
 ## How the MPC Works
 
-Full technical reference (state vector, every matrix entry, the cost
-function, the solver, and the two runtime adaptive features layered on top)
-has moved to its own document, **[`lmpc.md`](lmpc.md)**, split out because
-it had grown too large for this overview. The implementation is split
-across three files that must be kept in numeric agreement:
-`model/bicycle_model.py` (the prediction model), `controller/optimiser.py`
-(the QP formulation, used by the simulator/tuner), and `mpc_core.py` (a
-self-contained duplicate of both, used by the live ROS 2 node so it has no
-simulator dependencies).
+Full technical reference (state vector, every matrix entry, the cost function, the solver, and the two runtime adaptive features layered on top) has moved to its own document, **[`lmpc.md`](lmpc.md)**, split out because it had grown too large for this overview. The implementation is split across three files that must be kept in numeric agreement: `model/bicycle_model.py` (the prediction model), `controller/optimiser.py` (the QP formulation, used by the simulator/tuner), and `mpc_core.py` (a self-contained duplicate of both, used by the live ROS 2 node so it has no simulator dependencies).
 
-In one line: at every 20 Hz tick, the controller measures tracking error
-relative to the path, predicts how that error evolves over a 1.75 s horizon
-under a linear bicycle model, solves a Quadratic Program (QP) for the
-steering/throttle sequence that minimises tracking error plus control
-effort plus smoothness, and applies only the first command before
-re-solving next tick (the *receding horizon* principle). See
-[`lmpc.md`](lmpc.md) for the full derivation, including how error is
-measured (Frenet-frame projection), the kinematic/dynamic model blend, the
-cost function and constraints, the OSQP/Clarabel solver, and the adaptive
-gain-scheduling layer on top.
+In one line: at every 20 Hz tick, the controller measures tracking error relative to the path, predicts how that error evolves over a 1.75 s horizon under a linear bicycle model, solves a Quadratic Program (QP) for the steering/throttle sequence that minimises tracking error plus control effort plus smoothness, and applies only the first command before re-solving next tick (the *receding horizon* principle). See [`lmpc.md`](lmpc.md) for the full derivation, including how error is measured (Frenet-frame projection), the kinematic/dynamic model blend, the cost function and constraints, the OSQP/Clarabel solver, and the adaptive gain-scheduling layer on top.
 
 ---
 ## How the Offline Tuner Works
 
-`tuner/offline_tuner.py` searches for `Q`, `R`, `R_rate` cost weights automatically
-rather than requiring hand-tuning, by running many closed-loop rollouts and
-minimising a single scalar score. This section covers the search algorithm;
-see [The Composite Score](#the-composite-score) for exactly what's being
-minimised.
+`tuner/offline_tuner.py` searches for `Q`, `R`, `R_rate` cost weights automatically rather than requiring hand-tuning, by running many closed-loop rollouts and minimising a single scalar score. This section covers the search algorithm; see [The Composite Score](#the-composite-score) for exactly what's being minimised.
 
 ```mermaid
 flowchart TD
@@ -460,10 +258,7 @@ flowchart TD
 
 ### Search space
 
-Rather than searching over raw weight values directly, CMA-ES searches over
-9 **multiplicative scale factors**, one per tunable diagonal entry
-(`TUNABLE_Q_IDX = [0,1,2,3,4]`, `TUNABLE_R_IDX = [0,1]`,
-`TUNABLE_R_RATE_IDX = [0,1]`):
+Rather than searching over raw weight values directly, CMA-ES searches over 9 **multiplicative scale factors**, one per tunable diagonal entry (`TUNABLE_Q_IDX = [0,1,2,3,4]`, `TUNABLE_R_IDX = [0,1]`, `TUNABLE_R_RATE_IDX = [0,1]`):
 
 ```
 Q[i,i]      = vec[j] · Q_template[i,i]
@@ -471,111 +266,43 @@ R[i,i]      = vec[j] · R_template[i,i]
 R_rate[i,i] = vec[j] · R_rate_template[i,i]
 ```
 
-Each factor is bounded to `[0.1, 10.0]`, one decade of adjustment in either
-direction from the template. Searching in multiplicative (rather than
-absolute) space keeps the problem dimensionally consistent regardless of
-the template's starting magnitude, and the `0.1` floor (rather than `1.0`)
-specifically allows the tuner to discover that a weight should be *reduced*
-below its starting point, not only increased.
+Each factor is bounded to `[0.1, 10.0]`, one decade of adjustment in either direction from the template. Searching in multiplicative (rather than absolute) space keeps the problem dimensionally consistent regardless of the template's starting magnitude, and the `0.1` floor (rather than `1.0`) specifically allows the tuner to discover that a weight should be *reduced* below its starting point, not only increased.
 
-The starting point `x0 = sqrt(lower · upper) = 1.0` for every parameter is
-the geometric (log-scale) midpoint of `[0.1, 10.0]`, i.e. "start the search
-exactly at the current template weights, unscaled," which is the natural
-neutral point for a multiplicative search space (the arithmetic mean would
-be biased toward the larger bound). This fixed midpoint is CMA-ES's default
-starting point; if `USE_OPTUNA_PRESEARCH` is enabled (see below), `x0` is
-replaced by the Optuna pre-pass's best result instead.
+The starting point `x0 = sqrt(lower · upper) = 1.0` for every parameter is the geometric (log-scale) midpoint of `[0.1, 10.0]`, i.e. "start the search exactly at the current template weights, unscaled," which is the natural neutral point for a multiplicative search space (the arithmetic mean would be biased toward the larger bound). This fixed midpoint is CMA-ES's default starting point; if `USE_OPTUNA_PRESEARCH` is enabled (see below), `x0` is replaced by the Optuna pre-pass's best result instead.
 
 ### Optional Optuna TPE pre-search
 
-`USE_OPTUNA_PRESEARCH` in `settings.py` (default `True`) runs a short
-Optuna TPE (Tree-structured Parzen Estimator) search *before* CMA-ES starts,
-using `OPTUNA_PRE_PASS_EVALS` true rollouts (default 10% of `MAX_EVALS`) out
-of a separate mini-budget. This phase's cost is in addition to, not carved
-out of, the main `MAX_EVALS` budget. TPE is a cheaper, less precise
-global search method than CMA-ES; the idea is to spend a small budget
-finding a promising general region of the 9-dimensional search space, then
-start CMA-ES there instead of at the fixed geometric midpoint, so more of
-CMA-ES's own budget goes toward local refinement instead of coarse search.
+`USE_OPTUNA_PRESEARCH` in `settings.py` (default `True`) runs a short Optuna TPE (Tree-structured Parzen Estimator) search *before* CMA-ES starts, using `OPTUNA_PRE_PASS_EVALS` true rollouts (default 10% of `MAX_EVALS`) out of a separate mini-budget. This phase's cost is in addition to, not carved out of, the main `MAX_EVALS` budget. TPE is a cheaper, less precise global search method than CMA-ES; the idea is to spend a small budget finding a promising general region of the 9-dimensional search space, then start CMA-ES there instead of at the fixed geometric midpoint, so more of CMA-ES's own budget goes toward local refinement instead of coarse search.
 
-The pre-pass reuses the exact same objective (`parallel_evaluate_candidate`)
-and worker pool as the CMA-ES phase (no rollout logic is duplicated),
-running trials sequentially (`n_jobs=1`) since each trial already fans a
-single candidate out across every core via the pool; a second layer of
-Optuna-level parallelism would only oversubscribe the same cores. It
-respects the same Ctrl+C graceful-shutdown flag (`_stop_requested`) as the
-CMA-ES phase, and its result (trial count, best score, seeded x0) is logged
-to `tuning history.txt` alongside the run's weights so it's traceable which
-runs used it.
+The pre-pass reuses the exact same objective (`parallel_evaluate_candidate`) and worker pool as the CMA-ES phase (no rollout logic is duplicated), running trials sequentially (`n_jobs=1`) since each trial already fans a single candidate out across every core via the pool; a second layer of Optuna-level parallelism would only oversubscribe the same cores. It respects the same Ctrl+C graceful-shutdown flag (`_stop_requested`) as the CMA-ES phase, and its result (trial count, best score, seeded x0) is logged to `tuning history.txt` alongside the run's weights so it's traceable which runs used it.
 
-> **Entries above the `COMPARABLE HISTORY RESUMES HERE` marker in
-> `tuning history.txt` are not comparable to each other or to later runs.**
-> The Optuna pre-pass is one of several things that differ across that
-> marker (alongside `SCORE_WEIGHTS` and the scoring/simulation
-> unification), so runs logged before it used a different search and
-> scoring setup than runs logged after. See the header of that file for
-> the full list and consequences.
+> **Entries above the `COMPARABLE HISTORY RESUMES HERE` marker in `tuning history.txt` are not comparable to each other or to later runs.** The Optuna pre-pass is one of several things that differ across that marker (alongside `SCORE_WEIGHTS` and the scoring/simulation unification), so runs logged before it used a different search and scoring setup than runs logged after. See the header of that file for the full list and consequences.
 
-Requires the optional `optuna` package (see
-[Dependencies](offline_guide.md#dependencies)), only needed if this flag
-is enabled.
+Requires the optional `optuna` package (see [Dependencies](offline_guide.md#dependencies)), only needed if this flag is enabled.
 
 ### CMA-ES: what it's doing and why
 
-CMA-ES (Covariance Matrix Adaptation Evolution Strategy) is a
-**derivative-free black-box optimiser**, it doesn't need a formula for how
-the score changes as a weight changes, only the ability to run a rollout
-and read off a score.
+CMA-ES (Covariance Matrix Adaptation Evolution Strategy) is a **derivative-free black-box optimiser**, it doesn't need a formula for how the score changes as a weight changes, only the ability to run a rollout and read off a score.
 
-**Why that matters here:** the objective (drive N corners well) is noisy,
-two rollouts with identical weights can score slightly differently, and
-has no clean formula connecting a weight to the score, the way fitting a
-straight line to data does. There's no calculus shortcut available, so any
-optimiser that needs one is off the table.
+**Why that matters here:** the objective (drive N corners well) is noisy, two rollouts with identical weights can score slightly differently, and has no clean formula connecting a weight to the score, the way fitting a straight line to data does. There's no calculus shortcut available, so any optimiser that needs one is off the table.
 
 **How CMA-ES actually searches**, each generation:
 
-1. Maintain a multivariate Gaussian distribution over candidate solutions
-   (think: a fuzzy cloud centred on the current best guess).
-2. Sample a population of candidates from that cloud, and run a real
-   rollout to score each one.
-3. Adapt the cloud's centre and shape toward the better-scoring region,
-   learning, over generations, not just *where* good solutions are but
-   which *directions* in parameter space matter and which don't.
+1. Maintain a multivariate Gaussian distribution over candidate solutions (think: a fuzzy cloud centred on the current best guess).
+2. Sample a population of candidates from that cloud, and run a real rollout to score each one.
+3. Adapt the cloud's centre and shape toward the better-scoring region, learning, over generations, not just *where* good solutions are but which *directions* in parameter space matter and which don't.
 
-This project specifically uses `cma.fmin_lq_surr2`, which layers two
-additional techniques on top of plain CMA-ES:
+This project specifically uses `cma.fmin_lq_surr2`, which layers two additional techniques on top of plain CMA-ES:
 
-**BIPOP (bi-population) restarts.** Rather than one long single run, the
-optimiser interleaves "large" restarts (population size doubles each time
-via `incpopsize=2`, broader exploration, better at escaping local minima)
-with "small" restarts (reduced population, faster local refinement around
-the current best candidate). `max_restarts = 7` caps how many restarts the
-whole session gets.
+**BIPOP (bi-population) restarts.** Rather than one long single run, the optimiser interleaves "large" restarts (population size doubles each time via `incpopsize=2`, broader exploration, better at escaping local minima) with "small" restarts (reduced population, faster local refinement around the current best candidate). `max_restarts = 7` caps how many restarts the whole session gets.
 
-**Surrogate assistance (the "lq" in `fmin_lq_surr2` = local quadratic).** A
-cheap quadratic model is fitted to recently-evaluated candidates and used to
-*predict* the score of new candidates without running a full rollout. Only
-candidates the surrogate predicts are promising (or a periodic sample, to
-keep the surrogate honest) get a real rollout. This is what lets `MAX_EVALS`
-"true" rollouts produce roughly 3-10× as much effective search coverage.
+**Surrogate assistance (the "lq" in `fmin_lq_surr2` = local quadratic).** A cheap quadratic model is fitted to recently-evaluated candidates and used to *predict* the score of new candidates without running a full rollout. Only candidates the surrogate predicts are promising (or a periodic sample, to keep the surrogate honest) get a real rollout. This is what lets `MAX_EVALS` "true" rollouts produce roughly 3-10× as much effective search coverage.
 
-**Initial step size (`sigma0 = 0.65`) and per-dimension spread
-(`CMA_stds = 0.23 · log(upper/lower)`)** control how large a jump CMA-ES
-takes when sampling new candidates early in the search. Since
-`log(10/0.1) ≈ 4.6`, this gives an initial per-dimension standard deviation
-of roughly `1.06` in log-space, large enough to explore meaningfully across
-the full decade of allowed adjustment, without being so large that early
-generations are mostly wasted on wildly implausible weight combinations.
+**Initial step size (`sigma0 = 0.65`) and per-dimension spread (`CMA_stds = 0.23 · log(upper/lower)`)** control how large a jump CMA-ES takes when sampling new candidates early in the search. Since `log(10/0.1) ≈ 4.6`, this gives an initial per-dimension standard deviation of roughly `1.06` in log-space, large enough to explore meaningfully across the full decade of allowed adjustment, without being so large that early generations are mostly wasted on wildly implausible weight combinations.
 
 ### Parallel + serial evaluation
 
-Every CMA-ES candidate is evaluated across all tasks in
-`EVAL_TASKS`, the cross-product of `VALIDATION_SUITE` (the corner shapes
-from `settings.py`) and `INITIAL_CONDITIONS` (a nominal on-path start, plus
-a perturbed start with `ey0=0.2 m, epsi0=0.05 rad`, to force the tuner to
-find weights that also recover from imperfect starting position). Each
-task's rollout runs in parallel across `cpu_count - 1` worker processes.
+Every CMA-ES candidate is evaluated across all tasks in `EVAL_TASKS`, the cross-product of `VALIDATION_SUITE` (the corner shapes from `settings.py`) and `INITIAL_CONDITIONS` (a nominal on-path start, plus a perturbed start with `ey0=0.2 m, epsi0=0.05 rad`, to force the tuner to find weights that also recover from imperfect starting position). Each task's rollout runs in parallel across `cpu_count - 1` worker processes.
 
 The per-candidate objective combines all task scores as:
 
@@ -583,22 +310,9 @@ The per-candidate objective combines all task scores as:
 objective = 0.7 · weighted_mean(scores) + 0.3 · quantile(scores, TAIL_QUANTILE)
 ```
 
-The 30% tail term exists specifically so CMA-ES can't find a weight set that
-scores well *on average* by driving one corner shape perfectly and another
-one badly, every task in the suite has to be reasonably good, not just the
-average.
+The 30% tail term exists specifically so CMA-ES can't find a weight set that scores well *on average* by driving one corner shape perfectly and another one badly, every task in the suite has to be reasonably good, not just the average.
 
-`TAIL_QUANTILE` (in `settings.py`, default `0.8`) replaced a hard `max()`.
-With the flat `DNF_PENALTY` of +3.0 (+6.0 off-track), the old `max()` let
-**one** unlucky task out of ten shift the objective by ~0.9 and swamp all
-twelve continuous quality metrics. Measured, a plausible hand-picked gain set
-ranked 3rd-worst of six (below two deliberately pathological sets) purely
-because a single one of its ten tasks DNF'd. That is a discontinuous,
-high-variance signal for CMA-ES and a likely contributor to the ~10× spread in
-tuned gains across historical runs. A high quantile keeps the intent, punish
-weights that fail badly *somewhere*, while requiring more than one bad task
-before it dominates. Set `TAIL_QUANTILE = 1.0` to recover the old behaviour
-exactly.
+`TAIL_QUANTILE` (in `settings.py`, default `0.8`) replaced a hard `max()`. With the flat `DNF_PENALTY` of +3.0 (+6.0 off-track), the old `max()` let **one** unlucky task out of ten shift the objective by ~0.9 and swamp all twelve continuous quality metrics. Measured, a plausible hand-picked gain set ranked 3rd-worst of six (below two deliberately pathological sets) purely because a single one of its ten tasks DNF'd. That is a discontinuous, high-variance signal for CMA-ES and a likely contributor to the ~10× spread in tuned gains across historical runs. A high quantile keeps the intent, punish weights that fail badly *somewhere*, while requiring more than one bad task before it dominates. Set `TAIL_QUANTILE = 1.0` to recover the old behaviour exactly.
 
 ### DNF conditions (offline tuner, tighter than the live simulator)
 
@@ -606,45 +320,28 @@ A rollout inside the tuner is marked "did not finish" if any of:
 
 - `|e_y| ≥ 3.50 m` (left the track, matches `OFFTRACK_LIMIT`)
 - 5 consecutive MPC solver failures (matches `MAX_FAILS`)
-- **Rolling stall check**: less than 3.0 m of forward progress in any
-  rolling 60-step (3 s) window, catches a car that hasn't technically left
-  the track or failed to solve, but also isn't actually driving anywhere
-  (e.g. stuck oscillating in place).
+- **Rolling stall check**: less than 3.0 m of forward progress in any rolling 60-step (3 s) window, catches a car that hasn't technically left the track or failed to solve, but also isn't actually driving anywhere (e.g. stuck oscillating in place).
 
-On a DNF, `DNF_PENALTY` is added to the score, plus `DNF_OFFTRACK_PENALTY`
-specifically if the DNF was caused by leaving the track (see
-[Configuring the Project](#configuring-the-project-settingspy) for both
-values).
+On a DNF, `DNF_PENALTY` is added to the score, plus `DNF_OFFTRACK_PENALTY` specifically if the DNF was caused by leaving the track (see [Configuring the Project](#configuring-the-project-settingspy) for both values).
 
 ### Post-optimisation: picking the final answer
 
-After the search budget is exhausted (or `Ctrl+C` is pressed), two
-candidates are freshly evaluated **serially** (outside the noisy parallel
-pool, for a clean comparison):
+After the search budget is exhausted (or `Ctrl+C` is pressed), two candidates are freshly evaluated **serially** (outside the noisy parallel pool, for a clean comparison):
 
-- **`xbest`** is the single best individual candidate observed across the
-  entire search.
-- **`xfavorite`** is the mean of CMA-ES's final search distribution, which
-  tends to be more robust/averaged than any one lucky sample.
+- **`xbest`** is the single best individual candidate observed across the entire search.
+- **`xfavorite`** is the mean of CMA-ES's final search distribution, which tends to be more robust/averaged than any one lucky sample.
 
-Whichever scores lower in this final clean evaluation is printed as the
-result and appended to `tuning_history.txt`.
+Whichever scores lower in this final clean evaluation is printed as the result and appended to `tuning_history.txt`.
 
 ---
 
 ## The Composite Score
 
-Both the offline tuner and the simulator's **Show Metrics**/**Benchmark All
-Paths** buttons score a rollout through the exact same code path
-(`scoring.RolloutMetrics`), which is what guarantees a path scored live in
-the GUI and the same path scored offline produce matching numbers, there
-is exactly one implementation of the scoring maths, not two independently
-maintained copies.
+Both the offline tuner and the simulator's **Show Metrics**/**Benchmark All Paths** buttons score a rollout through the exact same code path (`scoring.RolloutMetrics`), which is what guarantees a path scored live in the GUI and the same path scored offline produce matching numbers, there is exactly one implementation of the scoring maths, not two independently maintained copies.
 
 ### The 13 metrics
 
-Accumulated once per simulation step via `RolloutMetrics.add_step()`, then
-normalised (mostly to RMS values) at the end via `.finalize()`:
+Accumulated once per simulation step via `RolloutMetrics.add_step()`, then normalised (mostly to RMS values) at the end via `.finalize()`:
 
 | # | Metric | What it measures |
 |---|---|---|
@@ -682,80 +379,27 @@ if inaccurate_count > 0:
     score += abs(score) * min(5, inaccurate_count) * 0.1        # capped at 50%
 ```
 
-**Why three tiers instead of one sum.** A weighted sum is
-linear scalarisation, and can only reach solutions on the *convex hull* of the
-trade-off surface. Where that surface is non-convex (normal for vehicle
-dynamics), whole regions of good behaviour are unreachable by **any** weight
-vector. Measured: a deliberately-hunting gain set outscored a sane one purely
-by tracking the line more tightly, and kept winning even after `METRIC_SCALES`
-made the smoothness terms bite (normalisation amplifies the tracking terms
-too). Re-weighting cannot fix that, because the hunting set is genuinely better
-on the dominant term.
+**Why three tiers instead of one sum.** A weighted sum is linear scalarisation, and can only reach solutions on the *convex hull* of the trade-off surface. Where that surface is non-convex (normal for vehicle dynamics), whole regions of good behaviour are unreachable by **any** weight vector. Measured: a deliberately-hunting gain set outscored a sane one purely by tracking the line more tightly, and kept winning even after `METRIC_SCALES` made the smoothness terms bite (normalisation amplifies the tracking terms too). Re-weighting cannot fix that, because the hunting set is genuinely better on the dominant term.
 
-- **Constraints are not prices.** A flat `+3.0` DNF penalty on the same axis
-  as the metrics would let a sufficiently tight-tracking run *buy its way out
-  of a crash*. Instead, infeasible runs occupy a band strictly above
-  `CONSTRAINT_FLOOR` and no quality score can promote them out of it.
-  Ordering *within* the band still improves with `progress`, so the
-  optimiser keeps a gradient rather than hitting a flat wall.
-- **The objective is time, in real units.** `time_bonus` is
-  `optimal_lap_time / actual_time` (see `speed_profile.optimal_lap_time()`), so
-  `time_cost = 0.15` means the lap took ~18% longer than physically possible.
-  This is what kills the hunting exploit: hunting cannot buy lap time, so it
-  only ever costs.
-- **`reached_end`, not `progress`, decides completion.** `progress` comes from
-  a bounded nearest-index search that stops short of the final path point, so
-  a fully-completed run reports ~0.90; thresholding completion on `progress`
-  would mark every successful run infeasible. `COMPLETION_THRESHOLD` remains
-  only as a fallback for callers that cannot supply `reached_end`. The live
-  car does not need that fallback when running against a precomputed speed
-  profile (see `LapProgressTracker` in `docs/reference/README.md`'s
-  "Live/offline score parity" section); a run against the live planner topic
-  instead still has no known path end and falls back to this threshold.
-- `COMPLETION_BONUS_WEIGHT` is now unused by the score, completion is a
-  precondition, not a reward. The constant is retained for the live copy's
-  header compatibility.
+- **Constraints are not prices.** A flat `+3.0` DNF penalty on the same axis as the metrics would let a sufficiently tight-tracking run *buy its way out of a crash*. Instead, infeasible runs occupy a band strictly above `CONSTRAINT_FLOOR` and no quality score can promote them out of it. Ordering *within* the band still improves with `progress`, so the optimiser keeps a gradient rather than hitting a flat wall.
+- **The objective is time, in real units.** `time_bonus` is `optimal_lap_time / actual_time` (see `speed_profile.optimal_lap_time()`), so `time_cost = 0.15` means the lap took ~18% longer than physically possible. This is what kills the hunting exploit: hunting cannot buy lap time, so it only ever costs.
+- **`reached_end`, not `progress`, decides completion.** `progress` comes from a bounded nearest-index search that stops short of the final path point, so a fully-completed run reports ~0.90; thresholding completion on `progress` would mark every successful run infeasible. `COMPLETION_THRESHOLD` remains only as a fallback for callers that cannot supply `reached_end`. The live car does not need that fallback when running against a precomputed speed profile (see `LapProgressTracker` in `docs/reference/README.md`'s "Live/offline score parity" section); a run against the live planner topic instead still has no known path end and falls back to this threshold.
+- `COMPLETION_BONUS_WEIGHT` is now unused by the score, completion is a precondition, not a reward. The constant is retained for the live copy's header compatibility.
 
-`METRIC_SCALES` divides each metric by a reference magnitude
-*before* weighting, so `SCORE_WEIGHTS` expresses priority rather than silently
-doing unit conversion as well. Without it a metric's influence is
-`weight × typical magnitude`: measured, that left all ten non-tracking metrics
-contributing a combined +0.0064 against a −0.2649 tracking term, i.e. the score
-was effectively single-objective and the smoothness/oscillation terms could not
-bite no matter how their weights were set. `tuner/performance_stats.py` now
-prints each metric's **effective contribution** (`weight × metric / scale`) and
-percentage share, so this is visible directly in a benchmark report.
+`METRIC_SCALES` divides each metric by a reference magnitude *before* weighting, so `SCORE_WEIGHTS` expresses priority rather than silently doing unit conversion as well. Without it a metric's influence is `weight × typical magnitude`: measured, that left all ten non-tracking metrics contributing a combined +0.0064 against a −0.2649 tracking term, i.e. the score was effectively single-objective and the smoothness/oscillation terms could not bite no matter how their weights were set. `tuner/performance_stats.py` now prints each metric's **effective contribution** (`weight × metric / scale`) and percentage share, so this is visible directly in a benchmark report.
 
-Consequence: a run with every metric at its reference scores exactly 1.0
-before bonuses. Scores logged under an earlier `METRIC_SCALES`/`SCORE_WEIGHTS`
-normalisation are **not** comparable to current scores.
+Consequence: a run with every metric at its reference scores exactly 1.0 before bonuses. Scores logged under an earlier `METRIC_SCALES`/`SCORE_WEIGHTS` normalisation are **not** comparable to current scores.
 
-**Lower is always better.** A good finishing run typically scores in
-`[-0.5, -0.3]`, negative because the completion/time bonuses usually
-outweigh the (small, well-tuned) metric costs. See
-[tuning.md](tuning.md#6-scoring-metric_scales-and-score_weights) for how to
-tune `SCORE_WEIGHTS`/`METRIC_SCALES`.
+**Lower is always better.** A good finishing run typically scores in `[-0.5, -0.3]`, negative because the completion/time bonuses usually outweigh the (small, well-tuned) metric costs. See [tuning.md](tuning.md#6-scoring-metric_scales-and-score_weights) for how to tune `SCORE_WEIGHTS`/`METRIC_SCALES`.
 
-The inaccurate-solver penalty (up to +50% at 5 or more
-`OPTIMAL_INACCURATE` occurrences in one rollout) uses
-`score + abs(score)·factor` rather than a flat addition specifically so it
-scales with, and preserves the sign of, an already-good (negative) score:
-a run that finished well but had a few marginally-converged solves is
-penalised proportionally, not knocked into DNF-penalty territory outright.
+The inaccurate-solver penalty (up to +50% at 5 or more `OPTIMAL_INACCURATE` occurrences in one rollout) uses `score + abs(score)·factor` rather than a flat addition specifically so it scales with, and preserves the sign of, an already-good (negative) score: a run that finished well but had a few marginally-converged solves is penalised proportionally, not knocked into DNF-penalty territory outright.
 
 ---
 ## Module Reference
 
-Detailed explanations of the core algorithms live in
-[`lmpc.md`](lmpc.md), [`nmpc.md`](nmpc.md), and
-[How the Offline Tuner Works](#how-the-offline-tuner-works) above. This section is
-a short per-file index: what each module is for, and where its logic is
-documented in depth (either there, or in the file's own docstrings/comments,
-which are kept in sync with this README).
+Detailed explanations of the core algorithms live in [`lmpc.md`](lmpc.md), [`nmpc.md`](nmpc.md), and [How the Offline Tuner Works](#how-the-offline-tuner-works) above. This section is a short per-file index: what each module is for, and where its logic is documented in depth (either there, or in the file's own docstrings/comments, which are kept in sync with this README).
 
-Note: this covers the simulator/tuner files only. The shared planning code
-in `planning/` is copied from the `fsae_planning` repo and documented there,
-not here.
+Note: this covers the simulator/tuner files only. The shared planning code in `planning/` is copied from the `fsae_planning` repo and documented there, not here.
 
 | File | Purpose |
 |---|---|
@@ -780,17 +424,6 @@ not here.
 <a id="second-controller-nonlinear-mpc-use_nmpc"></a>
 ## Second controller: nonlinear MPC (`use_nmpc`)
 
-Full technical reference (the structural difference from the LTV-QP, how
-it's solved via Gauss-Newton SQP, the full feature-comparison table, and the
-three MPCC-inspired additions) has moved to its own document,
-**[`nmpc.md`](nmpc.md)**, split out because it had grown too large for this
-overview.
+Full technical reference (the structural difference from the LTV-QP, how it's solved via Gauss-Newton SQP, the full feature-comparison table, and the three MPCC-inspired additions) has moved to its own document, **[`nmpc.md`](nmpc.md)**, split out because it had grown too large for this overview.
 
-In one line: the live workspace carries a second, separately selectable
-controller, `nmpc_core.NMPCController` (chosen by the node parameter
-`use_nmpc`, default false), which replaces the LTV-QP's fixed-error-frame
-prediction with one that carries arc length `s` itself as a horizon state,
-so the road's curvature ahead is part of the prediction rather than
-something bolted onto the cost via the adaptive gain schedule. See
-[`nmpc.md`](nmpc.md) for the full derivation, the solve procedure, and the
-side-by-side feature table against the LTV-QP.
+In one line: the live workspace carries a second, separately selectable controller, `nmpc_core.NMPCController` (chosen by the node parameter `use_nmpc`, default false), which replaces the LTV-QP's fixed-error-frame prediction with one that carries arc length `s` itself as a horizon state, so the road's curvature ahead is part of the prediction rather than something bolted onto the cost via the adaptive gain schedule. See [`nmpc.md`](nmpc.md) for the full derivation, the solve procedure, and the side-by-side feature table against the LTV-QP.

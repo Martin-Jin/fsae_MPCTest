@@ -10,10 +10,6 @@ This document has been split by subject into [`docs/reference/`](reference/).
 | sim-vs-car divergences, the lateral-acceleration ceiling, the planner defect | [`reference/simulator_fidelity.md`](reference/simulator_fidelity.md) |
 | removed, superseded or rejected mechanisms | [`reference/superseded_mechanisms.md`](reference/superseded_mechanisms.md) |
 
-See [`reference/README.md`](reference/README.md) for the index and for where
-new content belongs.
+See [`reference/README.md`](reference/README.md) for the index and for where new content belongs.
 
-**Why it was split.** The file stated its purpose as a resync reference but had
-grown to 38 sections and 2214 lines, of which five were about resyncing. It had
-become the default home for anything touching planning or control, which made
-it both hard to navigate and easy to add unrelated material to.
+**Why it was split.** The file stated its purpose as a resync reference but had grown to 38 sections and 2214 lines, of which five were about resyncing. It had become the default home for anything touching planning or control, which made it both hard to navigate and easy to add unrelated material to.

@@ -1,9 +1,9 @@
 # Junior Project: MPC Path Tracking Controller
 
-**Designer:** Martin Jin
-**Design leader:** N/A
-**CTO:** Jonty Clark
-**Supervisor:** Siva Sriram
+**Designer:** Martin Jin\
+**Design leader:** N/A\
+**CTO:** Jonty Clark\
+**Supervisor:** Siva Sriram\
 **Timeline:** 20/06/2026 - 26/08/2026
 
 
@@ -18,17 +18,7 @@
 
 ## Overview
 
-**This project has two separate simulators, easy to conflate.** FSDS is the
-AirSim/UE4-based 3D simulator this whole project targets, the closest
-available stand-in for the real car. `fsae_MPCTest` (this repo) also has
-its own offline 2D GUI and headless rollout, used for automatic tuning,
-with different (lower-fidelity, unvalidated against FSDS) dynamics. Neither
-offline tool is validated against the real car either; FSDS is a closer
-approximation since it runs a real physics engine, but is not itself
-confirmed accurate against the real car. See
-[docs/reference/simulator_glossary.md](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/reference/simulator_glossary.md)
-for the full explanation and which docs cover which side, and
-[Section 6](#6-repo-contents-fsae_mpctest) below for how the models compare.
+**This project has two separate simulators, easy to conflate.** FSDS is the AirSim/UE4-based 3D simulator this whole project targets, the closest available stand-in for the real car. `fsae_MPCTest` (this repo) also has its own offline 2D GUI and headless rollout, used for automatic tuning, with different (lower-fidelity, unvalidated against FSDS) dynamics. Neither offline tool is validated against the real car either; FSDS is a closer approximation since it runs a real physics engine, but is not itself confirmed accurate against the real car. See [docs/reference/simulator_glossary.md](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/reference/simulator_glossary.md) for the full explanation and which docs cover which side, and [Section 6](#6-repo-contents-fsae_mpctest) below for how the models compare.
 
 The car runs a track in two laps. The first lap maps it: a live planner reconstructs the track from cones as the car drives, recording the result. The second lap drives the same track again using that recorded map, and because the whole path is now known in advance instead of being discovered lap-by-lap, a controller can plan ahead instead of only reacting. That second lap is what this project's MPC (Model Predictive Control) controller is for. MPC runs alongside the existing Stanley controller, not as a replacement for it, both remain available options on the second lap.
 
@@ -40,16 +30,9 @@ The core idea behind MPC: every tick, ask "if the car did X for the next second 
 
 ### Controller comparison
 
-NMPC and Stanley currently perform similarly overall. LMPC has a structural
-disadvantage the other two don't: it can't see the road bend ahead, which
-shows up specifically around corner turn-in (Section 4).
+NMPC and Stanley currently perform similarly overall. LMPC has a structural disadvantage the other two don't: it can't see the road bend ahead, which shows up specifically around corner turn-in (Section 4).
 
-Both controllers are compared using a single performance metric, a composite
-score computed the same way for every run, see
-[5.3 How a Run Gets Scored](#53-how-a-run-gets-scored) for how it's
-calculated. The underlying logic lives in `sim/scoring.py`. See
-`docs/logs/steering_chatter_investigation.md` for the investigation behind an
-earlier steering-chatter issue that once separately skewed this comparison.
+Both controllers are compared using a single performance metric, a composite score computed the same way for every run, see [5.3 How a Run Gets Scored](#53-how-a-run-gets-scored) for how it's calculated. The underlying logic lives in `sim/scoring.py`. See `docs/logs/steering_chatter_investigation.md` for the investigation behind an earlier steering-chatter issue that once separately skewed this comparison.
 
 
 ### What this project delivers
@@ -176,39 +159,17 @@ Full detail on each of these: [`docs/reference/control_mechanisms.md`](https://g
 
 ### 1.6 Two Kinds of MPC: Linear vs. Nonlinear
 
-Two versions of this MPC controller exist in this project, LMPC and NMPC,
-covered in Sections 2 and 3. Both share everything in Section 1: receding
-horizon, error state, cost function, solver. What differs is the internal
-model each uses to predict "if the car did X, where would it end up,"
-which is what "linear" vs "nonlinear" means here:
+Two versions of this MPC controller exist in this project, LMPC and NMPC, covered in Sections 2 and 3. Both share everything in Section 1: receding horizon, error state, cost function, solver. What differs is the internal model each uses to predict "if the car did X, where would it end up," which is what "linear" vs "nonlinear" means here:
 
-- **A linear model's predictions scale proportionally.** Every entry in its
-  internal matrices is a fixed multiplier, doubling an error input exactly
-  doubles its predicted effect, at any speed or state. This is what keeps
-  the optimisation a **Quadratic Program (QP)**, solvable in one pass with a
-  guaranteed answer (Section 1.4).
-- **A nonlinear model's predictions don't scale proportionally**, some
-  quantity in the model depends on another state-dependent quantity (e.g.
-  two things multiplied together, both of which change as the car moves),
-  so doubling an error doesn't cleanly double the effect. This is more
-  accurate in principle, but it can no longer be solved as a single QP;
-  it needs to be re-linearised and solved iteratively instead (Section 3.2),
-  which costs more time per tick and gives up the QP's solve-time guarantee.
+- **A linear model's predictions scale proportionally.** Every entry in its internal matrices is a fixed multiplier, doubling an error input exactly doubles its predicted effect, at any speed or state. This is what keeps the optimisation a **Quadratic Program (QP)**, solvable in one pass with a guaranteed answer (Section 1.4).
+- **A nonlinear model's predictions don't scale proportionally**, some quantity in the model depends on another state-dependent quantity (e.g. two things multiplied together, both of which change as the car moves), so doubling an error doesn't cleanly double the effect. This is more accurate in principle, but it can no longer be solved as a single QP; it needs to be re-linearised and solved iteratively instead (Section 3.2), which costs more time per tick and gives up the QP's solve-time guarantee.
 
-**LMPC** (Section 2) uses a linear model. **NMPC** (Section 3) uses a
-nonlinear one specifically to fix a blind spot LMPC's linear model has no
-way to represent (Section 2.3). Both are real implementations in this
-project, not a theoretical comparison; Section 4 compares them directly.
+**LMPC** (Section 2) uses a linear model. **NMPC** (Section 3) uses a nonlinear one specifically to fix a blind spot LMPC's linear model has no way to represent (Section 2.3). Both are real implementations in this project, not a theoretical comparison; Section 4 compares them directly.
 
 
 ## 2. LMPC: The Linear Controller
 
-**LMPC (linear MPC)**, also called LTV-QP in some of this project's other
-docs, was this project's original controller. NMPC (Section 3) fixes a
-structural blind spot LMPC has (Section 2.3) and currently performs better
-on corner turn-in; see [Controller comparison](#controller-comparison)
-above for how the two compare. Both remain available, selected by a single
-flag, see Section 3 for the mechanics.
+**LMPC (linear MPC)**, also called LTV-QP in some of this project's other docs, was this project's original controller. NMPC (Section 3) fixes a structural blind spot LMPC has (Section 2.3) and currently performs better on corner turn-in; see [Controller comparison](#controller-comparison) above for how the two compare. Both remain available, selected by a single flag, see Section 3 for the mechanics.
 
 
 ### 2.1 The Model
@@ -411,11 +372,7 @@ There are two separate vehicle models in play here, each built for a different j
 
 Having both is what lets the simulator stand in for a rough approximation of the real car during offline development: the simple model is what the controller *thinks* the car is, and the detailed model is a closer but still imperfect stand-in for what the car *actually is*, and testing the first against the second is what "developing and tuning offline" means in this project. This offline simulator's dynamics are not confirmed to match FSDS or the real car (see [What this project delivers](#what-this-project-delivers)); a weight set that scores well here still needs to be validated against FSDS (Section 7) and the real car before it's trusted.
 
-> If you ever import new real tyre test data into `vehicle_physics.py`, you **must** also
-> recompute `Cf`/`Cr` (used by the MPC's *internal* model) to match the new curve's initial slope,
-> otherwise the controller's internal picture of the car quietly stops matching the physics it's
-> actually driving, which shows up as degraded tracking with no obvious cause. See
-> `docs/architecture.md`'s "If you import new tyre data" note.
+> If you ever import new real tyre test data into `vehicle_physics.py`, you **must** also recompute `Cf`/`Cr` (used by the MPC's *internal* model) to match the new curve's initial slope, otherwise the controller's internal picture of the car quietly stops matching the physics it's actually driving, which shows up as degraded tracking with no obvious cause. See `docs/architecture.md`'s "If you import new tyre data" note.
 
 
 ### 6.3 The GUI

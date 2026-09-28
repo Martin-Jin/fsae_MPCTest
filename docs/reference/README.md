@@ -1,8 +1,6 @@
 # Reference documents
 
-Deep reference for the planning/control stack, split by subject. These replace
-the former single `docs/planning_control_sync.md`, which had grown to 38
-sections covering five unrelated topics.
+Deep reference for the planning/control stack, split by subject. These replace the former single `docs/planning_control_sync.md`, which had grown to 38 sections covering five unrelated topics.
 
 | document | covers |
 |---|---|
@@ -36,6 +34,4 @@ sections covering five unrelated topics.
 | a mechanism that no longer exists | `superseded_mechanisms.md` |
 | an investigation's history and measurements | `docs/logs/` |
 
-Describe a mechanism in its own document and record only its parity obligation
-in `offline_live_parity.md`. Writing both in one place is how the previous
-single file accumulated 33 sections that had nothing to do with parity.
+Describe a mechanism in its own document and record only its parity obligation in `offline_live_parity.md`. Writing both in one place is how the previous single file accumulated 33 sections that had nothing to do with parity.
