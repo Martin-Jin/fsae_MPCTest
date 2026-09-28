@@ -41,9 +41,10 @@ under `fsds_simulator/`, pasted into `fsae_planning`, see
 `rollout_core`.
 
 Note: the diagram below shows the case where `USE_PLANNER = True` (the
-simulator/tuner reconstructs the track from cones, like the real car would).
-When `USE_PLANNER = False`, the Perception/Planner boxes are skipped and the
-true reference path is used directly for tracking error.
+simulator/tuner reconstructs the track from cones, like the real car would,
+see [Simulated Perception and Planning](#simulated-perception-and-planning-use_planner)
+below for how). When `USE_PLANNER = False`, the Perception/Planner boxes are
+skipped and the true reference path is used directly for tracking error.
 
 ```mermaid
 flowchart TD
@@ -124,6 +125,9 @@ mpc_controller.py (standalone_output=true) │  gui/simulation.py's rollout loop
 cone_recorder.py                │  sim/track_io.py + gui/simulation.py's Load Recorded Track  (recorder writes what the loader reads)
 ```
 
+See [Simulated Perception and Planning (`USE_PLANNER`)](#simulated-perception-and-planning-use_planner)
+below for how `SimPerception`/`SimPlanner` actually work.
+
 `fsds_simulator/control/fsae_control/fsae_control/stanley_controller.py` is
 the actual current Stanley controller (mirrored from upstream, kept in sync
 like everything else under `fsds_simulator/`, see
@@ -134,6 +138,60 @@ drive against the MPC (`mpc_controller.py`'s `standalone_output=true` mode /
 up the full live stack, not because this repo's own simulator exercises it.
 See [`docs/stanley.md`](stanley.md) for its steering law and the speed-target
 smoothing added on top of it.
+
+### Simulated Perception and Planning (`USE_PLANNER`)
+
+`USE_PLANNER` (in `settings.py`) picks which reference the controller tracks:
+
+- **`False` (default)**: the controller tracks the true, precomputed path
+  directly, no perception or planning simulated at all. Faster, and isolates
+  controller behaviour from planner mistakes.
+- **`True`**: the controller only ever sees a **reconstructed** path, built
+  the same way the real car would build one from cones, cone-by-cone, one
+  simulation step at a time. This is what "simulating perception and
+  planning" means concretely: two classes in `sim/sim_track.py`,
+  `SimPerception` and `SimPlanner`, mirror the two real ROS 2 nodes
+  (`sim_perception.py`, `centerline_planner.py`) closely enough that a bug
+  reproduced with `USE_PLANNER=True` offline is a real perception/planning
+  bug, not a simulator artifact. Turn it on specifically to test how the
+  controller behaves when fed a noisy, incrementally-built path instead of a
+  perfect one; leave it off for pure controller/weight tuning.
+
+**`SimPerception`: what the car can currently see.** Every step, it takes the
+full static cone map for the track (known only to the simulator, never to the
+controller) and returns just the cones inside a forward field-of-view cone
+from the vehicle's current position and heading: further than `MIN_AHEAD`
+(0.5 m, drops cones behind the car), closer than `LOOK_AHEAD` (25 m), and
+within `LOOK_WIDE` (10 m) to either side. This is a direct port of
+`sim_perception.py`'s own visibility filter, so the sequence of cone
+observations the simulated planner receives is shaped the same way the real
+one is, cones appear only as the car gets close enough, not all at once.
+
+**`SimPlanner`: turning observed cones into a path.** Each step it:
+
+1. Adds the newly visible cones to a persistent `ConeMap` (from
+   `planning/cone_map.py`, shared with the live stack), which de-duplicates
+   repeat sightings of the same cone as the car drives past it again.
+2. Rebuilds a centreline from every cone accumulated so far, via
+   `build_path_walls()` (boundary-matching between paired blue/yellow cones);
+   if that fails, typically too few cones seen yet, it falls back to
+   `build_local_path()`, a simpler cone-midpoint heuristic.
+3. Blends that freshly-rebuilt centreline with the previous step's
+   (`blend_paths()`, an exponential moving average), because rebuilding from
+   scratch every step would otherwise make the tracked path jump around
+   step to step.
+
+The result: the centreline the controller tracks starts incomplete near the
+back of the visible cones and firms up as the car advances and accumulates
+more observations, exactly the shape of behaviour the real planner exhibits,
+not a simplification of it. `SimPlanner` emits path only; speed targets still
+come from `speed_profile.curvature_speed()` run over that reconstructed
+centreline, same as the `USE_PLANNER=False` case.
+
+Both classes are used identically by `gui/simulation.py` and
+`tuner/offline_tuner.py` (see [Full System Flow](#full-system-flow) above),
+so an offline test with `USE_PLANNER=True` exercises the same
+perception/planning code path whether run interactively or during tuning.
 
 ---
 ## Configuring the Project (`settings.py`)
@@ -699,7 +757,7 @@ not here.
 | `model/vehicle_physics.py` | The 24-state nonlinear "truth" plant (Pacejka tyres, suspension, aero) that the MPC never observes directly, only through tracking error. See [Configuring the Vehicle](#configuring-the-vehicle-modelvehicle_physicspy). |
 | `tuner/offline_tuner.py` | Headless CMA-ES weight search. See [How the Offline Tuner Works](#how-the-offline-tuner-works). Also exports the synthetic path library (`SYNTHETIC_PATHS`, `PATH_NAMES`) and the speed-keyed model cache (`get_cached_model`) used by both the tuner and the simulator. |
 | `sim/speed_profile.py` | Curvature-based per-point target speed (`compute_speed_profile`), with a moving-average smoothing pass (`smooth_profile`). Uses the friction-circle approximation `v = sqrt(a_lat_max / κ)` over a forward look-ahead window. |
-| `sim/sim_track.py` | Simulator-side mirrors of the real perception/planner nodes: `place_cones()` (static track layout), `SimPerception` (FOV filter), `SimPlanner` (cone accumulation → centreline + speed profile). |
+| `sim/sim_track.py` | Simulator-side mirrors of the real perception/planner nodes: `place_cones()` (static track layout), `SimPerception` (FOV filter), `SimPlanner` (cone accumulation → centreline + speed profile). See [Simulated Perception and Planning](#simulated-perception-and-planning-use_planner). |
 | `sim/track_io.py` | Loads a `fsae_planning` `cone_recorder` JSON cone map into the same `(path_X, path_Y, path_Psi, path_v, blue, yellow)` tuple shape as a synthetic path, see [Recording, exporting and driving a track](developer_guide.md#recording-exporting-and-driving-a-track). |
 | `tuner/performance_stats.py` | Scores a completed simulator run for the **Show Metrics** button by replaying its stored history through the exact same `scoring.RolloutMetrics` accumulator the tuner uses. Also exposes `benchmark_weights()` for **Benchmark All Paths**. |
 | `gui/manual_drive.py` | Standalone WASD/mouse drive mode against the 24-state nonlinear plant, no MPC, no scoring, purely open-loop human control for building intuition or sanity-checking a track. See [Manual Drive Mode](developer_guide.md#manual-drive-mode). |

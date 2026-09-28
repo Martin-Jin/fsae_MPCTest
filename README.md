@@ -145,7 +145,9 @@ The 2D simulator can optionally simulate the full perception + planning
 pipeline (`USE_PLANNER` in `settings.py`) by placing cones along a path
 (`sim_track.place_cones()`) and reconstructing a centreline from them using
 the shared planning code in the `planning/` folder (taken from the
-`fsae_planning` repo). When `USE_PLANNER` is off, the simulator instead tracks
+`fsae_planning` repo). See
+[architecture.md's Simulated Perception and Planning](docs/architecture.md#simulated-perception-and-planning-use_planner)
+for exactly how `SimPerception`/`SimPlanner` do this. When `USE_PLANNER` is off, the simulator instead tracks
 the true reference path directly, faster, and useful for isolating driving
 behaviour from planner behaviour. **Load Recorded Track** in `gui/simulation.py`
 loads a real cone map recorded from a live FSDS lap (via `fsae_planning`'s

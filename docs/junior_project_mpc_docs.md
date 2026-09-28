@@ -381,7 +381,7 @@ Having both is what lets the simulator stand in for a rough approximation of the
 | `sim/rollout_core.py` | The single shared closed-loop rollout loop used by both the GUI and the tuner |
 | `sim/scoring.py` | The 13-metric accumulation and composite score, single source of truth |
 | `sim/speed_profile.py` | Curvature-based target speed for a given path |
-| `sim/sim_track.py` | Cone placement + simulated perception/planning (mirrors the ROS 2 nodes) |
+| `sim/sim_track.py` | Cone placement + simulated perception/planning (mirrors the ROS 2 nodes); see [architecture.md's Simulated Perception and Planning](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/architecture.md#simulated-perception-and-planning-use_planner) for how |
 | `model/bicycle_model.py` | Builds LMPC's linear 8-state internal model (Section 2) |
 | `model/vehicle_physics.py` | The 24-state nonlinear simulated vehicle (above; an approximation, not a validated match to FSDS or the real car; full physics in [`docs/vehicle_physics_guide.md`](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/vehicle_physics_guide.md)) |
 | `controller/optimiser.py` | The QP formulation and OSQP/Clarabel solve (Section 1.4) |
@@ -400,7 +400,7 @@ Every one has a full plain-English explanation as a comment directly above it in
 | Setting | What it does | Typical adjustment |
 |---|---|---|
 | `N_HORIZON` | How many 0.05s steps ahead the MPC plans (35 = 1.75s look-ahead). Must match `N_horizon` in `gui/simulation.py` and `N` in `mpc_core.py` | ±5 steps at a time |
-| `USE_PLANNER` | Test with the full simulated cone-perception pipeline (`True`), or the perfect/precomputed reference path and speed profile (`False`, default, also faster) | Leave `False` unless testing perception/planner mistakes |
+| `USE_PLANNER` | Test with the full simulated cone-perception pipeline (`True`, see [architecture.md's Simulated Perception and Planning](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/architecture.md#simulated-perception-and-planning-use_planner) for how it works), or the perfect/precomputed reference path and speed profile (`False`, default, also faster) | Leave `False` unless testing perception/planner mistakes |
 | `DELAY_STEPS` / `DELAY_JITTER_STEPS` | Simulated command lag, and how *wrong* the car's guess about its own lag is allowed to be (the real car can't compensate perfectly, default `0.2` matches what was measured) | Adjust `DELAY_STEPS` for the robustness scenario being tested; leave `DELAY_JITTER_STEPS` at `0.2` |
 | `SLAM_NOISE_ENABLED` (+ `SLAM_*` settings) | Off by default. Adds jitter + slow drift to the pose the controller/planner *see* (not ground truth), modelling real SLAM/odometry error | Enable to test robustness to localisation noise, not for normal tuning runs |
 | `MAX_FAILS` | Consecutive solver failures before a run is abandoned as DNF | 1-2 at a time, default 5 |

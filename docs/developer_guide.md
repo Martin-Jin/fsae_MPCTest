@@ -70,7 +70,8 @@ Either:
   below). Unlike the synthetic paths, the blue/yellow cones rendered are the
   *actual recorded cones*, not `place_cones()` output, a real perception
   recording, resimulated exactly as `SimPerception`/`SimPlanner` would drive
-  it live. The centreline drawn on load is only a reconstruction for the
+  it live (see [Simulated Perception and Planning](architecture.md#simulated-perception-and-planning-use_planner)
+  for how those two work). The centreline drawn on load is only a reconstruction for the
   oracle-mode reference path and initial camera framing (see
   `sim/track_io.py`). With `USE_PLANNER = True`, the actual driving line
   during the rollout instead comes from `SimPlanner` rebuilding it
@@ -141,8 +142,10 @@ Before running, confirm:
 - `MAX_EVALS` is set to an acceptable budget to wait for (a good run is
   20 minutes to a few hours depending on core count and `MAX_EVALS`).
 - `USE_PLANNER` reflects whether the tuner should test the full
-  perception/planning pipeline (`True`) or drive on the perfect
-  reference line (`False`, default as of 2026-08-08, also faster).
+  perception/planning pipeline (`True`, see
+  [Simulated Perception and Planning](architecture.md#simulated-perception-and-planning-use_planner))
+  or drive on the perfect reference line (`False`, default as of
+  2026-08-08, also faster).
 - The `Q_diag`/`R_diag`/`R_rate_diag` cost weights and `SCORE_WEIGHTS`/
   `METRIC_SCALES` the tuner optimises against, see
   [tuning.md](tuning.md) for what each one does and how to tune it.
