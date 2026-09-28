@@ -37,8 +37,8 @@ That chatter fix is unrelated to NMPC's other advantage over LMPC: a structural 
 ### What this project delivers
 
 - **A working MPC controller**: takes in odometry (position, heading, speed) and outputs a throttle + steering command.
-- **A working 2D simulator**: used to visualise and test the controller, and to run the offline tuner against. (This is a separate, lightweight simulator from FSDS, and its dynamics do not match FSDS or the real car, see [Section 6](#6-repo-contents-fsae_mpctest) for how the two compare.)
-- **A working auto-tuner**: the controller's cost function has ~9 numbers that need tuning for it to drive well; this searches for good values automatically instead of by hand. It tunes against the 2D simulator only, so it is not confirmed to be accurate against FSDS or the real car; it gets the weights into the right ball park, and further manual tuning against FSDS (Section 7) and the real car is still required to get the desired performance.
+- **A working 2D simulator**: a matplotlib GUI used to visualise and manually test the controller against a drawn or loaded path. (This is a separate, lightweight tool from FSDS, and its dynamics do not match FSDS or the real car, see [Section 6](#6-repo-contents-fsae_mpctest) for how the two compare.)
+- **A working auto-tuner**: the controller's cost function has ~9 numbers that need tuning for it to drive well; this searches for good values automatically instead of by hand. It doesn't tune against the 2D GUI simulator, it runs a headless closed-loop rollout that simulates the car with a separate, higher-fidelity vehicle model (`model/vehicle_physics.py`, Section 6.2), which is itself still an approximation, not confirmed to be accurate against FSDS or the real car. This gets the weights into the right ball park; further manual tuning against FSDS (Section 7) and the real car is still required to get the desired performance.
 - **Working ROS 2 nodes**: drop-in replacements for the old Stanley controller nodes in the FSDS/planning stack, so the MPC can be validated against the real simulator.
 - **Documentation**: the repo [README](https://github.com/Martin-Jin/fsae_MPCTest) and this docs page.
 
@@ -233,7 +233,7 @@ For the exact formulas and a full feature-by-feature comparison verified against
 
 Section 1's cost function has weights ($Q$, $R$, $R_{rate}$) that decide what "good driving" means to the solver. This section covers finding good values for those weights: why that's hard to do by hand, the automatic tuner that does it instead, how a candidate weight set gets scored, and how to run and read the tuner in practice.
 
-Tuning runs against the offline 2D simulator, not the real car or FSDS directly, and that simulator's dynamics do not match FSDS or the real car. A tuned weight set is a starting point, not a validated one; see Section 6 for how the two simulators differ, and Section 7 for validating against FSDS before trusting a weight set on the real car.
+Tuning runs headless against the higher-fidelity `vehicle_physics.py` model (Section 6.2), not the 2D GUI simulator, and not the real car or FSDS directly; that model's dynamics do not match FSDS or the real car. A tuned weight set is a starting point, not a validated one; see Section 6 for how the models/simulators differ, and Section 7 for validating against FSDS before trusting a weight set on the real car.
 
 
 ### 5.1 Why an Automatic Tuner?
@@ -346,7 +346,7 @@ New synthetic corner shapes are added in `tuner/offline_tuner.py`'s `build_synth
 This project has two deliverables, in two separate repos:
 
 - A **working ROS 2 implementation**, in the `fsae_planning` repo, that runs on the FSDS simulator `autonomous` uses for testing. See Section 7.
-- **`fsae_MPCTest`**: everything listed just above, the offline 2D simulator, debugging/graphing tool, and automatic tuner (Section 5) that searches the simulator for good cost-function weights, without needing FSDS running at all.
+- **`fsae_MPCTest`**: everything listed just above, the offline 2D GUI simulator, debugging/graphing tool, and automatic tuner (Section 5) that searches for good cost-function weights using its own headless rollout, without needing FSDS running at all.
 
 The rest of this section is what `fsae_MPCTest` itself contains.
 

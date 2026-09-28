@@ -4,10 +4,13 @@ model/vehicle_physics.py — High-Fidelity Nonlinear Vehicle Plant Model
 PURPOSE
 -------
 Implements a 24-state nonlinear vehicle dynamics simulation plant intended to
-match the fidelity of Nvidia PhysX (used by FSDS/AirSim). This is the "truth"
-model that drives the vehicle in simulation; the MPC controller (controller/optimiser.py)
-uses a much simpler 8-state linear model internally, creating a deliberate
-plant-model mismatch that mirrors the real-world situation.
+approach the fidelity of Nvidia PhysX (used by FSDS/AirSim); this intent is not
+the same as a confirmed match, see docs/logs/sim_to_real_investigation.md for
+the open, only-partially-closed gap to the real car. This is the "truth" model
+relative to the MPC's own internal model: the MPC controller
+(controller/optimiser.py) uses a much simpler 8-state linear model internally,
+creating a deliberate plant-model mismatch that mirrors the real-world
+situation.
 
 The plant is stepped at 20 Hz (dt=0.05 s) but internally sub-steps at 4×
 (h=0.0125 s) to maintain numerical stability through the stiff suspension

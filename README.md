@@ -1,10 +1,12 @@
 # FSAE MPC Path Tracking Simulator
 
-A high-fidelity 2D closed-loop simulator and offline weight tuner for a Formula
-Student autonomous vehicle. The system pairs a nonlinear 24-state vehicle plant
-with a Model Predictive Controller, and provides CMA-ES-based automated weight
+A 2D closed-loop simulator and offline weight tuner for a Formula Student
+autonomous vehicle. The system pairs a nonlinear 24-state vehicle plant with
+a Model Predictive Controller, and provides CMA-ES-based automated weight
 optimisation so the controller's cost weights don't have to be hand-tuned by
-trial and error.
+trial and error. The plant model is a detailed approximation, not a
+validated match to FSDS or the real car; see
+[`docs/junior_project_mpc_docs.md`](docs/junior_project_mpc_docs.md#what-this-project-delivers).
 
 ## How it runs, at a glance
 
