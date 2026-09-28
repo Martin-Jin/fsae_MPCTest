@@ -797,6 +797,96 @@ class LaunchTab(ttk.Frame):
         # so the progress-row visibility needs an explicit refresh here too.
         self._on_controller_changed()
 
+    def refresh_from_disk(self) -> None:
+        """Re-reads every field this tab seeded from launch_all.sh at
+        __init__ time. Without this, the tab's widgets only ever reflect
+        the file's contents at the moment the GUI window was opened --
+        stale the instant launch_all.sh changes on disk afterward (a hand
+        edit, another concurrent GUI/session per CLAUDE.md's "Concurrent
+        session collisions" note, or this same tab's own previous Launch
+        click). The next Launch click writes _pending_values() straight
+        from these widgets, so a stale value here silently reverts
+        whatever the more recent on-disk edit set -- this was exactly the
+        "Launch tab doesn't seem to overwrite" symptom for
+        NMPC_PROGRESS_ENABLED, since that field can ALSO be true/false on
+        disk independent of what this tab last wrote. Skipped while
+        "Record new track" is checked, since that mode intentionally
+        holds a forced-override state this tab hasn't written yet."""
+        if self.record_var.get():
+            return
+        paths = self._paths
+        self.track_var.set(_read_var(paths.launch_all_sh, "TRACK") or self.track_var.get())
+        controller = _read_var(paths.launch_all_sh, "CONTROLLER") or "mpc"
+        use_nmpc = (_read_var(paths.launch_all_sh, "USE_NMPC") or "false").strip().lower()
+        if controller.strip() == "stanley":
+            self.controller_var.set("stanley")
+        elif use_nmpc == "true":
+            self.controller_var.set("nmpc")
+        else:
+            self.controller_var.set("ltv")
+        progress_state = _read_shortlist_var(paths.launch_all_sh, "NMPC_PROGRESS_ENABLED")
+        self.progress_var.set(bool(progress_state and progress_state[0] and progress_state[1] == "true"))
+        self.standalone_var.set(
+            (_read_var(paths.launch_all_sh, "STANDALONE_OUTPUT") or "true").strip().lower() == "true")
+        self.precomp_speed_var.set(
+            (_read_var(paths.launch_all_sh, "USE_PRECOMPUTED_SPEED") or "true").strip().lower() == "true")
+        self.precomp_path_var.set(
+            (_read_var(paths.launch_all_sh, "USE_PRECOMPUTED_PATH") or "true").strip().lower() == "true")
+        self.v_max_var.set(_read_var(paths.launch_all_sh, "V_MAX") or self.v_max_var.get())
+        self.v_min_var.set(_read_var(paths.launch_all_sh, "V_MIN") or self.v_min_var.get())
+        self._on_controller_changed()
+
+    def capture_profile_values(self) -> dict[str, str]:
+        """This tab's own fields, in the same {launch_all.sh NAME: raw
+        value} shape _pending_values() already builds for a real Launch
+        click, plus NMPC_PROGRESS_ENABLED (not in _pending_values() since
+        it needs the comment-toggling shortlist write, not a plain one --
+        see _on_launch's own comment on this). A saved profile previously
+        captured ONLY the Settings tab's fields (Q/R weights, NMPC
+        overrides, feature flags): loading it left the Launch tab's track/
+        controller/precomputed-path/etc. choice untouched, so 'load a
+        profile' silently did not reproduce the run it was saved from
+        unless those also happened to already match. Record new track
+        mode is deliberately NOT captured, a profile is a driving
+        configuration, not a recording-in-progress snapshot."""
+        values = self._pending_values()
+        values["NMPC_PROGRESS_ENABLED"] = (
+            "true" if (self.controller_var.get() == "nmpc" and self.progress_var.get()) else "false")
+        return values
+
+    def apply_profile_values(self, values: dict[str, str]) -> None:
+        """Inverse of capture_profile_values(): pushes a saved profile's
+        launch_all.sh-shaped values into this tab's own widgets. Mirrors
+        SettingsTab.apply_profile_values()'s own silently-skip-unknown-keys
+        behaviour, a profile is a convenience snapshot, not a strict
+        schema. Does NOT write launch_all.sh itself or start anything --
+        same "widgets now, disk on next explicit action" split
+        SettingsTab.apply_profile_values() uses (there: _on_save(); here:
+        the user's own next Launch click, or Save on the Settings tab if
+        that ran in the same load)."""
+        if "TRACK" in values and not self.record_var.get():
+            self.track_var.set(values["TRACK"])
+        if "CONTROLLER" in values and "USE_NMPC" in values:
+            if values["CONTROLLER"].strip() == "stanley":
+                self.controller_var.set("stanley")
+            elif values["USE_NMPC"].strip().lower() == "true":
+                self.controller_var.set("nmpc")
+            else:
+                self.controller_var.set("ltv")
+            self._on_controller_changed()
+        if "NMPC_PROGRESS_ENABLED" in values:
+            self.progress_var.set(values["NMPC_PROGRESS_ENABLED"].strip().lower() == "true")
+        if "STANDALONE_OUTPUT" in values:
+            self.standalone_var.set(values["STANDALONE_OUTPUT"].strip().lower() == "true")
+        if "USE_PRECOMPUTED_SPEED" in values:
+            self.precomp_speed_var.set(values["USE_PRECOMPUTED_SPEED"].strip().lower() == "true")
+        if "USE_PRECOMPUTED_PATH" in values:
+            self.precomp_path_var.set(values["USE_PRECOMPUTED_PATH"].strip().lower() == "true")
+        if "V_MAX" in values:
+            self.v_max_var.set(values["V_MAX"])
+        if "V_MIN" in values:
+            self.v_min_var.set(values["V_MIN"])
+
     def _bool_row(self, row: int, label: str, desc: str, var_name: str) -> tk.BooleanVar:
         _field_label(self._body, row, label, desc)
         current = (_read_var(self._paths.launch_all_sh, var_name) or "true").strip().lower()
@@ -1222,6 +1312,18 @@ _SCALAR_FIELDS: list[tuple[str, str, str | None, str]] = [
     ("R_A_BRAKE", "R_A_BRAKE", "r_a_brake", "float"),
     ("SPEED_TARGET_DEFICIT_MAX", "SPEED_TARGET_DEFICIT_MAX",
      "speed_target_deficit_max", "float"),
+    # NMPC only, active on the car right now (launch_all.sh ships these
+    # uncommented, non-default) but previously had no Settings-tab widget
+    # at all -- only editable by hand-editing launch_all.sh/nmpc_params.py
+    # directly, bypassing this tab's settings.py/mirror/YAML sync.
+    ("NMPC_RJERK_DELTA", "NMPC_RJERK_DELTA", "nmpc_rjerk_delta", "float"),
+    ("NMPC_RJERK_A", "NMPC_RJERK_A", "nmpc_rjerk_a", "float"),
+    ("NMPC_RRATE_ZONE_BOOST_STRAIGHT", "NMPC_RRATE_ZONE_BOOST_STRAIGHT",
+     "nmpc_rrate_zone_boost_straight", "float"),
+    ("NMPC_RRATE_ZONE_EASE_APPROACH", "NMPC_RRATE_ZONE_EASE_APPROACH",
+     "nmpc_rrate_zone_ease_approach", "float"),
+    ("NMPC_RRATE_ZONE_FLOOR_CORNER", "NMPC_RRATE_ZONE_FLOOR_CORNER",
+     "nmpc_rrate_zone_floor_corner", "float"),
 ]
 
 # NMPC weight overrides: -1.0 means "inherit the base weight", any other
@@ -1242,6 +1344,7 @@ _NMPC_OVERRIDE_FIELDS: list[tuple[str, str, str]] = [
     ("r_rate_delta", "NMPC_R_RATE_DELTA", "nmpc_r_rate_delta"),
     ("r_rate_a", "NMPC_R_RATE_A", "nmpc_r_rate_a"),
     ("terminal_scale", "NMPC_TERMINAL_SCALE", "nmpc_terminal_scale"),
+    ("corner_factor_k", "NMPC_CORNER_FACTOR_K", "nmpc_corner_factor_k"),
 ]
 
 # (label, settings.py name, mpc_params.py field names for each list index).
@@ -1350,13 +1453,14 @@ _FEATURE_GROUPS: list[tuple[str, list[tuple[str, str | None, str]]]] = [
          "nmpc_rrate_zone_enabled"),
         ("Corner rate-blend enabled (experimental)", "NMPC_CORNER_RRATE_BLEND_ENABLED",
          "nmpc_corner_rrate_blend_enabled"),
-        # Lives in nmpc_params.py, not mpc_params.py, so the desc lookup
-        # below finds nothing and the row renders without help text -- the
-        # label carries the warning instead. Enabling this alone is NOT
-        # enough: it also needs NMPC_SLACK_LINEAR_WEIGHT > 0 (see the
-        # numeric fields below) or the car cuts corners and goes off-track.
-        ("Progress term enabled (experimental, offline-only, needs slack_linear > 0)",
-         "NMPC_PROGRESS_ENABLED", "nmpc_progress_enabled"),
+        # NMPC_PROGRESS_ENABLED itself is NOT here: it is a launch_all.sh
+        # CLI arg, which overrides this tab's dataclass-default/YAML writes
+        # at ROS param declaration time, so a checkbox here could be
+        # toggled with zero effect on the next real launch. The Launch
+        # tab's own checkbox is the only widget that touches the
+        # launch_all.sh shortlist line and is the sole place to enable/
+        # disable this. The numeric fields below (q_progress etc.) stay
+        # here since they have no such precedence conflict.
     ]),
 ]
 
@@ -1495,6 +1599,12 @@ class SettingsTab(ttk.Frame):
         self._scalar_vars: dict[str, tk.Variable] = {}
         for label, name, _mpc_field, kind in _SCALAR_FIELDS:
             desc = _read_dataclass_field_desc(paths.mpc_params_py, _mpc_field) if _mpc_field else ""
+            if not desc and _mpc_field:
+                # Structural NMPC-only scalars (e.g. nmpc_rjerk_delta, the
+                # rrate-zone endpoints) live in nmpc_params.py, not
+                # mpc_params.py -- same fallback the feature-flag loop
+                # below already needs for the same reason.
+                desc = _read_dataclass_field_desc(paths.nmpc_params_py, _mpc_field)
             _field_label(weights_card, r, label, desc, label_style="Card.TLabel",
                          desc_style="CardMuted.TLabel", wraplength=420)
             raw = _read_var(paths.settings_py, name)
@@ -2023,23 +2133,34 @@ class SettingsTab(ttk.Frame):
 
 class ProfilesTab(ttk.Frame):
     """Named snapshots of every field the Settings tab manages (see
-    _profile_field_names()), stored as one JSON file per profile under
-    RepoPaths.profiles_dir. Save/Load go through SettingsTab's own
+    _profile_field_names()) PLUS the Launch tab's own driving configuration
+    (track, controller, precomputed speed/path, V_MAX/V_MIN,
+    NMPC_PROGRESS_ENABLED), stored as one JSON file per profile under
+    RepoPaths.profiles_dir. A profile used to capture only the Settings
+    tab's weights/flags -- loading one left whatever track/controller/
+    precomputed-path choice was already selected untouched, so it did not
+    actually reproduce the run it was saved from unless those separately
+    already matched. Save/Load go through SettingsTab's/LaunchTab's own
     capture_profile_values()/apply_profile_values() so a loaded profile is
-    written to settings.py, the live dataclasses, both fsae_params.yaml
-    copies, and both fsds_simulator/ mirrors -- exactly like a normal
-    Settings-tab edit, via the exact same code path, not a second one."""
+    written the same way a normal edit on either tab would be, via the
+    exact same code paths, not a third one. The two tabs' key sets are
+    disjoint (Settings tab uses settings.py NAMEs like Q_diag/NMPC_Q_E_Y;
+    Launch tab uses launch_all.sh NAMEs like TRACK/CONTROLLER), so they
+    merge into one flat dict with no collision to resolve."""
 
-    def __init__(self, parent: ttk.Notebook, paths: RepoPaths, settings_tab: "SettingsTab") -> None:
+    def __init__(self, parent: ttk.Notebook, paths: RepoPaths, settings_tab: "SettingsTab",
+                 launch_tab: "LaunchTab") -> None:
         super().__init__(parent, padding=24)
         self._paths = paths
         self._settings_tab = settings_tab
+        self._launch_tab = launch_tab
 
         ttk.Label(self, text="Profiles", style="Heading.TLabel").pack(anchor="w")
         ttk.Label(
             self,
-            text=f"settings_profiles/ — full snapshots of every Settings-tab field "
-                 f"({len(_profile_field_names())} values).",
+            text=f"settings_profiles/ — full snapshots of every Settings-tab field plus the "
+                 f"Launch tab's driving configuration "
+                 f"({len(_profile_field_names())}+ values).",
             style="Muted.TLabel").pack(anchor="w", pady=(2, 16))
 
         toolbar = ttk.Frame(self)
@@ -2114,6 +2235,7 @@ class ProfilesTab(ttk.Frame):
         try:
             self._paths.profiles_dir.mkdir(parents=True, exist_ok=True)
             values = self._settings_tab.capture_profile_values()
+            values.update(self._launch_tab.capture_profile_values())
             payload = {"name": name, "values": values}
             target.write_text(json.dumps(payload, indent=2, sort_keys=True))
         except OSError as exc:
@@ -2134,13 +2256,16 @@ class ProfilesTab(ttk.Frame):
         values = payload.get("values", {})
         if not messagebox.askyesno(
                 "Load profile",
-                f"Overwrite EVERY current Settings-tab value with '{path.stem}' "
-                f"({len(values)} values)? This writes settings.py, the live "
-                "dataclasses, both fsae_params.yaml copies, and both "
-                "fsds_simulator/ mirrors immediately, the same as pressing "
-                "Save on the Settings tab."):
+                f"Overwrite EVERY current Settings-tab AND Launch-tab value with "
+                f"'{path.stem}' ({len(values)} values)? The Settings-tab values write "
+                "settings.py, the live dataclasses, both fsae_params.yaml copies, and "
+                "both fsds_simulator/ mirrors immediately, the same as pressing Save on "
+                "the Settings tab. The Launch-tab values (track/controller/precomputed "
+                "speed & path/V_MAX/V_MIN/progress term) only update that tab's widgets "
+                "-- launch_all.sh itself is not touched until the next Launch click."):
             return
         self._settings_tab.apply_profile_values(values)
+        self._launch_tab.apply_profile_values(values)
         self.status_var.set(f"Loaded '{path.stem}'. Restart the sim to pick up the live change.")
 
     def _delete_selected(self) -> None:
@@ -2209,7 +2334,7 @@ class LauncherApp(tk.Tk):
         notebook.add(OfflineSimTab(notebook, paths), text="Run Offline Sim")
         self._settings_tab = SettingsTab(notebook, paths)
         notebook.add(self._settings_tab, text="Settings")
-        notebook.add(ProfilesTab(notebook, paths, self._settings_tab), text="Profiles")
+        notebook.add(ProfilesTab(notebook, paths, self._settings_tab, self._launch_tab), text="Profiles")
 
         # Warn on leaving the Settings tab with unsaved edits, not just on
         # window close -- switching to Launch Sim/Profiles/etc. and back is
@@ -2271,6 +2396,12 @@ class LauncherApp(tk.Tk):
                 self._notebook.select(settings_index)
                 self.after_idle(self._clear_reentering_tab_guard)
                 return
+        # Re-sync the Launch tab's widgets from launch_all.sh on arrival,
+        # not just at GUI startup -- see refresh_from_disk()'s own
+        # docstring for why a stale widget here silently reverts a more
+        # recent on-disk edit the next time Launch is pressed.
+        if self._notebook.select() == str(self._launch_tab):
+            self._launch_tab.refresh_from_disk()
         self._last_tab_was_settings = (
             self._notebook.select() == str(self._settings_tab))
 
