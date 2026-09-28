@@ -9,7 +9,8 @@ centreline-curvature-spike defect (`docs/reference/`) — it is a new,
 separate, currently-unexplained failure mode found while triaging a "the car
 randomly steers off" report.
 
-**Status: root cause NOT found, but substantially narrowed.** Four live
+**Status: root cause NOT found, but substantially narrowed, and now confirmed
+to cause a real driving failure, not just a diagnostic anomaly.** Four live
 captures (see "Capture result" through "Fourth capture result" below) have
 exonerated `sim_perception.py` entirely, shown the bridge's raw 250 Hz odom
 output sustaining only ~22-36 Hz for nearly the whole run, shown that
@@ -23,6 +24,12 @@ coincidence between two calls" — this is one shared bottleneck somewhere in
 the RPC/AirSim transport boundary, not anything specific to how any one
 sensor's data is fetched or cached. See "Third capture result" and "Fourth
 capture result" for the measurements and what they do/don't rule out.
+
+**Fifth capture result (2026-09-29) closes the gap between this bug and an
+actual crash**: a car that spins out and stalls at the track's tightest
+corner traces back to this same clock fault inflating the controller's
+delay-compensation lookback, not to a tuning or planner problem. See
+"Fifth capture result" below.
 
 **Why it exists.** The investigation started as "is this a controller or
 planner bug" and ended by ruling out both — worth recording precisely because
@@ -394,6 +401,95 @@ traffic between the bridge and AirSim: the msgpack-rpc transport itself, a
 lock/queue on the AirSim server side that serialises all client calls, or a
 periodic stall in Unreal/AirSim's own request-handling loop that blocks
 every RPC response simultaneously regardless of which method was called.
+
+## Fifth capture result (2026-09-29): this bug causes a real spin-out, via delay compensation, not a direct teleport
+
+**In plain terms**: the car spins out and gets stuck at one specific sharp
+corner. The spin is not caused by that corner being too tight for the
+tuning, or by the planner's known path-smoothing defect. It happens because
+the clock fault above (the ~31.7 s stall) makes the controller think the
+car's position report is older than it really is. The controller reacts to
+old information at the one point on the track that has no room for that
+delay, and loses control.
+
+**The mechanism, precisely.** The controller tracks how stale each pose
+update is (`pose_age_s`) and uses it to pick `n_delay`, how many ticks of
+its own past commands to roll the state forward by before planning (capped
+at 3). Two logs from the same track (`comp_test_map_3`) and identical
+`mpc_params.py`/`nmpc_params.py` config —
+`mpc_standalone_control_20260921-163018.csv` (a ~51 min, ~61,000-row session)
+and `mpc_standalone_control_20260929-083956.csv` (an 884-row session cut
+short by the crash) — both drive through the same hairpin (index ~404 on
+`centerline.csv`, curvature κ≈0.208, a ~4.8 m turn radius, the single
+tightest point on this track) repeatedly. Across 106 total passes through it
+in these and neighbouring same-week logs:
+
+| `n_delay` at corner entry | passes | spins |
+|---|---|---|
+| 0 | 41 | 0 |
+| 1 | 43 | 0 |
+| 2 | 5 | 1 |
+| 3 (pinned at the cap) | 17 | 6 |
+
+A spin needs both `n_delay` pinned at 2-3 **and** an entry speed above
+roughly 7.2 m/s; passes at `n_delay=3` that entered slower (6.2-6.5 m/s) all
+survived, and passes at `n_delay=0-1` survived even above 7.5 m/s. Neither
+condition alone explains the failure.
+
+**Falsified: the "clean" 2026-09-21 run was not actually clean.** It was
+read earlier in this investigation as a validated good run (composite score
+0.537, 50 s lap time). Re-checked here: it spins at this exact same corner,
+at the exact same stuck position (`car_x=34.20, car_y=41.45,
+e_psi≈51.8°, v=0`) as the 2026-09-29 failure, on its very last lap
+(t≈2923 s of the ~3068 s log) rather than its first. Its composite score
+only reflects the laps completed before that point. A run's tuning weights
+being validated by a clean-looking score does not mean the run itself was
+free of this failure mode, only that the failure happened to land after the
+score was already computed or off the timing window checked.
+
+**What inflates `pose_age_s` here is clock drift between stalls, not the
+stall event itself.** In the 2026-09-29 log, two backward jumps in the
+logged time column occur: `t=12.7013 → 11.9444` (a 0.7569 s drop) and
+`t=44.3755 → 43.6120` (a 0.7635 s drop), 31.68 s apart, matching this
+document's already-established ~31.7 s period exactly. Between jumps,
+`pose_age_s` does not stay flat, it climbs steadily (observed: from a
+healthy ~0.01-0.05 s baseline up to 0.21-0.35 s immediately before the
+crash), including while the car is stationary — ruling out real sensor
+latency, since a parked car has nothing generating fresh latency. This is
+the clock drift itself accumulating between two stall/resync events, not a
+single instantaneous jump. `n_delay=3` (the cap) held continuously through
+the entire crash-approach window (t=33.5-37.7 s in the failing run),
+consistent with `pose_age_s` staying elevated the whole time rather than
+spiking once.
+
+**What this rules out.** Not the centreline-curvature-spike defect (see
+"Before changing the planner" in `CLAUDE.md`): both logs drive a
+precomputed static path, `path_age_s ≡ 0` throughout, so the live planner's
+path-refitting defect cannot be in the loop at all. Not a solver problem:
+`solver_failed=0`, `inaccurate=0`, `nmpc_status=1` throughout both runs'
+approach to the corner, right up to the spin. Not the track geometry alone:
+the curvature at this corner rises and falls smoothly over roughly 15
+points (real track shape, not a spike), and a second corner of comparable
+tightness (κ≈0.172, near the opposite end of the loop) is driven cleanly on
+every pass in both logs. Not tuning: the two logs share byte-identical
+`mpc_params.py`/`nmpc_params.py`/`settings.py` values, so the same
+configuration produces both zero-incident laps and a crash depending only
+on whether the clock fault happens to be active with `n_delay` pinned at
+the moment the car reaches this one corner.
+
+**A second, separate, previously undocumented issue.** After spinning, the
+car does not recover or attempt to drive away in either log — it sits
+stalled indefinitely (`v_des≈2.0`, `a_cmd≈0`, no further steering attempt)
+until the log ends. This standstill deadlock is worth its own investigation
+and is not explained by anything above; recording it here only because it
+was found in the same telemetry, not because the cause is understood.
+
+**What this does not change.** The underlying clock/RPC stall's own root
+cause (see "Next step" below) is still unidentified. This capture adds a
+downstream consequence and a concrete trigger condition (`n_delay≥2` at
+entry speed >~7.2 m/s into a corner with κ>0.17-ish on this track), it does
+not narrow where in the FSDS/bridge/transport stack the stall itself
+originates.
 
 ## Next step (2026-08-20 — shared-bottleneck question answered; root cause still open)
 
