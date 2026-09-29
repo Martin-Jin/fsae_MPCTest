@@ -176,7 +176,23 @@ Exact split line ranges are in `docs/restructure_audit/survey_offline_code.md` Â
 
 ## Phase 4: mirror restructure, then overwrite `fsae_planning`
 
-### Target layout (`control/fsae_control/fsae_control/`)
+**Scope narrowed by the user (2026-09-30): only MPC-related files get
+refactored/split. Every other file in `fsds_simulator/` (perception,
+`fsae_planning`'s `cone_sorting.py`/`boundary.py`/`path_utils.py`/
+`centerline_planner.py`, `special_utils/`, `fsae_bringup`'s non-MPC launch
+and config plumbing) may be MOVED for sorting if a move is actually needed,
+but is never split or internally refactored.** The rest of this section
+applies only to the MPC-related files listed below.
+
+### MPC-related files (in scope for split/refactor)
+
+- `control/fsae_control/fsae_control/mpc/{mpc_params,nmpc_params,mpc_core,nmpc_core,mpc_controller}.py`
+- `control/fsae_control/fsae_control/{telemetry_logger,scoring}.py` (telemetry/scoring are MPC-run output, in scope)
+- `control/fsae_control/fsae_control/live_viz.py` (MPC debug visualisation, in scope)
+- `common/fsae_bringup/launch/control.launch.py`/`sim.launch.py` (generate MPC/NMPC launch args from `MPCParams`/`NMPCParams` field metadata)
+- `common/fsae_bringup/config/fsae_params.yaml`'s `controller:` block
+
+### Target layout (MPC files only, under `control/fsae_control/fsae_control/`)
 
 ```
 params/        mpc_params.py, nmpc_params.py, ros_params.py
@@ -184,21 +200,25 @@ params/        mpc_params.py, nmpc_params.py, ros_params.py
 lmpc/          adaptive_gains.py, predict.py, controller.py   (from mpc_core.py)
 nmpc/          layout, dynamics, reference, outputs, weight_schedule,
                solver.py, qp_build.py, sqp_step.py             (from nmpc_core.py, 1:1 with offline)
-stanley/       controller.py (StanleyController from control_utils), node.py
-speed/         speed_target.py (gate, curvature_speed, dynamic cap),
-               profiles.py (CSV loaders)
 telemetry/     config_lines.py, horizon_tracker.py, lap_progress.py,
                control_logger.py, scoring.py
 nodes/         mpc_node.py (+ helpers split out of the 1220-line node class),
-               live_viz/ (node.py, panels.py), fsds_bridge.py, brake_sysid.py
+               live_viz/ (node.py, panels.py)
 ```
 
-Other mirror changes:
+Explicitly NOT split or refactored (moved only if a move is needed for
+sorting, e.g. an MPC file relocating out from under a shared directory):
+`control_utils.py` (Stanley controller + speed-gate/profile-loader
+helpers -- Stanley is not MPC, and the speed-gate/profile helpers are
+shared with Stanley, so splitting risks tangling a non-MPC consumer),
+`stanley_controller.py`, `fsds_bridge.py`, `brake_sysid.py`,
+`planning/fsae_planning/fsae_planning/*` (boundary, cone_sorting,
+cone_map, path_utils, centerline_planner, special_utils/),
+`perception/fsae_sim_perception/*`.
 
-- `planning/.../special_utils/` becomes `skidpad/`.
-- `path_utils.py` gets the same `geometry.py` extraction as offline.
-- `common/fsae_bringup/launch/control.launch.py` (422 lines): move the arg-generation helpers into the empty `fsae_bringup/fsae_bringup/` package module.
-- Entry-point names and package names may change. Update every consumer:
+Other mirror changes (MPC-file paths only):
+
+- Entry-point names and package names for the MPC files above may change. Update every consumer:
   - `setup.py` entry points
   - launch files
   - both `launch_all.sh` copies and `ros2/run_*.sh`
