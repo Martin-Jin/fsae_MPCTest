@@ -16,7 +16,7 @@ Any settings.py constant can be overridden for one run via --set NAME=VALUE
     python -m tuner.investigations.steering_chatter_check --set NMPC_SQP_ITERS=2
     python -m tuner.investigations.steering_chatter_check --controller ltv
 
-Overrides are applied to the `settings` module BEFORE `sim.rollout_core` is
+Overrides are applied to the `settings` module BEFORE `sim.rollout.core` is
 imported, which is required for any constant that module imports by bare
 name (USE_NMPC, NMPC_HORIZON, NMPC_SQP_ITERS, NMPC_SOLVE_BUDGET_MS,
 NMPC_TRUST_DELTA_RAD, NMPC_JAC_SUBSTEPS, TERMINAL_Q_SCALE, and others) --
@@ -60,7 +60,7 @@ def main():
     # several NMPC_* constants in by bare name at its own import time.
     from model.vehicle_physics import VehicleParams
     from model.bicycle_model import get_8state_discrete_model
-    from sim.rollout_core import compute_step_budget, run_core_rollout
+    from sim.rollout.core import compute_step_budget, run_core_rollout
     from sim.track_io import load_recorded_track
     from tracks import cone_map_path
 

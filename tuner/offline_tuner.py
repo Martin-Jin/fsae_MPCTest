@@ -109,7 +109,7 @@ import time
 from collections import Counter
 from scipy.interpolate import CubicSpline
 import signal
-from sim.rollout_core import run_core_rollout, compute_step_budget
+from sim.rollout.core import run_core_rollout, compute_step_budget
 import subprocess
 import settings  # module handle, for the NMPC tail's shipped x0 seed
 from settings import (

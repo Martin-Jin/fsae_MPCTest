@@ -47,7 +47,7 @@ from model.vehicle_physics import VehicleParams  # noqa: E402
 from settings import (  # noqa: E402
     N_HORIZON, Q_diag, R_diag, R_rate_diag, ROLLOUT_EPS, ROLLOUT_MAX_ITER,
 )
-from sim.rollout_core import compute_step_budget, run_core_rollout  # noqa: E402
+from sim.rollout.core import compute_step_budget, run_core_rollout  # noqa: E402
 from sim.track_io import load_recorded_track  # noqa: E402
 from tuner.offline_tuner import get_cached_model  # noqa: E402
 

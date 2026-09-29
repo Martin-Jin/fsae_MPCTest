@@ -15,7 +15,7 @@ gui/simulation.py so that:
   2. The console report can be updated without touching the simulation engine
   3. The returned dict can be used programmatically (e.g. logging, plotting)
 
-PARITY WITH tuner/offline_tuner.py / sim/rollout_core.py
+PARITY WITH tuner/offline_tuner.py / sim/rollout/core.py
 ------------------------------------------------
 All metric computations mirror the accumulation loop in
 sim/rollout_core.run_core_rollout() exactly, by replaying the stored history

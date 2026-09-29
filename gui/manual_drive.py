@@ -44,7 +44,7 @@ USED BY
 
 DOES NOT USE
 ------------
-  controller/lmpc/solve.py, model/bicycle_model.py, sim/rollout_core.py, sim/scoring.py, controller/model_utils.py
+  controller/lmpc/solve.py, model/bicycle_model.py, sim/rollout/core.py, sim/scoring.py, controller/model_utils.py
   (no MPC solve, no adaptive gains, no scoring — this is open-loop human control)
 """
 

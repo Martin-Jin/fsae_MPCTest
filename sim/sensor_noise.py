@@ -10,7 +10,7 @@ planner SEE. The plant and the score always use the true state.
 
 import numpy as np
 
-from sim.rollout_phases import _normalize_angle
+from sim.rollout.reference import _normalize_angle
 
 
 class SlamNoise:

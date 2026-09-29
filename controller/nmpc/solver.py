@@ -751,14 +751,14 @@ class NMPCController:
         with `u_opt = [delta_cmd (rad), a_cmd (m/s^2)]` — matching
         `controller/optimiser.solve_mpc()`'s own return convention — rather
         than normalised (steering, throttle, brake) FSDS units, since
-        `sim/rollout_core.py`'s `step_nonlinear_plant()` (unlike the live
+        `sim/rollout/core.py`'s `step_nonlinear_plant()` (unlike the live
         ROS node) wants the raw physical command directly.
 
         `pending_cmds` (list of `[delta_cmd, a_cmd]` arrays, oldest first) is
         used for delay compensation via a NONLINEAR rollforward, exactly
         like the live module's `_u_history`-based rollforward — but is taken
         as an explicit argument here rather than derived internally from a
-        `pose_age_s` measurement, because `sim/rollout_core.py`'s existing
+        `pose_age_s` measurement, because `sim/rollout/core.py`'s existing
         delay-JITTER model (settings.DELAY_JITTER_STEPS) already perturbs
         the BELIEVED pending-command list directly (see that module's
         "Delay-estimation error" comment) — reusing that list is more

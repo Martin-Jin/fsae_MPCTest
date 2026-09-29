@@ -79,7 +79,7 @@ lookahead family):
 
 USED BY
 -------
-  sim/rollout_phases.py — called once per step inside the LTV-QP solve
+  sim/rollout/reference.py, sim/rollout/speed_target.py, sim/rollout/delay.py, sim/rollout/tick_solve.py — called once per step inside the LTV-QP solve
                     phase, the single shared rollout loop used by both
                     gui/simulation.py and tuner/offline_tuner.py.
 
@@ -179,7 +179,7 @@ def steer_rate_anti_hunt(kappa, e_y, R_rate_base, enabled=False, e_psi=0.0):
         R_rate_base unchanged if enabled=False. Otherwise a copy with
         R[0,0] boosted when kappa, |e_y| and |e_psi| are all small.
 
-    Called by: sim/rollout_core.py (run_core_rollout), opt-in only
+    Called by: sim/rollout/core.py (run_core_rollout), opt-in only
     """
     if not enabled:
         return R_rate_base
@@ -244,7 +244,7 @@ def reversal_penalty_boost(u_prev_steer, R_rate_base, enabled=False,
         R_rate_base unchanged if enabled=False. Otherwise a copy with
         R[0,0] boosted when the previous steering command was near zero.
 
-    Called by: sim/rollout_core.py (run_core_rollout, LTV-QP path) and
+    Called by: sim/rollout/core.py (run_core_rollout, LTV-QP path) and
     controller/nmpc/solver.py (compute_step, NMPC path) -- opt-in only,
     via REVERSAL_PENALTY_ENABLED / NMPC_REVERSAL_PENALTY_ENABLED respectively.
     """
@@ -319,7 +319,7 @@ def adaptive_Q_scaling(e_y, Q_base, enabled=False):
         (or Q[0] if Q_base is a 1-D diagonal vector) scaled down when
         |e_y| < ey_hi.
 
-    Called by: sim/rollout_core.py (run_core_rollout), opt-in only
+    Called by: sim/rollout/core.py (run_core_rollout), opt-in only
     """
     if not enabled:
         return Q_base

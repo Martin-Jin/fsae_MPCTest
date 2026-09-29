@@ -20,7 +20,7 @@ SAT_FRAC = 0.98
 
 
 def run_one(path_name, rate_deg_s):
-    import sim.rollout_core as rc
+    import sim.rollout.core as rc
     from model.vehicle_physics import VehicleParams
     from settings import N_HORIZON, Q_diag, R_diag, R_rate_diag, ROLLOUT_EPS, ROLLOUT_MAX_ITER
     from tuner.offline_tuner import get_cached_model, SYNTHETIC_PATHS

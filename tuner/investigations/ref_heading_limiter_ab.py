@@ -3,7 +3,7 @@ A/B test: does REF_HEADING_RATE_LIMIT (settings.py) close any of the
 steering-saturation gap between sim and live?
 
 Sweeps REF_HEADING_RISE_RATE against the disabled baseline on the recorded
-map. Patches sim.rollout_core's already-imported module attributes directly
+map. Patches sim.rollout.core's already-imported module attributes directly
 (same requirement as CONE_NOISE_ENABLED/SLAM_NOISE_ENABLED — patching the
 settings module after import has no effect on names imported via
 `from settings import X`).
@@ -19,7 +19,7 @@ import numpy as np
 
 
 def run_once(rate_deg_s):
-    import sim.rollout_core as rc
+    import sim.rollout.core as rc
     from model.vehicle_physics import VehicleParams
     from tracks import DEFAULT_MAP
     from sim.track_io import load_recorded_track

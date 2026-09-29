@@ -72,7 +72,7 @@ from tuner.performance_stats import benchmark_weights, report_performance_metric
 import sim.speed_profile as speed_profile
 from tuner.offline_tuner import SYNTHETIC_PATHS, PATH_NAMES, get_cached_model
 from sim.perception import place_cones
-from sim.rollout_core import run_core_rollout, compute_step_budget
+from sim.rollout.core import run_core_rollout, compute_step_budget
 from sim.track_io import load_recorded_track
 from tracks import TRACKS_DIR
 

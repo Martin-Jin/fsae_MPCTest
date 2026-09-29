@@ -1,5 +1,5 @@
 """
-sim/rollout_core.py — Single Source of Truth for the MPC Closed-Loop Rollout
+sim/rollout/core.py — Single Source of Truth for the MPC Closed-Loop Rollout
 
 PURPOSE
 -------
@@ -26,10 +26,14 @@ nothing GUI-related, so it's safe to import from anywhere.
 
 LAYOUT
 ------
-  sim/rollout_core.py    this file: rollout state, the tick loop, termination
-  sim/rollout_phases.py  the loop's per-tick phases (reference + speed target,
-                         LTV/NMPC solves, history recording, time bonus)
-  sim/sensor_noise.py    SLAM noise, cone noise, pose-feed hold models
+  sim/rollout/core.py         this file: rollout state, the tick loop, termination
+  sim/rollout/reference.py    reference/tracking-error phase
+  sim/rollout/speed_target.py speed-target phase (gate/rate-limit, time bonus)
+  sim/rollout/delay.py        delay compensation, believed-pending-commands,
+                              true (non-diverged) tracking error
+  sim/rollout/tick_solve.py   LTV/NMPC controller construction and per-tick
+                              solve, history recording
+  sim/sensor_noise.py         SLAM noise, cone noise, pose-feed hold models
 """
 
 import math
@@ -53,11 +57,16 @@ from settings import (
     CONE_NOISE_ENABLED, CONE_POS_JITTER_STD, CONE_NOISE_SEED,
     USE_NMPC,
 )
-from sim.rollout_phases import (  # noqa: F401 (predict_ahead is public API)
-    _normalize_angle, predict_ahead, build_nmpc, compute_reference,
-    compute_speed_target, gate_and_rate_limit_speed_target, true_tracking_error,
-    believed_pending_cmds, solve_nmpc_tick, solve_ltv_tick,
-    record_solve_history, record_horizon_prediction, compute_time_bonus,
+from sim.rollout.reference import _normalize_angle, compute_reference
+from sim.rollout.speed_target import (
+    compute_speed_target, gate_and_rate_limit_speed_target, compute_time_bonus,
+)
+from sim.rollout.delay import (  # noqa: F401 (predict_ahead is public API)
+    predict_ahead, true_tracking_error, believed_pending_cmds,
+)
+from sim.rollout.tick_solve import (
+    build_nmpc, solve_nmpc_tick, solve_ltv_tick,
+    record_solve_history, record_horizon_prediction,
 )
 from sim.sensor_noise import SlamNoise, ConeNoise, PoseFeedHold
 

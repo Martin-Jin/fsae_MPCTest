@@ -72,7 +72,7 @@ USED BY
                      (oracle/offline reference path only).
   tuner/offline_tuner.py — _resample_path() calls both functions to build path_v for
                      every synthetic test path; also used in scoring time bonus.
-  sim/rollout_core.py  — run_core_rollout()'s use_planner=True branch calls
+  sim/rollout/core.py  — run_core_rollout()'s use_planner=True branch calls
                      curvature_speed() each step on the live planner's centreline
                      (no oracle profile exists for a planner-built path).
 

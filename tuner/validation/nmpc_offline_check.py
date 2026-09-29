@@ -193,7 +193,7 @@ def test_closed_loop():
     except Exception as exc:
         print(f'  [SKIP] could not load the recorded track: {exc}')
         return
-    from sim.rollout_core import run_core_rollout, compute_step_budget
+    from sim.rollout.core import run_core_rollout, compute_step_budget
     import settings as S  # noqa: F401 (Q_diag/R_diag/etc. still read from here)
 
     path_X, path_Y, path_Psi, path_v, blue, yellow = load_recorded_track(cone_map_path())

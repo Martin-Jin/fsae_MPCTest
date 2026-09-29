@@ -41,7 +41,7 @@ Two differences from the live module, both because this is the offline side:
     repo (the SAME source `model/bicycle_model.py`'s linear model and the
     24-state nonlinear plant both use), rather than a hardcoded copy — this
     repo has no "no cross-import" constraint against its own `model/` package.
-  - Cost weights are NOT read from a dataclass. `sim/rollout_core.py`'s
+  - Cost weights are NOT read from a dataclass. `sim/rollout/core.py`'s
     `run_core_rollout()` already receives the CURRENT weight set (whether
     from `settings.py` or a CMA-ES tuning candidate) as `Q`/`R`/`R_rate`
     arrays; `NMPCController` here is constructed with those same arrays (plus
@@ -50,7 +50,7 @@ Two differences from the live module, both because this is the offline side:
 
 USED BY
 -------
-  sim/rollout_core.py — run_core_rollout(), when settings.USE_NMPC is True.
+  sim/rollout/core.py — run_core_rollout(), when settings.USE_NMPC is True.
     Constructed once per rollout (outside the step loop, so its warm start
     persists across ticks exactly like the LTV path's u_prev/command_queue).
 

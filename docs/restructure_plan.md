@@ -363,3 +363,19 @@ Open:
 - Rationale gaps found during Phase 5 get listed here as they turn up.
 - **Risk:** other sessions editing live or the mirror mid-restructure. Mitigated by the re-diff before the overwrite and the `git status` check at every gate.
 - **Risk:** byte-identical checks can't catch GUI-only or node-only regressions. Covered by the GUI smoke test and the Phase 9 live run.
+
+## Found during execution: pre-existing bug, out of scope to fix here
+
+- `tuner/investigations/ref_heading_limiter_ab.py` and
+  `ref_heading_limiter_suite_check.py` monkeypatch
+  `rc.REF_HEADING_RATE_LIMIT_ENABLED`/`rc.REF_HEADING_RISE_RATE` on the
+  `sim.rollout.core` module object (was `sim.rollout_core`). Neither name
+  was ever imported into that module, before or after this restructure;
+  the real binding `compute_reference()` reads lives in
+  `sim/rollout/reference.py`'s own namespace (was `sim/rollout_phases.py`).
+  The monkeypatch has silently done nothing since before this restructure
+  started (confirmed against the pre-restructure file), so both scripts'
+  "OFF (baseline)" and swept-rate rows have always used whatever
+  `settings.py`'s own default is, not the value the row claims. Not fixed
+  here: this restructure moves files, it does not fix investigation-script
+  logic bugs found along the way. Flagging for a follow-up task.

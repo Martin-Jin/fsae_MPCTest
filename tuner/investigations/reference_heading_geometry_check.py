@@ -61,7 +61,7 @@ def main():
     from model.vehicle_physics import VehicleParams
     from tracks import DEFAULT_MAP
     from sim.track_io import load_recorded_track
-    from sim.rollout_core import compute_step_budget, run_core_rollout
+    from sim.rollout.core import compute_step_budget, run_core_rollout
     from settings import N_HORIZON, Q_diag, R_diag, R_rate_diag, ROLLOUT_EPS, ROLLOUT_MAX_ITER
     from tuner.offline_tuner import get_cached_model
 
