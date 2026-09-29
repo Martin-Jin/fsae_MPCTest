@@ -18,7 +18,7 @@ import numpy as np
 
 from model.vehicle_physics import plant_to_tracking_error
 
-from settings import DELAY_JITTER_STEPS
+import settings
 
 _PREDICT_EPSI_CLIP = 0.5   # rad (~28.6°) — small-angle bound, see predict_ahead below
 
@@ -100,9 +100,9 @@ def believed_pending_cmds(command_queue, delay_rng, u_prev):
     one sample from `delay_rng` per call, so call it once per tick.
     """
     pending_cmds = list(command_queue)[1:]
-    if DELAY_JITTER_STEPS > 0.0:
+    if settings.DELAY_JITTER_STEPS > 0.0:
         n_true = len(pending_cmds)
-        n_believed = int(round(n_true + delay_rng.normal(0.0, DELAY_JITTER_STEPS)))
+        n_believed = int(round(n_true + delay_rng.normal(0.0, settings.DELAY_JITTER_STEPS)))
         # Cap over-estimates at the live MAX_DELAY_COMPENSATION_STEPS
         # equivalent so a tail draw can't roll forward absurdly far.
         n_believed = int(np.clip(n_believed, 0, max(n_true, 0) + 2))

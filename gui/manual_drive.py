@@ -57,7 +57,7 @@ from matplotlib.animation import FuncAnimation
 from model.vehicle_physics import VehicleParams, step_nonlinear_plant, init_plant_state
 from tuner.offline_tuner import SYNTHETIC_PATHS, PATH_NAMES
 from sim.perception import place_cones
-from settings import DT
+import settings
 
 # ==========================================
 # SETUP AND CONFIGURATION
@@ -349,14 +349,14 @@ def update_frame(_frame):
             accel_target += MAX_BRAKE   # MAX_BRAKE is already negative
 
     # ── Ramp commands toward target (rate-limited for analog feel) ─────────
-    delta_cmd += float(np.clip(steer_target - delta_cmd, -STEER_RATE * DT, STEER_RATE * DT))
-    a_cmd     += float(np.clip(accel_target - a_cmd,     -ACCEL_RATE * DT, ACCEL_RATE * DT))
+    delta_cmd += float(np.clip(steer_target - delta_cmd, -STEER_RATE * settings.DT, STEER_RATE * settings.DT))
+    a_cmd     += float(np.clip(accel_target - a_cmd,     -ACCEL_RATE * settings.DT, ACCEL_RATE * settings.DT))
     delta_cmd = float(np.clip(delta_cmd, -MAX_STEER, MAX_STEER))
     a_cmd     = float(np.clip(a_cmd, MAX_BRAKE, MAX_ACCEL))
 
     # ── Step the nonlinear plant ─────────────────────────────────────────────
     u_cmd = np.array([delta_cmd, a_cmd])
-    plant_state = step_nonlinear_plant(plant_state, u_cmd, DT, vehicle_params)
+    plant_state = step_nonlinear_plant(plant_state, u_cmd, settings.DT, vehicle_params)
 
     X_g, Y_g, psi_g, vx = plant_state[0], plant_state[1], plant_state[2], plant_state[3]
 
@@ -403,6 +403,6 @@ def update_frame(_frame):
 # blit=False: the camera re-centring above moves the axes limits, which
 # blitting doesn't pick up correctly. Interval matches DT (20 Hz) so plant
 # stepping stays in real time regardless of render cost.
-anim = FuncAnimation(fig, update_frame, interval=DT * 1000.0, blit=False, cache_frame_data=False)
+anim = FuncAnimation(fig, update_frame, interval=settings.DT * 1000.0, blit=False, cache_frame_data=False)
 
 plt.show()

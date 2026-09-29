@@ -47,16 +47,7 @@ from sim.perception import SimPerception
 from sim.planner import SimPlanner, calculate_dynamic_max_steps
 from sim.scoring import RolloutMetrics
 
-from settings import (
-    USE_PLANNER, DELAY_STEPS, OFFTRACK_LIMIT, MAX_FAILS, DT,
-    ROLLOUT_EPS, ROLLOUT_MAX_ITER, N_HORIZON, DELAY_JITTER_SEED,
-    SLAM_NOISE_ENABLED, SLAM_POS_JITTER_STD, SLAM_YAW_JITTER_STD,
-    SLAM_POS_DRIFT_STD, SLAM_YAW_DRIFT_STD, SLAM_DRIFT_TAU, SLAM_NOISE_SEED,
-    POSE_HOLD_ENABLED, POSE_HOLD_PROB, POSE_HOLD_MEAN_TICKS,
-    POSE_HOLD_MAX_TICKS, POSE_HOLD_SEED,
-    CONE_NOISE_ENABLED, CONE_POS_JITTER_STD, CONE_NOISE_SEED,
-    USE_NMPC,
-)
+import settings
 from sim.rollout.reference import _normalize_angle, compute_reference
 from sim.rollout.speed_target import (
     compute_speed_target, gate_and_rate_limit_speed_target, compute_time_bonus,
@@ -93,10 +84,10 @@ def compute_step_budget(path_X, path_Y, path_v_profile):
                              actual step budget for the rollout loop.
     """
     path_length = float(np.sum(np.hypot(np.diff(path_X), np.diff(path_Y))))
-    dynamic_max_steps = calculate_dynamic_max_steps(path_X, path_Y, dt=DT)
+    dynamic_max_steps = calculate_dynamic_max_steps(path_X, path_Y, dt=settings.DT)
     mean_v_profile = float(np.mean(path_v_profile)) if len(path_v_profile) > 0 else 1.5
     profile_max_steps = int(
-        math.ceil((path_length / max(mean_v_profile * 0.6, 1.5)) * 1.5 / DT)
+        math.ceil((path_length / max(mean_v_profile * 0.6, 1.5)) * 1.5 / settings.DT)
     )
     max_steps = max(dynamic_max_steps, profile_max_steps)
     return dynamic_max_steps, max_steps
@@ -106,11 +97,11 @@ def run_core_rollout(
     path_X, path_Y, path_Psi, path_v_profile, blue_cones, yellow_cones,
     Q, R, R_rate, u_min, u_max, vehicle_params,
     ey0=0.0, epsi0=0.0, max_steps=400, dynamic_max_steps=None,
-    use_planner=USE_PLANNER, model_lookup=None,
-    n_horizon=N_HORIZON, eps=ROLLOUT_EPS, max_iter=ROLLOUT_MAX_ITER,
+    use_planner=settings.USE_PLANNER, model_lookup=None,
+    n_horizon=settings.N_HORIZON, eps=settings.ROLLOUT_EPS, max_iter=settings.ROLLOUT_MAX_ITER,
     want_history=False, want_horizon_pred=False,
     optimal_time=None, continue_after_dnf=False,
-    use_nmpc=USE_NMPC,
+    use_nmpc=settings.USE_NMPC,
     nmpc_overrides=None,
 ):
     """
@@ -227,8 +218,8 @@ def run_core_rollout(
     # oracle centreline (use_planner=False) and the score are unaffected. See
     # ConeNoise / settings.CONE_NOISE_ENABLED.
     cone_noise = None
-    if CONE_NOISE_ENABLED:
-        cone_noise = ConeNoise(seed=CONE_NOISE_SEED, pos_jitter_std=CONE_POS_JITTER_STD)
+    if settings.CONE_NOISE_ENABLED:
+        cone_noise = ConeNoise(seed=settings.CONE_NOISE_SEED, pos_jitter_std=settings.CONE_POS_JITTER_STD)
 
     perception = planner = None
     if use_planner:
@@ -239,7 +230,7 @@ def run_core_rollout(
             _b0, _y0 = cone_noise.corrupt(_b0), cone_noise.corrupt(_y0)
         planner.update(_b0, _y0, np.array([X0, Y0]), float(psi0))
 
-    command_queue = deque([np.zeros(2) for _ in range(DELAY_STEPS + 1)], maxlen=DELAY_STEPS + 1)
+    command_queue = deque([np.zeros(2) for _ in range(settings.DELAY_STEPS + 1)], maxlen=settings.DELAY_STEPS + 1)
     u_prev = np.zeros(2)
 
     # Hard per-step slew-rate limit handed to the MPC, mirroring the live
@@ -248,7 +239,7 @@ def run_core_rollout(
     # so it stays a rate. The acceleration entry (0.6 per step at DT=0.05 =
     # 12 m/s^3) matches the live controller's second du_max element.
     du_max = np.array([
-        vehicle_params.max_steer_rate * DT,
+        vehicle_params.max_steer_rate * settings.DT,
         0.6,
     ])
 
@@ -261,7 +252,7 @@ def run_core_rollout(
     # in the tuner than it can ever be on the car. See believed_pending_cmds.
     # Seeded so each rollout is reproducible and CMA-ES still gets a stable
     # score per candidate (see settings.DELAY_JITTER_SEED).
-    delay_rng = np.random.default_rng(DELAY_JITTER_SEED)
+    delay_rng = np.random.default_rng(settings.DELAY_JITTER_SEED)
 
     # Stacked (N,2) path array, built once (not per-step), for the NMPC's
     # oracle-path reference.
@@ -282,14 +273,14 @@ def run_core_rollout(
     # Corrupts only the pose fed to perception/planner/tracking-error; the
     # plant and the score always see the true state. See SlamNoise.
     slam_noise = None
-    if SLAM_NOISE_ENABLED:
+    if settings.SLAM_NOISE_ENABLED:
         slam_noise = SlamNoise(
-            dt=DT, seed=SLAM_NOISE_SEED,
-            pos_jitter_std=SLAM_POS_JITTER_STD,
-            yaw_jitter_std=SLAM_YAW_JITTER_STD,
-            pos_drift_std=SLAM_POS_DRIFT_STD,
-            yaw_drift_std=SLAM_YAW_DRIFT_STD,
-            drift_tau=SLAM_DRIFT_TAU,
+            dt=settings.DT, seed=settings.SLAM_NOISE_SEED,
+            pos_jitter_std=settings.SLAM_POS_JITTER_STD,
+            yaw_jitter_std=settings.SLAM_YAW_JITTER_STD,
+            pos_drift_std=settings.SLAM_POS_DRIFT_STD,
+            yaw_drift_std=settings.SLAM_YAW_DRIFT_STD,
+            drift_tau=settings.SLAM_DRIFT_TAU,
         )
 
     # ── Pose-feed hold ────────────────────────────────────────────────────
@@ -300,12 +291,12 @@ def run_core_rollout(
     # freshly-corrupted one (re-drawing noise during a freeze would leak new
     # information into a period when the controller should be blind).
     pose_hold = None
-    if POSE_HOLD_ENABLED:
+    if settings.POSE_HOLD_ENABLED:
         pose_hold = PoseFeedHold(
-            p_hold=POSE_HOLD_PROB,
-            mean_hold_ticks=POSE_HOLD_MEAN_TICKS,
-            max_hold_ticks=POSE_HOLD_MAX_TICKS,
-            seed=POSE_HOLD_SEED,
+            p_hold=settings.POSE_HOLD_PROB,
+            mean_hold_ticks=settings.POSE_HOLD_MEAN_TICKS,
+            max_hold_ticks=settings.POSE_HOLD_MAX_TICKS,
+            seed=settings.POSE_HOLD_SEED,
         )
 
     nmpc = None
@@ -508,7 +499,7 @@ def run_core_rollout(
             n_ran = step + 1
             break
 
-        if consecutive_fails >= MAX_FAILS:
+        if consecutive_fails >= settings.MAX_FAILS:
             dnf = True
             n_ran = step + 1
             if want_history:
@@ -542,7 +533,7 @@ def run_core_rollout(
             solver_failed=solver_failed, inaccurate=inaccurate,
         )
 
-        if abs(e_y_true) > OFFTRACK_LIMIT:
+        if abs(e_y_true) > settings.OFFTRACK_LIMIT:
             first_trigger = not dnf
             offtrack = True
             dnf = True
@@ -555,7 +546,7 @@ def run_core_rollout(
                 break
 
         u_prev = u_opt.copy()
-        state = step_nonlinear_plant(state, delayed_u_cmd, DT, vehicle_params)
+        state = step_nonlinear_plant(state, delayed_u_cmd, settings.DT, vehicle_params)
 
     # ── Completion / time bonus (identical formula for both callers) ──────────
     progress = cumulative_distance / path_length if path_length > 0 else 0.0
@@ -564,7 +555,7 @@ def run_core_rollout(
     # Timed from LAUNCH, not from tick 0 -- see launch_step's comment above.
     # Falls back to the full count if the car never moved, so a stalled run
     # still reports the whole elapsed time rather than 0.
-    sim_time = (n_ran - (launch_step or 0)) * DT
+    sim_time = (n_ran - (launch_step or 0)) * settings.DT
     time_bonus = compute_time_bonus(
         reached_end, sim_time, progress, optimal_time, dynamic_max_steps,
     )

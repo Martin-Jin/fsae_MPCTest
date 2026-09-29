@@ -19,7 +19,7 @@ import numpy as np
 from angles import wrap_angle as _normalize_angle  # noqa: F401 (re-exported, see sim/rollout/core.py)
 from model.vehicle_physics import plant_to_tracking_error
 
-from settings import DT, REF_HEADING_RATE_LIMIT_ENABLED, REF_HEADING_RISE_RATE
+import settings
 
 
 def _rate_limit_ref_psi(ref_psi_raw, ref_psi_prev, max_rate_rad_per_s, dt):
@@ -126,9 +126,9 @@ def compute_reference(
             # fallback/oracle branches below reference path_X/path_Y/
             # path_Psi, the fixed geometric path that does NOT carry this
             # excess, so there is nothing to limit there.
-            if REF_HEADING_RATE_LIMIT_ENABLED:
+            if settings.REF_HEADING_RATE_LIMIT_ENABLED:
                 rpsi_limited = _rate_limit_ref_psi(
-                    rpsi, ref_psi_prev, np.radians(REF_HEADING_RISE_RATE), DT
+                    rpsi, ref_psi_prev, np.radians(settings.REF_HEADING_RISE_RATE), settings.DT
                 )
                 ref_psi_prev = rpsi_limited
                 e_psi = _normalize_angle(psi_est - rpsi_limited)

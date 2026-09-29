@@ -250,7 +250,12 @@ class RepoPaths:
     tracks_dir: Path
     recorded_runs_dir: Path
     fsae_logs_dir: Path
-    settings_py: Path
+    # Directory, not a single file: settings.py became the settings/
+    # package (settings/general.py, settings/nmpc.py, ...). _read_var/
+    # _rewrite_var search every settings/*.py file for NAME's assignment,
+    # since a field's submodule isn't tracked here -- see those functions'
+    # own docstrings.
+    settings_dir: Path
     mpc_params_py: Path
     # NMPC structural/solver fields live in their own dataclass, separate
     # from mpc_params.py's weights -- see nmpc_params.py's own docstring.
@@ -296,7 +301,7 @@ def _repo_paths() -> RepoPaths:
         # getting this directory right is what makes the Stop button's
         # "save this run?" prompt able to find anything at all.
         fsae_logs_dir=fsds_root / "fsae_logs",
-        settings_py=fsae_mpctest / "settings.py",
+        settings_dir=fsae_mpctest / "settings",
         mpc_params_py=fsae_planning_mpc / "mpc_params.py",
         nmpc_params_py=fsae_planning_mpc / "nmpc_params.py",
         fsae_params_yaml=(fsds_root / "ros2" / "src" / "fsae_planning" / "common"
@@ -324,9 +329,29 @@ def _var_pattern(name: str) -> re.Pattern:
                        re.MULTILINE)
 
 
+def _settings_file_for(settings_dir: Path, name: str) -> Path | None:
+    """Which settings/*.py file holds NAME's assignment, or None if no
+    submodule has it. Searched fresh every call (not cached) since a hand
+    edit or a concurrent session (see CLAUDE.md's "Concurrent sessions"
+    note) can move a field between submodules between calls."""
+    pattern = _var_pattern(name)
+    for f in sorted(settings_dir.glob("*.py")):
+        if pattern.search(f.read_text()):
+            return f
+    return None
+
+
 def _read_var(path: Path, name: str) -> str | None:
     """Current raw right-hand-side text of NAME's assignment, or None if
-    NAME's assignment line isn't found in path."""
+    NAME's assignment line isn't found. `path` may be a single file
+    (launch_all.sh) or a directory (settings/), in which case every
+    settings/*.py file is searched -- a field's submodule isn't tracked
+    anywhere else in this GUI, so this is the one place that resolves it."""
+    if path.is_dir():
+        f = _settings_file_for(path, name)
+        if f is None:
+            return None
+        path = f
     text = path.read_text()
     m = _var_pattern(name).search(text)
     return m.group(2).strip() if m else None
@@ -335,7 +360,13 @@ def _read_var(path: Path, name: str) -> str | None:
 def _rewrite_var(path: Path, name: str, new_value: str) -> bool:
     """Rewrite NAME's assignment to new_value, preserving the line's
     leading whitespace/alignment and any trailing inline comment. Returns
-    False (no-op, file untouched) if NAME's assignment line isn't found."""
+    False (no-op, file untouched) if NAME's assignment line isn't found.
+    `path` may be a single file or a directory (settings/), see _read_var."""
+    if path.is_dir():
+        f = _settings_file_for(path, name)
+        if f is None:
+            return False
+        path = f
     text = path.read_text()
     pattern = _var_pattern(name)
     if not pattern.search(text):
@@ -504,8 +535,18 @@ def _backup_once(path: Path, done: set[Path]) -> None:
     """Back up path to path.bak the first time this session touches it, so
     a bad rewrite has a one-command recovery (`mv file.bak file`) without
     needing git -- launch_all.sh is a local, never-pushed file whose
-    working-tree state matters session-to-session (see CLAUDE.md)."""
+    working-tree state matters session-to-session (see CLAUDE.md).
+
+    `path` may be the settings/ package directory instead of a single file
+    (any of its *.py submodules could be the one a save actually writes
+    to); each submodule gets its own file.py.bak, same recovery command
+    per file as before."""
     if path in done:
+        return
+    if path.is_dir():
+        for f in sorted(path.glob("*.py")):
+            _backup_once(f, done)
+        done.add(path)
         return
     shutil.copy(path, path.with_suffix(path.suffix + ".bak"))
     done.add(path)
@@ -1555,7 +1596,7 @@ class SettingsTab(ttk.Frame):
             _field_label(weights_card, r, label, desc, label_style="Card.TLabel",
                          desc_style="CardMuted.TLabel", wraplength=520)
             r += 2 if desc else 1
-            raw = _read_var(paths.settings_py, name) or "[]"
+            raw = _read_var(paths.settings_dir, name) or "[]"
             current = _parse_float_list(raw, length)
             # One labelled row per index, not one wide horizontal row -- the
             # old layout packed up to 8 entries side by side in a fixed-width
@@ -1605,7 +1646,7 @@ class SettingsTab(ttk.Frame):
                 desc = _read_dataclass_field_desc(paths.nmpc_params_py, _mpc_field)
             _field_label(weights_card, r, label, desc, label_style="Card.TLabel",
                          desc_style="CardMuted.TLabel", wraplength=420)
-            raw = _read_var(paths.settings_py, name)
+            raw = _read_var(paths.settings_dir, name)
             if kind == "bool":
                 var = tk.BooleanVar(value=(raw or "False").strip() == "True")
                 ttk.Checkbutton(weights_card, style="Card.TCheckbutton", variable=var).grid(
@@ -1627,7 +1668,7 @@ class SettingsTab(ttk.Frame):
             desc = _read_dataclass_field_desc(paths.mpc_params_py, mpc_field)
             _field_label(overrides_card, r, label, desc, label_style="Card.TLabel",
                          desc_style="CardMuted.TLabel", columnspan=3, wraplength=520)
-            raw = _read_var(paths.settings_py, name) or "-1.0"
+            raw = _read_var(paths.settings_dir, name) or "-1.0"
             is_override = _to_float(raw) is not None and _to_float(raw) >= 0.0
             enabled_var = tk.BooleanVar(value=is_override)
             value_var = tk.StringVar(value=raw if is_override else "")
@@ -1651,7 +1692,7 @@ class SettingsTab(ttk.Frame):
         for label, name, desc in _NMPC_PROGRESS_FIELDS:
             _field_label(progress_card, r, label, desc, label_style="Card.TLabel",
                          desc_style="CardMuted.TLabel", wraplength=520)
-            var = tk.StringVar(value=_read_var(paths.settings_py, name) or "0.0")
+            var = tk.StringVar(value=_read_var(paths.settings_dir, name) or "0.0")
             ttk.Entry(progress_card, textvariable=var, width=10).grid(
                 row=r, column=1, sticky="w")
             self._progress_vars[name] = var
@@ -1675,7 +1716,7 @@ class SettingsTab(ttk.Frame):
                     desc = (desc + " " if desc else "") + "(live-only, no settings.py equivalent)"
                 _field_label(group_card, r, label, desc, label_style="Card.TLabel",
                              desc_style="CardMuted.TLabel", wraplength=520)
-                raw = _read_var(paths.settings_py, settings_name) if settings_name else None
+                raw = _read_var(paths.settings_dir, settings_name) if settings_name else None
                 if raw is None:
                     raw = _read_dataclass_field(paths.mpc_params_py, mpc_field)
                 var = tk.BooleanVar(value=(raw or "False").strip() in ("True", "true"))
@@ -1765,7 +1806,7 @@ class SettingsTab(ttk.Frame):
                 errors.append(f"{mpc_field}: key not found in the mirror fsae_params.yaml")
 
     def _on_save(self) -> None:
-        settings_path = self._paths.settings_py
+        settings_path = self._paths.settings_dir
         mpc_params_path = self._paths.mpc_params_py
         nmpc_params_path = self._paths.nmpc_params_py
         sync_live = mpc_params_path.is_file()
@@ -1796,7 +1837,7 @@ class SettingsTab(ttk.Frame):
                     continue
                 literal = "[" + ", ".join(repr(v) for v in values) + "]"
                 if not _rewrite_var(settings_path, name, literal):
-                    errors.append(f"{name}: assignment not found in settings.py")
+                    errors.append(f"{name}: assignment not found in any settings/*.py file")
                 if sync_live:
                     for value, mpc_field in zip(values, mpc_fields):
                         if mpc_field is None:
@@ -1814,7 +1855,7 @@ class SettingsTab(ttk.Frame):
                         errors.append(f"{name}: not a number")
                         continue
                 if not _rewrite_var(settings_path, name, literal):
-                    errors.append(f"{name}: assignment not found in settings.py")
+                    errors.append(f"{name}: assignment not found in any settings/*.py file")
                 if sync_live and mpc_field is not None:
                     self._sync_live_field(mpc_field, literal, errors)
 
@@ -1829,7 +1870,7 @@ class SettingsTab(ttk.Frame):
                 else:
                     literal = "-1.0"
                 if not _rewrite_var(settings_path, name, literal):
-                    errors.append(f"{name}: assignment not found in settings.py")
+                    errors.append(f"{name}: assignment not found in any settings/*.py file")
                 if sync_live:
                     self._sync_live_field(mpc_field, literal, errors)
 
@@ -1840,7 +1881,7 @@ class SettingsTab(ttk.Frame):
                 literal = "True" if var.get() else "False"
                 if settings_name is not None:
                     if not _rewrite_var(settings_path, settings_name, literal):
-                        errors.append(f"{settings_name}: assignment not found in settings.py")
+                        errors.append(f"{settings_name}: assignment not found in any settings/*.py file")
                 if sync_live:
                     self._sync_live_field(mpc_field, literal, errors)
 
@@ -1855,7 +1896,7 @@ class SettingsTab(ttk.Frame):
                     errors.append(f"{name}: not a number")
                     continue
                 if not _rewrite_var(settings_path, name, literal):
-                    errors.append(f"{name}: assignment not found in settings.py")
+                    errors.append(f"{name}: assignment not found in any settings/*.py file")
                 if sync_live:
                     self._sync_live_field(name.lower(), literal, errors)
 

@@ -44,9 +44,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(_HERE))
 
 from model.vehicle_physics import VehicleParams  # noqa: E402
-from settings import (  # noqa: E402
-    N_HORIZON, Q_diag, R_diag, R_rate_diag, ROLLOUT_EPS, ROLLOUT_MAX_ITER,
-)
+import settings
 from sim.rollout.core import compute_step_budget, run_core_rollout  # noqa: E402
 from sim.track_io import load_recorded_track  # noqa: E402
 from tuner.offline_tuner import get_cached_model  # noqa: E402
@@ -63,9 +61,9 @@ def run(map_path, params, use_planner=False, continue_after_dnf=False):
     path_X, path_Y, path_Psi, path_v, blue, yellow = load_recorded_track(map_path)
     dyn_max, num_steps = compute_step_budget(path_X, path_Y, path_v)
 
-    Q = np.diag(Q_diag)
-    R = np.diag(R_diag)
-    R_rate = np.diag(R_rate_diag)
+    Q = np.diag(settings.Q_diag)
+    R = np.diag(settings.R_diag)
+    R_rate = np.diag(settings.R_rate_diag)
     u_min = np.array([-params.max_steer, params.max_accel_brake])
     u_max = np.array([params.max_steer, params.max_accel])
 
@@ -74,7 +72,7 @@ def run(map_path, params, use_planner=False, continue_after_dnf=False):
         Q, R, R_rate, u_min, u_max, params,
         max_steps=num_steps, dynamic_max_steps=dyn_max,
         use_planner=use_planner, model_lookup=get_cached_model,
-        n_horizon=N_HORIZON, eps=ROLLOUT_EPS, max_iter=ROLLOUT_MAX_ITER,
+        n_horizon=settings.N_HORIZON, eps=settings.ROLLOUT_EPS, max_iter=settings.ROLLOUT_MAX_ITER,
         want_history=True, continue_after_dnf=continue_after_dnf,
     )
 

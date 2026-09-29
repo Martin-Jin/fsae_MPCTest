@@ -43,10 +43,8 @@ DOES NOT USE
 
 from model.vehicle_physics import VehicleParams
 import numpy as np
-from sim.scoring import (
-    SCORE_WEIGHTS, METRIC_SCALES, COMPLETION_BONUS_WEIGHT, TIME_BONUS_WEIGHT,
-    COMPLETION_THRESHOLD, TIME_OBJECTIVE_WEIGHT, QUALITY_WEIGHT, RolloutMetrics,
-)
+import settings
+from sim.scoring import RolloutMetrics
 from tuner.offline_tuner import (
     PATH_NAMES,
     INITIAL_CONDITIONS,
@@ -55,7 +53,7 @@ from tuner.offline_tuner import (
     get_cached_model,
     TUNABLE_Q_IDX, TUNABLE_R_IDX, TUNABLE_R_RATE_IDX
 )
-from settings import DT
+import settings
 
 # Metric index constants — must stay in sync with SCORE_WEIGHTS order in tuner/offline_tuner.py
 _IDX_RMSE               = 0   # Combined tracking RMSE (e_y² + 0.4*e_psi²)
@@ -246,7 +244,7 @@ def report_performance_metrics(history, log_fn=print):
     n                   = result["n_steps"]
 
     # ── Console report ────────────────────────────────────────────────────────
-    W          = SCORE_WEIGHTS
+    W          = settings.SCORE_WEIGHTS
     status_str = "FAILED / OFF-TRACK" if failed else "completed"
     log_fn("=" * 60)
     log_fn(
@@ -280,10 +278,10 @@ def report_performance_metrics(history, log_fn=print):
     # rescued by good quality metrics. time_bonus is optimal_lap_time /
     # actual_time, so 1.0 is the physical limit.
     log_fn(f"  Path completion    : {completion_frac*100:8.1f} %      "
-           f"(constraint, must be >= {COMPLETION_THRESHOLD*100:.0f}%)")
+           f"(constraint, must be >= {settings.COMPLETION_THRESHOLD*100:.0f}%)")
     log_fn(f"  Time vs optimal    : {time_bonus:8.4f}        "
-           f"(1.0 = physical limit; cost = {TIME_OBJECTIVE_WEIGHT:.2f} x (1-this))")
-    log_fn(f"  Quality group      : {'':8s}        (x{QUALITY_WEIGHT:.2f} of the metrics below)")
+           f"(1.0 = physical limit; cost = {settings.TIME_OBJECTIVE_WEIGHT:.2f} x (1-this))")
+    log_fn(f"  Quality group      : {'':8s}        (x{settings.QUALITY_WEIGHT:.2f} of the metrics below)")
     log_fn("-" * 60)
     # Effective contribution = weight * (metric / reference scale). This is
     # what each metric actually adds to the composite, and it is the number
@@ -310,7 +308,7 @@ def report_performance_metrics(history, log_fn=print):
     _rows = []
     for _name, _val, _i in _contrib:
         _v = 0.0 if (_val is None or np.isnan(_val)) else float(_val)
-        _rows.append((_name, W[_i] * (_v / METRIC_SCALES[_i])))
+        _rows.append((_name, W[_i] * (_v / settings.METRIC_SCALES[_i])))
     _total = sum(c for _, c in _rows) or 1.0
     log_fn("  Effective contribution to score (weight x metric/scale):")
     for _name, _c in sorted(_rows, key=lambda r: -abs(r[1])):

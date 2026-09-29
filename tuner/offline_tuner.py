@@ -112,23 +112,7 @@ import signal
 from sim.rollout.core import run_core_rollout, compute_step_budget
 import subprocess
 import settings  # module handle, for the NMPC tail's shipped x0 seed
-from settings import (
-    SCORE_WEIGHTS,
-    TAIL_QUANTILE,
-    PATH_N_POINTS,
-    USE_PLANNER,
-    ROLLOUT_EPS,
-    ROLLOUT_MAX_ITER,
-    MAX_EVALS,
-    N_HORIZON,
-    DT,
-    VALIDATION_SUITE,
-    USE_OPTUNA_PRESEARCH,
-    OPTUNA_PRE_PASS_EVALS,
-    COMPLETION_BONUS_WEIGHT,
-    TIME_BONUS_WEIGHT,
-    DNF_PENALTY,
-)
+import settings
 
 from model.vehicle_physics import (
     VehicleParams,
@@ -245,8 +229,8 @@ for _name, _b in TUNABLE_NMPC:
 
 # Sanity check: weights must sum to 1 so the composite score is interpretable
 assert (
-    abs(SCORE_WEIGHTS.sum() - 1.0) < 1e-9
-), f"SCORE_WEIGHTS must sum to 1.0, got {SCORE_WEIGHTS.sum():.6f}"
+    abs(settings.SCORE_WEIGHTS.sum() - 1.0) < 1e-9
+), f"SCORE_WEIGHTS must sum to 1.0, got {settings.SCORE_WEIGHTS.sum():.6f}"
 
 # Module-level dict: shared initial parameters passed to worker processes.
 # Set in the main process before the Pool is opened; each worker reads it
@@ -292,7 +276,7 @@ def get_cached_model(vx, dt):
 # ==========================================
 
 
-def _resample_path(waypoints_x, waypoints_y, n_points=PATH_N_POINTS):
+def _resample_path(waypoints_x, waypoints_y, n_points=settings.PATH_N_POINTS):
     """
     Fit a clamped cubic spline through the given waypoints and resample to
     n_points uniformly-spaced points. Computes path heading, speed profile,
@@ -700,7 +684,7 @@ def init_worker(Q_init, R_init, R_rate_init):
     for vx in np.arange(0.5, 20.1, 0.1):
         key = np.round(vx, 1)
         if key not in _model_cache:
-            _model_cache[key] = get_8state_discrete_model(key, DT)
+            _model_cache[key] = get_8state_discrete_model(key, settings.DT)
 
 
 # ==========================================
@@ -713,7 +697,7 @@ def run_headless_rollout(
     num_steps=350,
     ey0=0.0,
     epsi0=0.0,
-    use_planner=USE_PLANNER,
+    use_planner=settings.USE_PLANNER,
 ):
     """
     Run a single closed-loop simulation rollout without graphics and return
@@ -806,7 +790,7 @@ def run_headless_rollout(
         ey0=ey0, epsi0=epsi0,
         max_steps=num_steps, dynamic_max_steps=dynamic_max_steps,
         use_planner=use_planner, model_lookup=get_cached_model,
-        n_horizon=N_HORIZON, eps=ROLLOUT_EPS, max_iter=ROLLOUT_MAX_ITER,
+        n_horizon=settings.N_HORIZON, eps=settings.ROLLOUT_EPS, max_iter=settings.ROLLOUT_MAX_ITER,
         want_history=False,
         optimal_time=PATH_OPTIMAL_TIMES.get(path_name),
         nmpc_overrides=nmpc_ov,
@@ -889,7 +873,7 @@ def _build_task_table(suite, ics):
     return tasks, weights
 
 
-EVAL_TASKS, EVAL_WEIGHTS = _build_task_table(VALIDATION_SUITE, INITIAL_CONDITIONS)
+EVAL_TASKS, EVAL_WEIGHTS = _build_task_table(settings.VALIDATION_SUITE, INITIAL_CONDITIONS)
 
 
 def _aggregate_task_scores(task_scores):
@@ -943,7 +927,7 @@ def _aggregate_task_scores(task_scores):
     weighted_mean = float(np.sum(EVAL_WEIGHTS * s) / np.sum(EVAL_WEIGHTS))
     # Linear-interpolated quantile; with TAIL_QUANTILE=1.0 this is exactly
     # max(s), so the old behaviour remains reachable from settings.py.
-    tail = float(np.quantile(s, TAIL_QUANTILE))
+    tail = float(np.quantile(s, settings.TAIL_QUANTILE))
     return 0.7 * weighted_mean + 0.3 * tail
 
 
@@ -1212,13 +1196,13 @@ def log_results_to_history(Q, R, R_rate, duration, score, optuna_info=None):
             "Score weights = "
             + ", ".join(
                 f"{name}={w:g}"
-                for name, w in zip(_SCORE_METRIC_NAMES, SCORE_WEIGHTS.tolist())
+                for name, w in zip(_SCORE_METRIC_NAMES, settings.SCORE_WEIGHTS.tolist())
             )
             + "\n"
         )
         f.write(
-            f"Bonus/penalty weights = completion_bonus={COMPLETION_BONUS_WEIGHT:g}, "
-            f"time_bonus={TIME_BONUS_WEIGHT:g}, dnf_penalty={DNF_PENALTY:g}\n"
+            f"Bonus/penalty weights = completion_bonus={settings.COMPLETION_BONUS_WEIGHT:g}, "
+            f"time_bonus={settings.TIME_BONUS_WEIGHT:g}, dnf_penalty={settings.DNF_PENALTY:g}\n"
         )
         f.write(f"Duration    = {duration / 60:.2f} minutes\n")
         f.write("Overall score (avged from all testing scenarios)  = Haven't been tested.\n")
@@ -1309,16 +1293,16 @@ if __name__ == "__main__":
     default_popsize = int(5 + np.floor(3 * np.log(num_params)))
     popsize = default_popsize
 
-    max_evals = MAX_EVALS
+    max_evals = settings.MAX_EVALS
     max_restarts = 7  # BIPOP restart budget — a round number, not measured;
                        # raise it if MAX_EVALS is raised enough that restarts
                        # exhaust before the eval budget does
     num_cores = max(1, mp.cpu_count() - 1)  # Leave one core for the OS
 
     print("\n[Offline Tuner] Strategy: BIPOP + lq-CMA-ES (surrogate-assisted)")
-    if USE_OPTUNA_PRESEARCH:
+    if settings.USE_OPTUNA_PRESEARCH:
         print(
-            f"  Optuna TPE pre-pass: ENABLED ({OPTUNA_PRE_PASS_EVALS} trials) — "
+            f"  Optuna TPE pre-pass: ENABLED ({settings.OPTUNA_PRE_PASS_EVALS} trials) — "
             f"x0 below is the fixed-midpoint fallback, replaced once the pre-pass completes"
         )
     print(f"  Parameters:    {num_params}")
@@ -1378,7 +1362,7 @@ if __name__ == "__main__":
         for vx in np.linspace(0.5, 20.0, 196):
             key = np.round(vx, 1)
             if key not in _model_cache:
-                _model_cache[key] = get_8state_discrete_model(key, DT)
+                _model_cache[key] = get_8state_discrete_model(key, settings.DT)
 
         def _handle_sigint(sig, frame):
             """
@@ -1405,12 +1389,12 @@ if __name__ == "__main__":
         # (n_jobs=1) rather than adding a second layer of parallelism on top
         # of the pool's per-candidate fan-out.
         optuna_start = time.time()
-        if USE_OPTUNA_PRESEARCH and not _stop_requested:
+        if settings.USE_OPTUNA_PRESEARCH and not _stop_requested:
             print(
-                f"\n[Offline Tuner] Optuna TPE pre-pass: {OPTUNA_PRE_PASS_EVALS} trials..."
+                f"\n[Offline Tuner] Optuna TPE pre-pass: {settings.OPTUNA_PRE_PASS_EVALS} trials..."
             )
             optuna_vec, optuna_study = run_optuna_presearch(
-                lower, upper, OPTUNA_PRE_PASS_EVALS
+                lower, upper, settings.OPTUNA_PRE_PASS_EVALS
             )
             optuna_duration = time.time() - optuna_start
             n_trials_run = len(optuna_study.trials)
@@ -1426,7 +1410,7 @@ if __name__ == "__main__":
             }
             print(
                 f"[Offline Tuner] Optuna pre-pass done in {optuna_duration / 60:.2f} min "
-                f"| trials run: {n_trials_run}/{OPTUNA_PRE_PASS_EVALS} "
+                f"| trials run: {n_trials_run}/{settings.OPTUNA_PRE_PASS_EVALS} "
                 f"| best score: {optuna_study.best_value:.4f}"
             )
             # Seed CMA-ES's x0 from the best trial found. sigma0 is left as-is

@@ -76,27 +76,19 @@ from sim.rollout.core import run_core_rollout, compute_step_budget
 from sim.track_io import load_recorded_track
 from tracks import TRACKS_DIR
 
-from settings import (
-    USE_PLANNER,
-    ROLLOUT_MAX_ITER,
-    ROLLOUT_EPS,
-    Q_diag,
-    R_diag,
-    R_rate_diag,
-    N_HORIZON,
-)
+import settings
 
 # ==========================================
 # SETUP AND CONFIGURATION
 # ==========================================
-N_horizon = N_HORIZON  # MPC prediction horizon (steps); see settings.N_HORIZON
+N_horizon = settings.N_HORIZON  # MPC prediction horizon (steps); see settings.N_HORIZON
 v_ref     = 7.0     # Fallback constant speed (m/s); only used if path_v_profile is empty
 
 # ── MPC Cost Weight Matrices ───────────────────────────────────────────────────
 
-Q      = np.diag(Q_diag)       # State cost matrix (8×8 diagonal)
-R      = np.diag(R_diag)       # Input cost matrix (2×2 diagonal)
-R_rate = np.diag(R_rate_diag)  # Input rate-of-change cost matrix (2×2 diagonal)
+Q      = np.diag(settings.Q_diag)       # State cost matrix (8×8 diagonal)
+R      = np.diag(settings.R_diag)       # Input cost matrix (2×2 diagonal)
+R_rate = np.diag(settings.R_rate_diag)  # Input rate-of-change cost matrix (2×2 diagonal)
 
 # ── Global GUI State ────────────────────────────────────────────────────────────
 is_drawing          = False          # True while user is dragging a path
@@ -599,7 +591,7 @@ btn_reset.on_clicked(reset_environment)
 # SIMULATION ENGINE
 # ==========================================
  
-def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=None, R_rate_w=None, use_planner=USE_PLANNER):
+def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=None, R_rate_w=None, use_planner=settings.USE_PLANNER):
     """
     Run one closed-loop simulation rollout on the currently loaded path.
 
@@ -728,7 +720,7 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=None, R_
         ey0=ey0_eff, epsi0=np.radians(epsi0_eff),
         max_steps=max_steps, dynamic_max_steps=dynamic_max_steps,
         use_planner=use_planner, model_lookup=get_cached_model,
-        n_horizon=N_horizon, eps=ROLLOUT_EPS, max_iter=ROLLOUT_MAX_ITER,
+        n_horizon=N_horizon, eps=settings.ROLLOUT_EPS, max_iter=settings.ROLLOUT_MAX_ITER,
         want_history=True, want_horizon_pred=True,
         optimal_time=optimal_time,
     )

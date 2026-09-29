@@ -18,10 +18,7 @@ import numpy as np
 
 import sim.speed_profile as sp
 
-from settings import (
-    DT, USE_PRECOMPUTED_SPEED_PROFILE, ENABLE_DYNAMIC_SPEED_CAP,
-    DYNAMIC_CAP_A_LAT_MAX, DYNAMIC_CAP_SAFETY, SPEED_TARGET_DEFICIT_MAX,
-)
+import settings
 
 # v_max/v_min for the live-planner branch's speed_profile.curvature_speed() call.
 # Mirror fsds_simulator/control/fsae_control/fsae_control/mpc/mpc_controller.py's
@@ -123,7 +120,7 @@ def compute_speed_target(
         return float(path_v_profile[idx]), v_curv_prev
 
     cl = planner_cl
-    if USE_PRECOMPUTED_SPEED_PROFILE:
+    if settings.USE_PRECOMPUTED_SPEED_PROFILE:
         # Track is already fully mapped (settings.py's
         # USE_PRECOMPUTED_SPEED_PROFILE) -- use the oracle speed
         # profile computed once from the WHOLE path (path_v_profile,
@@ -146,10 +143,10 @@ def compute_speed_target(
         # the oracle target) so a corner reached faster than
         # planned still gets braked for in time. Mirrors
         # mpc_controller.py's identical logic.
-        if ENABLE_DYNAMIC_SPEED_CAP:
+        if settings.ENABLE_DYNAMIC_SPEED_CAP:
             v_cap = sp.curvature_speed(
                 cl[cl_idx:], v_max=PLANNER_V_MAX, v_min=PLANNER_V_MIN,
-                a_lat_max=DYNAMIC_CAP_A_LAT_MAX, safety=DYNAMIC_CAP_SAFETY,
+                a_lat_max=settings.DYNAMIC_CAP_A_LAT_MAX, safety=settings.DYNAMIC_CAP_SAFETY,
             )
             v_target = min(v_target, v_cap)
     else:
@@ -167,7 +164,7 @@ def compute_speed_target(
         # ask for -- see V_CURV_FALL_RATE's own comment. Mirrors
         # mpc_controller.py's identical fix.
         if v_curv_prev is not None:
-            max_fall = V_CURV_FALL_RATE * DT
+            max_fall = V_CURV_FALL_RATE * settings.DT
             v_target = max(v_target, v_curv_prev - max_fall)
         v_curv_prev = v_target
 
@@ -193,7 +190,7 @@ def gate_and_rate_limit_speed_target(v_target, e_y, e_psi, v_actual, gate_prev, 
     """
     raw_gate = sp.tracking_error_speed_gate(e_y, e_psi)
     if gate_prev is not None:
-        max_step = GATE_RATE_LIMIT * DT
+        max_step = GATE_RATE_LIMIT * settings.DT
         raw_gate = float(np.clip(raw_gate, gate_prev - max_step, gate_prev + max_step))
     gate_prev = raw_gate
     gate = raw_gate
@@ -207,14 +204,14 @@ def gate_and_rate_limit_speed_target(v_target, e_y, e_psi, v_actual, gate_prev, 
     # plant/tyre-force bug.
     if v_des_prev is None:
         v_des_prev = v_actual
-    v_target = min(v_target, v_des_prev + SPEED_TARGET_RISE_RATE * DT)
+    v_target = min(v_target, v_des_prev + SPEED_TARGET_RISE_RATE * settings.DT)
     # Stop ramping once the target has run this far ahead of the car; see
     # SPEED_TARGET_DEFICIT_MAX. Never DROPS the target (max against
     # v_des_prev), so a car that is merely slow does not get the target
     # dragged down to meet it, and a genuine brake request still passes
     # through the min() above untouched.
-    if v_target - v_actual > SPEED_TARGET_DEFICIT_MAX:
-        v_target = min(v_target, max(v_des_prev, v_actual + SPEED_TARGET_DEFICIT_MAX))
+    if v_target - v_actual > settings.SPEED_TARGET_DEFICIT_MAX:
+        v_target = min(v_target, max(v_des_prev, v_actual + settings.SPEED_TARGET_DEFICIT_MAX))
     v_des_prev = v_target
     return v_target, gate_prev, v_des_prev
 
@@ -254,5 +251,5 @@ def compute_time_bonus(reached_end, sim_time, progress, optimal_time, dynamic_ma
     if optimal_time is not None and optimal_time > 0.0 and sim_time > 0.0:
         ref_time = optimal_time * max(progress, 1e-6)
         return float(np.clip(ref_time / sim_time, 0.0, 1.0))
-    expected_time = dynamic_max_steps * DT
+    expected_time = dynamic_max_steps * settings.DT
     return max(0.0, 1.0 - (sim_time / expected_time))

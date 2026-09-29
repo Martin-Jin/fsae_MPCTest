@@ -46,6 +46,7 @@ Usage
 -----
     python3 -m tuner.investigations.reference_heading_geometry_check
 """
+import settings
 import os
 import sys
 
@@ -62,15 +63,14 @@ def main():
     from tracks import DEFAULT_MAP
     from sim.track_io import load_recorded_track
     from sim.rollout.core import compute_step_budget, run_core_rollout
-    from settings import N_HORIZON, Q_diag, R_diag, R_rate_diag, ROLLOUT_EPS, ROLLOUT_MAX_ITER
     from tuner.offline_tuner import get_cached_model
 
     path_X, path_Y, path_Psi, path_v, blue, yellow = load_recorded_track(DEFAULT_MAP)
     dyn_max, num_steps = compute_step_budget(path_X, path_Y, path_v)
     params = VehicleParams()
-    Q = np.diag(Q_diag)
-    R = np.diag(R_diag)
-    R_rate = np.diag(R_rate_diag)
+    Q = np.diag(settings.Q_diag)
+    R = np.diag(settings.R_diag)
+    R_rate = np.diag(settings.R_rate_diag)
     u_min = np.array([-params.max_steer, params.max_accel_brake])
     u_max = np.array([params.max_steer, params.max_accel])
     rollout = run_core_rollout(
@@ -78,7 +78,7 @@ def main():
         Q, R, R_rate, u_min, u_max, params,
         max_steps=num_steps, dynamic_max_steps=dyn_max,
         use_planner=True, model_lookup=get_cached_model,
-        n_horizon=N_HORIZON, eps=ROLLOUT_EPS, max_iter=ROLLOUT_MAX_ITER,
+        n_horizon=settings.N_HORIZON, eps=settings.ROLLOUT_EPS, max_iter=settings.ROLLOUT_MAX_ITER,
         want_history=True,
     )
 
