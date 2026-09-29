@@ -38,7 +38,7 @@ USED BY
 DOES NOT USE
 ------------
   model/vehicle_physics.py (beyond VehicleParams for u_max_steer), model/bicycle_model.py,
-  controller/optimiser.py, sim/speed_profile.py, sim/sim_track.py
+  controller/lmpc/solve.py, sim/speed_profile.py, sim/sim_track.py
 """
 
 from model.vehicle_physics import VehicleParams

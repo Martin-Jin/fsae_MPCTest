@@ -13,7 +13,7 @@ import numpy as np
 
 from controller import nmpc as no
 from model.vehicle_physics import VehicleParams
-from controller.optimiser import solve_mpc
+from controller.lmpc import solve_mpc
 from model.bicycle_model import get_8state_discrete_model
 
 FAILURES = []

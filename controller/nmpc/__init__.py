@@ -4,7 +4,7 @@ the live ROS 2 side's `fsae_control.nmpc_core.NMPCController`.
 
 PURPOSE
 -------
-`controller/optimiser.py`'s `solve_mpc()` is a linear time-varying MPC: its
+`controller/lmpc/solve.py`'s `solve_mpc()` is a linear time-varying MPC: its
 prediction model (`model/bicycle_model.py`) is the bicycle model in ERROR
 coordinates with the reference path's own rotation entirely absent from it
 (`e_psi_dot` = yaw rate only, never `r - kappa(s)*s_dot`). With the car
@@ -56,9 +56,9 @@ USED BY
 
 DOES NOT USE
 ------------
-  controller/optimiser.py, model/bicycle_model.py (this package's own model
+  controller/lmpc/solve.py, model/bicycle_model.py (this package's own model
   replaces both when active), gui/simulation.py (imported from
-  rollout_core.py only, same reasoning as controller/optimiser.py's own
+  rollout_core.py only, same reasoning as controller/lmpc/solve.py's own
   "DOES NOT USE" note).
 MODULE MAP (live `nmpc_core.py` is one file; this split is offline-only)
 ----------

@@ -118,7 +118,7 @@ class NMPCController:
         if osqp is None:      # pragma: no cover - dependency guard
             raise ImportError(
                 f'controller.nmpc requires osqp (already a dependency of '
-                f'controller/optimiser.py via cvxpy): {_OSQP_IMPORT_ERROR!r}'
+                f'controller/lmpc/solve.py via cvxpy): {_OSQP_IMPORT_ERROR!r}'
             )
         self.dt = float(dt)
         self.N = int(N)

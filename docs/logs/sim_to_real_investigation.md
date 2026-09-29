@@ -2929,7 +2929,7 @@ spending effort chasing the residual gap.
 
 `mpc_core.py` (live) hard-constrains `u[:,0] - uprev_p` within `du_max` using
 its own raw (unweighted) `u_prev` Parameter, separate from the
-`weighted_u_prev` Parameter used only in the rate cost. `controller/optimiser.py`
+`weighted_u_prev` Parameter used only in the rate cost. `controller/lmpc/solve.py`
 (offline) had the weighted one for the cost but never had the raw one, so it
 could only SOFT-penalise a large jump at step 0 — a strong-enough
 tracking-error gradient could push `u[:,0]` further from `u_prev` than
@@ -2963,12 +2963,12 @@ slightly away from 1.0 but remain in a reasonable range.
 
 **No live-side change needed** — `mpc_core.py` already has this constraint
 (that's the parity gap this closes: only the offline copy was missing it).
-`fsae_MPCTest`-only diff, in `controller/optimiser.py`.
+`fsae_MPCTest`-only diff, in `controller/lmpc/solve.py`.
 
 ## 40. Terminal cost added as an inactive (1.0 = no-op) toggle, mirrored to both stacks
 
 Unlike §38/§39, this is a gap present in BOTH stacks identically, not a
-sim/live mismatch: `mpc_core.py` (live) and `controller/optimiser.py`
+sim/live mismatch: `mpc_core.py` (live) and `controller/lmpc/solve.py`
 (offline) both weight every predicted state x[:,0..N] uniformly via
 `sqrtQ_param`, with no extra cost or constraint on the terminal state
 x[:,N]. This means the MPC has no structural incentive to prefer ending
@@ -3955,7 +3955,7 @@ showed 19.5% steering saturation and a real high-`|e_psi|` episode, pointing
 at horizon length as the next suspect — `N_HORIZON=25 × DT=0.05s = 1.25s` is
 only ~20-22.5 m of look-ahead distance at 16-18 m/s (§48). A full
 speed-dependent horizon was ruled out as a first attempt: the solver
-(`controller/optimiser.py`, OSQP via cvxpy) relies on warm-starting/
+(`controller/lmpc/solve.py`, OSQP via cvxpy) relies on warm-starting/
 factorisation reuse across consecutive solves of a **fixed-size** QP, so a
 per-tick variable `N_HORIZON` would mean rebuilding the QP structure every
 tick — too large a real-time-performance change to attempt without dedicated
@@ -4510,7 +4510,7 @@ live).
 | **Fresh post-fix live log looked worse than pre-fix baselines** | **Explained, not a regression (§36).** Traced to two localized stall/tangle events (t=40s, t=150s) that drag the mean e_psi up while bulk-of-lap saturation/tracking is statistically unchanged from pre-fix logs. `steer_lp` and pose-age/delay hypotheses both checked and ruled out directly from log columns. Cause of the two stalls themselves not yet identified |
 | Speed-dependent `alat_ceiling(v)` | **Shipped (§37), 2026-08-08.** `max(7.5, 2.46+0.47*v)` — sweep's fit, only raises the ceiling above ~10.7 m/s, never lowers it. Validated: sweep MAE 0.87→0.72, 0 new `VALIDATION_SUITE` DNFs, recorded-map ratios unchanged-to-improved. `fsae_MPCTest`-only (no live plant model to mirror to). Not yet validated live |
 | Solver tolerance mismatch (1e-4 offline / 1e-5 live) | **Ruled out (§38), 2026-08-08.** Measured directly on the recorded map full-lap: byte-identical sat/e_psi/progress/score at both tolerances. OSQP already converges well inside 1e-4 on this QP; not a source of sim/live divergence |
-| Missing step-0 slew constraint offline | **Fixed (§39), 2026-08-08.** Added `u_prev_param` + hard `u[:,0]-u_prev` constraint to `controller/optimiser.py`, mirroring `mpc_core.py`'s existing `uprev_p` constraint. `fsae_MPCTest`-only (live already had it). 0 new DNFs; ratios mostly moved toward live (sat 0.40→0.47, e_psi mean 0.60→0.70, e_psi p90 0.52→0.67) |
+| Missing step-0 slew constraint offline | **Fixed (§39), 2026-08-08.** Added `u_prev_param` + hard `u[:,0]-u_prev` constraint to `controller/lmpc/solve.py`, mirroring `mpc_core.py`'s existing `uprev_p` constraint. `fsae_MPCTest`-only (live already had it). 0 new DNFs; ratios mostly moved toward live (sat 0.40→0.47, e_psi mean 0.60→0.70, e_psi p90 0.52→0.67) |
 | No terminal cost/constraint | **Added as an inactive toggle (§40), 2026-08-08.** `TERMINAL_Q_SCALE=1.0` (no-op, verified bit-identical), mirrored to both `mpc_core.py` copies + offline `optimiser.py`. A gap in BOTH stacks identically, not a parity issue. Picking/validating a non-default value deliberately left to the user, same tuning loop as `Q_diag`/`R_diag` |
 | Small-error steering hunting | **Real on one live log, NOT reproduced offline (§42), 2026-08-08.** Reversal rate rises to 35.6% as \|e_y\|→0 live (opposite trend offline at the time). `adaptive_Q_scaling()` added. Enabled live 2026-08-08 for an A/B test (user's own call) — fresh log shows broad improvement (sat 27.0%→20.8%, e_psi mean 23.6°→16.9°) but reversals/s got WORSE (1.99→3.48) and the small-error reversal-rate pattern got worse too (35.6%→46.9% at \|e_y\|<0.05m) even though the car now spends more time there (1.9%→5.4%) — a mixed result, not a clean win on the specific symptom it targeted |
 | Sensor noise disabled in every offline comparison | **Found and fixed (§43), 2026-08-08.** `SLAM_NOISE_ENABLED`/`CONE_NOISE_ENABLED` were `False` for every offline run this whole session. At documented (1x) magnitude, enabling closes most of the reversal-rate gap (0.99→3.06/s, live is 3.48) but none of the mean\|e_y\| gap (stuck at 0.06-0.08 vs live's 0.346 across 1x-6x). Flipped to `True` by default — changes what `offline_tuner.py` optimises against |
@@ -4696,7 +4696,7 @@ zero-crossing at 0.42 Hz). That is a rate-limit-induced limit cycle, not a
 weight-tuning problem.
 
 **Slew-rate limit — the root cause found this session.**
-`controller/optimiser.py` had NO slew constraint at all, so the tuner was
+`controller/lmpc/solve.py` had NO slew constraint at all, so the tuner was
 optimising against a plant that could steer arbitrarily fast while the live
 car was clamped to 80 deg/s. Weights could not transfer faithfully,
 independent of any weight choice. Added `du_max`, baked into the cached QP

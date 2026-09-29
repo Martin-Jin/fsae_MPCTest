@@ -990,7 +990,7 @@ lookahead window — not just once the car is already turning through it.
 
 **Implemented in**: live `mpc_core.py`/`mpc_params.py`
 (`curvature_forcing_enabled`, `curvature_forcing_gain`,
-`anti_hunt_k_lookahead`), offline `controller/optimiser.py`'s
+`anti_hunt_k_lookahead`), offline `controller/lmpc/solve.py`'s
 `init_parameterized_mpc`/`solve_mpc` (new `w` parameter) and
 `controller/model_utils.py` (`curvature_horizon_profile`,
 `steer_rate_anti_hunt`'s new `kappa_max_abs`/`k_lookahead` params),
@@ -2851,7 +2851,7 @@ first and replaced with this simpler `cp.pos`/`cp.neg` rewrite once it was
 confirmed DCP-valid and numerically identical to the old single-weight cost
 when `r_a_accel == r_a_brake`, since `pos(x)²+neg(x)² == x²` for any real
 `x`. Implemented in both `mpc_core.py`/`mpc_params.py`/`fsae_params.yaml`/
-`launch_all.sh` (live) and `controller/optimiser.py`/`settings.py` (offline)
+`launch_all.sh` (live) and `controller/lmpc/solve.py`/`settings.py` (offline)
 — see `docs/reference/control_mechanisms.md`'s "Accel/brake effort weight split"
 section for the current file-by-file mapping.
 

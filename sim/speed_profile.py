@@ -78,7 +78,7 @@ USED BY
 
 DOES NOT USE
 ------------
-  model/vehicle_physics.py, model/bicycle_model.py, controller/optimiser.py, sim/sim_track.py, tuner/performance_stats.py
+  model/vehicle_physics.py, model/bicycle_model.py, controller/lmpc/solve.py, sim/sim_track.py, tuner/performance_stats.py
 """
 
 import numpy as np

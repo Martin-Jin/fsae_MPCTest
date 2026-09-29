@@ -35,7 +35,7 @@ USED BY
 
 DOES NOT USE (directly)
 -----------------------
-  model/vehicle_physics.py, model/bicycle_model.py, controller/optimiser.py, tuner/performance_stats.py, sim/speed_profile.py
+  model/vehicle_physics.py, model/bicycle_model.py, controller/lmpc/solve.py, tuner/performance_stats.py, sim/speed_profile.py
 """
 
 import math

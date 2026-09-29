@@ -141,7 +141,7 @@ def run_core_rollout(
     use_planner : bool
         Planner-in-the-loop vs. oracle tracking against the global path.
     use_nmpc : bool
-        False (default, = settings.USE_NMPC) -> controller/optimiser.py's
+        False (default, = settings.USE_NMPC) -> controller/lmpc/solve.py's
         linear time-varying QP, as always. True -> controller/nmpc/'s
         Frenet-frame nonlinear MPC instead -- see that package's
         docstring. Explicit parameter (not read from settings.py

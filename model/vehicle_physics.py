@@ -8,7 +8,7 @@ approach the fidelity of Nvidia PhysX (used by FSDS/AirSim); this intent is not
 the same as a confirmed match, see docs/logs/sim_to_real_investigation.md for
 the open, only-partially-closed gap to the real car. This is the "truth" model
 relative to the MPC's own internal model: the MPC controller
-(controller/optimiser.py) uses a much simpler 8-state linear model internally,
+(controller/lmpc/solve.py) uses a much simpler 8-state linear model internally,
 creating a deliberate plant-model mismatch that mirrors the real-world
 situation.
 
@@ -75,7 +75,7 @@ USED BY
 
 DOES NOT USE
 ------------
-  model/bicycle_model.py, controller/optimiser.py, sim/speed_profile.py, sim/sim_track.py, tuner/performance_stats.py
+  model/bicycle_model.py, controller/lmpc/solve.py, sim/speed_profile.py, sim/sim_track.py, tuner/performance_stats.py
 """
 
 import numpy as np
@@ -166,7 +166,7 @@ class VehicleParams:
         self.g     = 9.81     # Gravitational acceleration (m/s²); set early —
                                # needed by static_fz_per_corner() for the Cf/Cr
                                # slope-matching calc further below.
-        # Actuator limits: enforced as hard bounds in controller/optimiser.py's QP constraints.
+        # Actuator limits: enforced as hard bounds in controller/lmpc/solve.py's QP constraints.
         # 25deg matches the live stack's physical steering limit (see
         # ros2/src/fsae_planning/control/fsae_control/fsae_control/mpc_core.py's
         # MAX_STEER_RAD and fsae_control.control_utils/fsds_bridge).

@@ -17,7 +17,7 @@ import numpy as np
 import cvxpy as cp
 
 from model.vehicle_physics import plant_to_tracking_error
-from controller.optimiser import solve_mpc
+from controller.lmpc import solve_mpc
 from controller.nmpc import NMPCController
 from controller.model_utils import (
     curvature_estimate, adaptive_R_rate, adaptive_R_scaling, adaptive_Q_scaling,
