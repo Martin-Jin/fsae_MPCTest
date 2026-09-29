@@ -20,7 +20,7 @@ from model.vehicle_physics import plant_to_tracking_error
 from controller.lmpc import solve_mpc
 from controller.nmpc import NMPCController
 from controller.model_utils import (
-    curvature_estimate, adaptive_R_rate, adaptive_R_scaling, adaptive_Q_scaling,
+    curvature_estimate, adaptive_R_scaling, adaptive_Q_scaling,
     steer_rate_anti_hunt, reversal_penalty_boost, _corner_factor, _blend,
     _low_speed_corner_boost,
 )
@@ -32,7 +32,6 @@ from settings import (
     USE_PRECOMPUTED_SPEED_PROFILE, STEER_RATE_ANTI_HUNT_ENABLED,
     REVERSAL_PENALTY_ENABLED, REVERSAL_PENALTY_BOOST_MAX, REVERSAL_PENALTY_K,
     ENABLE_DYNAMIC_SPEED_CAP, DYNAMIC_CAP_A_LAT_MAX, DYNAMIC_CAP_SAFETY,
-    ADAPTIVE_R_RATE_ENABLE_IN_CORNERS, ADAPTIVE_R_RATE_DURING_FLOOR,
     ALAT_CEILING_FLAT, ALAT_CEILING_SLOPE, ALAT_CEILING_INTERCEPT, R_A_ACCEL,
     R_A_BRAKE, CORNER_FACTOR_K, Q_EY_STRAIGHT, Q_EY_CORNER, Q_EPSI_STRAIGHT,
     Q_EPSI_CORNER, Q_R_STRAIGHT, Q_R_CORNER, RRATE_STEER_STRAIGHT,
@@ -574,7 +573,7 @@ def solve_nmpc_tick(nmpc, planner_cl, path_xy, car_pos_np, psi_est, state_est,
     One NMPC solve. Returns (u_opt, nmpc_diag).
 
     Deliberately skips the whole adaptive-gain schedule solve_ltv_tick()
-    runs (current-state corner-factor scheduler, adaptive_R_rate/_scaling,
+    runs (current-state corner-factor scheduler, adaptive_R_scaling,
     steer_rate_anti_hunt, adaptive_Q_scaling, heading-error accel/brake
     asymmetry): all of it exists to synthesise anticipation the LINEAR model
     cannot produce on its own. The nonlinear model anticipates a bend
@@ -626,7 +625,7 @@ def solve_ltv_tick(
     # model_utils.py's module docstring): 0 (straight) -> 1 (full
     # corner), a single continuous saturating curve of the CURRENT
     # ~instantaneous curvature `kappa` -- the same signal
-    # adaptive_R_rate/steer_rate_anti_hunt already use. No forward
+    # steer_rate_anti_hunt already uses. No forward
     # scan, no separate decay-distance timer/hysteresis state: entry
     # and exit are symmetric, driven purely by how `kappa` itself
     # rises and falls.
@@ -651,10 +650,12 @@ def solve_ltv_tick(
     corner_frac = float(np.clip(corner_factor + low_speed_boost, 0.0, 1.0))
 
     # ── Adaptive gain scaling ────────────────────────────────────────
-    R_rate_scaled = adaptive_R_rate(
-        kappa, R_rate, enable_in_corners=ADAPTIVE_R_RATE_ENABLE_IN_CORNERS,
-        during_floor=ADAPTIVE_R_RATE_DURING_FLOOR,
-    )
+    # R_rate_scaled[0,0]'s base value is set below by the corner-factor
+    # blend, so it starts as a plain copy here (the removed adaptive_R_rate
+    # current-curvature floor used to scale it first, but that scale was
+    # always overwritten by the blend before it could reach the QP, see
+    # docs/removed_mechanisms.md).
+    R_rate_scaled = np.array(R_rate, copy=True)
     _rr_before_hunt = float(R_rate_scaled[0, 0])
     R_rate_scaled = steer_rate_anti_hunt(
         kappa, e_y, R_rate_scaled, enabled=STEER_RATE_ANTI_HUNT_ENABLED, e_psi=e_psi,

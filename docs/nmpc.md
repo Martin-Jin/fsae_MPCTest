@@ -9,13 +9,13 @@ Everything in [`lmpc.md`](lmpc.md) describes `mpc_core.MPCController`: a linear 
 ## Table of Contents
 
 1. [The structural difference, in one line](#the-structural-difference-in-one-line)
-2. [Structure and solve method, in brief](#structure-and-solve-method-in-brief)
+2. [Structure and solve method](#structure-and-solve-method)
 3. [The state vector and the Frenet metric factor](#the-state-vector-and-the-frenet-metric-factor)
 4. [The nonlinear model (`_f`)](#the-nonlinear-model-_f)
 5. [Linearising the rollout: finite-difference Jacobians](#linearising-the-rollout-finite-difference-jacobians)
 6. [Condensing and the QP](#condensing-and-the-qp)
 7. [Testing the math](#testing-the-math)
-8. [Feature comparison: LTV-QP vs. NMPC, at a glance](#feature-comparison-ltv-qp-vs-nmpc-at-a-glance)
+8. [Feature comparison: LTV-QP vs. NMPC](#feature-comparison-ltv-qp-vs-nmpc)
 
 ---
 
@@ -29,7 +29,7 @@ The LTV-QP takes its one Frenet measurement at the current tick, then predicts f
 
 The NMPC instead carries `s` itself as a horizon *state*: at every one of its 20 predicted steps, `kappa(s)`/`psi_ref(s)` are looked up fresh at that step's predicted `s`, not sampled once at the current tick. So the road's bend is re-evaluated at every future point along the plan, not frozen at one lookahead distance the way the LTV-QP's preview curvature is. As `s` advances along the predicted horizon, `kappa(s)` changes with it, so a bend 10 steps out is already shaping the plan today, not just once the car arrives there.
 
-## Structure and solve method, in brief
+## Structure and solve method
 
 **Structure**: states `[s, e_y, e_psi, v_x, v_y, r, delta_act, a_act]`, inputs `[delta_cmd, a_cmd]`, linear-tyre bicycle dynamics with the same constants and the same low-speed kinematic blend as the LTV-QP, plus a `tanh` saturation of the predicted lateral force at FSDS's measured `a_lat` ceiling.
 
@@ -249,13 +249,13 @@ Two test suites exist for this controller's numerics specifically, both referenc
 
 A divergence in the first check (`_step_scalar` vs `_step`) is a **silent wrong-prediction bug**: both the scalar rollout and the vectorised Jacobian path would be consistently wrong the same way, so no closed-loop behavioural test would catch it, only this direct numerical comparison does.
 
-## Feature comparison: LTV-QP vs. NMPC, at a glance
+## Feature comparison: LTV-QP vs. NMPC
 
 Every feature below is verified against actual read-sites in the code, not inferred from a docstring or field name, see `docs/reference/README.md`'s "Which settings affect which controller" map for the exhaustive, field-by-field version this table summarises.
 
 | Feature | LTV-QP (`mpc_core.py`) | NMPC (`nmpc_core.py`) | Why |
 |---|---|---|---|
-| Adaptive gain scheduling (`_corner_factor`, anti-hunt, `adaptive_Q_scaling`, `adaptive_R_scaling`, `adaptive_R_rate`) | **Yes** | **No** (inert, none of these fields have any read site in `nmpc_core.py`) | Every one of these mechanisms exists to compensate for the LTV-QP's blind spot (it can't predict the path curving). NMPC's model has that built in structurally, so reweighting the cost on top would double-count an effect that's now already handled, see [`removed_mechanisms.md` §1](removed_mechanisms.md#1-the-structural-limit-the-argument-that-motivates-nmpc). |
+| Adaptive gain scheduling (`_corner_factor`, anti-hunt, `adaptive_Q_scaling`, `adaptive_R_scaling`) | **Yes** | **No** (inert, none of these fields have any read site in `nmpc_core.py`) | Every one of these mechanisms exists to compensate for the LTV-QP's blind spot (it can't predict the path curving). NMPC's model has that built in structurally, so reweighting the cost on top would double-count an effect that's now already handled, see [`removed_mechanisms.md` §1](removed_mechanisms.md#1-the-structural-limit-the-argument-that-motivates-nmpc). |
 | `steer_rate_anti_hunt` (steering-rate damping when centred/aligned/uncurving) | **Yes**, on by default | **Opt-in**, off by default (`nmpc_steer_rate_anti_hunt_enabled`) | The one exception to the row above: it only ever makes steering *more* damped in a specific narrow case, the opposite direction from anticipation, so it doesn't fight NMPC's structural fix the way the rest of the gain schedule would. Reuses the LTV-QP's own function verbatim (imported, not reimplemented). |
 | Precomputed corner map (`use_precomputed_corner_map`) | Removed from both | Removed from both | Served the deleted lookahead gain-scheduling family, gone from both controllers, not an LMPC/NMPC difference. See [`removed_mechanisms.md` §7](removed_mechanisms.md#7-precomputed-corner-segmentation-cornermap). |
 | Precomputed shaped heading-lead profile (`use_precomputed_heading_profile`) | **Yes** | **Accepted but ignored** (`set_heading_profile()` exists so the node needs no branch, logs a one-time warning) | Same reasoning as gain scheduling: the shaped lead is a workaround for the same missing curvature term NMPC closes structurally. Applying both would double-count the anticipation. |

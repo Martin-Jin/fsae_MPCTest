@@ -41,9 +41,9 @@ Each call to MPCController.compute() runs the full MPC pipeline:
   3. _discrete_model() — build the speed-blended kinematic/dynamic bicycle
      model and ZOH-discretise it (mirrors bicycle_model.get_8state_discrete_model,
      duplicated locally so the live controller has no simulation dependencies).
-  4. Gain-schedule R and R_rate via the module-level _adaptive_R_scaling /
-     _adaptive_R_rate helpers (mirrors model_utils.py's adaptive_R_scaling /
-     adaptive_R_rate — duplicated here for the same reason).
+  4. Gain-schedule R via the module-level _adaptive_R_scaling helper
+     (mirrors model_utils.py's adaptive_R_scaling — duplicated here for
+     the same reason).
   5. _solve_qp() — inject the above into a persistent, parameterised CVXPY
      problem (built once in _build_qp, reused via warm-start) and solve with
      OSQP, falling back to Clarabel, then to a full-brake command (holding
@@ -57,7 +57,7 @@ Each call to MPCController.compute() runs the full MPC pipeline:
 
 PARITY WITH THE OFFLINE PIPELINE
 ---------------------------------
-_adaptive_R_scaling/_adaptive_R_rate/_discrete_model here are intentionally
+_adaptive_R_scaling/_discrete_model here are intentionally
 near-identical duplicates of model_utils.py / bicycle_model.py, and
 _build_qp's cost/constraint formulation is a near-identical duplicate of
 optimiser.py's init_parameterized_mpc (same +/-3.5 m soft lane bound, same
@@ -224,51 +224,6 @@ def _adaptive_R_scaling(vx: float, R_base: np.ndarray) -> np.ndarray:
     return R
 
 
-def _adaptive_R_rate(
-    kappa: float,
-    R_rate_base: np.ndarray,
-    enable_in_corners: bool = True,
-    during_floor: float = 0.625,
-) -> np.ndarray:
-    """
-    Curvature-dependent steering-jerk softening: relaxes the steering
-    rate-of-change cost in sharp corners (floor during_floor, default
-    MPCParams.adaptive_r_rate_during_floor), driven by CURRENT-position
-    kappa, so the controller isn't over-penalised for the extra steering
-    rate a tight corner demands. Mirrors model_utils.adaptive_R_rate in
-    fsae_MPCTest — keep both floors in sync manually.
-
-    enable_in_corners: TEMPORARY/EXPERIMENTAL, NOT VALIDATED -- re-verify
-    before relying on the False branch below. True
-    (default) preserves the softening above -- R_rate reduction stays
-    active in corners. False uses a kappa_straight=0.03 "cornering" cutoff:
-    once |kappa| exceeds it, softening is switched off and R_rate[0,0] gets
-    the full, unscaled baseline cost instead -- deliberately undoing the
-    softening this function exists to provide. (Renamed from
-    disable_in_corners, whose True/False polarity was inverted from what
-    the name suggested.)
-
-    during_floor is kept relatively shallow (not deeper): a deeper floor
-    lets steering oscillate through zero several times per second
-    mid-corner (e.g. +25 -> -20 -> +14 -> -9 deg across ~0.3s) while
-    e_y/e_psi stay small -- classic under-damped steering-rate hunt, not a
-    tracking-error problem. The fix is less softening of the rate cost
-    while actually turning, not more lateral/heading authority -- do not
-    deepen this floor without re-checking for that oscillation.
-
-    Only the current-position during-floor is implemented; there is no
-    forward-scan entering-floor.
-    """
-    kappa_straight = 0.03
-    if not enable_in_corners and abs(kappa) > kappa_straight:
-        scale = 1.0
-    else:
-        scale = max(during_floor, 1.0 / (1.0 + 3.0 * abs(kappa)))
-    R = R_rate_base.copy()
-    R[0, 0] *= scale
-    return R
-
-
 def _steer_rate_anti_hunt(
     kappa: float,
     e_y: float,
@@ -279,20 +234,20 @@ def _steer_rate_anti_hunt(
 ) -> np.ndarray:
     """
     TEMPORARY/EXPERIMENTAL, NOT VALIDATED: heavily penalise steering
-    rate-of-change on top of _adaptive_R_rate's existing curvature softening,
-    strongest when the car is centred (|e_y| small), well-aligned (|e_psi|
-    small), AND not currently curving (kappa small). Mirrors
-    model_utils.steer_rate_anti_hunt in fsae_MPCTest -- keep both constants
-    in sync. enabled=False returns R_rate_base untouched.
+    rate-of-change, strongest when the car is centred (|e_y| small),
+    well-aligned (|e_psi| small), AND not currently curving (kappa small).
+    Mirrors model_utils.steer_rate_anti_hunt in fsae_MPCTest -- keep both
+    constants in sync. enabled=False returns R_rate_base untouched.
 
     Continuous, not a hard AND-gated threshold: a discontinuous step would
-    risk the same QP-solver-iteration-spike problem the
-    enable_in_corners/kappa_straight history above already found from
-    threshold cutoffs on curvature, so straight-line hunting is instead
-    penalised more strongly via a higher continuous ceiling.
+    risk the same QP-solver-iteration-spike problem a threshold cutoff on
+    curvature already found once (see the removed adaptive-R_rate
+    enable_in_corners/kappa_straight cutoff in docs/removed_mechanisms.md),
+    so straight-line hunting is instead penalised more strongly via a
+    higher continuous ceiling.
     boost_kappa, boost_ey, and boost_epsi each saturate independently
-    toward 1.0 as their input shrinks toward 0 (same saturating-curve style
-    as _adaptive_R_rate's own floor); their product is the applied scale,
+    toward 1.0 as their input shrinks toward 0 (a saturating-curve style);
+    their product is the applied scale,
     so the full boost_max (default MPCParams.anti_hunt_boost_max) only
     applies when all three are near their "straight, centred, and aligned"
     ideal, and it fades smoothly -- never snaps -- as any one of them
@@ -355,8 +310,8 @@ def _reversal_penalty_boost(
     Same saturating-curve style as _steer_rate_anti_hunt (single input here,
     not a product of several) so it fades continuously rather than snapping,
     and composes the same way: applied multiplicatively on top of whatever
-    _adaptive_R_rate/_steer_rate_anti_hunt/the corner blend already produced,
-    never replacing them. enabled=False returns R_rate_base untouched.
+    _steer_rate_anti_hunt/the corner blend already produced, never
+    replacing them. enabled=False returns R_rate_base untouched.
 
     k=8.0 (rad^-1) sets half-boost at ~7.2 deg of PREVIOUS steering (a
     reversal starting from near-centre gets close to the full boost_max;
@@ -423,8 +378,8 @@ def _corner_factor(kappa: float, k: float) -> float:
     """
     0 (straight) -> 1 (full corner), a single continuous saturating curve
     of the CURRENT |kappa| (the ~1m-preview curvature _error_state already
-    computes every tick, same signal _adaptive_R_rate/_steer_rate_anti_hunt
-    use). Deliberately the SAME functional shape for both rising (entry)
+    computes every tick, same signal _steer_rate_anti_hunt uses).
+    Deliberately the SAME functional shape for both rising (entry)
     and falling (exit) curvature -- no separate decay-distance timer, no
     hysteresis state: this is a pure function of the current instantaneous
     signal, replacing the whole deleted lookahead approach/exit-boost
@@ -648,23 +603,6 @@ class MPCController:
         # standing no-settings.py-on-the-car rule; keep in sync with
         # fsae_MPCTest's copy.
         self.reversal_penalty_enabled = self.params.reversal_penalty_enabled
-
-        # ADAPTIVE_R_RATE_ENABLE_IN_CORNERS (settings.py, fsae_MPCTest) —
-        # see _adaptive_R_rate's enable_in_corners param above (renamed from
-        # disable_in_corners, whose polarity was inverted from what the name
-        # suggested). True (default) keeps R_rate reduction ACTIVE in
-        # corners via the continuous curve (no threshold, no discontinuity).
-        # False uses the kappa_straight cutoff to switch softening off past
-        # it, restoring full baseline R_rate[0,0] -- raising kappa_straight
-        # causes severe lag specifically in corners: the discontinuous
-        # R_rate[0,0] jump at the kappa_straight crossing likely spikes QP
-        # solver iterations / invalidates warm-starts every tick near the
-        # threshold. Do not switch this to False without addressing that.
-        # Inlined per the standing no-settings.py-on-the-car rule; keep in
-        # sync with fsae_MPCTest's copy.
-        self.adaptive_r_rate_enable_in_corners = (
-            self.params.adaptive_r_rate_enable_in_corners
-        )
 
         # DELAY_COMPENSATION_ENABLED — TEMPORARY/EXPERIMENTAL, NOT VALIDATED.
         # Master switch for _update_n_delay()/predict_ahead() (see both
@@ -1340,8 +1278,8 @@ class MPCController:
         # Replaces the deleted lookahead gain-scheduling family (see the
         # module comment near the top of this file): 0 (straight) -> 1 (full
         # corner), a single continuous saturating curve of the CURRENT
-        # ~1m-preview curvature `kappa` -- the same signal _adaptive_R_rate/
-        # _steer_rate_anti_hunt already use. No forward scan, no separate
+        # ~1m-preview curvature `kappa` -- the same signal
+        # _steer_rate_anti_hunt already uses. No forward scan, no separate
         # decay-distance timer/hysteresis state: entry and exit are
         # symmetric, driven purely by how `kappa` itself rises and falls.
         corner_factor = _corner_factor(kappa, self.params.corner_factor_k)
@@ -1368,14 +1306,12 @@ class MPCController:
         R_scaled = _adaptive_R_scaling(car_speed, self.R)
         adapt["m_R_speed"] = float(R_scaled[0, 0] / self.R[0, 0]) if self.R[0, 0] else 1.0
 
-        R_rate_scaled = _adaptive_R_rate(
-            kappa, self.R_rate,
-            enable_in_corners=self.adaptive_r_rate_enable_in_corners,
-            during_floor=self.params.adaptive_r_rate_during_floor,
-        )
-        adapt["m_Rrate_corner"] = (
-            float(R_rate_scaled[0, 0] / self.R_rate[0, 0]) if self.R_rate[0, 0] else 1.0
-        )
+        # R_rate_scaled[0,0]'s base value is set below by the corner-factor
+        # blend, so it starts as a plain copy here (the removed
+        # adaptive_R_rate current-curvature floor used to scale it first,
+        # but that scale was always overwritten by the blend before it
+        # could reach the QP, see docs/removed_mechanisms.md).
+        R_rate_scaled = self.R_rate.copy()
         _rr_before_hunt = float(R_rate_scaled[0, 0])
         R_rate_scaled = _steer_rate_anti_hunt(
             kappa, x0[0], R_rate_scaled, self.steer_rate_anti_hunt_enabled,

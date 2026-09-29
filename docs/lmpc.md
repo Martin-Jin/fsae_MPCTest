@@ -296,7 +296,7 @@ Ad, Bd = Md[:8, :8], Md[:8, 8:]
 
 `Ad` and `Bd` are what actually get handed to the solver, the continuous matrices `A_c`/`B_c` above exist only as an intermediate step to build them correctly.
 
-#### Linear vs nonlinear, in plain English
+#### Linear vs nonlinear
 
 Now that `Ad`/`Bd` exist concretely, it's worth being precise about what "linear" actually means here, since the word gets used constantly below. A model is **linear** if every output is just a fixed multiple of each input, added together, double an input and its contribution exactly doubles, and no input's effect depends on the current value of another input. Every matrix built above (`A`, `B`, `Ad`, `Bd`) is exactly this: a table of fixed multipliers, so `x[k+1] = Ad·x[k] + Bd·u[k]` is always "this state times a fixed number, plus that state times a fixed number, ...", never anything that bends or saturates depending on where the car currently is.
 
@@ -381,7 +381,7 @@ The tuned `Q`, `R`, `R_rate` weights are optimised as if for a single "average" 
 
 #### Current-state gain scheduling
 
-Every function below reacts only to curvature/error the car is measuring *right now*, none of them scan the path ahead. `adaptive_R_scaling` and `adaptive_R_rate` predate the corner-factor rewrite (below) and carry over unchanged; the corner-factor blend and the heading-error accel/brake asymmetry were introduced by that rewrite.
+Every function below reacts only to curvature/error the car is measuring *right now*, none of them scan the path ahead. `adaptive_R_scaling` predates the corner-factor rewrite (below) and carries over unchanged; the corner-factor blend and the heading-error accel/brake asymmetry were introduced by that rewrite.
 
 **`adaptive_R_scaling(vx, R)`** increases steering cost with speed:
 
@@ -392,15 +392,9 @@ accel_scale = 1 + 0.05 · vx                     # gentler linear scale
 
 At higher speed, the same steering angle produces much more lateral acceleration (`a_lat ≈ vx² · κ`), so the same-magnitude steering command is more destabilising. This Hill-function form was chosen over a straight linear ramp because it *saturates*: steering cost approaches but never exceeds 2.5× base, so the controller is never effectively locked out of steering at very high speed. The half-saturation point (`vx_half = 6.0`) sits in the same speed range where the kinematic→dynamic model blend transitions (1-2.5 m/s), so extra steering conservatism ramps up exactly where the internal prediction model itself becomes less certain.
 
-**`adaptive_R_rate(kappa, R_rate, enable_in_corners=True)`** softens the steering *jerk* penalty in tight corners, via a floor on the current-position curvature alone:
+`adaptive_R_scaling` returns a **copy** of the base matrix, the tuned weights in `settings.py` are never mutated, only scaled per-tick on top of.
 
-```
-during_scale = max(0.625, 1 / (1 + 3·κ))     # current-position curvature only
-```
-
-`κ` (curvature) is estimated causally from the plant's own current yaw rate and speed (`curvature_estimate()`: `κ = |yaw_rate| / vx`), it reflects the curvature the car is *currently experiencing*. In a straight, the full smoothness penalty applies. In a tight corner, the penalty is floored rather than removed entirely, enough softening to let the controller make the fast steering changes a tight corner demands, without ever allowing the rate cost to vanish completely (which would permit arbitrarily rapid, oscillatory steering). Only the current-position floor shown above remains; a removed lookahead-driven floor once combined with it via `min()`, see "Historical" below.
-
-Both functions return a **copy** of the base matrix, the tuned weights in `settings.py` are never mutated, only scaled per-tick on top of.
+**Removed: `adaptive_R_rate`'s current-curvature floor on `R_rate[0,0]`.** This function softened the steering rate-of-change cost in corners, via `max(0.625, 1/(1+3·κ))` on the current-position curvature. It was removed because its result never reached the QP: the corner-factor blend below unconditionally overwrites `R_rate_scaled[0,0]` right after this function ran, so `adaptive_r_rate_enable_in_corners`/`adaptive_r_rate_during_floor` had no effect on any run, live or offline, despite looking wired (the multiplier was still logged to telemetry). See [`removed_mechanisms.md`](removed_mechanisms.md) for the full mechanism and where it used to live.
 
 #### Corner-factor scheduler
 
@@ -427,8 +421,6 @@ r_a_brake_eff = r_a_brake · (1 - (1 - epsi_ra_brake_floor) · frac_epsi)
 
 Not a replacement for `adaptive_R_scaling`'s current-speed-driven `R[0,0]` scaling above, which this leaves untouched: the two compose.
 
-A removed, lookahead-driven floor once combined with `adaptive_R_rate`'s current-position floor above via `min()` (whichever was more aggressive won), see "Historical" below.
-
 **`adaptive_Q_scaling(e_y, Q, enabled)`** softens the lateral-error cost `Q[0,0]` when the car is already close to the centreline, to reduce small-error hunting/chatter:
 
 ```
@@ -440,9 +432,7 @@ scale = 1.0                                               |e_y| >= ey_hi
 - **Why:** steering sign-reversal rate was observed rising as `|e_y|` gets *smaller* live, the car darting across the centreline rather than settling onto it. A quadratic cost pulls toward zero error with the same proportional strength no matter how small the error already is, a plausible contributor to a correct-overcorrect cycle right where the controller should be settling, not correcting.
 - **Status:** `ADAPTIVE_Q_SCALING_ENABLED = True` in `settings.py` (**enabled by default**, to match the live controller). Still not reproduced on the offline recorded-map rollout, there, reversal rate rises *with* `|e_y|`, the opposite direction, so it may be a live-only symptom of sensor noise, delay-compensation dynamics, or the plant behaving differently from the linear model near zero slip. Re-validate against `VALIDATION_SUITE`/the recorded map before any further re-tuning around it.
 
-**`enable_in_corners` (an `adaptive_R_rate` parameter, on by default)** controls whether `adaptive_R_rate`'s softening applies once estimated curvature exceeds a small "cornering" threshold (`kappa_straight = 0.03`). Setting it `False` *undoes* that softening, restoring the full unscaled `R_rate[0,0]` baseline instead, and causes severe lag specifically in corners, most likely because the discontinuous cost jump at the threshold crossing spikes QP solver iterations and invalidates warm-starts on ticks straddling it. Kept in the code, gated on (softening active, the setting that avoids the discontinuity), as a documented dead end rather than deleted, so it isn't accidentally re-tried without this context.
-
-**`steer_rate_anti_hunt(kappa, e_y, R_rate, enabled, e_psi=0.0)`** stacks on top of `adaptive_R_rate` (not a replacement): multiplies `R_rate[0,0]` **up** by a fixed boost ceiling (6.0×) instead of softening it, strongest when the car is simultaneously straight (`κ` near zero), centred (`|e_y|` small), *and* well-aligned (`|e_psi|` small):
+**`steer_rate_anti_hunt(kappa, e_y, R_rate, enabled, e_psi=0.0)`** multiplies `R_rate[0,0]` **up** by a fixed boost ceiling (6.0×) instead of softening it, strongest when the car is simultaneously straight (`κ` near zero), centred (`|e_y|` small), *and* well-aligned (`|e_psi|` small):
 
 ```
 boost_kappa = 1 / (1 + 60·|κ|)
@@ -453,7 +443,7 @@ scale = 1 + (6.0 - 1) · boost_kappa · boost_ey · boost_epsi
 
 - Each factor saturates independently toward 1.0 as its input shrinks, so the full ceiling only applies when all three are near their "straight, centred, aligned" ideal, fading smoothly (never snapping) as any one of them grows.
 - **Why `e_psi`:** guards against a car that enters a straight *misaligned* (large `|e_psi|`, small `|e_y|`, e.g. just exited a corner still pointed the wrong way). Without it, `κ`/`e_y` alone can't distinguish "straight and correctly aligned" from "straight but needs to yaw back into line", making exactly the correction it needs artificially expensive.
-- **What it covers:** the "already on the line, not cornering" regime `adaptive_R_rate` alone doesn't address, that function only ever softens the rate cost for corners, never stiffens it for straights.
+- **What it covers:** the "already on the line, not cornering" regime, stiffening the rate cost specifically where nothing else in this file does.
 - **Status:** `STEER_RATE_ANTI_HUNT_ENABLED = True` in `settings.py` (**enabled by default**). Experimental, not validated.
 
 #### Historical: the lookahead gain-scheduling family (removed)
@@ -478,7 +468,7 @@ See `docs/reference/control_mechanisms.md`'s "Precomputed shaped heading-lead pr
 
 ### Where this is duplicated, and why
 
-`mpc_core.py`'s `MPCController` re-implements `_discrete_model` (mirrors `model/bicycle_model.py`), `_adaptive_R_scaling`/`_adaptive_R_rate` (mirrors `controller/model_utils.py`), and `_build_qp` (mirrors `controller/optimiser.py`'s `init_parameterized_mpc`, including the same `±3.5 m` soft boundary, `W_slack=10000`, and step-0/subsequent rate-cost split) as self-contained local copies, rather than importing the shared modules. This is deliberate: `mpc_core.py` runs inside a ROS 2 node on the real/FSDS vehicle and must have zero simulator dependencies. **Any change to the cost/constraint structure in one location must be mirrored in the other**, or weights tuned by `tuner/offline_tuner.py` will not transfer faithfully to the live controller.
+`mpc_core.py`'s `MPCController` re-implements `_discrete_model` (mirrors `model/bicycle_model.py`), `_adaptive_R_scaling` (mirrors `controller/model_utils.py`), and `_build_qp` (mirrors `controller/optimiser.py`'s `init_parameterized_mpc`, including the same `±3.5 m` soft boundary, `W_slack=10000`, and step-0/subsequent rate-cost split) as self-contained local copies, rather than importing the shared modules. This is deliberate: `mpc_core.py` runs inside a ROS 2 node on the real/FSDS vehicle and must have zero simulator dependencies. **Any change to the cost/constraint structure in one location must be mirrored in the other**, or weights tuned by `tuner/offline_tuner.py` will not transfer faithfully to the live controller.
 
 Both QPs enforce a hard per-step slew-rate limit (`du_max`) on top of the soft `R_rate` cost, on both sides: without it, the tuner would be optimising against a plant that could change steering arbitrarily fast while the real car stays clamped, a silent parity break independent of any weight choice.
 

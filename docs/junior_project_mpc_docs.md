@@ -18,8 +18,6 @@
 
 ## Overview
 
-**This project has two separate simulators, easy to conflate.** FSDS is the AirSim/UE4-based 3D simulator this whole project targets, the closest available stand-in for the real car. `fsae_MPCTest` (this repo) also has its own offline 2D GUI and headless rollout, used for automatic tuning, with different (lower-fidelity, unvalidated against FSDS) dynamics. Neither offline tool is validated against the real car either; FSDS is a closer approximation since it runs a real physics engine, but is not itself confirmed accurate against the real car. See [docs/reference/simulator_glossary.md](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/reference/simulator_glossary.md) for the full explanation and which docs cover which side, and [Section 6](#6-repo-contents-fsae_mpctest) below for how the models compare.
-
 The car runs a track in two laps. The first lap maps it: a live planner reconstructs the track from cones as the car drives, recording the result. The second lap drives the same track again using that recorded map, and because the whole path is now known in advance instead of being discovered lap-by-lap, a controller can plan ahead instead of only reacting. That second lap is what this project's MPC (Model Predictive Control) controller is for. MPC runs alongside the existing Stanley controller, not as a replacement for it, both remain available options on the second lap.
 
 The core idea behind MPC: every tick, ask "if the car did X for the next second or so, where would it end up, and how well would that track the path?" for lots of possible X, and pick the best one. Two properties fall out of that naturally:
@@ -27,6 +25,9 @@ The core idea behind MPC: every tick, ask "if the car did X for the next second 
 - **Physical limits are respected properly**, the optimisation never asks for more steering angle than the rack can provide.
 - **"Good driving" becomes tunable** through a cost function's weights, rather than hard-coded reactive rules.
 
+
+**Note, this project has two separate simulators.** FSDS is the AirSim/UE4-based 3D simulator this whole project targets, the closest available stand-in for the real car. As of writing this doc.
+`fsae_MPCTest` (this repo) also has its own offline 2D GUI and headless rollout, used for automatic tuning. Neither offline tool is validated against the real car; FSDS is a closer approximation since it runs a real physics engine, but is not itself confirmed accurate against the real car. See [docs/reference/simulator_glossary.md](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/reference/simulator_glossary.md) for the full explanation and which docs cover which side, and [Section 6](#6-repo-contents-fsae_mpctest) below for how the models compare.
 
 ### Controller comparison
 
@@ -68,7 +69,7 @@ Both controllers are compared using a single performance metric, a composite sco
     - [3.2 Solving It](#32-solving-it)
     - [3.3 Does It Help?](#33-does-it-help)
     - [3.4 Optional Refinements](#34-optional-refinements)
-  - [4. LMPC vs. NMPC, Compared](#4-lmpc-vs-nmpc-compared)
+  - [4. LMPC vs. NMPC](#4-lmpc-vs-nmpc)
   - [5. Tuning the Controller](#5-tuning-the-controller)
     - [5.1 Why an Automatic Tuner?](#51-why-an-automatic-tuner)
     - [5.2 How the Tuner Works (CMA-ES)](#52-how-the-tuner-works-cma-es)
@@ -82,7 +83,7 @@ Both controllers are compared using a single performance metric, a composite sco
     - [5.6 Adding a New Test Track](#56-adding-a-new-test-track)
   - [6. Repo Contents (`fsae_MPCTest`)](#6-repo-contents-fsae_mpctest)
     - [6.1 Two Deliverables, Two Repos](#61-two-deliverables-two-repos)
-    - [6.2 Two Vehicle Models, On Purpose](#62-two-vehicle-models-on-purpose)
+    - [6.2 Two Vehicle Models](#62-two-vehicle-models)
     - [6.3 The GUI](#63-the-gui)
     - [6.4 Module Reference](#64-module-reference)
     - [6.5 Key Settings Reference](#65-key-settings-reference)
@@ -149,7 +150,7 @@ A quadratic cost with linear constraints is a **Quadratic Program (QP)**, a well
 The tuned weights are optimised for one "average" operating point. A handful of small functions rescale $Q$/$R$/$R_{rate}$ every tick (on a fresh copy, the tuned weights are never permanently modified) to compensate for how the car's needs change with speed and cornering:
 
 - **Steering gets more conservative at higher speed**, the same angle produces more lateral acceleration, so steering cost scales up smoothly with speed.
-- **Smoothness penalty relaxes in corners, and stiffens on straights**, full smoothness cost on a straight, floored (not removed) in a tight corner; stiffened again once the car is already straight, centred, and aligned, to stop small unnecessary corrections.
+- **Smoothness penalty relaxes in corners, and stiffens on straights**, full smoothness cost on a straight, floored (not removed) in a tight corner via the corner-factor blend (Section 2's cost weights); stiffened again once the car is already straight, centred, and aligned, to stop small unnecessary corrections.
 - **Lateral-error cost softens near the centreline**, preventing a correct-overcorrect cycle right where the car should be settling onto the line.
 - **Delay compensation** (live controller only), rolls the tracking error forward through commands already in flight, so the controller plans against where the car will be, not where it was measured.
 - **Tracking-error speed gate**, slows the car down when it's not near the path it's trying to follow, independent of the path's own shape.
@@ -216,16 +217,17 @@ The fix described in Section 3.1 is the core mechanism. NMPC also carries three 
 
 ### 3.4 Optional Refinements
 
-These three are independent of each other and of the core fix above, each can be switched on or off without affecting the others:
+NMPC carries two further refinements on top of the core fix above:
 
 - **A smoother spline-fitted curvature reading**, on by default, strictly better, no trade-off.
-- **An experimental per-point lookahead speed profile**, off by default, still being validated.
-- **A backup hard speed-limit check**, off by default, unvalidated.
+- **A friction-circle hard constraint on tyre force**, off by default, experimental, not enabled pending a telemetry fix and a looser force bound (see the doc referenced below).
 
-Full detail: [`docs/reference/README.md`](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/reference/README.md)'s "Three MPCC-inspired additions" section.
+A third idea, sampling a precomputed speed profile per horizon step instead of holding one speed target constant across the horizon, was tried in two forms (a cost term, then a hard per-stage constraint) and live-tested twice. Both were removed after failing for different reasons (a corner overspeed in one case, the same overspeed surviving under the other because the constraint checked the solver's own prediction rather than the real car), not left in as an off-by-default option.
+
+Full detail: [`docs/reference/control_mechanisms.md`](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/reference/control_mechanisms.md)'s "Three MPCC-inspired additions" section.
 
 
-## 4. LMPC vs. NMPC, Compared
+## 4. LMPC vs. NMPC
 
 | | **LMPC** | **NMPC** |
 |---|---|---|
@@ -238,7 +240,7 @@ Full detail: [`docs/reference/README.md`](https://github.com/Martin-Jin/fsae_MPC
 | Yaw-rate cost weight | `q_r` penalises **absolute** yaw rate | `nmpc_q_epsi_dot` penalises yaw rate *relative to what the corner demands*, penalising absolute yaw rate here would fight the cornering it's built to enable |
 | Where it lives | `model/bicycle_model.py` (`fsae_MPCTest`) + `mpc_core.py` (live) | `nmpc_core.py` (live) + `controller/nmpc_optimiser.py` (`fsae_MPCTest`'s offline port) |
 
-For the exact formulas and a full feature-by-feature comparison verified against code: [`nmpc.md`](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/nmpc.md#feature-comparison-ltv-qp-vs-nmpc-at-a-glance) and [`error_state_reference.md`](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/error_state_reference.md).
+For the exact formulas and a full feature-by-feature comparison verified against code: [`nmpc.md`](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/nmpc.md#feature-comparison-ltv-qp-vs-nmpc) and [`error_state_reference.md`](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/error_state_reference.md).
 
 
 ## 5. Tuning the Controller
@@ -363,7 +365,7 @@ This project has two deliverables, in two separate repos:
 The rest of this section is what `fsae_MPCTest` itself contains.
 
 
-### 6.2 Two Vehicle Models, On Purpose
+### 6.2 Two Vehicle Models
 
 There are two separate vehicle models in play here, each built for a different job:
 

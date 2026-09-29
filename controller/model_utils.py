@@ -23,8 +23,8 @@ lookahead_approach_boost, lookahead_epsi_approach_boost, lookahead_exit_boost,
 lookahead_yaw_rate_relax, lookahead_steer_effort_relax,
 lookahead_straight_boost, steer_effort_straight_boost, uturn_severity/
 uturn_boost, _corner_demand/_demand_frac/_alat_ceiling_at, and the
-kappa_max_abs-driven terms inside steer_rate_anti_hunt/adaptive_Q_scaling/
-adaptive_R_rate. Removed because this MPC formulation already predicts state
+kappa_max_abs-driven terms inside steer_rate_anti_hunt/adaptive_Q_scaling.
+Removed because this MPC formulation already predicts state
 error against the reference at each future horizon step; reweighting TODAY's
 (usually near-zero) cost based on a forward scan doesn't change what the
 horizon predicts when the car actually gets there, so the mechanism did
@@ -41,14 +41,6 @@ Mirrors mpc_core.py's identical removal per CLAUDE.md's parity rule.
 
 HOW THE SCALING WORKS
 ---------------------
-adaptive_R_rate (curvature-based):
-    In a tight corner the vehicle must change steering direction quickly to
-    track the path, so penalising steering rate-of-change (R_rate[0,0]) too
-    heavily would prevent the needed responsiveness. The scale factor
-    1/(1 + 3*κ) is a saturating function: at zero curvature (straight) it
-    equals 1.0 (no softening); at high curvature it floors at a "during a
-    corner" value driven by the car's CURRENT-position curvature.
-
 adaptive_R_scaling (speed-based):
     At higher speeds, a unit of steering angle produces a much larger lateral
     force and path deviation than at low speed (because lateral acceleration
@@ -71,10 +63,9 @@ adaptive_Q_scaling (current lateral error):
     looks at the car's CURRENT |e_y|, not the path ahead.
 
 steer_rate_anti_hunt (current curvature + lateral + heading error):
-    Stacks on top of adaptive_R_rate: boosts R_rate[0,0] ABOVE the tuned
-    baseline (rather than softening it) when the car is simultaneously
-    straight, centred, and well-aligned, to suppress residual steering
-    hunt/chatter in that specific regime.
+    Boosts R_rate[0,0] ABOVE the tuned baseline when the car is
+    simultaneously straight, centred, and well-aligned, to suppress
+    residual steering hunt/chatter in that specific regime.
 
 corner_factor / low_speed_corner_boost (current curvature, replaces the
 lookahead family):
@@ -88,9 +79,9 @@ lookahead family):
 
 USED BY
 -------
-  sim/rollout_core.py — called once per step inside run_core_rollout(), the
-                    single shared rollout loop used by both gui/simulation.py
-                    and tuner/offline_tuner.py.
+  sim/rollout_phases.py — called once per step inside the LTV-QP solve
+                    phase, the single shared rollout loop used by both
+                    gui/simulation.py and tuner/offline_tuner.py.
 
 DOES NOT USE
 ------------
@@ -135,104 +126,19 @@ def curvature_estimate(state):
     return abs(r / vx)         # |κ| = |r| / vx  (always positive)
 
 
-def adaptive_R_rate(kappa, R_rate_base, enable_in_corners=True,
-                     during_floor=0.625):
-    """
-    Scale the steering rate-of-change cost R_rate[0,0] based on path curvature.
-
-    In straight-line driving (κ ≈ 0), the full R_rate steering penalty applies,
-    discouraging unnecessary steering jitter. In tight corners (large κ), the
-    penalty is softened so the controller can make the larger steering rate
-    changes needed to track the curve, driven by the CURRENT-position kappa:
-        scale = max(0.625, 1 / (1 + 3 * κ))
-    At κ = 0.0 (straight):         scale = 1.00 → no change to R_rate
-    At κ = 0.1 (R=10 m corner):    scale = 0.77 → moderate softening
-    At κ → ∞:                       scale → 0.625 → floor
-
-    The floor is kept fairly high (0.625, not lower) because over-relaxing
-    this cost is exactly what lets steering sign-reversal chatter grow in
-    corners: R_rate[0,0] is the one cost term that directly discourages
-    rapid steer-sign-flipping, so cutting it hard at high curvature works
-    against damping instead of with it. It keeps some softening available
-    in genuinely tight corners (where the vehicle does need to change
-    steering direction quickly) while still ensuring the rate cost never
-    fully vanishes, which would allow arbitrarily rapid steering
-    oscillations. A floor set too low here shows up as steering oscillating
-    through zero several times per second mid-corner while e_y/e_psi stay
-    small -- an under-damped steering-rate hunt, not a tracking-error
-    problem, which needs less softening of the rate cost while actually
-    turning rather than more lateral/heading authority.
-
-    Only the current-position floor is implemented; there is no
-    forward-scan entering-floor.
-
-    Only R_rate[0,0] (steering rate penalty) is modified. R_rate[1,1]
-    (acceleration rate penalty) is unchanged: longitudinal jerk is less
-    affected by curvature, and aggressive acceleration changes in corners
-    destabilise traction regardless of curvature.
-
-    Parameters
-    ----------
-    kappa : float
-        Current path curvature estimate from curvature_estimate() (1/m).
-    R_rate_base : np.ndarray, shape (2, 2)
-        Base rate-of-change cost matrix, typically the tuned R_rate from
-        tuner/offline_tuner.py or gui/simulation.py. Not modified in-place.
-    enable_in_corners : bool, optional
-        TEMPORARY/EXPERIMENTAL, NOT VALIDATED. True (default) preserves the
-        original continuous softening above, keeping R_rate reduction ACTIVE
-        in corners with no threshold/discontinuity -- this is what you want
-        if the goal is "reduce R_rate when turning". False uses a
-        kappa_straight=0.03 cutoff to mean "not cornering": below it,
-        softening still applies as normal (it barely does anything that
-        close to straight anyway); at or above it ("cornering"), softening
-        is switched off entirely and R_rate[0,0] gets the full, unscaled
-        baseline cost -- deliberately undoing the softening this function
-        exists to provide. The discontinuous cost jump this introduces at
-        the cutoff can spike QP solver iterations and cause severe lag
-        specifically in corners; only disable this to investigate that
-        failure mode, not as a validated tuning choice.
-    during_floor : float, optional
-        The floor described above. Defaults match settings.py's
-        ADAPTIVE_R_RATE_DURING_FLOOR (and the live side's
-        MPCParams.adaptive_r_rate_during_floor), so a caller that passes
-        nothing gets the tuned behaviour unchanged. The ramp sharpness (3.0)
-        and the kappa_straight=0.03 cutoff are deliberately NOT parameters --
-        they are not tuning knobs on either side.
-
-    Returns
-    -------
-    R : np.ndarray, shape (2, 2)
-        Modified R_rate with R[0,0] scaled by the curvature factor.
-        A copy of R_rate_base — the original is not mutated.
-
-    Called by: tuner/offline_tuner.py (run_headless_rollout),
-               gui/simulation.py (simulate_closed_loop)
-    """
-    R = np.array(R_rate_base, copy=True)          # Never mutate the caller's matrix
-    kappa_straight = 0.03
-    if not enable_in_corners and abs(kappa) > kappa_straight:
-        scale = 1.0                                     # Cornering -> no softening, full baseline cost
-    else:
-        scale = max(during_floor, 1.0 / (1.0 + 3.0 * abs(kappa)))
-    R[0, 0] *= scale                                    # Apply only to steering rate cost
-    return R
-
-
 def steer_rate_anti_hunt(kappa, e_y, R_rate_base, enabled=False, e_psi=0.0):
     """
     TEMPORARY/EXPERIMENTAL (fsds sim only, off by default): heavily penalise
-    steering-rate-of-change on top of adaptive_R_rate's existing curvature
-    softening, strongest when the car is centred (|e_y| small), well-aligned
-    (|e_psi| small), AND not currently curving (kappa small). Mirrors
-    mpc_core.py's _steer_rate_anti_hunt, keep both in sync.
+    steering-rate-of-change, strongest when the car is centred (|e_y|
+    small), well-aligned (|e_psi| small), AND not currently curving (kappa
+    small). Mirrors mpc_core.py's _steer_rate_anti_hunt, keep both in sync.
 
     Continuous, not a hard AND-gated threshold: boost_kappa, boost_ey, and
     boost_epsi each saturate independently toward 1.0 as their input
-    shrinks toward 0 (same saturating-curve style as adaptive_R_rate's own
-    floor); their product is the applied scale, so the full boost_max only
-    applies when all three are near their "straight, centred, and aligned"
-    ideal, and it fades smoothly -- never snaps -- as any one of them grows.
+    shrinks toward 0 (a saturating-curve style); their product is the
+    applied scale, so the full boost_max only applies when all three are
+    near their "straight, centred, and aligned" ideal, and it fades
+    smoothly -- never snaps -- as any one of them grows.
 
     boost_kappa/boost_ey/boost_epsi are current-state signals only (no
     forward-scan term).
@@ -259,9 +165,7 @@ def steer_rate_anti_hunt(kappa, e_y, R_rate_base, enabled=False, e_psi=0.0):
         Current lateral deviation from the path centreline (m). Sign does
         not matter; only magnitude is used.
     R_rate_base : np.ndarray, shape (2, 2)
-        Rate-of-change cost matrix to boost -- pass the ALREADY
-        curvature-softened output of adaptive_R_rate so the two compose
-        rather than one undoing the other.
+        Rate-of-change cost matrix to boost.
     enabled : bool, optional
         Master off-switch. False (default) returns R_rate_base completely
         unmodified -- not even copied.
@@ -380,8 +284,8 @@ def adaptive_Q_scaling(e_y, Q_base, enabled=False):
 
     SHAPE
     -----
-    Mirrors adaptive_R_rate's saturating-floor style: linear ramp between
-    ey_lo and ey_hi, 1.0 (no change) at and above ey_hi, floor below ey_lo.
+    A saturating-floor style: linear ramp between ey_lo and ey_hi, 1.0 (no
+    change) at and above ey_hi, floor below ey_lo.
         scale = floor                              |e_y| <= ey_lo
         scale = floor + (1-floor)*(|e_y|-ey_lo)/(ey_hi-ey_lo)   ey_lo < |e_y| < ey_hi
         scale = 1.0                                 |e_y| >= ey_hi
@@ -442,7 +346,7 @@ def _corner_factor(kappa, k):
     0 (straight) -> 1 (full corner), a single continuous saturating curve
     of the CURRENT |kappa| (the ~1m-preview curvature the caller already
     computes every tick via curvature_estimate(), same signal
-    adaptive_R_rate/steer_rate_anti_hunt use). Deliberately the SAME
+    steer_rate_anti_hunt uses). Deliberately the SAME
     functional shape for both rising (entry) and falling (exit) curvature --
     no separate decay-distance timer, no hysteresis state: this is a pure
     function of the current instantaneous signal, replacing the whole

@@ -65,7 +65,7 @@ flowchart LR
     subgraph ROLLOUT["rollout_core.run_core_rollout() (sim/rollout_core.py)"]
         direction LR
         MODEL["bicycle_model.get_8state_discrete_model()<br/>&rarr; Ad, Bd (ZOH linearised bicycle model)"]
-        GAINS["model_utils.adaptive_R_scaling(vx, R)<br/>model_utils.adaptive_R_rate(&kappa;, R_rate)<br/>&rarr; speed- and curvature-adjusted weights"]
+        GAINS["model_utils.adaptive_R_scaling(vx, R)<br/>&rarr; speed-adjusted weights"]
         SOLVE["optimiser.solve_mpc()<br/>&rarr; OSQP QP &rarr; u* = [&delta;_cmd, a_cmd]"]
         SCORE["scoring.RolloutMetrics.add_step()<br/>&rarr; accumulates the 13 score metrics"]
         MODEL --> GAINS --> SOLVE --> SCORE
@@ -215,7 +215,7 @@ The plant computes tyre grip using the Pacejka **MF94** "Magic Formula", an empi
 
 Where `α` is slip angle (lateral) or slip ratio (longitudinal), and `Fz` is the tyre's current normal load. See [vehicle_physics_guide.md §4](vehicle_physics_guide.md#4-what-is-full-mf94-pacejka-and-what-is-a-tyre-model-at-all) for what each coefficient (`B`/`C`/`D`/`E`/`Sv`/`Sh`), `mu`/`k_sens`, tyre relaxation, and the friction ellipse physically mean, not repeated here.
 
-This curve is where the plant's nonlinearity shows up numerically. Near `α = 0` it's *approximately* a straight line through the origin, and that local slope is exactly the linear cornering-stiffness `Cf`/`Cr` the MPC's internal model assumes holds everywhere (see "Linear vs nonlinear" in [`lmpc.md`](lmpc.md#linear-vs-nonlinear-in-plain-english)). Push `α` out past roughly 5-8° of slip, though, and the real curve visibly bends over: each extra degree of slip buys noticeably less extra force than the last, until it saturates at `D` and can even fall past that (a tyre that's broken traction). Doubling the slip angle out here does **not** double the force: it might only add 20% more, or none at all, which is exactly the behaviour a fixed-multiplier linear model cannot represent.
+This curve is where the plant's nonlinearity shows up numerically. Near `α = 0` it's *approximately* a straight line through the origin, and that local slope is exactly the linear cornering-stiffness `Cf`/`Cr` the MPC's internal model assumes holds everywhere (see "Linear vs nonlinear" in [`lmpc.md`](lmpc.md#linear-vs-nonlinear)). Push `α` out past roughly 5-8° of slip, though, and the real curve visibly bends over: each extra degree of slip buys noticeably less extra force than the last, until it saturates at `D` and can even fall past that (a tyre that's broken traction). Doubling the slip angle out here does **not** double the force: it might only add 20% more, or none at all, which is exactly the behaviour a fixed-multiplier linear model cannot represent.
 
 ---
 ## How the MPC Works

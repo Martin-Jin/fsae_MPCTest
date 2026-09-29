@@ -422,8 +422,6 @@ NMPC_REVERSAL_PENALTY_ENABLED=false
 # MPC_R_A_ACCEL=3.0                     # [shared] acceleration-effort weight, a_cmd >= 0
 # MPC_R_A_BRAKE=0.5                     # [shared] acceleration-effort weight, a_cmd < 0 (braking); separate from r_a_accel so braking effort can be tuned independently
 # MPC_SPEED_TARGET_DEFICIT_MAX=5.0      # [shared] max the ramped speed target may lead the car's current speed by [m/s]; was a bare module constant in mpc_controller.py/rollout_core.py, now a real param. Binding constraint on acceleration for 36.8% of a lap at the old default (2.5); NOT yet live-validated at 5.0
-# MPC_ADAPTIVE_R_RATE_DURING_FLOOR=0.625   # [LTV-QP only] R_rate softening floor, mid-corner
-# MPC_ADAPTIVE_R_RATE_ENTERING_FLOOR=0.85  # [LTV-QP only] R_rate softening floor, corner approach
 # MPC_CORNER_FACTOR_K=8.0                   # [LTV-QP only] corner_factor curve sharpness vs CURRENT |kappa|
 # MPC_Q_EY_CORNER=9.0                       # [LTV-QP only] Q[0,0] at full corner (corner_frac=1)
 # MPC_Q_EPSI_CORNER=3.0                     # [LTV-QP only] Q[2,2] at full corner (corner_frac=1)
@@ -468,8 +466,6 @@ _append_mpc_arg r_delta "$MPC_R_DELTA"
 _append_mpc_arg r_a_accel "$MPC_R_A_ACCEL"
 _append_mpc_arg r_a_brake "$MPC_R_A_BRAKE"
 _append_mpc_arg speed_target_deficit_max "$MPC_SPEED_TARGET_DEFICIT_MAX"
-_append_mpc_arg adaptive_r_rate_during_floor "$MPC_ADAPTIVE_R_RATE_DURING_FLOOR"
-_append_mpc_arg adaptive_r_rate_entering_floor "$MPC_ADAPTIVE_R_RATE_ENTERING_FLOOR"
 _append_mpc_arg corner_factor_k "$MPC_CORNER_FACTOR_K"
 _append_mpc_arg q_ey_corner "$MPC_Q_EY_CORNER"
 _append_mpc_arg q_epsi_corner "$MPC_Q_EPSI_CORNER"

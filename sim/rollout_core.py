@@ -123,7 +123,7 @@ def run_core_rollout(
         Static cone map for SimPerception (used only if use_planner=True).
     Q, R, R_rate : np.ndarray
         MPC cost matrices at their template/tuned values (this function
-        applies adaptive_R_scaling / adaptive_R_rate internally each step).
+        applies adaptive_R_scaling internally each step).
     u_min, u_max : array-like, shape (2,)
         Actuator bounds.
     vehicle_params : VehicleParams

@@ -393,12 +393,11 @@ REF_HEADING_RISE_RATE = 90.0   # deg/s — only used when the flag above is True
 ADAPTIVE_Q_SCALING_ENABLED = True
 
 # [LTV-QP only] STEER_RATE_ANTI_HUNT_ENABLED — TEMPORARY/EXPERIMENTAL, fsds sim only.
-# Heavily penalises steering-rate-of-change on top of adaptive_R_rate's
-# existing curvature softening, but only when the car is already centred
-# (|e_y| small) AND not currently curving (kappa small) -- see
-# controller/model_utils.py::steer_rate_anti_hunt for the exact thresholds
-# and mechanism. "Corner ahead" is NOT detected via path lookahead here --
-# it reuses the same causal, current-curvature signal as adaptive_R_rate, so
+# Heavily penalises steering-rate-of-change, but only when the car is
+# already centred (|e_y| small) AND not currently curving (kappa small) --
+# see controller/model_utils.py::steer_rate_anti_hunt for the exact
+# thresholds and mechanism. "Corner ahead" is NOT detected via path
+# lookahead here -- it reuses the same causal, current-curvature signal, so
 # it cannot anticipate a corner before the car is already turning into it.
 # NOT VALIDATED against VALIDATION_SUITE/recorded-map or any live log.
 # Kept enabled to match the live controller.
@@ -415,25 +414,6 @@ STEER_RATE_ANTI_HUNT_ENABLED = True
 REVERSAL_PENALTY_ENABLED = False
 REVERSAL_PENALTY_BOOST_MAX = 4.0   # ceiling multiplier, applied when u_prev steer == 0
 REVERSAL_PENALTY_K = 8.0           # 1/rad; half-boost at ~7.2deg of previous steering
-
-# [LTV-QP only] ADAPTIVE_R_RATE_ENABLE_IN_CORNERS — TEMPORARY/EXPERIMENTAL, fsds sim only.
-# (Renamed from ADAPTIVE_R_RATE_DISABLE_IN_CORNERS, whose True/False
-# polarity was inverted from what the name suggested.) adaptive_R_rate
-# (above STEER_RATE_ANTI_HUNT_ENABLED's mechanism, see
-# controller/model_utils.py::adaptive_R_rate) normally SOFTENS the steering
-# rate-of-change cost continuously as curvature rises, so the controller
-# isn't over-penalised for the extra steering rate a corner demands. Keep
-# this True to keep that reduction ACTIVE in corners via the continuous
-# curve (no threshold, no discontinuity) -- this is the setting you want if
-# the goal is "reduce R_rate when turning". Setting this False switches
-# softening off once kappa exceeds adaptive_R_rate's own kappa_straight
-# cutoff (0.03): in a corner, R_rate[0,0] gets the full, unscaled baseline
-# cost instead of being relaxed -- the opposite of reduction. NOT VALIDATED.
-# Must stay True — disabling causes severe lag specifically in corners, because
-# the discontinuous R_rate[0,0] jump at the kappa_straight crossing likely
-# spikes QP solver iterations / invalidates warm-starts every tick near the
-# threshold.
-ADAPTIVE_R_RATE_ENABLE_IN_CORNERS = True
 
 # ── Lookahead gain-scheduling family: removed ────────────────────────────────
 # This section used to carry ~15 interacting mechanisms
@@ -774,7 +754,7 @@ NMPC_RJERK_A = 0.0
 # if it never approaches FLOOR_CORNER, k is the thing to fix, not these.
 NMPC_RRATE_ZONE_ENABLED = True
 NMPC_RRATE_ZONE_BOOST_STRAIGHT = 2.0    # x r_rate on a true straight
-NMPC_RRATE_ZONE_EASE_APPROACH = 0.80    # x r_rate when a corner is AHEAD but not here yet (0.35 DNFs offline -- see `docs/reference/`)
+NMPC_RRATE_ZONE_EASE_APPROACH = 0.8    # x r_rate when a corner is AHEAD but not here yet (0.35 DNFs offline -- see `docs/reference/`)
 NMPC_RRATE_ZONE_FLOOR_CORNER = 0.15     # x r_rate mid-corner
 
 NMPC_RRATE_STAGE_RAMP_ENABLED = False
@@ -1036,9 +1016,8 @@ NMPC_LATENCY_COMPENSATION_MS = 25.0         # defaults to NMPC_SOLVE_BUDGET_MS; 
 
 # NMPC_V_DES_FILTER_ALPHA: parity placeholder only, NOT YET WIRED IN. Live's
 # nmpc_core.py low-pass-filters the incoming speed target before its cost
-# function sees it (nmpc_params.py's nmpc_v_des_filter_alpha, default 0.09
-# as of 2026-09-15 live tuning, the best full-run result of the day after a
-# wide sweep -- see that field's own docstring and
+# function sees it (nmpc_params.py's nmpc_v_des_filter_alpha, default 0.09,
+# the best result of a live tuning sweep -- see that field's own docstring and
 # planner_only_lap2_corner_spinout.md). controller/nmpc_optimiser.py's
 # compute_step() has NO equivalent: it feeds desired_speed straight into
 # _outputs()/_solve_step() unfiltered every call. This constant exists only
@@ -1047,31 +1026,6 @@ NMPC_LATENCY_COMPENSATION_MS = 25.0         # defaults to NMPC_SOLVE_BUDGET_MS; 
 # added to nmpc_optimiser.py.
 NMPC_V_DES_FILTER_ALPHA = 0.09
 
-
-# ------------------------------------------------------------------------------
-# Adaptive-gain SHAPE constants
-# ------------------------------------------------------------------------------
-# The *_ENABLED flags further up decide WHETHER each adaptive-gain mechanism
-# runs; these decide the SHAPE of the curve it applies — the floors, ceilings
-# and ramp sharpnesses. Each is a keyword argument of the function that uses
-# it in controller/model_utils.py, defaulting to the value below, so this
-# file is the single place any of them gets tuned. Read the referenced
-# function's docstring for the mechanism before changing one — these are all
-# tuned values, not arbitrary defaults.
-#
-# Mirrors the live side's MPCParams (mpc_params.py) field-for-field; keep the
-# numbers identical across both per CLAUDE.md's planning/control parity rule.
-
-# [LTV-QP only] adaptive_R_rate's softening floor on the steering rate-of-change cost
-# R_rate[0,0] — "how much of the rate penalty survives in a corner?" Driven
-# by the car's CURRENT curvature. Raising it means less softening (more
-# damping, but a controller more penalised for the steering rate a corner
-# needs); lowering it too far is what let steering sign-reversal chatter
-# grow mid-corner. See controller/model_utils.py::adaptive_R_rate.
-#
-# Only the current-curvature floor is implemented (no forward-scan
-# entering-floor).
-ADAPTIVE_R_RATE_DURING_FLOOR = 0.625
 
 # FSDS's fitted sustained lateral-acceleration ceiling law,
 # a_lat_max(v) = max(FLAT, SLOPE * |v| + INTERCEPT) in m/s^2. This is a
@@ -1462,7 +1416,6 @@ VALIDATION_SUITE = [
     "PATH_FS_CORNER",
     "PATH_MICRO_SLALOM",
     # "PATH_OFFSET_CHICANE",
-    # "PATH_SKIDPAD",
     # "PATH_S_BEND",
     # "PATH_MIXED",
     # "PATH_CHICANE",

@@ -1435,8 +1435,6 @@ _FEATURE_GROUPS: list[tuple[str, list[tuple[str, str | None, str]]]] = [
         ("Adaptive Q scaling enabled", "ADAPTIVE_Q_SCALING_ENABLED", "adaptive_q_scaling_enabled"),
         ("Steer-rate anti-hunt enabled", "STEER_RATE_ANTI_HUNT_ENABLED",
          "steer_rate_anti_hunt_enabled"),
-        ("Adaptive R-rate enabled in corners", "ADAPTIVE_R_RATE_ENABLE_IN_CORNERS",
-         "adaptive_r_rate_enable_in_corners"),
         ("Reference-heading rate limit enabled", "REF_HEADING_RATE_LIMIT_ENABLED",
          "ref_heading_rate_limit_enabled"),
         ("Reversal penalty enabled (experimental)", "REVERSAL_PENALTY_ENABLED",

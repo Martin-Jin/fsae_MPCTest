@@ -633,9 +633,6 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=None, R_
       - adaptive_R_scaling(vx, R): increases steering cost at high speed
         (Hill function, saturates at ~2.5× base) to prevent destabilising
         large steering commands where the linear model is less accurate.
-      - adaptive_R_rate(kappa, R_rate): softens steering jerk penalty in
-        tight corners (floor at 35% of base) so the controller can steer
-        aggressively enough to track the corner without understeering.
 
     INITIAL CONDITION JITTER
     ------------------------

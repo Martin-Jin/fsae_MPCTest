@@ -96,15 +96,9 @@ Every adaptive gain below is an *enable flag* (whether the mechanism runs) plus 
 
 **Known constraints**: detects "currently curving"/"centred"/"aligned" only via current curvature/`e_y`/`e_psi` (reactive); these three alone cannot anticipate a corner before the car is already turning into it. Not validated against `VALIDATION_SUITE`/recorded-map or any live log as a whole mechanism; treat as experimental. (`anti_hunt_k_lookahead`, a lookahead-curvature fade gate that once paired with this mechanism, does not exist on `MPCParams`, removed along with the rest of the lookahead family in the corner-factor rewrite; see §4.4.)
 
-### 4.3 Adaptive R-rate corner softening (`adaptive_r_rate_enable_in_corners`)
+### 4.3 Adaptive R-rate corner softening, REMOVED
 
-**Purpose**: continuously softens the steering-rate-of-change cost as current curvature rises, so the controller isn't over-penalised for the extra steering rate a corner demands.
-
-| Field | Purpose |
-|---|---|
-| `adaptive_r_rate_during_floor` | `R_rate[0,0]` floor driven by the car's CURRENT curvature |
-
-**Known constraints**: keep this enabled (True) for continuous softening. Disabling it does not remove softening symmetrically, it switches to a discontinuous step at a fixed curvature threshold, which was tested and caused severe lag specifically in corners (likely from the discontinuous `R_rate[0,0]` jump spiking QP solver iterations / invalidating warm-starts near the threshold). Lowering `adaptive_r_rate_during_floor` too far reintroduces steering sign-reversal chatter mid-corner. This is the mechanism that keeps that in check, not just a free knob. (A second, lookahead-driven floor that once paired with this one, `adaptive_r_rate_entering_floor`/`_k_entering`, does not exist on `MPCParams`, removed along with the rest of the lookahead family in the corner-factor rewrite; see §4.4.)
+`adaptive_r_rate_enable_in_corners`/`adaptive_r_rate_during_floor` no longer exist on `MPCParams`. This mechanism continuously softened `R_rate[0,0]` as current curvature rose, but its computed scale was always overwritten by the corner-factor blend (§4.3b) immediately after, so it never reached the QP on either side, live or offline, despite looking wired (the multiplier was still logged to telemetry as `m_Rrate_corner`). Removed rather than left as dead code; see [`removed_mechanisms.md`](removed_mechanisms.md) for the full mechanism and recovery from git history.
 
 ### 4.3b Corner-factor scheduler
 

@@ -106,7 +106,6 @@ controller:
     # Feature enable/disable flags
     adaptive_q_scaling_enabled: true              # soften Q[0,0] near centreline to reduce small-error hunting
     steer_rate_anti_hunt_enabled: true            # extra R_rate[0,0] penalty when centred/aligned/uncurving
-    adaptive_r_rate_enable_in_corners: true       # keep R_rate softening active in corners (continuous, no cutoff)
     delay_compensation_enabled: true              # roll x0 forward through pending commands via predict_ahead()
     ref_heading_rate_limit_enabled: false         # cap how fast the tracked reference heading may change per tick
 
@@ -120,9 +119,6 @@ controller:
     # n_delay stabilisation
     pose_age_lp_alpha: 0.15      # per-tick low-pass coefficient on pose_age_s
     n_delay_hysteresis: 0.25     # steps — deadband either side of an n_delay bin boundary
-
-    # Adaptive R_rate corner softening floor
-    adaptive_r_rate_during_floor: 0.625     # R_rate[0,0] floor driven by CURRENT-position curvature
 
     # Straight-line R_rate[0,0] (steering rate) anti-hunt boost
     anti_hunt_boost_max: 6.0   # ceiling on the steer_rate_anti_hunt multiplier
@@ -204,12 +200,12 @@ controller:
     nmpc_rrate_stage_near: 0.15                # stage-0 multiplier for the steering-rate cost ramp; 1.0 = no-op. Only read when nmpc_rrate_stage_ramp_enabled is true
     nmpc_rrate_zone_enabled: true               # continuous three-zone schedule on steering-RATE cost (boost straight / ease approach / floor corner). MULTIPLIES r_rate_delta
     nmpc_rrate_zone_boost_straight: 2.0        # x r_rate on a true straight
-    nmpc_rrate_zone_ease_approach: 0.35        # x r_rate when a corner is ahead in the horizon but not here yet
+    nmpc_rrate_zone_ease_approach: 0.8        # x r_rate when a corner is ahead in the horizon but not here yet
     nmpc_rrate_zone_floor_corner: 0.15         # x r_rate mid-corner
-    nmpc_rjerk_delta: 0.0                      # steering-JERK weight (second difference of steering command). 0.0 disables the term entirely (1/(rad/s^2)^2)
+    nmpc_rjerk_delta: 150.0                      # steering-JERK weight (second difference of steering command). 0.0 disables the term entirely (1/(rad/s^2)^2)
     nmpc_rjerk_a: 0.0                          # acceleration-jerk weight (second difference of a_cmd). 0.0 disables (1/(m/s^4)^2)
     nmpc_corner_rrate_blend_enabled: false      # blend R_rate[0,0] between nmpc_rrate_steer_straight/_corner by CURRENT curvature. Takes priority over nmpc_steer_rate_anti_hunt_enabled if both set. Default false, unvalidated
-    nmpc_corner_factor_k: -1.0                  # override corner_factor_k for the NMPC only (-1 = inherit). Read by BOTH nmpc_corner_rrate_blend_enabled AND nmpc_rrate_zone_enabled
+    nmpc_corner_factor_k: 27.0                  # override corner_factor_k for the NMPC only (-1 = inherit). Read by BOTH nmpc_corner_rrate_blend_enabled AND nmpc_rrate_zone_enabled
     nmpc_rrate_steer_straight: -1.0             # override rrate_steer_straight for the NMPC only (-1 = inherit). Only read when nmpc_corner_rrate_blend_enabled is true (1/(rad/s)^2)
     nmpc_rrate_steer_corner: -1.0               # override rrate_steer_corner for the NMPC only (-1 = inherit). Only read when nmpc_corner_rrate_blend_enabled is true (1/(rad/s)^2)
 

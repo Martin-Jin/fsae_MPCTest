@@ -12,7 +12,7 @@ This doc is the single home for a whole family of mechanisms that **no longer ex
 ## Table of contents
 
 - [1. The structural limit: the argument that motivates NMPC](#1-the-structural-limit-the-argument-that-motivates-nmpc)
-- [2. What the whole family did, at a glance](#2-what-the-whole-family-did-at-a-glance)
+- [2. What the whole family did](#2-what-the-whole-family-did)
 - [3. Lookahead corner anticipation](#3-lookahead-corner-anticipation)
 - [4. Demand normalisation](#4-demand-normalisation)
 - [5. U-turn detection](#5-u-turn-detection)
@@ -21,6 +21,7 @@ This doc is the single home for a whole family of mechanisms that **no longer ex
 - [8. Curvature forcing: the closest attempt, and why it still failed](#8-curvature-forcing-the-closest-attempt-and-why-it-still-failed)
 - [9. Low-speed steering-rate boost](#9-low-speed-steering-rate-boost-removed)
 - [10. FSDS lateral-acceleration ceiling as a lookahead input](#10-fsds-lateral-acceleration-ceiling-as-a-lookahead-input)
+- [10a. Adaptive R_rate current-curvature floor (removed 2026-09-29): computed, then always overwritten before reaching the QP](#10a-adaptive-r_rate-current-curvature-floor-removed-2026-09-29-computed-then-always-overwritten-before-reaching-the-qp)
 - [11. What replaced all of this](#11-what-replaced-all-of-this)
 
 ---
@@ -39,7 +40,7 @@ It's tempting to read every mechanism below as "the MPC looks ahead at the path,
 
 ---
 
-## 2. What the whole family did, at a glance
+## 2. What the whole family did
 
 | Mechanism | What it scanned for | What it reweighted |
 |---|---|---|
@@ -164,6 +165,37 @@ Full numeric gain-sweep trace and the anti-hunt interaction found alongside this
 - **If a future rework revisits this idea, it needs a curvature/lookahead gate** so it only fires when the car is *not* approaching or inside a corner. The tuned values from the original attempt, kept here as a starting point: `boost_max = 2.5, k = 0.35`.
 
 See `docs/logs/late_turn_in_investigation.md`'s "Appendix: Low-speed steering-rate boost" for the full incident, and `docs/reference/superseded_mechanisms.md`'s "Low-speed steering-rate boost" section for the current-state pointer.
+
+---
+
+## 10a. Adaptive R_rate current-curvature floor (removed 2026-09-29): computed, then always overwritten before reaching the QP
+
+**Not part of the lookahead family above** (it reacted to CURRENT curvature only, no forward scan), but removed for a related reason: its output never reached the solver on either side.
+
+- **What it was:** `mpc_core.py`'s `_adaptive_R_rate` (live) / `model_utils.adaptive_R_rate` (offline), gated by `MPCParams.adaptive_r_rate_enable_in_corners` and floored by `adaptive_r_rate_during_floor` (default `0.625`). Relaxed `R_rate[0,0]` (steering rate-of-change cost) in sharp corners so the controller was not over-penalised for the extra steering rate a tight corner demands:
+
+```python
+kappa_straight = 0.03
+if not enable_in_corners and abs(kappa) > kappa_straight:
+    scale = 1.0
+else:
+    scale = max(during_floor, 1.0 / (1.0 + 3.0 * abs(kappa)))
+R[0, 0] *= scale
+```
+
+- **Exact mechanism that killed it:** `compute()` (live) and `solve_ltv_tick()` (`rollout_phases.py`, offline) both called this function first, stored its result in `R_rate_scaled`, and logged its multiplier to `adapt["m_Rrate_corner"]`. A few lines later in the same tick, the corner-factor blend introduced by the corner-factor rewrite (see `docs/reference/control_mechanisms.md`'s "Corner-factor scheduler" section) set `R_rate_scaled[0,0]` again from scratch:
+
+```python
+R_rate_scaled[0, 0] = _blend(
+    self.params.rrate_steer_straight, self.params.rrate_steer_corner,
+    corner_frac,
+) * adapt["m_Rrate_antihunt"] * adapt["m_Rrate_reversal"]
+```
+
+  This assignment replaces `R_rate_scaled[0,0]` outright rather than multiplying onto the existing value, and `adapt["m_Rrate_corner"]` (the adaptive-R_rate multiplier) is not one of the terms re-multiplied back in. The value computed by `_adaptive_R_rate`/`adaptive_R_rate` was correctly logged to telemetry every tick, and never once reached the QP.
+- **Why this survived unnoticed:** the telemetry column `m_Rrate_corner` looked like it was reporting a live, active multiplier, since it was computed from real inputs and varied tick to tick exactly as expected; only tracing the assignment order in `compute()`/`solve_ltv_tick()` shows the blend line discards it.
+- **Removed, not just disabled:** the function, its `MPCParams.adaptive_r_rate_enable_in_corners`/`adaptive_r_rate_during_floor` fields, `settings.py`'s matching constants, and the `m_Rrate_corner` telemetry column have been deleted from both `mpc_core.py`/`model_utils.py` and their call sites, rather than left as dead code that still runs and logs without effect.
+- **Recoverable from git history** if the underlying idea (curvature-dependent R_rate relaxation, independent of the corner-factor blend's own `R_rate[0,0]` endpoints) is ever revisited; any reintroduction must either replace what the corner-factor blend does to `R_rate[0,0]` or explicitly compose with it (multiply into the blend's output the way the anti-hunt and reversal-penalty multipliers already do), not run in parallel and get silently discarded again.
 
 ---
 

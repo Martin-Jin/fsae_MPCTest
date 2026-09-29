@@ -136,7 +136,8 @@ These pairs must stay numerically identical across the offline/live boundary, or
 | Metric normalisation scales | `settings.py` (`METRIC_SCALES`) | `fsds_simulator/control/fsae_control/fsae_control/scoring.py` (inlined as module constant) | 13 entries, `[0.40, 0.45, 0.30, 0.18, 1.50, 0.40, 0.02, 0.30, 1.00, 0.015, 0.70, 2.30, 0.08]` |
 | Constrained-scoring constants | `settings.py` (`CONSTRAINT_FLOOR`, `COMPLETION_THRESHOLD`, `TIME_OBJECTIVE_WEIGHT`, `QUALITY_WEIGHT`) | `fsds_simulator/.../scoring.py` (inlined as module constants) | `10.0` / `0.98` / `1.0` / `0.35` |
 | `A_BRAKE_PLAN` (braking-distance propagation in `curvature_speed`) | `sim/speed_profile.py` | `fsds_simulator/.../control_utils.py` | `5.0` m/s², positive magnitude |
-| Dynamic speed cap enable/gains | `settings.py` (`ENABLE_DYNAMIC_SPEED_CAP`, `DYNAMIC_CAP_A_LAT_MAX`, `DYNAMIC_CAP_SAFETY`) | `mpc/mpc_controller.py` (`enable_dynamic_speed_cap`/`dynamic_cap_a_lat_max`/`dynamic_cap_safety` ROS params) | `True` / `3.2` m/s² / `0.9`, see "Dynamic speed cap" section below |
+| Dynamic speed cap enable/gains | `settings.py` (`ENABLE_DYNAMIC_SPEED_CAP`, `DYNAMIC_CAP_A_LAT_MAX`, `DYNAMIC_CAP_SAFETY`) | `mpc/mpc_controller.py` (`enable_dynamic_speed_cap`/`dynamic_cap_a_lat_max`/`dynamic_cap_safety` ROS params) | code default `True` / `3.2` m/s² / `0.9` on both sides, but `ros2/launch_all.sh`'s MPC tuning shortlist overrides `enable_dynamic_speed_cap` to `false` for a plain launch, so a real run currently has the cap OFF; see "Dynamic speed cap" section below |
+| NMPC progress term (`nmpc_progress_enabled`/`nmpc_q_progress`/`nmpc_progress_reach`/`nmpc_progress_v_min`) | `settings.py` (`NMPC_PROGRESS_ENABLED=False`/`NMPC_Q_PROGRESS=1.0`/`NMPC_PROGRESS_REACH=1.25`/`NMPC_PROGRESS_V_MIN=3.0`) | `nmpc_params.py` (same names, lowercase; dataclass defaults `q_progress=4.25`/`reach=3.0`/`v_min=3.0`) | Not currently in sync: `ros2/launch_all.sh:308` has the flag commented out with a note that it was tried 2026-09-21 and reverted the same day (never completes a lap at any setting tried); the code and params are kept in place rather than removed. Do not treat the numeric values above as validated, and re-check `launch_all.sh`'s own commented hints before assuming any of them |
 | Latency telemetry columns | (offline has no equivalent) | `fsds_simulator/.../telemetry_logger.py` | `pose_age_s`, `path_age_s`, `n_delay`, `solve_ms`, `cmd_latency_ms` |
 | Lap / horizon-accuracy telemetry columns | (offline `rollout_core.py` records no predicted horizon for NMPC at all, and has no multi-lap concept — see "Live/offline score parity" below) | `fsds_simulator/.../telemetry_logger.py` (`LapProgressTracker`, `HorizonAccuracyTracker`) | `lap_idx`, `pred_err_m`, `pred_acc_pct` (per-tick), `lap_score`, `lap_pred_acc_pct` (filled only on the tick a lap completes). Live-only, diagnostics, not fed back into control |
 | Pose-feed hold model | `settings.py` (`POSE_HOLD_*`) + `sim/rollout_core.PoseFeedHold` | (offline-only; models a live fault) | `PROB 0.05`, `MEAN_TICKS 2.1`, `MAX_TICKS 5` |
@@ -178,10 +179,8 @@ This table is the field-by-field mapping. Every field below is confirmed present
 | `terminal_q_scale` | `TERMINAL_Q_SCALE` | `1.0` (matched) |
 | `adaptive_q_scaling_enabled` | `ADAPTIVE_Q_SCALING_ENABLED` | `True` (matched) |
 | `steer_rate_anti_hunt_enabled` | `STEER_RATE_ANTI_HUNT_ENABLED` | `True` (matched) |
-| `adaptive_r_rate_enable_in_corners` | `ADAPTIVE_R_RATE_ENABLE_IN_CORNERS` | `True` (matched) |
 | `ref_heading_rate_limit_enabled` | `REF_HEADING_RATE_LIMIT_ENABLED` | `False` (matched) |
 | `ref_heading_rise_rate_deg_s` | `REF_HEADING_RISE_RATE` | `90.0` (matched) |
-| `adaptive_r_rate_during_floor` | `ADAPTIVE_R_RATE_DURING_FLOOR` | `0.625` (matched) |
 | `anti_hunt_boost_max` | `ANTI_HUNT_BOOST_MAX` | `6.0`, see "remaining fields" note; confirm this offline constant still exists at re-sync time |
 | `corner_factor_k` | `CORNER_FACTOR_K` | `8.0` (matched) |
 | `q_ey_straight` / `q_ey_corner` | `Q_EY_STRAIGHT` / `Q_EY_CORNER` | `4.5` / `9.0` (matched) |
