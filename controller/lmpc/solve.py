@@ -14,7 +14,7 @@ USED BY
 DOES NOT USE
 ------------
   model/vehicle_physics.py (directly), model/bicycle_model.py (receives Ad/Bd as arguments),
-  sim/speed_profile.py, sim/sim_track.py, tuner/performance_stats.py
+  sim/speed_profile.py, sim/perception.py, sim/planner.py, tuner/performance_stats.py
 """
 
 import cvxpy as cp

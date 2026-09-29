@@ -40,7 +40,7 @@ USED BY
 -------
   Standalone: run with `python gui/manual_drive.py`
   Imports from: vehicle_physics, offline_tuner (SYNTHETIC_PATHS/PATH_NAMES),
-                sim_track (place_cones), settings (DT)
+                sim.perception (place_cones), settings (DT)
 
 DOES NOT USE
 ------------
@@ -56,7 +56,7 @@ from matplotlib.animation import FuncAnimation
 
 from model.vehicle_physics import VehicleParams, step_nonlinear_plant, init_plant_state
 from tuner.offline_tuner import SYNTHETIC_PATHS, PATH_NAMES
-from sim.sim_track import place_cones
+from sim.perception import place_cones
 from settings import DT
 
 # ==========================================

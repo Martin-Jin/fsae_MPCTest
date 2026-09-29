@@ -78,7 +78,7 @@ USED BY
 
 DOES NOT USE
 ------------
-  model/vehicle_physics.py, model/bicycle_model.py, controller/lmpc/solve.py, sim/sim_track.py, tuner/performance_stats.py
+  model/vehicle_physics.py, model/bicycle_model.py, controller/lmpc/solve.py, sim/perception.py, sim/planner.py, tuner/performance_stats.py
 """
 
 import numpy as np
@@ -728,7 +728,7 @@ def optimal_lap_time(path_X, path_Y, v_max=None, a_lat_max=None,
     A physically-grounded reference lap time, so `time_bonus` can measure
     "how close to the fastest this car could physically go" instead of being
     anchored to a placeholder constant. Previously the time baseline was
-    `arc_length / 2.5 m/s * 1.5` (see sim_track.calculate_dynamic_max_steps),
+    `arc_length / 2.5 m/s * 1.5` (see planner.calculate_dynamic_max_steps),
     an arbitrary figure with no physical meaning — which made
     TIME_BONUS_WEIGHT (0.25, the second-largest score term) a reward measured
     against nothing in particular.

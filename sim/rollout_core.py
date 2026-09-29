@@ -39,7 +39,8 @@ from collections import deque
 from model.vehicle_physics import (
     step_nonlinear_plant, init_plant_state, find_closest_reference_bounded,
 )
-from sim.sim_track import SimPerception, SimPlanner, calculate_dynamic_max_steps
+from sim.perception import SimPerception
+from sim.planner import SimPlanner, calculate_dynamic_max_steps
 from sim.scoring import RolloutMetrics
 
 from settings import (

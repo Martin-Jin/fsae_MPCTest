@@ -49,7 +49,7 @@ USED BY
 
 DOES NOT USE
 ------------
-  gui/simulation.py, model/vehicle_physics.py, sim/speed_profile.py, sim/sim_track.py,
+  gui/simulation.py, model/vehicle_physics.py, sim/speed_profile.py, sim/perception.py, sim/planner.py,
   tuner/performance_stats.py
 """
 

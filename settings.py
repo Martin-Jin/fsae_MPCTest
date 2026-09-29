@@ -13,7 +13,7 @@ how the *controller* is scored, tuned, and configured to drive.
 """
 
 import numpy as np
-from sim.sim_track import TRACK_HALF_WIDTH
+from sim.perception import TRACK_HALF_WIDTH
 
 # ==============================================================================
 # GENERAL SYSTEM CONFIGURATION (TUNER + SIMULATOR)
@@ -270,7 +270,7 @@ SLAM_NOISE_SEED = 24680
 # commands, so a nonzero DELAY_STEPS is safe to enable).
 
 # ── Cone-detection noise ────────────────────────────────────────────────
-# FSDS's cone map is a latched ORACLE: sim_track.SimPerception returns exact
+# FSDS's cone map is a latched ORACLE: perception.SimPerception returns exact
 # ground-truth cone positions, cropped only by range/FOV (see
 # `docs/reference/simulator_fidelity.md`, "Simulator fidelity limits" — "Cone map...
 # Not modelled anywhere" until this was added). Real cone detection has
@@ -330,7 +330,7 @@ MAX_FAILS = 5
 # than the distance from the centreline to the cones — the car has to be
 # meaningfully outside the cone boundary, not just close to it, to be
 # flagged. You normally shouldn't need to touch this directly; if you want
-# to change it, change TRACK_HALF_WIDTH in sim_track.py instead, which also
+# to change it, change TRACK_HALF_WIDTH in sim/perception.py instead, which also
 # affects cone placement.
 OFFTRACK_LIMIT = TRACK_HALF_WIDTH * 1.3  # Lateral error threshold for DNF (m)
 
@@ -346,7 +346,7 @@ DT = 0.05
 # ------------------------------------------------------------------------------
 # Planner tunables — MUST mirror fsae_bringup/config/fsae_params.yaml's
 # centerline_planner block (live ROS params: smooth, look_radius, plan_horizon,
-# path_blend). sim/sim_track.py::SimPlanner must pass these four values as
+# path_blend). sim/planner.py::SimPlanner must pass these four values as
 # explicit keyword args to build_path_walls()/blend_paths() — those functions
 # have their own hardcoded defaults that silently diverge from the live-tuned
 # values below (e.g. PLANNER_SMOOTH_PER_PT's live 0.015 vs. build_path_walls'

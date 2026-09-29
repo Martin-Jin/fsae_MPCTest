@@ -136,7 +136,7 @@ from model.vehicle_physics import (
 from model.bicycle_model import get_8state_discrete_model
 import sim.speed_profile as sp
 import cma
-from sim.sim_track import (
+from sim.perception import (
     place_cones,
 )
 import datetime
@@ -472,7 +472,7 @@ def build_synthetic_paths():
     Each path is resampled to n_points=MAX_EVALS dense points with:
       - A clamped cubic spline (smooth, no end-point artefacts)
       - A curvature-based speed profile (from sim/speed_profile.py)
-      - Cone placement (from sim_track.place_cones)
+      - Cone placement (from sim.perception.place_cones)
 
     Returns
     -------

@@ -145,7 +145,7 @@ def _seed_pose(blue: np.ndarray, yellow: np.ndarray) -> tuple[np.ndarray, float]
 
     Instead, use FS convention directly: blue cones mark the LEFT boundary
     and yellow the RIGHT, relative to the direction of travel (see
-    sim.sim_track.place_cones and planning.boundary's blue-left/yellow-right
+    sim.perception.place_cones and planning.boundary's blue-left/yellow-right
     validity check). Of the two opposite candidate headings, keep whichever
     one actually puts the nearest blue cone on the left and the nearest
     yellow cone on the right — that is the true recorded driving direction,
@@ -183,7 +183,7 @@ def _seed_pose(blue: np.ndarray, yellow: np.ndarray) -> tuple[np.ndarray, float]
 def _reconstruct_centreline(blue: np.ndarray, yellow: np.ndarray) -> np.ndarray:
     """
     Build a single reference loop from a full recorded cone map by marching a
-    virtual car around the whole lap, exactly as sim.sim_track.SimPlanner does
+    virtual car around the whole lap, exactly as sim.planner.SimPlanner does
     per tick while actually driving. See module docstring for why this — not a
     single global nearest-neighbour sort+pair — is needed to survive a lap that
     crosses near itself.
@@ -348,7 +348,7 @@ def load_recorded_track(json_path: str, n_points: int = PATH_N_POINTS, closed_lo
     -------
     (path_X, path_Y, path_Psi, path_v, blue, yellow) : tuple
         Same shape as tuner/offline_tuner.SYNTHETIC_PATHS[name] and
-        sim/sim_track.place_cones()'s output, so callers can use a recorded
+        sim/perception.place_cones()'s output, so callers can use a recorded
         track everywhere a synthetic path is currently accepted — e.g.
         gui/simulation.py's load_test_path()/on_release() assign these same
         six values.  blue/yellow are the RECORDED cones (not re-placed via

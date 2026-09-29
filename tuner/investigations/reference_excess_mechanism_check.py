@@ -41,7 +41,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(_HERE))
 
 import planning.boundary as boundary  # noqa: E402
-import sim.sim_track as sim_track  # noqa: E402
+import sim.planner as sim_planner  # noqa: E402
 
 _orig_build_path_walls = boundary.build_path_walls
 
@@ -98,7 +98,7 @@ def main():
     u_max = np.array([params.max_steer, params.max_accel])
 
     boundary.build_path_walls = _wrapped
-    sim_track.build_path_walls = _wrapped
+    sim_planner.build_path_walls = _wrapped
     try:
         rollout = run_core_rollout(
             path_X, path_Y, path_Psi, path_v, blue, yellow,
@@ -110,7 +110,7 @@ def main():
         )
     finally:
         boundary.build_path_walls = _orig_build_path_walls
-        sim_track.build_path_walls = _orig_build_path_walls
+        sim_planner.build_path_walls = _orig_build_path_walls
 
     h = rollout["history"]
     psi = np.asarray(h["psi"], float)

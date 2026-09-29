@@ -49,7 +49,7 @@ USED BY
   Standalone: run with `python gui/simulation.py`
   Imports from: vehicle_physics, performance_stats, speed_profile, offline_tuner
                 (SYNTHETIC_PATHS/PATH_NAMES at import time, get_cached_model at
-                runtime), sim_track, rollout_core, settings.
+                runtime), sim.perception, sim.planner, rollout_core, settings.
 
 DOES NOT USE (at runtime, beyond what's listed above)
 -------------------------------------------------------
@@ -71,7 +71,7 @@ from model.vehicle_physics import VehicleParams
 from tuner.performance_stats import benchmark_weights, report_performance_metrics
 import sim.speed_profile as speed_profile
 from tuner.offline_tuner import SYNTHETIC_PATHS, PATH_NAMES, get_cached_model
-from sim.sim_track import place_cones
+from sim.perception import place_cones
 from sim.rollout_core import run_core_rollout, compute_step_budget
 from sim.track_io import load_recorded_track
 from tracks import TRACKS_DIR

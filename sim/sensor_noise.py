@@ -96,7 +96,7 @@ class ConeNoise:
 
     Why this exists
     ---------------
-    sim_track.SimPerception.visible_cones() returns exact ground-truth cone
+    perception.SimPerception.visible_cones() returns exact ground-truth cone
     coordinates, only cropped by range/FOV — see `docs/reference/simulator_fidelity.md`,
     "Simulator fidelity limits": the cone map was, until this class existed,
     the one aspect of the sim/real gap with literally no model at all. This
