@@ -59,7 +59,7 @@ fi
 # still-being-tuned track from becoming the default.
 #
 # Existing tracks (ls ros2/src/fsae_planning/tracks/ to refresh this list):
-# TRACK=comp_test_map_3
+TRACK=comp_test_map_3
 # TRACK=comp_test_map_2_20260916
 # TRACK=acceleration_20260916
 _newest_track() {
@@ -143,8 +143,8 @@ PATH_CSV="$TRACK_DIR/$_TRACK_GEOMETRY_NAME"
 # Set BOTH to false (with CONTROLLER=stanley below) when recording a NEW
 # track: the precomputed toggles replay the OLD map/oracle path instead of
 # driving off the live planner, which defeats recording a fresh lap.
-USE_PRECOMPUTED_SPEED=false
-USE_PRECOMPUTED_PATH=false
+USE_PRECOMPUTED_SPEED=true
+USE_PRECOMPUTED_PATH=true
 # Use raceline_optimizer.py's shaped psi_target column (heading-lead
 # reference, see late_turn_in_investigation.md Part 8/9/10/12) in place of
 # the geometric path tangent for e_psi's reference. Only has an effect
@@ -297,7 +297,7 @@ USE_NMPC=true
 # this track sits at ~31.5 drift episodes/min -- 31.6 / 32.0 / 31.5 across
 # q6.35 and both q7.5 runs. Normalise by duration before comparing, and treat
 # a single run's lap time as noisy: the same config gave 53.29 s and 47.99 s.
-NMPC_Q_E_Y=7.5
+# NMPC_Q_E_Y=7.5
 # NMPC_Q_E_PSI=-1.0                   # [NMPC only] -1 = inherit q_e_psi
 # NMPC_Q_EPSI_DOT=-1.0                # [NMPC only] -1 = inherit q_r. NOTE: weights HEADING-ERROR RATE (r - kappa*s_dot), not absolute yaw rate -- the one weight whose meaning changes, expect to re-sweep it
 # NMPC_R_DELTA=-1.0                   # [NMPC only] -1 = inherit r_delta
@@ -309,7 +309,7 @@ NMPC_Q_E_Y=7.5
 # NMPC_Q_PROGRESS=5.0                        # [NMPC only] progress-reward weight; only read when NMPC_PROGRESS_ENABLED=true. NARROW usable band at r_a_accel=1.0: below ~5 the car never breaks static friction and never launches, above ~6 it carries too much speed into corners and goes off-track
 # NMPC_PROGRESS_REACH=2.0                    # [NMPC only] how far out of reach the progress target sits: s_target = s0 + max(v_cap*N*dt*REACH, 0.5*a_max*(N*dt)^2*REACH). The kinematic floor is what lets the car launch at all (v_cap is deliberately small at a standing start); below ~1.8 it stalls indefinitely
 # NMPC_PROGRESS_V_MIN=0.5                    # [NMPC only] low-speed floor sharing the speed-cap row/weight, guards the standstill trivial solution. Only read when NMPC_PROGRESS_ENABLED=true
-# NMPC_SLACK_LINEAR_WEIGHT=0.0               # [NMPC only] set ~1000 alongside any progress-term experiment: necessary there, measured NOT sufficient. Inert while the progress term is off.
+NMPC_SLACK_LINEAR_WEIGHT=500.0               # [NMPC only] set ~1000 alongside any progress-term experiment: necessary there, measured NOT sufficient. Inert while the progress term is off.
 # NMPC_TRACK_HALFWIDTH=3.5                   # [NMPC only] soft |e_y| bound with slack (both quadratic and linear); <=0 removes the constraint entirely. Matches the LTV-QP's own 3.5m. Narrowing to 3.0 was tried 2026-09-21 for the progress-term experiment and reverted the same day: this field is read unconditionally, so it also tightened ordinary tracking mode and measurably hurt it
 # NMPC_STEER_RATE_ANTI_HUNT_ENABLED=false    # [NMPC only, EXPERIMENTAL] reuses the LTV-QP's steer_rate_anti_hunt penalty on the NMPC, independent of MPC_STEER_RATE_ANTI_HUNT_ENABLED above. Mutually exclusive with NMPC_CORNER_RRATE_BLEND_ENABLED below -- blend takes priority if both are set. Not yet live-tested; offline A/B first.
 # NMPC_ANTI_HUNT_BOOST_MAX=-1.0               # [NMPC only] -1 = inherit anti_hunt_boost_max; only read when NMPC_STEER_RATE_ANTI_HUNT_ENABLED=true
