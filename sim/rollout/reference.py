@@ -16,14 +16,10 @@ first import of sim.rollout.core, which imports this module.
 
 import numpy as np
 
+from angles import wrap_angle as _normalize_angle  # noqa: F401 (re-exported, see sim/rollout/core.py)
 from model.vehicle_physics import plant_to_tracking_error
 
 from settings import DT, REF_HEADING_RATE_LIMIT_ENABLED, REF_HEADING_RISE_RATE
-
-
-def _normalize_angle(angle):
-    """Wrap an angle to (−π, π] using atan2."""
-    return np.arctan2(np.sin(angle), np.cos(angle))
 
 
 def _rate_limit_ref_psi(ref_psi_raw, ref_psi_prev, max_rate_rad_per_s, dt):
