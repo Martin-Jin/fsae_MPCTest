@@ -312,25 +312,27 @@ def build_nmpc(Q, R, R_rate, u_min, u_max, du_max, vehicle_params, nmpc_override
     )
 
 
-def reference_and_speed_target(
+def compute_reference(
     use_planner, perception, planner, cone_noise, pose_age_ticks,
     state, state_est, X_est, Y_est, psi_est, car_pos_np,
-    path_X, path_Y, path_Psi, path_v_profile, idx,
-    ref_psi_prev, v_curv_prev, history,
+    path_X, path_Y, path_Psi, ref_psi_prev, history,
 ):
     """
-    The CONTROLLER's view of tracking error and the raw speed target, from
-    the live planner's centreline when one is ready, otherwise the oracle
-    path.
+    The CONTROLLER's view of tracking error, from the live planner's
+    centreline when one is ready, otherwise the oracle path.
 
-    Returns (e_y, e_psi, v_target, rpsi, planner_cl, ref_psi_prev, v_curv_prev).
-    `rpsi` is None unless the planner branch produced one. `planner_cl` is the
-    planner centreline this tick's error was measured against, or None when
-    the oracle path was used (the NMPC must track the same source).
-    Appends the planner-centreline snapshot to `history` when it is not None.
+    Returns (e_y, e_psi, rpsi, planner_cl, ref_psi_prev, cl_idx). `rpsi` is
+    None unless the planner branch produced one. `planner_cl` is the planner
+    centreline this tick's error was measured against, or None when the
+    oracle path was used (the NMPC must track the same source). `cl_idx` is
+    the nearest-point index into `planner_cl` (None when `planner_cl` is
+    None), reused by compute_speed_target() so it isn't recomputed twice per
+    tick. Appends the planner-centreline snapshot to `history` when it is
+    not None.
     """
     rpsi = None
     planner_cl = None
+    cl_idx = None
     if use_planner:
         # Skip perception/planning entirely while the pose is held. On the
         # car, a stalled pose feed stalls everything downstream of it: the
@@ -377,70 +379,19 @@ def reference_and_speed_target(
             else:
                 ref_psi_prev = rpsi
 
-            if USE_PRECOMPUTED_SPEED_PROFILE:
-                # Track is already fully mapped (settings.py's
-                # USE_PRECOMPUTED_SPEED_PROFILE) -- use the oracle speed
-                # profile computed once from the WHOLE path (path_v_profile,
-                # non-causal, see speed_profile.compute_speed_profile()) at
-                # the car's current position, instead of re-deriving from
-                # only the live-built sub-path. Bypasses the perception-FOV
-                # lookahead shortfall entirely (the live centreline is
-                # typically shorter than curvature_speed()'s own scan
-                # horizon), since it needs no live cone visibility at all
-                # for the speed target. idx is one step stale here
-                # (updated later in the loop, same as the path_v_profile[idx]
-                # fallback below) -- accepted, not new.
-                v_target = float(path_v_profile[idx])
-
-                # The oracle lookup above has no notion of the car's
-                # actual current speed relative to how much runway is
-                # left to brake for the upcoming corner — see
-                # settings.ENABLE_DYNAMIC_SPEED_CAP's docstring. Layer a
-                # live curvature-lookahead cap under it (min, never above
-                # the oracle target) so a corner reached faster than
-                # planned still gets braked for in time. Mirrors
-                # mpc_controller.py's identical logic.
-                if ENABLE_DYNAMIC_SPEED_CAP:
-                    dists = np.linalg.norm(cl - car_pos_np, axis=1)
-                    cl_idx = int(np.argmin(dists))
-                    v_cap = sp.curvature_speed(
-                        cl[cl_idx:], v_max=PLANNER_V_MAX, v_min=PLANNER_V_MIN,
-                        a_lat_max=DYNAMIC_CAP_A_LAT_MAX, safety=DYNAMIC_CAP_SAFETY,
-                    )
-                    v_target = min(v_target, v_cap)
-            else:
-                # No pre-computed profile exists for a live-built centreline
-                # (see SimPlanner) -- derive the target speed on-demand each
-                # step from the sub-path ahead of the car, exactly as the
-                # live ROS node does via control_utils.curvature_speed().
-                dists = np.linalg.norm(cl - car_pos_np, axis=1)
-                cl_idx = int(np.argmin(dists))
-                v_target = sp.curvature_speed(
-                    cl[cl_idx:], v_max=PLANNER_V_MAX, v_min=PLANNER_V_MIN
-                )
-                # curvature_speed() has no memory of its own last output
-                # and the live centreline is rebuilt every step, so a
-                # single noisy sample can swing v_target down far faster
-                # than any real corner's own braking-distance curve would
-                # ask for -- see V_CURV_FALL_RATE's own comment. Mirrors
-                # mpc_controller.py's identical fix.
-                if v_curv_prev is not None:
-                    max_fall = V_CURV_FALL_RATE * DT
-                    v_target = max(v_target, v_curv_prev - max_fall)
-                v_curv_prev = v_target
+            dists = np.linalg.norm(cl - car_pos_np, axis=1)
+            cl_idx = int(np.argmin(dists))
 
             if history is not None:
                 history["planner_X"].append(cl_x)
                 history["planner_Y"].append(cl_y)
         else:
             # Planner not yet ready — fall back to the global reference path.
-            # Without this fallback, e_y/e_psi/v_target would silently
-            # reuse stale values from the previous step whenever the
-            # planner isn't ready.
+            # Without this fallback, e_y/e_psi would silently reuse stale
+            # values from the previous step whenever the planner isn't ready.
             e_y, _, e_psi, _, _, _, _ = plant_to_tracking_error(
                 state_est, path_x=path_X, path_y=path_Y, path_psi=path_Psi
             )
-            v_target = float(path_v_profile[idx])
 
             if history is not None:
                 # No planner centreline yet this step — record an empty
@@ -452,9 +403,77 @@ def reference_and_speed_target(
         e_y, _, e_psi, _, _, _, _ = plant_to_tracking_error(
             state_est, path_x=path_X, path_y=path_Y, path_psi=path_Psi
         )
+
+    return e_y, e_psi, rpsi, planner_cl, ref_psi_prev, cl_idx
+
+
+def compute_speed_target(
+    planner_cl, cl_idx, car_pos_np, path_v_profile, idx, v_curv_prev,
+):
+    """
+    The raw speed target: the oracle profile plus a live curvature cap when
+    a planner centreline is available, otherwise the oracle profile alone.
+
+    `planner_cl`/`cl_idx` come from compute_reference()'s return (None when
+    no planner centreline was ready this tick, which folds into the "no
+    live centreline" branch below exactly like the pre-split function's
+    fallback/no-planner cases did — both only ever read path_v_profile[idx]).
+
+    Returns (v_target, v_curv_prev).
+    """
+    if planner_cl is None:
+        return float(path_v_profile[idx]), v_curv_prev
+
+    cl = planner_cl
+    if USE_PRECOMPUTED_SPEED_PROFILE:
+        # Track is already fully mapped (settings.py's
+        # USE_PRECOMPUTED_SPEED_PROFILE) -- use the oracle speed
+        # profile computed once from the WHOLE path (path_v_profile,
+        # non-causal, see speed_profile.compute_speed_profile()) at
+        # the car's current position, instead of re-deriving from
+        # only the live-built sub-path. Bypasses the perception-FOV
+        # lookahead shortfall entirely (the live centreline is
+        # typically shorter than curvature_speed()'s own scan
+        # horizon), since it needs no live cone visibility at all
+        # for the speed target. idx is one step stale here
+        # (updated later in the loop, same as the path_v_profile[idx]
+        # fallback below) -- accepted, not new.
         v_target = float(path_v_profile[idx])
 
-    return e_y, e_psi, v_target, rpsi, planner_cl, ref_psi_prev, v_curv_prev
+        # The oracle lookup above has no notion of the car's
+        # actual current speed relative to how much runway is
+        # left to brake for the upcoming corner — see
+        # settings.ENABLE_DYNAMIC_SPEED_CAP's docstring. Layer a
+        # live curvature-lookahead cap under it (min, never above
+        # the oracle target) so a corner reached faster than
+        # planned still gets braked for in time. Mirrors
+        # mpc_controller.py's identical logic.
+        if ENABLE_DYNAMIC_SPEED_CAP:
+            v_cap = sp.curvature_speed(
+                cl[cl_idx:], v_max=PLANNER_V_MAX, v_min=PLANNER_V_MIN,
+                a_lat_max=DYNAMIC_CAP_A_LAT_MAX, safety=DYNAMIC_CAP_SAFETY,
+            )
+            v_target = min(v_target, v_cap)
+    else:
+        # No pre-computed profile exists for a live-built centreline
+        # (see SimPlanner) -- derive the target speed on-demand each
+        # step from the sub-path ahead of the car, exactly as the
+        # live ROS node does via control_utils.curvature_speed().
+        v_target = sp.curvature_speed(
+            cl[cl_idx:], v_max=PLANNER_V_MAX, v_min=PLANNER_V_MIN
+        )
+        # curvature_speed() has no memory of its own last output
+        # and the live centreline is rebuilt every step, so a
+        # single noisy sample can swing v_target down far faster
+        # than any real corner's own braking-distance curve would
+        # ask for -- see V_CURV_FALL_RATE's own comment. Mirrors
+        # mpc_controller.py's identical fix.
+        if v_curv_prev is not None:
+            max_fall = V_CURV_FALL_RATE * DT
+            v_target = max(v_target, v_curv_prev - max_fall)
+        v_curv_prev = v_target
+
+    return v_target, v_curv_prev
 
 
 def gate_and_rate_limit_speed_target(v_target, e_y, e_psi, v_actual, gate_prev, v_des_prev):

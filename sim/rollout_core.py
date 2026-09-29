@@ -53,8 +53,8 @@ from settings import (
     USE_NMPC,
 )
 from sim.rollout_phases import (  # noqa: F401 (predict_ahead is public API)
-    _normalize_angle, predict_ahead, build_nmpc, reference_and_speed_target,
-    gate_and_rate_limit_speed_target, true_tracking_error,
+    _normalize_angle, predict_ahead, build_nmpc, compute_reference,
+    compute_speed_target, gate_and_rate_limit_speed_target, true_tracking_error,
     believed_pending_cmds, solve_nmpc_tick, solve_ltv_tick,
     record_solve_history, record_horizon_prediction, compute_time_bonus,
 )
@@ -392,13 +392,13 @@ def run_core_rollout(
             history["r"].append(state[5])
 
         # ── Tracking error + speed target ─────────────────────────────────
-        e_y, e_psi, v_target, rpsi, planner_cl, ref_psi_prev, v_curv_prev = (
-            reference_and_speed_target(
-                use_planner, perception, planner, cone_noise, pose_age_ticks,
-                state, state_est, X_est, Y_est, psi_est, car_pos_np,
-                path_X, path_Y, path_Psi, path_v_profile, idx,
-                ref_psi_prev, v_curv_prev, history,
-            )
+        e_y, e_psi, rpsi, planner_cl, ref_psi_prev, cl_idx = compute_reference(
+            use_planner, perception, planner, cone_noise, pose_age_ticks,
+            state, state_est, X_est, Y_est, psi_est, car_pos_np,
+            path_X, path_Y, path_Psi, ref_psi_prev, history,
+        )
+        v_target, v_curv_prev = compute_speed_target(
+            planner_cl, cl_idx, car_pos_np, path_v_profile, idx, v_curv_prev,
         )
         v_target, gate_prev, v_des_prev = gate_and_rate_limit_speed_target(
             v_target, e_y, e_psi, state[3], gate_prev, v_des_prev,
