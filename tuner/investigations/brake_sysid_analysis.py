@@ -25,7 +25,7 @@ deceleration value, then reports:
     case, rather than assuming one shape.
 
 Usage:
-    python -m tuner.checks.brake_sysid_analysis <brake_sysid_log.csv>
+    python -m tuner.investigations.brake_sysid_analysis <brake_sysid_log.csv>
 """
 import sys
 

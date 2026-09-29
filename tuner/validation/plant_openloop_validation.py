@@ -23,9 +23,9 @@ held-out data: nothing in the ceiling model was ever fitted to it.
 
 Usage
 -----
-    python3 -m tuner.checks.plant_openloop_validation              # both, current params
-    python3 -m tuner.checks.plant_openloop_validation --ab         # A/B the ceiling laws
-    python3 -m tuner.checks.plant_openloop_validation --robustness # rig confound checks
+    python3 -m tuner.validation.plant_openloop_validation              # both, current params
+    python3 -m tuner.validation.plant_openloop_validation --ab         # A/B the ceiling laws
+    python3 -m tuner.validation.plant_openloop_validation --robustness # rig confound checks
 
 Interpreting the output
 -----------------------

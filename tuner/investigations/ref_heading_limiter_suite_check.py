@@ -9,7 +9,7 @@ before being trusted, not just the one recorded map.
 
 Usage
 -----
-    python3 -m tuner.checks.ref_heading_limiter_suite_check
+    python3 -m tuner.investigations.ref_heading_limiter_suite_check
 """
 import os
 os.environ.setdefault("MPLBACKEND", "Agg")

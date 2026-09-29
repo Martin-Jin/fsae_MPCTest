@@ -1283,7 +1283,7 @@ class OfflineSimTab(ttk.Frame):
             text=(
                 "Rough signal only — its dynamics do not match FSDS. Cross-check "
                 "anything that matters against\n"
-                "python -m tuner.recorded_map_rollout or a real FSDS session "
+                "python -m tuner.validation.recorded_map_rollout or a real FSDS session "
                 "before trusting it (see CLAUDE.md).\n\n"
                 "Track/synthetic-path selection and initial-condition sliders are "
                 "configured inside the tool itself.\n"

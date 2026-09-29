@@ -12,10 +12,10 @@ after a plant change. This script makes it one command.
 
 Usage
 -----
-    python3 -m tuner.recorded_map_rollout
-    python3 -m tuner.recorded_map_rollout --planner
-    python3 -m tuner.recorded_map_rollout --mode pi --gain 450 --ceiling 6.6
-    python3 -m tuner.recorded_map_rollout --no-ceiling
+    python3 -m tuner.validation.recorded_map_rollout
+    python3 -m tuner.validation.recorded_map_rollout --planner
+    python3 -m tuner.validation.recorded_map_rollout --mode pi --gain 450 --ceiling 6.6
+    python3 -m tuner.validation.recorded_map_rollout --no-ceiling
 
 Default is the oracle/precomputed path, matching settings.USE_PLANNER=False
 — no planner/perception in the loop, and speed
@@ -51,14 +51,7 @@ from sim.rollout_core import compute_step_budget, run_core_rollout  # noqa: E402
 from sim.track_io import load_recorded_track  # noqa: E402
 from tuner.offline_tuner import get_cached_model  # noqa: E402
 
-from tracks import cone_map_path, resolve_map_arg  # noqa: E402
-
-# The map every baseline in docs/ is quoted on, kept at tracks/comp_test_map_3/
-# so the numbers stay directly comparable across runs. Eight other tuner
-# scripts import this constant rather than re-deriving the path -- repointing
-# it here moves all of them together, which is the reason it stays a module
-# constant.
-DEFAULT_MAP = cone_map_path()
+from tracks import DEFAULT_MAP, resolve_map_arg  # noqa: E402
 
 LIVE = {
     "steer_sat_pct": 21.1, "e_psi_mean": 15.9, "e_psi_p90": 42.0,

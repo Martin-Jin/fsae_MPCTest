@@ -28,7 +28,7 @@ planner mechanism entirely).
 
 Usage
 -----
-    python3 -m tuner.reference_excess_mechanism_check
+    python3 -m tuner.investigations.reference_excess_mechanism_check
 """
 import os
 import sys
@@ -82,7 +82,7 @@ def _wrapped(blue_cones, yellow_cones, car_pos, car_yaw, *a, **kw):
 
 def main():
     from model.vehicle_physics import VehicleParams
-    from tuner.recorded_map_rollout import DEFAULT_MAP
+    from tracks import DEFAULT_MAP
     from sim.track_io import load_recorded_track
     from sim.rollout_core import compute_step_budget, run_core_rollout
     from settings import N_HORIZON, Q_diag, R_diag, R_rate_diag, ROLLOUT_EPS, ROLLOUT_MAX_ITER

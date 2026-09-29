@@ -26,8 +26,8 @@ never made like-for-like:
 
 Usage
 -----
-    python3 -m tuner.checks.live_vs_sim_diagnostics
-    python3 -m tuner.checks.live_vs_sim_diagnostics --no-sim   # live logs only
+    python3 -m tuner.investigations.live_vs_sim_diagnostics
+    python3 -m tuner.investigations.live_vs_sim_diagnostics --no-sim   # live logs only
 """
 import argparse
 import csv
@@ -216,7 +216,8 @@ def live_report():
 
 def sim_report(mode=None, gain=None, continue_after_dnf=False):
     from model.vehicle_physics import VehicleParams
-    from tuner.recorded_map_rollout import DEFAULT_MAP, run
+    from tracks import DEFAULT_MAP
+    from tuner.validation.recorded_map_rollout import run
 
     p = VehicleParams()
     if mode:

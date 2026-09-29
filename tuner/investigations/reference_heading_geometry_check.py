@@ -44,7 +44,7 @@ boundary.py) is reopened as the cause after all.
 
 Usage
 -----
-    python3 -m tuner.reference_heading_geometry_check
+    python3 -m tuner.investigations.reference_heading_geometry_check
 """
 import os
 import sys
@@ -59,7 +59,7 @@ sys.path.insert(0, os.path.dirname(_HERE))
 
 def main():
     from model.vehicle_physics import VehicleParams
-    from tuner.recorded_map_rollout import DEFAULT_MAP
+    from tracks import DEFAULT_MAP
     from sim.track_io import load_recorded_track
     from sim.rollout_core import compute_step_budget, run_core_rollout
     from settings import N_HORIZON, Q_diag, R_diag, R_rate_diag, ROLLOUT_EPS, ROLLOUT_MAX_ITER

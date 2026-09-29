@@ -10,7 +10,7 @@ settings module after import has no effect on names imported via
 
 Usage
 -----
-    python3 -m tuner.checks.ref_heading_limiter_ab
+    python3 -m tuner.investigations.ref_heading_limiter_ab
 """
 import os
 os.environ.setdefault("MPLBACKEND", "Agg")
@@ -21,7 +21,7 @@ import numpy as np
 def run_once(rate_deg_s):
     import sim.rollout_core as rc
     from model.vehicle_physics import VehicleParams
-    from tuner.recorded_map_rollout import DEFAULT_MAP
+    from tracks import DEFAULT_MAP
     from sim.track_io import load_recorded_track
     from settings import N_HORIZON, Q_diag, R_diag, R_rate_diag, ROLLOUT_EPS, ROLLOUT_MAX_ITER
     from tuner.offline_tuner import get_cached_model

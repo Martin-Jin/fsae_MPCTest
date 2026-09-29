@@ -4,7 +4,7 @@ tuner/nmpc_offline_check.py — offline validation for controller/nmpc/,
 mirroring the live repo's ros2/.../test/nmpc_offline_check.py structure so the
 two can be read/compared side by side (see docs/tuning.md's NMPC section).
 
-Run: python -m tuner.nmpc_offline_check
+Run: python -m tuner.validation.nmpc_offline_check
 """
 import math
 import sys

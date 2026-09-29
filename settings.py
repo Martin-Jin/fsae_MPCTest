@@ -141,7 +141,7 @@ DYNAMIC_CAP_SAFETY = 0.9
 # instead of subscribing to the live planner's
 # centreline): the equivalent offline experiment is USE_PLANNER=False above
 # (or, for a recorded real track specifically, `python3 -m
-# tuner.recorded_map_rollout <map.json> --oracle`) — see that flag's own
+# tuner.validation.recorded_map_rollout <map.json> --oracle`) — see that flag's own
 # comment for what it does. No separate flag needed here; USE_PLANNER=False
 # already removes the planner from the rollout and tracks path_X/path_Y/
 # path_Psi (the same oracle path tuner/tools/export_speed_profile.py exports for
@@ -289,7 +289,7 @@ SLAM_NOISE_SEED = 24680
 # other perception-noise-dependent behaviour) testable offline at all.
 #
 # Left OFF, same as SLAM_NOISE_ENABLED above. Isolated from SLAM noise
-# (tuner.recorded_map_rollout --planner, SLAM off/cone on only):
+# (tuner.validation.recorded_map_rollout --planner, SLAM off/cone on only):
 # reversals/s=2.28, moderately above live's current 1.62 but nowhere near
 # SLAM jitter's 4.56 alone -- cone noise is a smaller contributor to the
 # excess, not the dominant one.

@@ -12,9 +12,9 @@ sign-flip rate of that delta.
 Any settings.py constant can be overridden for one run via --set NAME=VALUE
 (repeatable), e.g. to reproduce the investigation doc's sweeps:
 
-    python -m tuner.steering_chatter_check --set Q_diag=[6.0,0.8,1.65,1.20,5.40,0.0,0.0,0.0]
-    python -m tuner.steering_chatter_check --set NMPC_SQP_ITERS=2
-    python -m tuner.steering_chatter_check --controller ltv
+    python -m tuner.investigations.steering_chatter_check --set Q_diag=[6.0,0.8,1.65,1.20,5.40,0.0,0.0,0.0]
+    python -m tuner.investigations.steering_chatter_check --set NMPC_SQP_ITERS=2
+    python -m tuner.investigations.steering_chatter_check --controller ltv
 
 Overrides are applied to the `settings` module BEFORE `sim.rollout_core` is
 imported, which is required for any constant that module imports by bare
@@ -26,7 +26,7 @@ import-time-binding note. Run this script directly (a fresh process each
 time), not by importing it into a longer-lived process, or later overrides
 in the same process will not take effect on already-imported names.
 
-Run: python -m tuner.steering_chatter_check [--controller nmpc|ltv]
+Run: python -m tuner.investigations.steering_chatter_check [--controller nmpc|ltv]
                                              [--set NAME=VALUE ...]
 """
 import argparse
