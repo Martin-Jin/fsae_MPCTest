@@ -31,7 +31,6 @@ Run: python -m tuner.steering_chatter_check [--controller nmpc|ltv]
 """
 import argparse
 import ast
-import sys
 
 import numpy as np
 

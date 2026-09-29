@@ -6,7 +6,7 @@ This repo pairs a nonlinear 24-state vehicle plant with a Model Predictive Contr
 
 **This project has two separate simulators, easy to conflate:** FSDS (above) and this repo's own offline 2D GUI/headless rollout, used for tuning. Neither is validated against the real car; FSDS is a closer approximation since it's a real physics engine, but is not itself confirmed accurate. See [docs/reference/simulator_glossary.md](docs/reference/simulator_glossary.md) for the full explanation and which docs cover which side — [docs/offline_guide.md](docs/offline_guide.md) for this repo's own 2D GUI/tuner, [docs/fsds/](docs/fsds/) for FSDS/live-only docs.
 
-## How it runs, at a glance
+## How it runs
 
 Either controller family can drive **with** the live perception/planner pipeline, or **without** it against a precomputed path — the two are independent choices, not tied to a specific controller. The one exception is recording a brand-new track: that specifically needs the live planner (there's no map yet to precompute from) and defaults to Stanley for it, see [Recording, exporting and driving a track](docs/fsds/fsds_integration_guide.md#recording-exporting-and-driving-a-track).
 
@@ -37,7 +37,7 @@ flowchart LR
     VEHICLE -.->|"next tick's pose"| POSE
 ```
 
-See [docs/architecture.md](docs/architecture.md#architecture-overview) for the full closed-loop diagram (perception/planner internals, the MPC solve loop), [docs/fsds/fsds_ros_integration.md](docs/fsds/fsds_ros_integration.md) for how this connects to FSDS and ROS 2 when running live, and [docs/lmpc.md](docs/lmpc.md#what-mpc-means-here) / [docs/nmpc.md](docs/nmpc.md#structure-and-solve-method-in-brief) / [docs/stanley.md](docs/stanley.md#the-steering-law) for each controller's own per-tick flow.
+See [docs/architecture.md](docs/architecture.md#architecture-overview) for the full closed-loop diagram (perception/planner internals, the MPC solve loop), [docs/fsds/fsds_ros_integration.md](docs/fsds/fsds_ros_integration.md) for how this connects to FSDS and ROS 2 when running live, and [docs/lmpc.md](docs/lmpc.md#what-mpc-means-here) / [docs/nmpc.md](docs/nmpc.md#structure-and-solve-method) / [docs/stanley.md](docs/stanley.md#the-steering-law) for each controller's own per-tick flow.
 
 ## What's in this repo
 

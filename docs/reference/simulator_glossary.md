@@ -12,7 +12,7 @@ Three different things in this project get called "the simulator." This doc defi
 
 If a doc in this project says "the simulator" without qualifying it, check which of the offline rollout or FSDS the surrounding sentence actually means; this project's docs are usually locally unambiguous but rarely spell out the three-way distinction explicitly, which is what this page is for.
 
-## How trustworthy is each one, really
+## How trustworthy is each one
 
 This is the most important thing to take from this page.
 

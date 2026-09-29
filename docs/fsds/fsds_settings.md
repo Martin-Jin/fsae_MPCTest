@@ -35,7 +35,7 @@ Two shortlist blocks exist:
 - **Top-of-file basics**: `CONTROLLER`, `STANDALONE_OUTPUT`, `V_MAX`, `V_MIN`, and **`USE_NMPC`**, active (uncommented) by default rather than left at the dataclass's own default. This is the file to check before assuming which controller (LTV-QP vs. NMPC) or speed cap is actually running on a given launch, the dataclass default alone does not tell you.
 - **"MPC tuning shortlist"**, further down: a longer commented-out list covering the weights/gains most likely to be tuned interactively (`MPC_Q_E_Y`, `MPC_Q_E_PSI`, `MPC_R_DELTA`, `MPC_R_A_ACCEL`/`_BRAKE`, `MPC_SPEED_TARGET_DEFICIT_MAX`, adaptive-gain and corner-factor fields, dynamic speed cap), plus a large NMPC-specific shortlist (horizon, SQP iteration count, corner-factor/rrate-zone/rjerk fields, progress term). A handful of these are also left active rather than commented out; **read the script directly for the current state** rather than trusting a cached description, this shortlist changes as tuning continues.
 
-## Perception feeding the live planner, at a glance
+## Perception feeding the live planner
 
 The live stack's `sim_perception` node (an FOV/box/radius filter over FSDS's cone ground truth) publishes `left_track`/`right_track`, `cone_detection`, and `car_position` on separate timers; one of `centerline_planner`/`skidpad_planner` (selected via the `planner` launch arg) turns those into a published centreline the controller tracks. This is a live ROS 2 node graph, not a Python function call, so its behaviour (publish rates, FOV limits) is fixed by the running nodes' own parameters in `fsae_params.yaml`, not by anything in this doc.
 

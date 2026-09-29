@@ -169,7 +169,7 @@ The code enforces this with the *friction ellipse*: whatever fraction of the tyr
 
 ---
 
-## 5. Other Physics Features, Explained
+## 5. Other Physics Features
 
 ### Aerodynamics, drag and downforce
 

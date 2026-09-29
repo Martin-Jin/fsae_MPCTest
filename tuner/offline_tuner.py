@@ -76,7 +76,6 @@ The tuner evaluates candidates on a library of synthetic FS-spec paths that
 cover representative corner types:
   PATH_SUDDEN_TURN  — single sharp 90° corner, tests late-apex response
   PATH_S_BEND       — paired corners (right then left), tests weight transfer
-  PATH_SKIDPAD      — two full circles (currently disabled/commented out)
   PATH_SPIRAL       — continuously tightening corner, tests progressive response
   PATH_MICRO_SLALOM — tight slalom gates, tests rapid direction changes
   PATH_OFFSET_CHICANE — lateral offset gates
@@ -115,7 +114,6 @@ import subprocess
 import settings  # module handle, for the NMPC tail's shipped x0 seed
 from settings import (
     SCORE_WEIGHTS,
-    METRIC_SCALES,
     TAIL_QUANTILE,
     PATH_N_POINTS,
     USE_PLANNER,
@@ -515,23 +513,6 @@ def build_synthetic_paths():
     wx = np.concatenate([s0x, arc1x[1:], lx[1:], arc2x[1:], s1x[1:]])
     wy = np.concatenate([s0y, arc1y[1:], ly[1:], arc2y[1:], s1y[1:]])
     paths["PATH_S_BEND"] = _resample_path(wx, wy)
-
-    # --- PATH_SKIDPAD ---
-    # Two tangent circles R=9.125 m (FS skidpad centreline specification) with
-    # 5 m entry/exit straight. Tests sustained constant-radius cornering at speed —
-    # the most common FS dynamic event and the hardest for the linear model.
-    # R_skid = 9.125
-    # s0x    = np.zeros(8)
-    # s0y    = np.linspace(-5, 0, 8)
-    # # Right circle: clockwise, centre at (R_skid, 0)
-    # arc1x, arc1y = _make_arc(R_skid, 0, R_skid, 180, -180, n=60)
-    # # Left circle: counter-clockwise, centre at (-R_skid, 0)
-    # arc2x, arc2y = _make_arc(-R_skid, 0, R_skid, 0, 360, n=60)
-    # s1x    = np.zeros(8)
-    # s1y    = np.linspace(0, 5, 8)
-    # wx     = np.concatenate([s0x, arc1x[1:], arc2x[1:], s1x[1:]])
-    # wy     = np.concatenate([s0y, arc1y[1:], arc2y[1:], s1y[1:]])
-    # paths["PATH_SKIDPAD"] = _resample_path(wx, wy)
 
     # --- PATH_SPIRAL ---
     # Continuously tightening clothoid (Euler spiral): curvature increases linearly
