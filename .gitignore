@@ -36,3 +36,4 @@ todo.md
 
 # Editor-local, not project config
 .vscode/
+fsds_simulator/recorded_runs/NMPC/mpc_standalone_path_20260921-152615.csv
