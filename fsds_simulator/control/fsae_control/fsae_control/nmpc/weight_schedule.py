@@ -6,7 +6,7 @@ Curvature-zone and per-stage scaling of the steering-rate weight.
 
 import numpy as np
 
-from fsae_control.mpc.mpc_core import _corner_factor
+from fsae_control.lmpc import _corner_factor
 
 
 def _rrate_zone_scale(kappa_now, kappa_ahead, k, boost_straight, ease_approach,

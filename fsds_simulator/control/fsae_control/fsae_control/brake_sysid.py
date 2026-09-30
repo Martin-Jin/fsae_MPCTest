@@ -62,7 +62,7 @@ from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from fs_msgs.msg import ControlCommand, GoSignal
 from nav_msgs.msg import Odometry
 
-from .mpc.mpc_core import MAX_BRAKE
+from .lmpc import MAX_BRAKE
 
 LOOP_HZ = 20.0
 ACCEL_TIMEOUT_S = 15.0   # give up reaching approach_speed after this long

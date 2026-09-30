@@ -12,7 +12,7 @@ import time
 
 import numpy as np
 
-from fsae_control.mpc.mpc_core import (
+from fsae_control.lmpc import (
     MAX_ACCEL,
     MAX_BRAKE,
     MAX_STEER_RAD,
