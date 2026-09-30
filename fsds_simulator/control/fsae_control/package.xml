@@ -16,13 +16,13 @@
 
   <depend>python3-numpy</depend>
   <depend>python3-scipy</depend>
-  <!-- The MPC controller (mpc/mpc_core.py) additionally needs cvxpy, osqp and
+  <!-- The MPC controller (lmpc/controller.py) additionally needs cvxpy, osqp and
        clarabel.  These are pip-only (no rosdep key), so install them once into
        the ROS interpreter rather than via rosdep:
          pip install cvxpy osqp clarabel
        (on Ubuntu 24.04 add the break-system-packages flag).  The Stanley
        controller (default) has no such dependency. -->
-  <!-- live_viz.py (sim debug tool only) needs matplotlib + a Tk backend:
+  <!-- live_viz/ (sim debug tool only) needs matplotlib + a Tk backend:
          pip install matplotlib
          apt install python3-tk
        Neither is needed by the Stanley or MPC controllers themselves. -->

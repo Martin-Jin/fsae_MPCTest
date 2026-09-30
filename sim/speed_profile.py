@@ -72,13 +72,13 @@ USED BY
                      (oracle/offline reference path only).
   tuner/offline_tuner.py — _resample_path() calls both functions to build path_v for
                      every synthetic test path; also used in scoring time bonus.
-  sim/rollout_core.py  — run_core_rollout()'s use_planner=True branch calls
+  sim/rollout/core.py  — run_core_rollout()'s use_planner=True branch calls
                      curvature_speed() each step on the live planner's centreline
                      (no oracle profile exists for a planner-built path).
 
 DOES NOT USE
 ------------
-  model/vehicle_physics.py, model/bicycle_model.py, controller/lmpc/solve.py, sim/sim_track.py, tuner/performance_stats.py
+  model/vehicle_physics/, model/bicycle_model.py, controller/lmpc/solve.py, sim/perception.py, sim/planner.py, tuner/performance_stats.py
 """
 
 import numpy as np
@@ -132,7 +132,7 @@ A_BRAKE_PLAN = 5.0
 # the time term at exactly 1.0, destroying all discrimination in the primary
 # objective. A lower bound must use what the vehicle can actually do.
 #
-# a_lat: the plant's peak grip is mu=1.76 (vehicle_physics.py: 1.6 * GRIP_SCALE
+# a_lat: the plant's peak grip is mu=1.76 (model/vehicle_physics/: 1.6 * GRIP_SCALE
 # 1.1), i.e. ~17 m/s^2. Using the full figure would assume the tyres generate
 # peak lateral force with zero longitudinal demand, everywhere at once, which
 # even an ideal driver cannot sustain through corner entry/exit. 12.0 (~0.7g of
@@ -298,7 +298,7 @@ def compute_speed_profile(
     # Evaluate the LIVE heuristic at every path point, scanning forward from
     # that point exactly as the car does from its current position each tick.
     # pts[i:] is "the path ahead of point i", which is the same argument shape
-    # rollout_core passes when it calls curvature_speed() on the planner's
+    # sim/rollout/core passes when it calls curvature_speed() on the planner's
     # centreline — so oracle and planner branches now agree by construction.
     # On a closed loop, wrap the scan window past the end back to the start
     # so a point near the finish line still sees the corner just after the
@@ -728,7 +728,7 @@ def optimal_lap_time(path_X, path_Y, v_max=None, a_lat_max=None,
     A physically-grounded reference lap time, so `time_bonus` can measure
     "how close to the fastest this car could physically go" instead of being
     anchored to a placeholder constant. Previously the time baseline was
-    `arc_length / 2.5 m/s * 1.5` (see sim_track.calculate_dynamic_max_steps),
+    `arc_length / 2.5 m/s * 1.5` (see planner.calculate_dynamic_max_steps),
     an arbitrary figure with no physical meaning — which made
     TIME_BONUS_WEIGHT (0.25, the second-largest score term) a reward measured
     against nothing in particular.

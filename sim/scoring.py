@@ -23,20 +23,9 @@ USED BY
 """
 
 import numpy as np
-from settings import (
-    SCORE_WEIGHTS,
-    METRIC_SCALES,
-    COMPLETION_BONUS_WEIGHT,
-    TIME_BONUS_WEIGHT,
-    DNF_PENALTY,
-    DNF_OFFTRACK_PENALTY,
-    CONSTRAINT_FLOOR,
-    COMPLETION_THRESHOLD,
-    TIME_OBJECTIVE_WEIGHT,
-    QUALITY_WEIGHT,
-)
+import settings
 
-# Metric index constants — must stay in sync with SCORE_WEIGHTS order in settings.py
+# Metric index constants — must stay in sync with SCORE_WEIGHTS order in the settings package
 IDX_RMSE               = 0
 IDX_YAW_RMS            = 1
 IDX_SMOOTH_RMS         = 2
@@ -80,14 +69,14 @@ def compute_composite_score(
     Lower is better.
 
     Parameter order here MUST match the IDX_* constants above / the order
-    of SCORE_WEIGHTS in settings.py — the metrics array below is built
+    of SCORE_WEIGHTS in the settings package — the metrics array below is built
     positionally, not by name. accel_reversal_rms is keyword-only with a
     default so existing positional callers (which predate this metric)
     don't break; new callers should pass it explicitly.
 
     steering_reversal_rms/accel_reversal_rms: magnitude-weighted RMS of
     direction reversals, distinguishing controller hunting from a
-    legitimately twisty path — see docs/architecture.md's metric table
+    legitimately twisty path — see docs/reference/architecture.md's "The 13 metrics" section
     (metrics 9, 12) for the full construction and rationale, not repeated
     here.
     """
@@ -115,8 +104,8 @@ def compute_composite_score(
     # 2-3 orders of magnitude too small to affect the outcome — see
     # settings.METRIC_SCALES for the measurement. A metric sitting exactly at
     # its reference scale now contributes exactly its weight.
-    normalised = metrics / METRIC_SCALES
-    quality = float(SCORE_WEIGHTS @ normalised)
+    normalised = metrics / settings.METRIC_SCALES
+    quality = float(settings.SCORE_WEIGHTS @ normalised)
 
     progress = float(np.clip(progress, 0.0, 1.0))
 
@@ -126,13 +115,12 @@ def compute_composite_score(
     # accumulated over a trajectory that ended in failure. Feasible runs
     # occupy a band strictly below CONSTRAINT_FLOOR, infeasible ones strictly
     # above it, so no amount of good driving can promote an infeasible run
-    # above a feasible one. See docs/architecture.md "Why three tiers instead
-    # of one sum" for why a flat additive penalty (the pre-2026-08-06
-    # approach) let a run buy its way out of a crash — not repeated here.
+    # above a feasible one. See docs/reference/architecture.md "Three tiers, not one sum" for why a
+    # flat additive penalty (the pre-2026-08-06 approach) let a run buy its way out of a crash — not repeated here.
     if dnf or offtrack:
-        severity = DNF_PENALTY + (DNF_OFFTRACK_PENALTY if offtrack else 0.0)
+        severity = settings.DNF_PENALTY + (settings.DNF_OFFTRACK_PENALTY if offtrack else 0.0)
         # Deeper progress -> less bad, but never good enough to cross the floor.
-        return float(CONSTRAINT_FLOOR + severity * (1.0 - progress))
+        return float(settings.CONSTRAINT_FLOOR + severity * (1.0 - progress))
 
     # An unfinished-but-not-DNF run (ran out of steps mid-path) is also not a
     # valid measurement of a lap. Same treatment, scaled by how far it got.
@@ -143,12 +131,12 @@ def compute_composite_score(
     # progress therefore marked every successful run infeasible. Fall back to
     # the progress threshold only when the caller can't supply reached_end
     # (e.g. the live car, which has no known path end).
-    finished = reached_end if reached_end is not None else (progress >= COMPLETION_THRESHOLD)
+    finished = reached_end if reached_end is not None else (progress >= settings.COMPLETION_THRESHOLD)
     if not finished:
-        return float(CONSTRAINT_FLOOR + DNF_PENALTY * (1.0 - progress))
+        return float(settings.CONSTRAINT_FLOOR + settings.DNF_PENALTY * (1.0 - progress))
 
     # ── TIER 2: primary objective — time ──────────────────────────────────
-    # time_bonus is optimal_lap_time / actual_time (see rollout_core), so it
+    # time_bonus is optimal_lap_time / actual_time (see sim/rollout/core), so it
     # is 1.0 at the physical limit and decays as the run gets slower. The
     # objective is its complement: 0.0 is a perfect lap, 1.0 is infinitely
     # slow. This is the term that should dominate a FEASIBLE run, and it is
@@ -164,7 +152,7 @@ def compute_composite_score(
     # between two laps of similar speed, not make a slow-but-smooth lap beat
     # a fast one. This is what kills the hunting exploit — hunting cannot buy
     # lap time, so it now only costs.
-    score = TIME_OBJECTIVE_WEIGHT * time_cost + QUALITY_WEIGHT * quality
+    score = settings.TIME_OBJECTIVE_WEIGHT * time_cost + settings.QUALITY_WEIGHT * quality
 
     # Completion is a precondition now (see tier 1), not something to reward,
     # so the old COMPLETION_BONUS_WEIGHT * progress term is gone: every run

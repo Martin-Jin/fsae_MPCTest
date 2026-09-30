@@ -206,7 +206,7 @@ def generate_launch_description():
         # mpc_controller.py's _path_cb) -- wasted SLAM/boundary/spline work
         # every tick for no functional benefit, and, more importantly, the
         # ONLY thing publishing to /fsae/planning/selected_trajectory in that
-        # mode, which meant live_viz.py could never show the real precomputed
+        # mode, which meant live_viz/ could never show the real precomputed
         # reference being driven against no matter what the controller did
         # (see planner_only_lap2_corner_spinout.md's write-up of two failed
         # controller-side attempts to fix this by racing/out-publishing the

@@ -263,3 +263,13 @@ def default_out_for(map_path, filename, allow_overwrite=True):
             "different output path, or drop --no-overwrite to replace it."
         )
     return out
+
+
+# The recorded map every offline validation/investigation script defaults
+# to (the comp_test_map_3 baseline the sim-to-real comparison tables are
+# quoted against). Lives here, not in tuner/validation/recorded_map_rollout.py,
+# so investigation scripts under tuner/investigations/ can import it without
+# depending on a validation script -- that inversion (checks importing a
+# "top-level" script) is what this constant's move is fixing. Must come
+# after list_tracks()/newest_track(), which cone_map_path() calls into.
+DEFAULT_MAP = cone_map_path()

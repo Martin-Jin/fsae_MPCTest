@@ -31,7 +31,7 @@ from fsae_control.control_utils import (
     StanleyController, curvature_speed, load_path_profile_csv,
     load_speed_profile_csv, precomputed_speed_at, tracking_error_speed_gate,
 )
-from fsae_control.telemetry_logger import ControlLogger, LapProgressTracker, build_config_lines
+from fsae_control.telemetry import ControlLogger, LapProgressTracker, build_config_lines
 
 # Same three safeguards mpc_controller.py wraps around curvature_speed()'s
 # raw output, ported here after live testing showed Stanley stuttering (a
@@ -144,14 +144,14 @@ class StanleyControllerNode(Node):
 
         self.pub_cmd = self.create_publisher(AckermannDriveStamped, '/fsae/control/cmd_vel', 10)
         # Debug-only: per-tick weighted breakdown of Stanley's own three
-        # additive terms, for live_viz.py's debug window. Also doubles as
+        # additive terms, for live_viz/'s debug window. Also doubles as
         # this project's only positive "Stanley is active" signal -- MPC
         # and Stanley share the same ROS node name and, in cmd_vel mode,
-        # the same output topic, so live_viz.py cannot otherwise tell them
+        # the same output topic, so live_viz/ cannot otherwise tell them
         # apart (see mpc_controller.py's own /fsae/control/debug_weights).
         self.pub_debug_stanley = self.create_publisher(
             String, '/fsae/control/debug_stanley', 10)
-        # Per-lap score summary -- live_viz.py's lap panel. Same topic/QoS
+        # Per-lap score summary -- live_viz/'s lap panel. Same topic/QoS
         # as mpc_controller.py's own publisher (see its comment for the
         # RELIABLE rationale); no horizon accuracy here (Stanley has no
         # predicted horizon at all — see HorizonAccuracyTracker's docstring),
@@ -218,7 +218,7 @@ class StanleyControllerNode(Node):
         Weighted-cost-style breakdown of Stanley's three additive terms
         (heading error, cross-track atan2 correction, yaw-rate damping),
         each as a share of the sum of their absolute values, plus the raw
-        values themselves. Debug-only, for live_viz.py's Stanley panel;
+        values themselves. Debug-only, for live_viz/'s Stanley panel;
         mirrors mpc_controller.py's _publish_debug_weights() in spirit but
         Stanley has no cost weights to report, only its own control-law
         terms, so "percentage" here means "share of total steering
@@ -336,7 +336,7 @@ class StanleyControllerNode(Node):
                     # No horizon accuracy on Stanley -- no predicted
                     # trajectory exists at all (see HorizonAccuracyTracker's
                     # docstring), so pred_acc_pct/pred_err_m stay None and
-                    # every reader (live_viz.py, plot_playback.py) shows n/a.
+                    # every reader (live_viz/, plot_playback.py) shows n/a.
                     lap_summary = self._telemetry.finish_lap(lap)
                     lap_summary['lap_idx'] = lap['lap_idx']
                     msg = String()

@@ -1,84 +1,115 @@
-# `fsds_simulator/` — standalone ROS 2 workspace mirror
+# fsds_simulator: snapshot mirror of the ROS 2 workspace
 
-This folder is a **staging mirror** of the live [`fsae_planning`](https://github.com/UOA-FSAE/fsae_planning) ROS 2 workspace — every file lives at the exact relative path colcon expects, so this folder alone (plus FSDS itself and the two message repos below) is enough to build and run the full autonomous stack: `centerline_planner`, and either the `stanley` or `mpc` controller (the latter's `standalone_output` parameter selects its output mode). Every node/package file is byte-for-byte identical to its live counterpart; `launch_all.sh` is the one exception — see "What's here but adapted" below. See the parent repo's [`docs/reference/`](../`docs/reference/`) for the exact file-by-file mapping, what is deliberately *not* mirrored, and the resync procedure.
+This directory is a snapshot mirror of the `ros2/src/fsae_planning` ROS 2 workspace (the live simulation tree). It stages changes made there so they can be pull-requested into the separate `fsae_planning` repo later. Nothing is pushed to `fsae_planning` directly, so this mirror is where those changes are stored.
 
-Nothing under `fsds_simulator/` is imported by this repo's own simulator/tuner (`gui/`, `sim/`, `model/`, `controller/`, `tuner/`) — this folder exists purely to hold a ready-to-build copy of the ROS 2 side.
+- **Same paths.** Files sit at the relative paths colcon expects. This directory, plus FSDS and the two message dependencies below, builds and runs the whole stack: `centerline_planner`, and the `stanley` or `mpc` controller.
+- **Identical implementation files.** Every Python file under `control/`, `perception/`, `planning/` and `common/` is currently byte-identical to its live counterpart. `launch_all.sh` is identical too.
+- **A snapshot, not a live mirror.** A change to a file that exists here is applied here as well. Files that were never here are not added. Unrelated drift is not fixed on the way past.
+- **Not imported by the offline tools.** Nothing under `fsds_simulator/` is imported by `gui/`, `sim/`, `model/`, `controller/` or `tuner/` in this repo.
+
+The file mapping, the deliberate non-mirrors and the resync procedure are in [offline_live_parity.md](../docs/reference/offline_live_parity.md).
 
 ## Layout
 
 ```
 fsds_simulator/
-├── launch_all.sh                # one-command launcher (adapted paths, see below)
-├── requirements.txt              # Python deps for this stack (mpc_core.py's solver, etc.)
+├── launch_all.sh                 one-command launcher (same as ros2/launch_all.sh)
+├── requirements.txt              Python deps for this stack
+├── fsds_ros2_custom.Dockerfile   ROS 2 Jazzy image with the solver stack
 ├── common/
-│   ├── fsae_interfaces/        # vendored msgs (Track, ConeDetection, …)
-│   └── fsae_bringup/           # fsae_params.yaml + launch composition (sim.launch.py)
+│   ├── fsae_interfaces/          vendored messages (Track, ConeDetection, ...)
+│   └── fsae_bringup/             fsae_params.yaml + launch files (sim.launch.py, control.launch.py, ...)
 ├── perception/
-│   └── fsae_sim_perception/    # sim_perception: FSDS oracle+odom → /fsae/* inputs
+│   └── fsae_sim_perception/      sim_perception, cone_recorder
 ├── planning/
-│   └── fsae_planning/          # centerline_planner, skidpad_planner + utils
-└── control/
-    └── fsae_control/           # stanley_controller / mpc/mpc_controller (standalone_output param)
-                                 # + fsds_bridge (cmd_vel → FSDS) + mpc/mpc_core (shared MPC QP)
-                                 # + scoring.py (live/offline score parity, see `docs/reference/`)
+│   └── fsae_planning/            centerline_planner, skidpad_planner, boundary/cone/path utilities
+├── control/
+│   └── fsae_control/fsae_control/
+│       ├── stanley_controller.py     Stanley node (entry point: controller)
+│       ├── fsds_bridge.py            cmd_vel to FSDS control command (entry point: fsds_bridge)
+│       ├── control_utils.py          curvature speed, CSV loaders, speed gates
+│       ├── brake_sysid.py            open-loop braking system-ID (entry point: brake_sysid)
+│       ├── mpc/                      mpc_controller.py (node, entry point: mpc_controller),
+│       │                             control_step.py, debug_publish.py, node_constants.py,
+│       │                             mpc_params.py, nmpc_params.py
+│       ├── lmpc/                     LTV-QP: constants, predict, adaptive_gains, controller
+│       ├── nmpc/                     NMPC: layout, reference, dynamics, outputs, weight_schedule,
+│       │                             qp_model, sqp_step, solver
+│       ├── telemetry/                columns, config_lines, horizon_tracker, lap_progress,
+│       │                             control_logger, scoring
+│       └── live_viz/                 panels, node, app (entry point: live_viz)
+├── tracks/                       recorded tracks (a copy that has drifted from the live tracks/)
+├── cone_maps/                    an older recorded cone map
+└── recorded_runs/                exported telemetry CSVs, read by tuner/tools/plot_playback.py
 ```
+
+- `mpc/` holds the node and the parameter dataclasses (`MPCParams`, `NMPCParams`). `lmpc/` and `nmpc/` hold the solvers. `nmpc/` mirrors the offline `controller/nmpc/` file for file.
+- `telemetry/scoring.py` is a copy of the offline `sim/scoring.py` with the scoring constants inlined. Keep the two numerically identical.
+- The live and offline parity rule and the numeric-parity constants are in [offline_live_parity.md](../docs/reference/offline_live_parity.md).
 
 ## Building it into a workspace
 
-1. Create a ROS 2 (Jazzy) workspace and clone the two message dependencies this stack needs alongside it:
+1. Create a ROS 2 Jazzy workspace and clone the message package next to it:
+
    ```bash
    mkdir -p ~/ros2_fsd/src && cd ~/ros2_fsd/src
-   git clone https://github.com/FS-Driverless/fs_msgs.git -b ros2   # fs_msgs (FSDS's own messages)
-   ```
-   `ackermann_msgs` is a released ROS package, not a repo to clone:
-   ```bash
+   git clone https://github.com/FS-Driverless/fs_msgs.git -b ros2
    sudo apt install ros-jazzy-ackermann-msgs
    ```
-2. Copy (or symlink) every package folder under this `fsds_simulator/` directory into `~/ros2_fsd/src/`, preserving their relative paths — i.e. `common/`, `perception/`, `planning/`, `control/` end up directly under `src/`, each containing its packages (`fsae_interfaces`, `fsae_bringup`, `fsae_sim_perception`, `fsae_planning`, `fsae_control`).
-3. You also need the FSDS ↔ ROS 2 bridge itself (`fsds_ros2_bridge`, from the [FSDS simulator repo](https://github.com/FS-Driverless/Formula-Student-Driverless-Simulator)'s `ros2/src/fsds_ros2_bridge`) in the same workspace — this mirror does not include it, since it's part of FSDS itself, not the planning/control stack.
-4. Install this stack's own Python dependencies (`requirements.txt` in this directory, copied from the live workspace):
+
+   `ackermann_msgs` is a released ROS package, not a repo to clone.
+2. Copy or symlink `common/`, `perception/`, `planning/` and `control/` from this directory into `~/ros2_fsd/src/`, keeping their relative paths.
+3. Add the bridge, `fsds_ros2_bridge`, from the FSDS repo's `ros2/src/fsds_ros2_bridge`, into the same workspace. This mirror does not carry it, because it belongs to FSDS.
+4. Install the Python dependencies:
+
    ```bash
    pip install -r requirements.txt
    ```
+
 5. Build:
+
    ```bash
-   cd ~/ros2_fsd && source /opt/ros/jazzy/setup.bash && colcon build
+   cd ~/ros2_fsd && source /opt/ros/jazzy/setup.bash && colcon build --symlink-install
    ```
+
+   Use `--symlink-install` so later edits to `src/` take effect without a rebuild.
+
+The external steps above (the `fs_msgs` branch, the apt package) were not re-run when this file was rewritten.
 
 ## Running
 
 ```bash
-# Terminal 1 — FSDS itself
+# Terminal 1: FSDS itself
 cd ~/fsds-v2.2.0-linux && ./FSDS.sh
 
-# Terminal 2 — FSDS <-> ROS 2 bridge
+# Terminal 2: FSDS to ROS 2 bridge
 cd ~/ros2_fsd && source install/setup.bash
-ros2 launch fsds_ros2_bridge fsds_ros2_bridge.launch.py UDP_control:=false
+ros2 launch fsds_ros2_bridge fsds_ros2_bridge.launch.py
 
-# Terminal 3 — perception + planning + control
+# Terminal 3: perception, planning and control
 cd ~/ros2_fsd && source install/setup.bash
-ros2 launch fsae_bringup sim.launch.py controller:=stanley                                    # Stanley controller
-ros2 launch fsae_bringup sim.launch.py controller:=mpc standalone_output:=false               # MPC via fsds_bridge (steering only)
-ros2 launch fsae_bringup sim.launch.py controller:=mpc                                        # MPC's own throttle/brake (default: standalone_output:=true)
+ros2 launch fsae_bringup sim.launch.py controller:=stanley
+ros2 launch fsae_bringup sim.launch.py controller:=mpc standalone_output:=false
+ros2 launch fsae_bringup sim.launch.py controller:=mpc
 ```
 
-`standalone_output:=true` (the default) is the only mode whose longitudinal behaviour matches what this repo's offline tuner actually tunes — see the parent README's explanation of why the `standalone_output=false` mode discards the MPC's own throttle/brake. `stanley` and `mpc standalone_output:=false` both route through `fsds_bridge`'s simple speed-error P-loop instead.
+- The bridge launch file reads the simulator address from `$FSDS_HOST_IP` (default `localhost`). Under WSL2 with a Windows-side `.exe`, set it first. See the [integration guide](../docs/fsds/integration_guide.md#3-point-the-bridge-at-the-windows-side-simulator).
+- `controller:=mpc` defaults to `standalone_output:=true`. That is the mode whose throttle and brake come from the MPC itself, which is what the offline tuner tunes. With `standalone_output:=false`, `mpc` and `stanley` both route speed through `fsds_bridge`'s speed-error P-loop instead. See [choosing the controller and planner](../docs/fsds/integration_guide.md#choosing-the-controller-and-planner).
+- By default the launch uses the precomputed speed and path of the newest or pinned track. See the [integration guide](../docs/fsds/integration_guide.md#recording-exporting-and-driving-a-track).
 
-### One-command launch (`launch_all.sh`)
+### One-command launch
 
-If your workspace lives at a fixed path (rather than the generic `~/ros2_fsd` used above), `launch_all.sh` in this directory automates all three terminals above — starts FSDS, waits for its RPC server, starts the bridge, waits for odom, then launches the autonomous stack, tearing everything down cleanly on exit or Ctrl+C. It is **adapted to this repo's own machine** (hardcoded Windows username, screen resolution, and workspace path) — read it and edit those three things for your own setup before relying on it; it is not a drop-in script.
+`launch_all.sh` automates the three terminals: it starts the Windows FSDS `.exe`, waits for the RPC port, starts the bridge, then launches the stack, and tears everything down on exit or Ctrl+C. It hardcodes one machine's Windows install path (`WINDOWS_SIM_PATH` and a `cmd.exe` line) and expects the `src/fsae_planning/tracks/` layout beside it. Read and edit it before use. It is not a drop-in script.
 
 ```bash
 ./launch_all.sh
 ```
 
-## What's here but adapted (not byte-identical)
+## Deliberately not mirrored
 
-`launch_all.sh` hardcodes machine-specific paths (Windows FSDS install location, this host's ROS 2 workspace path, log output directory) — copied from the live script and then edited to this repo owner's own machine, the same way you'd need to edit it again for yours. Every other file in this mirror is a byte-for-byte copy.
-
-## What's deliberately not here
-
-- `fsds_ros2_bridge` itself — part of FSDS, not this stack.
-- Anything under `ros2/src/fsae_planning`'s `.git/`, `build/`, `install/`, `log/`, `__pycache__/` — build artifacts, not source.
-- `launch_terminals.sh` — a simpler multi-terminal opener superseded by this mirror's own `launch_all.sh`, which additionally waits for FSDS's RPC server and odom before launching and tears everything down on exit.
-- `CHANGES.md` / `.gitignore` — repo-management files specific to the live `fsae_planning` checkout, not needed to build or run this mirror.
+- `fsds_ros2_bridge`: part of FSDS.
+- The live checkout's `.git/`, `build/`, `install/`, `log/` and `__pycache__/`.
+- `launch_terminals.sh`: a simpler multi-terminal opener that `launch_all.sh` supersedes.
+- `CHANGES.md` and `.gitignore`: repo management files of the live `fsae_planning` checkout.
+- The live checkout's `README.md`. It differs from this file.
+- Live-only tracks (`acceleration_20260916`, `comp_test_map_2_20260916`) and `speed_profile_corner_test.csv`.

@@ -2,9 +2,9 @@
 Open-loop braking system-ID: what deceleration does FSDS actually deliver for
 a given brake command, at a given speed?
 
-Companion to `steering_sysid.py`'s lateral experiment (see
-`docs/reference/` -> "MEASURED: the car's yaw response is ~3x weaker than
-commanded"), but for the LONGITUDINAL braking side, which has never had an
+Companion to the lateral steering system-ID experiment (its node is not
+present in this tree; see `docs/reference/simulator_fidelity.md` -> "FSDS
+enforces a speed-dependent lateral-acceleration ceiling"), but for the LONGITUDINAL braking side, which has never had an
 equivalent measurement (see `docs/logs/brake_sysid_investigation.md` once a
 sweep has been run and analysed). This exists because two NMPC speed-profile
 attempts were rejected for reasons downstream of an unverified braking
@@ -41,7 +41,7 @@ Logs to <repo_root>/fsae_logs/brake_sysid_<epoch>.csv, columns:
     t, phase, approach_speed, brake_cmd, v_actual, a_cmd_equiv
 
 `a_cmd_equiv` converts the raw ControlCommand.brake (0..1, FSDS units) to the
-MPC's own m/s^2 units via `nmpc_core.MAX_BRAKE`/`mpc_core.MAX_BRAKE` so the
+MPC's own m/s^2 units via `lmpc.constants.MAX_BRAKE` so the
 analysis script can plot directly against `a_cmd`-labelled axes from the
 closed-loop logs this investigation started from -- see that constant's own
 import for why it must stay in sync rather than a hardcoded local copy.
@@ -62,7 +62,7 @@ from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from fs_msgs.msg import ControlCommand, GoSignal
 from nav_msgs.msg import Odometry
 
-from .mpc.mpc_core import MAX_BRAKE
+from .lmpc import MAX_BRAKE
 
 LOOP_HZ = 20.0
 ACCEL_TIMEOUT_S = 15.0   # give up reaching approach_speed after this long
@@ -84,7 +84,7 @@ class BrakeSysID(Node):
         # relative depth than its source location, making any fixed count of
         # os.path.dirname() calls silently wrong depending on which copy is
         # actually running. Empty default falls back to '~/fsae_logs' only
-        # for a bare `ros2 run` with no launcher, same as telemetry_logger.py.
+        # for a bare `ros2 run` with no launcher, same as telemetry/control_logger.py.
         self.declare_parameter('repo_root', '')
 
         self.approach_speeds = list(self.get_parameter('approach_speeds').value)

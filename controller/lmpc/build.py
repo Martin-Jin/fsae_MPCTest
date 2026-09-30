@@ -53,8 +53,8 @@ USED BY
 
 DOES NOT USE
 ------------
-  model/vehicle_physics.py (directly), model/bicycle_model.py (receives Ad/Bd as arguments),
-  sim/speed_profile.py, sim/sim_track.py, tuner/performance_stats.py
+  model/vehicle_physics/ (directly), model/bicycle_model.py (receives Ad/Bd as arguments),
+  sim/speed_profile.py, sim/perception.py, sim/planner.py, tuner/performance_stats.py
 """
 
 import cvxpy as cp
@@ -103,7 +103,7 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max, du_max=None, terminal_scale=
     du_max : array-like, shape (nu,), optional
         Hard per-step slew-rate limit on u, including step 0 against u_prev.
         None disables the constraint (legacy behaviour). Must match the live
-        mpc_core.py du_max for offline-tuned weights to transfer.
+        lmpc/controller.py du_max for offline-tuned weights to transfer.
     terminal_scale : float, optional
         Extra multiplier on the state cost applied ONLY to the terminal state
         x[:,N], on top of the existing (unscaled) per-step cost it already
@@ -215,14 +215,14 @@ def init_parameterized_mpc(nx, nu, N, u_min, u_max, du_max=None, terminal_scale=
 
     # Hard per-step slew-rate limit on [delta_cmd, a_cmd].
     #
-    # PARITY: this constraint must exist here too, matching live mpc_core.py,
+    # PARITY: this constraint must exist here too, matching live lmpc/controller.py,
     # or the offline tuner would be optimising against a plant that can
     # change steering arbitrarily fast while the real car is clamped —
-    # weights tuned here would not transfer faithfully. Mirrors mpc_core.py's
+    # weights tuned here would not transfer faithfully. Mirrors lmpc/controller.py's
     # du_max (see that file for how the 180 deg/s figure was measured).
     #
     # Step-0 constraint against u_prev closes a second parity gap:
-    # mpc_core.py hard-constrains `u[:,0] - uprev_p` (its own
+    # lmpc/controller.py hard-constrains `u[:,0] - uprev_p` (its own
     # separate raw-u_prev Parameter, not the sqrtR_rate-weighted one used in
     # the cost), so live can never jump more than du_max from the last
     # applied command on the very first predicted step. A SOFT-only penalty

@@ -11,7 +11,7 @@ from launch_ros.actions import Node
 
 # fsae_control is an installed package by the time `ros2 launch` generates
 # this file (same as any node import), so this resolves the same way
-# mpc_core.py's own `from fsae_control.mpc.mpc_params import ...` does -- no
+# lmpc/controller.py's own `from fsae_control.mpc.mpc_params import ...` does -- no
 # relative path back to src/ needed, unlike map_path's hardcoded absolute
 # default below (which points at data, not code on the Python path).
 from fsae_control.mpc.mpc_params import MPC_PARAM_FIELDS
@@ -68,7 +68,7 @@ def generate_launch_description():
     # the authoritative field list/defaults/units. Generated from
     # MPC_PARAM_FIELDS rather than hand-written so this launch file, the
     # dataclass, and fsae_params.yaml's defaults can't silently drift against
-    # each other (56 near-identical hand-written args is itself a drift
+    # each other (one near-identical hand-written arg per field is itself a drift
     # risk -- see the plan this was built from).
     mpc_param_configs = {
         name: LaunchConfiguration(name) for name, _default, _meta in MPC_PARAM_FIELDS
@@ -136,7 +136,7 @@ def generate_launch_description():
     # reach the code that would use it (confirmed by reading the Node()
     # parameter dicts below, not assumed — the non-MPC Node() entry passes
     # neither use_nmpc nor use_precomputed_heading_profile to Stanley's node
-    # at all, and nmpc_core.py always ignores a heading profile regardless
+    # at all, and nmpc/solver.py always ignores a heading profile regardless
     # of what set it). A launch typo here currently just runs, quietly not
     # doing what the operator asked — these print a LogInfo warning to the
     # terminal at launch time (before the node even starts) so it's visible
@@ -222,7 +222,7 @@ def generate_launch_description():
             # only where NEW tracks get produced (recording + the two
             # exporters); its output is meant to be copied into this
             # directory afterwards, mirroring the workflow the other
-            # direction (see fsae_MPCTest/docs/developer_guide.md).
+            # direction (see fsae_MPCTest/docs/fsds/integration_guide.md).
             #
             # To drive a DIFFERENT (already-committed) track, don't edit this
             # line: set TRACK= in ros2/launch_all.sh, which expands to
@@ -405,7 +405,7 @@ def generate_launch_description():
             msg=("WARNING: use_precomputed_heading_profile=true has NO EFFECT "
                  "with use_nmpc=true -- the NMPC always ignores it (its own "
                  "model already carries the curvature the profile "
-                 "approximates). See nmpc_core.py."),
+                 "approximates). See nmpc/solver.py."),
             condition=warn_nmpc_heading_profile,
         ),
         LogInfo(

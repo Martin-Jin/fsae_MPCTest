@@ -5,7 +5,7 @@ opposed to controller/nmpc/'s Frenet-frame nonlinear MPC).
   build.py   init_parameterized_mpc() — builds the parameterized CVXPY QP
   solve.py   solve_mpc() — the per-tick solve, plus the compiled-problem cache
 
-Both existed as one file, controller/optimiser.py, until split for
+Both existed as one file (the old controller/optimiser.py) until split for
 readability; no behaviour change. See build.py's module docstring for the
 full MPC design (cost function, warm start, parameterized formulation).
 """

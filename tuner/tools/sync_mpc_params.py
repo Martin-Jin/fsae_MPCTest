@@ -37,7 +37,7 @@ section names as the live side of the parity boundary:
     mpc/mpc_params.py
     mpc/nmpc_params.py
     common/fsae_bringup/config/fsae_params.yaml
-Nothing else. In particular this does NOT touch mpc_core.py/nmpc_core.py/
+Nothing else. In particular this does NOT touch lmpc/controller.py/nmpc/solver.py/
 mpc_controller.py/live_viz.py or any other source file -- those still
 need the ordinary manual "propagate this code change" step per
 CLAUDE.md's "Third copy" section, this script is scoped to tunable
@@ -49,7 +49,7 @@ Dry run by default: prints a unified diff per file per destination and
 touches nothing. --apply is required to actually overwrite, and each
 destination still gets a one-time .bak backup (skipped if a .bak from
 this run already exists) before being overwritten, same convention as
-gui/launcher.py's own file-safety mechanism.
+gui/launcher/'s own file-safety mechanism.
 
 fsae_autonomous is a production repo this project's own CLAUDE.md never
 lets an agent commit or push -- this script only ever writes into the
@@ -66,7 +66,7 @@ from pathlib import Path
 
 # Paths are resolved relative to this file, not the CWD, so the script
 # works whether invoked from fsae_MPCTest/ (the documented way) or
-# anywhere else -- same reasoning as gui/launcher.py's _repo_paths().
+# anywhere else -- same reasoning as gui/launcher/'s _repo_paths().
 _FSAE_MPCTEST = Path(__file__).resolve().parent.parent.parent
 _FSDS_ROOT = _FSAE_MPCTEST.parent
 

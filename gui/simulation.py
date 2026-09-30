@@ -37,7 +37,7 @@ At each 20 Hz step:
 
 PLANT / CONTROLLER MISMATCH (intentional)
 ------------------------------------------
-The plant (vehicle_physics.step_nonlinear_plant) is a 24-state nonlinear model
+The plant (vehicle_physics.step_nonlinear_plant) is a 25-state nonlinear model
 with Pacejka tyres, suspension, and aerodynamics. The controller's internal
 model (bicycle_model.get_8state_discrete_model) is a linearised 8-state bicycle
 model. The controller never observes the plant's internal states directly — it
@@ -46,16 +46,16 @@ step. This closed-loop feedback is what makes the MPC robust to model mismatch.
 
 USED BY
 -------
-  Standalone: run with `python gui/simulation.py`
+  Standalone: run with `python -m gui.simulation`
   Imports from: vehicle_physics, performance_stats, speed_profile, offline_tuner
                 (SYNTHETIC_PATHS/PATH_NAMES at import time, get_cached_model at
-                runtime), sim_track, rollout_core, settings.
+                runtime), sim.perception, sim.planner, sim/rollout/core, settings.
 
 DOES NOT USE (at runtime, beyond what's listed above)
 -------------------------------------------------------
   No tuner/CMA-ES optimisation logic from tuner/offline_tuner.py runs during
   simulation. Note: this file does call tuner/offline_tuner.get_cached_model() every
-  simulation step (via sim/rollout_core's model_lookup parameter) — a plain
+  simulation step (via sim/rollout/core's model_lookup parameter) — a plain
   model-cache lookup, not tuning logic, but a genuine runtime dependency,
   unlike SYNTHETIC_PATHS/PATH_NAMES which are read once at import.
 """
@@ -71,32 +71,24 @@ from model.vehicle_physics import VehicleParams
 from tuner.performance_stats import benchmark_weights, report_performance_metrics
 import sim.speed_profile as speed_profile
 from tuner.offline_tuner import SYNTHETIC_PATHS, PATH_NAMES, get_cached_model
-from sim.sim_track import place_cones
-from sim.rollout_core import run_core_rollout, compute_step_budget
+from sim.perception import place_cones
+from sim.rollout.core import run_core_rollout, compute_step_budget
 from sim.track_io import load_recorded_track
 from tracks import TRACKS_DIR
 
-from settings import (
-    USE_PLANNER,
-    ROLLOUT_MAX_ITER,
-    ROLLOUT_EPS,
-    Q_diag,
-    R_diag,
-    R_rate_diag,
-    N_HORIZON,
-)
+import settings
 
 # ==========================================
 # SETUP AND CONFIGURATION
 # ==========================================
-N_horizon = N_HORIZON  # MPC prediction horizon (steps); see settings.N_HORIZON
+N_horizon = settings.N_HORIZON  # MPC prediction horizon (steps); see settings.N_HORIZON
 v_ref     = 7.0     # Fallback constant speed (m/s); only used if path_v_profile is empty
 
 # ── MPC Cost Weight Matrices ───────────────────────────────────────────────────
 
-Q      = np.diag(Q_diag)       # State cost matrix (8×8 diagonal)
-R      = np.diag(R_diag)       # Input cost matrix (2×2 diagonal)
-R_rate = np.diag(R_rate_diag)  # Input rate-of-change cost matrix (2×2 diagonal)
+Q      = np.diag(settings.Q_diag)       # State cost matrix (8×8 diagonal)
+R      = np.diag(settings.R_diag)       # Input cost matrix (2×2 diagonal)
+R_rate = np.diag(settings.R_rate_diag)  # Input rate-of-change cost matrix (2×2 diagonal)
 
 # ── Global GUI State ────────────────────────────────────────────────────────────
 is_drawing          = False          # True while user is dragging a path
@@ -599,17 +591,17 @@ btn_reset.on_clicked(reset_environment)
 # SIMULATION ENGINE
 # ==========================================
  
-def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=None, R_rate_w=None, use_planner=USE_PLANNER):
+def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=None, R_rate_w=None, use_planner=settings.USE_PLANNER):
     """
     Run one closed-loop simulation rollout on the currently loaded path.
 
     This is the core simulation function. It integrates the nonlinear vehicle
     plant (vehicle_physics.step_nonlinear_plant) driven by the MPC solver
-    (optimiser.solve_mpc), which internally predicts using the linear bicycle
+    (controller.lmpc.solve_mpc), which internally predicts using the linear bicycle
     model (bicycle_model.get_8state_discrete_model).
 
     The plant and controller use deliberately different models (model-plant
-    mismatch): the MPC never observes the plant's 24 internal states directly.
+    mismatch): the MPC never observes the plant's 25 internal states directly.
     It only receives the tracking errors derived from the plant's global
     position each step, exactly as a real controller does from state estimates.
 
@@ -699,7 +691,7 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=None, R_
 
     # Optional initial condition jitter (for multi-rollout averaging) —
     # this is a gui/simulation.py-only feature; tuner/offline_tuner always runs
-    # deterministic ICs, so the jitter stays here rather than in rollout_core.
+    # deterministic ICs, so the jitter stays here rather than in sim/rollout/core.
     rng         = np.random.default_rng(rng_seed)
     jitter_ey   = rng.normal(0, 0.05) if rng_seed is not None else 0.0
     jitter_epsi = rng.normal(0, 1.0)  if rng_seed is not None else 0.0   # degrees
@@ -728,7 +720,7 @@ def simulate_closed_loop(Q_w, R_w, ey0, epsi0, rng_seed=None, max_steps=None, R_
         ey0=ey0_eff, epsi0=np.radians(epsi0_eff),
         max_steps=max_steps, dynamic_max_steps=dynamic_max_steps,
         use_planner=use_planner, model_lookup=get_cached_model,
-        n_horizon=N_horizon, eps=ROLLOUT_EPS, max_iter=ROLLOUT_MAX_ITER,
+        n_horizon=N_horizon, eps=settings.ROLLOUT_EPS, max_iter=settings.ROLLOUT_MAX_ITER,
         want_history=True, want_horizon_pred=True,
         optimal_time=optimal_time,
     )
@@ -761,7 +753,7 @@ def run_simulation(event):
     ax_epsi0.set_visible(False)
 
     # Step budget is now computed inside simulate_closed_loop() (via
-    # rollout_core.compute_step_budget) — identical formula to offline_tuner.
+    # sim/rollout/core.compute_step_budget) — identical formula to offline_tuner.
     history = simulate_closed_loop(
         Q, R, slider_ey0.val, slider_epsi0.val,
         rng_seed=None, R_rate_w=R_rate,
@@ -895,7 +887,7 @@ def update_scrub_frame(val):
     Handles the case where pred_X/pred_Y may be shorter than the full trail
     (e.g. if the simulation failed before the last step produced a prediction).
     planner_X/planner_Y are absent entirely when the rollout used the oracle
-    path (use_planner=False) rather than the live planner — see rollout_core.py.
+    path (use_planner=False) rather than the live planner — see sim/rollout/core.py.
 
     Parameters
     ----------

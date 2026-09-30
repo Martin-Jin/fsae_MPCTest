@@ -33,3 +33,6 @@ todo.md
 # rewritten. Local recovery copies (`mv X.bak X`), not project history --
 # git already has that.
 *.bak
+
+# Editor-local, not project config
+.vscode/

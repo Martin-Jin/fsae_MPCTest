@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-nmpc_offline_check.py — reproducible offline validation for nmpc_core's
+nmpc_offline_check.py — reproducible offline validation for nmpc.solver's
 NONLINEAR MPC (see late_turn_in_investigation.md Part 16).
 
 Run it any time:
@@ -56,10 +56,10 @@ _REPO = os.path.dirname(_ROS2)
 _MPCTEST = os.path.join(_REPO, 'fsae_MPCTest')
 TRACK_CSV = os.path.join(_FSAE_PLANNING, 'tracks', 'comp_test_map_3', 'raceline.csv')
 
-from fsae_control.mpc import nmpc_core as nc                        # noqa: E402
-from fsae_control.mpc.mpc_core import MAX_STEER_RAD, MPCController   # noqa: E402
+from fsae_control import nmpc as nc                        # noqa: E402
+from fsae_control.lmpc import MAX_STEER_RAD, MPCController   # noqa: E402
 from fsae_control.mpc.mpc_params import MPCParams                    # noqa: E402
-from fsae_control.mpc.nmpc_core import NMPCController                # noqa: E402
+from fsae_control.nmpc import NMPCController                # noqa: E402
 from fsae_control.mpc.nmpc_params import NMPCParams                  # noqa: E402
 
 FAILURES = []

@@ -63,7 +63,7 @@ ALAT_CEILING — the offline optimiser must respect the SIM's cap, not the
 physical grip limit
 --------------------------------------------------------------------------
 CLAUDE.md documents FSDS enforcing a measured sustained lateral-acceleration
-ceiling (model/vehicle_physics.py's alat_ceiling_at(), ~7.5 m/s^2 flat below
+ceiling (model/vehicle_physics/'s alat_ceiling_at(), ~7.5 m/s^2 flat below
 ~10.7 m/s, rising per the sweep fit above it) well below the plant's true
 grip (mu*g ~17 m/s^2, OPTIMAL_LAP_A_LAT_MAX=12.0 in sim/speed_profile.py).
 optimal_lap_time() uses OPTIMAL_LAP_A_LAT_MAX deliberately AS a physical
@@ -182,8 +182,8 @@ ALAT_MARGIN = 0.85
 # Ceiling on the exported profile's braking, as a fraction of
 # |params.max_accel_brake|.
 #
-# max_accel_brake (-7.0) is documented in model/vehicle_physics.py as a
-# BACKSTOP matching mpc_core's MAX_BRAKE, explicitly "not an FSDS-measured
+# max_accel_brake (-7.0) is documented in model/vehicle_physics/ as a
+# BACKSTOP matching lmpc/constants.py's MAX_BRAKE, explicitly "not an FSDS-measured
 # value". Planning the reference right at it asks the car to brake at its
 # own absolute limit for the whole braking zone, leaving no authority for the
 # MPC to brake harder when it arrives hot. The live logs bear this out: the
@@ -741,9 +741,9 @@ SLIP_LIMIT_RAD = math.radians(5.0)
 def max_yaw_rate(v, params, delta_max_rad=math.radians(25.0)):
     """
     Max steady-state yaw rate the kinematic bicycle model can deliver at
-    speed v with full steering lock -- same relationship mpc_core.py's
+    speed v with full steering lock -- same relationship lmpc/controller.py's
     _discrete_model uses for A_kin[2,6] (r = v/(lf+lr) * delta), evaluated
-    at the live controller's actual steering limit (see mpc_core.py's own
+    at the live controller's actual steering limit (see lmpc/controller.py's own
     module-note on MAX_STEER_RAD 35->25 deg for why 25, not 35).
     """
     return v / (params.lf + params.lr) * delta_max_rad

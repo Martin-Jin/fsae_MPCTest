@@ -3,8 +3,8 @@ MPC path-tracking controller.
 
 A drop-in alternative to the Stanley controller: it follows the planned
 centreline using one of two optimisers, constructed unconditionally in
-__init__ (mpc_core.MPCController, a linear time-varying MPC, by default; or
-nmpc_core.NMPCController when use_nmpc=true). Unlike Stanley (which reacts
+__init__ (lmpc.controller.MPCController, a linear time-varying MPC, by default; or
+nmpc.solver.NMPCController when use_nmpc=true). Unlike Stanley (which reacts
 to the instantaneous cross-track/heading error), the MPC plans a 1.25 s
 horizon, which is what damps the high-speed left-right sway.
 
@@ -23,7 +23,7 @@ parameter (default true):
     preserves the offline-tuned longitudinal behaviour from the fsae_MPCTest
     repo's tuner/offline_tuner.py and gui/simulation.py, which both drive the
     vehicle plant with the MPC's own commanded acceleration (see that repo's
-    sim/rollout_core.py) — the false mode's accel-discarding design does not.
+    sim/rollout/core.py) — the false mode's accel-discarding design does not.
     This node also owns GO-gating, stale-command braking, and cone-proximity
     braking itself in this mode (mirroring fsds_bridge.py's own logic against
     the same inputs) — do NOT launch fsds_bridge.py alongside this node when
@@ -55,7 +55,7 @@ being selected by two separate launchable executables.
     out  /fsds/control_command                fs_msgs/ControlCommand               (standalone_output=true)
     out  /fsae/control/static_reference_path  geometry_msgs/PoseArray        one-shot, TRANSIENT_LOCAL (path_map_path
                                                                              set only) — self._static_path, for
-                                                                             live_viz.py's debug display only, not
+                                                                             live_viz/'s debug display only, not
                                                                              read by anything in the control loop
 
 CONTROL LOOP PHASES (see _control_step)
@@ -81,149 +81,50 @@ CONTROL LOOP PHASES (see _control_step)
   Phase 4a — Telemetry logging of the *final* (post-override) command.
   Phase 5 — Publish.
 """
-import json
-import math
-import time
 
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
-
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+)
 from ackermann_msgs.msg import AckermannDriveStamped
 from fs_msgs.msg import ControlCommand, GoSignal
 from fsae_interfaces.msg import ConeDetection
 from geometry_msgs.msg import Pose, PoseArray, PoseStamped
 from nav_msgs.msg import Odometry
-from rclpy.time import Time
 from std_msgs.msg import String
 
 from fsae_control.control_utils import (
-    curvature_speed, dynamic_speed_cap, load_path_profile_csv,
+    load_path_profile_csv,
     load_path_heading_profile_csv,
-    load_speed_profile_csv, precomputed_speed_at, tracking_error_speed_gate,
+    load_speed_profile_csv,
 )
-from fsae_control.mpc.mpc_core import MAX_STEER_RAD, MPCController
-from fsae_control.mpc.nmpc_core import NMPCController
-from fsae_control.mpc.mpc_params import declare_mpc_params, mpc_params_from_node
-from fsae_control.mpc.nmpc_params import declare_nmpc_params, nmpc_params_from_node
-from fsae_control.telemetry_logger import (
-    ControlLogger, LapProgressTracker, HorizonAccuracyTracker, build_config_lines,
+from fsae_control.lmpc import MPCController
+from fsae_control.nmpc import NMPCController
+from fsae_control.mpc.mpc_params import (
+    declare_mpc_params,
+    mpc_params_from_node,
 )
-
-CONTROL_HZ = 20.0   # must match MPCController(dt=0.05); dt = 1 / CONTROL_HZ
-
-# CONE_BRAKE_DIST is also the ceiling on the dynamic corridor computed in
-# _check_cone_proximity() (car_speed * 0.25, clipped to [0.6, CONE_BRAKE_DIST]).
-# Only used when standalone_output=true (cone braking is fsds_bridge's job
-# otherwise).
-CONE_BRAKE_DIST      = 2.0    # m — forward corridor depth for cone proximity brake
-CONE_BRAKE_WIDTH     = 0.18   # m — lateral half-width of braking corridor (36 cm total)
-CONE_RESET_THRESHOLD = 0.3    # s — continuous cone-brake duration before one MPC reset
-PATH_TIMEOUT         = 0.5    # s — reset the MPC if no fresh trajectory within this window
-
-# Max rate (m/s^2) at which the speed TARGET may rise. Mirrors
-# sim/rollout_core.SPEED_TARGET_RISE_RATE — keep both in sync. Decreases are
-# never rate-limited; delaying a genuine brake request is the failure this is
-# meant to prevent.
-SPEED_TARGET_RISE_RATE = 7.0
-
-# Max speed error (m/s) the rise limiter is allowed to open up before it stops
-# ramping and waits for the car. Mirrors sim/rollout_core.py's constant of the
-# same name — keep in sync.
-#
-# SPEED_TARGET_RISE_RATE alone assumes the car can accelerate at that rate. From
-# a standing start it cannot: the car does not break static friction for ~1 s,
-# so the target ramps to ~7 m/s while the car is still stationary and banks a
-# deficit it spends the next second chasing. The NMPC minimises one scalar cost
-# over the horizon, so a speed error that large swamps the lateral term and the
-# optimiser trades e_y away for speed it was never going to get — measured live
-# as a sideways excursion at launch that self-corrects once the car is rolling.
-#
-# Capping the DEFICIT rather than gating on measured speed is deliberate. A gate
-# of the form "hold the target while v_actual is near zero" deadlocks: no target
-# means no speed error, which means no throttle, which means the car never moves
-# and the gate never opens. Holding at v_actual + DEFICIT_MAX always leaves a
-# real speed error, so throttle still commands and the launch still happens; the
-# ramp resumes by itself as the car closes the gap.
-#
-# Not specific to launch: the same rule stops the target running away after a
-# spin or a heavy brake, for the same reason.
-#
-# 5.0, not the original 2.5. At 2.5 the clamp is not a launch/recovery guard
-# at all, it is the binding constraint on acceleration for a THIRD of a
-# normal lap: measured OFFLINE 36.8% of ticks pinned at exactly the limit,
-# holding a_cmd to 4.45 against a plant that delivers ~12. Raising it to 5.0
-# drops the pinned fraction to 2.3%, nearly doubles peak a_cmd to 8.32, and
-# improves every metric at once rather than trading any against another:
-#
-#   DEFICIT_MAX   score (3 runs)        lap steps   a_cmd max   |e_y| mean   steer sat
-#   2.5           0.757/0.804/0.757     1081-1117   4.45        0.418        4.71%
-#   5.0           0.693/0.692/0.693     1033-1034   8.32        0.402        3.77%
-#
-# Lower score is better. The launch behaviour the clamp exists to protect is
-# unchanged (launch at step 9 either way, launch-phase |e_y| 0.27 m against
-# a 3.5 m boundary). Values above ~5 buy nothing further (10.0 and 100.0
-# both plateau at a_cmd 8.87), so this is the knee, not a ceiling to keep
-# raising.
-#
-# NOT YET LIVE-VALIDATED. This is an offline-only result, and the documented
-# sim-to-real gap (live saturates ~4x more often than the sim) is exactly
-# the failure mode of trusting one. Faster corner entry is the specific risk
-# to watch on the car. See docs/logs/nmpc_progress_term_investigation.md.
-#
-# Promoted to a real MPCParams field (params.speed_target_deficit_max,
-# tunable via ROS param/YAML/launch arg/GUI) rather than this module
-# constant; see mpc_params.py's "Speed-target deficit clamp" section for
-# the current default and rationale. No module-level constant remains.
-# Max rate (m/s^2) at which curvature_speed()'s OWN output (v_curv, the live
-# per-tick geometry-derived target, NOT the precomputed-track oracle lookup)
-# may fall, applied before the tracking-error gate. curvature_speed() is a
-# pure per-tick function with no memory of its own last output, and its
-# docstring already documents that the live planner path (re-fit every
-# frame) carries a few cm of lateral wiggle that survives its internal
-# denoising often enough to swing v_curv by 3-10 m/s in a single 50 ms tick
-# even on a straight or gentle bend (measured live 2026-09-15, see
-# planner_only_speed_target_oscillation.md) -- SPEED_TARGET_RISE_RATE does
-# not catch this, it only bounds the composed target's RISE, and this same
-# noise is the actual DROP.
-#
-# FIRST attempt (2026-09-15) sized this at A_BRAKE_PLAN (control_utils.py,
-# 5.0 m/s^2), reasoning that curvature_speed()'s own braking-distance
-# propagation already assumes that deceleration is enough to plan a genuine
-# corner's slowdown, so a cap at that rate should never bind on real
-# braking. That reasoning had a gap: it assumes the target had the full
-# scan-window distance to ramp down over, but the corner speed can firm up
-# to its true low value only once the car is already close (after the noisy
-# early-window estimate settles), leaving less runway than the planning
-# assumption presupposes. Measured live the same day: with the 5.0 cap in
-# place, the car entered the first corner at ~17 m/s and took 3+ seconds to
-# reach the ~2.5 m/s target, spinning out well before it got there
-# (e_psi -> -98 deg, stalled). 5.0 m/s^2 was capping GENUINE required
-# braking, not just noise.
-#
-# Sized instead at MAX_BRAKE (mpc_core.py, 7.0 m/s^2, matching
-# vehicle_physics.max_accel_brake): the car's actual achievable braking
-# deceleration, not a conservative planning-time assumption. This still
-# smooths a single noisy tick's collapse (which asks for far more than 7.0
-# m/s^2 worth of change) across a few ticks, but no longer throttles a
-# genuine hard-braking need down below what the car can physically do.
-V_CURV_FALL_RATE = 7.0
-# Max rate (gate-units/s, gate in [floor, 1.0]) at which
-# tracking_error_speed_gate()'s output may change per tick, in EITHER
-# direction. Without this, a fast-growing e_y sweeping through the gate's
-# active band can compound with a simultaneously falling curvature-based
-# speed target into a sharp single-tick v_desired drop that bypasses
-# SPEED_TARGET_RISE_RATE (that limiter only bounds RISES), producing erratic
-# a_cmd right after. Rate-limiting the gate itself spreads the same total
-# slowdown over several ticks instead of one, keeping the safety response
-# (the car DOES still slow down when tracking badly) while removing the
-# single-tick cliff. Sized to the same order of magnitude as
-# SPEED_TARGET_RISE_RATE by design choice, not measurement.
-GATE_RATE_LIMIT = 2.0
+from fsae_control.mpc.nmpc_params import (
+    declare_nmpc_params,
+    nmpc_params_from_node,
+)
+from fsae_control.telemetry import (
+    ControlLogger,
+    LapProgressTracker,
+    HorizonAccuracyTracker,
+    build_config_lines,
+)
+from fsae_control.mpc.control_step import _ControlStepMixin
+from fsae_control.mpc.debug_publish import _DebugPublishMixin
+from fsae_control.mpc.node_constants import CONTROL_HZ
 
 
-class MPCControllerNode(Node):
+class MPCControllerNode(_ControlStepMixin, _DebugPublishMixin, Node):
     def __init__(self):
         super().__init__('controller')
 
@@ -245,7 +146,7 @@ class MPCControllerNode(Node):
                 # Real-time curvature-lookahead speed cap layered under the
                 # precomputed speed profile (map_path) — see
                 # control_utils.dynamic_speed_cap()'s docstring. No effect
-                # when map_path is unset. Mirrors fsae_MPCTest/settings.py's
+                # when map_path is unset. Mirrors fsae_MPCTest/settings/ package's
                 # ENABLE_DYNAMIC_SPEED_CAP / DYNAMIC_CAP_A_LAT_MAX /
                 # DYNAMIC_CAP_SAFETY.
                 ('enable_dynamic_speed_cap', True),
@@ -257,18 +158,18 @@ class MPCControllerNode(Node):
                                        # else a fsae_MPCTest tuner/export_speed_profile.py
                                        # CSV to use instead — see
                                        # USE_PRECOMPUTED_SPEED_PROFILE in
-                                       # fsae_MPCTest/settings.py.
+                                       # fsae_MPCTest/settings/.
                 ('path_map_path', ''),  # '' -> live /fsae/planning/selected_trajectory
                                        # (default); else the SAME kind of CSV as map_path,
                                        # used for the tracked PATH instead of just speed —
-                                       # see USE_PLANNER=False in fsae_MPCTest/settings.py
+                                       # see USE_PLANNER=False in fsae_MPCTest/settings/
                                        # (the offline equivalent -- no separate flag exists
                                        # there). Removes centerline_planner.py from the
                                        # control loop entirely, to isolate controller/plant
                                        # tracking error from planner-induced path error.
                 ('use_precomputed_heading_profile', False),  # only has an effect
                                        # when path_map_path is ALSO set -- see
-                                       # mpc_core.py's set_heading_profile() and
+                                       # lmpc/controller.py's set_heading_profile() and
                                        # late_turn_in_investigation.md Part 8/9. Uses
                                        # raceline_optimizer.py's shaped psi_target
                                        # column (heading-lead reference) in place of
@@ -290,7 +191,7 @@ class MPCControllerNode(Node):
         # master switch (use_nmpc, default False). Declared unconditionally so
         # control.launch.py can always pass them; nothing below changes unless
         # use_nmpc is true. See nmpc_params.py for why these are a separate
-        # dataclass from MPCParams (settings.py parity) and nmpc_core.py for
+        # dataclass from MPCParams (settings/ parity) and nmpc/solver.py for
         # the formulation.
         declare_nmpc_params(self)
         nmpc_params = nmpc_params_from_node(self)
@@ -408,13 +309,13 @@ class MPCControllerNode(Node):
             self.pub_cmd = self.create_publisher(AckermannDriveStamped, '/fsae/control/cmd_vel', 10)
 
         # NMPC's predicted horizon (Cartesian, from last_telemetry['nmpc_pred_xy'],
-        # see nmpc_core.py's xy_at()), for live_viz.py only -- not read by
+        # see nmpc/reference.py's xy_at()), for live_viz/ only -- not read by
         # anything else in this stack, empty/absent whenever the LTV-QP path
         # is in use (last_telemetry never has this key in that case).
         self.pub_nmpc_pred_path = self.create_publisher(
             PoseArray, '/fsae/control/nmpc_predicted_path', 10)
 
-        # Per-tick weighted-error breakdown + solve time, for live_viz.py's
+        # Per-tick weighted-error breakdown + solve time, for live_viz/'s
         # debug panel only. JSON over a plain String rather than a new
         # fsae_interfaces .msg: this is a debug-only, best-effort field set
         # with no other consumer, not a stable interface worth a schema.
@@ -423,7 +324,7 @@ class MPCControllerNode(Node):
 
         # Per-lap score + horizon-accuracy summary, published the instant a
         # lap completes (see LapProgressTracker.update()'s return value) --
-        # live_viz.py's lap panel. JSON over a plain String, same rationale
+        # live_viz/'s lap panel. JSON over a plain String, same rationale
         # as pub_debug_weights above (debug-only, best-effort, no schema
         # worth a dedicated .msg). RELIABLE + KEEP_LAST(10): a lap
         # completion is a one-shot, low-rate event (once per lap, not once
@@ -442,11 +343,11 @@ class MPCControllerNode(Node):
             self._static_path if self._static_path is not None else np.empty((0, 2))
         )
 
-        # live_viz.py had no way to show the ACTUAL reference being driven
+        # live_viz/ had no way to show the ACTUAL reference being driven
         # against in precomputed-path mode. THREE earlier attempts got this
         # wrong before landing here. One and two tried publishing the static
         # path onto /fsae/planning/selected_trajectory (the live planner's
-        # own topic) to fix live_viz.py's subscription to it: that topic's
+        # own topic) to fix live_viz/'s subscription to it: that topic's
         # other publisher, centerline_planner.py, had no use_precomputed_path
         # awareness and used to keep running/publishing regardless (no
         # gating existed in sim.launch.py, unlike e.g. cone_recorder's
@@ -458,10 +359,10 @@ class MPCControllerNode(Node):
         # inclusion on use_precomputed_path, so the planner never runs in
         # this mode) -- but attempt three's one-shot-after-a-fixed-delay
         # publish, still onto the SAME shared topic, STILL showed nothing
-        # live: launch_all.sh starts live_viz.py well before this node even
+        # live: launch_all.sh starts live_viz/ well before this node even
         # exists (see its own "topics simply have no data yet" comment), so
         # a plain VOLATILE publish is a genuine race against ROS2 discovery
-        # completing on live_viz.py's side with no guaranteed margin, timer
+        # completing on live_viz/'s side with no guaranteed margin, timer
         # delay or not -- confirmed live (a standalone repro showed the
         # message correctly logged as sent by this node, but never observed
         # by a subscriber that started earlier).
@@ -475,7 +376,7 @@ class MPCControllerNode(Node):
         # live-planner-mode viewing instead. A separate topic sidesteps that
         # entirely. TRANSIENT_LOCAL removes the discovery-timing race
         # itself: ROS2 guarantees a late-joining subscriber (also
-        # TRANSIENT_LOCAL, see live_viz.py's matching subscription)
+        # TRANSIENT_LOCAL, see live_viz/'s matching subscription)
         # receives the publisher's last message regardless of when it
         # connects. See planner_only_lap2_corner_spinout.md.
         self._static_path_pub = None
@@ -529,11 +430,11 @@ class MPCControllerNode(Node):
             )
             self.get_logger().warn(
                 f'use_nmpc=True: running the NONLINEAR MPC '
-                f'(nmpc_core.NMPCController, N={self._mpc.N}, '
+                f'(nmpc.solver.NMPCController, N={self._mpc.N}, '
                 f'sqp_iters={nmpc_params.nmpc_sqp_iters}) instead of the '
                 'LTV-QP MPCController. Its adaptive gain schedule and '
                 'use_precomputed_heading_profile do NOT apply -- see '
-                'nmpc_core.py.'
+                'nmpc/solver.py.'
             )
             # NMPCController.set_static_path() precomputes the arc-length /
             # curvature / reference-heading profile its prediction needs,
@@ -641,7 +542,7 @@ class MPCControllerNode(Node):
         # v.x/v.y are body-frame (sim_perception.py relays them unrotated
         # from the bridge's already-body-frame odom) -- keep both instead of
         # collapsing to hypot(), which silently drops the vy*cos(e_psi) term
-        # _error_state needs (see mpc_core.py's e_yd comment).
+        # _error_state needs (see lmpc/controller.py's e_yd comment).
         v = msg.twist.twist.linear
         self._car_speed = float(v.x)
         self._car_vy = float(v.y)
@@ -657,537 +558,6 @@ class MPCControllerNode(Node):
     def _cone_cb(self, msg: ConeDetection) -> None:
         pts = [[p.x, p.y] for p in msg.blue] + [[p.x, p.y] for p in msg.yellow]
         self._cones_local = np.array(pts, dtype=np.float64) if pts else np.empty((0, 2))
-
-    # ------------------------------------------------------------------
-    # Helpers (standalone_output=true only)
-    # ------------------------------------------------------------------
-
-    def _check_cone_proximity(self) -> bool:
-        """True if a cone sits inside the dynamic forward braking corridor."""
-        if len(self._cones_local) == 0:
-            return False
-        x_car = self._cones_local[:, 0]   # forward (+)
-        y_car = self._cones_local[:, 1]   # left    (+)
-        dynamic_brake_dist = float(np.clip(self._car_speed * 0.25, 0.6, CONE_BRAKE_DIST))
-        return bool(np.any(
-            (x_car > 0.2) & (x_car < dynamic_brake_dist) & (np.abs(y_car) < CONE_BRAKE_WIDTH)
-        ))
-
-    # ------------------------------------------------------------------
-    # Debug telemetry (live_viz.py's weighted-error breakdown panel)
-    # ------------------------------------------------------------------
-
-    def _process_lap_and_horizon(self, t: float, tel: dict) -> tuple[float | None, float | None, dict | None]:
-        """
-        One call per tick, shared by both output modes (standalone/cmd_vel)
-        below: feeds this tick's pose + (if NMPC) predicted horizon into
-        self._horizon_acc, advances self._lap_tracker, and — on the tick a
-        lap completes — finalises that lap's score via
-        self._telemetry.finish_lap().
-
-        Must be called AFTER self._mpc.compute() (needs tel/last_telemetry)
-        and BEFORE self._telemetry.log_control() (its return values feed
-        straight into that call's pred_err_m/pred_acc_pct/lap_summary
-        kwargs, so the lap's own completing tick logs its score on the same
-        row — see log_control()'s docstring for why that ordering matters).
-
-        Returns (pred_err_m, pred_acc_pct, lap_summary): the first two are
-        this tick's own OWN matured prediction comparison (None most ticks —
-        maturity is ~1 s after the prediction was made, not immediate), the
-        third is finish_lap()'s return value on the tick a lap completes,
-        else None.
-        """
-        pred_err_m = pred_acc_pct = None
-        if self._horizon_acc is not None:
-            fa = self._car_pos + self._mpc.lf * np.array(
-                [math.cos(self._car_yaw), math.sin(self._car_yaw)])
-            self._horizon_acc.add_pose(t, fa[0], fa[1])
-            pred_xy = tel.get('nmpc_pred_xy')
-            if pred_xy is not None:
-                pose_age_s = tel.get('pose_age_s') or 0.0
-                n_delay = tel.get('n_delay') or 0
-                n_latency = tel.get('n_latency') or 0
-                t_stage0 = t - pose_age_s + (n_delay + n_latency) * self._mpc.dt
-                pred_x, pred_y = pred_xy
-                self._horizon_acc.add_prediction(
-                    t_stage0, self._mpc.dt, pred_x, pred_y, self._car_speed)
-            matured = self._horizon_acc.update(t)
-            if matured is not None:
-                pred_err_m, pred_acc_pct = matured
-
-        lap_summary = None
-        if self._lap_tracker is not None:
-            lap = self._lap_tracker.update(self._car_pos, t, self._car_speed)
-            if lap is not None:
-                lap_err = lap_acc = None
-                if self._horizon_acc is not None:
-                    lap_mean = self._horizon_acc.pop_lap_mean()
-                    if lap_mean is not None:
-                        lap_err, lap_acc = lap_mean
-                lap_summary = self._telemetry.finish_lap(
-                    lap, pred_acc_pct=lap_acc, pred_err_m=lap_err)
-                lap_summary['lap_idx'] = lap['lap_idx']
-                msg = String()
-                msg.data = json.dumps(lap_summary)
-                self.pub_lap_summary.publish(msg)
-
-        return pred_err_m, pred_acc_pct, lap_summary
-
-    def _publish_debug_weights(self, tel: dict) -> None:
-        """
-        Weighted-cost breakdown of every term the MPC actually solved this
-        tick (error^2 * effective weight, as a share of its own GROUP's sum,
-        see `group` below), plus the true solved objective and solve_ms.
-        Debug-only, for live_viz.py's bar-graph panel(s).
-
-        Grouped rather than one shared 0-100% scale: tracking errors
-        (metres/radians), input effort (the command itself) and input rate
-        (change per tick) are wildly different magnitudes squared against
-        their own weights, so e.g. a steering-rate term of a few
-        milliradians/tick will always round to ~0% next to a 0.3 m lateral
-        error even when the rate cost is the one actually dominant within
-        its own group -- comparing within a group is the only comparison
-        that's meaningful. live_viz.py draws one 100% bar-graph per group.
-
-        The `terms` breakdown is step-0-only (the current tick's
-        instantaneous errors/rates/command, not summed over the horizon) for
-        both solvers, so it stays an "at a glance, which term is biggest
-        right now" signal, not a horizon-summed one. The tracking group also
-        carries two synthetic combined entries, 'steering' and 'accel',
-        each that input's effort + rate-of-change step-0 cost folded into
-        one bar (their constituent steer_effort/accel_effort/delta_u_steer/
-        delta_u_accel entries are kept too, for the effort/rate panels).
-
-        `horizon_terms`, published separately, IS the true full-horizon
-        per-term cost (see mpc_core.py's _compute_cost_breakdown /
-        nmpc_core.py's _cost_breakdown), each shown as a share of
-        total_cost -- the exact full-horizon scalar each solver minimised
-        (cp.Problem.value for the LTV-QP, the SQP's own converged objective
-        for NMPC). These percentages are directly comparable to each other
-        (unlike the step-0 `terms` breakdown above), but do NOT sum to
-        exactly 100%/total_cost: the soft track-boundary slack cost is
-        deliberately excluded from horizon_terms (unused in this debug
-        display) even though it's still part of total_cost.
-
-        Falls back to the static MPCParams weight when no corner-blended
-        "_eff" value is in last_telemetry (always true for NMPC, which has
-        no blending step for Q/R).
-        """
-        params = self._mpc.params
-        a_cmd = tel.get('a_cmd', 0.0)
-        # accel/brake effort is one QP term split by sign (see mpc_core.py's
-        # _build_qp cp.pos(u)/cp.neg(u) split) -- mirror that split here so
-        # exactly one of the two is ever nonzero for a given tick, matching
-        # what the solver actually charged rather than double-counting.
-        r_a_eff = tel.get('R_a_accel_eff', params.r_a_accel) if a_cmd >= 0.0 \
-            else tel.get('R_a_brake_eff', params.r_a_brake)
-        terms = {
-            'e_y':      ('tracking', tel.get('e_y', 0.0),      tel.get('Q_ey_eff', params.q_e_y)),
-            'e_yd':     ('tracking', tel.get('e_yd', 0.0),      params.q_e_yd),
-            'e_psi':    ('tracking', tel.get('e_psi', 0.0),    tel.get('Q_epsi_eff', params.q_e_psi)),
-            'yaw_rate': ('tracking', tel.get('yaw_rate', 0.0), tel.get('Q_r_eff', params.q_r)),
-            # Row 4's NAME follows the mode, because its MEANING does. Under
-            # tracking it is the two-sided speed error e_v. Under the NMPC
-            # progress term it is a one-sided speed-CAP hinge that reads
-            # exactly 0.0 whenever the car is under the cap, i.e. most of a
-            # lap -- reporting that as "e_v" makes a working controller look
-            # like it has zero speed error, which is the opposite of what a
-            # flat bar there means. Keyed off the telemetry the controller
-            # actually published, not the parameter, so the label cannot
-            # disagree with the running controller.
-            ('v_cap_hinge' if 'nmpc_v_cap' in tel else 'e_v'):
-                        ('tracking', tel.get('e_v', 0.0),      params.q_e_v),
-            'steer_effort': ('effort', tel.get('delta_cmd', 0.0),
-                              tel.get('R_steer_eff', params.r_delta)),
-            'accel_effort': ('effort', a_cmd, r_a_eff),
-            'delta_u_steer': ('rate', tel.get('delta_u_steer', 0.0),
-                              tel.get('Rrate_steer_eff',
-                                      tel.get('Rrate_steer_corner_blend', params.r_rate_delta))),
-            'delta_u_accel': ('rate', tel.get('delta_u_accel', 0.0), params.r_rate_a),
-        }
-        # NMPC progress term (nmpc_progress_enabled only). Keyed off the
-        # telemetry the controller actually published rather than the
-        # parameter, so this stays correct if the flag and the running
-        # controller ever disagree. The residual is the horizon-END gap
-        # (see nmpc_core.py's _outputs: h_prog is zero at every other
-        # stage), which is why it is read from nmpc_s_target_gap_end rather
-        # than a step-0 quantity like every other row here.
-        if 'nmpc_s_target_gap_end' in tel:
-            terms['progress'] = ('tracking', tel['nmpc_s_target_gap_end'],
-                                 params.nmpc_q_progress)
-        costs = {name: weight * error ** 2 for name, (group, error, weight) in terms.items()}
-
-        # Two combined bars for the top (tracking) panel: 'steering' and
-        # 'accel' each fold that input's effort + rate-of-change step-0 cost
-        # into one bar, so the tracking panel shows how much the two inputs
-        # are costing overall alongside the 5 tracking-error terms. The
-        # underlying steer_effort/accel_effort/delta_u_steer/delta_u_accel
-        # entries stay as their own bars too (still needed by the effort/
-        # rate panels) -- these are additional entries, not replacements.
-        costs['steering'] = costs['steer_effort'] + costs['delta_u_steer']
-        costs['accel'] = costs['accel_effort'] + costs['delta_u_accel']
-        terms['steering'] = ('tracking', None, None)
-        terms['accel'] = ('tracking', None, None)
-
-        group_totals: dict[str, float] = {}
-        for name, (group, _error, _weight) in terms.items():
-            group_totals[group] = group_totals.get(group, 0.0) + costs[name]
-        breakdown = {
-            name: {
-                'group': group,
-                'error': error,
-                'weight': weight,
-                'cost': costs[name],
-                'pct': (100.0 * costs[name] / group_totals[group])
-                       if group_totals[group] > 0.0 else 0.0,
-            }
-            for name, (group, error, weight) in terms.items()
-        }
-
-        # Every term's horizon-summed cost (mpc_core.py's
-        # _compute_cost_breakdown / nmpc_core.py's _cost_breakdown, both
-        # under last_telemetry['cost_breakdown']['horizon_terms']), each as
-        # a share of total_cost -- one shared scale, unlike the step-0
-        # groups above, since these are all genuinely comparable: exactly
-        # the terms the solver actually summed to reach total_cost.
-        total_cost = tel.get('total_cost')
-        horizon_terms_raw = (tel.get('cost_breakdown') or {}).get('horizon_terms', {})
-        horizon_terms = {
-            name: {
-                'cost': cost,
-                'pct': (100.0 * cost / total_cost) if total_cost else 0.0,
-            }
-            for name, cost in horizon_terms_raw.items()
-        }
-
-        msg = String()
-        payload = {
-            'terms': breakdown,
-            'horizon_terms': horizon_terms,
-            'solve_ms': tel.get('solve_ms'),
-            'total_cost': total_cost,
-        }
-        # NMPC progress term (nmpc_progress_enabled only). Sent as their own
-        # keys rather than folded into 'terms' because these are raw
-        # diagnostics, not weighted cost shares: v_cap/speed_cap_over answer
-        # "is the cap binding or did the car choose to go slower", and
-        # s_target_gap_end GROWING tick-over-tick is the signature of a
-        # stuck solve. Absent on every other run, so live_viz skips the line.
-        if 'nmpc_v_cap' in tel:
-            payload['progress'] = {
-                'v_cap': tel.get('nmpc_v_cap'),
-                'speed_cap_over': tel.get('nmpc_speed_cap_over'),
-                's_target_gap_end': tel.get('nmpc_s_target_gap_end'),
-            }
-        msg.data = json.dumps(payload)
-        self.pub_debug_weights.publish(msg)
-
-    # ------------------------------------------------------------------
-    # Control step (fixed 20 Hz)
-    # ------------------------------------------------------------------
-
-    def _control_step(self) -> None:
-        # Loop-entry timestamp for the cmd_latency_ms telemetry column — how
-        # long this tick took from entering the callback to publishing a
-        # command. Distinguishes "our compute is slow" from "our inputs were
-        # already stale when we got them" (pose_age_s / path_age_s).
-        _t_loop0 = time.perf_counter()
-
-        # ── Phase 1 (standalone_output=true only): hold until GO ────────
-        if self._standalone_output and not self._go_received:
-            cmd = ControlCommand()
-            cmd.throttle, cmd.steering, cmd.brake = 0.0, 0.0, 1.0
-            cmd.header.stamp = self.get_clock().now().to_msg()
-            self.pub_cmd.publish(cmd)
-            self.get_logger().info('Waiting for GO signal...', throttle_duration_sec=2.0)
-            return
-
-        # ── Phase 2: emergency brake/reset on stale/missing path or pose ──
-        # No topic backing a static path, so "staleness" doesn't apply to it
-        # — the only thing that can fail here is the live pose (still
-        # checked below via self._have_pose), exactly the safety net
-        # path_map_path's docstring promises: a car running with a
-        # precomputed path still brakes correctly if its live localisation
-        # fails, same as before.
-        if self._static_path is not None:
-            path_stale = False
-        else:
-            path_stale = (
-                self._path_stamp is None
-                or (self.get_clock().now() - self._path_stamp).nanoseconds * 1e-9 > PATH_TIMEOUT
-            )
-        if not self._have_pose or len(self._path) < 2 or path_stale:
-            self._mpc.reset()
-            self._delta_filt = None   # drop filter state with the MPC warm-start
-            self._v_des_prev = None   # don't ramp from a pre-fail-safe target
-            self._gate_prev = None    # ditto for the tracking-error speed gate
-            self._v_curv_prev = None  # ditto for the live curvature_speed() fall limiter
-            if self._standalone_output:
-                # Explicit brake command — this node owns braking, unlike
-                # false mode below, which publishes nothing and relies on
-                # fsds_bridge's own cmd_vel timeout to brake.
-                cmd = ControlCommand()
-                cmd.throttle, cmd.steering, cmd.brake = 0.0, 0.0, 1.0
-                cmd.header.stamp = self.get_clock().now().to_msg()
-                self.pub_cmd.publish(cmd)
-                self.get_logger().warn(
-                    'Trajectory path lost or stale — emergency braking.', throttle_duration_sec=1.0)
-            return
-
-        # ── Phase 3: MPC solve ───────────────────────────────────────────
-        # Slice from the car's nearest point, gate on tracking error, and
-        # rate-limit rises — the speed TARGET must be derived the same way
-        # regardless of output mode, or they diverge in exactly the regime
-        # that matters. See control_utils.tracking_error_speed_gate for the
-        # rationale behind each step.
-        if self._speed_profile is not None:
-            # Track is already fully mapped (map_path param set) — look up
-            # the oracle speed target instead of re-deriving it from the
-            # live-built centreline. See load_speed_profile_csv()'s docstring.
-            path_X, path_Y, path_V = self._speed_profile
-            v_curv = precomputed_speed_at(self._car_pos, path_X, path_Y, path_V)
-
-            # The oracle lookup above has no notion of the car's actual
-            # current speed relative to how much runway is left to brake for
-            # the upcoming corner — see control_utils.dynamic_speed_cap()'s
-            # docstring. Layer a live curvature-lookahead cap under it
-            # (min, never above the oracle target) so a corner reached
-            # faster than planned still gets braked for in time.
-            if self._enable_dynamic_speed_cap:
-                path_ahead = self._path
-                if len(path_ahead) > 2:
-                    i_near = int(np.argmin(np.linalg.norm(path_ahead - self._car_pos, axis=1)))
-                    if i_near < len(path_ahead) - 2:
-                        path_ahead = path_ahead[i_near:]
-                v_cap = dynamic_speed_cap(
-                    path_ahead, v_max=self._v_max, v_min=self._v_min,
-                    a_lat_max=self._dynamic_cap_a_lat_max,
-                    safety=self._dynamic_cap_safety,
-                )
-                v_curv = min(v_curv, v_cap)
-        else:
-            path_ahead = self._path
-            if len(path_ahead) > 2:
-                i_near = int(np.argmin(np.linalg.norm(path_ahead - self._car_pos, axis=1)))
-                if i_near < len(path_ahead) - 2:
-                    path_ahead = path_ahead[i_near:]
-
-            v_curv = curvature_speed(path_ahead, v_max=self._v_max, v_min=self._v_min)
-
-            # curvature_speed() has no memory of its own last output and the
-            # live path is re-fit every tick, so a single noisy sample can
-            # swing v_curv down (never up, in this direction rises are what
-            # the corner needs) far faster than any real corner's own
-            # braking-distance curve would ask for -- see V_CURV_FALL_RATE's
-            # own comment. The precomputed-track oracle branch above does not
-            # need this: it is not re-derived from a noisy live path.
-            if self._v_curv_prev is not None:
-                max_fall = V_CURV_FALL_RATE / CONTROL_HZ
-                v_curv = max(v_curv, self._v_curv_prev - max_fall)
-            self._v_curv_prev = v_curv
-
-        # Gate's own output is rate-limited (GATE_RATE_LIMIT) so its
-        # tick-to-tick change is bounded — see that constant's own comment.
-        tel = self._mpc.last_telemetry
-        raw_gate = tracking_error_speed_gate(tel.get('e_y', 0.0), tel.get('e_psi', 0.0))
-        if self._gate_prev is not None:
-            max_step = GATE_RATE_LIMIT / CONTROL_HZ
-            raw_gate = float(np.clip(raw_gate, self._gate_prev - max_step, self._gate_prev + max_step))
-        self._gate_prev = raw_gate
-        gate = raw_gate
-        # Never gate below v_min: the car still needs authority to steer back.
-        desired_speed = max(self._v_min, v_curv * gate)
-
-        # Seed the ramp from the car's ACTUAL speed on the first tick after
-        # startup/a fail-safe reset, not from an unlimited jump straight to
-        # desired_speed -- see mpc_params.py / CLAUDE.md's standstill
-        # steering-saturation note. Without this, a standing-start run asks
-        # the controller (NMPC especially, via its e_v cost term) to track
-        # the full-speed target from tick 0, which is the actual root cause
-        # of the "steers hard at startup" symptom, not a plant/tyre-force bug.
-        if self._v_des_prev is None:
-            self._v_des_prev = self._car_speed
-        desired_speed = min(desired_speed,
-                            self._v_des_prev + SPEED_TARGET_RISE_RATE / CONTROL_HZ)
-        # Stop ramping once the target has run this far ahead of the car; see
-        # params.speed_target_deficit_max (mpc_params.py). Never DROPS the
-        # target (max against the previous value), so a car that is merely
-        # slow does not get the target dragged down to meet it, and a genuine
-        # brake request still passes through the min() above untouched.
-        deficit_max = self._mpc.params.speed_target_deficit_max
-        if desired_speed - self._car_speed > deficit_max:
-            desired_speed = min(desired_speed,
-                                max(self._v_des_prev,
-                                    self._car_speed + deficit_max))
-        self._v_des_prev = desired_speed
-
-        # Age of the pose the MPC is about to solve against — how long ago it
-        # was actually measured, not how long ago the callback fired. Lets
-        # MPCController compensate for the real, unknown/time-varying delay
-        # instead of assuming the state is fresh (see mpc_core.py compute()).
-        pose_age_s = (self.get_clock().now() - Time.from_msg(self._pose_stamp)).nanoseconds * 1e-9
-
-        # MPCController/NMPCController.compute() always returns the
-        # FSDS-normalised (steering, throttle, brake) tuple regardless of
-        # caller; standalone_output=true uses it directly, false mode
-        # instead reads last_telemetry['delta_cmd'] (pre-normalisation
-        # radians, +ve = left) below and forwards only that + the speed
-        # target, keeping the cmd_vel abstraction intact.
-        mpc_steering, mpc_throttle, mpc_brake = self._mpc.compute(
-            path=self._path, car_pos=self._car_pos, car_yaw=self._car_yaw,
-            car_speed=self._car_speed, desired_speed=desired_speed,
-            car_yaw_rate=self._car_yaw_rate, pose_age_s=pose_age_s, car_vy=self._car_vy,
-        )
-        pred_xy = self._mpc.last_telemetry.get('nmpc_pred_xy')
-        if pred_xy is not None:
-            pred_x, pred_y = pred_xy
-            pose_array = PoseArray()
-            pose_array.header.stamp = self.get_clock().now().to_msg()
-            pose_array.header.frame_id = 'map'
-            for x, y in zip(pred_x, pred_y):
-                pose = Pose()
-                pose.position.x, pose.position.y = float(x), float(y)
-                pose_array.poses.append(pose)
-            self.pub_nmpc_pred_path.publish(pose_array)
-
-        self._publish_debug_weights(self._mpc.last_telemetry)
-
-        if self._standalone_output:
-            steering, throttle, brake = mpc_steering, mpc_throttle, mpc_brake
-        else:
-            steering = float(self._mpc.last_telemetry.get('delta_cmd', 0.0))
-
-            # Low-pass the steering command across ticks (matches the
-            # Stanley node) so rapid left-right jitter never reaches the
-            # servo. 1.0 disables. Only applied in this mode.
-            if self._delta_filt is None or self._steer_lp >= 1.0:
-                self._delta_filt = steering
-            else:
-                self._delta_filt += self._steer_lp * (steering - self._delta_filt)
-            steering = self._delta_filt
-
-        if self._standalone_output:
-            cmd = ControlCommand()
-            cmd.steering, cmd.throttle, cmd.brake = steering, throttle, brake
-
-            # ── Phase 4: cone-proximity brake override ───────────────────
-            if self._check_cone_proximity():
-                cmd.throttle = 0.0
-                cmd.brake = 1.0
-                self._cone_brake_duration += 1.0 / CONTROL_HZ
-                if self._cone_brake_duration >= CONE_RESET_THRESHOLD and not self._cone_reset_done:
-                    self._mpc.reset()
-                    self._v_des_prev = None   # see the stale-path reset above
-                    self._gate_prev = None
-                    self._v_curv_prev = None
-                    self._cone_reset_done = True
-                self.get_logger().warn(
-                    f'Cone proximity brake active ({self._cone_brake_duration:.2f} s).',
-                    throttle_duration_sec=0.5,
-                )
-            else:
-                self._cone_brake_duration = 0.0
-                self._cone_reset_done = False
-
-            # ── Phase 4a: telemetry (post-override, reflects the final cmd) ─
-            # log_control's steer argument is RADIANS of roadwheel angle.
-            # cmd.steering is the normalised FSDS [-1, 1] command, so it must
-            # be scaled back by MAX_STEER_RAD (and un-negated — mpc_core
-            # flips sign for the FSDS convention) before logging.
-            if self._telemetry is not None:
-                tel = self._mpc.last_telemetry
-                t = self.get_clock().now().nanoseconds * 1e-9
-                steer_rad = -float(cmd.steering) * MAX_STEER_RAD
-                # delta_cmd/a_cmd come from the MPC's own telemetry so the
-                # logged score is computed on the solver's real [rad, m/s^2]
-                # command pair. They fall back to the published command when
-                # a fail-safe (cone brake / no solve) overrode the MPC, so
-                # the score reflects what the car actually did.
-                a_cmd = tel.get('a_cmd', 0.0)
-                if cmd.brake > 0.0 and cmd.throttle == 0.0:
-                    a_cmd = min(a_cmd, -float(cmd.brake) * self._mpc.a_max_brake)
-                # Age of the planner path this solve consumed. A static
-                # precomputed path (self._static_path set) is logged as
-                # exactly 0.0 rather than None — it is never stale by
-                # construction, and 0.0 keeps this column numeric for any
-                # downstream analysis that assumes path_age_s is always a
-                # float (see fsae_MPCTest's telemetry_logger.py mirror,
-                # which must match this convention).
-                if self._static_path is not None:
-                    path_age_s = 0.0
-                elif self._path_stamp is not None:
-                    path_age_s = (self.get_clock().now() - self._path_stamp).nanoseconds * 1e-9
-                else:
-                    path_age_s = None
-                pred_err_m, pred_acc_pct, lap_summary = self._process_lap_and_horizon(t, tel)
-                self._telemetry.log_control(
-                    t, self._car_pos[0], self._car_pos[1], self._car_yaw,
-                    self._car_speed, desired_speed, steer_rad,
-                    tel.get('e_y', 0.0), tel.get('e_psi', 0.0), self._car_yaw_rate,
-                    delta_cmd=steer_rad, a_cmd=a_cmd,
-                    pose_age_s=tel.get('pose_age_s'),
-                    path_age_s=path_age_s,
-                    n_delay=tel.get('n_delay'),
-                    solve_ms=tel.get('solve_ms'),
-                    cmd_latency_ms=(time.perf_counter() - _t_loop0) * 1e3,
-                    adaptive=tel,
-                    lap_idx=self._lap_tracker.lap_idx if self._lap_tracker is not None else None,
-                    pred_err_m=pred_err_m, pred_acc_pct=pred_acc_pct,
-                    lap_summary=lap_summary)
-                self._telemetry.log_path(t, self._path)
-
-            # ── Phase 5: publish ──────────────────────────────────────────
-            cmd.header.stamp = self.get_clock().now().to_msg()
-            self.pub_cmd.publish(cmd)
-
-            self.get_logger().info(
-                f'MPC thr={cmd.throttle:.2f} brk={cmd.brake:.2f} steer={cmd.steering:.3f} | '
-                f'v={self._car_speed:.1f}/{desired_speed:.1f} m/s',
-                throttle_duration_sec=1.0,
-            )
-        else:
-            msg = AckermannDriveStamped()
-            msg.header.stamp = self.get_clock().now().to_msg()
-            msg.drive.speed = float(desired_speed)
-            msg.drive.steering_angle = steering
-            self.pub_cmd.publish(msg)
-
-            if self._telemetry is not None:
-                tel = self._mpc.last_telemetry
-                t = self.get_clock().now().nanoseconds * 1e-9
-                # steering is already the roadwheel angle in radians here
-                # (this mode publishes an Ackermann steering_angle, not a
-                # normalised FSDS command), so it is both the logged steer
-                # and delta_cmd.
-                if self._static_path is not None:
-                    path_age_s = 0.0
-                elif self._path_stamp is not None:
-                    path_age_s = (self.get_clock().now() - self._path_stamp).nanoseconds * 1e-9
-                else:
-                    path_age_s = None
-                pred_err_m, pred_acc_pct, lap_summary = self._process_lap_and_horizon(t, tel)
-                self._telemetry.log_control(
-                    t, self._car_pos[0], self._car_pos[1], self._car_yaw,
-                    self._car_speed, desired_speed, steering,
-                    tel.get('e_y', 0.0), tel.get('e_psi', 0.0), self._car_yaw_rate,
-                    delta_cmd=steering, a_cmd=tel.get('a_cmd', 0.0),
-                    pose_age_s=tel.get('pose_age_s'),
-                    path_age_s=path_age_s,
-                    n_delay=tel.get('n_delay'),
-                    solve_ms=tel.get('solve_ms'),
-                    cmd_latency_ms=(time.perf_counter() - _t_loop0) * 1e3,
-                    adaptive=tel,
-                    lap_idx=self._lap_tracker.lap_idx if self._lap_tracker is not None else None,
-                    pred_err_m=pred_err_m, pred_acc_pct=pred_acc_pct,
-                    lap_summary=lap_summary)
-                self._telemetry.log_path(t, self._path)
-
-            self.get_logger().info(
-                f'cmd_vel: speed={desired_speed:.2f} m/s  steer={steering:.3f} rad  '
-                f'v_actual={self._car_speed:.2f} m/s  '
-                f'e_y={self._mpc.last_telemetry.get("e_y", 0.0):.2f}',
-                throttle_duration_sec=1.0,
-            )
 
     def destroy_node(self) -> None:
         if self._telemetry is not None:

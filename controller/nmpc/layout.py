@@ -1,10 +1,12 @@
 """
 controller/nmpc/layout.py — NMPC state/input/output index layout and the
 numerical constants shared by the model, the cost rows and the solver.
-Identical to the live `nmpc_core.py`'s module-level constants.
+Identical to the live `nmpc/solver.py`'s module-level constants.
 """
 
 import numpy as np
+
+from angles import wrap_angle as _wrap  # noqa: F401 (re-exported, see module list below)
 
 
 # ── State/input/output layout (identical to the live module) ────────────
@@ -41,7 +43,3 @@ _FD_EPS_U = np.array([1e-7, 1e-6])
 # Guard on the Frenet denominator (1 - kappa*e_y): singular at e_y = 1/kappa.
 # Inert on any real track line (see the live module's identical comment).
 _DENOM_FLOOR = 0.25
-
-
-def _wrap(a):
-    return np.arctan2(np.sin(a), np.cos(a))

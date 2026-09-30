@@ -11,10 +11,10 @@ against MPC runs.
 
 This is a companion to gui/simulation.py, not a replacement: gui/simulation.py owns
 the MPC/offline-tuner integration; this file owns the human-in-the-loop path.
-It reuses the same synthetic path library, cone placement, and 24-state
+It reuses the same synthetic path library, cone placement, and 25-state
 nonlinear plant so a manually-driven run is physically comparable to an
 MPC-driven one, but it does NOT run the MPC solver, adaptive gain scheduling,
-or rollout_core/scoring pipeline — driving is open-loop from the human's
+or sim/rollout/core/scoring pipeline — driving is open-loop from the human's
 perspective (no tracking-error feedback is computed or scored).
 
 CONTROLS
@@ -40,11 +40,11 @@ USED BY
 -------
   Standalone: run with `python gui/manual_drive.py`
   Imports from: vehicle_physics, offline_tuner (SYNTHETIC_PATHS/PATH_NAMES),
-                sim_track (place_cones), settings (DT)
+                sim.perception (place_cones), settings (DT)
 
 DOES NOT USE
 ------------
-  controller/lmpc/solve.py, model/bicycle_model.py, sim/rollout_core.py, sim/scoring.py, controller/model_utils.py
+  controller/lmpc/solve.py, model/bicycle_model.py, sim/rollout/core.py, sim/scoring.py, controller/model_utils.py
   (no MPC solve, no adaptive gains, no scoring — this is open-loop human control)
 """
 
@@ -56,8 +56,8 @@ from matplotlib.animation import FuncAnimation
 
 from model.vehicle_physics import VehicleParams, step_nonlinear_plant, init_plant_state
 from tuner.offline_tuner import SYNTHETIC_PATHS, PATH_NAMES
-from sim.sim_track import place_cones
-from settings import DT
+from sim.perception import place_cones
+import settings
 
 # ==========================================
 # SETUP AND CONFIGURATION
@@ -83,7 +83,7 @@ current_test_path_idx = -1
 _blue_cones_all   = np.empty((0, 2))
 _yellow_cones_all = np.empty((0, 2))
 
-plant_state   = None          # 24-state nonlinear plant vector (None until driving starts)
+plant_state   = None          # 25-state nonlinear plant vector (None until driving starts)
 delta_cmd     = 0.0           # Current commanded steering angle (rad), ramps toward key target
 a_cmd         = 0.0           # Current commanded accel/brake (m/s²), ramps toward key target
 held_keys     = set()         # Currently-held keyboard keys
@@ -349,14 +349,14 @@ def update_frame(_frame):
             accel_target += MAX_BRAKE   # MAX_BRAKE is already negative
 
     # ── Ramp commands toward target (rate-limited for analog feel) ─────────
-    delta_cmd += float(np.clip(steer_target - delta_cmd, -STEER_RATE * DT, STEER_RATE * DT))
-    a_cmd     += float(np.clip(accel_target - a_cmd,     -ACCEL_RATE * DT, ACCEL_RATE * DT))
+    delta_cmd += float(np.clip(steer_target - delta_cmd, -STEER_RATE * settings.DT, STEER_RATE * settings.DT))
+    a_cmd     += float(np.clip(accel_target - a_cmd,     -ACCEL_RATE * settings.DT, ACCEL_RATE * settings.DT))
     delta_cmd = float(np.clip(delta_cmd, -MAX_STEER, MAX_STEER))
     a_cmd     = float(np.clip(a_cmd, MAX_BRAKE, MAX_ACCEL))
 
     # ── Step the nonlinear plant ─────────────────────────────────────────────
     u_cmd = np.array([delta_cmd, a_cmd])
-    plant_state = step_nonlinear_plant(plant_state, u_cmd, DT, vehicle_params)
+    plant_state = step_nonlinear_plant(plant_state, u_cmd, settings.DT, vehicle_params)
 
     X_g, Y_g, psi_g, vx = plant_state[0], plant_state[1], plant_state[2], plant_state[3]
 
@@ -403,6 +403,6 @@ def update_frame(_frame):
 # blit=False: the camera re-centring above moves the axes limits, which
 # blitting doesn't pick up correctly. Interval matches DT (20 Hz) so plant
 # stepping stays in real time regardless of render cost.
-anim = FuncAnimation(fig, update_frame, interval=DT * 1000.0, blit=False, cache_frame_data=False)
+anim = FuncAnimation(fig, update_frame, interval=settings.DT * 1000.0, blit=False, cache_frame_data=False)
 
 plt.show()

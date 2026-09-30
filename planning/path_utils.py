@@ -13,6 +13,7 @@ from planning.cone_sorting import (
     pair_cones_nn,
     sort_cones_nn,
 )
+from planning.geometry import segment_crosses_walls
 
 # Per-point spline smoothing (splprep's s scales as smooth_per_pt * n_points).
 # 0.0 forces an interpolating spline that reproduces every cone-pairing wobble;
@@ -401,7 +402,6 @@ def roll_loop_to_car(
     reachable = None
     idx = int(order[0])
     if wall_segs:
-        from planning.boundary import segment_crosses_walls
         reachable = np.array(
             [not segment_crosses_walls(car, pts[i], wall_segs) for i in range(n)]
         )
