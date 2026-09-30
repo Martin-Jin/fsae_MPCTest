@@ -10,19 +10,19 @@ import numpy as np
 # Nonlinear MPC (NMPC) — a SECOND controller (controller/nmpc/)
 # ------------------------------------------------------------------------------
 # [NMPC only] USE_NMPC — "Which controller does the closed-loop rollout actually solve?"
-# False (default) = controller/optimiser.py's solve_mpc(), the linear
+# False (default) = controller/lmpc/'s solve_mpc(), the linear
 # time-varying QP everything above this section tunes. True =
-# controller/nmpc_optimiser.py's NMPCController, a Frenet-frame NONLINEAR MPC
+# controller/nmpc/solver.py's NMPCController, a Frenet-frame NONLINEAR MPC
 # (arc length is a state, path curvature kappa(s) is looked up from it
 # directly, instead of the linear model's e_psi_dot = yaw-rate-only). See
-# docs/junior_project_mpc_docs.md's §4.2 for the plain-language explanation
-# of why the linear model needs this at all, and docs/tuning.md's NMPC
+# docs/guides/getting_started.md's for the plain-language explanation
+# of why the linear model needs this at all, and docs/guides/tuning.md's NMPC
 # section for the tuning surface.
 #
 # Closes a structural gap the linear model has: with the car exactly on-line
 # and on-heading approaching a corner, the linear model's own horizon
 # rollout predicts staying at 0 forever (checked directly, not assumed —
-# see tuner/nmpc_offline_check.py's turn-in test), so no amount of cost
+# see tuner/validation/nmpc_offline_check.py's turn-in test), so no amount of cost
 # reweighting can make it commit to steering before real tracking error
 # exists. The WHOLE adaptive-gain-shape section below (and every
 # ADAPTIVE_*_ENABLED flag) exists to synthesise anticipation this linear
@@ -87,13 +87,13 @@ NMPC_TERMINAL_SCALE = -1.0
 # [NMPC only, EXPERIMENTAL] Reuses model_utils.steer_rate_anti_hunt
 # (the same function STEER_RATE_ANTI_HUNT_ENABLED above already gates for the
 # LTV-QP) on the NMPC too -- independent flag, not inherited, since the live
-# nmpc_core.py module docstring documents a deliberate decision NOT to port
-# mpc_core's adaptive gain-schedule family onto the curvature-aware NMPC
+# nmpc/__init__.py docstring documents a deliberate decision NOT to port
+# lmpc's adaptive gain-schedule family onto the curvature-aware NMPC
 # (double-count risk); anti-hunt is offered separately because it only ever
 # makes steering-rate MORE expensive when already centred/aligned/uncurving,
 # the opposite direction from anticipation. UNVALIDATED for the NMPC. Note:
 # model_utils.steer_rate_anti_hunt hardcodes boost_max=6.0 internally (no
-# settings.py override exists for EITHER controller's use of it, pre-existing
+# the settings package override exists for EITHER controller's use of it, pre-existing
 # limitation, not introduced here) -- ANTI_HUNT_BOOST_MAX has no live
 # offline-side constant to parameterise this with yet.
 NMPC_STEER_RATE_ANTI_HUNT_ENABLED = False
@@ -121,8 +121,8 @@ NMPC_CORNER_RRATE_BLEND_ENABLED = False
 # Scale this with the TRACK's max curvature, not by feel:
 #   k ~= target_corner_frac / ((1 - target_corner_frac) * kappa_max)
 # CAUTION: raising this past 27 does not fix mid-corner lateral drift --
-# k=60 was live-tested WORSE (see `docs/reference/README.md`'s "Three-zone rate
-# schedule"). It lowers the corner weight as intended but drift barely moves,
+# k=60 was live-tested WORSE (see `docs/reference/control_mechanisms.md`'s NMPC
+# section). It lowers the corner weight as intended but drift barely moves,
 # which is the evidence that the steering-RATE cost is not what limits
 # turn-in on this track.
 # 27.0 puts |kappa|=0.209 (comp_test_map_3's tightest) at corner_frac 0.85.
@@ -139,24 +139,24 @@ NMPC_RRATE_STEER_CORNER = -1.0     # -1 = inherit RRATE_STEER_CORNER
 # uniformly across the horizon, exactly like the two flags above. Unlike those
 # two, this one COMPOSES with either of them rather than replacing them: it is
 # keyed on u_prev, not curvature/e_y/e_psi, so all three multipliers stack onto
-# the same R_rate[0,0] (see nmpc_optimiser.compute_step's rrate_steer_current).
+# the same R_rate[0,0] (see controller/nmpc/solver.py's compute()'s rrate_steer_current).
 # Mirrors the live MPCParams.nmpc_reversal_penalty_* override fields.
 # UNVALIDATED on the car; offline-A/B'd only.
 # [NMPC only, EXPERIMENTAL] Discount the steering-RATE cost at the NEAR
 # horizon stages (a linear ramp from NMPC_RRATE_STAGE_NEAR at stage 0 to 1.0
 # at the last stage), so a first turn-in input is cheap while a sustained
 # oscillation still pays close to full price -- see
-# controller/nmpc_optimiser.py::_rrate_stage_ramp for the reasoning, and
-# docs/steering_turn_in_upgrade_options.md (Option 1) for why this is keyed
+# controller/nmpc/weight_schedule.py::_rrate_stage_ramp for the reasoning, and
+# docs/reference/control_mechanisms.md ("Rate stage ramp") for why this is keyed
 # on horizon POSITION rather than measured curvature/error.
 # NEAR = 1.0 is an exact no-op. Composes with the three flags below (they set
 # the rate weight's magnitude; this shapes it across stages).
-# [NMPC only, EXPERIMENTAL] Continuous three-zone schedule on the
+# [NMPC only] Continuous three-zone schedule (ships ON) on the
 # steering-RATE cost, driven by CURRENT curvature and the peak curvature the
 # HORIZON predicts ahead: boost on a true straight, ease on the approach to a
 # corner the horizon can see, floor through the corner itself. Smooth surface,
 # no thresholds -- degrades to the corner value on a continuously-winding
-# road. See controller/nmpc_optimiser.py::_rrate_zone_scale.
+# road. See controller/nmpc/weight_schedule.py::_rrate_zone_scale.
 # Multiplies whatever r_rate_delta is (unlike NMPC_CORNER_RRATE_BLEND_ENABLED,
 # which OVERWRITES it), so it composes with the shipped 52.5 rather than
 # discarding it.
@@ -167,7 +167,7 @@ NMPC_RRATE_STEER_CORNER = -1.0     # -1 = inherit RRATE_STEER_CORNER
 # reversals carry ~4.3x the |d2| of same-direction ramps vs only ~1.9x the
 # |d1|, so this separates chatter from turn-in about twice as sharply as the
 # rate cost can. 0.0 disables the term entirely (no Hessian contribution).
-# See controller/nmpc_optimiser.py::_build_qp's _E2 comment.
+# See controller/nmpc/qp_model.py::_build_qp's _E2 comment.
 NMPC_RJERK_DELTA = 150.0
 
 NMPC_RJERK_A = 0.0
@@ -320,13 +320,13 @@ NMPC_BACKTRACK_MAX = 2                      # step halvings if a full SQP step i
                                             # true nonlinear cost (divergence guard).
 NMPC_TRACK_HALFWIDTH = 3.35                  # soft |e_y| bound with slack (both quadratic and
 
-                                            # linear), matching controller/optimiser.py's LTV-QP
+                                            # linear), matching controller/lmpc/'s LTV-QP
                                             # +-3.5m literal. Was narrowed to 3.0 on 2026-09-21 for
                                             # the progress-term experiment, then REVERTED the same
                                             # day: this field is read unconditionally (not gated on
                                             # progress_enabled), so narrowing it also tightened
                                             # ordinary tracking mode and measurably hurt it.
-NMPC_SLACK_WEIGHT = 10000.0                 # matches controller/optimiser.py's W_SLACK.
+NMPC_SLACK_WEIGHT = 10000.0                 # matches controller/lmpc/'s W_SLACK.
 
 NMPC_CURVATURE_DENSE_STEP = 0.5             # kappa(s)/heading-reference smoothing -- same
 
@@ -383,7 +383,7 @@ NMPC_SPLINE_REFERENCE_ENABLED = True
 # see CLAUDE.md's strong warning against touching that mechanism, which this
 # does not). The bound is derived from the SAME measured ceiling law
 # (ALAT_CEILING_FLAT/_SLOPE/_INTERCEPT) via F_max = m * ceiling(v_x) / 2 per
-# axle (see nmpc_optimiser.py's _fmax_flat/_fmax_slope/_fmax_intercept for
+# axle (see controller/nmpc/solver.py's _fmax_flat/_fmax_slope/_fmax_intercept for
 # the exact conversion). When False, _build_qp/_outputs/_output_jacobians/
 # _solve_step are all IDENTICAL (same array shapes, same QP dimensions) to
 # before this feature existed -- not just "the extra rows are empty".
@@ -401,7 +401,7 @@ NMPC_FRICTION_CIRCLE_ENABLED = False
 # ONE-SIDED cap (penalises v_x only ABOVE desired_speed, nothing pulls it
 # up), and a 6th cost row rewards progress toward an unreachable arc-length
 # target (NMPC_Q_PROGRESS below), written as a least-squares residual so it
-# stays native to the Gauss-Newton solver (see nmpc_optimiser.py's
+# stays native to the Gauss-Newton solver (see nmpc/solver.py's
 # _outputs() docstring -- a bare linear reward contributes nothing to the
 # Hessian and lets a single SQP step bang to a bound). desired_speed (the
 # existing curvature-limited/precomputed-profile pipeline, UNCHANGED) keeps
@@ -440,7 +440,7 @@ NMPC_PROGRESS_REACH = 3.0    # s_target_N = s0 + max(v_cap*N*DT*REACH,
                              # the ~2.3 m/s^2 needed to break static friction
                              # at REACH=1.5 with no floor. 2.0 gives ~1.3x
                              # margin over the measured 11 m minimum at this
-                             # weight set; see nmpc_optimiser.py's
+                             # weight set; see nmpc/solver.py's
                              # compute_step() comment for the full mechanism.
 NMPC_PROGRESS_V_MIN = 3.0    # hard-ish low-speed floor (hinge, same row/weight
 
@@ -482,15 +482,15 @@ NMPC_LATENCY_COMPENSATION_MS = 25.0         # defaults to NMPC_SOLVE_BUDGET_MS; 
                                             # MAX_DELAY_COMPENSATION_STEPS, same as n_delay.
 
 # NMPC_V_DES_FILTER_ALPHA: parity placeholder only, NOT YET WIRED IN. Live's
-# nmpc_core.py low-pass-filters the incoming speed target before its cost
+# The live nmpc/solver.py low-pass-filters the incoming speed target before its cost
 # function sees it (nmpc_params.py's nmpc_v_des_filter_alpha, default 0.09,
 # the best result of a live tuning sweep -- see that field's own docstring and
-# planner_only_lap2_corner_spinout.md). controller/nmpc_optimiser.py's
+# planner_only_lap2_corner_spinout.md). controller/nmpc/solver.py's
 # compute_step() has NO equivalent: it feeds desired_speed straight into
 # _outputs()/_solve_step() unfiltered every call. This constant exists only
 # so the live default has a matching offline record per CLAUDE.md's parity
 # rule; it has no effect until/unless an equivalent filter is actually
-# added to nmpc_optimiser.py.
+# added to controller/nmpc/solver.py.
 NMPC_V_DES_FILTER_ALPHA = 0.09
 
 # FSDS's fitted sustained lateral-acceleration ceiling law,
@@ -500,7 +500,7 @@ NMPC_V_DES_FILTER_ALPHA = 0.09
 # for the NMPC's own in-prediction ceiling model (NMPC_ALAT_CEILING_ENABLED
 # above) even though the LTV-QP no longer has a lookahead
 # demand-normalisation reading these directly. Must stay in sync with
-# model/vehicle_physics.py's alat_ceiling_at().
+# model/vehicle_physics/'s alat_ceiling_at().
 ALAT_CEILING_FLAT = 7.5
 
 ALAT_CEILING_SLOPE = 0.47

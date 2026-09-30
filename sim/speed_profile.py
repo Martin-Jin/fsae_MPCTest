@@ -78,7 +78,7 @@ USED BY
 
 DOES NOT USE
 ------------
-  model/vehicle_physics.py, model/bicycle_model.py, controller/lmpc/solve.py, sim/perception.py, sim/planner.py, tuner/performance_stats.py
+  model/vehicle_physics/, model/bicycle_model.py, controller/lmpc/solve.py, sim/perception.py, sim/planner.py, tuner/performance_stats.py
 """
 
 import numpy as np
@@ -132,7 +132,7 @@ A_BRAKE_PLAN = 5.0
 # the time term at exactly 1.0, destroying all discrimination in the primary
 # objective. A lower bound must use what the vehicle can actually do.
 #
-# a_lat: the plant's peak grip is mu=1.76 (vehicle_physics.py: 1.6 * GRIP_SCALE
+# a_lat: the plant's peak grip is mu=1.76 (model/vehicle_physics/: 1.6 * GRIP_SCALE
 # 1.1), i.e. ~17 m/s^2. Using the full figure would assume the tyres generate
 # peak lateral force with zero longitudinal demand, everywhere at once, which
 # even an ideal driver cannot sustain through corner entry/exit. 12.0 (~0.7g of
@@ -298,7 +298,7 @@ def compute_speed_profile(
     # Evaluate the LIVE heuristic at every path point, scanning forward from
     # that point exactly as the car does from its current position each tick.
     # pts[i:] is "the path ahead of point i", which is the same argument shape
-    # rollout_core passes when it calls curvature_speed() on the planner's
+    # sim/rollout/core passes when it calls curvature_speed() on the planner's
     # centreline — so oracle and planner branches now agree by construction.
     # On a closed loop, wrap the scan window past the end back to the start
     # so a point near the finish line still sees the corner just after the

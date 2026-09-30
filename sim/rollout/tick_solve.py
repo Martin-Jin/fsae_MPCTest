@@ -8,9 +8,10 @@ Stateless: any value the loop carries from one tick to the next
 than stored, so the loop in sim/rollout/core.py remains the one place that
 owns rollout state.
 
-settings.py constants are bound here by name at import time, the same as
-elsewhere in this package. Callers that override settings
-(tuner/investigations/steering_chatter_check.py) must do so before the
+settings constants are read here as settings.X at call time, so a runtime
+override is honoured. Only default arguments (in sim/rollout/core.py) bind at
+import. Callers that override settings
+(tuner/investigations/steering_chatter_check.py) should still do so before the
 first import of sim.rollout.core, which imports this module.
 """
 
@@ -30,7 +31,7 @@ import settings
 
 def _nmpc_pick(override, base):
     """-1.0 (or None) = inherit `base`; otherwise use `override`. See
-    settings.py's "NMPC weight overrides" comment."""
+    the settings package's "NMPC weight overrides" comment."""
     return base if override is None or override < 0.0 else override
 
 
@@ -39,10 +40,10 @@ def build_nmpc(Q, R, R_rate, u_min, u_max, du_max, vehicle_params, nmpc_override
     Construct the rollout's NMPCController. Called ONCE per rollout, so its
     warm-started SQP solution persists tick to tick exactly like the LTV
     path's u_prev/command_queue do. See controller/nmpc/'s package docstring
-    for the full design, and settings.py's "NMPC weight overrides" comment
-    for why Q/R/R_rate (the CURRENT weight set: settings.py's tuned values or
+    for the full design, and the settings package's "NMPC weight overrides" comment
+    for why Q/R/R_rate (the CURRENT weight set: the settings package's tuned values or
     a CMA-ES candidate, whichever this rollout was called with) rather than
-    settings.py's constants directly are what the overrides inherit from.
+    the settings package's constants directly are what the overrides inherit from.
 
     `nmpc_overrides` is run_core_rollout()'s per-call override dict, keyed by
     the controller's own kwarg name; see that function's docstring.
@@ -125,7 +126,7 @@ def solve_nmpc_tick(nmpc, planner_cl, path_xy, car_pos_np, psi_est, state_est,
     structurally (kappa(s) is looked up from a STATE, arc length, not
     reweighted after the fact), so applying the same mechanisms on top would
     double-count an effect that is now built into the prediction. See
-    settings.py's USE_NMPC comment.
+    the settings package's USE_NMPC comment.
 
     The warm-start-projection invariant (see NMPCController._project_feasible)
     means compute_step() always ships a feasible u_opt, even on a tick where
@@ -199,7 +200,7 @@ def solve_ltv_tick(
     # blend, so it starts as a plain copy here (the removed adaptive_R_rate
     # current-curvature floor used to scale it first, but that scale was
     # always overwritten by the blend before it could reach the QP, see
-    # docs/removed_mechanisms.md).
+    # docs/reference/retired_mechanisms.md).
     R_rate_scaled = np.array(R_rate, copy=True)
     _rr_before_hunt = float(R_rate_scaled[0, 0])
     R_rate_scaled = steer_rate_anti_hunt(
@@ -237,7 +238,7 @@ def solve_ltv_tick(
     # m_rrate_reversal, and any future one) must be explicitly
     # reapplied here too -- an assignment that omits one silently
     # discards its effect even though the multiplier's own value is
-    # still correctly logged elsewhere. See mpc_core.py's matching
+    # still correctly logged elsewhere. See lmpc/controller.py's matching
     # comment; this exact class of bug has recurred more than once.
     R_rate_scaled = R_rate_scaled.copy()
     R_rate_scaled[0, 0] = _blend(

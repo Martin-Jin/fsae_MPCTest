@@ -145,11 +145,11 @@ def run_core_rollout(
         False (default, = settings.USE_NMPC) -> controller/lmpc/solve.py's
         linear time-varying QP, as always. True -> controller/nmpc/'s
         Frenet-frame nonlinear MPC instead -- see that package's
-        docstring. Explicit parameter (not read from settings.py
-        at call time) so a caller (e.g. an A/B script) can toggle it without
-        relying on module-attribute mutation after settings.py has already
-        been imported elsewhere, which has no effect on an already-bound
-        `from settings import USE_NMPC` name -- see tuner/
+        docstring. Explicit parameter (the default settings.USE_NMPC binds
+        at import time) so a caller (e.g. an A/B script) can toggle it without
+        relying on module-attribute mutation after this module has already
+        been imported, which has no effect on an already-bound
+        default -- see tuner/validation/
         nmpc_offline_check.py's closed-loop test for exactly this gotcha,
         found by testing this parameter's own first version.
     model_lookup : callable(vx, dt) -> (Ad, Bd)
@@ -165,11 +165,11 @@ def run_core_rollout(
     nmpc_overrides : dict, optional
         Per-call overrides for the NMPC rate-shaping fields, by the controller's
         own kwarg name (e.g. {'rjerk_delta': 250.0, 'rrate_zone_ease_approach':
-        0.35}). Anything absent falls back to the settings.py constant.
+        0.35}). Anything absent falls back to the settings package constant.
 
-        This exists because settings.py's constants are imported into this
-        module BY NAME at import time, so a caller that mutates
-        settings.NMPC_* after this module is imported has no effect -- the
+        This exists because default arguments of this function (for example
+        use_nmpc=settings.USE_NMPC) bind at import time, so a caller that mutates
+        settings.NMPC_* after this module is imported has no effect on them -- the
         usual workaround is a fresh subprocess per configuration. Passing a
         dict here lets one process evaluate many configurations, which is what
         an optimiser sweeping these fields needs. Keys are not validated
@@ -234,7 +234,7 @@ def run_core_rollout(
     u_prev = np.zeros(2)
 
     # Hard per-step slew-rate limit handed to the MPC, mirroring the live
-    # mpc_core.py's du_max so offline-tuned weights transfer. Derived from the
+    # lmpc/controller.py's du_max so offline-tuned weights transfer. Derived from the
     # vehicle's physical steering rate rather than hardcoded, and scaled by DT
     # so it stays a rate. The acceleration entry (0.6 per step at DT=0.05 =
     # 12 m/s^3) matches the live controller's second du_max element.
@@ -348,7 +348,7 @@ def run_core_rollout(
     n_ran = max_steps
     # Step at which the car first exceeds LAUNCH_SPEED_MPS, so sim_time (and
     # therefore time_bonus) is measured from LAUNCH rather than from tick 0.
-    # Mirrors telemetry_logger.LapProgressTracker.LAUNCH_SPEED_MPS on the live
+    # Mirrors telemetry/lap_progress.py's LapProgressTracker.LAUNCH_SPEED_MPS on the live
     # side -- keep the two equal. Without this the standstill before the car
     # gets moving is folded into the lap time, deflating time_bonus and making
     # runs with different pre-launch holds non-comparable.
@@ -491,7 +491,7 @@ def run_core_rollout(
         # measured — wide enough to reliably catch idx lagging the true
         # finish, narrow enough not to false-trigger on a lap's own
         # start/finish straight or figure-eight crossing (see above).
-        # Mirrored in telemetry_logger.py's LapProgressTracker.
+        # Mirrored in telemetry/lap_progress.py's LapProgressTracker.
         near_end = idx >= len(path_X) - int(0.1 * len(path_X)) - 2
         dist_to_finish = math.hypot(state[0] - path_X[-1], state[1] - path_Y[-1])
         if idx >= len(path_X) - 2 or (near_end and dist_to_finish <= 3.0):

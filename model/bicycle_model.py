@@ -5,7 +5,7 @@ PURPOSE
 -------
 Builds the linearised, discretised vehicle model that the MPC optimiser
 (controller/lmpc/solve.py) uses for its horizon predictions. This is deliberately simpler
-than the nonlinear plant (model/vehicle_physics.py): it is a linearised bicycle
+than the nonlinear plant (model/vehicle_physics/): it is a linearised bicycle
 model that can be solved as a convex QP. The gap between this model and the
 real plant (model-plant mismatch) is what makes the closed-loop feedback
 controller necessary.
@@ -49,7 +49,7 @@ USED BY
 
 DOES NOT USE
 ------------
-  gui/simulation.py, model/vehicle_physics.py, sim/speed_profile.py, sim/perception.py, sim/planner.py,
+  gui/simulation.py, model/vehicle_physics/, sim/speed_profile.py, sim/perception.py, sim/planner.py,
   tuner/performance_stats.py
 """
 

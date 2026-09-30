@@ -29,15 +29,15 @@ error against the reference at each future horizon step; reweighting TODAY's
 (usually near-zero) cost based on a forward scan doesn't change what the
 horizon predicts when the car actually gets there, so the mechanism did
 roughly nothing useful. Replaced by three CURRENT-STATE-driven factors — see
-mpc_core.py's _corner_factor/_low_speed_corner_boost and their use in
-compute(), mirrored here via rollout_core.py's call sites — plus a fourth,
+lmpc/adaptive_gains.py's _corner_factor/_low_speed_corner_boost and their use in
+compute(), mirrored here via sim/rollout/core.py's call sites — plus a fourth,
 independent heading-error-driven accel/brake asymmetry. Also removed as
 unused/didn't-work: the curvature-forcing QP-disturbance term
 (CURVATURE_FORCING_ENABLED, curvature_horizon_profile, the `w` parameter in
-optimiser.py — structurally unsound, see docs/logs) and
+controller/lmpc/ — structurally unsound, see docs/logs) and
 low_speed_steer_rate_boost (disabled by default, gated on speed alone with no
 way to distinguish wanted low-speed turn-in from unwanted post-exit wobble).
-Mirrors mpc_core.py's identical removal per CLAUDE.md's parity rule.
+Mirrors lmpc/controller.py's identical removal per CLAUDE.md's parity rule.
 
 HOW THE SCALING WORKS
 ---------------------
@@ -75,7 +75,7 @@ lookahead family):
     low_speed_corner_boost adds an extra push in the same direction, gated
     multiplicatively on corner_factor so it cannot fire on low speed alone.
     Both feed a shared _blend(straight_val, corner_val, corner_frac) lerp per
-    weight in rollout_core.py, mirroring mpc_core.py's compute().
+    weight in sim/rollout/core.py, mirroring lmpc/controller.py's compute().
 
 USED BY
 -------
@@ -85,7 +85,7 @@ USED BY
 
 DOES NOT USE
 ------------
-  model/vehicle_physics.py, model.py, controller/lmpc/solve.py, sim/speed_profile.py,
+  model/vehicle_physics/, model.py, controller/lmpc/solve.py, sim/speed_profile.py,
   sim/perception.py, sim/planner.py, tuner/performance_stats.py
 """
 
@@ -109,7 +109,7 @@ def curvature_estimate(state):
         Plant state vector. Reads:
           state[3] — longitudinal speed vx (m/s)
           state[5] — yaw rate r (rad/s)
-        Compatible with both the 8-state MPC vector and the 24-state plant vector
+        Compatible with both the 8-state MPC vector and the 25-state plant vector
         since both share indices 3 and 5.
 
     Returns
@@ -131,7 +131,7 @@ def steer_rate_anti_hunt(kappa, e_y, R_rate_base, enabled=False, e_psi=0.0):
     TEMPORARY/EXPERIMENTAL (fsds sim only, off by default): heavily penalise
     steering-rate-of-change, strongest when the car is centred (|e_y|
     small), well-aligned (|e_psi| small), AND not currently curving (kappa
-    small). Mirrors mpc_core.py's _steer_rate_anti_hunt, keep both in sync.
+    small). Mirrors lmpc/adaptive_gains.py's _steer_rate_anti_hunt, keep both in sync.
 
     Continuous, not a hard AND-gated threshold: boost_kappa, boost_ey, and
     boost_epsi each saturate independently toward 1.0 as their input
@@ -150,10 +150,10 @@ def steer_rate_anti_hunt(kappa, e_y, R_rate_base, enabled=False, e_psi=0.0):
     and correctly aligned" from "straight but needs to yaw back into line",
     making exactly the correction it needs artificially expensive.
     e_psi=0.0 (default) makes this term a no-op for callers that don't pass
-    it. k_epsi=23.0 sets half-fade at ~2.5 deg of e_psi.
+    it. k_epsi=11.5 sets half-fade at ~5 deg of e_psi.
 
     NOT VALIDATED. Gated behind STEER_RATE_ANTI_HUNT_ENABLED (default False
-    in settings.py) so it can be evaluated without affecting any existing
+    in the settings package) so it can be evaluated without affecting any existing
     tuned behaviour. Mirrors adaptive_Q_scaling's opt-in pattern: disabled
     callers get R_rate_base back completely unmodified.
 
@@ -184,7 +184,7 @@ def steer_rate_anti_hunt(kappa, e_y, R_rate_base, enabled=False, e_psi=0.0):
     if not enabled:
         return R_rate_base
 
-    # Relaxed 2026-08-19 (halved from 60.0/30.0/23.0) -- see mpc_core.py's
+    # Relaxed 2026-08-19 (halved from 60.0/30.0/23.0) -- see lmpc/controller.py's
     # _steer_rate_anti_hunt for the full reasoning (faded out too fast on
     # gentle curves, leaving residual jitter under-damped). Keep in sync.
     k_kappa, k_ey, k_epsi = 30.0, 15.0, 11.5
@@ -206,7 +206,7 @@ def reversal_penalty_boost(u_prev_steer, R_rate_base, enabled=False,
     against steering REVERSALS (a tick-to-tick sign flip), approximated by
     boosting R_rate[0,0] whenever LAST tick's steering command was already
     close to zero -- the one state a reversal must pass through. Mirrors
-    mpc_core.py's _reversal_penalty_boost, keep both in sync.
+    lmpc/adaptive_gains.py's _reversal_penalty_boost, keep both in sync.
 
     A reversal can't be detected directly inside one solve (it depends on
     THIS tick's own decision, the thing being optimised), so this penalises
@@ -279,8 +279,9 @@ def adaptive_Q_scaling(e_y, Q_base, enabled=False):
     This may be a live-only symptom (sensor/state noise, delay-compensation
     dynamics, or the plant behaving differently from the model near zero
     slip) rather than something the offline plant reproduces. Implemented
-    here anyway, DISABLED BY DEFAULT, so it exists to test against a live
-    log without risking any offline-tuned behaviour changing silently.
+    here so it can be tested against a live log. The function's own `enabled`
+    argument defaults to False, but the shipped flag
+    ADAPTIVE_Q_SCALING_ENABLED is True.
 
     SHAPE
     -----
@@ -351,7 +352,7 @@ def _corner_factor(kappa, k):
     no separate decay-distance timer, no hysteresis state: this is a pure
     function of the current instantaneous signal, replacing the whole
     deleted lookahead approach/exit-boost family (see this module's
-    docstring). Numeric-parity mirror of mpc_core.py's _corner_factor -- k
+    docstring). Numeric-parity mirror of lmpc/adaptive_gains.py's _corner_factor -- k
     is settings.CORNER_FACTOR_K.
     """
     return 1.0 - 1.0 / (1.0 + k * abs(kappa))
@@ -361,9 +362,9 @@ def _blend(straight_val, corner_val, corner_frac):
     """
     Simple linear interpolation from straight_val (corner_frac=0) to
     corner_val (corner_frac=1). Shared helper for every current-state
-    Q/R_rate weight schedule in rollout_core.py -- see _corner_factor/
+    Q/R_rate weight schedule in sim/rollout/core.py -- see _corner_factor/
     _low_speed_corner_boost for how corner_frac itself is built. Numeric-
-    parity mirror of mpc_core.py's _blend.
+    parity mirror of lmpc/adaptive_gains.py's _blend.
     """
     return straight_val + (corner_val - straight_val) * corner_frac
 
@@ -385,7 +386,7 @@ def _low_speed_corner_boost(car_speed, corner_factor, v_half, max_extra):
     car_speed=0 gives the full max_extra (scaled by corner_factor); the
     boost falls off toward 0 as speed rises past v_half (the speed at
     which half of max_extra remains), same saturating-curve style used
-    throughout this file. Numeric-parity mirror of mpc_core.py's
+    throughout this file. Numeric-parity mirror of lmpc/controller.py's
     _low_speed_corner_boost.
     """
     v = max(abs(car_speed), 0.0)

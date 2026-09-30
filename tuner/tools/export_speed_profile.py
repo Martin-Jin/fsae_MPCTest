@@ -20,7 +20,7 @@ load_path_profile_csv(), fsae_planning repo) is a ~15-line CSV reader with no
 scipy and no boundary.py port. psi is exported alongside x/y so a live
 consumer that wants the path itself (not just the speed lookup) doesn't have
 to re-derive heading from consecutive points if it would rather use the
-spline-fit heading directly — see USE_PRECOMPUTED_PATH in settings.py.
+spline-fit heading directly — see USE_PRECOMPUTED_PATH in the settings package.
 
 Re-run this whenever the map changes (a new cone_recorder capture, or a
 speed_profile.py change that would alter the oracle profile).

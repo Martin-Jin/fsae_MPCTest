@@ -5,7 +5,7 @@ its RK4 integrators.
 
 `_f_scalar`/`_step_scalar` (one stage, used for the rollout) and `_f`/`_step`
 (vectorised, used for the finite-difference Jacobians) must stay numerically
-identical; `tuner/nmpc_offline_check.py` asserts it.
+identical; `tuner/validation/nmpc_offline_check.py` asserts it.
 """
 
 import math
@@ -81,7 +81,7 @@ def _tyre_forces(X, p):
 
 def _f(X, U, ref, p):
     """Continuous-time dynamics, vectorised over horizon stages. See the
-    live nmpc_core.py's `_f` for the full equations/derivation; identical
+    live nmpc/dynamics.py's `_f` for the full equations/derivation; identical
     here."""
     s     = X[:, IDX_S]
     e_y   = X[:, IDX_EY]
@@ -128,7 +128,7 @@ def _f(X, U, ref, p):
 
     blend = np.clip((v_x - p.v_blend_lo) / (p.v_blend_hi - p.v_blend_lo), 0.0, 1.0)
 
-    # Fade tyre forces out at low speed -- see live nmpc_core.py's `_f` for
+    # Fade tyre forces out at low speed -- see live nmpc/dynamics.py's `_f` for
     # the full derivation (mirrored here: without this, alpha_f/alpha_r's
     # speed-floored denominator makes a stationary tyre's slip angle track
     # the steering command directly, producing a fictitious cornering force

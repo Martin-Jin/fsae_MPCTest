@@ -3,7 +3,7 @@
 Attribute tracking error to individual adaptive features, from a live log.
 
 Reads a control CSV containing the adaptive-feature trace columns (see
-fsae_control/telemetry_logger.py's ADAPTIVE_COLUMNS) and reports, per corner,
+fsae_control/telemetry/columns.py's ADAPTIVE_COLUMNS) and reports, per corner,
 which features actually fired and how hard -- so a wide corner can be pinned
 on a specific multiplier instead of guessed at.
 

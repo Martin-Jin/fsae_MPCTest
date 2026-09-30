@@ -32,7 +32,7 @@ STEER_RATE_ANTI_HUNT_ENABLED = True
 # controller/model_utils.py::reversal_penalty_boost's docstring for why a
 # reversal can't be detected directly inside a convex QP and this
 # approximates it. Composes multiplicatively with STEER_RATE_ANTI_HUNT
-# above (mirrors mpc_core.py's own composition fix), does not replace it.
+# above (mirrors lmpc/controller.py's own composition fix), does not replace it.
 # Default False: genuine experiment, not yet validated.
 REVERSAL_PENALTY_ENABLED = False
 
@@ -54,7 +54,7 @@ REVERSAL_PENALTY_K = 8.0           # 1/rad; half-boost at ~7.2deg of previous st
 # TODAY's (usually near-zero) cost based on a forward scan doesn't change
 # what the horizon predicts when the car actually gets there -- see
 # controller/model_utils.py's module docstring for the full removal
-# rationale, and mpc_core.py's mirrored removal (CLAUDE.md's parity rule).
+# rationale, and lmpc/controller.py's mirrored removal (CLAUDE.md's parity rule).
 # Replaced by CORNER_FACTOR_K and the Q/R_rate/R straight/corner blend
 # endpoints below, plus LOW_SPEED_CORNER_BOOST_*/EPSI_RA_* — all driven by
 # CURRENT curvature/speed/heading-error, never a forward scan. Also removed
@@ -74,7 +74,7 @@ CORNER_FACTOR_K = 8.0
 
 # [LTV-QP only] Q[0,0] (e_y) / Q[2,2] (e_psi) / Q[3,3] (r) / R_rate[0,0] straight/corner
 # blend endpoints, and R[0,0]'s special MIDDLE blend target -- see
-# mpc_core.py's compute() for the exact _blend() wiring these feed. Q[3,3]/
+# lmpc/controller.py's compute() for the exact _blend() wiring these feed. Q[3,3]/
 # R_rate[0,0] RELAX in-corner (corner value LOWER than straight) so the MPC
 # can rotate/steer fast enough to hit the tighter Q[0,0]/Q[2,2] targets;
 # R[0,0] blends toward a MIDDLE value, not the same low extreme, so
@@ -115,7 +115,7 @@ LOW_SPEED_CORNER_BOOST_MAX_EXTRA = 0.3
 # ── Heading-error-driven accel/brake asymmetry ───────────────────────────────
 # [LTV-QP only] Always-on, independent of the corner-factor scheduler above: scales
 # R_A_ACCEL/R_A_BRAKE (below) by a continuous 0->1 fraction of CURRENT
-# |e_psi| -- see mpc_core.py's compute() for the exact blend. Not
+# |e_psi| -- see lmpc/controller.py's compute() for the exact blend. Not
 # gain-scheduled off a forward scan; purely reactive to the car's own
 # current heading error. Mirrors MPCParams.epsi_ra_half_rad/
 # _accel_boost_max/_brake_floor.
@@ -131,8 +131,8 @@ EPSI_RA_BRAKE_FLOOR = 0.5
 # e_v/progress-cap row ever sees it. Measured 2026-09-20: at 2.5 this was the
 # binding constraint on acceleration for 36.8% of a lap, not the launch/
 # recovery guard it was written as. Raised to 5.0 (faster lap, lower |e_y|,
-# lower steering saturation, no measured trade-off offline); NOT yet
-# live-validated at this value. See docs/logs/nmpc_progress_term_investigation.md.
+# lower steering saturation, no measured trade-off offline); the shipped
+# value is 2.55. See docs/logs/nmpc_progress_term_investigation.md.
 # Mirrors MPCParams.speed_target_deficit_max.
 SPEED_TARGET_DEFICIT_MAX = 2.55
 
@@ -215,7 +215,7 @@ R_rate_diag = [100.0, 2.0]
 
 # [shared] R_A_ACCEL / R_A_BRAKE — separate effort weights for acceleration and
 # braking. solve_mpc()'s a_cmd effort cost is r_a_accel*pos(a_cmd)^2 +
-# r_a_brake*neg(a_cmd)^2 (see controller/optimiser.py), not R_diag[1]*a_cmd^2
+# r_a_brake*neg(a_cmd)^2 (see controller/lmpc/), not R_diag[1]*a_cmd^2
 # -- R_diag[1] is read only as the fallback default when a caller omits
 # these. A single shared r_a weight cannot be tuned independently for
 # acceleration vs. braking: lowering it to free up acceleration authority

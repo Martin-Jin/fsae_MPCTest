@@ -1,5 +1,5 @@
 """
-A/B test: does REF_HEADING_RATE_LIMIT (settings.py) close any of the
+A/B test: does REF_HEADING_RATE_LIMIT (the settings package) close any of the
 steering-saturation gap between sim and live?
 
 Sweeps REF_HEADING_RISE_RATE against the disabled baseline on the recorded

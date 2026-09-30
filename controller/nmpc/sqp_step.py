@@ -7,7 +7,7 @@ PURPOSE
 updates the OSQP problem built in qp_model.py and returns the control
 correction `dU`; `_project_feasible` clips a candidate trajectory back
 inside the input and rate limits. Split from solver.py only to keep files
-readable; the names match the live `nmpc_core.NMPCController` one to one.
+readable; the names match the live `nmpc.solver.NMPCController` one to one.
 
 USED BY
 -------
@@ -45,7 +45,7 @@ class _SQPStepMixin:
         and the OSQP status. Because X was rolled forward from the measured
         state (see _rollout), the linearised dynamics have ZERO defect, so
         the condensed sensitivities alone describe the subproblem exactly —
-        see the live nmpc_core.py's _solve_step; identical here.
+        see the live nmpc/sqp_step.py's _solve_step; identical here.
 
         When self.friction_circle_enabled, H/C carry NH_FRICTION extra
         (unweighted) rows (see _outputs) -- G/g below are built from ONLY

@@ -53,7 +53,7 @@ from model.vehicle_physics.tyres import pacejka_lateral_mf94, pacejka_longitudin
 def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
                          road_mu=1.0, tv_gain=0.0):
     """
-    Advance the 24-state nonlinear plant by one control timestep dt.
+    Advance the 25-state nonlinear plant by one control timestep dt.
 
     This is the core integration function called at every simulation step.
     It sub-steps the ODEs 4× internally (h = dt/4 = 0.0125 s) to remain
@@ -470,7 +470,7 @@ def step_nonlinear_plant(state, u_cmd, dt, params: VehicleParams,
         # Restoring yaw moment for FSDS's lateral-accel ceiling (modelled as
         # lagged, not a hard clip, to reproduce the measured ~30% overshoot a
         # clip cannot). See VehicleParams.alat_ceiling* fields above and
-        # `docs/reference/README.md`'s "MECHANISM" section for the
+        # `docs/reference/simulator_fidelity.md`'s ceiling section for the
         # measurement and full derivation.
         #
         # alat_lim is a STATE that accumulates over time (not a function of

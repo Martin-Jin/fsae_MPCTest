@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-tuner/nmpc_offline_check.py — offline validation for controller/nmpc/,
+tuner/validation/nmpc_offline_check.py — offline validation for controller/nmpc/,
 mirroring the live repo's ros2/.../test/nmpc_offline_check.py structure so the
-two can be read/compared side by side (see docs/tuning.md's NMPC section).
+two can be read/compared side by side (see docs/guides/tuning.md's NMPC section).
 
 Run: python -m tuner.validation.nmpc_offline_check
 """
@@ -211,12 +211,12 @@ def test_closed_loop():
     results = {}
     for use_nmpc, label in ((False, 'LTV-QP (as shipped)'), (True, 'NMPC (settings.py defaults)')):
         # Pass use_nmpc as an explicit CALL argument, not by mutating
-        # settings.USE_NMPC -- rollout_core.py imports USE_NMPC as a bare
-        # name (`from settings import USE_NMPC`), so reassigning the
+        # settings.USE_NMPC -- run_core_rollout()'s default argument
+        # (use_nmpc=settings.USE_NMPC) binds at import time, so reassigning the
         # settings MODULE's attribute afterward has no effect on that
-        # already-bound name. This is exactly why run_core_rollout() takes
+        # already-bound default. This is exactly why run_core_rollout() takes
         # use_nmpc as its own parameter (mirroring use_planner=USE_PLANNER),
-        # not something to rely on toggling via settings.py at runtime.
+        # not something to rely on toggling via settings at runtime.
         r = run_core_rollout(
             path_X, path_Y, path_Psi, path_v, blue, yellow,
             Q, R, R_rate, u_min, u_max, vp,

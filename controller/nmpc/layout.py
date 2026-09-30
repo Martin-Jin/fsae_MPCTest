@@ -1,7 +1,7 @@
 """
 controller/nmpc/layout.py — NMPC state/input/output index layout and the
 numerical constants shared by the model, the cost rows and the solver.
-Identical to the live `nmpc_core.py`'s module-level constants.
+Identical to the live `nmpc/solver.py`'s module-level constants.
 """
 
 import numpy as np

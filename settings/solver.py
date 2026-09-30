@@ -81,7 +81,7 @@ _stop_requested = False
 #     (minutes to hours depending on your computer).
 #   - Decrease it: faster but rougher tuning results, useful for quick
 #     iteration while testing changes to the tracks or scoring.
-#   - Typical adjustment: double or halve it (e.g. 2500 → 5000 or → 1250)
+#   - Typical adjustment: double or halve it (e.g. 1500 → 3000 or → 750)
 #     to meaningfully change tuning time; small changes won't be noticeable.
 MAX_EVALS = 1500
 
@@ -144,7 +144,7 @@ OPTUNA_PRE_PASS_EVALS = max(10, int(0.1 * MAX_EVALS))
 # ==============================================================================
 # FAST_TEST_MODE — "Am I checking that a code change to the tuner/benchmark
 # still runs correctly, or am I actually trying to find good driving weights?"
-# A real offline_tuner.py run (MAX_EVALS=2500 across a 5-path validation
+# A real offline_tuner.py run (MAX_EVALS=1500 across a 5-path validation
 # suite) or a full performance_stats.py benchmark (11 paths x multiple
 # initial conditions/repeats) takes minutes to hours. That cost is fine when
 # the result is meant to be used, but wasteful when you only need to confirm
@@ -154,6 +154,6 @@ OPTUNA_PRE_PASS_EVALS = max(10, int(0.1 * MAX_EVALS))
 #   - Set True only for quick development smoke-tests: cuts a tuning run down
 #     to roughly a minute by shrinking the eval budget, path count, track
 #     resolution, and solver precision. Never paste weights produced with
-#     this on into settings.py's Q_diag/R_diag/R_rate_diag — they're a
+#     this on into the settings package's Q_diag/R_diag/R_rate_diag — they're a
 #     correctness check, not a tuned result.
 FAST_TEST_MODE = False

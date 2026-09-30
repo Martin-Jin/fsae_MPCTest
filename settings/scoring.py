@@ -12,7 +12,7 @@ import numpy as np
 
 # METRIC_SCALES — "What counts as a NORMAL amount of each thing being
 # measured?"
-# Each of the 12 metrics below is divided by its entry here before being
+# Each of the 13 metrics below is divided by its entry here before being
 # multiplied by its SCORE_WEIGHTS entry. That turns every metric into a
 # roughly unitless "multiples of a typical value" number, so a weight of
 # 0.05 next to a weight of 0.015 really does mean "this matters ~3x more".
@@ -20,7 +20,7 @@ import numpy as np
 # WHY THIS EXISTS (measured)
 # ---------------------------
 # Without it, a metric's real influence is weight x typical magnitude, not
-# weight — and the 12 metrics have wildly different natural magnitudes
+# weight — and the 13 metrics have wildly different natural magnitudes
 # (steering_reversal_rms ~0.007, accel_rms ~1.3, speed_rmse ~2.5). A probe
 # batch of 6 hand-constructed gain sets spanning known failure modes found
 # that this made the score effectively SINGLE-objective:
@@ -94,7 +94,7 @@ METRIC_SCALES = np.array(
 # These weights are applied to each metric AFTER it has been divided by its
 # METRIC_SCALES entry above. That normalisation is what makes a weight mean
 # what it says: without it, weights would hit each metric's *raw* value, and
-# since the 12 metrics have wildly different natural magnitudes
+# since the 13 metrics have wildly different natural magnitudes
 # (mixed m²/rad² RMS terms, radians, m/s², unitless ratios), a metric's real
 # influence was weight x typical magnitude rather than weight. See the
 # METRIC_SCALES block above for the measurement that showed this had made the
@@ -284,7 +284,7 @@ COMPLETION_BONUS_WEIGHT = 0.5
 #
 # A hard worst-case (TAIL_QUANTILE = 1.0) is too brittle: a DNF adds a flat
 # +3.0 (+6.0 off-track), so ONE unlucky task out of ten shifts the objective
-# by ~0.9 and swamps all twelve continuous quality metrics. Measured effect:
+# by ~0.9 and swamps all thirteen continuous quality metrics. Measured effect:
 # a plausible hand-picked gain set scored 3rd-WORST of six — below two
 # deliberately pathological sets — purely because one of its ten tasks DNF'd.
 #   - 1.0  = the single worst task decides the tail term entirely.
@@ -300,7 +300,7 @@ TAIL_QUANTILE = 0.8
 # ==============================================================================
 # CONSTRAINED SCORING STRUCTURE
 # ==============================================================================
-# A single weighted sum of 12 metrics plus additive bonuses and penalties is
+# A single weighted sum of 13 metrics plus additive bonuses and penalties is
 # "linear scalarisation", and it has a structural limit: a
 # weighted sum can only ever reach solutions on the CONVEX HULL of the
 # trade-off surface. If that surface is non-convex — normal for vehicle
@@ -317,7 +317,7 @@ TAIL_QUANTILE = 0.8
 #   1. HARD CONSTRAINTS  — crash / off-track / didn't finish. Infeasible, and
 #      pushed above CONSTRAINT_FLOOR where no quality score can rescue them.
 #   2. PRIMARY OBJECTIVE — lap time vs. the path's physical optimum.
-#   3. QUALITY GROUP     — the 12 metrics, kept as a weighted sum (they really
+#   3. QUALITY GROUP     — the 13 metrics, kept as a weighted sum (they really
 #      are preferences), scaled to shape rather than drive the result.
 
 # CONSTRAINT_FLOOR — "the line between a valid run and a failed one."

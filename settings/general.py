@@ -15,7 +15,7 @@ from sim.perception import TRACK_HALF_WIDTH
 # a short sequence of future steering/throttle moves and only acts on the
 # first one, then re-plans next tick. This number is how many 0.05-second 
 # (since simulator runs at 20Hz) steps ahead it plans each time 
-# (25 steps = 1.25 seconds of look-ahead).
+# (35 steps = 1.75 seconds of look-ahead).
 #   - Increase it: the car "sees" further ahead, which can smooth out
 #     reactions to corners it hasn't reached yet, but each planning step
 #     takes noticeably longer to compute (the difficulty roughly squares).
@@ -31,7 +31,7 @@ N_HORIZON = 35
 # With no terminal cost or constraint, the MPC has exactly the same incentive
 # to track well at the last predicted step as at every other step, and no
 # incentive to leave itself in a good position for what happens just past the
-# horizon. This affects both stacks identically (mpc_core.py has the same gap).
+# horizon. This affects both stacks identically (lmpc/controller.py has the same gap).
 # 1.0 = no-op (the only value ever validated against the current Q_diag/
 #       R_diag/R_rate_diag tuning -- this is what every existing tuned
 #       weight set assumes).
@@ -83,7 +83,7 @@ USE_PLANNER = False
 #
 # No effect while USE_PLANNER=False above: with the planner disabled,
 # run_core_rollout() already always uses the oracle path_v profile for
-# speed regardless of this flag (rollout_core.py). Set True here only
+# speed regardless of this flag (sim/rollout/core.py). Set True here only
 # matters if USE_PLANNER is switched back to True and you still want
 # precomputed speed instead of live curvature_speed().
 USE_PRECOMPUTED_SPEED_PROFILE = True
@@ -98,7 +98,7 @@ USE_PRECOMPUTED_SPEED_PROFILE = True
 # own plan and the corner being too close to brake down to the profile's
 # target in time. That mismatch is what shows up as late, hard braking and
 # steering saturation right at corner entry — see
-# fsae_MPCTest/`docs/reference/README.md`'s speed-governor section for
+# fsae_MPCTest/`docs/reference/control_mechanisms.md`'s dynamic speed cap section for
 # the log evidence.
 #
 # True  = also compute speed_profile.curvature_speed() (renamed at the call
@@ -228,7 +228,7 @@ DT = 0.05
 #     left vs. right) is never touched, so this cannot reverse a correction.
 # Lowering below ~85 risks DNFing a fast, tight slalom off-track (the
 # reference is held back so hard the car cannot keep up) — re-run
-# tuner/checks/ref_heading_limiter_suite_check.py before changing this.
+# tuner/investigations/ref_heading_limiter_suite_check.py before changing this.
 # Default off until validated live.
 REF_HEADING_RATE_LIMIT_ENABLED = False
 

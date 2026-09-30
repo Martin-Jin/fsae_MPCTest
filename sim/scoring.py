@@ -25,7 +25,7 @@ USED BY
 import numpy as np
 import settings
 
-# Metric index constants — must stay in sync with SCORE_WEIGHTS order in settings.py
+# Metric index constants — must stay in sync with SCORE_WEIGHTS order in the settings package
 IDX_RMSE               = 0
 IDX_YAW_RMS            = 1
 IDX_SMOOTH_RMS         = 2
@@ -69,14 +69,14 @@ def compute_composite_score(
     Lower is better.
 
     Parameter order here MUST match the IDX_* constants above / the order
-    of SCORE_WEIGHTS in settings.py — the metrics array below is built
+    of SCORE_WEIGHTS in the settings package — the metrics array below is built
     positionally, not by name. accel_reversal_rms is keyword-only with a
     default so existing positional callers (which predate this metric)
     don't break; new callers should pass it explicitly.
 
     steering_reversal_rms/accel_reversal_rms: magnitude-weighted RMS of
     direction reversals, distinguishing controller hunting from a
-    legitimately twisty path — see docs/architecture.md's metric table
+    legitimately twisty path — see docs/reference/architecture.md's "The 13 metrics" section
     (metrics 9, 12) for the full construction and rationale, not repeated
     here.
     """
@@ -115,9 +115,8 @@ def compute_composite_score(
     # accumulated over a trajectory that ended in failure. Feasible runs
     # occupy a band strictly below CONSTRAINT_FLOOR, infeasible ones strictly
     # above it, so no amount of good driving can promote an infeasible run
-    # above a feasible one. See docs/architecture.md "Why three tiers instead
-    # of one sum" for why a flat additive penalty (the pre-2026-08-06
-    # approach) let a run buy its way out of a crash — not repeated here.
+    # above a feasible one. See docs/reference/architecture.md "Three tiers, not one sum" for why a
+    # flat additive penalty (the pre-2026-08-06 approach) let a run buy its way out of a crash — not repeated here.
     if dnf or offtrack:
         severity = settings.DNF_PENALTY + (settings.DNF_OFFTRACK_PENALTY if offtrack else 0.0)
         # Deeper progress -> less bad, but never good enough to cross the floor.
@@ -137,7 +136,7 @@ def compute_composite_score(
         return float(settings.CONSTRAINT_FLOOR + settings.DNF_PENALTY * (1.0 - progress))
 
     # ── TIER 2: primary objective — time ──────────────────────────────────
-    # time_bonus is optimal_lap_time / actual_time (see rollout_core), so it
+    # time_bonus is optimal_lap_time / actual_time (see sim/rollout/core), so it
     # is 1.0 at the physical limit and decays as the run gets slower. The
     # objective is its complement: 0.0 is a perfect lap, 1.0 is infinitely
     # slow. This is the term that should dominate a FEASIBLE run, and it is

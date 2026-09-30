@@ -34,7 +34,7 @@ class ProfilesTab(ttk.Frame):
     capture_profile_values()/apply_profile_values() so a loaded profile is
     written the same way a normal edit on either tab would be, via the
     exact same code paths, not a third one. The two tabs' key sets are
-    disjoint (Settings tab uses settings.py NAMEs like Q_diag/NMPC_Q_E_Y;
+    disjoint (Settings tab uses settings NAMEs like Q_diag/NMPC_Q_E_Y;
     Launch tab uses launch_all.sh NAMEs like TRACK/CONTROLLER), so they
     merge into one flat dict with no collision to resolve."""
 
@@ -148,7 +148,7 @@ class ProfilesTab(ttk.Frame):
                 "Load profile",
                 f"Overwrite EVERY current Settings-tab AND Launch-tab value with "
                 f"'{path.stem}' ({len(values)} values)? The Settings-tab values write "
-                "settings.py, the live dataclasses, both fsae_params.yaml copies, and "
+                "the settings package, the live dataclasses, both fsae_params.yaml copies, and "
                 "both fsds_simulator/ mirrors immediately, the same as pressing Save on "
                 "the Settings tab. The Launch-tab values (track/controller/precomputed "
                 "speed & path/V_MAX/V_MIN/progress term) only update that tab's widgets "

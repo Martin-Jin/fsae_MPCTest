@@ -33,7 +33,7 @@ except ImportError as _exc:      # pragma: no cover - see README's dependency li
 
 class NMPCController(_QPModelMixin, _SQPStepMixin):
     """
-    Offline counterpart of the live side's `nmpc_core.NMPCController`. See
+    Offline counterpart of the live side's `nmpc.solver.NMPCController`. See
     this module's own docstring for the relationship between the two, and
     the live module's docstring for the full model/solver explanation
     (identical here) — not repeated per-method here to avoid the two
@@ -123,7 +123,7 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
         )
         self.lf, self.lr = self.plant.lf, self.plant.lr
 
-        # ── Experimental feature flags (see settings.py's NMPC_* comments) ──
+        # ── Experimental feature flags (see settings/nmpc.py's NMPC_* comments) ──
         self.spline_reference_enabled = bool(spline_reference_enabled)
         self.friction_circle_enabled = bool(friction_circle_enabled)
         self.latency_compensation_enabled = bool(latency_compensation_enabled)
@@ -137,22 +137,22 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
         self.q_progress = float(q_progress)
         self.progress_reach = float(progress_reach)
         self.progress_v_min = float(progress_v_min)
-        # EXPERIMENTAL, unvalidated for the NMPC -- see settings.py's
+        # EXPERIMENTAL, unvalidated for the NMPC -- see settings/nmpc.py's
         # NMPC_STEER_RATE_ANTI_HUNT_ENABLED comment. Independent of any
         # LTV-QP-side anti-hunt flag.
         self.steer_rate_anti_hunt_enabled = bool(steer_rate_anti_hunt_enabled)
         # Alternative to the above, not a composition with it -- see
-        # settings.py's NMPC_CORNER_RRATE_BLEND_ENABLED comment. Takes
+        # settings/nmpc.py's NMPC_CORNER_RRATE_BLEND_ENABLED comment. Takes
         # priority over steer_rate_anti_hunt_enabled if both are set.
         self.corner_rrate_blend_enabled = bool(corner_rrate_blend_enabled)
         self.corner_factor_k = float(corner_factor_k)
         self.rrate_steer_straight = float(rrate_steer_straight)
         self.rrate_steer_corner = float(rrate_steer_corner)
-        # EXPERIMENTAL, default off -- see settings.py's
+        # EXPERIMENTAL, default off -- see settings/nmpc.py's
         # NMPC_REVERSAL_PENALTY_ENABLED comment. Unlike the two flags above,
         # this one COMPOSES with either of them (it is keyed on u_prev, a
         # different signal from curvature/e_y/e_psi), so it is not an
-        # alternative to them; see compute_step()'s rrate_steer_current.
+        # alternative to them; see compute()'s rrate_steer_current.
         self.reversal_penalty_enabled = bool(reversal_penalty_enabled)
         self.reversal_penalty_boost_max = float(reversal_penalty_boost_max)
         self.reversal_penalty_k = float(reversal_penalty_k)
@@ -163,10 +163,10 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
         # they set the rate weight's MAGNITUDE, this shapes it across STAGES.
         self.rrate_stage_ramp_enabled = bool(rrate_stage_ramp_enabled)
         self.rrate_stage_near = float(rrate_stage_near)
-        # EXPERIMENTAL, default off. Continuous three-zone schedule on the
+        # Default off here (ships ON via settings). Continuous three-zone schedule on the
         # steering-rate cost: boost on a true straight, ease on the approach
         # to a corner the HORIZON can see, floor through the corner itself.
-        # See _rrate_zone_scale. Unlike the corner blend it uses the
+        # See weight_schedule.py's _rrate_zone_scale. Unlike the corner blend it uses the
         # horizon's predicted curvature as well as the current value, so the
         # ease can lead turn-in rather than arriving with it.
         self.rrate_zone_enabled = bool(rrate_zone_enabled)
@@ -283,7 +283,7 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
     def _rate_limit_kappa(self, ref, prev):
         """
         Cap kappa(s)'s tick-to-tick change against the last rebuild's
-        profile. Mirrors the live nmpc_core.py's own _rate_limit_kappa --
+        profile. Mirrors the live nmpc/solver.py's own _rate_limit_kappa --
         see that method's docstring for the mechanism and
         NMPCParams.nmpc_kappa_rate_max's for why. Mutates ref.kappa/
         ref._k_list in place; must run before anything reads them.
@@ -314,7 +314,7 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
         One NMPC control step. Deliberately DIFFERENT calling convention from
         the live module's `compute()`: returns raw `(u_opt, status_dict)`
         with `u_opt = [delta_cmd (rad), a_cmd (m/s^2)]` — matching
-        `controller/optimiser.solve_mpc()`'s own return convention — rather
+        `controller/lmpc/solve.py`'s solve_mpc()'s own return convention — rather
         than normalised (steering, throttle, brake) FSDS units, since
         `sim/rollout/core.py`'s `step_nonlinear_plant()` (unlike the live
         ROS node) wants the raw physical command directly.
@@ -356,7 +356,7 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
         ])
 
         # Corner-blend / anti-hunt (EXPERIMENTAL, default off) -- mirrors
-        # nmpc_core.py's own block exactly: ALTERNATIVES, not composed (blend
+        # the live nmpc/solver.py's own block exactly: ALTERNATIVES, not composed (blend
         # takes priority when both are enabled). Same signal (current
         # kappa/e_y/e_psi), same functions (model_utils, imported not
         # reimplemented), computed once per compute_step() call and applied
@@ -374,8 +374,8 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
         # reversal-penalty composition below, so the reversal penalty (which
         # applies regardless of which branch ran) boosts whatever value is
         # actually current rather than always the pre-if/elif base -- the same
-        # silent-discard bug already found and fixed in mpc_core.py's own
-        # corner-blend/anti-hunt composition. Mirrors nmpc_core.py.
+        # silent-discard bug already found and fixed in lmpc/controller.py's own
+        # corner-blend/anti-hunt composition. Mirrors the live nmpc/solver.py.
         rrate_steer_current = float(self.r_rate[0])
         if self.corner_rrate_blend_enabled:
             rrate_blend = _blend(self.rrate_steer_straight, self.rrate_steer_corner, corner_frac)
@@ -417,13 +417,13 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
                 xk = _step_scalar(xk, u_hist, ref, self.plant, self.dt, self.rk_substeps)
             x0 = np.array(xk)
 
-        # Latency compensation (EXPERIMENTAL, mirrors nmpc_core.py's own
+        # Latency compensation (EXPERIMENTAL, mirrors nmpc/solver.py's own
         # block): same nonlinear rollforward as the pending_cmds block just
         # above, but forward past "now" using the LAST APPLIED command held
         # constant, to compensate for THIS solve's own wall-clock time
         # rather than pose staleness. Held constant, not extrapolated -- the
         # true future command is exactly what this solve is trying to
-        # determine. See settings.py's NMPC_LATENCY_COMPENSATION_* comments.
+        # determine. See settings/nmpc.py's NMPC_LATENCY_COMPENSATION_* comments.
         if self.latency_compensation_enabled:
             # math.floor(x + 0.5), not round(): round() is round-half-to-
             # even, so exactly 25 ms at dt=0.05 s (0.5 steps) rounds to 0,
@@ -477,11 +477,11 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
         # the horizon's own maximum reach under full commanded accel from
         # rest) rather than scaled off v_cap alone. This matters specifically
         # at launch: SPEED_TARGET_DEFICIT_MAX holds v_cap near ~2.5 m/s while
-        # the car is still stationary (see settings.py), which on its own
+        # the car is still stationary (see the settings package), which on its own
         # makes v_cap*N*dt*reach a few metres -- too close for the residual
         # to stay "unreachable" once a_cmd approaches the ~2.3 m/s^2 needed
         # to break static friction (measured: F_stiction=600N / m=255kg in
-        # model/vehicle_physics.py). The reward then saturates at a tiny gap
+        # model/vehicle_physics/). The reward then saturates at a tiny gap
         # and settles well below the accel stiction needs, so the car never
         # launches (measured live in this repo's own offline rollout: a_cmd
         # plateaus at ~0.6-1.2 forever, v_x stays exactly 0). The kinematic
@@ -529,7 +529,7 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
                 # Jacobian build or this backtracking search, which is where
                 # per-tick time actually varies (each trial re-rolls out the
                 # full horizon). _bt > 0 keeps the first trial unconditional so
-                # the common on-budget case is untouched. Mirrors nmpc_core.py.
+                # the common on-budget case is untouched. Mirrors the live nmpc/solver.py.
                 if _bt > 0 and time.perf_counter() - t0 > budget_s:
                     break
                 U_try = np.clip(U + step * dU, self.u_min, self.u_max)
@@ -578,7 +578,7 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
             'pred_ey_max_abs': float(np.abs(X[:, IDX_EY]).max()),
             'solve_ms': (time.perf_counter() - t0) * 1e3,
             'corner_frac': corner_frac,
-            # Same keys/semantics as nmpc_core.py's last_telemetry:
+            # Same keys/semantics as the live nmpc/solver.py's last_telemetry:
             # per-mechanism multipliers, plus the FINAL fully-composed
             # R_rate[0,0] actually used this tick (post corner-blend AND
             # anti-hunt AND reversal-penalty), not just one stage in isolation.
@@ -599,7 +599,7 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
             # unreachable) progress target the horizon ends -- a stuck/
             # regressing solve shows up as this GROWING tick over tick, not
             # shrinking. a_cmd itself is already u_opt[1], logged by the
-            # caller (rollout_core.py) alongside this dict, not duplicated
+            # caller (sim/rollout/core.py) alongside this dict, not duplicated
             # here.
             diag['v_cap'] = float(v_cap if np.isscalar(v_cap) else v_cap[0])
             diag['speed_cap_over'] = float(max(0.0, float(x0[IDX_VX]) - diag['v_cap']))

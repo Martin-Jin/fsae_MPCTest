@@ -9,7 +9,7 @@ question went unasked when `alat_ceiling_gain` was refitted 3000 -> 700, which
 is how a 13% surplus in SUSTAINED cornering survived in the model.
 
 This script closes that loop. It replays the two measured open-loop
-experiments through `model/vehicle_physics.py` at matched (speed, steering) and
+experiments through `model/vehicle_physics/` at matched (speed, steering) and
 reports the residuals.
 
 The two experiments probe different regimes, and that matters:

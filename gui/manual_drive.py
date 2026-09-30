@@ -11,10 +11,10 @@ against MPC runs.
 
 This is a companion to gui/simulation.py, not a replacement: gui/simulation.py owns
 the MPC/offline-tuner integration; this file owns the human-in-the-loop path.
-It reuses the same synthetic path library, cone placement, and 24-state
+It reuses the same synthetic path library, cone placement, and 25-state
 nonlinear plant so a manually-driven run is physically comparable to an
 MPC-driven one, but it does NOT run the MPC solver, adaptive gain scheduling,
-or rollout_core/scoring pipeline — driving is open-loop from the human's
+or sim/rollout/core/scoring pipeline — driving is open-loop from the human's
 perspective (no tracking-error feedback is computed or scored).
 
 CONTROLS
@@ -83,7 +83,7 @@ current_test_path_idx = -1
 _blue_cones_all   = np.empty((0, 2))
 _yellow_cones_all = np.empty((0, 2))
 
-plant_state   = None          # 24-state nonlinear plant vector (None until driving starts)
+plant_state   = None          # 25-state nonlinear plant vector (None until driving starts)
 delta_cmd     = 0.0           # Current commanded steering angle (rad), ramps toward key target
 a_cmd         = 0.0           # Current commanded accel/brake (m/s²), ramps toward key target
 held_keys     = set()         # Currently-held keyboard keys

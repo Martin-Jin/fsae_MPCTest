@@ -1,6 +1,6 @@
 """
 gui/launcher/file_edit.py — shared file-rewrite helpers (Launch tab ->
-launch_all.sh, Settings tab -> settings/*.py). All of settings.py's
+launch_all.sh, Settings tab -> settings/*.py). All of the settings package's
 package files, launch_all.sh, fsae_params.yaml, and mpc_params.py/
 nmpc_params.py use the same flat "NAME = value" / "NAME=value" style with
 no multi-line assignments for any field this GUI touches, so a single
@@ -15,7 +15,7 @@ from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Shared file-rewrite helpers (Launch tab -> launch_all.sh, Settings tab ->
-# settings.py). Both files use the same flat "NAME = value" / "NAME=value"
+# the settings package). Both files use the same flat "NAME = value" / "NAME=value"
 # style with no multi-line assignments for any field this GUI touches.
 # ---------------------------------------------------------------------------
 

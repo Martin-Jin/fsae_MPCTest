@@ -37,7 +37,7 @@ class VehicleParams:
         COASTING_SCALE = 3.0 # < 1.0 = Rolls further, > 1.0 = Stops faster
 
         # ── Geometry ────────────────────────────────────────────────────────
-        # lf/lr/Iz must match the live mpc_core.py exactly (see this repo's
+        # lf/lr/Iz must match the live lmpc/controller.py exactly (see this repo's
         # plant/model parity rule). Neither set of values is measured (the
         # true lf/lr/Iz aren't in the FSDS repo -- they live in git-LFS
         # .uasset binaries), so these are a deliberate choice, not a guess:
@@ -65,12 +65,12 @@ class VehicleParams:
                                # slope-matching calc further below.
         # Actuator limits: enforced as hard bounds in controller/lmpc/solve.py's QP constraints.
         # 25deg matches the live stack's physical steering limit (see
-        # ros2/src/fsae_planning/control/fsae_control/fsae_control/mpc_core.py's
+        # ros2/src/fsae_planning/control/fsae_control/fsae_control/lmpc/constants.py's
         # MAX_STEER_RAD and fsae_control.control_utils/fsds_bridge).
         self.max_steer       = np.radians(25.0)  # Max rack-limited steering angle (rad)
         # Max steering SLEW rate (rad/s) — how fast the rack can move, as
         # opposed to how far.  Feeds the MPC's hard du_max constraint (see
-        # optimiser.init_parameterized_mpc and the live mpc_core.py, which
+        # lmpc/build.py's init_parameterized_mpc and the live lmpc/controller.py, which
         # must agree).  Measured from live FSDS telemetry by inverting the
         # logged yaw rate through the kinematic bicycle (delta = atan(L*r/v)):
         # achieved roadwheel rate reached p99 ~138 deg/s and max ~218 deg/s,
@@ -79,10 +79,10 @@ class VehicleParams:
         self.max_steer_rate  = np.radians(180.0)
         # FS EV peak acceleration ~12 m/s² (0→17 m/s in ~2 s); braking ~9 m/s² (~0.9g).
         self.max_accel       = 12.0              # Max longitudinal acceleration (m/s²)
-        # Matches mpc_core.py's MAX_BRAKE. Not an FSDS-measured value; the MPC
+        # Matches lmpc/constants.py's MAX_BRAKE. Not an FSDS-measured value; the MPC
         # never commands braking anywhere near this limit regardless of
         # weighting, so it acts as a backstop rather than an active bound.
-        # Keep numerically identical to mpc_core.py.
+        # Keep numerically identical to lmpc/constants.py.
         self.max_accel_brake = -7.0             # Max longitudinal braking (m/s²)
         # This project's real car tops out at ~60 km/h (16.7 m/s) — a slower
         # autonomous test platform, not FSDS's own ~27 m/s simulator ceiling.
@@ -93,9 +93,9 @@ class VehicleParams:
         # lateral acceleration at ~7.5 m/s² (well below the ~12.3 this car
         # reaches on a lap), enforced as a lagged restoring yaw moment rather
         # than a hard clip — it overshoots ~30% before settling, which a clip
-        # cannot reproduce. See docs/vehicle_physics_guide.md §5 "The FSDS
+        # cannot reproduce. See docs/reference/vehicle_physics.md "The FSDS
         # lateral-acceleration ceiling" for the plain-English explanation and
-        # `docs/reference/README.md`'s "MECHANISM" section for the full
+        # `docs/reference/simulator_fidelity.md`'s ceiling section for the full
         # measurement/derivation this is fitted to — not repeated here.
         # Set alat_ceiling_enabled=False to recover the unconstrained plant
         # (e.g. for real-vehicle work; this models FSDS, not the physical car).
@@ -110,7 +110,7 @@ class VehicleParams:
         # structure, for any gain). 'p' = rejected proportional law (its
         # equilibrium must sit above the setpoint by construction — no gain
         # fits both settled level and transient peak); kept only so
-        # tuner/checks/plant_openloop_validation.py --ab can reproduce the
+        # tuner/validation/plant_openloop_validation.py --ab can reproduce the
         # measurement that rejected it.
         self.alat_ceiling_mode = 'pi'
         # Restoring-moment gain (N·m per m/s² of excess), fitted to the

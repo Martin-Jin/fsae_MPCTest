@@ -6,7 +6,7 @@ PURPOSE
 Builds the fixed-sparsity OSQP problem once (`_build_qp`), and evaluates the
 horizon rollout, its state/output Jacobians and the cost that the SQP loop
 in sqp_step.py linearises around. Split from solver.py only to keep files
-readable; the live `nmpc_core.NMPCController` defines all of these methods
+readable; the live `nmpc.solver.NMPCController` defines all of these methods
 on one class, and the names here match it one to one.
 
 USED BY
@@ -49,7 +49,7 @@ class _QPModelMixin:
     # ------------------------------------------------------------------
     def _build_qp(self):
         """Allocate the condensed QP once with fixed sparsity — see the live
-        nmpc_core.py's _build_qp for the constraint-row layout (box/slew/
+        the live nmpc/qp_model.py's _build_qp for the constraint-row layout (box/slew/
         soft-track-boundary rows); identical here.
 
         Friction-circle rows (self.friction_circle_enabled, see
@@ -87,7 +87,7 @@ class _QPModelMixin:
         # |d2| of same-direction ramps versus only ~1.9x the |d1|, so |d2|
         # separates the two roughly twice as sharply. A steady ramp scores
         # near zero here and is nearly free; an alternating wiggle is
-        # expensive. See docs/steering_turn_in_upgrade_options.md (Option 4).
+        # expensive. See docs/reference/control_mechanisms.md ("Input-jerk cost").
         #
         # No OSQP sparsity change: p_mask[:n_du,:n_du] is already a dense
         # upper triangle, so E2'RE2 adds no new nonzeros to the pattern.
@@ -145,7 +145,7 @@ class _QPModelMixin:
     def _rollout(self, x0, U, ref):
         """Roll the nonlinear model forward from the measured state under
         the current input guess, scalar fast path — see the live
-        nmpc_core.py's _rollout for why this makes the QP's dynamics defect
+        the live nmpc/qp_model.py's _rollout for why this makes the QP's dynamics defect
         exactly zero (the linearisation point is always feasible).
 
         rk_substeps is SPEED-GATED per stage, same technique as
@@ -175,7 +175,7 @@ class _QPModelMixin:
     def _jacobians(self, X, U, ref):
         """Finite-difference the one-step dynamics Jacobians A_k/B_k,
         vectorised across all horizon stages at once — see the live
-        nmpc_core.py's _jacobians for why finite-differencing (not
+        the live nmpc/qp_model.py's _jacobians for why finite-differencing (not
         hand-derived), the nmpc_jac_substeps accuracy/cost tradeoff, and the
         jac_gate_speed/jac_substeps_fast speed gate this mirrors (gated on the
         horizon's slowest predicted stage, not instantaneous speed, so it
@@ -201,7 +201,7 @@ class _QPModelMixin:
 
     def _output_jacobians(self, X, ref, v_ref, v_cap=None, s_target_N=None):
         """Finite-difference the stage-output Jacobians C_k (h(x) w.r.t.
-        state) — see the live nmpc_core.py's _output_jacobians; identical
+        state) — see the live nmpc/qp_model.py's _output_jacobians; identical
         here.
 
         When self.friction_circle_enabled, H0/C carry NH_FRICTION extra rows
@@ -236,7 +236,7 @@ class _QPModelMixin:
         """Stage 0's steering-effort weight for this tick: r_delta normally,
         scaled up while the car is slow and faded linearly back to 1x
         between standstill_speed and standstill_fade_speed -- see the live
-        nmpc_core.py's _r_delta_stage0 for the mechanism and for why the
+        the live nmpc/qp_model.py's _r_delta_stage0 for the mechanism and for why the
         fade replaced a hard cutoff. Shared by
         _solve_step and _cost so the QP and the line search cannot score
         different objectives."""
@@ -256,7 +256,7 @@ class _QPModelMixin:
 
     def _cost(self, X, U, H):
         """True nonlinear cost at a candidate (X, U) — used for the
-        backtracking check after each SQP step; see the live nmpc_core.py's
+        backtracking check after each SQP step; see the live nmpc/sqp_step.py's
         _cost for the Gauss-Newton stage-output weighting this mirrors.
 
         H may carry NH_FRICTION extra (unweighted) columns when

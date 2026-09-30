@@ -35,7 +35,7 @@ class OfflineSimTab(ttk.Frame):
                 "before trusting it (see CLAUDE.md).\n\n"
                 "Track/synthetic-path selection and initial-condition sliders are "
                 "configured inside the tool itself.\n"
-                "Q/R weights and NMPC overrides come from settings.py — use the "
+                "Q/R weights and NMPC overrides come from the settings package — use the "
                 "Settings tab to change those first."
             ),
         ).pack(anchor="w")

@@ -252,7 +252,7 @@ def main(argv):
         print(f"  CONSTANT RACK-SCALE ERROR: FSDS's true lock is about "
               f"{25.0 * s_all.mean():.1f} deg,")
         print("  not the assumed 25. Fix MAX_STEER_RAD in fsds_bridge,")
-        print("  mpc_core and control_utils together.")
+        print("  lmpc and control_utils together.")
     elif winner == 'speed-scaled rack':
         print("  SPEED-SCALED STEERING MAP inside FSDS: the simulator reduces")
         print("  effective lock as speed rises. The offline plant models no")

@@ -30,7 +30,7 @@ already carries a second, independent reference alongside the planner's
 online centreline: path_X/path_Y/path_Psi, the fixed global spline fit
 once from the full recorded cone map (sim/track_io.py::load_recorded_track),
 used for e_psi_true specifically BECAUSE it does not depend on the planner's
-per-tick FOV-limited rebuild (see rollout_core.py's own comment: "the
+per-tick FOV-limited rebuild (see sim/rollout/core.py's own comment: "the
 REFERENCE is the planner's cone-derived, FOV-limited, EMA-blended
 centreline rather than path_X/path_Y"). Reconstructing
 ref_psi_true = psi - e_psi_true gives the heading of that fixed reference

@@ -113,7 +113,7 @@ def conditional(label, sat, series):
 def reference_quality(label, t, car_yaw, e_psi_rad, yaw_rate, v):
     """Decompose heading-error growth into car lag vs reference motion.
 
-    e_psi = wrap(car_yaw - ref_psi)  (mpc_core.compute_tracking_errors)
+    e_psi = wrap(car_yaw - ref_psi)  (lmpc/controller.py's tracking-error code)
       =>  d(e_psi)/dt = yaw_rate - d(ref_psi)/dt
 
     So a rising heading error has exactly two possible sources: the car is not

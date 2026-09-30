@@ -24,13 +24,13 @@ from gui.launcher.paths import RepoPaths
 from gui.launcher.theme import _field_label, _make_scrollable
 
 # ---------------------------------------------------------------------------
-# Tab 4: Settings (settings.py)
+# Tab 4: Settings (the settings package)
 # ---------------------------------------------------------------------------
 
-# (label, settings.py name, mpc_params.py field name, kind) -- kind is
+# (label, settings name, mpc_params.py field name, kind) -- kind is
 # 'float' or 'bool'. mpc_params.py name is None for a field with no live
 # equivalent (skipped when syncing to the live file). Order matches
-# settings.py's own section grouping.
+# the settings package's own section grouping.
 _SCALAR_FIELDS: list[tuple[str, str, str | None, str]] = [
     ("R_A_ACCEL", "R_A_ACCEL", "r_a_accel", "float"),
     ("R_A_BRAKE", "R_A_BRAKE", "r_a_brake", "float"),
@@ -39,7 +39,7 @@ _SCALAR_FIELDS: list[tuple[str, str, str | None, str]] = [
     # NMPC only, active on the car right now (launch_all.sh ships these
     # uncommented, non-default) but previously had no Settings-tab widget
     # at all -- only editable by hand-editing launch_all.sh/nmpc_params.py
-    # directly, bypassing this tab's settings.py/mirror/YAML sync.
+    # directly, bypassing this tab's settings/mirror/YAML sync.
     ("NMPC_RJERK_DELTA", "NMPC_RJERK_DELTA", "nmpc_rjerk_delta", "float"),
     ("NMPC_RJERK_A", "NMPC_RJERK_A", "nmpc_rjerk_a", "float"),
     ("NMPC_RRATE_ZONE_BOOST_STRAIGHT", "NMPC_RRATE_ZONE_BOOST_STRAIGHT",
@@ -52,11 +52,11 @@ _SCALAR_FIELDS: list[tuple[str, str, str | None, str]] = [
 
 
 # NMPC weight overrides: -1.0 means "inherit the base weight", any other
-# value diverges just that one weight for the NMPC -- see settings.py's own
+# value diverges just that one weight for the NMPC -- see the settings package's own
 # "NMPC weight overrides" section comment, and mpc_params.py's matching
 # nmpc_* fields (same sentinel convention on both sides). Each gets an
 # "override" checkbox (checked = use the number field's value, unchecked =
-# write -1.0). (label, settings.py name, mpc_params.py name)
+# write -1.0). (label, settings name, mpc_params.py name)
 _NMPC_OVERRIDE_FIELDS: list[tuple[str, str, str]] = [
     ("q_e_y", "NMPC_Q_E_Y", "nmpc_q_e_y"),
     ("q_e_yd", "NMPC_Q_E_YD", "nmpc_q_e_yd"),
@@ -73,10 +73,10 @@ _NMPC_OVERRIDE_FIELDS: list[tuple[str, str, str]] = [
 ]
 
 
-# (label, settings.py name, mpc_params.py field names for each list index).
+# (label, settings name, mpc_params.py field names for each list index).
 # Only indices with a real live-side weight are mapped -- Q_diag[5:8]
 # (e_a/delta_act/a_act) are always 0.0, not tunables, and R_diag[1] is
-# nominal-only now (superseded by R_A_ACCEL/R_A_BRAKE, see settings.py's own
+# nominal-only now (superseded by R_A_ACCEL/R_A_BRAKE, see the settings package's own
 # comment on it), so neither gets a mpc_params.py entry (None = skip).
 _LIST_FIELDS: list[tuple[str, str, int, list[str | None]]] = [
     ("Q_diag", "Q_diag", 8,
@@ -95,7 +95,7 @@ _LIST_FIELDS: list[tuple[str, str, int, list[str | None]]] = [
 # "unused" repeated with no way to tell which state each one is -- and
 # R_diag[1] (a_cmd) is not unused at all, just nominal-only (superseded by
 # R_A_ACCEL/R_A_BRAKE), so labelling it "unused" was actively wrong, not
-# just uninformative. Names from mpc_core.py's own state/input vector
+# just uninformative. Names from lmpc/controller.py's own state/input vector
 # docstring: x = [e_y, e_yd, e_psi, r, e_v, e_a, delta_act, a_act],
 # u = [delta_cmd, a_cmd].
 _LIST_FIELD_INDEX_NAMES: dict[str, list[str]] = {
@@ -154,8 +154,8 @@ _LIST_FIELD_DESC: dict[str, str] = {
 # Feature flags, grouped by which controller(s) they affect -- mirrors
 # mpc_params.py's own per-field "controller": "both"/"ltv_qp_only"/
 # "nmpc_only" metadata tag exactly (that tag is the source of truth for
-# this grouping). (label, settings.py name or None, mpc_params.py name).
-# settings.py name is None when the flag is live-only (delay compensation
+# this grouping). (label, settings name or None, mpc_params.py name).
+# settings name is None when the flag is live-only (delay compensation
 # has no offline toggle -- the offline rollout always has it on).
 _FEATURE_GROUPS: list[tuple[str, list[tuple[str, str | None, str]]]] = [
     ("Both controllers", [
@@ -177,7 +177,7 @@ _FEATURE_GROUPS: list[tuple[str, list[tuple[str, str | None, str]]]] = [
          "nmpc_reversal_penalty_enabled"),
         ("Rate-cost stage ramp enabled (experimental)", "NMPC_RRATE_STAGE_RAMP_ENABLED",
          "nmpc_rrate_stage_ramp_enabled"),
-        ("Rate-cost 3-zone schedule enabled (experimental)", "NMPC_RRATE_ZONE_ENABLED",
+        ("Rate-cost 3-zone schedule enabled", "NMPC_RRATE_ZONE_ENABLED",
          "nmpc_rrate_zone_enabled"),
         ("Corner rate-blend enabled (experimental)", "NMPC_CORNER_RRATE_BLEND_ENABLED",
          "nmpc_corner_rrate_blend_enabled"),
@@ -193,12 +193,12 @@ _FEATURE_GROUPS: list[tuple[str, list[tuple[str, str | None, str]]]] = [
 ]
 
 
-# NMPC progress-term numeric settings (see settings.py's own block and
+# NMPC progress-term numeric settings (see the settings package's own block and
 # docs/logs/nmpc_progress_term_investigation.md). Plain scalars, NOT the
 # -1.0-inherit override convention _NMPC_OVERRIDE_FIELDS uses: none of
 # these has a base weight to inherit from, the rows they weight do not
 # exist at all unless NMPC_PROGRESS_ENABLED is on. Only read when it is.
-# (label, settings.py name, help text)
+# (label, settings name, help text)
 _NMPC_PROGRESS_FIELDS: list[tuple[str, str, str]] = [
     ("q_progress", "NMPC_Q_PROGRESS",
      "Progress-reward weight [1/m^2]. NARROW usable band at r_a_accel=1.0: "
@@ -228,7 +228,7 @@ _NMPC_PROGRESS_FIELDS: list[tuple[str, str, str]] = [
 
 
 def _profile_field_names() -> list[str]:
-    """Every settings.py NAME the Settings tab reads/writes, derived from
+    """Every settings NAME the Settings tab reads/writes, derived from
     the same field-group tables the tab itself builds its widgets from
     (rather than a separately hand-maintained list, which would silently
     drift the moment a new field is added to one table but not the other).
@@ -268,7 +268,7 @@ class SettingsTab(ttk.Frame):
         header = ttk.Frame(self, padding=(24, 24, 24, 0))
         header.pack(fill="x")
         ttk.Label(header, text="Settings", style="Heading.TLabel").pack(anchor="w")
-        ttk.Label(header, text="settings.py — saved changes apply the next time it's imported.",
+        ttk.Label(header, text="the settings package — saved changes apply the next time it's imported.",
                   style="Muted.TLabel").pack(anchor="w", pady=(2, 0))
 
         body = _make_scrollable(self, body_padding=(24, 16, 24, 24))
@@ -413,7 +413,7 @@ class SettingsTab(ttk.Frame):
                     # get their help text instead of rendering bare.
                     desc = _read_dataclass_field_desc(paths.nmpc_params_py, mpc_field)
                 if settings_name is None:
-                    desc = (desc + " " if desc else "") + "(live-only, no settings.py equivalent)"
+                    desc = (desc + " " if desc else "") + "(live-only, no settings equivalent)"
                 _field_label(group_card, r, label, desc, label_style="Card.TLabel",
                              desc_style="CardMuted.TLabel", wraplength=520)
                 raw = _read_var(paths.settings_dir, settings_name) if settings_name else None
@@ -457,7 +457,7 @@ class SettingsTab(ttk.Frame):
         # the trace). is_dirty toggles true the moment ANY tracked Variable
         # changes; _on_save()'s own success path is the only thing that
         # clears it, so "dirty" tracks "differs from the last save", not
-        # "differs from the last settings.py import".
+        # "differs from the last settings import".
         self._is_dirty = False
         self._dirty_trace_ids: list[tuple[tk.Variable, str]] = []
         self._wire_dirty_tracking()
@@ -524,7 +524,7 @@ class SettingsTab(ttk.Frame):
                 messagebox.showwarning(
                     "Settings tab",
                     f"Live file not found at:\n{mpc_params_path}\n\n"
-                    "Saving settings.py only -- the live simulator's mpc_params.py will "
+                    "Saving the settings package only -- the live simulator's mpc_params.py will "
                     "NOT be updated. This can happen if the repo layout differs from what "
                     "this tool assumes (fsae_MPCTest and ros2/ as siblings).")
 
@@ -609,13 +609,13 @@ class SettingsTab(ttk.Frame):
             else:
                 if sync_live:
                     self._set_status(
-                        "Saved to settings.py, the live mpc_params.py/nmpc_params.py, "
+                        "Saved to the settings package, the live mpc_params.py/nmpc_params.py, "
                         "fsae_params.yaml, and their fsds_simulator/ mirrors. Restart the "
                         "sim to pick up the live change.",
                         style="Success.TLabel", flash=True, auto_clear=True)
                 else:
                     self._set_status(
-                        "Saved. Takes effect next time settings.py is imported.",
+                        "Saved. Takes effect next time the settings package is imported.",
                         style="Success.TLabel", flash=True, auto_clear=True)
                 self._is_dirty = False
         except OSError as exc:
@@ -768,7 +768,7 @@ class SettingsTab(ttk.Frame):
             "(ros2/src/fsae_planning/), one-way. Any local edits in those "
             "destinations to those 3 files will be LOST, except for a "
             "one-time .bak backup saved alongside each overwritten file.\n\n"
-            "This does NOT touch settings.py, this Settings tab's own "
+            "This does NOT touch the settings package, this Settings tab's own "
             "unsaved edits, or any file other than those 3 per destination.\n\n"
             "fsae_autonomous is never committed or pushed by this tool -- "
             "only its local working tree is overwritten. Review the change "
@@ -799,9 +799,9 @@ class SettingsTab(ttk.Frame):
             style="Success.TLabel", flash=True, auto_clear=True)
 
     def capture_profile_values(self) -> dict[str, str]:
-        """Current value of every settings.py NAME this tab manages, as
+        """Current value of every settings NAME this tab manages, as
         {name: raw-literal-text}, read straight from each field's own
-        widget (not from settings.py) so an unsaved in-progress edit is
+        widget (not from the settings package) so an unsaved in-progress edit is
         captured too. Used by the Profiles tab's "Save current as profile".
         Keys match _profile_field_names() exactly."""
         values: dict[str, str] = {}
@@ -827,7 +827,7 @@ class SettingsTab(ttk.Frame):
     def apply_profile_values(self, values: dict[str, str]) -> None:
         """Inverse of capture_profile_values(): pushes a {name: raw-literal}
         dict (as loaded from a profile JSON file) into every matching
-        widget, then calls _on_save() unchanged so the write path (settings.py,
+        widget, then calls _on_save() unchanged so the write path (the settings package,
         live dataclasses, both YAMLs, both mirrors) is EXACTLY the one normal
         editing already uses -- no separate load-time file-writing logic to
         keep in sync with _on_save's own. A name present in the profile but
@@ -877,7 +877,7 @@ def _to_float(text: str) -> float | None:
 
 def _parse_float_list(literal: str, expected_length: int) -> list[float]:
     """Best-effort parse of a `[1.0, 2, 3.5]`-style literal already
-    extracted from a settings.py line. Falls back to zeros of the expected
+    extracted from a settings/ line. Falls back to zeros of the expected
     length on anything unparseable, rather than raising into the GUI."""
     inner = literal.strip()
     if inner.startswith("[") and inner.endswith("]"):

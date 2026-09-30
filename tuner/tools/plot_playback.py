@@ -1,7 +1,7 @@
 """
 Interactive time-scrubbing playback of one or more control telemetry logs.
 
-Reads the (control_csv, path_csv) pair(s) `fsae_control/telemetry_logger.py`
+Reads the (control_csv, path_csv) pair(s) `fsae_control/telemetry/control_logger.py`
 writes (see that module's docstring for the schema) and shows, side by side:
 
   - left:  the scored signals (e_y, e_psi_deg, kappa, steer_deg, v) stacked
@@ -73,7 +73,7 @@ from tuner import csv_log
 # One row per signal by default -- covers the "lateral error / heading error /
 # corner curvature / steering / speed" ask directly; --signals overrides this.
 # 'corner_frac' (0=straight -> 1=full corner, see ADAPTIVE_COLUMNS in
-# telemetry_logger.py) stands in for curvature -- there is no raw `kappa`
+# telemetry/control_logger.py) stands in for curvature -- there is no raw `kappa`
 # column in the control CSV schema (live node or offline tuner), so a bare
 # 'kappa' here would always warn-and-skip.
 DEFAULT_SIGNALS = ['e_y', 'e_psi_deg', 'corner_frac', 'steer_deg', 'v']
@@ -196,7 +196,7 @@ COLORS = plt.rcParams['axes.prop_cycle'].by_key()['color']
 
 
 def _read_header_metadata(path):
-    """Parse the `# key=value` comment block telemetry_logger.py prepends.
+    """Parse the `# key=value` comment block telemetry/control_logger.py prepends.
 
     Returns a dict of whatever key=value pairs are present (composite_score,
     lap_time_s, steering_sat_ratio, ...) -- see ControlLogger.close(). Not
@@ -258,7 +258,7 @@ ZOOM_HALF_WIDTH_M = 12.0   # how far ahead/behind/either-side the zoom view show
 def _path_csv_for(control_csv_path):
     """Return the sibling `<tag>_path_<stamp>.csv` path, or None if absent.
 
-    telemetry_logger.py always names the two files `{tag}_control_{stamp}.csv`
+    telemetry/control_logger.py always names the two files `{tag}_control_{stamp}.csv`
     / `{tag}_path_{stamp}.csv` in the same directory (see its `paths`
     property) -- this just re-derives the second name from the first.
     """
@@ -275,7 +275,7 @@ def _load_path_snapshots(path_csv):
 
     Each row in the path CSV is one point of one snapshot; rows sharing the
     same `t` are one polyline as the planner saw it at that instant (see
-    telemetry_logger.py's log_path()). Grouped here so playback can pick
+    telemetry/control_logger.py's log_path()). Grouped here so playback can pick
     "the most recent snapshot at or before now" in O(log n).
     """
     cols = csv_log.load_columns(path_csv)
@@ -364,7 +364,7 @@ class _Run:
         preference:
 
         1. The CSV columns lap_score/lap_pred_acc_pct (added alongside
-           lap_idx/pred_err_m/pred_acc_pct -- see telemetry_logger.py's
+           lap_idx/pred_err_m/pred_acc_pct -- see telemetry/control_logger.py's
            log_control()): a lap_score cell is non-empty ONLY on the tick
            that lap completed, so this is a straight column scan.
         2. Older logs predating those columns have no per-lap rows at all
@@ -443,7 +443,7 @@ class Playback:
         self._dedupe_labels()
 
         # pred_acc_pct (horizon accuracy, NMPC-only -- see
-        # telemetry_logger.py's HorizonAccuracyTracker) is not in
+        # telemetry/horizon_tracker.py's HorizonAccuracyTracker) is not in
         # DEFAULT_SIGNALS: most existing logs (Stanley, LTV-QP, or NMPC runs
         # recorded before this metric existed) have no such column, and a
         # bare 'not present' row for every one of those would be noise. Only

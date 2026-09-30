@@ -23,13 +23,13 @@ USED BY
 
 DOES NOT USE (directly)
 -----------------------
-  model/vehicle_physics.py, model/bicycle_model.py, controller/lmpc/solve.py, tuner/performance_stats.py, sim/speed_profile.py
+  model/vehicle_physics/, model/bicycle_model.py, controller/lmpc/solve.py, tuner/performance_stats.py, sim/speed_profile.py
 """
 
 import math
 import numpy as np
 
-# NOTE: settings.py imports TRACK_HALF_WIDTH from this module at module
+# NOTE: the settings package imports TRACK_HALF_WIDTH from this module at module
 # scope, so `from settings import PLANNER_*` cannot be a top-level import
 # here without a circular import.
 

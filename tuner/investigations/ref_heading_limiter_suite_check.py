@@ -1,5 +1,5 @@
 """
-Does REF_HEADING_RATE_LIMIT's recorded-map improvement (tuner/checks/ref_heading_limiter_ab.py)
+Does REF_HEADING_RATE_LIMIT's recorded-map improvement (tuner/investigations/ref_heading_limiter_ab.py)
 hold across settings.VALIDATION_SUITE, or is it a one-map artifact?
 
 Per the standing rig-validation lesson -- a plausible-looking improvement on

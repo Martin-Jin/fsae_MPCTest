@@ -8,7 +8,7 @@ the offline tuner behave, without touching any of the maths or control
 code elsewhere.
 
 Nothing physical about the car (its weight, tyre grip, engine power etc.)
-lives here -- that's all in vehicle_physics.py. This package only controls
+lives here -- that's all in model/vehicle_physics/. This package only controls
 how the *controller* is scored, tuned, and configured to drive.
 
 LAYOUT
@@ -114,7 +114,7 @@ from settings.scoring import (
 # any one of them -- see FAST_TEST_MODE's own docstring in settings/solver.py
 # for what it does and why.
 if FAST_TEST_MODE:
-    MAX_EVALS = 150                                        # was 2500
+    MAX_EVALS = 150                                        # was 1500
     VALIDATION_SUITE = ["PATH_SUDDEN_TURN", "PATH_HAIRPIN"]  # was 5 paths
     ROLLOUT_EPS = 1e-3                                      # was 1e-4, looser/faster OSQP
     ROLLOUT_MAX_ITER = 2000                                 # was 8000

@@ -11,22 +11,22 @@ button output in gui/simulation.py.
 The scoring is deliberately kept in a separate file rather than inlined into
 gui/simulation.py so that:
   1. Weights and metric definitions have a single source of truth in sim/scoring.py
-     (which itself sources the weight values from settings.py)
+     (which itself sources the weight values from the settings package)
   2. The console report can be updated without touching the simulation engine
   3. The returned dict can be used programmatically (e.g. logging, plotting)
 
 PARITY WITH tuner/offline_tuner.py / sim/rollout/core.py
 ------------------------------------------------
 All metric computations mirror the accumulation loop in
-sim/rollout_core.run_core_rollout() exactly, by replaying the stored history
+sim/rollout/core.run_core_rollout() exactly, by replaying the stored history
 through the identical sim/scoring.RolloutMetrics accumulator that
 run_core_rollout() itself uses (see the "single source of truth" comment
 above rm = RolloutMetrics() below).
 
 SCORE_WEIGHTS, COMPLETION_BONUS_WEIGHT, and TIME_BONUS_WEIGHT are defined in
-settings.py and re-exported via sim/scoring.py (imported directly from sim/scoring.py
+the settings package and re-exported via sim/scoring.py (imported directly from sim/scoring.py
 below, not from tuner/offline_tuner.py), so any change to the scoring formula in
-settings.py automatically propagates to this report. DNF_PENALTY is not used
+the settings package automatically propagates to this report. DNF_PENALTY is not used
 in this file — failure is instead signalled via the `dnf`/`offtrack` booleans
 already recorded in the history dict.
 
@@ -37,7 +37,7 @@ USED BY
 
 DOES NOT USE
 ------------
-  model/vehicle_physics.py (beyond VehicleParams for u_max_steer), model/bicycle_model.py,
+  model/vehicle_physics/ (beyond VehicleParams for u_max_steer), model/bicycle_model.py,
   controller/lmpc/solve.py, sim/speed_profile.py, sim/perception.py, sim/planner.py
 """
 

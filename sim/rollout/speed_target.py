@@ -8,9 +8,10 @@ Stateless: any value the loop carries from one tick to the next
 explicitly rather than stored, so the loop in sim/rollout/core.py remains
 the one place that owns rollout state.
 
-settings.py constants are bound here by name at import time, the same as
-elsewhere in this package. Callers that override settings
-(tuner/investigations/steering_chatter_check.py) must do so before the
+settings constants are read here as settings.X at call time, so a runtime
+override is honoured. Only default arguments (in sim/rollout/core.py) bind at
+import. Callers that override settings
+(tuner/investigations/steering_chatter_check.py) should still do so before the
 first import of sim.rollout.core, which imports this module.
 """
 
@@ -37,7 +38,7 @@ SPEED_TARGET_RISE_RATE = 7.0
 # Max speed error (m/s) the rise limiter is allowed to open up before it stops
 # ramping and waits for the car. Promoted to MPCParams.speed_target_deficit_max
 # on the live side (ROS param/YAML/launch arg/GUI tunable); imported here from
-# settings.py's SPEED_TARGET_DEFICIT_MAX, which is the offline mirror of that
+# the settings package's SPEED_TARGET_DEFICIT_MAX, which is the offline mirror of that
 # same field, kept in sync by hand like every other entry in that file.
 #
 # SPEED_TARGET_RISE_RATE alone assumes the car can accelerate at that rate. From
@@ -95,7 +96,7 @@ GATE_RATE_LIMIT = 2.0
 # curvature_speed()'s braking-distance propagation assumes) capped genuine
 # hard braking below what the car can do (measured live 2026-09-15: car
 # entered the first corner at ~17 m/s, took 3+ s to reach the real ~2.5 m/s
-# target, spun out before arriving). Now 7.0, matching mpc_core.MAX_BRAKE /
+# target, spun out before arriving). Now 7.0, matching lmpc.constants.MAX_BRAKE /
 # vehicle_physics.max_accel_brake, the car's actual achievable braking
 # deceleration rather than a conservative planning assumption.
 V_CURV_FALL_RATE = 7.0
@@ -121,7 +122,7 @@ def compute_speed_target(
 
     cl = planner_cl
     if settings.USE_PRECOMPUTED_SPEED_PROFILE:
-        # Track is already fully mapped (settings.py's
+        # Track is already fully mapped (the settings package's
         # USE_PRECOMPUTED_SPEED_PROFILE) -- use the oracle speed
         # profile computed once from the WHOLE path (path_v_profile,
         # non-causal, see speed_profile.compute_speed_profile()) at

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-tuner/steering_chatter_check.py — reproduce and measure the NMPC steering
+tuner/investigations/steering_chatter_check.py — reproduce and measure the NMPC steering
 chatter symptom documented in docs/logs/steering_chatter_investigation.md.
 
 Runs a closed-loop NMPC (or LTV-QP, for comparison) rollout on
@@ -9,7 +9,7 @@ noise / pose-hold / delay-jitter), and reports tick-to-tick steering
 chatter metrics: std of the per-tick delta, mean|delta|, and the
 sign-flip rate of that delta.
 
-Any settings.py constant can be overridden for one run via --set NAME=VALUE
+Any the settings package constant can be overridden for one run via --set NAME=VALUE
 (repeatable), e.g. to reproduce the investigation doc's sweeps:
 
     python -m tuner.investigations.steering_chatter_check --set Q_diag=[6.0,0.8,1.65,1.20,5.40,0.0,0.0,0.0]
@@ -39,7 +39,7 @@ def _parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--controller', choices=['nmpc', 'ltv'], default='nmpc')
     p.add_argument('--set', action='append', default=[], metavar='NAME=VALUE',
-                    help='override a settings.py constant before import; '
+                    help='override a settings constant before import; '
                          'repeatable. VALUE is parsed with ast.literal_eval, '
                          'so lists/floats/bools all work, e.g. '
                          '--set NMPC_HORIZON=25 --set "R_rate_diag=[5.0,2.25]"')
@@ -56,8 +56,8 @@ def main():
             raise SystemExit(f'--set expects NAME=VALUE, got: {spec!r}')
         setattr(settings, name, ast.literal_eval(value))
 
-    # Imported AFTER settings overrides are applied -- rollout_core.py pulls
-    # several NMPC_* constants in by bare name at its own import time.
+    # Imported AFTER settings overrides are applied -- sim/rollout/core.py pulls
+    # default arguments from settings at its own import time.
     from model.vehicle_physics import VehicleParams
     from model.bicycle_model import get_8state_discrete_model
     from sim.rollout.core import compute_step_budget, run_core_rollout

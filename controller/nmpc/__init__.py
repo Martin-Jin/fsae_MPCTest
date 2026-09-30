@@ -1,6 +1,6 @@
 """
 controller/nmpc/ — Nonlinear MPC (NMPC), offline counterpart of
-the live ROS 2 side's `fsae_control.nmpc_core.NMPCController`.
+the live ROS 2 side's `fsae_control.nmpc.NMPCController`.
 
 PURPOSE
 -------
@@ -11,7 +11,7 @@ coordinates with the reference path's own rotation entirely absent from it
 exactly on-line and on-heading approaching a corner, that model's own N-step
 rollout predicts staying at zero forever — no cost weighting can produce
 turn-in before real tracking error exists. See `model/bicycle_model.py`'s own
-docstring and `docs/junior_project_mpc_docs.md` §4.2 for the plain-language
+docstring and `docs/guides/getting_started.md` for the plain-language
 version, and `late_turn_in_investigation.md` (live repo) Parts 1-15 for the
 full investigation this is downstream of.
 
@@ -24,14 +24,14 @@ iteration, via OSQP), not one convex QP.
 
 RELATIONSHIP TO THE LIVE SIDE
 ------------------------------
-This is a faithful, independent PORT of `nmpc_core.py`'s `NMPCController` —
+This is a faithful, independent PORT of the live `nmpc/solver.py`'s `NMPCController` —
 same model, same SQP/condensing/OSQP scheme, same variable/function names
 where they carry over — NOT an import (`fsae_MPCTest` cannot import from the
 live `fsae_planning` checkout and vice versa; CLAUDE.md's standing
-"no settings.py-on-the-car" rule, from the other direction here). Kept
+"no settings-on-the-car" rule, from the other direction here). Kept
 numerically identical BY HAND, the same discipline as every other
 live/offline pair in this project (Q_diag/R_diag/R_rate_diag, etc.) — see
-`settings.py`'s NMPC_* constants and `docs/tuning.md`'s NMPC section for the
+the settings package's NMPC_* constants and `docs/guides/tuning.md`'s NMPC section for the
 field-by-field mapping this needs to be kept in sync with if either side's
 model or solver changes.
 
@@ -39,13 +39,13 @@ Two differences from the live module, both because this is the offline side:
   - Vehicle constants (lf, lr, m, Iz, Cf, Cr, tau_delta, tau_a) are read
     directly from the `VehicleParams` instance already passed around this
     repo (the SAME source `model/bicycle_model.py`'s linear model and the
-    24-state nonlinear plant both use), rather than a hardcoded copy — this
+    25-state nonlinear plant both use), rather than a hardcoded copy — this
     repo has no "no cross-import" constraint against its own `model/` package.
   - Cost weights are NOT read from a dataclass. `sim/rollout/core.py`'s
     `run_core_rollout()` already receives the CURRENT weight set (whether
-    from `settings.py` or a CMA-ES tuning candidate) as `Q`/`R`/`R_rate`
+    from the settings package or a CMA-ES tuning candidate) as `Q`/`R`/`R_rate`
     arrays; `NMPCController` here is constructed with those same arrays (plus
-    the NMPC-only override scalars from `settings.py`) so a tuner sweep
+    the NMPC-only override scalars from the settings package) so a tuner sweep
     reaches the NMPC's weights exactly the way it reaches the LTV-QP's.
 
 USED BY
@@ -58,9 +58,9 @@ DOES NOT USE
 ------------
   controller/lmpc/solve.py, model/bicycle_model.py (this package's own model
   replaces both when active), gui/simulation.py (imported from
-  rollout_core.py only, same reasoning as controller/lmpc/solve.py's own
+  sim/rollout/core.py only, same reasoning as controller/lmpc/solve.py's own
   "DOES NOT USE" note).
-MODULE MAP (live `nmpc_core.py` is one file; this split is offline-only)
+MODULE MAP (live `nmpc/` is a package with the same file names; this offline copy mirrors it 1:1)
 ----------
   layout.py           IDX_*/NX/NU/NH_* layout, FD step sizes, _DENOM_FLOOR, _wrap
   reference.py        PathReference

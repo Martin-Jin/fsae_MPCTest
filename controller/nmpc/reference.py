@@ -53,7 +53,7 @@ class PathReference:
         # point and the existing edge-hold behaviour in kappa_at/psi_ref_at
         # (see their docstrings) takes over from there, holding the last REAL
         # sample instead of a frozen duplicate one. Mirrors the live
-        # nmpc_core.py fix (same commit/investigation).
+        # nmpc/reference.py fix (same commit/investigation).
         real_n = len(path)
         while real_n > 2 and seg_len[real_n - 2] < 1e-6:
             real_n -= 1

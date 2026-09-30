@@ -8,9 +8,10 @@ Stateless: any value the loop carries from one tick to the next
 stored, so the loop in sim/rollout/core.py remains the one place that owns
 rollout state.
 
-settings.py constants are bound here by name at import time, the same as
-elsewhere in this package. Callers that override settings
-(tuner/investigations/steering_chatter_check.py) must do so before the
+settings constants are read here as settings.X at call time, so a runtime
+override is honoured. Only default arguments (in sim/rollout/core.py) bind at
+import. Callers that override settings
+(tuner/investigations/steering_chatter_check.py) should still do so before the
 first import of sim.rollout.core, which imports this module.
 """
 
@@ -90,7 +91,7 @@ def believed_pending_cmds(command_queue, delay_rng, u_prev):
     command_queue[0] is applied to the plant THIS step; everything after it
     (DELAY_STEPS commands) is already committed and will land before a new
     solve's output ever reaches the plant, so the controller rolls its state
-    forward through them (see settings.py DELAY_STEPS note).
+    forward through them (see the settings package DELAY_STEPS note).
 
     With DELAY_JITTER_STEPS > 0, only the controller's BELIEF about how many
     commands are in flight is perturbed; the queue itself (and so the plant's

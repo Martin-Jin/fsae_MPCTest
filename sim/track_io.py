@@ -101,13 +101,13 @@ _MARCH_VISIT_DIST = 4.0
 # Minimum straight-line gap to leave between the reconstructed path's first
 # and last point (see the tail-trim in _reconstruct_centreline). A recorded
 # lap is a closed loop, so without any trim the march's last point sits right
-# on top of its first — rollout_core.find_closest_reference_bounded() (a
+# on top of its first — sim/rollout/core.find_closest_reference_bounded() (a
 # forward-bounded nearest-index search) would then immediately snap idx to
 # the array's tail on step one, since the closest point to a near-duplicate
 # start IS the end. This just needs to be enough to give idx somewhere
 # unambiguous to start; it does not need to (and in general cannot, on a lap
 # that runs close to itself elsewhere) guarantee the tail is clear of every
-# other point on the lap — see rollout_core.run_core_rollout's near_end-gated
+# other point on the lap — see sim/rollout/core.run_core_rollout's near_end-gated
 # finish check for how that is actually handled.
 _MARCH_TAIL_GAP = 5.0
 

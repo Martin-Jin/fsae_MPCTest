@@ -24,7 +24,7 @@ USED BY
 
 DOES NOT USE (directly)
 -----------------------
-  model/vehicle_physics.py, model/bicycle_model.py, controller/lmpc/solve.py, tuner/performance_stats.py, sim/speed_profile.py
+  model/vehicle_physics/, model/bicycle_model.py, controller/lmpc/solve.py, tuner/performance_stats.py, sim/speed_profile.py
 """
 
 import math
@@ -38,7 +38,7 @@ import settings
 # (settings/general.py imports sim.perception, not sim.planner, but the two
 # lived in one sim/sim_track.py module before that split) no longer exists
 # now that perception and planner are separate files -- settings/general.py
-# never reaches sim.planner. See settings.py's PLANNER_* comment for why
+# never reaches sim.planner. See the settings package's PLANNER_* comment for why
 # these must mirror fsae_params.yaml.
 
 
@@ -58,7 +58,7 @@ class SimPlanner:
 
     Planning emits path only (no speed field) — matching the upstream
     CenterlinePlanner ROS node, which publishes x,y waypoints and leaves speed
-    targeting to the controller (see rollout_core.run_core_rollout()'s
+    targeting to the controller (see sim/rollout/core.run_core_rollout()'s
     use_planner branch, which calls speed_profile.curvature_speed() on this
     centreline each step).
 
@@ -107,7 +107,7 @@ class SimPlanner:
         # Attempt primary path builder (cone-boundary matching + centreline extraction).
         # Keyword args mirror centerline_planner.py's _compute_path() exactly, sourced
         # from the same settings.PLANNER_* constants that mirror fsae_params.yaml's
-        # live-tuned ROS params — see settings.py's comment for why this matters.
+        # live-tuned ROS params — see the settings package's comment for why this matters.
         # Omitting these here would silently fall back to build_path_walls'/
         # blend_paths' own hardcoded defaults instead of the live-tuned values.
         try:

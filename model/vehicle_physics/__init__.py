@@ -3,7 +3,7 @@ model/vehicle_physics/ — High-Fidelity Nonlinear Vehicle Plant Model
 
 PURPOSE
 -------
-Implements a 24-state nonlinear vehicle dynamics simulation plant intended to
+Implements a 25-state nonlinear vehicle dynamics simulation plant intended to
 approach the fidelity of Nvidia PhysX (used by FSDS/AirSim); this intent is not
 the same as a confirmed match, see docs/logs/sim_to_real_investigation.md for
 the open, only-partially-closed gap to the real car. This is the "truth" model

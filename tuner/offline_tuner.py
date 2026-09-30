@@ -10,7 +10,7 @@ directly into gui/simulation.py to improve live simulator performance.
 
 HOW IT WORKS — THE OPTIMISATION LOOP
 --------------------------------------
-Optionally (USE_OPTUNA_PRESEARCH in settings.py), the run starts with a short
+Optionally (USE_OPTUNA_PRESEARCH in the settings package), the run starts with a short
 Optuna TPE (Tree-structured Parzen Estimator) pre-search phase: a cheaper,
 more sample-efficient method for finding a promising general region of the
 9-dimensional search space, using a small fraction of the eval budget
@@ -85,7 +85,7 @@ cover representative corner types:
   PATH_FS_CORNER    — classic single 90° corner
   PATH_MIXED        — combined sequence: corner + link + corner + hairpin
 
-Only the VALIDATION_SUITE subset is used for evaluation (in settings.py)
+Only the VALIDATION_SUITE subset is used for evaluation (in the settings package)
 to balance coverage vs. computation time. The full library is available for
 manual testing.
 
@@ -94,7 +94,7 @@ USED BY
   Standalone script: run with `python tuner/offline_tuner.py` to start optimisation.
   gui/simulation.py: imports SYNTHETIC_PATHS, PATH_NAMES, get_cached_model.
                  Scoring/weight constants (SCORE_WEIGHTS, COMPLETION_BONUS_WEIGHT,
-                 TIME_BONUS_WEIGHT, DNF_PENALTY) now live in settings.py / sim/scoring.py.
+                 TIME_BONUS_WEIGHT, DNF_PENALTY) now live in the settings package / sim/scoring.py.
   tuner/performance_stats.py: imports PATH_NAMES, INITIAL_CONDITIONS, evaluate_all_paths,
                          _init_context, get_cached_model, tunable-index lists.
 
@@ -186,7 +186,7 @@ R_RATE_BOUNDS = {
 # is False by default, and under the LTV-QP the controller ignores every field
 # here -- the search still explores those five dimensions but every candidate
 # scores identically in them, which wastes the population. Set USE_NMPC=True
-# (before importing this module -- settings constants bind by name at import
+# (before importing this module -- default arguments bind settings values at import
 # time) when tuning the NMPC, or empty this list when tuning the LTV-QP.
 #
 # Verified by smoke test with USE_NMPC=True on PATH_SUDDEN_TURN: moving each
@@ -910,7 +910,7 @@ def _aggregate_task_scores(task_scores):
     the old hard-max behaviour exactly.
 
     NOTE: this deliberately keeps DNFs expensive. The aim is to stop a single
-    borderline task from swamping the twelve continuous quality metrics, not
+    borderline task from swamping the thirteen continuous quality metrics, not
     to make crashing cheap.
 
     Parameters
@@ -926,7 +926,7 @@ def _aggregate_task_scores(task_scores):
     s = np.asarray(task_scores, dtype=float)
     weighted_mean = float(np.sum(EVAL_WEIGHTS * s) / np.sum(EVAL_WEIGHTS))
     # Linear-interpolated quantile; with TAIL_QUANTILE=1.0 this is exactly
-    # max(s), so the old behaviour remains reachable from settings.py.
+    # max(s), so the old behaviour remains reachable from the settings package.
     tail = float(np.quantile(s, settings.TAIL_QUANTILE))
     return 0.7 * weighted_mean + 0.3 * tail
 
@@ -1051,7 +1051,7 @@ def run_optuna_presearch(lower, upper, n_trials):
         Per-parameter lower/upper bounds (same arrays used to build
         cma_options["bounds"]).
     n_trials : int
-        Number of trials to run (OPTUNA_PRE_PASS_EVALS from settings.py).
+        Number of trials to run (OPTUNA_PRE_PASS_EVALS from the settings package).
 
     Returns
     -------
@@ -1143,7 +1143,7 @@ TUNING_HISTORY_PATH = os.path.join(
 )
 
 # Metric names in SCORE_WEIGHTS order — used only to label the weights when
-# logging, so a tuning history entry stays self-contained even if settings.py's
+# logging, so a tuning history entry stays self-contained even if the settings package's
 # SCORE_WEIGHTS values change later. Must stay in sync with sim/scoring.py's
 # IDX_* constants.
 _SCORE_METRIC_NAMES = [
@@ -1169,7 +1169,7 @@ def log_results_to_history(Q, R, R_rate, duration, score, optuna_info=None):
     The log file provides a persistent record of all tuning runs. Each entry
     includes a timestamp, the weight diagonals (copy-pasteable into gui/simulation.py),
     the scoring function's SCORE_WEIGHTS/bonus/penalty config active for this run
-    (so the run stays interpretable even after settings.py changes later), the
+    (so the run stays interpretable even after the settings package changes later), the
     run duration, and the git commit hash so results can be reproduced.
     The "Overall score" field is left as a placeholder — it is filled in manually
     after the weights have been tested in FSDS (the real simulator), since the
@@ -1265,7 +1265,7 @@ if __name__ == "__main__":
     # The Q/R/R_rate head is multiplicative, so sqrt(lower*upper)=1.0 means
     # "template unscaled" and is the right neutral start. The NMPC tail is
     # ABSOLUTE, and its geometric midpoint is an arbitrary configuration -- for
-    # those dimensions start from the shipped settings.py value so generation 0
+    # those dimensions start from the shipped the settings package value so generation 0
     # evaluates the current car, not a random one.
     if TUNABLE_NMPC:
         _n_head = len(TUNABLE_Q_IDX) + len(TUNABLE_R_IDX) + len(TUNABLE_R_RATE_IDX)

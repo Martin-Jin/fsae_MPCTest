@@ -106,7 +106,7 @@ class LauncherApp(tk.Tk):
             if not messagebox.askyesno(
                     "Unsaved changes",
                     "The Settings tab has unsaved changes. Switch away anyway?\n\n"
-                    "Nothing is lost from this tab's own widgets, but settings.py/the "
+                    "Nothing is lost from this tab's own widgets, but settings/ and the "
                     "live files still hold the OLD values until you press Save."):
                 self._reentering_tab_guard = True
                 self._notebook.select(settings_index)
@@ -133,7 +133,7 @@ class LauncherApp(tk.Tk):
         if self._settings_tab.has_unsaved_changes() and not messagebox.askyesno(
                 "Unsaved changes",
                 "The Settings tab has unsaved changes that will be lost "
-                "(the widgets, not settings.py, since nothing has written them "
+                "(the widgets, not the settings package, since nothing has written them "
                 "yet). Quit anyway?"):
             return
         if self._launch_tab.stop_running_sim():

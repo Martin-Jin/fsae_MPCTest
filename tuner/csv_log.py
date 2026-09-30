@@ -2,7 +2,7 @@
 
 The FSDS telemetry/log CSVs all share one quirk this module exists to handle
 once: a leading block of `#`-prefixed comment lines (e.g. a prepended score
-header — see `telemetry_logger.py`) before the real header row, and
+header — see `telemetry/control_logger.py`) before the real header row, and
 occasional short/malformed trailing rows to drop.
 """
 import numpy as np

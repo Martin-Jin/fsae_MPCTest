@@ -25,7 +25,7 @@ def _run_detached(cmd: list[str], cwd: Path) -> subprocess.Popen:
 def _sibling_path_csv(control_csv: Path) -> Path | None:
     """Return the sibling `<tag>_path_<stamp>.csv` next to control_csv, or
     None if absent -- same file-naming convention plot_playback.py's own
-    _path_csv_for() re-derives (telemetry_logger.py always writes the two
+    _path_csv_for() re-derives (telemetry/control_logger.py always writes the two
     with matching tag/stamp, see its `paths` property), reimplemented here
     rather than imported so this GUI has no dependency on the tuner
     package's internals."""

@@ -17,7 +17,7 @@ class RepoPaths:
     tracks_dir: Path
     recorded_runs_dir: Path
     fsae_logs_dir: Path
-    # Directory, not a single file: settings.py became the settings/
+    # Directory, not a single file: the settings package became the settings/
     # package (settings/general.py, settings/nmpc.py, ...). _read_var/
     # _rewrite_var search every settings/*.py file for NAME's assignment,
     # since a field's submodule isn't tracked here -- see those functions'
@@ -49,7 +49,7 @@ class RepoPaths:
 
 def _repo_paths() -> RepoPaths:
     # This file now lives at gui/launcher/paths.py (one level deeper than
-    # the original gui/launcher.py), so resolving fsae_MPCTest/ needs one
+    # the original single-file gui/launcher.py), so resolving fsae_MPCTest/ needs one
     # more .parent than before: paths.py -> launcher/ -> gui/ -> fsae_MPCTest/.
     fsae_mpctest = Path(__file__).resolve().parent.parent.parent
     fsds_root = fsae_mpctest.parent
@@ -66,7 +66,7 @@ def _repo_paths() -> RepoPaths:
         # Matches launch_all.sh's own `log_dir:='$HOST_REPO_ROOT/fsae_logs'`
         # exactly (HOST_REPO_ROOT is that script's own outer-FSDS-repo-root
         # variable) -- NOT the user's home directory, which only coincides
-        # with the repo root by accident. ControlLogger (telemetry_logger.py)
+        # with the repo root by accident. ControlLogger (telemetry/control_logger.py)
         # opens its CSV here at node startup, not lazily at shutdown, so
         # getting this directory right is what makes the Stop button's
         # "save this run?" prompt able to find anything at all.

@@ -13,7 +13,7 @@ USED BY
 
 DOES NOT USE
 ------------
-  model/vehicle_physics.py (directly), model/bicycle_model.py (receives Ad/Bd as arguments),
+  model/vehicle_physics/ (directly), model/bicycle_model.py (receives Ad/Bd as arguments),
   sim/speed_profile.py, sim/perception.py, sim/planner.py, tuner/performance_stats.py
 """
 
@@ -43,9 +43,9 @@ def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max, R_rate=None, u_prev=None,
       4. Solves with OSQP; falls back to Clarabel if OSQP fails.
       5. Returns u[0] (the first step's control action to apply to the plant).
 
-    SOLVER STRATEGY: OSQP primary (sparse, warm-startable, ~1-5 ms at N=25),
-    Clarabel fallback on a non-optimal OSQP status. See architecture.md's
-    "The solver" section for the full OSQP/Clarabel/OPTIMAL_INACCURATE
+    SOLVER STRATEGY: OSQP primary (sparse, warm-startable, ~1-5 ms at N=35),
+    Clarabel fallback on a non-optimal OSQP status. See
+    docs/controllers/lmpc.md's "The solver is OSQP with a Clarabel fallback" section for the full OSQP/Clarabel/OPTIMAL_INACCURATE
     reasoning — not repeated here.
 
     warm_start=False is used by the offline tuner for the FIRST step of each
@@ -86,8 +86,8 @@ def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max, R_rate=None, u_prev=None,
         cp.pos/cp.neg in the cost instead of R's own [1,1] entry (R[1,1]
         is NOT used for a_cmd -- only R[0,0], delta_cmd, is read from it).
         Defaults to R[1,1] for both when omitted, exactly reproducing the
-        pre-split single-R[1,1] behaviour. See settings.py's
-        R_A_ACCEL/R_A_BRAKE and `docs/reference/README.md`'s "Accel/brake
+        pre-split single-R[1,1] behaviour. See the settings package's
+        R_A_ACCEL/R_A_BRAKE and `docs/reference/control_mechanisms.md`'s "Accel/brake
         effort weight split".
     u_prev : array-like, shape (2,), optional
         Previously applied control input. Used as anchor for the step-0
