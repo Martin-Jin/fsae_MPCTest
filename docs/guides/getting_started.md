@@ -321,7 +321,7 @@ Every tuning run appends an entry to `docs/logs/tuning_history.txt`: timestamp, 
 
 Two gaps to know about:
 
-- The tuner prints and logs only the 9 Q/R/R_rate weights. The values it finds for the 5 NMPC fields are not printed or logged, so an NMPC tuning result is not recoverable from the run output.
+- The tuner prints and logs the 9 Q/R/R_rate weights and the 5 NMPC values (an `NMPC tail` line). Copy the NMPC values into `settings/nmpc.py` and the live `nmpc_params.py` by hand output.
 - `R_diag[1]` (the accel weight) is nominal only. The QP's acceleration and braking costs read `R_A_ACCEL` and `R_A_BRAKE`, so the tuner's `R_diag[1]` has no effect on the score. Set those two by hand.
 
 The full field-by-field parity mapping is in [offline_live_parity.md](../reference/offline_live_parity.md). Full tuner usage is in [offline_guide.md](offline_guide.md).

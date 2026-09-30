@@ -221,6 +221,10 @@ for idx in TUNABLE_R_IDX:
     bounds.append(R_BOUNDS.get(idx))
 for idx in TUNABLE_R_RATE_IDX:
     bounds.append(R_RATE_BOUNDS.get(idx))
+# Inert dimensions: R_diag[1] (accel effort) is superseded by R_A_ACCEL/R_A_BRAKE, and
+# under the LTV-QP the corner blend overwrites Q[0,0]/Q[2,2]/Q[3,3]/R_rate[0,0], so those
+# entries do not change the score there. They stay in the search to keep the vector layout
+# (and every recorded result) stable.
 # NMPC rate-shaping tail (absolute values, appended after the 9 multipliers).
 # Only meaningful when the rollout runs the NMPC; with the LTV-QP these are
 # ignored by the controller, so the search wastes dimensions but stays correct.
@@ -1159,10 +1163,12 @@ _SCORE_METRIC_NAMES = [
     "steering_reversal_rms",
     "peak_lateral_error",
     "speed_rmse",
+    "accel_reversal_rms",
 ]
 
 
-def log_results_to_history(Q, R, R_rate, duration, score, optuna_info=None):
+def log_results_to_history(Q, R, R_rate, duration, score, optuna_info=None,
+                           nmpc_overrides=None):
     """
     Append the best-found weight matrices and metadata to docs/logs/tuning_history.txt.
 
@@ -1181,6 +1187,9 @@ def log_results_to_history(Q, R, R_rate, duration, score, optuna_info=None):
     R : np.ndarray, shape (2,2)       Best-found R matrix.
     R_rate : np.ndarray, shape (2,2)  Best-found R_rate matrix.
     duration : float                  Total optimisation wall time (seconds).
+    nmpc_overrides : dict or None
+        The best-found NMPC rate-shaping values (see TUNABLE_NMPC), logged so an
+        NMPC tuning result is complete. None when TUNABLE_NMPC is empty.
     optuna_info : dict or None
         If the Optuna TPE pre-pass was used, a dict with keys 'n_trials',
         'best_score', and the pre-pass's own best-found 'Q'/'R'/'R_rate'
@@ -1197,6 +1206,8 @@ def log_results_to_history(Q, R, R_rate, duration, score, optuna_info=None):
         f.write(f"Q_diag      = {np.diag(Q).tolist()}\n")
         f.write(f"R_diag      = {np.diag(R).tolist()}\n")
         f.write(f"R_rate_diag = {np.diag(R_rate).tolist()}\n")
+        if nmpc_overrides:
+            f.write(f"NMPC tail   = {nmpc_overrides}\n")
         f.write(
             "Score weights = "
             + ", ".join(
@@ -1526,10 +1537,14 @@ if __name__ == "__main__":
         f"Selected:              {'xbest' if score_best <= score_mean else 'xfavorite'}"
     )
     print("=" * 60)
-    print("\nReplace your gui/simulation.py weights with:")
+    print("\nCopy these into the settings/ package (settings/lmpc.py):")
     print("Q_diag      =", np.diag(best_Q).tolist())
     print("R_diag      =", np.diag(best_R).tolist())
     print("R_rate_diag =", np.diag(best_R_rate).tolist())
+    best_nmpc = vector_to_nmpc_overrides(final_vec)
+    if best_nmpc:
+        print("NMPC tail   =", best_nmpc)
+        print("(absolute values: set the matching settings/nmpc.py NMPC_* constants, and the live nmpc_params.py fields)")
     print("=" * 60)
 
     # ── Generation log summary ───────────────────────────────────────────────────
@@ -1549,7 +1564,8 @@ if __name__ == "__main__":
         print("Optimization finished or interrupted. Saving results...")
         duration = end_time - start_time
         log_results_to_history(
-            best_Q, best_R, best_R_rate, duration, score_best, optuna_info=optuna_info
+            best_Q, best_R, best_R_rate, duration, score_best, optuna_info=optuna_info,
+            nmpc_overrides=best_nmpc,
         )
         print("Results successfully appended to docs/logs/tuning_history.txt")
         print("=" * 60)

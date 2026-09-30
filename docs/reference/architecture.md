@@ -249,7 +249,7 @@ After the budget is spent (or on Ctrl+C), two candidates are re-evaluated serial
 - **`xbest`** is the best single candidate seen.
 - **`xfavorite`** is the mean of the final search distribution, usually more robust than one lucky sample.
 
-The lower score is printed and appended to `docs/logs/tuning_history.txt` (path `TUNING_HISTORY_PATH` in the tuner). The printed diagonals and the history entry carry `Q`, `R` and `R_rate` only. The five NMPC tail values found by a search are not printed or logged.
+The lower score is printed and appended to `docs/logs/tuning_history.txt` (path `TUNING_HISTORY_PATH` in the tuner). The printed diagonals and the history entry carry `Q`, `R` and `R_rate`, plus an `NMPC tail` line with the five NMPC values when they are searched.
 
 ## The composite score puts constraints above time above quality
 

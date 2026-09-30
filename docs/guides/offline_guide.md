@@ -210,7 +210,7 @@ Notes:
 
 - The live LMPC builds its weights from `self.params.*` at construction (`lmpc/controller.py`) with no hardcoded weights. Edit `mpc_params.py`, not the controller.
 - `R_diag[1]` is nominal only. The QP reads `R_A_ACCEL` and `R_A_BRAKE` (`settings/lmpc.py`, live `r_a_accel` and `r_a_brake`), so the tuner's second R entry has no effect on the score. Set those by hand.
-- The tuner prints and logs only the 9 Q, R and R_rate weights. The values found for the 5 NMPC fields are not printed or logged.
+- The tuner prints and logs the 9 Q, R and R_rate weights plus, when `TUNABLE_NMPC` is non-empty, the 5 NMPC values as an `NMPC tail` line. Copy those into the matching `settings/nmpc.py` constants and the live `nmpc_params.py` fields by hand.
 - The two sides have no shared import, because the live node has no simulator dependency. They stay in sync by hand. The field-by-field table is in [offline_live_parity.md](../reference/offline_live_parity.md).
 - `python -m tuner.tools.sync_mpc_params` copies live params (not `settings/`) from the live tree to the `fsds_simulator/` mirror and `fsae_autonomous`. It does not touch offline settings.
 
