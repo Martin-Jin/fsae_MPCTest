@@ -112,7 +112,6 @@ import signal
 from sim.rollout.core import run_core_rollout, compute_step_budget
 import subprocess
 import settings  # module handle, for the NMPC tail's shipped x0 seed
-import settings
 
 from model.vehicle_physics import (
     VehicleParams,
@@ -124,6 +123,7 @@ from sim.perception import (
     place_cones,
 )
 import datetime
+import os
 
 # ==========================================
 # TUNABLE WEIGHT CONFIGURATION
@@ -760,7 +760,7 @@ def run_headless_rollout(
                          feasible band so no quality score can promote a
                          failed run above a completed one.
         These figures are NOT comparable to older scoring-formula scores;
-        see the closed-book header in tuning history.txt.
+        see the closed-book header in docs/logs/tuning_history.txt.
 
     Called by: _score_task() (from pool.map in parallel_evaluate_candidate),
                evaluate_candidate() (serial fallback)
@@ -1137,6 +1137,11 @@ def get_git_revision_hash():
         return "Unknown (not a git repository)"
 
 
+TUNING_HISTORY_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "docs", "logs", "tuning_history.txt",
+)
+
 # Metric names in SCORE_WEIGHTS order — used only to label the weights when
 # logging, so a tuning history entry stays self-contained even if settings.py's
 # SCORE_WEIGHTS values change later. Must stay in sync with sim/scoring.py's
@@ -1159,7 +1164,7 @@ _SCORE_METRIC_NAMES = [
 
 def log_results_to_history(Q, R, R_rate, duration, score, optuna_info=None):
     """
-    Append the best-found weight matrices and metadata to tuning history.txt.
+    Append the best-found weight matrices and metadata to docs/logs/tuning_history.txt.
 
     The log file provides a persistent record of all tuning runs. Each entry
     includes a timestamp, the weight diagonals (copy-pasteable into gui/simulation.py),
@@ -1187,7 +1192,7 @@ def log_results_to_history(Q, R, R_rate, duration, score, optuna_info=None):
     """
     timestamp = datetime.datetime.now().strftime("%d/%m/%y %H:%M")
     commit_hash = get_git_revision_hash()
-    with open("tuning history.txt", "a", encoding="utf-8") as f:
+    with open(TUNING_HISTORY_PATH, "a", encoding="utf-8") as f:
         f.write(f"\n# {timestamp} - [Pending Description: yet to be tested]\n")
         f.write(f"Q_diag      = {np.diag(Q).tolist()}\n")
         f.write(f"R_diag      = {np.diag(R).tolist()}\n")
@@ -1546,7 +1551,7 @@ if __name__ == "__main__":
         log_results_to_history(
             best_Q, best_R, best_R_rate, duration, score_best, optuna_info=optuna_info
         )
-        print("Results successfully appended to tuning history.txt")
+        print("Results successfully appended to docs/logs/tuning_history.txt")
         print("=" * 60)
     except KeyboardInterrupt:
         print("\n[!] Optimization interrupted by user. Saving best-found state...")

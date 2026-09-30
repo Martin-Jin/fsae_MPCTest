@@ -150,7 +150,7 @@ OPTUNA_PRE_PASS_EVALS = max(10, int(0.1 * MAX_EVALS))
 # the result is meant to be used, but wasteful when you only need to confirm
 # "does this still import/run/converge" after an unrelated code change.
 #   - Leave False for any run whose output you intend to actually use (a real
-#     tuning session, or a benchmark compared against tuning history.txt).
+#     tuning session, or a benchmark compared against docs/logs/tuning_history.txt).
 #   - Set True only for quick development smoke-tests: cuts a tuning run down
 #     to roughly a minute by shrinking the eval budget, path count, track
 #     resolution, and solver precision. Never paste weights produced with
