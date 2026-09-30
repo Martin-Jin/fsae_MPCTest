@@ -67,7 +67,9 @@ MODULE MAP (live `nmpc_core.py` is one file; this split is offline-only)
   dynamics.py         _Plant, _tyre_forces, _f, _f_scalar, _step_scalar, _step
   outputs.py          _outputs (cost residual rows)
   weight_schedule.py  _rrate_zone_scale, _rrate_stage_ramp
-  solver.py           _csc_pattern, NMPCController
+  qp_model.py         _csc_pattern, _QPModelMixin (QP build, rollout, Jacobians, cost)
+  sqp_step.py         _SQPStepMixin (_solve_step, _project_feasible)
+  solver.py           NMPCController (__init__, reset, path_reference, compute_step)
 To diff against the live module, compare by function name; the order above
 is the order the live file defines them in.
 """
