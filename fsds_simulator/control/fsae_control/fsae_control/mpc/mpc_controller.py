@@ -104,7 +104,7 @@ from fsae_control.control_utils import (
     load_speed_profile_csv, precomputed_speed_at, tracking_error_speed_gate,
 )
 from fsae_control.mpc.mpc_core import MAX_STEER_RAD, MPCController
-from fsae_control.mpc.nmpc_core import NMPCController
+from fsae_control.nmpc import NMPCController
 from fsae_control.mpc.mpc_params import declare_mpc_params, mpc_params_from_node
 from fsae_control.mpc.nmpc_params import declare_nmpc_params, nmpc_params_from_node
 from fsae_control.telemetry_logger import (
