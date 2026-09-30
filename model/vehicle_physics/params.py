@@ -119,9 +119,7 @@ class VehicleParams:
         self.alat_ceiling_gain = 450.0
         # Lag (s) on the restoring moment — produces the measured overshoot;
         # under the integral law affects ONLY the transient, not the settled
-        # value. Measured 2026-08-07 via a long step-hold; re-measure with
-        # ros2/run_steering_step.sh --no-sim -p 'speeds:=[5.0,8.0,12.0]'
-        # -p 'step_s:=8.0' -p 'repeats:=2' then
+        # value. Re-measure with a long step-hold, then run
         # tuner.validation.plant_openloop_validation if corner entry time changes.
         self.alat_ceiling_tau = 0.40
 

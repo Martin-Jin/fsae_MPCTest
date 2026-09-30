@@ -350,24 +350,20 @@ To validate the metric offline, the smallest correct change is to record an NMPC
 
 ## Steering system-ID harness
 
-**Status: the ROS 2 nodes are missing.** The harness scripts `ros2/run_steering_sysid.sh` and `ros2/run_steering_step.sh` run `ros2 run fsae_control steering_sysid` and `steering_step`. Neither node file exists in the working tree, in the mirror, in `setup.py`'s console scripts, or in any `fsae_planning` commit. Only the offline analysers survive. The scripts also call the analysers by an old module path (`tuner.steering_sysid_analysis`), which no longer exists. The current paths are `tuner.investigations.steering_sysid_analysis` and `tuner.investigations.steering_step_analysis`. Until the nodes are restored, the harness cannot run end to end. The design below is what the scripts and analysers were written for.
-
 **What it does.** Commanding fixed steering angles at fixed speeds on an empty map, with the MPC bypassed, and recording the achieved yaw rate isolates the plant from the controller. This is how FSDS's lateral-acceleration ceiling was found (see [simulator_fidelity.md](simulator_fidelity.md)). A closed-loop lap log alone cannot separate a plant defect from a controller or reference defect, so this method is the one to reuse whenever a plant-versus-car discrepancy is suspected.
+
+**Status: the drivers were removed.** The ROS 2 nodes that drove the sweep and step tests (`steering_sysid`, `steering_step`) no longer exist in the working tree, the mirror or any `fsae_planning` commit, and the two one-command shell scripts that called them have been deleted. To repeat the measurement, new nodes are needed. The offline side survives:
 
 | piece | location | role |
 |---|---|---|
-| `ros2/run_steering_sysid.sh` | outer repo, beside `launch_all.sh` | one-command speed sweep |
-| `ros2/run_steering_step.sh` | same | one-command step-input test (50 Hz, isolates the transient) |
-| `tuner/investigations/steering_sysid_analysis.py` | this repo | reads the sweep log, names the mechanism |
-| `tuner/investigations/steering_step_analysis.py` | this repo | reads the step log, names the mechanism |
-| `steering_sysid` and `steering_step` nodes | live workspace, not present | drive FSDS directly and write the log |
+| `tuner/investigations/steering_sysid_analysis.py` | this repo | reads a sweep log, names the mechanism |
+| `tuner/investigations/steering_step_analysis.py` | this repo | reads a step log, names the mechanism |
+| `tuner/validation/plant_openloop_validation.py` | this repo | replays recorded sweeps and steps through the offline plant |
 
-The nodes, the scripts and their logs are not mirrored into `fsds_simulator/`. The analysers are offline-only.
-
-**Running the sweep.** `cd <FSDS repo>/ros2 && ./run_steering_sysid.sh` starts FSDS, waits for the RPC port, starts the bridge, waits for `/fsds/testing_only/odom`, runs the sweep, analyses the newest log and tears everything down, including on Ctrl+C. Flags: `--no-sim` (FSDS already running), `--quick` (fewer points), and any `-p name:=value` passed to the node. Logs go to `$HOME/fsae_logs/steering_sysid_*.csv`. `ros2/run_steering_step.sh` takes the same flags.
+Requirements for any new driver:
 
 - **Empty map only.** The car circles at up to 14 m/s and does not brake for cones.
-- **Nothing else may publish control.** The script refuses to start if `mpc_controller`, `fsds_bridge` or `stanley` is running, because a second publisher on `/fsds/control_command` interleaves commands and corrupts the log. It is deliberately separate from `launch_all.sh`.
+- **Nothing else may publish control.** A second publisher on `/fsds/control_command` interleaves commands and corrupts the log, so the stack must not run alongside it.
 - **Measured property, not a tuning knob.** If the result is suspected stale, re-measure.
 
 **Reading the sweep log.** The analyser reports, per (speed, steering) point, the achieved-to-commanded steering ratio `s = delta_achieved / delta_commanded`, with `delta_achieved = atan(L * yaw_rate / v)` and `L = 1.55 m`. A falling `s` is not diagnostic alone, since a speed-scaled steering rack, real understeer and grip saturation all produce one. The analyser fits five candidate models to the achieved yaw rate and ranks them by R^2.

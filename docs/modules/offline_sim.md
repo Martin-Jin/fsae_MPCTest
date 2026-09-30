@@ -549,7 +549,7 @@ Does: replays the measured open-loop steering step and sweep experiments through
 Change it to:
 - add a report or a plant parameter override. Run `python -m tuner.validation.plant_openloop_validation` (also `--ab`, `--robustness`) after any edit to `model/vehicle_physics/`.
 Don't:
-- run it without measurement logs, because it reads the newest `steering_step_*.csv` and `steering_sysid_*.csv` from `~/fsae_logs` (from `ros2/run_steering_step.sh` and `ros2/run_steering_sysid.sh`); presence of those logs on this machine is not verified.
+- run it without measurement logs, because it reads the newest `steering_step_*.csv` and `steering_sysid_*.csv` from `~/fsae_logs`; presence of those logs on this machine is not verified.
 - read the low-speed rows as findings, because they are a known rig confound (the ceiling never engages below about 6 to 7 m/s).
 Key API: `run_plant`, `report_step`, `report_sweep`, `report_ab`, `report_robustness`
 

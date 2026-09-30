@@ -761,24 +761,6 @@ Don't:
 - Start the control stack alongside it.
 Key API: `--quick`, `--no-sim`
 
-### `ros2/run_steering_sysid.sh`
-
-Does: one-shot harness for the open-loop steering sweep.
-Change it to:
-- Nothing until it is repaired: it runs `ros2 run fsae_control steering_sysid`, which no longer exists, and calls a moved analysis module (see the report).
-Don't:
-- Rely on it, because it cannot run as written.
-Key API: `--quick`, `--no-sim`
-
-### `ros2/run_steering_step.sh`
-
-Does: one-shot harness for the step-input yaw-cap test.
-Change it to:
-- Nothing until it is repaired, same as the steering sweep (`steering_step` node is gone).
-Don't:
-- Rely on it, because it cannot run as written.
-Key API: `--quick`, `--no-sim`
-
 ### `ros2/clock_drift_check.py`
 
 Does: subscribes to `/clock` and logs wall time against sim time to CSV, to test whether FSDS falls behind real time during the periodic pose stall.
@@ -804,7 +786,7 @@ Key API: script argument `HOST`
 ### Rules
 
 - **Byte-identical, not just similar.** Every file under `fsds_simulator/` that also exists in `ros2/src/fsae_planning` must match it. Verified at the time of writing: only the repo-specific files differ (see the table).
-- **Edit in the mirror, then overwrite into the live tree.** Make the change in `fsds_simulator/`, then copy the file to the same relative path under `ros2/src/fsae_planning` (local working tree only). Never commit or push in `fsae_planning`.
+- **Edit either side, then copy to the other.** Make the change in `ros2/src/fsae_planning` or in `fsds_simulator/`, then copy the file to the same relative path on the other side. Both must end byte-identical. The mirror commit is the change record. Never commit or push in `fsae_planning`.
 - **Do not add files that were never there, and do not fix unrelated drift.** Propagate the specific change only.
 - **Check on disk, not with `git status`.** An ignore pattern once hid a whole mirrored package from `git status`. Use `ls`, `find` or `diff`.
 - **Params move the other way.** A retuned and live-validated param value goes from `ros2/src/fsae_planning` into the mirror and into the local `fsae_autonomous` tree with the sync tool below.

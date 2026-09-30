@@ -158,7 +158,7 @@ Horizon accuracy is how well the controller's 1-second prediction matched the dr
 
 FSDS's lateral-acceleration ceiling was found by commanding fixed steering angles at fixed speeds on an empty map and recording the achieved yaw rate. Repeat that methodology whenever a plant-versus-car discrepancy is suspected, because a closed-loop lap log cannot separate a plant defect from a controller or reference one.
 
-**Current state.** The nodes `steering_sysid` and `steering_step` do not exist. No module named `steering_sysid` or `steering_step` exists under `fsae_control`, and `setup.py` has no `entry_points` line for either. `ros2/run_steering_sysid.sh` and `ros2/run_steering_step.sh` invoke them with `ros2 run fsae_control steering_sysid` and `steering_step`, so both scripts fail at that step today. The status of these files, and why they are not mirrored, is recorded in [offline_live_parity.md](../reference/offline_live_parity.md). This guide does not repeat it.
+**Current state.** The ROS 2 nodes that drove the sweep and step tests no longer exist, and the shell scripts that called them are deleted. Repeating the measurement needs new nodes, see [offline_live_parity.md](../reference/offline_live_parity.md#steering-system-id-harness).
 
 What survives:
 
