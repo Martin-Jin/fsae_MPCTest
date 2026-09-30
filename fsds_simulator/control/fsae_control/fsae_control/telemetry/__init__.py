@@ -83,7 +83,7 @@ MODULE MAP
   horizon_tracker.py  HorizonAccuracyTracker
   lap_progress.py     LapProgressTracker
   control_logger.py   ControlLogger
-  scoring.py          verbatim copy of fsae_MPCTest/sim/scoring.py
+  scoring.py          same formulas as fsae_MPCTest/sim/scoring.py (constants inlined)
 """
 
 from fsae_control.telemetry.columns import ADAPTIVE_COLUMNS  # noqa: F401

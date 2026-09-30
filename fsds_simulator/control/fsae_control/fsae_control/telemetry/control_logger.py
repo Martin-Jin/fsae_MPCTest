@@ -309,7 +309,7 @@ class ControlLogger:
             f'# t0_epoch_s={self._t0_epoch:.4f}  (t column is seconds since this instant)',
             '# frame=global ENU (x east, y north, yaw right-handed, 0=+x); '
             'e_y/e_psi are front-axle Frenet errors vs the path, +ve = left/CCW',
-            '# score: fsae_control.scoring, verbatim copy of '
+            '# score: fsae_control.telemetry.scoring, same formulas as '
             'fsae_MPCTest/sim/scoring.py — lower is better',
             f'# score_is_partial={int(partial)}'
             '  (1 = time_bonus/offtrack unavailable live; weighted-metric '
