@@ -9,7 +9,7 @@ no adaptive features leave them empty so the column set is identical.
 
 
 # ── Adaptive-feature trace columns ───────────────────────────────────────
-# Written from mpc_core's last_telemetry (see its "Adaptive-feature trace"
+# Written from lmpc.controller's last_telemetry (see its "Adaptive-feature trace"
 # comment). Each m_* column is the multiplier that ONE feature applied to ONE
 # weight on that tick, so 1.0 means "this feature did nothing here" and the
 # product of a weight's m_* columns times its base value is its *_eff column.
@@ -21,7 +21,7 @@ no adaptive features leave them empty so the column set is identical.
 # Controllers with no adaptive features (Stanley) pass nothing and every cell
 # is written empty, so the column set stays identical across controllers.
 ADAPTIVE_COLUMNS = (
-    # Corner-factor scheduler (mpc_core._corner_factor/_low_speed_corner_boost):
+    # Corner-factor scheduler (lmpc.adaptive_gains._corner_factor/_low_speed_corner_boost):
     # a single CURRENT-curvature-driven fraction, and the low-speed boost
     # that adds to it, both gated multiplicatively so the boost cannot fire
     # on low speed alone.
@@ -41,7 +41,7 @@ ADAPTIVE_COLUMNS = (
     # Absolute weights handed to the QP after all of the above.
     'Q_ey_eff', 'Q_epsi_eff', 'Q_r_eff', 'R_steer_eff', 'Rrate_steer_eff',
     'R_a_accel_eff', 'R_a_brake_eff',  # a_cmd effort weight, split by sign; R_a_*_eff already includes the heading-error-driven asymmetry (epsi_ra_*)
-    # ── NMPC-only columns (nmpc_core.NMPCController; empty for every LTV-QP
+    # ── NMPC-only columns (nmpc.solver.NMPCController; empty for every LTV-QP
     # run, exactly as the m_* columns are empty for Stanley). Appended at the
     # END so the existing column order — and every offline script that parses
     # these CSVs by name — is unaffected.
@@ -65,8 +65,8 @@ ADAPTIVE_COLUMNS = (
     'nmpc_pred_ey_max_abs',    # peak predicted |e_y| anywhere in the horizon (m)
     'n_latency',               # nmpc_latency_compensation_enabled's rollforward depth (0 when off)
     # nmpc_friction_circle_enabled only (empty otherwise, same convention as
-    # every other column above); see `docs/reference/README.md`'s "Three
-    # MPCC-inspired additions" section.
+    # every other column above); see `docs/reference/control_mechanisms.md`'s "Nonlinear
+    # MPC (`use_nmpc`)" section.
     'nmpc_fyf_max_abs',        # peak |front-axle lateral tyre force| anywhere in the horizon (N)
     'nmpc_fyr_max_abs',        # peak |rear-axle lateral tyre force| anywhere in the horizon (N)
     # nmpc_progress_enabled only (empty otherwise, same convention as every

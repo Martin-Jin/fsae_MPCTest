@@ -2,7 +2,7 @@
 
 """
 nmpc_params.py — STRUCTURAL/SOLVER tunables for the NONLINEAR MPC
-path-tracking controller (nmpc_core.NMPCController). See
+path-tracking controller (nmpc.solver.NMPCController). See
 late_turn_in_investigation.md Part 16 for the research/decision record
 behind the formulation.
 
@@ -20,18 +20,18 @@ are.
 
 PARITY, NOW THAT AN OFFLINE NMPC EXISTS
 -----------------------------------------
-Before fsae_MPCTest's offline NMPC port (controller/nmpc_optimiser.py),
+Before fsae_MPCTest's offline NMPC port (controller/nmpc/),
 these structural fields had no offline counterpart, so CLAUDE.md's
 numeric-parity rule didn't apply to them. It does now: every field below
-has a matching settings.py NMPC_* constant (see that file's "Nonlinear MPC
-(NMPC)" section), kept numerically identical by hand — the same
+has a matching NMPC_* constant in the settings package
+(settings/nmpc.py), kept numerically identical by hand — the same
 discipline as Q_diag/R_diag/R_rate_diag always have been. Extend both
 sides together if either changes.
 
 ONE WEIGHT (now in mpc_params.py) DOES NOT TRANSFER WITH IDENTICAL
 MEANING: q_r / nmpc_q_epsi_dot. In the LTV-QP it weights absolute yaw rate
 `r`; in the Frenet NMPC it weights the heading-error RATE
-`r - kappa*s_dot` (see nmpc_core._outputs). Penalising absolute `r` in a
+`r - kappa*s_dot` (see nmpc.outputs._outputs). Penalising absolute `r` in a
 curvature-aware model would penalise the yaw rate the car MUST hold to
 follow a corner (r = kappa*v), i.e. it would fight cornering — which is
 the exact failure this controller exists to remove. Same number,
@@ -41,7 +41,7 @@ and mpc_params.py's own docstring for the field itself.
 PROVENANCE OF EVERY DEFAULT BELOW
 ---------------------------------
 No default here is a fresh guess. Each is either (a) copied from an existing
-validated value in mpc_core.py / control_utils.py (noted per field), or
+validated value in lmpc/controller.py / control_utils.py (noted per field), or
 (b) a solver/structural setting measured in Part 16 §16.7, or (c) an explicit
 guard whose value is chosen to be inert on this car's real operating range
 (also noted). Anything that is genuinely unvalidated says so in its `desc`.
@@ -61,8 +61,8 @@ class NMPCParams:
     # optimiser, so it is the most conservative default available.
     use_nmpc: bool = field(default=False, metadata={
         "unit": "bool",
-        "desc": "true -> use nmpc_core.NMPCController (Frenet-frame nonlinear MPC) "
-                "instead of mpc_core.MPCController (LTV-QP). Default false.",
+        "desc": "true -> use nmpc.solver.NMPCController (Frenet-frame nonlinear MPC) "
+                "instead of lmpc.controller.MPCController (LTV-QP). Default false.",
         "controller": "nmpc_only",
     })
 
@@ -291,7 +291,7 @@ class NMPCParams:
     # ── Soft track constraint (mirrors MPCController's own) ─────────────
     # Back to 3.5, matching the LTV-QP's own +-3.5 m literal. Was narrowed
     # to 3.0 on 2026-09-21 for the progress-term experiment (both the
-    # quadratic and linear slack read this same bound, see nmpc_core.py's
+    # quadratic and linear slack read this same bound, see nmpc/solver.py's
     # _cost()/_solve_step()), on the reasoning that progress's analytic
     # incentive to hug the boundary (kappa(s)'s 1/(1-kappa*e_y) metric
     # factor rises toward the inside) needs slack headroom before the car
@@ -399,8 +399,8 @@ class NMPCParams:
     nmpc_alat_ceiling_enabled: bool = field(default=True, metadata={
         "unit": "bool",
         "desc": "include FSDS's measured sustained lateral-acceleration ceiling "
-                "(MPCParams.alat_ceiling_flat/_slope/_intercept, the same law "
-                "mpc_core._alat_ceiling_at uses) as a smooth saturation of the "
+                "(the _Plant.alat_ceiling_flat/_slope/_intercept constants in "
+                "nmpc/dynamics.py, the same law model/vehicle_physics uses) as a smooth saturation of the "
                 "prediction's tyre forces. True is correct for FSDS; set False "
                 "for real-vehicle work, mirroring "
                 "model/vehicle_physics.VehicleParams.alat_ceiling_enabled",
@@ -431,7 +431,7 @@ class NMPCParams:
                 "_f_scalar -- see CLAUDE.md's warning against touching that "
                 "mechanism, which this does not. F_max is derived from the "
                 "SAME measured ceiling law "
-                "(alat_ceiling_flat/_slope/_intercept) via "
+                "(_Plant.alat_ceiling_flat/_slope/_intercept) via "
                 "F_max = m * ceiling(v_x) / 2 per axle. Changes the QP's "
                 "fixed sparsity pattern, so it is read once at construction "
                 "time, not per-tick. When False, _build_qp/_outputs/"
@@ -607,10 +607,10 @@ class NMPCParams:
     # First-order low-pass on the incoming desired_speed before it reaches
     # the cost function (v_ref = v_ref + alpha*(desired_speed - v_ref) each
     # tick). Introduced 2026-06-29 (mirrors MPCController's own identical
-    # filter in mpc_core.py) to smooth the live planner's ~1 Hz cone-map
+    # filter in lmpc/controller.py) to smooth the live planner's ~1 Hz cone-map
     # target-speed jumps, so a single noisy planner update doesn't look like
     # a step-input speed error to the solver. Has NO offline analogue
-    # (rollout_core.py/nmpc_optimiser.py never filter the speed target), so
+    # (sim/rollout/ and controller/nmpc/ never filter the speed target), so
     # this has always been live-only and untested against the offline
     # weight sweeps.
     #

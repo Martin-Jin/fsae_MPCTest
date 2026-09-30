@@ -38,7 +38,7 @@ at the control rate.
 Known limitation: this node is not a SLAM stand-in for accuracy, only for
 range. The pose it publishes is FSDS ground truth, copied verbatim: no noise,
 no drift, no estimation lag. The offline tuner models this gap explicitly via
-`SLAM_NOISE_ENABLED` in fsae_MPCTest/settings.py (default off, since FSDS has
+`SLAM_NOISE_ENABLED` in fsae_MPCTest/settings/ (default off, since FSDS has
 no such error).
 
 Speed/yaw-rate synchronisation: mpc_controller.py gets car_pos/car_yaw AND

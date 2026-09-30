@@ -19,11 +19,11 @@ class LapProgressTracker:
     which pinned every live composite_score at CONSTRAINT_FLOOR + DNF_PENALTY
     regardless of how the car actually drove).
 
-    Mirrors fsae_MPCTest/sim/rollout_core.py's own progress/reached_end/
+    Mirrors fsae_MPCTest/sim/rollout/core.py's own progress/reached_end/
     time_bonus derivation as closely as the live node's available data
     allows: same nearest-index-forward-bounded-search shape for progress,
     same "near the last point" reached_end check. The one deliberate
-    difference is optimal_time: rollout_core.py calls speed_profile.py's
+    difference is optimal_time: rollout/core.py calls speed_profile.py's
     quasi-steady-state optimal_lap_time() solver, which lives in
     fsae_MPCTest and is not on the live node's PYTHONPATH (see
     CLAUDE.md's scoring-parity note — the car has no fsae_MPCTest checkout).
@@ -49,7 +49,7 @@ class LapProgressTracker:
         v_seg = np.maximum(v_seg, 1e-3)   # guard a stray zero in the profile
         self._optimal_time = float(np.sum(self._seg_len / v_seg))
 
-        self._idx = 0            # forward-bounded nearest-index, like rollout_core.py
+        self._idx = 0            # forward-bounded nearest-index, like rollout/core.py
         self._start_wall: float | None = None
         self._end_wall: float | None = None
         self._reached_end = False
@@ -116,7 +116,7 @@ class LapProgressTracker:
         self._reset_car_pos = (float(car_pos[0]), float(car_pos[1]))
 
         # Forward-bounded: only search from the current index onward, same
-        # rationale as rollout_core.py's find_closest_reference_bounded — it
+        # rationale as rollout/core.py's find_closest_reference_bounded — it
         # can't jump backward onto a spatially-close-but-lapped-already point.
         #
         # While not yet _armed, the search is ADDITIONALLY capped to how far
@@ -143,7 +143,7 @@ class LapProgressTracker:
         d2 = (window - car_pos[0]) ** 2 + (self._path_Y[self._idx:window_end] - car_pos[1]) ** 2
         self._idx += int(np.argmin(d2))
 
-        # 10% window / 3 m radius: mirrors fsae_MPCTest/sim/rollout_core.py's
+        # 10% window / 3 m radius: mirrors fsae_MPCTest/sim/rollout/core.py's
         # identical check — see that file's comment for why these values
         # (not independently measured, but wide/narrow enough to avoid a
         # false trigger on a lap's own start/finish straight).

@@ -39,24 +39,23 @@ fi
 # raceline.csv -- see _newest_track/_track_geometry_name below).
 #
 # tracks/ is committed data inside fsae_planning, so a fresh clone of FSDS +
-# fsae_planning alone can drive its newest track with no fsae_MPCTest
+# fsae_planning alone can drive a recorded track with no fsae_MPCTest
 # checkout. fsae_MPCTest is only where NEW tracks get produced (recording +
 # the two exporters); copy the output into fsae_planning's tracks/<name>/ to
 # ship it.
 #
 # To see what's available:  ls "$(dirname "${BASH_SOURCE[0]}")/src/fsae_planning/tracks"
 # To add a new one (requires fsae_MPCTest for the exporters): record a lap,
-# run the two exporters -- see fsae_MPCTest/docs/developer_guide.md
+# run the two exporters -- see fsae_MPCTest/docs/fsds/integration_guide.md
 # ("Recording, exporting and driving a track") -- then copy the resulting
 # tracks/<name>/ directory into ros2/src/fsae_planning/tracks/<name>/.
 #
-# TRACK defaults to the MOST RECENTLY RECORDED track (by cone_map.json mtime,
-# via _newest_track, a bash port of fsae_MPCTest/tracks/newest_track() kept
-# in sync by hand since this script must not depend on fsae_MPCTest existing).
-#
-# Set TRACK= explicitly (uncomment below) to pin a specific track instead of
-# always using the newest -- e.g. comparing two recordings, or holding back a
-# still-being-tuned track from becoming the default.
+# TRACK is pinned below (currently comp_test_map_3), so the value set there
+# is what drives. If TRACK is left unset or empty (e.g. the line below is
+# commented out), the script falls back to the
+# MOST RECENTLY RECORDED track (by cone_map.json mtime, via _newest_track, a
+# bash port of fsae_MPCTest/tracks/newest_track() kept in sync by hand since
+# this script must not depend on fsae_MPCTest existing).
 #
 # Existing tracks (ls ros2/src/fsae_planning/tracks/ to refresh this list):
 TRACK=comp_test_map_3
@@ -105,7 +104,7 @@ TRACK_DIR="$HOST_ROS2_DIR/src/fsae_planning/tracks/$TRACK"
 # these describe different lines. Do not point both at the same CSV: doing so
 # has regressed tracking badly before (RMSE and steering saturation both blow
 # up). Do not raise SPEED_CSV's cap without checking the precomputed-speed
-# branch in mpc_controller_standalone.py first: it applies no v_max clip, so
+# branch in mpc/mpc_controller.py first: it applies no v_max clip, so
 # the CSV's own top speed becomes the car's top speed directly, and
 # speed_profile.csv is generated deliberately under the measured FSDS lateral
 # ceiling (see docs/reference/reference_path_and_speed.md's "Speed-profile
@@ -167,12 +166,12 @@ for _f in \
         echo "ERROR: TRACK='$TRACK' is missing $_f" >&2
         echo "       Available tracks: $(ls "$HOST_ROS2_DIR/src/fsae_planning/tracks" 2>/dev/null | tr '\n' ' ')" >&2
         echo "       To add this track, export it in fsae_MPCTest (a separate" >&2
-        echo "       repo -- see fsae_MPCTest/docs/developer_guide.md," >&2
+        echo "       repo -- see fsae_MPCTest/docs/fsds/integration_guide.md," >&2
         echo "       'Recording, exporting and driving a track') then copy its" >&2
         echo "       tracks/$TRACK/ directory into ros2/src/fsae_planning/tracks/:" >&2
         echo "         cd $HOST_REPO_ROOT/fsae_MPCTest" >&2
-        echo "         python3 -m tuner.export_speed_profile $TRACK" >&2
-        echo "         python3 -m tuner.raceline_optimizer   $TRACK" >&2
+        echo "         python3 -m tuner.tools.export_speed_profile $TRACK" >&2
+        echo "         python3 -m tuner.tools.raceline_optimizer $TRACK" >&2
         echo "         python3 -m tuner.tools.raceline_optimizer $TRACK --mode centerline" >&2
         echo "         cp -r tracks/$TRACK \"$HOST_ROS2_DIR/src/fsae_planning/tracks/\"" >&2
         exit 1
@@ -186,8 +185,8 @@ CONTROLLER=mpc
 
 # mpc only: true (default) -> the MPC node publishes fs_msgs/ControlCommand
 # directly with its own throttle/brake (fsds_bridge skipped) -- this is
-# what "mpc_standalone" used to mean before mpc_controller.py and
-# mpc_controller_standalone.py were merged into one node with this toggle.
+# what "mpc_standalone" used to mean, when it was a separate controller node
+# that has since been merged into mpc/mpc_controller.py behind this toggle.
 # false -> steering only via the shared cmd_vel interface, fsds_bridge
 # computes throttle/brake (what plain "mpc" used to mean).
 STANDALONE_OUTPUT=true
@@ -195,6 +194,10 @@ STANDALONE_OUTPUT=true
 # Speed caps passed to the controller node (see sim.launch.py's v_max/v_min
 # DeclareLaunchArgument -- overrides fsae_params.yaml's controller.v_max/
 # v_min without editing that shared file).
+# V_MAX=20.0 below is passed as v_max:=$V_MAX on every launch from this
+# script, so it is the value that applies here. The launch-argument defaults
+# (control.launch.py/sim.launch.py) and fsae_params.yaml's controller.v_max
+# are 15.0, which only applies to a direct `ros2 launch` without this script.
 V_MAX=20.0
 V_MIN=1.5
 
@@ -204,9 +207,9 @@ V_MIN=1.5
 # Settings marked [shared] affect both controllers.
 
 # ── NONLINEAR MPC (NMPC) ──────────────────────────────────────────────
-# false (default) = today's LTV-QP controller (fsae_control/mpc_core.py's
+# false (default) = today's LTV-QP controller (fsae_control/lmpc/controller.py's
 # MPCController). true = the Frenet-frame NONLINEAR MPC
-# (fsae_control/nmpc_core.py's NMPCController): the path's curvature kappa(s)
+# (fsae_control/nmpc/solver.py's NMPCController): the path's curvature kappa(s)
 # is part of its prediction model, so its own rollout predicts drifting off
 # line if it does not start turning -- the structural gap every mechanism in
 # late_turn_in_investigation.md Parts 1-15 was working around. Offline- and
@@ -320,7 +323,7 @@ NMPC_SLACK_LINEAR_WEIGHT=500.0               # [NMPC only] set ~1000 alongside a
 # r_rate_delta is set to and causing steering saturation. Always set BOTH
 # NMPC_RRATE_STEER_STRAIGHT/_CORNER explicitly, scaled to the current
 # r_rate_delta, never left at -1.
-NMPC_CORNER_RRATE_BLEND_ENABLED=false      # [NMPC only, EXPERIMENTAL] blends R_rate[steer] between NMPC_RRATE_STEER_STRAIGHT/_CORNER by CURRENT curvature (mpc_core._corner_factor/_blend). Mutually exclusive with NMPC_STEER_RATE_ANTI_HUNT_ENABLED above -- blend takes priority if both are set.
+NMPC_CORNER_RRATE_BLEND_ENABLED=false      # [NMPC only, EXPERIMENTAL] blends R_rate[steer] between NMPC_RRATE_STEER_STRAIGHT/_CORNER by CURRENT curvature (lmpc.adaptive_gains._corner_factor/_blend). Mutually exclusive with NMPC_STEER_RATE_ANTI_HUNT_ENABLED above -- blend takes priority if both are set.
 # Saturation rate of _corner_factor = 1 - 1/(1 + k*|kappa|), shared by the
 # corner blend above and NMPC_RRATE_ZONE_* below. The LTV-QP-inherited
 # default (8.0) is too low for a schedule that needs corner_frac to actually
@@ -333,7 +336,7 @@ NMPC_CORNER_RRATE_BLEND_ENABLED=false      # [NMPC only, EXPERIMENTAL] blends R_
 # persists, look at the error/effort weights (q_e_y vs r_delta) or the
 # reference heading instead, not k.
 NMPC_CORNER_FACTOR_K=27.0
-# NMPC_RRATE_STEER_STRAIGHT=52.5             # [NMPC only] MUST be set explicitly, never -1: at -1 it inherits the LTV-QP's 2.0 and silently discards r_rate_delta (see CAUTION above)
+# NMPC_RRATE_STEER_STRAIGHT=52.5             # [NMPC only] (example value only; r_rate_delta now defaults to 100.0, so scale to it) MUST be set explicitly, never -1: at -1 it inherits the LTV-QP's 2.0 and silently discards r_rate_delta (see CAUTION above)
 # NMPC_RRATE_STEER_CORNER=8.0                # [NMPC only] MUST be set explicitly, never -1 (inherits the LTV-QP's 1.25)
 
 # [NMPC only, EXPERIMENTAL, default off] Per-stage ramp on the steering-RATE
@@ -365,7 +368,7 @@ NMPC_RRATE_ZONE_BOOST_STRAIGHT=2.0    # x r_rate on a true straight
 # Do not set this much below ~0.7: lower values (including ones that make the
 # zone uniformly weaker than no zone at all) DNF the offline sim at k=27,
 # off-track at the tightest corner. Not a simple "too much release" effect,
-# still unexplained -- see docs/tuning.md's "Three-zone rate schedule".
+# still unexplained -- see docs/guides/tuning.md's "Three-zone rate schedule".
 NMPC_RRATE_ZONE_EASE_APPROACH=0.80    # x r_rate when a corner is AHEAD -- the turn-in release
 NMPC_RRATE_ZONE_FLOOR_CORNER=0.15     # x r_rate mid-corner
 #
@@ -377,8 +380,9 @@ NMPC_RRATE_ZONE_FLOOR_CORNER=0.15     # x r_rate mid-corner
 #
 # CAUTION when judging this on a raceline reference instead of centerline:
 # the raceline shows meaningfully higher saturation with the same weight,
-# which belongs to the reference line, not this term -- see docs/reference/'s
-# "Reference line: raceline vs centreline" before attributing a saturation
+# which belongs to the reference line, not this term -- see
+# docs/reference/reference_path_and_speed.md's "The centreline drives better
+# than the raceline on this track" before attributing a saturation
 # figure to this weight.
 NMPC_RJERK_DELTA=150.0
 # NMPC_RJERK_A=0.0
@@ -386,12 +390,12 @@ NMPC_RJERK_DELTA=150.0
 # [shared (LTV-QP native, NMPC via override), EXPERIMENTAL] Soft constraint
 # against steering REVERSALS (tick-to-tick sign flip), approximated by
 # boosting R_rate[0,0] whenever LAST tick's steering was already close to
-# zero -- see mpc_core.py's _reversal_penalty_boost docstring for why a
+# zero -- see lmpc/controller.py's _reversal_penalty_boost docstring for why a
 # reversal can't be detected directly inside a convex QP and this
 # approximates it. Composes multiplicatively with steer_rate_anti_hunt/the
 # corner blend, does not replace them -- keyed on a different signal
 # (u_prev, not curvature/e_y/e_psi), so no double-count risk.
-# Offline-validated on the LTV-QP path (see docs/reference/'s
+# Offline-validated on the LTV-QP path (see docs/reference/control_mechanisms.md's
 # "Soft steering-reversal penalty" section); not yet live-tested.
 REVERSAL_PENALTY_ENABLED=true
 # REVERSAL_PENALTY_BOOST_MAX=4.0                # ceiling multiplier, applied when previous steering == 0
@@ -410,8 +414,9 @@ NMPC_REVERSAL_PENALTY_ENABLED=false
 
 # MPC tuning shortlist -- optional one-off overrides for the handful of
 # MPCController weights/gains most likely to be tuned interactively, without
-# editing fsae_params.yaml. The FULL set of ~56 tunables (every field in
-# fsae_control/mpc_params.py's MPCParams) is always available as a launch
+# editing fsae_params.yaml. The FULL set of tunables (every field in
+# fsae_control/mpc/mpc_params.py's MPCParams, 69 fields, and mpc/nmpc_params.py's
+# NMPCParams, 35 fields) is always available as a launch
 # arg via control.launch.py/sim.launch.py; these are just a convenience
 # shortlist on top, matching V_MAX/V_MIN's pattern. Left unset (commented
 # out) by default so leaving this file untouched changes nothing -- uncomment
@@ -421,7 +426,7 @@ NMPC_REVERSAL_PENALTY_ENABLED=false
 # MPC_R_DELTA=1.8                       # [shared] steering-effort weight
 # MPC_R_A_ACCEL=3.0                     # [shared] acceleration-effort weight, a_cmd >= 0
 # MPC_R_A_BRAKE=0.5                     # [shared] acceleration-effort weight, a_cmd < 0 (braking); separate from r_a_accel so braking effort can be tuned independently
-# MPC_SPEED_TARGET_DEFICIT_MAX=5.0      # [shared] max the ramped speed target may lead the car's current speed by [m/s]; was a bare module constant in mpc_controller.py/rollout_core.py, now a real param. Binding constraint on acceleration for 36.8% of a lap at the old default (2.5); NOT yet live-validated at 5.0
+# MPC_SPEED_TARGET_DEFICIT_MAX=5.0      # [shared] max the ramped speed target may lead the car's current speed by [m/s]; was a bare module constant in mpc_controller.py and sim/rollout/, now a real param. The shipped default (mpc_params.py and fsae_params.yaml) is 2.55. the old 2.5 cap pinned acceleration for 36.8% of a lap; 5.0 was tried offline only, never live-validated, and is not the shipped value
 # MPC_CORNER_FACTOR_K=8.0                   # [LTV-QP only] corner_factor curve sharpness vs CURRENT |kappa|
 # MPC_Q_EY_CORNER=9.0                       # [LTV-QP only] Q[0,0] at full corner (corner_frac=1)
 # MPC_Q_EPSI_CORNER=3.0                     # [LTV-QP only] Q[2,2] at full corner (corner_frac=1)
@@ -803,7 +808,7 @@ fi
 
 # Live debug visualiser (close-up car/cones/reference path/NMPC predicted
 # horizon/driven trail + control-output stats), see
-# fsae_control/live_viz.py's own docstring. Sim-only debug tool: not part of
+# fsae_control/live_viz/'s own docstring. Sim-only debug tool: not part of
 # the autonomy stack, host-only (needs a real display, no X11 forwarding set
 # up for the Docker path today). Starts before the stack is fully up on
 # purpose, its topics simply have no data yet and the window sits blank
@@ -837,13 +842,13 @@ fi
 #
 # The precomputed-speed/path toggles are set via USE_PRECOMPUTED_SPEED /
 # USE_PRECOMPUTED_PATH above, and WHICH track's CSVs they read via TRACK.
-# Full workflow: fsae_MPCTest/docs/developer_guide.md, "Recording, exporting
+# Full workflow: fsae_MPCTest/docs/fsds/integration_guide.md, "Recording, exporting
 # and driving a track".
 #
 # cone_out_path sends a fresh recording into fsae_planning's own
 # tracks/<TRACK>/cone_map.json, the same directory the exporters read from --
 # so a re-record of the current track is picked up by
-# `python3 -m tuner.export_speed_profile $TRACK` (run from fsae_MPCTest, then
+# `python3 -m tuner.tools.export_speed_profile $TRACK` (run from fsae_MPCTest, then
 # copy the result back into ros2/src/fsae_planning/tracks/$TRACK/) with no
 # extra file shuffling. Recording a NEW track: point TRACK at the new name
 # first, and set both precomputed toggles false so the car drives off the
@@ -872,7 +877,7 @@ if [ ! -d "$TRACK_DIR" ]; then
 fi
 echo "[3/3] Launching Autonomous Stack (Perception, Planner, Control, Cone Recorder)..."
 echo "      track: $TRACK  (precomputed speed=$USE_PRECOMPUTED_SPEED path=$USE_PRECOMPUTED_PATH heading_profile=$USE_PRECOMPUTED_HEADING_PROFILE)"
-echo "      controller: $CONTROLLER$( [ "$CONTROLLER" != stanley ] && echo "  [$( [ "$USE_NMPC" = true ] && echo 'NMPC (nonlinear, nmpc_core.py)' || echo 'LTV-QP (mpc_core.py)' )]" )"
+echo "      controller: $CONTROLLER$( [ "$CONTROLLER" != stanley ] && echo "  [$( [ "$USE_NMPC" = true ] && echo 'NMPC (nonlinear, nmpc/solver.py)' || echo 'LTV-QP (lmpc/controller.py)' )]" )"
 mkdir -p "$TRACK_DIR"
 if [ "$USE_DOCKER" = true ]; then
     # Container-side paths: the container mounts the repo at a different

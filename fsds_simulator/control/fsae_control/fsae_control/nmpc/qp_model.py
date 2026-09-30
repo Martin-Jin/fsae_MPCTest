@@ -407,7 +407,7 @@ class _QPModelMixin:
     def _cost_breakdown(self, X, U, H, u_prev, u_prev2):
         """
         Same arithmetic as _cost(), split into named components instead of
-        summed to one scalar. Debug-only (live_viz.py's weighted-error
+        summed to one scalar. Debug-only (live_viz/'s weighted-error
         panel): called once per tick on the final accepted trajectory, never
         inside the backtracking loop, so it cannot affect which step gets
         accepted. Keep in sync with _cost() by hand if that method's terms
@@ -473,7 +473,7 @@ class _QPModelMixin:
 
         # Per-term horizon-summed breakdown (unlike stage/eff/rate above,
         # which merge all 5 output terms / both inputs together) -- for
-        # live_viz.py's horizon panel. _rr reshaped to (N, nu) rather than
+        # live_viz/'s horizon panel. _rr reshaped to (N, nu) rather than
         # flattened: np.tile(self.r_rate, N) interleaves [steer, accel] per
         # stage, so column 0/1 of the reshape is exactly steer/accel's own
         # per-stage weight, matching du's own (N, nu) column layout.
@@ -510,5 +510,5 @@ class _QPModelMixin:
             'rate_total': rate,           # full-horizon input rate-of-change cost
             'jerk_total': jerk,           # full-horizon input jerk cost (0.0 if disabled)
             'slack_total': slack,         # full-horizon soft-boundary slack cost (0.0 if disabled)
-            'horizon_terms': horizon_terms,  # per-term horizon sums, for live_viz.py's horizon panel
+            'horizon_terms': horizon_terms,  # per-term horizon sums, for live_viz/'s horizon panel
         }

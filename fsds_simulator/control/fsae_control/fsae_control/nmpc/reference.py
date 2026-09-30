@@ -231,7 +231,7 @@ class PathReference:
         psi_ref_at(s), so xy_at(*project(front_axle, yaw)[:2]) recovers
         front_axle. Used to convert the NMPC's own Frenet-frame horizon
         prediction (s, e_y per stage) into a plottable Cartesian trajectory
-        for live visualisation, see live_viz.py.
+        for live visualisation, see live_viz/.
         """
         s = np.atleast_1d(np.asarray(s, dtype=float))
         e_y = np.atleast_1d(np.asarray(e_y, dtype=float))

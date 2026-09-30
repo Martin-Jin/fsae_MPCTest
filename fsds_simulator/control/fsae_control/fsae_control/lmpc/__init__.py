@@ -9,8 +9,8 @@ node's `standalone_output` parameter picks how the result is used:
 false forwards only steering through the shared cmd_vel interface;
 true uses the full (steering, throttle, brake) triple directly — see that
 file's own docstring for why. It is a self-contained, "live-solve" re-implementation
-of the same linear time-varying MPC formulated generically in optimiser.py /
-bicycle_model.py for the offline tuner and simulator (both in the
+of the same linear time-varying MPC formulated generically in controller/lmpc/build.py /
+model/bicycle_model.py for the offline tuner and simulator (both in the
 fsae_MPCTest repo), designed for 100% numerical parity with that offline
 pipeline so that weights tuned there transfer directly to the real/simulated
 vehicle.
@@ -50,7 +50,7 @@ PARITY WITH THE OFFLINE PIPELINE
 _adaptive_R_scaling/_discrete_model here are intentionally
 near-identical duplicates of model_utils.py / bicycle_model.py, and
 _build_qp's cost/constraint formulation is a near-identical duplicate of
-optimiser.py's init_parameterized_mpc (same +/-3.5 m soft lane bound, same
+controller/lmpc/build.py's init_parameterized_mpc (same +/-3.5 m soft lane bound, same
 W_slack=10000, same step-0/subsequent rate-cost split), plus a hard
 per-step slew-rate constraint on [delta_cmd, a_cmd] (self.du_max) enforced
 in addition to the soft R_rate cost. Any change to the cost/constraint

@@ -4,7 +4,7 @@ fsae_control/nmpc/ — NONLINEAR model-predictive path-tracking controller
 subproblem solved by OSQP).
 
 This is a SECOND, independently selectable controller. It does not modify,
-subclass or import behaviour from mpc_core.MPCController's solve path: that
+subclass or import behaviour from lmpc.controller.MPCController's solve path: that
 LTV-QP controller remains the default and is completely untouched. Selection
 happens at node construction time via NMPCParams.use_nmpc (default False) —
 see mpc_controller.py.
@@ -20,7 +20,7 @@ attempts to inject curvature as exogenous horizon data (all producing a
 wrong-direction transient, see below), the obligation isn't schedulable.
 Full derivation, the model equations, the cost construction, and the
 real-time SQP structure (roll-forward feasibility, condensing, warm-start,
-solve-time budget): `docs/reference/README.md`'s "Nonlinear MPC (use_nmpc)"
+solve-time budget): `docs/reference/control_mechanisms.md`'s "Nonlinear MPC (`use_nmpc`): the second controller"
 section and `late_turn_in_investigation.md` Part 16 (§16.1 gap, §16.3 model,
 §16.5 correctness checks, §16.7 solve time/horizon-iteration sweep).
 
@@ -37,7 +37,7 @@ rate, not absolute yaw rate).
 
 WHAT THIS CONTROLLER DELIBERATELY DOES NOT DO
 ---------------------------------------------
-* No adaptive gain schedule (mpc_core's corner-factor/heading-error-asymmetry
+* No adaptive gain schedule (lmpc.controller's corner-factor/heading-error-asymmetry
   stack) — that exists to synthesise anticipation a curvature-blind model
   can't produce; layering it on a curvature-aware model would double-count an
   effect that's now structural. Left untouched on the LTV-QP path. The one
@@ -72,7 +72,7 @@ exactly)
   existing soft alat-ceiling saturation below — see NH_FRICTION and
   _build_qp/_solve_step.
 * nmpc_steer_rate_anti_hunt_enabled (MPCParams field, default False):
-  reuses mpc_core._steer_rate_anti_hunt verbatim (imported, not
+  reuses lmpc.adaptive_gains._steer_rate_anti_hunt verbatim (imported, not
   reimplemented, so it is byte-identical by construction) to scale
   R_rate[0,0] up to nmpc_anti_hunt_boost_max (inherits anti_hunt_boost_max)
   when the CURRENT state is centred/aligned/uncurving. Computed once per
@@ -82,9 +82,9 @@ exactly)
   lag. See "WHAT THIS CONTROLLER DELIBERATELY DOES NOT DO" above for why
   this is scoped separately from the rest of the gain-schedule family.
 * nmpc_corner_rrate_blend_enabled (MPCParams field, default False): a
-  narrower, ALTERNATIVE port of mpc_core's corner_factor family — blends
+  narrower, ALTERNATIVE port of lmpc.controller's corner_factor family — blends
   R_rate[0,0] between nmpc_rrate_steer_straight/_corner by CURRENT curvature
-  alone (mpc_core._corner_factor/_blend, imported verbatim). Unlike the rest
+  alone (lmpc.adaptive_gains._corner_factor/_blend, imported verbatim). Unlike the rest
   of that family (Q[e_y]/Q[e_psi]/Q[r]/R[steer], deliberately excluded
   above), only R_rate[steer] is touched here, to limit how much of the
   "no adaptive gain schedule" reasoning this overrides. NOT composed with

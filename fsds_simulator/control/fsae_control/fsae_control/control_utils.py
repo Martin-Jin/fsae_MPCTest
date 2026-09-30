@@ -74,14 +74,14 @@ class StanleyController:
         self.k_d       = k_d
         self.wheelbase = wheelbase
         # Last tick's tracking error, in the SAME sign convention as
-        # mpc_core.py's last_telemetry (+ve = left/CCW) so both controllers'
-        # e_y/e_psi are directly comparable in telemetry_logger.py's CSV —
+        # lmpc/controller.py's last_telemetry (+ve = left/CCW) so both controllers'
+        # e_y/e_psi are directly comparable in telemetry/control_logger.py's CSV —
         # see compute()'s sign flip on `e` below. Exposed for ControlLogger;
         # not used internally by compute() itself.
         self.last_e_y: float = 0.0
         self.last_e_psi: float = 0.0
         # Last tick's three additive terms of delta itself (radians, BEFORE
-        # the final clip), for debug telemetry only -- see live_viz.py's
+        # the final clip), for debug telemetry only -- see live_viz/'s
         # weighted-error panel for Stanley. Not used internally.
         self.last_heading_term: float = 0.0   # theta_e
         self.last_atan_term: float = 0.0      # atan2(k_cte*e, v+k_soft)
@@ -137,7 +137,7 @@ class StanleyController:
         right_n = np.array([t[1], -t[0]])   # 90° CW rotation of tangent
         e = float(np.dot(fa - path[idx], right_n))
 
-        # Expose this tick's error in mpc_core.py's sign convention (+ve =
+        # Expose this tick's error in lmpc/controller.py's sign convention (+ve =
         # left/CCW) — e above is +ve RIGHT, the opposite — so a Stanley log
         # and an MPC log can be plotted on the same axis without a manual
         # sign flip. theta_e already matches (+ve = path turns left of car).
@@ -377,7 +377,7 @@ def dynamic_speed_cap(waypoints, v_max=15.0, v_min=1.5,
     allows and the corner is close enough that it can no longer brake down
     to the profile's target in time." That mismatch is exactly what shows up
     as late, hard braking and steering saturation at corner entry — see
-    fsae_MPCTest/`docs/reference/README.md`'s speed-governor section.
+    fsae_MPCTest/`docs/reference/control_mechanisms.md`'s "Dynamic speed cap" section.
 
     This is a thin wrapper over curvature_speed() using its own (separate,
     typically tighter) a_lat_max/safety defaults — the oracle profile was
@@ -500,7 +500,7 @@ def load_path_profile_csv(csv_path: str):
     already derives path heading from consecutive waypoints (atan2 of the
     segment direction, the same convention centerline_planner.py's published
     PoseArray uses), so the (n,2) array below is a direct substitute for the
-    live topic's path with no interface change to mpc_core.py.
+    live topic's path with no interface change to lmpc/controller.py.
 
     Parameters
     ----------
@@ -527,7 +527,7 @@ def load_path_heading_profile_csv(csv_path: str):
     MPCController.set_heading_profile() for how it's consumed.
 
     Separate from load_path_profile_csv (which returns only (x,y), an
-    (n,2) array used directly as `path` everywhere in mpc_core.py,
+    (n,2) array used directly as `path` everywhere in lmpc/controller.py,
     including CornerMap's curvature segmentation) so that call site's
     return shape never changes — this is an additive, opt-in lookup, not a
     replacement for the geometric path array.

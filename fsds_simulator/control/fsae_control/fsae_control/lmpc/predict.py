@@ -9,7 +9,7 @@ the rollforward depth is capped and why n_delay is filtered.
 import numpy as np
 
 # ── Reference-heading rate limit ─────────────────────────────────────────────
-# Mirrors fsae_MPCTest/sim/rollout_core.py's REF_HEADING_RATE_LIMIT_ENABLED /
+# Mirrors fsae_MPCTest/sim/rollout/core.py's REF_HEADING_RATE_LIMIT_ENABLED /
 # REF_HEADING_RISE_RATE / _rate_limit_ref_psi — keep all three in sync.
 # Caps how fast the tracked reference heading (path_yaw in _error_state) may
 # change per tick, symmetric in both directions — unlike the speed-target
@@ -28,7 +28,7 @@ import numpy as np
 # against is (pose_age_s, measured from the pose message's own timestamp —
 # see mpc_controller.py/_pose_cb) and converts that into a step count itself.
 # See predict_ahead() below for the same small-angle-clip rollforward
-# validated in fsae_MPCTest/sim/rollout_core.py.
+# validated in fsae_MPCTest/sim/rollout/core.py.
 # The rollforward depth (n_delay) is capped at a small value because
 # predict_ahead() iterates the linear model n_delay times with NO
 # ground-truth correction, so pose noise compounds through every extra
@@ -86,7 +86,7 @@ def predict_ahead(
     against the state it will actually face instead of a stale x0.
 
     pending_cmds must be ordered oldest-first (the order they were issued).
-    Mirrors fsae_MPCTest/sim/rollout_core.py's predict_ahead() exactly,
+    Mirrors fsae_MPCTest/sim/rollout/core.py's predict_ahead() exactly,
     including the e_psi clip — see that function's docstring for why the
     clip is needed (the e_psi -> e_y_dot coupling in Ad is only valid for
     small angles, and this rollforward has no per-step ground-truth

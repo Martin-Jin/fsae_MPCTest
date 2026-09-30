@@ -36,7 +36,7 @@ authoritative topic table):
     /fsae/control/nmpc_predicted_path geometry_msgs/PoseArray        NMPC's predicted horizon,
                                                                      only published when
                                                                      use_nmpc=true (see
-                                                                     nmpc_core.py's xy_at())
+                                                                     nmpc/reference.py's xy_at())
     /fsds/control_command             fs_msgs/ControlCommand         steering/throttle/brake
                                                                      (standalone_output=true)
     /fsae/control/cmd_vel             ackermann_msgs/AckermannDriveStamped  (standalone_output=false)
@@ -63,7 +63,7 @@ authoritative topic table):
                                                                        completed lap by either
                                                                        controller node (see
                                                                        ControlLogger.finish_lap()
-                                                                       in telemetry_logger.py).
+                                                                       in telemetry/control_logger.py).
                                                                        pred_acc_pct is n/a
                                                                        (absent) for Stanley/
                                                                        LTV-QP runs -- NMPC-only,

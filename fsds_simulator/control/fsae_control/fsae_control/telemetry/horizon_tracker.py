@@ -13,10 +13,10 @@ import numpy as np
 class HorizonAccuracyTracker:
     """
     Compares the NMPC's predicted horizon (published each tick as Cartesian
-    front-axle points, see nmpc_core.py's xy_at()) against where the car
+    front-axle points, see nmpc/reference.py's xy_at()) against where the car
     actually was once enough time has passed for the prediction to "come
     true". NMPC-only: the LTV-QP path never exposes a Cartesian horizon (see
-    mpc_core.py), so a caller with no predictions to feed just never calls
+    lmpc/controller.py), so a caller with no predictions to feed just never calls
     add_prediction() and update() always returns None.
 
     A prediction made at tick k covers stages j=0..N at times
@@ -26,7 +26,7 @@ class HorizonAccuracyTracker:
     between each predicted point and the car's actual (interpolated)
     position at that same time is computed. That mean error, divided by the
     horizon's own arc length, is what turns into the accuracy percentage
-    (see the caller / docs/debugging_tools.md for the exact formula) — this
+    (see the caller / docs/guides/debugging_tools.md for the exact formula) — this
     class only produces the raw mean error and lets the caller apply that
     formula, so the percentage definition lives in one place.
     """

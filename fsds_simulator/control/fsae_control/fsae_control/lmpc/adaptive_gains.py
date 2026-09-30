@@ -15,7 +15,7 @@ import numpy as np
 # today's Q/R cost based on a corner not yet reached (approach/exit boosts,
 # demand normalisation, U-turn detector, straight-line adjustments, curvature
 # forcing, the precomputed CornerMap fast path — full list in
-# `docs/reference/README.md`'s "Corner-factor scheduler rewrite" section)
+# `docs/reference/control_mechanisms.md`'s "Corner-factor scheduler (LTV-QP)" section)
 # because this MPC formulation already predicts state error at each future
 # horizon step; reweighting TODAY's near-zero cost based on a forward scan
 # doesn't change what the horizon predicts once the car gets there. Replaced
@@ -67,7 +67,7 @@ def _steer_rate_anti_hunt(
     Continuous, not a hard AND-gated threshold: a discontinuous step would
     risk the same QP-solver-iteration-spike problem a threshold cutoff on
     curvature already found once (see the removed adaptive-R_rate
-    enable_in_corners/kappa_straight cutoff in docs/removed_mechanisms.md),
+    enable_in_corners/kappa_straight cutoff in docs/reference/retired_mechanisms.md),
     so straight-line hunting is instead penalised more strongly via a
     higher continuous ceiling.
     boost_kappa, boost_ey, and boost_epsi each saturate independently
@@ -99,7 +99,7 @@ def _steer_rate_anti_hunt(
     # residual steering jitter was still visible. Halving each k_* doubles
     # the |kappa|/|e_y|/|e_psi| each factor reaches before dropping to half
     # its max contribution (kappa: ~0.017 -> ~0.033 1/m; e_y: ~3.3 -> ~6.7 cm;
-    # e_psi: ~2.5 -> ~5.0 deg). Applies to both controllers -- nmpc_core.py
+    # e_psi: ~2.5 -> ~5.0 deg). Applies to both controllers -- nmpc/solver.py
     # imports this function verbatim, not a separate copy.
     k_kappa, k_ey, k_epsi = 30.0, 15.0, 11.5
     boost_kappa = 1.0 / (1.0 + k_kappa * abs(kappa))

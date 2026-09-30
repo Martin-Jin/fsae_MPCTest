@@ -18,13 +18,13 @@ CONE_RESET_THRESHOLD = 0.3    # s — continuous cone-brake duration before one 
 PATH_TIMEOUT         = 0.5    # s — reset the MPC if no fresh trajectory within this window
 
 # Max rate (m/s^2) at which the speed TARGET may rise. Mirrors
-# sim/rollout_core.SPEED_TARGET_RISE_RATE — keep both in sync. Decreases are
+# sim/rollout/core.SPEED_TARGET_RISE_RATE — keep both in sync. Decreases are
 # never rate-limited; delaying a genuine brake request is the failure this is
 # meant to prevent.
 SPEED_TARGET_RISE_RATE = 7.0
 
 # Max speed error (m/s) the rise limiter is allowed to open up before it stops
-# ramping and waits for the car. Mirrors sim/rollout_core.py's constant of the
+# ramping and waits for the car. Mirrors sim/rollout/core.py's constant of the
 # same name — keep in sync.
 #
 # SPEED_TARGET_RISE_RATE alone assumes the car can accelerate at that rate. From
@@ -97,7 +97,7 @@ SPEED_TARGET_RISE_RATE = 7.0
 # (e_psi -> -98 deg, stalled). 5.0 m/s^2 was capping GENUINE required
 # braking, not just noise.
 #
-# Sized instead at MAX_BRAKE (mpc_core.py, 7.0 m/s^2, matching
+# Sized instead at MAX_BRAKE (lmpc/controller.py, 7.0 m/s^2, matching
 # vehicle_physics.max_accel_brake): the car's actual achievable braking
 # deceleration, not a conservative planning-time assumption. This still
 # smooths a single noisy tick's collapse (which asks for far more than 7.0

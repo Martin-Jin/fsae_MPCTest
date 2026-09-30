@@ -72,7 +72,7 @@ controller:
     # Real-time curvature-lookahead speed cap layered under the precomputed
     # speed profile (map_path), mpc only — see
     # control_utils.dynamic_speed_cap()'s docstring. No effect when map_path
-    # is unset. Mirrors fsae_MPCTest/settings.py's ENABLE_DYNAMIC_SPEED_CAP /
+    # is unset. Mirrors fsae_MPCTest/settings/ package's ENABLE_DYNAMIC_SPEED_CAP /
     # DYNAMIC_CAP_A_LAT_MAX / DYNAMIC_CAP_SAFETY.
     enable_dynamic_speed_cap: true
     dynamic_cap_a_lat_max: 3.2   # m/s^2 — lateral-accel budget for the dynamic cap only
@@ -82,8 +82,8 @@ controller:
     # of truth is fsae_control/mpc/mpc_params.py's MPCParams dataclass — every
     # field there has a matching key here with the SAME default, so leaving
     # these untouched changes nothing. Must be kept numerically identical to
-    # fsae_MPCTest/settings.py's matching constants (CLAUDE.md's plant/model
-    # parity rule) — see mpc_params.py / settings.py for the full tuning
+    # fsae_MPCTest/settings/ package's matching constants (CLAUDE.md's plant/model
+    # parity rule) — see mpc_params.py / settings/ for the full tuning
     # history behind each value; this file only carries the current numbers.
 
     # Core cost weights — Q penalises tracking error, R penalises control
@@ -132,7 +132,7 @@ controller:
     reversal_penalty_k: 8.0           # fade rate of the boost as |last tick's steering| grows; 8.0 sets half-boost at ~7.2 deg (1/rad)
 
     # Current-state corner-factor scheduler -- replaces the whole deleted
-    # lookahead gain-scheduling family (see mpc_params.py's/mpc_core.py's
+    # lookahead gain-scheduling family (see mpc_params.py's/lmpc/controller.py's
     # comments). corner_factor(kappa) = 1 - 1/(1 + k*|kappa|), CURRENT-position
     # kappa only, no forward scan.
     corner_factor_k: 8.0   # corner_factor curve sharpness vs CURRENT |kappa|
@@ -169,7 +169,7 @@ controller:
     epsi_ra_accel_boost_max: 2.0            # max multiplier on r_a_accel at large |e_psi|
     epsi_ra_brake_floor: 0.5                # min multiplier on r_a_brake at large |e_psi|
 
-    # NMPC weight overrides (nmpc_core.NMPCController only; no-op on the
+    # NMPC weight overrides (nmpc.solver.NMPCController only; no-op on the
     # LTV-QP path above). -1.0 = inherit the field of the same name above
     # (q_e_y, r_delta, ...) -- see mpc_params.py's own section comment for
     # the full reasoning, and this file's "NONLINEAR MPC" block below for
@@ -209,22 +209,22 @@ controller:
     nmpc_rrate_steer_straight: -1.0             # override rrate_steer_straight for the NMPC only (-1 = inherit). Only read when nmpc_corner_rrate_blend_enabled is true (1/(rad/s)^2)
     nmpc_rrate_steer_corner: -1.0               # override rrate_steer_corner for the NMPC only (-1 = inherit). Only read when nmpc_corner_rrate_blend_enabled is true (1/(rad/s)^2)
 
-    # ── NONLINEAR MPC (nmpc_core.py's NMPCController) ────────────────────
+    # ── NONLINEAR MPC (nmpc/solver.py's NMPCController) ────────────────────
     # use_nmpc=false (default) means none of this is used and the LTV-QP
     # MPCController runs exactly as it always has. Single source of truth for
     # these is fsae_control/mpc/nmpc_params.py's NMPCParams dataclass — every
     # field there has a matching key here with the SAME default.
     #
     # These are STRUCTURAL/SOLVER settings only (no LTV-QP analogue to
-    # inherit from) — they have an fsae_MPCTest/settings.py parity partner
-    # (settings.py's NMPC_* constants, from that repo's own offline NMPC
-    # port, controller/nmpc_optimiser.py), kept numerically identical by
+    # inherit from) — they have an fsae_MPCTest/settings/ parity partner
+    # (settings/ package's NMPC_* constants, from that repo's own offline NMPC
+    # port, controller/nmpc/), kept numerically identical by
     # hand, the same discipline as every other field in this file. The NMPC's
     # COST WEIGHTS (nmpc_q_e_y, nmpc_r_delta, ...) live in the MPC tuning
     # block above instead, alongside the weights they inherit from when
     # left at their -1.0 sentinel — see that block's own comment.
 
-    use_nmpc: false   # true -> use nmpc_core.NMPCController (Frenet-frame nonlinear MPC) instead of mpc_core.MPCController (LTV-QP). Default false.
+    use_nmpc: false   # true -> use nmpc.solver.NMPCController (Frenet-frame nonlinear MPC) instead of lmpc.controller.MPCController (LTV-QP). Default false.
     nmpc_horizon: 20   # prediction horizon in steps (20 * dt=0.05 = 1.0 s). See Part 16 §16.7 for the horizon choice. (steps)
     nmpc_sqp_iters: 1   # max Gauss-Newton SQP iterations per control tick (real-time-iteration style: the previous tick's shifted solution is the warm start, so one iteration per tick still converges across ticks). See Part 16 §16.7 for the iteration-count choice. (iterations)
     nmpc_solve_budget_ms: 25.0   # wall-clock budget per tick; SQP stops early (shipping the best feasible iterate) once exceeded. Half of the 50 ms control period, leaving the rest of the tick for the node (ms)
@@ -248,11 +248,11 @@ controller:
     nmpc_curvature_smooth_w: 3   # moving-average width applied before differencing headings (= curvature_speed()'s w). 1 disables smoothing (samples)
     nmpc_kappa_clip: 0.5   # hard clamp on |kappa(s)|. GUARD, not a tuning knob: 0.5 = a 2 m radius, the tightest corner curvature_speed()'s own docstring contemplates, so it is inert on any real track line and only catches a ... (1/m)
     nmpc_kappa_rate_max: 2.0   # max tick-to-tick change of kappa(s) at matching arc-length samples, live-planner mode only (structurally inert on a precomputed path -- confirmed via a clean isolation test 2026-09-15, not a regression suspect there). Live-validated at 2.0: corner recovers instead of stalling, rejected-tick rate roughly halves, still stumbles somewhat. 1.0 TRIED AND FAILED (stalled at the same corner, MORE kappa oscillation not less) -- do not go below 2.0 without new evidence (1/m per s)
-    nmpc_alat_ceiling_enabled: true   # include FSDS's measured sustained lateral-acceleration ceiling (MPCParams.alat_ceiling_flat/_slope/_intercept, the same law mpc_core._alat_ceiling_at uses) as a smooth saturation of the prediction'...
+    nmpc_alat_ceiling_enabled: true   # include FSDS's measured sustained lateral-acceleration ceiling (the _Plant.alat_ceiling_flat/_slope/_intercept constants in nmpc/dynamics.py, the same law model/vehicle_physics uses) as a smooth saturation of the prediction'...
     # [NMPC only] MPCC-inspired additions (2026-08-13) -- see mpc_params.py's
     # own field metadata (controller: "nmpc_only") and
-    # fsae_MPCTest/docs/planning_control_sync.md's "Three MPCC-inspired
-    # additions" / "Which settings affect which controller" sections.
+    # fsae_MPCTest/docs/reference/control_mechanisms.md's "Spline path reference"
+    # / "Which settings affect which controller" sections.
     nmpc_spline_reference_enabled: true   # [NMPC only] true (default) -> PathReference builds kappa(s)/psi_ref(s) from an analytic CubicSpline fit to the raw waypoints instead of the dense-resample + moving-average + finite-difference pipeline. Numerical-quality fix, no new solver coupling, defaults on unlike every other flag in this block. False restores the old moving-average path exactly, for A/B comparison (bool)
     nmpc_friction_circle_enabled: false   # [NMPC only, EXPERIMENTAL] true -> add a HARD |F_yf|/|F_yr| <= F_max bound to the condensed QP, ADDITIONAL to (not a replacement for) the existing SOFT alat-ceiling tanh saturation. F_max derived from the same measured ceiling law via F_max = m * ceiling(v_x) / 2 per axle. Default false: unvalidated, do not enable for a live run without an offline A/B first (bool)
     nmpc_progress_enabled: false   # [NMPC only, EXPERIMENTAL] ON was attempted 2026-09-21 and REVERTED the same day: the shipped config does not complete a lap at any setting tried (q_progress 4.0 never launches, 5.0/6.0 go off track at ~10% of a lap, and raising the slack weight 50x changes nothing). Tracking (false) completes and scores 0.714 on the same map. See fsae_MPCTest/docs/logs/nmpc_progress_term_investigation.md

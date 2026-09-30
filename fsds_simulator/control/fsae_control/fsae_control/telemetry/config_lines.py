@@ -53,11 +53,11 @@ def build_config_lines(
 
     What this does NOT capture (read this before assuming the dump is
     complete): the adaptive-gain SCHEME itself -- e.g. today's
-    `_corner_factor`/`_blend` continuous blend in mpc_core.py -- is CODE,
+    `_corner_factor`/`_blend` continuous blend in lmpc/controller.py -- is CODE,
     not a parameter, and isn't reproducible from a config dump the way a
     numeric weight is. If the scheme changes (as it already has once this
     session), a config header from an OLDER run describes weights for a
-    scheme that no longer exists. `mpc_core.py`'s own module/function
+    scheme that no longer exists. `lmpc/controller.py`'s own module/function
     docstrings are the authoritative description of the CURRENT scheme;
     this dump only ever tells you the NUMBERS that scheme was using.
     """

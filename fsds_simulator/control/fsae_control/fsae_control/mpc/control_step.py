@@ -194,7 +194,7 @@ class _ControlStepMixin:
         # Age of the pose the MPC is about to solve against — how long ago it
         # was actually measured, not how long ago the callback fired. Lets
         # MPCController compensate for the real, unknown/time-varying delay
-        # instead of assuming the state is fresh (see mpc_core.py compute()).
+        # instead of assuming the state is fresh (see lmpc/controller.py compute()).
         pose_age_s = (self.get_clock().now() - Time.from_msg(self._pose_stamp)).nanoseconds * 1e-9
 
         # MPCController/NMPCController.compute() always returns the
@@ -262,7 +262,7 @@ class _ControlStepMixin:
             # ── Phase 4a: telemetry (post-override, reflects the final cmd) ─
             # log_control's steer argument is RADIANS of roadwheel angle.
             # cmd.steering is the normalised FSDS [-1, 1] command, so it must
-            # be scaled back by MAX_STEER_RAD (and un-negated — mpc_core
+            # be scaled back by MAX_STEER_RAD (and un-negated — lmpc.controller
             # flips sign for the FSDS convention) before logging.
             if self._telemetry is not None:
                 tel = self._mpc.last_telemetry
@@ -281,7 +281,7 @@ class _ControlStepMixin:
                 # exactly 0.0 rather than None — it is never stale by
                 # construction, and 0.0 keeps this column numeric for any
                 # downstream analysis that assumes path_age_s is always a
-                # float (see fsae_MPCTest's telemetry_logger.py mirror,
+                # float (see fsae_MPCTest's telemetry/control_logger.py mirror,
                 # which must match this convention).
                 if self._static_path is not None:
                     path_age_s = 0.0

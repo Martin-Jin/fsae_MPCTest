@@ -8,20 +8,22 @@ tuner uses to score a simulated rollout, so a number produced on the car is
 directly comparable to a number produced by offline_tuner.py.  Without this,
 "the sim says 42, the car feels worse" is unfalsifiable.
 
-PARITY — THIS IS A VERBATIM COPY
---------------------------------
+PARITY — SAME FORMULA, CONSTANTS INLINED
+----------------------------------------
 compute_composite_score(), RolloutMetrics.add_step() and
-RolloutMetrics.finalize() below are copied byte-for-byte (modulo the
-settings import, see below) from fsae_MPCTest/sim/scoring.py.  Do NOT
+RolloutMetrics.finalize() below carry the same formula as
+fsae_MPCTest/sim/scoring.py (only the source of the constants differs,
+see below).  Do NOT
 "improve" them here.  Any change to scoring must be made in
 fsae_MPCTest/sim/scoring.py first and then re-copied across, exactly like
-mpc_core.py mirrors the offline MPC — otherwise live and offline scores stop
+lmpc/controller.py mirrors the offline MPC — otherwise live and offline scores stop
 being comparable, which defeats the entire point of the file.
 
 The ONE intentional difference: fsae_MPCTest imports SCORE_WEIGHTS and the
-bonus/penalty constants from its settings.py, which is not on the live car's
-PYTHONPATH.  They are inlined below as module constants instead, and must be
-kept numerically identical to fsae_MPCTest/settings.py.
+bonus/penalty constants from its settings package (settings/scoring.py and
+settings/solver.py), which is not on the live car's PYTHONPATH.  They are
+inlined below as module constants instead, and must be kept numerically
+identical to those files.
 
 WHAT THE LIVE CAR CANNOT MEASURE
 --------------------------------
@@ -36,13 +38,13 @@ this so a reader can't mistake one for the other.
 
 USED BY
 -------
-  telemetry_logger.ControlLogger — accumulates per control step and writes the
+  telemetry.control_logger.ControlLogger — accumulates per control step and writes the
                                    finalised score as a header on the CSV.
 """
 
 import numpy as np
 
-# ── Inlined from fsae_MPCTest/settings.py — keep numerically identical ───────
+# ── Inlined from fsae_MPCTest/settings/ (scoring.py, solver.py) — keep numerically identical ───────
 # Order MUST match the IDX_* constants below.
 # These must sum to ~1.0 (offline_tuner.py asserts this) so the composite
 # score's scale stays comparable across runs.
@@ -59,7 +61,7 @@ SCORE_WEIGHTS = np.array([
     0.05,   # 9  steering_reversal_rms
     0.10,   # 10 peak_lateral_error
     0.015,  # 11 speed_rmse
-    0.05,   # 12 accel_reversal_rms     (see fsae_MPCTest/settings.py's comment)
+    0.05,   # 12 accel_reversal_rms     (see fsae_MPCTest/settings/scoring.py's comment)
 ])
 
 # METRIC_SCALES — each metric is divided by its entry here BEFORE being
@@ -68,7 +70,7 @@ SCORE_WEIGHTS = np.array([
 # metric's real influence is weight x typical magnitude, which made the
 # smoothness/oscillation terms 2-3 orders of magnitude too small to affect
 # the outcome (steering_reversal_rms had an effective contribution of
-# ~0.0003 despite a nominal weight of 0.05). See fsae_MPCTest/settings.py's
+# ~0.0003 despite a nominal weight of 0.05). See fsae_MPCTest/settings/scoring.py's
 # METRIC_SCALES block for the measurement this came from.
 # Order MUST match SCORE_WEIGHTS / the IDX_* constants below.
 METRIC_SCALES = np.array([
@@ -92,7 +94,7 @@ TIME_BONUS_WEIGHT = 0.25
 DNF_PENALTY = 3.0
 DNF_OFFTRACK_PENALTY = 3.0
 
-# Constrained scoring structure — see fsae_MPCTest/settings.py for the full
+# Constrained scoring structure — see fsae_MPCTest/settings/ for the full
 # rationale. Summary: the score is three tiers, not one weighted sum.
 #   1. Hard constraints (crash/off-track/unfinished) -> above CONSTRAINT_FLOOR,
 #      where no amount of good driving in the quality terms can rescue them.
@@ -155,12 +157,12 @@ def compute_composite_score(
     by name. accel_reversal_rms is keyword-only with a default so existing
     positional callers (which predate this metric) don't break.
 
-    See fsae_MPCTest/docs/architecture.md's composite-score metric table
-    (metrics 9, 12) for the steering_reversal_rms/accel_reversal_rms
-    magnitude-weighted-swing construction, and its "Why three tiers instead
-    of one sum" section for the TIER 1/2/3 structure below — this repo has
+    See fsae_MPCTest/docs/reference/architecture.md's "The composite score puts
+    constraints above time above quality" section for the metric table
+    (metrics 9, 12: steering_reversal_rms/accel_reversal_rms
+    magnitude-weighted-swing construction) and the TIER 1/2/3 structure below — this repo has
     no local copy of that doc, but the reasoning applies unchanged since
-    this function is a verbatim copy of sim/scoring.py.
+    this function carries the same formula as sim/scoring.py.
     """
     metrics = np.array(
         [

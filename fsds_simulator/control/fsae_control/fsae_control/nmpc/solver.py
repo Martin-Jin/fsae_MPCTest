@@ -55,7 +55,7 @@ from fsae_control.nmpc.sqp_step import _SQPStepMixin
 class NMPCController(_QPModelMixin, _SQPStepMixin):
     """
     Frenet-frame nonlinear MPC, drop-in compatible with
-    mpc_core.MPCController's node-facing surface: compute(), reset(),
+    lmpc.controller.MPCController's node-facing surface: compute(), reset(),
     set_static_path(), set_heading_profile(), last_telemetry, a_max,
     a_max_brake.
     """
@@ -78,8 +78,8 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
         """
         if osqp is None:      # pragma: no cover - dependency guard
             raise ImportError(
-                'nmpc_core requires osqp (already a documented dependency of '
-                f'mpc_core via cvxpy — see package.xml): {_OSQP_IMPORT_ERROR!r}'
+                'nmpc.solver requires osqp (already a documented dependency of '
+                f'lmpc.controller via cvxpy — see package.xml): {_OSQP_IMPORT_ERROR!r}'
             )
 
         self.dt = float(dt)
@@ -102,7 +102,7 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
         # nmpc_alat_ceiling_enabled (a genuine NMPC-only on/off switch, not a
         # shared plant constant) still comes from NMPCParams.
         self.plant = _Plant(alat_ceiling_enabled=bool(nm0.nmpc_alat_ceiling_enabled))
-        # Convenience aliases so telemetry/geometry code reads like mpc_core's.
+        # Convenience aliases so telemetry/geometry code reads like lmpc.controller's.
         self.lf, self.lr = self.plant.lf, self.plant.lr
 
         # ── Experimental feature flags (see nmpc_params.py's comments) ───
@@ -253,7 +253,7 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
         if self._logger is not None:      # pragma: no cover - ROS path
             self._logger.info(msg)
         else:
-            print(f'[nmpc_core] {msg}')
+            print(f'[nmpc.solver] {msg}')
 
     def set_static_path(self, path) -> None:
         """
@@ -331,7 +331,7 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
         Deliberate duplicate of MPCController._update_n_delay (same MPCParams
         fields, same arithmetic): that method is bound to the LTV-QP
         controller's own state, and refactoring it out would mean editing
-        mpc_core.py's live solve path, which this feature is specifically
+        lmpc/controller.py's live solve path, which this feature is specifically
         designed not to touch. Keep the two in sync if either changes.
         """
         age = max(0.0, float(pose_age_s))
@@ -402,7 +402,7 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
         # docstring) — ALTERNATIVES, not composed: the corner-factor blend
         # takes priority when both are enabled (skips anti-hunt entirely in
         # that case). Same signals/functions as the LTV-QP path (imported
-        # verbatim from mpc_core, not reimplemented). Computed once per
+        # verbatim from lmpc.controller, not reimplemented). Computed once per
         # compute() call (this tick's measured state), and applied UNIFORMLY
         # across the whole horizon for this tick's solve — not a function of
         # horizon step, so neither schedules a future obligation the way the
@@ -423,7 +423,7 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
         # applies regardless of which branch ran) boosts whatever value is
         # actually current rather than always the pre-if/elif base -- the
         # same silent-discard bug already found and fixed twice tonight in
-        # mpc_core.py's own corner-blend/anti-hunt composition.
+        # lmpc/controller.py's own corner-blend/anti-hunt composition.
         rrate_steer_current = rrate_steer_corner_blend
         if self.corner_rrate_blend_enabled:
             rrate_steer_corner_blend = _blend(
@@ -644,8 +644,8 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
         cost_breakdown = self._cost_breakdown(
             X, U, H, u_prev_for_breakdown, u_prev2_for_breakdown)
 
-        # Telemetry: the keys mpc_core publishes keep their exact meaning (so
-        # every existing offline analysis script and telemetry_logger column
+        # Telemetry: the keys lmpc.controller publishes keep their exact meaning (so
+        # every existing offline analysis script and telemetry column
         # still works), plus nmpc_* diagnostics. kappa/kappa_max_abs are
         # recomputed here from the SAME kappa(s) reference the prediction used
         # — kappa at the car, and peak |kappa| over the horizon's own predicted
@@ -664,7 +664,7 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
             'm_Rrate_zone': m_rrate_zone,
             'corner_frac': corner_frac,
             # The FINAL, fully-composed R_rate[0,0] actually used this tick
-            # -- same semantic as mpc_core.py's own Rrate_steer_corner_blend
+            # -- same semantic as lmpc/controller.py's own Rrate_steer_corner_blend
             # column (post corner-blend AND anti-hunt AND reversal-penalty),
             # not just the corner-blend stage in isolation.
             'Rrate_steer_corner_blend': rrate_steer_current,
@@ -690,16 +690,16 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
             'yaw_rate': float(X[0, IDX_R]),
             # Actual step-0 rate-of-change the rate cost penalised this tick
             # (this tick's issued command vs the previous one), matching
-            # mpc_core.py's delta_u_steer/delta_u_accel definition exactly.
+            # lmpc/controller.py's delta_u_steer/delta_u_accel definition exactly.
             'delta_u_steer': float(self._u_prev[0] - self._u_prev2[0]),
             'delta_u_accel': float(self._u_prev[1] - self._u_prev2[1]),
-            # Debug-only weighted breakdown for live_viz.py's bar graph, see
+            # Debug-only weighted breakdown for live_viz/'s bar graph, see
             # _cost_breakdown()'s own docstring for what each key means.
             'cost_breakdown': cost_breakdown,
-            # NMPC-specific: see telemetry_logger.NMPC_COLUMNS.
+            # NMPC-specific: see telemetry.columns.NMPC_COLUMNS.
             'nmpc_iters': int(iters),
             'nmpc_cost': float(cost),
-            'total_cost': float(cost),  # alias: same key mpc_core.py uses
+            'total_cost': float(cost),  # alias: same key lmpc/controller.py uses
             'nmpc_status': 1.0 if status.lower().startswith('solved') else 0.0,
             'nmpc_s0': float(s0),
             'nmpc_kappa_horizon_end': float(kap_horizon[-1]),
@@ -707,7 +707,7 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
             'nmpc_pred_epsi_end': float(X[-1, IDX_EPSI]),
             'nmpc_pred_ey_max_abs': float(np.abs(X[:, IDX_EY]).max()),
             # Full predicted horizon in Cartesian (x, y), for live
-            # visualisation only (live_viz.py): not logged to CSV (that's
+            # visualisation only (live_viz/): not logged to CSV (that's
             # what the scalar nmpc_pred_* summaries above are for), and
             # cheap relative to the solve itself, one xy_at() call over N
             # points already computed by the rollout.

@@ -3,8 +3,8 @@ MPC path-tracking controller.
 
 A drop-in alternative to the Stanley controller: it follows the planned
 centreline using one of two optimisers, constructed unconditionally in
-__init__ (mpc_core.MPCController, a linear time-varying MPC, by default; or
-nmpc_core.NMPCController when use_nmpc=true). Unlike Stanley (which reacts
+__init__ (lmpc.controller.MPCController, a linear time-varying MPC, by default; or
+nmpc.solver.NMPCController when use_nmpc=true). Unlike Stanley (which reacts
 to the instantaneous cross-track/heading error), the MPC plans a 1.25 s
 horizon, which is what damps the high-speed left-right sway.
 
@@ -23,7 +23,7 @@ parameter (default true):
     preserves the offline-tuned longitudinal behaviour from the fsae_MPCTest
     repo's tuner/offline_tuner.py and gui/simulation.py, which both drive the
     vehicle plant with the MPC's own commanded acceleration (see that repo's
-    sim/rollout_core.py) — the false mode's accel-discarding design does not.
+    sim/rollout/core.py) — the false mode's accel-discarding design does not.
     This node also owns GO-gating, stale-command braking, and cone-proximity
     braking itself in this mode (mirroring fsds_bridge.py's own logic against
     the same inputs) — do NOT launch fsds_bridge.py alongside this node when
@@ -55,7 +55,7 @@ being selected by two separate launchable executables.
     out  /fsds/control_command                fs_msgs/ControlCommand               (standalone_output=true)
     out  /fsae/control/static_reference_path  geometry_msgs/PoseArray        one-shot, TRANSIENT_LOCAL (path_map_path
                                                                              set only) — self._static_path, for
-                                                                             live_viz.py's debug display only, not
+                                                                             live_viz/'s debug display only, not
                                                                              read by anything in the control loop
 
 CONTROL LOOP PHASES (see _control_step)
@@ -146,7 +146,7 @@ class MPCControllerNode(_ControlStepMixin, _DebugPublishMixin, Node):
                 # Real-time curvature-lookahead speed cap layered under the
                 # precomputed speed profile (map_path) — see
                 # control_utils.dynamic_speed_cap()'s docstring. No effect
-                # when map_path is unset. Mirrors fsae_MPCTest/settings.py's
+                # when map_path is unset. Mirrors fsae_MPCTest/settings/ package's
                 # ENABLE_DYNAMIC_SPEED_CAP / DYNAMIC_CAP_A_LAT_MAX /
                 # DYNAMIC_CAP_SAFETY.
                 ('enable_dynamic_speed_cap', True),
@@ -158,18 +158,18 @@ class MPCControllerNode(_ControlStepMixin, _DebugPublishMixin, Node):
                                        # else a fsae_MPCTest tuner/export_speed_profile.py
                                        # CSV to use instead — see
                                        # USE_PRECOMPUTED_SPEED_PROFILE in
-                                       # fsae_MPCTest/settings.py.
+                                       # fsae_MPCTest/settings/.
                 ('path_map_path', ''),  # '' -> live /fsae/planning/selected_trajectory
                                        # (default); else the SAME kind of CSV as map_path,
                                        # used for the tracked PATH instead of just speed —
-                                       # see USE_PLANNER=False in fsae_MPCTest/settings.py
+                                       # see USE_PLANNER=False in fsae_MPCTest/settings/
                                        # (the offline equivalent -- no separate flag exists
                                        # there). Removes centerline_planner.py from the
                                        # control loop entirely, to isolate controller/plant
                                        # tracking error from planner-induced path error.
                 ('use_precomputed_heading_profile', False),  # only has an effect
                                        # when path_map_path is ALSO set -- see
-                                       # mpc_core.py's set_heading_profile() and
+                                       # lmpc/controller.py's set_heading_profile() and
                                        # late_turn_in_investigation.md Part 8/9. Uses
                                        # raceline_optimizer.py's shaped psi_target
                                        # column (heading-lead reference) in place of
@@ -191,7 +191,7 @@ class MPCControllerNode(_ControlStepMixin, _DebugPublishMixin, Node):
         # master switch (use_nmpc, default False). Declared unconditionally so
         # control.launch.py can always pass them; nothing below changes unless
         # use_nmpc is true. See nmpc_params.py for why these are a separate
-        # dataclass from MPCParams (settings.py parity) and nmpc_core.py for
+        # dataclass from MPCParams (settings/ parity) and nmpc/solver.py for
         # the formulation.
         declare_nmpc_params(self)
         nmpc_params = nmpc_params_from_node(self)
@@ -309,13 +309,13 @@ class MPCControllerNode(_ControlStepMixin, _DebugPublishMixin, Node):
             self.pub_cmd = self.create_publisher(AckermannDriveStamped, '/fsae/control/cmd_vel', 10)
 
         # NMPC's predicted horizon (Cartesian, from last_telemetry['nmpc_pred_xy'],
-        # see nmpc_core.py's xy_at()), for live_viz.py only -- not read by
+        # see nmpc/reference.py's xy_at()), for live_viz/ only -- not read by
         # anything else in this stack, empty/absent whenever the LTV-QP path
         # is in use (last_telemetry never has this key in that case).
         self.pub_nmpc_pred_path = self.create_publisher(
             PoseArray, '/fsae/control/nmpc_predicted_path', 10)
 
-        # Per-tick weighted-error breakdown + solve time, for live_viz.py's
+        # Per-tick weighted-error breakdown + solve time, for live_viz/'s
         # debug panel only. JSON over a plain String rather than a new
         # fsae_interfaces .msg: this is a debug-only, best-effort field set
         # with no other consumer, not a stable interface worth a schema.
@@ -324,7 +324,7 @@ class MPCControllerNode(_ControlStepMixin, _DebugPublishMixin, Node):
 
         # Per-lap score + horizon-accuracy summary, published the instant a
         # lap completes (see LapProgressTracker.update()'s return value) --
-        # live_viz.py's lap panel. JSON over a plain String, same rationale
+        # live_viz/'s lap panel. JSON over a plain String, same rationale
         # as pub_debug_weights above (debug-only, best-effort, no schema
         # worth a dedicated .msg). RELIABLE + KEEP_LAST(10): a lap
         # completion is a one-shot, low-rate event (once per lap, not once
@@ -343,11 +343,11 @@ class MPCControllerNode(_ControlStepMixin, _DebugPublishMixin, Node):
             self._static_path if self._static_path is not None else np.empty((0, 2))
         )
 
-        # live_viz.py had no way to show the ACTUAL reference being driven
+        # live_viz/ had no way to show the ACTUAL reference being driven
         # against in precomputed-path mode. THREE earlier attempts got this
         # wrong before landing here. One and two tried publishing the static
         # path onto /fsae/planning/selected_trajectory (the live planner's
-        # own topic) to fix live_viz.py's subscription to it: that topic's
+        # own topic) to fix live_viz/'s subscription to it: that topic's
         # other publisher, centerline_planner.py, had no use_precomputed_path
         # awareness and used to keep running/publishing regardless (no
         # gating existed in sim.launch.py, unlike e.g. cone_recorder's
@@ -359,10 +359,10 @@ class MPCControllerNode(_ControlStepMixin, _DebugPublishMixin, Node):
         # inclusion on use_precomputed_path, so the planner never runs in
         # this mode) -- but attempt three's one-shot-after-a-fixed-delay
         # publish, still onto the SAME shared topic, STILL showed nothing
-        # live: launch_all.sh starts live_viz.py well before this node even
+        # live: launch_all.sh starts live_viz/ well before this node even
         # exists (see its own "topics simply have no data yet" comment), so
         # a plain VOLATILE publish is a genuine race against ROS2 discovery
-        # completing on live_viz.py's side with no guaranteed margin, timer
+        # completing on live_viz/'s side with no guaranteed margin, timer
         # delay or not -- confirmed live (a standalone repro showed the
         # message correctly logged as sent by this node, but never observed
         # by a subscriber that started earlier).
@@ -376,7 +376,7 @@ class MPCControllerNode(_ControlStepMixin, _DebugPublishMixin, Node):
         # live-planner-mode viewing instead. A separate topic sidesteps that
         # entirely. TRANSIENT_LOCAL removes the discovery-timing race
         # itself: ROS2 guarantees a late-joining subscriber (also
-        # TRANSIENT_LOCAL, see live_viz.py's matching subscription)
+        # TRANSIENT_LOCAL, see live_viz/'s matching subscription)
         # receives the publisher's last message regardless of when it
         # connects. See planner_only_lap2_corner_spinout.md.
         self._static_path_pub = None
@@ -430,11 +430,11 @@ class MPCControllerNode(_ControlStepMixin, _DebugPublishMixin, Node):
             )
             self.get_logger().warn(
                 f'use_nmpc=True: running the NONLINEAR MPC '
-                f'(nmpc_core.NMPCController, N={self._mpc.N}, '
+                f'(nmpc.solver.NMPCController, N={self._mpc.N}, '
                 f'sqp_iters={nmpc_params.nmpc_sqp_iters}) instead of the '
                 'LTV-QP MPCController. Its adaptive gain schedule and '
                 'use_precomputed_heading_profile do NOT apply -- see '
-                'nmpc_core.py.'
+                'nmpc/solver.py.'
             )
             # NMPCController.set_static_path() precomputes the arc-length /
             # curvature / reference-heading profile its prediction needs,
@@ -542,7 +542,7 @@ class MPCControllerNode(_ControlStepMixin, _DebugPublishMixin, Node):
         # v.x/v.y are body-frame (sim_perception.py relays them unrotated
         # from the bridge's already-body-frame odom) -- keep both instead of
         # collapsing to hypot(), which silently drops the vy*cos(e_psi) term
-        # _error_state needs (see mpc_core.py's e_yd comment).
+        # _error_state needs (see lmpc/controller.py's e_yd comment).
         v = msg.twist.twist.linear
         self._car_speed = float(v.x)
         self._car_vy = float(v.y)

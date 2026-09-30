@@ -47,11 +47,12 @@ class _Plant:
     v_blend_lo: float = 1.0
     v_blend_hi: float = 2.5
     # FSDS's measured sustained lateral-acceleration ceiling law, from
-    # MPCParams.alat_ceiling_flat/_slope/_intercept (the SAME law
-    # mpc_core._alat_ceiling_at and model/vehicle_physics.alat_ceiling_at
-    # already use — measured by open-loop system-ID, see CLAUDE.md's
+    # the _Plant.alat_ceiling_flat/_slope/_intercept constants below (the SAME
+    # law model/vehicle_physics's VehicleParams.alat_ceiling_at uses on the
+    # offline side — measured by open-loop system-ID, see CLAUDE.md's
     # "MECHANISM: a dynamically-enforced lateral-acceleration ceiling").
-    # NMPCController.__init__ overwrites these from its MPCParams instance.
+    # NMPCController.__init__ builds _Plant with these defaults and only sets
+    # alat_ceiling_enabled (from nmpc_alat_ceiling_enabled).
     #
     # Why the PREDICTION needs it: linear tyres produce unbounded lateral
     # force, so without this the model believes it can hold any corner at any
@@ -219,7 +220,7 @@ def _f_scalar(x, u, kap, p):
     Scalar (single-state) form of _f, returning a tuple of 8 derivatives.
 
     EXISTS ONLY FOR SPEED, and is a line-by-line mirror of _f above — keep the
-    two identical. The horizon rollout is inherently sequential (35 steps x 4
+    two identical. The horizon rollout is inherently sequential (N steps, default 20, x 4
     RK stages x n_sub substeps), and at that size numpy's per-call overhead
     dominates completely: the vectorised _f costs ~75 us on a 1x8 array, making
     one rollout 17 ms, versus ~1 ms for this form. The Jacobian pass, which
@@ -229,9 +230,9 @@ def _f_scalar(x, u, kap, p):
     caller can use PathReference.kappa_scalar's O(1) uniform-grid lookup
     instead of np.interp's ~4 us call overhead.
 
-    test_nmpc_core.py::test_scalar_matches_vectorised asserts the two forms
-    agree to 1e-12 on randomised states — a divergence between them is a
-    silent-wrong-prediction bug, so that test is not optional.
+    the scalar-versus-vectorised check in tuner/validation/nmpc_offline_check.py
+    (offline) asserts the two forms agree on randomised states — a divergence
+    between them is a silent-wrong-prediction bug, so that check is not optional.
     """
     s, e_y, e_psi, v_x, v_y, r, d, a = x
 

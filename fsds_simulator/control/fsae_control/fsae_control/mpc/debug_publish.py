@@ -3,7 +3,7 @@ fsae_control/mpc/debug_publish.py — `_DebugPublishMixin`: lap/horizon bookkeep
 
 `_process_lap_and_horizon` scores completed laps and matures horizon-accuracy
 predictions; `_publish_debug_weights` publishes the weighted cost breakdown for
-live_viz.py. Split from mpc_controller.py only to keep files readable.
+live_viz/. Split from mpc_controller.py only to keep files readable.
 """
 
 import json
@@ -17,7 +17,7 @@ class _DebugPublishMixin:
     """Lap/horizon bookkeeping and debug-weight publishing for MPCControllerNode."""
 
     # ------------------------------------------------------------------
-    # Debug telemetry (live_viz.py's weighted-error breakdown panel)
+    # Debug telemetry (live_viz/'s weighted-error breakdown panel)
     # ------------------------------------------------------------------
 
     def _process_lap_and_horizon(self, t: float, tel: dict) -> tuple[float | None, float | None, dict | None]:
@@ -81,7 +81,7 @@ class _DebugPublishMixin:
         Weighted-cost breakdown of every term the MPC actually solved this
         tick (error^2 * effective weight, as a share of its own GROUP's sum,
         see `group` below), plus the true solved objective and solve_ms.
-        Debug-only, for live_viz.py's bar-graph panel(s).
+        Debug-only, for live_viz/'s bar-graph panel(s).
 
         Grouped rather than one shared 0-100% scale: tracking errors
         (metres/radians), input effort (the command itself) and input rate
@@ -90,7 +90,7 @@ class _DebugPublishMixin:
         milliradians/tick will always round to ~0% next to a 0.3 m lateral
         error even when the rate cost is the one actually dominant within
         its own group -- comparing within a group is the only comparison
-        that's meaningful. live_viz.py draws one 100% bar-graph per group.
+        that's meaningful. live_viz/ draws one 100% bar-graph per group.
 
         The `terms` breakdown is step-0-only (the current tick's
         instantaneous errors/rates/command, not summed over the horizon) for
@@ -102,8 +102,8 @@ class _DebugPublishMixin:
         delta_u_accel entries are kept too, for the effort/rate panels).
 
         `horizon_terms`, published separately, IS the true full-horizon
-        per-term cost (see mpc_core.py's _compute_cost_breakdown /
-        nmpc_core.py's _cost_breakdown), each shown as a share of
+        per-term cost (see lmpc/controller.py's _compute_cost_breakdown /
+        nmpc/qp_model.py's _cost_breakdown), each shown as a share of
         total_cost -- the exact full-horizon scalar each solver minimised
         (cp.Problem.value for the LTV-QP, the SQP's own converged objective
         for NMPC). These percentages are directly comparable to each other
@@ -118,7 +118,7 @@ class _DebugPublishMixin:
         """
         params = self._mpc.params
         a_cmd = tel.get('a_cmd', 0.0)
-        # accel/brake effort is one QP term split by sign (see mpc_core.py's
+        # accel/brake effort is one QP term split by sign (see lmpc/controller.py's
         # _build_qp cp.pos(u)/cp.neg(u) split) -- mirror that split here so
         # exactly one of the two is ever nonzero for a given tick, matching
         # what the solver actually charged rather than double-counting.
@@ -152,7 +152,7 @@ class _DebugPublishMixin:
         # telemetry the controller actually published rather than the
         # parameter, so this stays correct if the flag and the running
         # controller ever disagree. The residual is the horizon-END gap
-        # (see nmpc_core.py's _outputs: h_prog is zero at every other
+        # (see nmpc/outputs.py's _outputs: h_prog is zero at every other
         # stage), which is why it is read from nmpc_s_target_gap_end rather
         # than a step-0 quantity like every other row here.
         if 'nmpc_s_target_gap_end' in tel:
@@ -187,8 +187,8 @@ class _DebugPublishMixin:
             for name, (group, error, weight) in terms.items()
         }
 
-        # Every term's horizon-summed cost (mpc_core.py's
-        # _compute_cost_breakdown / nmpc_core.py's _cost_breakdown, both
+        # Every term's horizon-summed cost (lmpc/controller.py's
+        # _compute_cost_breakdown / nmpc/qp_model.py's _cost_breakdown, both
         # under last_telemetry['cost_breakdown']['horizon_terms']), each as
         # a share of total_cost -- one shared scale, unlike the step-0
         # groups above, since these are all genuinely comparable: exactly

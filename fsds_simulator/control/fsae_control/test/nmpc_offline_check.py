@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-nmpc_offline_check.py — reproducible offline validation for nmpc_core's
+nmpc_offline_check.py — reproducible offline validation for nmpc.solver's
 NONLINEAR MPC (see late_turn_in_investigation.md Part 16).
 
 Run it any time:

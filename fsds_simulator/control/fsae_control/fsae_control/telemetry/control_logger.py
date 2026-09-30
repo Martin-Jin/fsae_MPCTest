@@ -162,7 +162,7 @@ class ControlLogger:
 
         `adaptive` is the controller's last_telemetry dict (or any mapping);
         the ADAPTIVE_COLUMNS keys are pulled out of it and everything else is
-        ignored, so mpc_core can add telemetry keys without touching this
+        ignored, so lmpc.controller can add telemetry keys without touching this
         file. Omit it (Stanley) and those cells are written empty.
 
         lap_idx/pred_err_m/pred_acc_pct come from the caller's

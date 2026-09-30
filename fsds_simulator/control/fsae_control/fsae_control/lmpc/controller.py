@@ -78,7 +78,7 @@ class MPCController:
 
         # ── Vehicle geometry & dynamics  ─────
         # FSDS-matched values. Mass 255 kg is confirmed from the sim
-        # (docs/vehicle_model.md). The true lf/lr, Iz and Cf/Cr are NOT in the
+        # (docs/reference/vehicle_physics.md). The true lf/lr, Iz and Cf/Cr are NOT in the
         # FSDS repo (they live in git-LFS .uasset binaries), so these are chosen
         # from physical reasoning rather than read off:
         #   - lf < lr (CoG biased toward the front axle) makes the bicycle model
@@ -109,7 +109,7 @@ class MPCController:
         self.nu = 2
 
         # Values live in mpc_params.py (MPCParams.q_*/r_*/r_rate_*); keep them
-        # numerically identical to fsae_MPCTest/settings.py's
+        # numerically identical to fsae_MPCTest/settings/lmpc.py's
         # Q_diag/R_diag/R_rate_diag and the same three lists in
         # fsds_simulator's copy of this file (see CLAUDE.md's parity rule).
         #
@@ -168,42 +168,42 @@ class MPCController:
         # per-step angle, so the physical meaning survives a change of dt.
         # 180 deg/s was set just under the plant's measured achievable
         # roadwheel rate (~200 deg/s, via system-ID) — see
-        # fsae_MPCTest/`docs/reference/README.md`'s "Slew-rate limit
-        # (du_max)" section for the full history.
+        # fsae_MPCTest/`docs/reference/control_mechanisms.md`'s "Slew-rate limit
+        # `du_max`" section for the full history.
         #
         # Do not raise without re-measuring; a higher value previously
         # regressed smoothness metrics. UNMEASURED either way -- the sync
         # doc explicitly says to refine this "via system-ID on the running
         # sim", not by picking a number; re-measure properly before
         # trusting either value long-term, and update both sides (this file
-        # + fsae_MPCTest's controller/optimiser.py / vehicle_physics.py
+        # + fsae_MPCTest's controller/lmpc/build.py / model/vehicle_physics/
         # du_max) together per that doc's parity rule.
         MAX_STEER_RATE_RAD_S: float = math.radians(180.0)
         self.du_max = np.array([MAX_STEER_RATE_RAD_S * self.dt, 0.6])
 
-        # TERMINAL_Q_SCALE (settings.py, fsae_MPCTest) — extra weight on the
+        # TERMINAL_Q_SCALE (settings/, fsae_MPCTest) — extra weight on the
         # final predicted state x[:,N], on top of the uniform per-step weight
         # it already gets. 1.0 = no-op, matching every weight set tuned
         # against this controller so far. Inlined here per the standing
-        # no-settings.py-on-the-car rule (now via MPCParams.terminal_q_scale
+        # no-settings-on-the-car rule (now via MPCParams.terminal_q_scale
         # in mpc_params.py); must be kept numerically identical to
         # fsae_MPCTest's copy.
         self.terminal_scale = self.params.terminal_q_scale
 
-        # ADAPTIVE_Q_SCALING_ENABLED (settings.py, fsae_MPCTest) — see
+        # ADAPTIVE_Q_SCALING_ENABLED (settings/, fsae_MPCTest) — see
         # _adaptive_Q_scaling above. Gated by MPCParams.adaptive_q_scaling_enabled.
         self.adaptive_q_scaling_enabled = self.params.adaptive_q_scaling_enabled
 
-        # STEER_RATE_ANTI_HUNT_ENABLED (settings.py, fsae_MPCTest) — see
+        # STEER_RATE_ANTI_HUNT_ENABLED (settings/, fsae_MPCTest) — see
         # _steer_rate_anti_hunt above. Experimental, not validated against
         # a live log or VALIDATION_SUITE. Default off, inlined per the
-        # standing no-settings.py-on-the-car rule; keep in sync with
+        # standing no-settings-on-the-car rule; keep in sync with
         # fsae_MPCTest's copy.
         self.steer_rate_anti_hunt_enabled = self.params.steer_rate_anti_hunt_enabled
 
         # _reversal_penalty_boost above. EXPERIMENTAL, not validated against
         # a live log or VALIDATION_SUITE. Default off, inlined per the
-        # standing no-settings.py-on-the-car rule; keep in sync with
+        # standing no-settings-on-the-car rule; keep in sync with
         # fsae_MPCTest's copy.
         self.reversal_penalty_enabled = self.params.reversal_penalty_enabled
 
@@ -285,7 +285,7 @@ class MPCController:
     def _build_qp(self) -> None:
         """
         Constructs the CVXPY problem using parameters. Built once to maximize 20Hz throughput.
-        Matches optimiser.py exactly, including soft track boundaries.
+        Matches controller/lmpc/build.py exactly, including soft track boundaries.
         """
         nx, nu, N = self.nx, self.nu, self.N
 
@@ -330,7 +330,7 @@ class MPCController:
                 du_hard >= -self.du_max[:, None],
             ]
 
-        # Cost Formulation (Exact match to optimiser.py)
+        # Cost Formulation (Exact match to controller/lmpc/build.py)
         cost  = cp.sum(cp.sum_squares(cp.multiply(sqrtQ_param, x)))
         # Terminal cost: extra weight on x[:,N] only. self.terminal_scale=1.0
         # makes this a no-op (see __init__ for the full explanation).
@@ -490,7 +490,7 @@ class MPCController:
             path_yaw = float(self._heading_profile[base_idx])
 
         # ── Reference-heading rate limit (ref_heading_rate_limit_enabled) ──
-        # Mirrors fsae_MPCTest/sim/rollout_core.py's planner branch exactly:
+        # Mirrors fsae_MPCTest/sim/rollout/core.py's planner branch exactly:
         # only e_psi is recomputed from the limited reference; e_y above is
         # left untouched (matches the offline choice not to also limit
         # lateral tracking). See the module-level comment about the
@@ -514,7 +514,7 @@ class MPCController:
         # Heading error wrapped to [-pi, pi]
         e_psi = math.atan2(math.sin(car_yaw - path_yaw), math.cos(car_yaw - path_yaw))
         # Matches vehicle_physics.py's plant_to_tracking_error /
-        # rollout_core.py's identical inline formula: e_y_dot needs both
+        # rollout/core.py's identical inline formula: e_y_dot needs both
         # body-frame velocity components, not just forward speed — omitting
         # car_vy silently drops this term whenever the car has real sideslip
         # (car_vy defaults to 0.0 for callers that don't measure it).
@@ -720,7 +720,7 @@ class MPCController:
         Horizon-summed per-term cost, reproducing _build_qp's cost
         expression (see that method's "Cost Formulation" block) in plain
         numpy from the just-solved qp's variable/parameter .value's, term by
-        term instead of as one scalar. Debug-only (live_viz.py's horizon
+        term instead of as one scalar. Debug-only (live_viz/'s horizon
         panel): called once per successful solve, never affects the QP
         itself. Keep in sync with _build_qp() by hand if that cost
         expression ever changes.
@@ -794,7 +794,7 @@ class MPCController:
             Vehicle forward (body-frame vx) speed (m/s); see _odom_cb note on
             how this is measured upstream. Used for the plant discretisation
             and gain scheduling, which are both parameterised on forward
-            speed alone — see rollout_core.py's identical vx_true usage.
+            speed alone — see rollout/core.py's identical vx_true usage.
         desired_speed : float
             Planner's requested speed (m/s); low-pass filtered internally.
         car_yaw_rate : float, optional
@@ -802,7 +802,7 @@ class MPCController:
         car_vy : float, optional
             Body-frame lateral velocity (m/s), defaults to 0.0. Used only in
             _error_state's e_yd = vx*sin(e_psi) + vy*cos(e_psi) (matches
-            vehicle_physics.py's plant_to_tracking_error / rollout_core.py's
+            vehicle_physics.py's plant_to_tracking_error / rollout/core.py's
             identical inline formula exactly). Callers that only have a
             speed magnitude (no separate vx/vy) should leave this at 0.0
             rather than passing the magnitude here.
@@ -913,7 +913,7 @@ class MPCController:
         # blend, so it starts as a plain copy here (the removed
         # adaptive_R_rate current-curvature floor used to scale it first,
         # but that scale was always overwritten by the blend before it
-        # could reach the QP, see docs/removed_mechanisms.md).
+        # could reach the QP, see docs/reference/retired_mechanisms.md).
         R_rate_scaled = self.R_rate.copy()
         _rr_before_hunt = float(R_rate_scaled[0, 0])
         R_rate_scaled = _steer_rate_anti_hunt(
@@ -1013,7 +1013,7 @@ class MPCController:
 
         # Wall-clock the QP so the log can distinguish "the solver is slow"
         # from "the pipeline upstream of us is slow" — see solve_ms in
-        # telemetry_logger's column reference.
+        # telemetry's column reference.
         _t_solve0 = time.perf_counter()
         u_prev_for_rate = self._u_prev.copy()
         u_opt = self._solve_qp(
@@ -1080,7 +1080,7 @@ class MPCController:
             # branch, which never calls .solve() again after that point).
             "total_cost":    self._last_solver_cost,
             # Per-term horizon-summed cost breakdown, debug-only (see
-            # _compute_cost_breakdown). Same key/shape nmpc_core.py produces
+            # _compute_cost_breakdown). Same key/shape nmpc/solver.py produces
             # so mpc_controller.py can read one uniform structure regardless
             # of which solver is active.
             "cost_breakdown": self._last_cost_breakdown,
