@@ -31,7 +31,7 @@ from fsae_control.control_utils import (
     StanleyController, curvature_speed, load_path_profile_csv,
     load_speed_profile_csv, precomputed_speed_at, tracking_error_speed_gate,
 )
-from fsae_control.telemetry_logger import ControlLogger, LapProgressTracker, build_config_lines
+from fsae_control.telemetry import ControlLogger, LapProgressTracker, build_config_lines
 
 # Same three safeguards mpc_controller.py wraps around curvature_speed()'s
 # raw output, ported here after live testing showed Stanley stuttering (a

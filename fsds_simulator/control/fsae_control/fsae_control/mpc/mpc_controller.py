@@ -107,7 +107,7 @@ from fsae_control.lmpc import MAX_STEER_RAD, MPCController
 from fsae_control.nmpc import NMPCController
 from fsae_control.mpc.mpc_params import declare_mpc_params, mpc_params_from_node
 from fsae_control.mpc.nmpc_params import declare_nmpc_params, nmpc_params_from_node
-from fsae_control.telemetry_logger import (
+from fsae_control.telemetry import (
     ControlLogger, LapProgressTracker, HorizonAccuracyTracker, build_config_lines,
 )
 
