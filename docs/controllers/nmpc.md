@@ -1,279 +1,288 @@
 # The Nonlinear MPC Controller (NMPC)
 
-Full technical reference for the second, separately selectable controller, `nmpc_core.NMPCController`, chosen by the node parameter `use_nmpc` (`false` in the `NMPCParams` dataclass default, but check the actual launch configuration in use, e.g. `ros2/launch_all.sh`'s shortlist, which is not required to leave this at the dataclass default). Split out of `architecture.md` because this material is large enough to be its own document; that file now only summarises and links here.
+Reference for `NMPCController`, the Frenet-frame nonlinear model predictive controller. It is one of three selectable controllers, alongside the linear one in [lmpc.md](lmpc.md) and the non-predictive one in [stanley.md](stanley.md).
 
-For the original linear controller, see [`lmpc.md`](lmpc.md). For the third, non-MPC controller, see [`stanley.md`](stanley.md). For the worked-by-hand arithmetic behind `e_y`/`e_psi`, see [`error_state_reference.md`](error_state_reference.md).
+## What it does
 
-Everything in [`lmpc.md`](lmpc.md) describes `mpc_core.MPCController`: a linear time-varying MPC solved as one convex QP per tick. The live workspace carries a **second, separately selectable** controller, `nmpc_core.NMPCController`, described here. This repo has its own offline port, `controller/nmpc_optimiser.py`, selected by `settings.USE_NMPC`; this doc is a pointer to the live design, not a mirror of the offline code, see `docs/reference/control_mechanisms.md`'s "Nonlinear MPC (`use_nmpc`)" section for the offline port's specifics.
+**What it does.** Every 50 ms the controller looks 1.0 s ahead, guesses the steering and throttle sequence that keeps the car on the path with the least fuss, applies only the first step, and repeats. Its internal model knows the road bends. A corner 10 steps ahead already shapes the steering this tick, so the car starts turning in before heading error builds up.
 
-## Table of Contents
+**Why it matters.** The linear controller in [lmpc.md](lmpc.md) treats the road ahead as pointing the same way for the whole horizon. With the car on line and a corner ahead, it plans "stay on line" and commands exactly zero steering until real error appears. NMPC removes that blind spot by putting arc length along the path into the prediction state. Curvature is looked up at each predicted position instead of being sampled once.
 
-1. [The structural difference, in one line](#the-structural-difference-in-one-line)
-2. [Structure and solve method](#structure-and-solve-method)
-3. [The state vector and the Frenet metric factor](#the-state-vector-and-the-frenet-metric-factor)
-4. [The nonlinear model (`_f`)](#the-nonlinear-model-_f)
-5. [Linearising the rollout: finite-difference Jacobians](#linearising-the-rollout-finite-difference-jacobians)
-6. [Condensing and the QP](#condensing-and-the-qp)
-7. [Testing the math](#testing-the-math)
-8. [Feature comparison: LTV-QP vs. NMPC](#feature-comparison-ltv-qp-vs-nmpc)
+**Selection.** The switch is the node parameter `use_nmpc`. The value depends on where it is read:
 
----
+| Layer | Value | Where |
+|---|---|---|
+| `NMPCParams.use_nmpc` dataclass default | `False` | `fsds_simulator/control/fsae_control/fsae_control/mpc/nmpc_params.py` |
+| `controller:` block of `fsae_params.yaml` | `false` | `fsds_simulator/common/fsae_bringup/config/fsae_params.yaml` |
+| `ros2/launch_all.sh` (`USE_NMPC`, passed as a launch arg, overrides both) | `true` | `ros2/launch_all.sh` |
+| Offline `settings.USE_NMPC` | `False` | `settings/nmpc.py` |
 
-## The structural difference, in one line
+A run started through `ros2/launch_all.sh` uses NMPC. An offline rollout uses the linear controller unless `USE_NMPC` is set before the tuner or rollout imports `settings`.
 
-In plain terms: the LTV-QP plans ahead as though the road stays pointed the same direction for the whole horizon, even if a corner is coming up; the NMPC's internal model actually knows the road bends, and where. The LTV-QP predicts how the car's current error (`e_y`, `e_psi`) drifts under its own dynamics, against a reference direction it treats as fixed for the whole horizon. The NMPC predicts that same error's evolution **relative to a path whose bend is itself part of the prediction**, the model knows the reference direction changes with `s`, not just the car's state.
+## Why it exists
 
-**Both controllers measure their current-tick error the same way**: the Frenet-frame projection described in [`lmpc.md`'s "How the error vector is measured"](lmpc.md#how-the-error-vector-is-measured-frenet-frame-projection) (`_error_state()` in `mpc_core.py`, `PathReference.project()` in `nmpc_core.py`, same nearest-point-plus-perpendicular-offset arithmetic). Frenet-frame measurement is not what tells them apart. What differs is what happens to that error **over the prediction horizon**, after this tick's measurement:
+**The structural limit.** The linear controller predicts error in coordinates where the reference frame never rotates, so its heading-error rate is the raw yaw rate `r`. NMPC predicts `r - kappa(s) * s_dot`, the yaw rate minus the rate at which the path direction itself turns. A single Frenet measurement (nearest path point plus perpendicular offset) is used by both controllers at the current tick. The difference is what happens to that error across the horizon.
 
-The LTV-QP takes its one Frenet measurement at the current tick, then predicts forward in fixed error coordinates with the reference frame's rotation dropped, so `e_psi_dot = r` instead of `e_psi_dot = r - kappa(s)*s_dot`. Arc length `s` never appears as a predicted state, curvature is sampled once (the ~1 m preview lookup in `_error_state()`) and held fixed for the whole horizon. With the car on line and a corner ahead, its 35-step rollout predicts staying on line forever (measured: exactly 0.000 deg commanded at 8 dead-on-line states), which is why the "structural limit" callout in `removed_mechanisms.md` exists and why the adaptive lookahead layer had to be invented.
+- **Linear controller:** curvature is read once, about 1 m ahead of the car, and held for all 35 steps. On line with a bend ahead, the rollout predicts staying on line forever. Measured: exactly 0.000 deg commanded 24 m before a 20 m radius bend with zero tracking error (Part 6b of [late_turn_in_investigation.md](../logs/late_turn_in_investigation.md)).
+- **NMPC:** curvature and reference heading are looked up at each predicted arc length, so a bend inside the horizon appears in the prediction.
+- **Consequence:** a family of lookahead gain-scheduling workarounds was built for the linear controller and later deleted. The argument for why reweighting today's cost cannot substitute for a model that sees the bend is in [retired_mechanisms.md](../reference/retired_mechanisms.md).
 
-The NMPC instead carries `s` itself as a horizon *state*: at every one of its 20 predicted steps, `kappa(s)`/`psi_ref(s)` are looked up fresh at that step's predicted `s`, not sampled once at the current tick. So the road's bend is re-evaluated at every future point along the plan, not frozen at one lookahead distance the way the LTV-QP's preview curvature is. As `s` advances along the predicted horizon, `kappa(s)` changes with it, so a bend 10 steps out is already shaping the plan today, not just once the car arrives there.
+**Measured benefit.** A matched same-day live pair on `comp_test_map_3`, both with the weights of that day (older than the current defaults, before the rate zone and jerk terms below):
 
-## Structure and solve method
+| | Linear controller | NMPC |
+|---|---|---|
+| lap time | 54.72 s | 52.35 s |
+| steering saturation | 6.45% | 0.58% |
+| RMSE lateral | 0.455 m | 0.378 m |
+| peak lateral error | 1.636 m | 1.179 m |
 
-**Structure**: states `[s, e_y, e_psi, v_x, v_y, r, delta_act, a_act]`, inputs `[delta_cmd, a_cmd]`, linear-tyre bicycle dynamics with the same constants and the same low-speed kinematic blend as the LTV-QP, plus a `tanh` saturation of the predicted lateral force at FSDS's measured `a_lat` ceiling.
+Source: section 16.9 of [late_turn_in_investigation.md](../logs/late_turn_in_investigation.md). One matched pair, not a sweep.
 
-**How it's solved (Gauss-Newton SQP)**, step by step each tick, in one line each (the full derivation of every step is below):
+## How it works
 
-1. **Roll the nonlinear model forward** from the car's actually-measured state, not an approximation, using the real nonlinear equations (see ["The nonlinear model"](#the-nonlinear-model-_f) below).
-2. **Linearise around that rollout**: compute how a small change in each input would change the predicted trajectory, via finite-difference Jacobians (see ["Linearising the rollout"](#linearising-the-rollout-finite-difference-jacobians) below).
-3. **Condense into a QP**: fold the whole 20-step problem down into one solved for input *changes* only (see ["Condensing and the QP"](#condensing-and-the-qp) below).
-4. **Solve with a trust region**: cap how large a step OSQP is allowed to take from this tick's rollout, since the linearisation from step 2 is only accurate near it.
-5. **One iteration per tick, warm-started from last tick's answer** ("real-time iteration"), rather than looping steps 1-4 until full convergence within a single tick, which would risk missing the 50 ms deadline.
+### Each tick is one Gauss-Newton step, warm-started
+
+State `x = [s, e_y, e_psi, v_x, v_y, r, delta_act, a_act]`, input `u = [delta_cmd, a_cmd]`. Horizon `nmpc_horizon = 20` steps of 0.05 s (1.0 s).
+
+1. **Roll forward.** Shift last tick's input plan one step and simulate the nonlinear model from the measured state.
+2. **Linearise.** Get the sensitivity of every predicted state to every input, by finite differences.
+3. **Condense.** Fold the whole horizon into one dense QP (quadratic program) whose unknowns are input changes only.
+4. **Solve with OSQP** inside a trust region that limits how far one step may move.
+5. **Line search.** Try the full step, then half, then a quarter (`nmpc_backtrack_max = 2` halvings) against the true nonlinear cost. Keep the first that does not raise the cost. If none does, keep the shifted plan from last tick.
+6. **Ship the first input** of the plan, clipped to the input limits and the per-tick slew limit.
+
+`nmpc_sqp_iters = 1`, so steps 1 to 5 run once per tick. This is the real-time-iteration scheme. Consecutive ticks differ by one horizon step, so the warm start is already close and one step per tick tracks the moving optimum. A wall-clock budget (`nmpc_solve_budget_ms = 25.0`) stops iterating early. OSQP runs with `nmpc_osqp_max_iter = 500`, `nmpc_osqp_eps = 1e-4`, warm starting on, polishing off. The looser tolerances are deliberate: the QP result is a step direction that the line search validates, not a final answer.
 
 ```mermaid
 flowchart TD
     A["Roll the nonlinear model forward<br/>from the measured state"]
-    B["Linearise around that rollout<br/>(finite-difference Jacobians)"]
-    C["Condense into a QP<br/>(solve for input CHANGES)"]
-    D["Solve with a trust region<br/>(OSQP)"]
-    A --> B --> C --> D -->|"one iteration per tick,<br/>warm-started next tick"| A
+    B["Linearise around the rollout<br/>(finite-difference Jacobians)"]
+    C["Condense into a QP<br/>(unknowns are input changes)"]
+    D["Solve with OSQP inside a trust region"]
+    E["Line search on the true nonlinear cost"]
+    A --> B --> C --> D --> E -->|"next tick, warm start"| A
 ```
 
-Horizon 20 steps (1.0 s); measured solve time mean 8.9 ms, p95 11.6 ms.
+Solve time is not re-measured for the current defaults. A measurement taken when the Jacobian pass still used one substep gave a mean of 9.56 ms. Raising both substep counts to 4 roughly doubled it to 18.63 ms with a maximum past the 25 ms budget (see [nmpc_low_speed_accel_stall_investigation.md](../logs/nmpc_low_speed_accel_stall_investigation.md)). The speed gates described below were added afterwards to cut that cost. Watch `solve_ms` and `nmpc_iters` in the log if the budget or substeps change.
 
-**Consequences for the rest of the architecture**: when `use_nmpc=true` the entire adaptive gain schedule, the precomputed corner map and the shaped heading-lead profile are all inactive (each was a workaround for the missing curvature term), and the telemetry CSV's `m_*` columns are empty while eight `nmpc_*` columns carry solver/prediction diagnostics instead. The composite score, the scoring pipeline, the path/speed-profile plumbing and the delay compensation are unchanged.
+### The state is measured along the path, not on the map
 
-## The state vector and the Frenet metric factor
+`s` is distance travelled along the path. `e_y` is the signed lateral offset of the front axle from the path (positive left). `e_psi` is car yaw minus path yaw. The car's map position is recovered from `s` and `e_y` when needed and is never a state.
 
-Recall the 8-state vector and 2-input command vector:
-
-```
-x = [s, e_y, e_psi, v_x, v_y, r, delta_act, a_act]ᵀ
-u = [delta_cmd, a_cmd]ᵀ
-```
-
-The first three states are exactly the Frenet quantities described in [`lmpc.md`'s "How the error vector is measured"](lmpc.md#how-the-error-vector-is-measured-frenet-frame-projection): arc length along the path (`s`), lateral offset from it (`e_y`), and heading error against its tangent (`e_psi`). `s` is a single number, the distance travelled along the path from its start, not an (x, y) position; the prediction's actual position is recovered from `s` plus the lateral offset `e_y`, never carried as its own coordinate. The remaining five are the same kind of physical state the LTV-QP tracks (speed, lateral velocity, yaw rate, and the two lagged-actuator states), just expressed once (as true quantities, not errors against a frozen target) rather than duplicated as both a raw state and an error state.
-
-**Why `s` is a state here and not in the LTV-QP.** The LTV-QP's error coordinates implicitly assume the reference frame itself doesn't rotate under the prediction (see `lmpc.md`). Carrying `s` explicitly is what lets `kappa(s)` and `psi_ref(s)` be looked up **fresh at the predicted `s` of every horizon stage**, instead of being sampled once at the current tick and held fixed. This is the mechanism behind the "structural difference" described above.
-
-**The kinematics of moving along a curved reference: the metric factor `1 - kappa*e_y`.** Converting straight-line, global-frame motion into "progress along a curving path" isn't a plain unit conversion, because a point offset to one side of a bend covers a different arc length than a point on the bend itself for the same physical displacement (walk the inside of a curved corridor and you cover less ground than someone walking its outside edge, for the same number of steps forward). This is exactly the same idea `kappa` and `e_y` describe elsewhere in this stack, applied to the *rate* of `s` rather than to a single measurement. The exact relationship (a standard result in Frenet-frame vehicle models) is:
+Progress along a curved path is not the plain forward speed. A car on the inside of a bend covers less path length per metre travelled. The exact relations are:
 
 ```
-s_dot = (v_x*cos(e_psi) - v_y*sin(e_psi)) / (1 - kappa(s)*e_y)
+s_dot     = (v_x*cos(e_psi) - v_y*sin(e_psi)) / (1 - kappa(s)*e_y)
+e_y_dot   = v_x*sin(e_psi) + v_y*cos(e_psi)
+e_psi_dot = r - kappa(s)*s_dot
 ```
 
-The numerator is just the car's forward-progress speed resolved into the path-tangent direction (a car facing away from the tangent, `e_psi != 0`, or carrying sideways velocity `v_y`, doesn't turn all of its speed into progress along the path). The denominator, `1 - kappa*e_y`, is the metric factor above: on a straight (`kappa = 0`) it's exactly `1` regardless of `e_y` and `s_dot` is just the ordinary forward speed; in a corner, being offset toward the inside (`e_y` and `kappa` the same sign) makes the denominator less than 1, so `s_dot` is *larger* than the raw forward speed for the same physical motion, because the car is covering the same physical ground while advancing further along a shorter (inside) arc. In code (`nmpc_core.py`'s `_f()`):
+- **Metric factor `1 - kappa*e_y`:** equals 1 on a straight. Offset toward the inside of a bend it drops below 1, so `s_dot` exceeds the raw forward speed.
+- **`e_psi_dot`:** yaw rate minus how fast the path direction rotates. This is the term the linear controller drops.
+- **Guard `_DENOM_FLOOR = 0.25`:** the denominator is floored without flipping its sign. A sign flip would reverse the predicted direction of travel. On this car the singularity sits at `e_y = 1/kappa`, 4.8 m at the tightest logged corner (`kappa` 0.21), outside the 3.5 m track half-width, so the floor is inert in normal driving.
 
-```python
-kap = ref.kappa_at(s)
-denom = 1.0 - kap * e_y
-s_dot   = (v_x * cos_ep - v_y * sin_ep) / denom
-e_y_dot = v_x * sin_ep + v_y * cos_ep
-e_psi_dot = r - kap * s_dot
-```
+The from-scratch worked arithmetic is in [error_states.md](../reference/error_states.md).
 
-`e_y_dot` needs no metric correction (a lateral offset is measured perpendicular to the path, which is a locally flat direction regardless of curvature). `e_psi_dot`, the heading-error rate, is yaw rate `r` **minus** how fast the reference direction itself is rotating as the car advances along it (`kappa(s) * s_dot`, curvature times progress rate is the standard identity `dpsi_ref/dt = kappa * ds/dt`). This is the exact term the LTV-QP's fixed-frame prediction drops (see `lmpc.md`), reintroduced here because `s` and hence `kappa(s)` are now genuinely time-varying predicted quantities, not one frozen sample.
+### The prediction model is a bicycle with a saturating tyre
 
-**The denominator is floored, not left to blow up or flip sign** (`_DENOM_FLOOR = 0.25` in code): if a prediction step ever puts `e_y` far enough to the "inside" that `1 - kappa*e_y` approaches zero, the true physical picture is the car is nearly orbiting a point (`s_dot` genuinely diverges), which is not a regime the SQP's linearisation should be asked to represent. The floor keeps `denom` bounded away from zero **without ever flipping its sign**, since a sign flip would reverse the predicted direction of travel along the path, a far more misleading failure than a merely under-estimated `s_dot`.
+`dynamics.py` (`_f`, vectorised over stages, and `_f_scalar`, a hand-mirrored scalar copy for the sequential rollout) gives `x_dot = f(x, u)`.
 
-## The nonlinear model (`_f`)
-
-This is the same purpose as [`lmpc.md`'s "Building the prediction model"](lmpc.md#building-the-prediction-model-modelbicycle_modelpy): "given the current state `x` and a chosen input `u`, what is the state's instantaneous rate of change?" The difference is that here the answer is genuinely **nonlinear** (curvature, trig terms and a smooth saturation all depend on the current state itself), so it's written directly as `ẋ = f(x, u)`, a function, rather than reduced to a fixed matrix `ẋ = A·x + B·u`.
-
-### Tyre forces and the lateral-acceleration ceiling
-
-The lateral tyre forces use the same linear-tyre slip-angle model as the LTV-QP's cornering-stiffness terms in `lmpc.md`, just written per-axle rather than folded into the `A_dyn` matrix:
+**Tyre forces.** Linear-tyre slip angles per axle, then a smooth cap at FSDS's lateral-acceleration ceiling:
 
 ```
-alpha_f = atan((v_y + lf*r) / v_x) - delta_act      (front slip angle)
-alpha_r = atan((v_y - lr*r) / v_x)                  (rear slip angle)
-F_yf = -2*Cf*alpha_f
-F_yr = -2*Cr*alpha_r
+alpha_f = atan((v_y + lf*r) / v_safe) - delta_act        v_safe = max(|v_x|, 2.5)
+alpha_r = atan((v_y - lr*r) / v_safe)
+F_yf = -2*Cf*alpha_f       F_yr = -2*Cr*alpha_r
+a_y  = (F_yf*cos(delta_act) + F_yr) / m
+ceil = max(7.5, 0.47*|v_x| + 2.46)
+sat  = tanh(|a_y|/ceil) / (|a_y|/ceil)          both axle forces scaled by sat
 ```
 
-`v_x` in these two `atan()` terms is floored at `v_blend_hi` (2.5 m/s) purely to keep the slip-angle expression finite as the car approaches a standstill; the low-speed kinematic blend below is what actually governs behaviour down there, not this floor.
+- **Why the cap exists:** a linear tyre has no upper force bound, so an uncapped model believes it can hold any corner at any speed. The plant cannot (FSDS enforces a sustained ceiling near 7.5 m/s squared). The controller then demanded yaw that never arrived, saw the error persist and demanded more, which showed up offline as a large steering oscillation and then a spin (section 16.6 of [late_turn_in_investigation.md](../logs/late_turn_in_investigation.md)).
+- **Why `tanh`:** `tanh(x)/x` is 1 to second order at 0, so the linear region that the weights were tuned in is unchanged. Beyond the ceiling the curve bends over smoothly, not with a hard corner that would make the sensitivity jump to zero. Both axles use the same factor, which preserves the front/rear force ratio and so the understeer character.
+- **Constants:** `lf = 0.70`, `lr = 0.85`, `m = 255`, `Iz = 150`, `tau_delta = 0.08`, `tau_a = 0.02`, `Cf`, `Cr` and the ceiling law are hardcoded in `_Plant`. They are plant constants, not tuning weights. Switch: `nmpc_alat_ceiling_enabled` (default true). How the ceiling was measured and modelled is in [simulator_fidelity.md](../reference/simulator_fidelity.md).
 
-**Why the linear-tyre force is then saturated with a `tanh`.** A linear tyre model has no upper bound on lateral force: double the slip angle, double the force, forever. FSDS's actual car does not behave this way (see CLAUDE.md's "The offline sim does not yet fully predict the car": a measured, sustained lateral-acceleration ceiling of roughly 7.5 m/s², mildly speed-dependent). Without representing that ceiling **inside the prediction itself**, the NMPC's internal model believes it can hold any corner at any speed; when the real car can't keep up, heading error grows, the solver demands even more force for an already-saturated tyre, and the error persists or grows rather than resolving, a genuine offline failure mode (measured spin, see `late_turn_in_investigation.md` Part 16 §16.6).
+**Low-speed blend.** Same breakpoints as the linear controller: `blend = clip((v_x - 1.0) / 1.5, 0, 1)`. Below 1 m/s the model is kinematic (`r_kin = v_x*tan(delta)/L`, `v_y_kin = lr*r_kin`, differentiated with the steering lag supplying `delta_dot`). Above 2.5 m/s it is dynamic. The tyre force itself is multiplied by `blend` before it enters the dynamic branch.
 
-```
-a_y = (F_yf*cos(delta_act) + F_yr) / m
-ceil = max(alat_ceiling_flat, alat_ceiling_slope*|v_x| + alat_ceiling_intercept)
-ratio = |a_y| / ceil
-sat = tanh(ratio) / ratio          (both axle forces scaled by this factor)
-```
+- **Why the force is blended at the source:** the slip-angle denominator is floored to avoid dividing by zero, so a stationary tyre's slip angle would track the steering command directly and predict a large cornering force from steering alone. A real tyre with no rolling velocity makes about zero force. Unblended, that phantom force produced a fictitious predicted excursion (`e_y` -1.9 m at the horizon end with the car still stopped), and the steering snapped to the 25 deg lock in the first 0.5 to 0.7 s of every standing start. Blending only the branch output downstream is too late, because the force has already leaked into intermediate terms.
 
-`tanh(x)/x -> 1` as `x -> 0` (to second order), so at small `ratio` (well inside the ceiling) `sat ≈ 1` and the linear-tyre force is returned unchanged, exactly the regime the cornering-stiffness weights were tuned against. As `ratio` grows past 1, `tanh` saturates and `sat` shrinks, smoothly bending the force curve over rather than clipping it with a hard corner (a hard clip would make the model's sensitivity to steering discontinuously jump to zero right at the bound, which is a poor thing to linearise around). Both axle forces are scaled by the *same* factor, which preserves the front/rear force **ratio** (and hence the model's understeer character) while limiting the overall magnitude.
+**Discretisation.** Each 0.05 s step is RK4 (4th-order Runge-Kutta) with `n_sub` sub-steps. The two actuator lag states are then overwritten with their exact zero-order-hold values. RK4 alone leaves `a_act` visibly short, because `tau_a = 0.02 s` against `dt = 0.05 s` puts `lambda*dt` at -2.5, near RK4's real-axis stability edge of about 2.78. `v_x` is floored at 0 so the prediction never runs into reverse.
 
-### The kinematic/dynamic blend, and why the tyre force itself must be blended out
+### Sub-step counts are speed-gated because the model is stiff at low speed
 
-The same low-speed blend as the LTV-QP (`lmpc.md` §"Blending kinematic and dynamic models"), same breakpoints (`v_blend_lo = 1.0`, `v_blend_hi = 2.5`):
+The `(v_y, r)` dynamics stiffen as 1/v_x. With too few RK4 sub-steps the integration diverges (not merely loses accuracy) at low speed. The linearised eigenvalue times `dt` is about 10.5 at 2 m/s, against RK4's limit of about 2.78. A divergent Jacobian compounds through the condensing loop into a Hessian whose only solution is zero, so the car commands no throttle in the 2.5 to 6 m/s band.
 
-```
-blend = clip((v_x - v_blend_lo) / (v_blend_hi - v_blend_lo), 0, 1)
-```
+| Pass | Below gate | At or above gate | Gate (m/s) | Gate measured on |
+|---|---|---|---|---|
+| Rollout (`_rollout`) | `nmpc_rk_substeps = 4` | `nmpc_rk_substeps_fast = 3` | `nmpc_rk_gate_speed = 4.0` | each predicted stage's own `v_x` |
+| Jacobian (`_jacobians`) | `nmpc_jac_substeps = 4` | `nmpc_jac_substeps_fast = 2` | `nmpc_jac_gate_speed = 8.0` | slowest stage in the horizon |
 
-`blend = 0` below 1 m/s (pure kinematic), `blend = 1` above 2.5 m/s (pure dynamic), linearly interpolated between. Unlike the LTV-QP, where blending only needs to combine two already-computed matrices, here the **tyre force itself** has to be scaled by `blend` before it enters the dynamic-branch equations below, not just the dynamic branch's final output:
+- **Rollout fast value is 3, not 2:** 2 is the one count confirmed unstable (up to about 260 times perturbation growth) across 2.25 to 3.75 m/s.
+- **Jacobian fast value is 2, not 1:** 1 does not diverge at speed but is inaccurate (1.30 against a converged 3.85 at 10 m/s).
+- **An analytic Jacobian would not help:** the variational equation propagated through RK4 has the same stability region as the nominal ODE, so the substep floor belongs to RK4, not to finite differencing.
+- **Why the Jacobian gate uses the slowest stage:** it then changes rarely. A per-tick flip in Jacobian fidelity would perturb the warm start and become its own disturbance.
+- **History:** both counts were once 2 and 1. The earlier argument that the Jacobian only sets a step direction was sound about accuracy and wrong about stability. Full derivation and the measurement tables are in [nmpc_low_speed_accel_stall_investigation.md](../logs/nmpc_low_speed_accel_stall_investigation.md).
+- **Keep `nmpc_jac_substeps` equal to `nmpc_rk_substeps`,** and set `nmpc_jac_substeps_fast = nmpc_jac_substeps` to disable the gate exactly.
 
-```python
-F_yf = F_yf * blend
-F_yr = F_yr * blend
-```
+### Finite-difference Jacobians give the step direction
 
-**Why this matters, precisely** (a real bug found and fixed, see the code comment in `_f`): the slip-angle expressions above use a speed-floored denominator (`v_safe`) purely to avoid dividing by zero as `v_x -> 0`. Left otherwise unguarded, that floored denominator makes a *stationary* car's computed slip angle track the steering command almost directly (`alpha_f ≈ -delta_act` when `v_y`, `r` are both small), so the linear-tyre formula predicts a large cornering force from steering alone even though a real tyre with no rolling contact velocity generates approximately zero force. That fictitious force would otherwise propagate through `v_y_dot`/`r_dot` into a large, entirely imaginary predicted `e_y`/`e_psi` excursion over the horizon while the car has not physically moved. Measured effect before the fix: the NMPC's steering command snapped to the full ±25° mechanical lock in the first 0.5-0.7 s of every run from a standing start, with the predicted `e_y` at the end of the horizon reaching -1.9 m while the car's actual speed was still ~0. Scaling `blend` into the force itself, at the source, removes the fictitious force before it can contribute to anything downstream, rather than trying to blend away its consequences after the fact (which is too late: the dynamic branch's *output* is blended out downstream too, but by then the force has already been computed and would still leak in through the intermediate terms below).
+For each horizon stage `k`, `A_k = d x_{k+1} / d x_k` and `B_k = d x_{k+1} / d u_k` come from forward differences with a per-variable perturbation (`_FD_EPS_X`, `_FD_EPS_U`, about 1e-6 times the variable's typical size). The pass is vectorised over stages, so it costs 10 batched one-step integrations (8 states, 2 inputs), not `10*N` scalar ones. Output Jacobians `C_k = d h / d x` ride along on the same technique.
 
-### Assembling the state derivatives
+Finite differences were chosen over a hand derivative because the model has `atan`, `tanh`, a curvature lookup and a floored denominator, all tedious to differentiate by hand and keep in step with `_f`. Rationale for not using automatic differentiation is not recorded.
 
-Dynamic branch (used once `blend > 0`):
+### Condensing turns the horizon into one dense QP
 
-```
-v_x_dot     = a_act + blend * r * v_y
-v_y_dot_dyn = (F_yf*cos(delta_act) + F_yr) / m  -  r * v_x
-r_dot_dyn   = (lf*F_yf*cos(delta_act) - lr*F_yr) / Iz
-```
-
-These are the same Newton's-law relationships as `lmpc.md`'s dynamic model (`A_dyn`), just evaluated at the actual current nonlinear force rather than a linearised coefficient times the state.
-
-Kinematic branch (used once `blend < 1`), obtained by differentiating the Ackermann relationship `r_kin = v_x*tan(delta_act)/L` and `v_y_kin = lr*r_kin` with respect to time, and letting the steering actuator's own lag supply `delta_act`'s rate:
-
-```
-L = lf + lr
-delta_act_dot = (delta_cmd - delta_act) / tau_delta      (actuator lag, same as lmpc.md)
-r_dot_kin   = (a_act*tan(delta_act) + v_x*sec^2(delta_act)*delta_act_dot) / L
-v_y_dot_kin = lr * r_dot_kin
-```
-
-Blended exactly as `lmpc.md`'s `A_c` matrices are:
-
-```
-v_y_dot = (1 - blend)*v_y_dot_kin + blend*v_y_dot_dyn
-r_dot   = (1 - blend)*r_dot_kin   + blend*r_dot_dyn
-```
-
-The remaining two states are the same first-order actuator lag as `lmpc.md`'s shared rows, `d(delta_act)/dt = (delta_cmd - delta_act)/tau_delta` and `d(a_act)/dt = (a_cmd - a_act)/tau_a`, and `s_dot`/`e_y_dot`/`e_psi_dot` are exactly the Frenet-kinematics equations derived above. Together, all eight rates form `ẋ = f(x, u)`, evaluated by `nmpc_core.py`'s `_f()` (vectorised over every horizon stage at once) and `_f_scalar()` (a hand-mirrored scalar copy used by the sequential rollout, checked against `_f()` to machine precision by `test_nmpc_core_math.py::test_step_scalar_matches_step_vectorised`, see ["Testing the math"](#testing-the-math) below).
-
-### From continuous to discrete: RK4, not Zero-Order Hold
-
-`lmpc.md`'s `ẋ = A·x + B·u` is discretised **exactly** via a matrix exponential (Zero-Order Hold), because it's linear, an exact closed form exists. `ẋ = f(x, u)` here has no such closed form (`f` is nonlinear), so discretisation instead uses **4th-order Runge-Kutta (RK4)**, a standard numerical integrator that evaluates `f` several times per step (at the start, twice at the midpoint, and once at the end) and combines them into a step estimate accurate to 4th order in the step size, far tighter than a single-evaluation (Euler) step for the same `dt`. Each control tick's `dt = 0.05 s` is itself subdivided into `n_sub` RK4 sub-steps (`nmpc_rk_substeps`, default 2, for the rollout) for extra accuracy on a fast-changing state; see ["Two different sub-step counts, and why that's safe"](#two-different-sub-step-counts-and-why-thats-deliberately-safe) below for why the Jacobian pass uses a different, coarser count.
-
-## Linearising the rollout: finite-difference Jacobians
-
-Once the nonlinear rollout `X = [x_0, x_1, ..., x_N]` exists for the current guess `U`, the SQP needs to know: *if input `u_k` at stage `k` were nudged slightly, how would that change the predicted state at every later stage?* That sensitivity is exactly what `lmpc.md`'s fixed `Ad`/`Bd` matrices provide for the linear model; here, because the model is nonlinear, the equivalent matrices have to be **recomputed fresh, around this tick's specific rollout**, rather than looked up once and reused.
-
-**Why finite differences, not a symbolic/analytic derivative.** The model above involves `atan`, `cos`, `sin`, a `tanh` saturation and a piecewise kappa-lookup, differentiable in principle but tedious and error-prone to differentiate by hand and keep in sync with `_f` as it changes. A forward finite difference approximates the same derivative numerically instead:
-
-```
-A_k[:, j] = (f(x_k + eps_j * e_j, u_k) - f(x_k, u_k)) / eps_j     (one column of A_k, state j)
-B_k[:, j] = (f(x_k, u_k + eps_j * e_j) - f(x_k, u_k)) / eps_j     (one column of B_k, input j)
-```
-
-i.e. nudge one state (or input) component at a time by a small amount `eps_j`, re-evaluate `f`, and divide the change in the output by `eps_j`, recovering the local slope in that one direction. Repeating this for every one of the 8 states and 2 inputs builds the full one-step Jacobians `A_k = d(x_{k+1})/d(x_k)` and `B_k = d(x_{k+1})/d(u_k)` at every horizon stage `k`. This is done **vectorised over all stages at once** (`nmpc_core.py`'s `_jacobians()`): perturbing state `j` at every stage simultaneously costs one batched call to `_step()` across the whole horizon, so the whole Jacobian pass costs 10 such batched calls (8 states + 2 inputs) rather than `10 * N` individual ones.
-
-### Two different sub-step counts, and why that's deliberately safe
-
-The Jacobian pass uses `nmpc_jac_substeps` (default **1**), a **separate, coarser** RK4 sub-step count from the rollout's own `nmpc_rk_substeps` (default 2). This is a real, easily-missed distinction (an earlier investigation round swept the wrong one of the two and measured no effect at all, see `nmpc_low_speed_accel_stall_investigation.md`).
-
-**Why the asymmetry is safe rather than a shortcut that quietly degrades accuracy.** `A_k`/`B_k` only ever supply the QP's *step direction* for this iteration, never the predicted trajectory itself, that's what the rollout computes, and the rollout is exact to full RK4 at `nmpc_rk_substeps` regardless of how coarse the Jacobian is. A coarser sensitivity estimate can at most produce a slightly worse direction to step in; the backtracking line search in `_solve_step`'s caller validates every candidate step against the true nonlinear cost before accepting it (see ["The Gauss-Newton iteration as a whole"](#the-gauss-newton-iteration-as-a-whole) below), so a poor direction costs at most one wasted iteration, never a bad command. Halving the sub-step count on the Jacobian pass alone (the dominant per-iteration cost) is exactly the kind of asymmetry this buys real solve-time budget without touching prediction accuracy.
-
-**The numerical-stability caveat this asymmetry runs into.** RK4's real-axis stability limit is `|eigenvalue * dt| ≈ 2.78`; at `nmpc_jac_substeps = 1` the effective per-substep `dt` is large enough that the linearised (v_y, r) sub-dynamics' own eigenvalues push `|eigenvalue| * dt` up to roughly 10.5 around 2.0 m/s (falling to about 2.7 by 8 m/s), i.e. *outside* RK4's stable region specifically in the low/mid speed band. This does not corrupt the rollout (which uses the finer `nmpc_rk_substeps = 2`), but it can make the Jacobian estimate itself numerically unstable exactly in that speed band, which is the root cause investigated at length in `nmpc_low_speed_accel_stall_investigation.md`; that document is the canonical reference for the finding, not repeated in full here.
-
-## Condensing and the QP
-
-The SQP subproblem is: find the sequence of input *changes* `dU = [du_0, ..., du_{N-1}]` that minimises a quadratic approximation of the true nonlinear cost, subject to the *linearised* dynamics `dx_{k+1} = A_k dx_k + B_k du_k` (with `dx_0 = 0`, since the rollout already starts at the true measured state, so there is no linearisation defect to correct for at stage 0).
-
-**Condensing** eliminates the state-deviation variables `dx_k` from the problem entirely, expressing each one purely as a function of the input-change decision variables via forward substitution:
+Because the rollout starts at the measured state, the linearised dynamics have zero defect, so the sensitivities alone define the subproblem. With `dx_0 = 0`:
 
 ```
 S[0] = 0
-S[k+1] = A_k @ S[k] + [0 ... B_k ... 0]     (B_k in the k-th input-change slot)
+S[k+1] = A_k @ S[k] + (B_k placed in input slot k)
 dx_k = S[k] @ dU_flat
 ```
 
-`S[k]` (shape `NX x n_du`) is the sensitivity of stage-`k` state deviation to the *whole* flattened input-change vector; building it recursively this way costs one matrix multiply per stage rather than repeatedly composing Jacobians from scratch. This is the same condensing idea used in `lmpc.md`'s "parameterised" QP trick, just applied per-tick to a freshly linearised, nonlinear-in-origin problem rather than once to a fixed linear one.
+**Cost rows.** The residual `h(x) = [e_y, e_y_dot, e_psi, e_psi_dot, v_x - v_ref]` at every stage, with terminal-stage weight scaled by `nmpc_terminal_scale`. `G = sqrt(W) C S` and `g = sqrt(W) h`, giving the Gauss-Newton Hessian `G'G`. Second derivatives of `h` are dropped, which keeps the subproblem a QP.
 
-**The cost, in condensed form**, mirrors `lmpc.md`'s QP almost exactly (weighted output tracking, `Q`-analogue; input effort, `R`; input-rate smoothness, `R_rate`), but with the output residual and its sensitivity now coming from the *linearised, condensed* rollout rather than a fixed `Ad·x + Bd·u`:
+**Other cost terms** (all exactly quadratic, so no approximation):
 
-```
-h(x) = [e_y, e_y_dot, e_psi, e_psi_dot, v_x - v_ref]      (the 5-row output vector, "H" in code)
-G[k] = sqrt(W) @ C[k] @ S[k]        (sensitivity of the weighted output to dU_flat)
-g[k] = sqrt(W) @ h(x_k)             (the current, unimproved weighted residual)
+| Term | Weight | What it charges |
+|---|---|---|
+| Effort | `r_delta`, `r_a_accel`, `r_a_brake` | size of the command. Accel and brake weights are chosen per stage by the sign of the current iterate's `a_cmd` |
+| Rate | `r_rate_delta`, `r_rate_a`, shaped per stage (see below) | first difference of the input, against `u_prev` at stage 0 |
+| Jerk | `nmpc_rjerk_delta`, `nmpc_rjerk_a` | second difference of the input (change in the change) |
+| Track slack | `nmpc_slack_weight`, `nmpc_slack_linear_weight` | quadratic plus linear penalty on soft track-bound violation |
 
-minimise over dU_flat:
-    ||G @ dU_flat + g||^2                    (output tracking, condensed)
-  + ||sqrt(ru) * (u_flat + dU_flat)||^2       (input effort, evaluated at u_flat + dU, not just dU)
-  + ||sqrt(R_rate) * (E @ dU_flat + e_rate)||^2   (input-rate smoothness)
-```
+**Constraints on `dU_flat`:**
 
-`C[k] = d h/d x` at stage `k` is built by exactly the same finite-difference technique as `A_k`/`B_k` (`_output_jacobians`), riding along on the same per-stage perturbations. `E` is a fixed differencing matrix so that `E @ dU_flat` gives consecutive input-change differences directly (the same role `cp.diff` plays in `lmpc.md`'s CVXPY formulation), and `e_rate` carries the *current* iterate's own consecutive differences (including against `u_prev`, the last command actually sent), so that `E @ dU_flat + e_rate` is the *true* rate of change the true, unlinearized cost would see once `dU` is applied, not just the change in the change.
+- **Trust region:** `nmpc_trust_delta_rad = 0.157` (9 deg, the same as one tick of the slew limit) and `nmpc_trust_a = 0.6`. Both reuse the hard slew values, not new numbers.
+- **Slew rate:** `|u_k - u_{k-1}| <= du_max`, steering 180 deg/s times 0.05 s and acceleration 0.6 per tick.
+- **Soft track bound:** `|e_y| <= nmpc_track_halfwidth = 3.35` with slack. Rows are dense in `dU` because stage `k` depends on every earlier input. The linear slack term has no effect while `nmpc_progress_enabled` is false, because nothing else rewards leaving the track.
+- **Friction circle (off by default):** a hard per-axle force bound, see the optional features below.
 
-Expanding the quadratic norms gives the QP's `Hess`/`grad` (`P`/`q` in standard QP notation):
+**Jerk anchoring.** A second difference that spans the tick boundary needs the last two applied commands, so the controller carries `_u_prev2` and adds `e_jerk[:NU] -= 2*u_prev - u_prev2` and `e_jerk[NU:2NU] += u_prev`. Without this the term cannot see a reversal that straddles the boundary, which is the case it exists for. `_u_prev2` must advance before `_u_prev`.
 
-```
-Hess = G'G + diag(ru_flat) + E'(R_rate)E
-grad = G'g + ru_flat * u_flat + E'(R_rate)(E @ u_flat - u_prev_row)
-```
+**The line-search cost must equal the QP cost.** `_cost()` mirrors the QP term for term, including the shaped per-stage rate weight `_Rr_flat`, the jerk term and the stage-0 damping. A term present in the Hessian but missing from `_cost()` makes the search optimise a different objective than the one solved. That exact bug existed for the rate cost and affected every rate-reshaping flag.
 
-exactly the Gauss-Newton approximation to the true nonlinear Hessian: `G'G` (first-order-accurate curvature from the output sensitivity alone, dropping second-derivative terms of `h` itself, the standard Gauss-Newton simplification that keeps the subproblem a QP rather than a general nonlinear program) plus the exactly-quadratic effort and rate terms, which need no approximation since they are already quadratic in the true problem.
+**Standstill steering damping.** At `v_x = 0` steering cannot move the car, yet the horizon cost sums over stages where predicted `v_x` has already left zero. The solver would pre-commit stage 0 to help later stages, and the car would launch already turned (about -6.8 deg measured live). Stage-0 `r_delta` is multiplied by `nmpc_standstill_steer_r_scale = 200.0` below `nmpc_standstill_speed = 0.5` m/s, fading linearly to 1 at `nmpc_standstill_fade_speed = 3.0` m/s. A hard release at one speed put the whole change into a single tick, and steering ran from -1.8 to -12.9 deg over the next six ticks. The scale 200 is a tuning value, not derived, and very stiff values make stage 0 unresponsive. Set fade speed at or below the standstill speed for a hard cutoff.
 
-**Constraints on `dU_flat`** (`_solve_step`'s `A_dense`/`l`/`u`): a box bound (stay within `u_min`/`u_max` overall) intersected with a **trust region** (`nmpc_trust_delta_rad`, `nmpc_trust_a`, capping how far this one step may move from the current iterate, since the linearisation is only locally accurate); a slew-rate bound identical in spirit to `lmpc.md`'s `du_max`; and, when enabled, a soft-slacked track-boundary bound and a hard per-axle friction-circle bound, both built by projecting the same condensed `S[k]` sensitivity onto the relevant state row (`e_y`, or the two extra friction-circle output rows), exactly the same "sensitivity times decision variable" pattern as the cost terms above, just used as a constraint instead.
+### The path reference is a spline
 
-### The Gauss-Newton iteration as a whole
+`PathReference` builds `kappa(s)` and `psi_ref(s)` from `CubicSpline` fits of `x(s)` and `y(s)` over the raw waypoints. `psi_ref = atan2(y', x')` and `kappa = (x'y'' - y'x'') / (x'^2 + y'^2)^1.5`. Reference heading and curvature come from one reference, so the measured `e_psi` and the model's `e_psi_dot` agree.
 
-Putting the pieces together, one call to `_solve_step` does exactly one Gauss-Newton step:
+- **Why one reference:** measuring `e_psi` off the raw segment tangent quantises it in steps of ds/R, 5.7 deg per 0.5 m waypoint on a 5 m hairpin. The controller read each step as real error and produced a period-2 steering limit cycle (+25 and -25 deg alternating) through the tight corners offline.
+- **Switch:** `nmpc_spline_reference_enabled` (default true). False restores the dense-resample, moving-average and finite-difference pipeline (`nmpc_curvature_dense_step = 0.5`, `nmpc_curvature_smooth_w = 3`) for A/B comparison against the known centreline curvature-spike defect.
+- **Guards:** `nmpc_kappa_clip = 0.5` (a 2 m radius, inert on any real line). Trailing zero-length duplicate points in a padded live path are dropped, so the horizon does not predict the corner stopping.
+- **Live planner only:** `nmpc_kappa_rate_max = 2.0` caps tick-to-tick change of `kappa(s)` at matching arc-length samples. It is structurally inert on a precomputed path. A value of 1.0 was tried and failed (stalled at the same corner with more curvature oscillation).
+- **Static path:** the reference is built once at load (`set_static_path`) and looked up by signature each tick, at no per-tick cost.
 
-1. Roll out (already done by the caller) → `X`.
-2. Linearise (`_jacobians`, `_output_jacobians`) → `A_k`, `B_k`, `C_k`.
-3. Condense (`S`, `G`, `g`) → a QP in `dU_flat` alone.
-4. Solve the QP (OSQP) → a candidate `dU`.
-5. **Backtracking line search**: try `U + step*dU` for `step = 1, 0.5, 0.25, ...`, rolling the *true nonlinear* model forward each time (`_rollout`) and evaluating the *true nonlinear* cost (`_cost`, which mirrors the QP's objective term for term, not an approximation of it), accepting the first `step` that does not increase the true cost.
-6. If no backtracking step improves, keep the previous iterate: a wasted iteration, never a step in a bad direction, since step 5 only ever compares against the true cost, never the QP's own (possibly optimistic) quadratic approximation of it.
+### Delay compensation rolls the state through the nonlinear model
 
-**"Real-time iteration" means stopping after exactly one Gauss-Newton step per control tick** (steps 1-5 above run once, not looped to convergence), warm-started from the previous tick's converged-so-far `U`. Consecutive ticks differ by only one horizon step sliding forward, the same argument `lmpc.md` makes for OSQP's own warm start, so one step per tick tracks a slowly-moving optimum closely enough in practice, and the offline `nmpc_offline_check` explicitly verifies the cost decreases monotonically from a cold start (see ["Testing the math"](#testing-the-math) below) as a check that the iteration is behaving correctly, even though a live tick never actually runs it to convergence.
+When `delay_compensation_enabled`, the measured pose age is low-passed (`pose_age_lp_alpha`), converted to a step count with hysteresis (`n_delay_hysteresis`) and capped (`max_delay_compensation_steps`). The measured state is then rolled forward through that many recent commands with the nonlinear model. The linear controller does the same with its linear model (`predict_ahead`). An optional `nmpc_latency_compensation_enabled` (default false) rolls forward by `nmpc_latency_compensation_ms` to cover the solve's own wall-clock time. It was a suspect in a smoothness regression and stays off.
+
+## Shaping the steering rate cost
+
+**Plain version.** A high flat penalty on steering-rate stops the wheel twitching but makes the car reluctant to start a turn. Two mechanisms shape the cost so both hold.
+
+| Mechanism | Default | Effect |
+|---|---|---|
+| Three-zone rate schedule (`nmpc_rrate_zone_*`) | on: `2.0` straight, `0.8` approach, `0.15` corner | multiplies `r_rate_delta` (100.0) by a factor from current and horizon-peak curvature |
+| Input-jerk term (`nmpc_rjerk_delta`) | `150.0` | prices the change in steering rate instead of its size |
+
+**Three-zone schedule.** `_rrate_zone_scale` blends between the three multipliers using `_corner_factor(kappa, k)` of the current curvature (`now`) and of the peak curvature the predicted horizon sees (`ahead`). The lead component `max(0, ahead - now)` moves the multiplier from the straight boost toward the approach ease. As `now` rises, the corner floor takes over. A corner entered from a straight passes boost, then ease, then floor. With `r_rate_delta = 100.0` the effective steering-rate weight is 200 on a straight, 80 on approach and 15 mid-corner.
+
+- **`k` is load-bearing:** `nmpc_corner_factor_k = 27.0`. At the linear controller's inherited `k = 8.0` a track whose tightest corner has `|kappa|` near 0.2 tops `_corner_factor` out near 0.63, so the ease and floor bands are never reached and the schedule degrades into a mild global boost. Check the `m_Rrate_zone` log column against `nmpc_rrate_zone_floor_corner` before concluding the endpoints did anything. If it never approaches the floor, raise `k` rather than lowering the endpoints (`k ~= target / ((1 - target) * kappa_max)`).
+- **The intended ease is 0.35 but 0.8 ships:** 0.35 does not complete the recorded-map rollout offline.
+- **Live planner caution:** `kappa_ahead` inherits the open centreline curvature-spike defect, and unlike a speed target nothing downstream rate-limits it. Re-validate before trusting the zone with a live planner path.
+
+**Input-jerk term.** Reversals carry about 4.3 times the second difference of same-direction ramps, against about 1.9 times for the first difference, so the second difference separates chatter from turn-in about twice as sharply as a rate penalty does. A steady ramp into a corner is nearly free and a wiggle is not. `E2 = E @ E` reuses the first-difference operator and the OSQP sparsity pattern does not change, because the Hessian block is already a dense upper triangle. Both jerk weights at 0 remove the term entirely.
+
+### Late turn-in on shallow corners: what was tried
+
+The problem: after `r_rate_delta` was raised to stop chatter, shallow corners showed a late, jerky turn-in. The car held a smooth line, refused to turn, then jerked once predicted error overpowered the rate cost. The jerks landed at exactly 9.00 deg per tick, which is the slew limit (180 deg/s times 0.05 s). Cause: one flat rate weight cannot be stiff enough to kill straight-line hunting and compliant enough for a gentle corner's small early input. The tracking cost scales with error squared while the rate cost scales with step size, so their ratio swings about 100 times between a shallow and a sharp corner.
+
+| Option | Outcome |
+|---|---|
+| Curvature-scheduled rate blend (`nmpc_corner_rrate_blend_enabled`, `k = 20`, straight 52.5, corner 8.0) | rejected live: worse on every metric (slew-limited ticks 1.75% to 2.54%, `\|e_y\|` 0.288 to 0.467, saturation 0.03% to 1.52%). About 27% of jerks show no curvature or error signal one second earlier (14 of 51), so a schedule keyed on current state cannot reach them |
+| Curvature scheduling keyed earlier (lookahead) | not built: same signal shifted forward, amplifies planner curvature noise |
+| Per-stage rate ramp (`nmpc_rrate_stage_ramp_enabled`) | rejected offline and live: slew-limited ticks rose 8.43% to 12-15% offline and 1.75% to 5.10% live. A cheaper near-stage rate spends more of the slew budget every tick. Kept default off because it is the one change that clears the offline DNF of the shipped config |
+| Raise `du_max` | rejected: treats the symptom, and 180 deg/s is a measured lower-bound estimate of the real actuator |
+| Lower `r_rate_delta` and filter chatter another way | fallback, not needed |
+| Steering-jerk penalty (`nmpc_rjerk_delta`) | shipped at 150.0. Changes what is penalised, not when or where |
+
+The two rejected schedules failed the same way: any weakening that lets turn-in start early also lets oscillation start, trading chatter for compliance at about 1:1. That is the evidence that the rate cost cannot be scheduled into solving this and that the penalised quantity had to change. Measured effect of the jerk term with `r_rate_delta = 52.5` and `nmpc_rjerk_delta = 150.0`: on `centerline.csv` live, 0 saturated ticks, 0 slew-limited ticks and 1 steering reversal over three laps. Offline at the same pair, slew-limited ticks fell 7.80% to 2.77% and chatter 2.825 to 1.686 deg per tick. An earlier live figure of about 4.5% saturation with the same weight belonged to the raceline reference, not to the jerk term.
+
+Two further findings from the same investigation. Jerks at tight corners were partly a speed problem: the car arrived too fast, so the speed-profile cornering limit matters before any steering weight ([reference_path_and_speed.md](../reference/reference_path_and_speed.md)). A "won't turn" report should be checked against lateral-acceleration demand and speed overshoot first. The detailed lever table, current weights and the untested pairing `r_rate_delta = 5.0` with `nmpc_rjerk_delta = 250.0` are in [tuning.md](../guides/tuning.md). Full data is in [steering_chatter_investigation.md](../logs/steering_chatter_investigation.md).
+
+## Feature comparison with the linear controller
+
+| Feature | Linear controller | NMPC | Why |
+|---|---|---|---|
+| Adaptive gain schedule (`adaptive_R_scaling`, `adaptive_Q_scaling`, corner-blended Q, `r_steer_corner_mid`) | yes | not read | Each compensated for the missing curvature term. Reweighting on top of a model that has it would double-count |
+| Heading-error accel/brake asymmetry (`epsi_ra_*`) | yes | not read | Same reason. NMPC uses `r_a_accel` and `r_a_brake` directly |
+| `steer_rate_anti_hunt` | on by default | opt-in (`nmpc_steer_rate_anti_hunt_enabled`, default false) | Imported from the linear controller unchanged. Only ever adds damping, so it does not fight the structural fix |
+| Reversal penalty | `reversal_penalty_enabled` | opt-in (`nmpc_reversal_penalty_enabled`, default false) | An offline A/B on NMPC was a net regression: reversals barely improved and the score worsened |
+| Corner blend of `R_rate` | always | opt-in (`nmpc_corner_rrate_blend_enabled`, default false). Wins over anti-hunt if both set | Live-tested and rejected as a turn-in fix, see above |
+| Shaped heading-lead profile (`use_precomputed_heading_profile`) | supported | accepted and ignored, logs one warning | It approximates the curvature term NMPC models directly |
+| Delay compensation | linear rollforward | nonlinear rollforward | Same gating fields (`delay_compensation_enabled`, `max_delay_compensation_steps`, `pose_age_lp_alpha`, `n_delay_hysteresis`). `predict_epsi_clip` is linear-only |
+| Tracking-error speed gate, speed rate limiters, curvature speed | yes | yes | Node-level, run before either `compute()` |
+| Cone-proximity braking, GO gating, stale-path fail-safe | yes | yes | Node-level. NMPC exposes the same `compute()`, `reset()`, `set_static_path()` surface so the node needs no branch |
+| Lateral-acceleration ceiling | in the speed profile only | in the speed profile and inside the prediction (`tanh`) | The ceiling shapes what the solver believes is achievable |
+| Horizon | 35 steps (1.75 s), set in the node | 20 steps (1.0 s), `nmpc_horizon` | Longer NMPC horizons measured worse (horizon sweep in section 16.7 of [late_turn_in_investigation.md](../logs/late_turn_in_investigation.md)). Do not raise past 20 without re-checking it |
+| Solve | one convex QP (CVXPY, OSQP, Clarabel fallback) | one Gauss-Newton step per tick, dense condensed QP (OSQP) | NMPC needs the linearise-and-resolve step because its model is nonlinear |
+| Target-speed filter | first-order, alpha 0.08 hardcoded (live only) | `nmpc_v_des_filter_alpha = 0.09` | Raising it repeatedly made performance worse, see [planner_only_lap2_corner_spinout.md](../logs/planner_only_lap2_corner_spinout.md) |
+| Telemetry | adaptive-gain `m_*` and `*_eff` columns | eight `nmpc_*` diagnostics (`nmpc_iters` to `nmpc_pred_ey_max_abs`) plus `n_latency`. `m_Rrate_antihunt`, `m_Rrate_zone`, `m_Rrate_reversal`, `corner_frac` and `Rrate_steer_corner_blend` are filled, the LTV-only columns stay empty | Solver diagnostics separate a model or solver problem from a weighting problem |
+
+Weights are inherited from `MPCParams` and overridden per field by the `nmpc_*` fields when they are 0 or above (default -1.0 inherits). `q_r` weights the heading-error rate `r - kappa*s_dot` here, not absolute yaw rate. The full field-by-field map is in [control_mechanisms.md](../reference/control_mechanisms.md).
+
+## Optional and rejected features
+
+| Feature | Default | Status |
+|---|---|---|
+| `nmpc_spline_reference_enabled` | true | Numerical-quality fix, no new coupling to the solver |
+| `nmpc_friction_circle_enabled` | false | Experimental. Adds a hard per-axle bound `abs(F_y) <= m*ceiling(v_x)/2`, additional to the soft `tanh`. Unvalidated live |
+| `nmpc_progress_enabled` (with `nmpc_q_progress`, `nmpc_progress_reach`, `nmpc_progress_v_min`) | false | Replaces the two-sided speed error with a speed cap and a progress reward. Attempted and reverted: no lap completed at any setting tried (below about 5 the car never launches, 5 to 6 goes off track near 10% of a lap). Tracking mode completes and scores 0.714. See [nmpc_progress_term_investigation.md](../logs/nmpc_progress_term_investigation.md) |
+| Per-stage speed sampling (a target that varies across the horizon) | removed | Tried twice, as a cost term and as a constraint, rejected both times live. Flags and plumbing deleted. See [nmpc_speed_limit_investigation.md](../logs/nmpc_speed_limit_investigation.md) |
+
+The `nmpc_horizon_speed_profile_enabled` field no longer exists. The one-sided speed-cap row only appears in progress mode.
+
+## Tuning and pitfalls
+
+| Field | Default | Note |
+|---|---|---|
+| `nmpc_horizon` | 20 | Keep at or below 20 |
+| `nmpc_sqp_iters` | 1 | Real-time iteration. A too-low `nmpc_solve_budget_ms` silently truncates to one |
+| `nmpc_solve_budget_ms` | 25.0 | Half of the 50 ms tick |
+| `nmpc_rk_substeps`, `nmpc_jac_substeps` | 4, 4 | Do not lower without the instability tables in the log above |
+| `nmpc_track_halfwidth` | 3.35 | Read unconditionally. Narrowing it to 3.0 hurt ordinary tracking and was reverted |
+| `nmpc_corner_factor_k` | 27.0 | Read by both the zone schedule and the corner blend |
+| `nmpc_rjerk_delta`, `nmpc_rjerk_a` | 150.0, 0.0 | `nmpc_rjerk_a` has never been exercised at a nonzero value |
+| `nmpc_standstill_steer_r_scale` | 200.0 | Tuning value, re-check live |
+| `nmpc_v_des_filter_alpha` | 0.09 | Smaller is smoother and laggier |
+
+- **Runtime overrides:** `ros2/launch_all.sh` sets `USE_NMPC`, the zone fields, `NMPC_RJERK_DELTA`, `NMPC_CORNER_FACTOR_K` and `NMPC_SLACK_LINEAR_WEIGHT` explicitly. The rest of its NMPC shortlist is commented out, so those fields fall through to the YAML and dataclass defaults above.
+- **Field counts:** `MPCParams` has 69 fields and `NMPCParams` has 35, 104 in total, counted from the dataclasses.
+- **Weight retunes:** the linear controller's Q, R and R-rate values do not transfer one to one. See [tuning.md](../guides/tuning.md).
+- **Live against offline:** the defaults listed in this document match between `settings/nmpc.py` and the live dataclasses. Confirm any other field with [offline_live_parity.md](../reference/offline_live_parity.md) before trusting an offline score.
 
 ## Testing the math
 
-Two test suites exist for this controller's numerics specifically, both referenced from `docs/lmpc.md`'s testing pointers and CLAUDE.md's "Testing" section (see also [debugging_tools.md](debugging_tools.md#which-tool-for-which-question) for how `tuner.nmpc_offline_check` fits alongside the live-side `nmpc_offline_check.py` port):
+- **`python -m tuner.validation.nmpc_offline_check`** (from the repo root, offline port): scalar against vectorised step parity (`_step_scalar == _step`, `kappa_scalar == kappa_at`), monotonic SQP cost decrease from a cold start at four operating points, turn-in and wrong-direction checks against the linear controller, and a closed-loop run.
+- **Live-side copy:** `fsds_simulator/control/fsae_control/test/nmpc_offline_check.py`, the same structure against the live modules.
+- **`ros2_autonomous/src/fsae_autonomous/control/fsae_control/test/test_nmpc_core_math.py`** (production port): model parity, forward against central finite-difference Jacobians, monotonic SQP convergence and a Frenet round trip (`xy_at` inverts `project`).
 
-- **`tuner.nmpc_offline_check`** (offline repo): re-verifies `_step_scalar == _step` model parity, forward-vs-central-difference Jacobian agreement, and SQP cost-monotonic-convergence from a cold start at several representative operating points, on every call.
-- **`fsae_autonomous`'s `test_nmpc_core_math.py`** (production port): the same three checks, ported so the production copy's own transcription can be verified independently rather than assumed identical to the sim original; see that file's module docstring for exactly which of the sim tree's checks are and are not ported.
+A divergence in step parity is a silent wrong-prediction bug. The rollout and the Jacobian path would be consistently wrong the same way, so no closed-loop behaviour test would catch it.
 
-A divergence in the first check (`_step_scalar` vs `_step`) is a **silent wrong-prediction bug**: both the scalar rollout and the vectorised Jacobian path would be consistently wrong the same way, so no closed-loop behavioural test would catch it, only this direct numerical comparison does.
+## Where the code lives
 
-## Feature comparison: LTV-QP vs. NMPC
+The offline port and the live modules use the same file layout and the same method names. They are kept numerically identical by hand.
 
-Every feature below is verified against actual read-sites in the code, not inferred from a docstring or field name, see `docs/reference/README.md`'s "Which settings affect which controller" map for the exhaustive, field-by-field version this table summarises.
-
-| Feature | LTV-QP (`mpc_core.py`) | NMPC (`nmpc_core.py`) | Why |
-|---|---|---|---|
-| Adaptive gain scheduling (`_corner_factor`, anti-hunt, `adaptive_Q_scaling`, `adaptive_R_scaling`) | **Yes** | **No** (inert, none of these fields have any read site in `nmpc_core.py`) | Every one of these mechanisms exists to compensate for the LTV-QP's blind spot (it can't predict the path curving). NMPC's model has that built in structurally, so reweighting the cost on top would double-count an effect that's now already handled, see [`removed_mechanisms.md` §1](removed_mechanisms.md#1-the-structural-limit-the-argument-that-motivates-nmpc). |
-| `steer_rate_anti_hunt` (steering-rate damping when centred/aligned/uncurving) | **Yes**, on by default | **Opt-in**, off by default (`nmpc_steer_rate_anti_hunt_enabled`) | The one exception to the row above: it only ever makes steering *more* damped in a specific narrow case, the opposite direction from anticipation, so it doesn't fight NMPC's structural fix the way the rest of the gain schedule would. Reuses the LTV-QP's own function verbatim (imported, not reimplemented). |
-| Precomputed corner map (`use_precomputed_corner_map`) | Removed from both | Removed from both | Served the deleted lookahead gain-scheduling family, gone from both controllers, not an LMPC/NMPC difference. See [`removed_mechanisms.md` §7](removed_mechanisms.md#7-precomputed-corner-segmentation-cornermap). |
-| Precomputed shaped heading-lead profile (`use_precomputed_heading_profile`) | **Yes** | **Accepted but ignored** (`set_heading_profile()` exists so the node needs no branch, logs a one-time warning) | Same reasoning as gain scheduling: the shaped lead is a workaround for the same missing curvature term NMPC closes structurally. Applying both would double-count the anticipation. |
-| Delay/latency compensation (rolling `x0` forward through recently-issued commands) | **Yes** (`predict_ahead()`, linear rollforward) | **Yes** (rolls `x0` forward through the nonlinear model instead) | Both need this, it's about *sensor/actuation lag*, a problem that exists regardless of which prediction model is used. Different implementation, same four gating fields (`delay_compensation_enabled`, `max_delay_compensation_steps`, `pose_age_lp_alpha`, `n_delay_hysteresis`), shared `MPCParams` fields, read by both. One exception: `predict_epsi_clip` is LTV-QP only (a small-angle bound specific to the *linear* rollforward; NMPC's nonlinear rollforward has no such bound to set). |
-| Tracking-error speed gate (slow down when `e_y`/`e_psi` are large) | **Yes** | **Yes** | This lives in `control_utils.py`, called by the **node** (`mpc_controller.py`) *before* either controller's `.compute()` is invoked, neither `MPCController` nor `NMPCController` is even aware it exists. Controller-agnostic by construction. |
-| Curvature-based speed profile (`curvature_speed()`) | **Yes** | **Yes** | Same reason as the row above: computed by the node, handed to whichever controller is selected as `desired_speed`. |
-| Cone-proximity emergency braking, GO-gating, stale-path fail-safes | **Yes** | **Yes** | All node-level (`mpc_controller.py`'s `_control_step` phases, `standalone_output=true` only), not part of either controller class. `NMPCController` exposes the same `compute()`/`reset()`/`set_static_path()` surface as `MPCController` specifically so the node doesn't need a branch. |
-| FSDS lateral-acceleration ceiling | **Yes**, as a plain speed-profile input (`curvature_speed()`'s friction-circle cap) | **Yes**, AND inside the prediction itself (`tanh` saturation on predicted tyre force) | NMPC's version is strictly more: the ceiling shapes what the *solver itself* believes is achievable, not just the requested speed. Without it, NMPC's linear-tyre model believes it can hold any corner at any speed and the car spins (measured). |
-| Horizon length | 35 steps (1.75 s) | 20 steps (1.0 s) | Independent tuning choices, not a structural requirement, NMPC's shorter horizon reflects its per-tick solve cost (Gauss-Newton SQP is more expensive per step than one convex QP). |
-| Solve method | One convex QP per tick (OSQP) | Real-time-iteration SQP: one Gauss-Newton step per tick, warm-started, condensed dense QP (OSQP) | See [`lmpc.md`'s "The solver"](lmpc.md#the-solver) for what a QP is; NMPC needs the extra linearize-and-resolve step because its own model is nonlinear (curvature is now a function of a state, not a fixed matrix entry). |
-
-**Further NMPC-only additions**, assessed against Alexander Liniger's Model Predictive Contouring Control (MPCC) but narrower than it: full MPCC's progress-maximisation apparatus was considered and rejected as too close to a failure mode already eliminated here (see `docs/reference/README.md`'s writeup for why).
-
-- `nmpc_spline_reference_enabled` (default **true**): `PathReference`'s `kappa(s)`/`psi_ref(s)` come from an analytic cubic-spline fit to the waypoints instead of moving-average-smoothed finite differences. A numerical-quality fix, not a new coupling to the solver.
-- `nmpc_friction_circle_enabled` (default **false**, experimental): a hard per-axle tyre-force bound in the QP, additional to (not replacing) the existing soft `alat_ceiling` saturation.
-
-Per-horizon-stage speed sampling (holding a target other than one frozen scalar across the whole horizon) was tried twice, as a cost term and then as a per-stage constraint, and rejected both times after live testing; the flags and their shared plumbing have been removed rather than kept as dead/experimental code. See `docs/reference/control_mechanisms.md`'s "Horizon speed profile" writeup and `docs/logs/nmpc_speed_limit_investigation.md`.
-
-Both remaining flags are implemented identically in `nmpc_core.py` and the offline `controller/nmpc_optimiser.py`; neither touches `mpc_core.py` (the LTV-QP).
-
-Full detail: `docs/reference/control_mechanisms.md`'s "Nonlinear MPC (`use_nmpc`)" section (what it is, what it reuses, what is inactive, offline A/B numbers, the offline port, a matched same-day LIVE A/B (steering saturation 6.45% → 0.58%, lap 54.72s → 52.35s) and the "Which settings affect which controller" map and the three MPCC-inspired additions above), `tuning.md` §4.5d (tuning surface), and `late_turn_in_investigation.md` Part 16 (research survey, formulation choice, validation, the four bugs found in testing).
+| Piece | Offline (`controller/nmpc/`) | Live (`fsds_simulator/control/fsae_control/fsae_control/nmpc/`) |
+|---|---|---|
+| State layout, guards | `layout.py` | `layout.py` |
+| Model, RK4 steps | `dynamics.py` | `dynamics.py` |
+| Path reference | `reference.py` | `reference.py` |
+| Cost rows `h(x)` | `outputs.py` | `outputs.py` |
+| Rate zone and stage ramp | `weight_schedule.py` | `weight_schedule.py` |
+| QP structure, rollout, Jacobians, cost | `qp_model.py` | `qp_model.py` |
+| One SQP step | `sqp_step.py` | `sqp_step.py` |
+| `NMPCController`, `compute()` | `solver.py` | `solver.py` |
+| Parameters | `settings/nmpc.py` (`NMPC_*`) | `mpc/nmpc_params.py`, `mpc/mpc_params.py` |

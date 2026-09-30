@@ -1,318 +1,257 @@
 # Debugging Tools
 
-Catalog of the diagnostic/debugging tools across this repo and the outer `ros2/` scripts: which question each one answers and how to run it. For *why* a tool was built, or the investigation it came out of, see `docs/logs/`, this document only covers current usage.
+Catalogue of the diagnostic tools in this repo and the outer `ros2/` scripts: which question each answers and how to run it. For why a tool was built and what it found, see [docs/logs/](../logs/README.md). This guide covers current usage only.
 
-## Which tool for which question
+Run every `python -m` command from `fsae_MPCTest/` so `tuner`, `gui` and `settings` resolve as packages.
+
+## Which tool answers which question
 
 | Tool | Question it answers | Run with |
 |---|---|---|
-| `gui/launcher.py` | Where's the fastest way to launch the sim, debug a log, run the offline sim, or retune a weight, without editing a script or remembering a CLI? | `python -m gui.launcher` |
-| `live_viz.py` | Which tracking error or control-law term is actually driving the car's steering/throttle right now, live, whichever controller is running? | launched automatically by `ros2/launch_all.sh` (or the launcher's Launch Sim tab); standalone: `ros2 run fsae_control live_viz` |
-| `tuner/recorded_map_rollout.py` | Does a plant/weight change still reproduce the published closed-loop baseline on the recorded map? | `python -m tuner.recorded_map_rollout` |
-| `tuner/checks/plant_openloop_validation.py` | Does the offline plant model reproduce FSDS's measured open-loop behaviour? | `python -m tuner.checks.plant_openloop_validation [--ab] [--robustness]` |
-| `tuner/nmpc_offline_check.py` | Is the offline NMPC (model parity, Jacobians, SQP convergence, LTV-QP-vs-NMPC A/B) still internally consistent? | `python -m tuner.nmpc_offline_check` |
-| `ros2/src/fsae_planning/.../test/nmpc_offline_check.py` | Same four checks, for the **live** NMPC port | `python3 ros2/src/fsae_planning/control/fsae_control/test/nmpc_offline_check.py` |
-| `tuner/checks/live_vs_sim_diagnostics.py` | Where does a live run diverge from an offline run on speed-tracking error and saturation-episode structure? | `python -m tuner.checks.live_vs_sim_diagnostics` |
-| `ros2/run_steering_sysid.sh` + `tuner/checks/steering_sysid_analysis.py` | What does FSDS's steering→yaw response actually look like across speed (sustained cornering)? | `cd ros2 && ./run_steering_sysid.sh` |
-| `ros2/run_steering_step.sh` + `tuner/checks/steering_step_analysis.py` | Which mechanism caps FSDS's yaw rate (hard limit / scaled authority / active damping), from a step-input transient? | `cd ros2 && ./run_steering_step.sh` |
-| `tuner/checks/steering_response.py` | What understeer coefficient and full-lock deficit does a live control CSV imply? | `python -m tuner.checks.steering_response <control_csv>` |
-| `tuner/tools/plot_playback.py` | What did this run (or these runs, compared) actually do, signal by signal and on the map? | `python -m tuner.tools.plot_playback [csv ...]` |
-| `tuner/steering_chatter_check.py` | Does a weight/setting change make tick-to-tick steering chatter better or worse? | `python -m tuner.steering_chatter_check [--controller nmpc\|ltv] [--set NAME=VALUE ...]` |
-| `tuner/reference_heading_geometry_check.py` | Is a reference-heading swing caused by the online planner's rebuild, or is it just what the track geometry demands even offline? | `python -m tuner.reference_heading_geometry_check` |
-| `tuner/reference_excess_mechanism_check.py` | Are fast-reference-heading ticks explained by the boundary-planner's seed-midpoint anchor jump? | `python -m tuner.reference_excess_mechanism_check` |
-| `tuner/checks/ref_heading_limiter_ab.py` / `ref_heading_limiter_suite_check.py` | Does `REF_HEADING_RATE_LIMIT` help or hurt, on one map or across the whole validation suite? | `python -m tuner.checks.ref_heading_limiter_ab` / `python -m tuner.checks.ref_heading_limiter_suite_check` |
-| `ros2/clock_drift_check.py` | Is FSDS's own simulation clock falling behind wall time (a genuine sim-side slowdown), separate from message-delivery timing? | launched by `ros2/launch_all.sh`, or standalone: `python3 clock_drift_check.py <output_csv_path>` |
-| `ros2 topic hz` capture block in `ros2/launch_all.sh` | Are `/fsds/testing_only/odom`, `/fsae/slam/car_position`, `/clock`, `/fsds/imu` arriving at their expected rate? | launched automatically by `ros2/launch_all.sh`, logs to `fsae_logs/topic_hz_diagnostics/` |
-| `tuner/tools/doc_lint.py` | Does a doc break this project's own writing conventions (long unstructured prose, stray AI-instruction-file references)? | `python -m tuner.tools.doc_lint [--max N]` |
-| `tuner/tools/sync_mpc_params.py` | After a param change is live-tested and confirmed good, is `fsae_autonomous` (and the `fsds_simulator` mirror) still running the OLD weights? | `python -m tuner.tools.sync_mpc_params [--apply]`, or the Settings tab's "Overwrite All Params..." button |
+| `gui/launcher/` | What is the fastest way to launch the sim, debug a log, run the offline sim or retune a weight without editing a script? | `python -m gui.launcher` |
+| `live_viz` | Which tracking error or control-law term is driving steering and throttle right now? | started by `ros2/launch_all.sh`, or `ros2 run fsae_control live_viz` |
+| `tuner/validation/recorded_map_rollout.py` | Does a plant or weight change still reproduce the closed-loop baseline on the recorded map? | `python -m tuner.validation.recorded_map_rollout` |
+| `tuner/validation/plant_openloop_validation.py` | Does the offline plant reproduce FSDS's measured open-loop behaviour? | `python -m tuner.validation.plant_openloop_validation [--ab] [--robustness]` |
+| `tuner/validation/nmpc_offline_check.py` | Is the offline NMPC still internally consistent? | `python -m tuner.validation.nmpc_offline_check` |
+| `test/nmpc_offline_check.py` in `fsae_control` | The same for the live NMPC port. | `python3 ros2/src/fsae_planning/control/fsae_control/test/nmpc_offline_check.py` |
+| `tuner/investigations/live_vs_sim_diagnostics.py` | Where does a live run diverge from an offline run in speed-tracking error and saturation-episode structure? | `python -m tuner.investigations.live_vs_sim_diagnostics` |
+| `tuner/investigations/analyze_adaptive_log.py` | Which adaptive feature fired in each corner of a live log, and was the corner achievable at that speed? | `python -m tuner.investigations.analyze_adaptive_log <control_csv>` |
+| `tuner/investigations/steering_response.py` | What understeer coefficient and full-lock deficit does a live control CSV imply? | `python -m tuner.investigations.steering_response <control_csv> [...]` |
+| `tuner/investigations/steering_sysid_analysis.py` | Which mechanism explains FSDS's steering-to-yaw response across speed (sustained cornering)? | `python -m tuner.investigations.steering_sysid_analysis <log.csv>` |
+| `tuner/investigations/steering_step_analysis.py` | Is the yaw cap a hard limit, scaled authority or active damping (step-input transient)? | `python -m tuner.investigations.steering_step_analysis <log.csv>` |
+| `tuner/investigations/brake_sysid_analysis.py` and `ros2/run_brake_sysid.sh` | What deceleration does FSDS deliver for a given brake command and speed? | `cd ros2 && ./run_brake_sysid.sh` |
+| `tuner/tools/plot_playback.py` | What did this run, or these runs compared, do signal by signal and on the map? | `python -m tuner.tools.plot_playback [csv ...]` |
+| `tuner/investigations/steering_chatter_check.py` | Does a weight or setting change make tick-to-tick steering chatter better or worse? | `python -m tuner.investigations.steering_chatter_check [--controller nmpc\|ltv] [--set NAME=VALUE ...]` |
+| `tuner/investigations/reference_heading_geometry_check.py` | Is a reference-heading swing caused by the online planner's rebuild, or by the track geometry itself? | `python -m tuner.investigations.reference_heading_geometry_check` |
+| `tuner/investigations/reference_excess_mechanism_check.py` | Are fast-reference-heading ticks explained by the boundary planner's seed-midpoint anchor jump? | `python -m tuner.investigations.reference_excess_mechanism_check` |
+| `tuner/investigations/ref_heading_limiter_ab.py` and `ref_heading_limiter_suite_check.py` | Does the reference-heading rate limit help or hurt, on one map or across the validation suite? | `python -m tuner.investigations.ref_heading_limiter_ab` and `python -m tuner.investigations.ref_heading_limiter_suite_check` |
+| `ros2/clock_drift_check.py` | Is FSDS's simulation clock falling behind wall time, separate from message-delivery timing? | started by `ros2/launch_all.sh`, or `python3 clock_drift_check.py <output_csv_path>` |
+| `ros2 topic hz` capture block in `ros2/launch_all.sh` | Are odom, `/clock`, the SLAM pose and the IMU arriving at their expected rates? | started by `ros2/launch_all.sh`, logs to `fsae_logs/topic_hz_diagnostics/` |
+| `tuner/tools/sync_mpc_params.py` | After a param change is live-tested, are `fsae_autonomous` and the `fsds_simulator` mirror still on the old values? | `python -m tuner.tools.sync_mpc_params [--apply]`, or the Settings tab's "Overwrite All Params..." button |
+| `tuner/tools/doc_lint.py` | Does a doc break the project's writing conventions, links or module-reference coverage? | `python -m tuner.tools.doc_lint [--max N] [--strict] [paths ...]` |
 
-`tuner.offline_tuner` (the CMA-ES weight search) and `sim/`'s modules are core simulation infrastructure, not diagnostic tools, and are covered in [offline_guide.md](offline_guide.md) instead.
+The CMA-ES weight search (`tuner/offline_tuner.py`) and the `sim/` modules are simulation infrastructure, not diagnostics. See [offline_guide.md](offline_guide.md). Track export tools (`tuner/tools/export_speed_profile.py`, `tuner/tools/raceline_optimizer.py`) are covered in [integration_guide.md](../fsds/integration_guide.md).
 
-**Two different scripts share the name `nmpc_offline_check.py`.** One lives in this repo (`tuner/nmpc_offline_check.py`, offline plant), the other in the live `fsae_planning` checkout (`control/fsae_control/test/nmpc_offline_check.py`, mirrored under `fsds_simulator/control/fsae_control/test/`). They run the same four checks (scalar/vectorised model parity, Jacobian finite-difference cross-check, SQP cost-monotonic convergence from a cold start, and an independent CasADi+IPOPT solver cross-check) against their own side's implementation, and are meant to be read side by side, not interchanged. The live version's closed-loop A/B section optionally imports this repo for an extra cross-check when checked out alongside, and degrades to synthetic-state checks only when it isn't.
+**Two scripts share the name `nmpc_offline_check.py`.** They check different implementations and different sets of properties, and are read side by side, not interchanged.
 
-**Some investigation scripts named in `docs/logs/sim_to_real_investigation.md` no longer exist** (`gap_attribution_ledger.py`, `blend_reset_diagnostics.py`, `reference_heading_vs_rebuild.py`, `combined_factors_sweep.py`, `plot_control_log.py`): they were one-off scripts for a since-concluded question, deleted once concluded. Only a stale `.pyc` remains for these. Don't try to run them; if the same question comes up again, treat the surviving tools above (particularly `plot_playback.py`, which superseded `plot_control_log.py`) as the current equivalent.
+| Script | Checks |
+|---|---|
+| `tuner/validation/nmpc_offline_check.py` (offline plant, `controller/nmpc/`) | four: scalar against vectorised model parity, SQP cost convergence, turn-in from an on-line start, closed-loop LTV-QP against NMPC on the recorded map |
+| `test/nmpc_offline_check.py` (live `fsae_control.nmpc`, mirrored under `fsds_simulator/control/fsae_control/test/`) | six: model parity, Jacobians (forward against central differences), SQP convergence, turn-in, wrong-direction transient, closed loop |
 
-## Centralized launcher: `gui/launcher.py`
+The live closed-loop check needs a sibling `fsae_MPCTest` checkout and is skipped without one.
 
-**The main entry point for this project.** One tkinter app, tabbed by tool, wrapping every entry point below into a single window instead of a script edit plus a separate terminal command each time. It contains no simulation/ plotting/tuning logic of its own: every button rewrites a config file in place (same effect as hand-editing it) and then shells out to the existing tool via subprocess. It does not replace any of the CLI usage documented elsewhere on this page, it's a faster path to the same tools, not a different implementation of them — everything it does remains directly reachable the manual way too.
+Investigation scripts named in [sim_to_real_investigation.md](../logs/sim_to_real_investigation.md) that no longer exist: `gap_attribution_ledger`, `blend_reset_diagnostics`, `reference_heading_vs_rebuild`, `combined_factors_sweep`, `plot_control_log`. They were one-off scripts for concluded questions. `plot_playback.py` replaced `plot_control_log`.
 
-**Required checkout location: `fsae_MPCTest/` must be cloned directly inside the outer FSDS simulator repo's root**, i.e. `<FSDS repo root>/fsae_MPCTest/`, a sibling of that repo's own `ros2/` folder — the same layout this project's `CLAUDE.md` "Git layout" section already documents for every other tool here. The launcher locates `ros2/launch_all.sh` and `ros2/src/fsae_planning/tracks/` by walking up from its own file location (`gui/launcher.py` → `fsae_MPCTest/` → its parent), so a `fsae_MPCTest` checked out anywhere else (a sibling directory instead of nested inside, a different drive/path entirely) will fail to find the live sim to launch, or warn that `mpc_params.py` isn't where it expects (see the Settings tab's live-sync note below).
+## The launcher: `gui/launcher/`
+
+A Tk desktop app that wraps the tools on this page. It holds no simulation, plotting or tuning logic. Each button rewrites a config file in place, with the same effect as a hand edit, and then shells out to an existing tool.
 
 ```bash
 cd fsae_MPCTest && python -m gui.launcher
 ```
 
-**Config files this tool writes to** (all in place, no new files, `.bak` backups as noted below):
+**Required layout.** `fsae_MPCTest/` sits directly inside the outer FSDS repo root, next to `ros2/`. `gui/launcher/paths.py` resolves every path from its own location (`fsae_MPCTest` and its parent), so a checkout anywhere else cannot find `ros2/launch_all.sh`, the tracks or `mpc_params.py`.
 
-| File | Written by | What changes |
-|---|---|---|
-| `ros2/launch_all.sh` | Launch tab's Launch button | `TRACK`, `CONTROLLER`, `USE_NMPC`, `STANDALONE_OUTPUT`, `USE_PRECOMPUTED_SPEED`, `USE_PRECOMPUTED_PATH`, `V_MAX`, `V_MIN`, and (NMPC only, when checked) `NMPC_PROGRESS_ENABLED` |
-| `fsae_MPCTest/settings.py` | Settings tab's Save button (also Profiles tab's Load, see below) | `Q_diag`, `R_diag`, `R_rate_diag`, `R_A_ACCEL`, `R_A_BRAKE`, `SPEED_TARGET_DEFICIT_MAX`, every `NMPC_*` weight override, every feature-enable flag listed below |
-| `ros2/src/fsae_planning/.../mpc_params.py` / `nmpc_params.py` (live) | Settings tab's Save button (also Profiles tab's Load) | the matching field for every one of the above that has a live counterpart (see "Settings tab, and live/offline sync" below for the handful that don't) |
-| `ros2/src/fsae_planning/common/fsae_bringup/config/fsae_params.yaml` (live) | Settings tab's Save button (also Profiles tab's Load) | the same fields as the live dataclass row above. This is the file ROS actually loads a field's RUNTIME default from at node startup (it OVERRIDES the dataclass default), so a save that skipped this file leaves the car running the OLD value indefinitely with no visible sign of it -- writing this file is not optional, skipping it is exactly how `r_a_accel`/`nmpc_track_halfwidth` can silently stick on a stale value |
-| `fsae_MPCTest/fsds_simulator/.../mpc_params.py` / `nmpc_params.py` / `fsae_params.yaml` (mirror) | Settings tab's Save button (also Profiles tab's Load) | the same fields again, kept identical to the live copies above per CLAUDE.md's "Third copy" change-ledger rule |
-| `fsae_MPCTest/settings_profiles/<name>.json` | Profiles tab's Save/Delete | a full snapshot of every field above, see "Profiles tab" below |
-| `ros2/src/fsae_planning/tracks/<name>/` | Launch tab's Export & Save Track button | writes `speed_profile.csv`/`raceline.csv`/`centerline.csv` for a newly recorded track (only after explicit confirm if the name already exists) |
-| `fsae_MPCTest/fsds_simulator/tracks/<name>/` | same Export & Save Track button | copy of the same new track's files |
-| `<FSDS repo root>/fsae_logs/*.csv` → `fsds_simulator/recorded_runs/<Controller>/` | Launch tab's Stop button (moves, doesn't create) | only after the confirmation prompt it shows is accepted |
-
-Nothing else in this repo or the outer `ros2/` tree is touched by any tab.
+**Package layout.** `theme.py`, `paths.py`, `file_edit.py`, `process_utils.py`, `app.py` and one module per tab under `gui/launcher/tabs/`: `launch.py`, `log_debug.py`, `offline_sim.py`, `settings.py`, `profiles.py`.
 
 | Tab | What it does |
 |---|---|
-| **Launch Sim** | Rewrites `ros2/launch_all.sh`'s `TRACK`, `CONTROLLER`, `USE_NMPC`, `STANDALONE_OUTPUT`, `USE_PRECOMPUTED_SPEED`, `USE_PRECOMPUTED_PATH`, `V_MAX`, `V_MIN` from a form (with a preview/confirm before writing), then runs it. A **Stop** button sends the same signal a terminal Ctrl+C would (`launch_all.sh`'s own `trap cleanup SIGINT SIGTERM` handles the actual teardown). NMPC-only: a "Progress term (experimental)" checkbox, visible only when NMPC is selected, toggles the commented-out `NMPC_PROGRESS_ENABLED` shortlist line; it does NOT set `NMPC_SLACK_LINEAR_WEIGHT` for you (tune that from the Settings tab), even though the progress term is measured to need it set well above 0. See "Record a new track" below for its recording mode. |
-| **Debug a Log** | File browser over `<FSDS repo root>/fsae_logs/` (matching `launch_all.sh`'s own `log_dir:=` — NOT `~/fsae_logs`, `ControlLogger`'s fallback default when no `log_dir` is given) and `fsds_simulator/recorded_runs/` (including per-controller subfolders); select one or more `*_control_*.csv` files and run `tuner.tools.plot_playback` on them, or use "Debug Latest" for that tool's own auto-load-newest behaviour with no selection needed. |
-| **Run Offline Sim** | Launches `gui/simulation.py`. Carries forward its "rough signal only" caveat (see "The offline sim does not yet fully predict the car" in the root `CLAUDE.md`) directly in the tab. |
-| **Settings** | Edits the commonly-retuned `settings.py` constants in place, described in full below. |
-| **Profiles** | Named snapshots of every field the Settings tab manages, described in full below. |
+| Launch Sim | Rewrites `ros2/launch_all.sh` variables from a form (preview and confirm first), then runs it. Stop sends Ctrl+C to the process group. Also holds Export & Save Track and Run Brake Sysid. |
+| Debug a Log | Lists `*_control_*.csv` files in `<FSDS root>/fsae_logs/` and `fsds_simulator/recorded_runs/` (including one level of subfolder). Debug Selected opens them in `plot_playback`. Debug Latest runs it with no arguments. |
+| Run Offline Sim | Starts `gui/simulation.py` (`python -m gui.simulation`), the 2D matplotlib tool. Its dynamics do not match FSDS, so cross-check anything that matters against `tuner.validation.recorded_map_rollout` or an FSDS session. |
+| Settings | Edits commonly retuned `settings/` constants and syncs them to the live and mirror files. |
+| Profiles | Named snapshots of the Settings and Launch tab values. |
 
-### Record a new track
+### Files each tab writes
 
-Checking **"Record new track"** on the Launch tab and typing a name switches the form into the recording setup this project's own docs already recommend (`launch_all.sh`'s "Set BOTH to false (with CONTROLLER=stanley below) when recording a NEW track" comment, and [fsds/fsds_integration_guide.md](fsds/fsds_integration_guide.md#recording-exporting-and-driving-a-track)'s step 1): `CONTROLLER=stanley`, `USE_PRECOMPUTED_SPEED=false`, `USE_PRECOMPUTED_PATH=false`. Prior values for those three are remembered and restored when the checkbox is unchecked, so toggling recording mode on and off never clobbers an otherwise-normal drive setup. `launch_all.sh` always writes `cone_map.json` for whatever `TRACK` is set to as a side effect of driving, recording mode just makes sure it lands in a *new* track's folder with a live (not precomputed) drive behind it.
+| File | Written by | What changes |
+|---|---|---|
+| `ros2/launch_all.sh` | Launch button | `TRACK`, `CONTROLLER`, `USE_NMPC`, `STANDALONE_OUTPUT`, `USE_PRECOMPUTED_SPEED`, `USE_PRECOMPUTED_PATH`, `V_MAX`, `V_MIN`, and (NMPC only) the commented-out `NMPC_PROGRESS_ENABLED` line. It does not set `NMPC_SLACK_LINEAR_WEIGHT`. Brake Sysid flips `RUN_BRAKE_SYSID` on for the launch and back to false. |
+| `settings/*.py` | Settings Save, Profiles Load | `Q_diag`, `R_diag`, `R_rate_diag`, `R_A_ACCEL`, `R_A_BRAKE`, `SPEED_TARGET_DEFICIT_MAX`, the NMPC rate-shaping scalars, every `NMPC_*` weight override, the NMPC progress-term numbers and the feature flags. Each name is located by searching the submodules. |
+| Live `mpc_params.py` and `nmpc_params.py` | Settings Save, Profiles Load | the matching field for each setting that has a live counterpart |
+| Live `fsae_params.yaml` | Settings Save, Profiles Load | the same fields. The YAML overrides the dataclass default at ROS parameter declaration, so a save that skipped it would leave the car on the old value with no visible sign. |
+| `fsds_simulator/.../mpc_params.py`, `nmpc_params.py`, `fsae_params.yaml` | Settings Save, Profiles Load | the same fields again, keeping the mirror identical to live |
+| `settings_profiles/<name>.json` | Profiles Save and Delete | a snapshot, tracked in git |
+| `ros2/src/fsae_planning/tracks/<name>/` and `fsds_simulator/tracks/<name>/` | Export & Save Track | `speed_profile.csv`, `raceline.csv`, `centerline.csv` for a new track, then a copy into the mirror |
+| `fsae_logs/*.csv` to `fsds_simulator/recorded_runs/<Controller>/` | Stop (moves, does not create) | only after the prompt is accepted |
 
-Once stopped (the **Stop** button, or Ctrl+C in the terminal it opened), **Export & Save Track** runs the same two exporters [fsds/fsds_integration_guide.md](fsds/fsds_integration_guide.md#recording-exporting-and-driving-a-track)'s step 2 does by hand (`tuner.tools.export_speed_profile`, then `tuner.tools.raceline_optimizer` in both `raceline` and `centerline` modes), which write directly into `ros2/src/fsae_planning/tracks/<name>/` as they already do outside the GUI. It then additionally copies that whole track folder into `fsae_MPCTest/fsds_simulator/tracks/<name>/`, since that mirror has no automatic resync (see "Third copy" in the root `CLAUDE.md`). Re-exporting over an existing track name asks to confirm the overwrite first.
+The first write of a session to `launch_all.sh` or any `settings/*.py` file saves a `.bak` copy beside it. Recovery is `mv launch_all.sh.bak launch_all.sh`, independent of git.
 
-Clicking **Stop** on any run (recording or not) also offers to move that run's just-written CSV pair from `<FSDS repo root>/fsae_logs/` (matching `launch_all.sh`'s own `log_dir:=`) into `fsds_simulator/recorded_runs/<Controller>/` — the same manual copy step described under "Telemetry playback" below, done for you. It only offers logs written after the current launch started, so an unrelated older file sitting in `fsae_logs/` is never swept up by mistake. Since the node's own telemetry file isn't necessarily flushed and closed the instant Stop is clicked (`ControlLogger.close()` runs from the node's own signal handler, asynchronously with the click), the launcher polls for up to 5 seconds before giving up silently, rather than checking once and missing a file written moments later.
+### Launch tab: recording a new track
 
-Accepting the move prompt then asks for an optional label for the run. Leaving it blank keeps the original filename; typing one splices it in between the tag and `_control_`/`_path_` (`mpc_standalone_<label>_control_<stamp>.csv`), the same hand-labelled-run convention `recorded_runs/` already uses for runs saved for later comparison (see "Telemetry playback" below) — `plot_playback.py`'s own discovery already tolerates this, it only looks for `_control_`/`_path_` plus the trailing stamp.
+Checking Record new track and typing a name applies the recommended recording setup: `CONTROLLER=stanley`, `USE_PRECOMPUTED_SPEED=false`, `USE_PRECOMPUTED_PATH=false`. The previous values are restored when the box is unchecked. `launch_all.sh` writes `cone_map.json` for whatever `TRACK` is set to, so recording mode makes sure it lands in a new folder from a live drive.
 
-### Settings tab, and live/offline sync
+After Stop, Export & Save Track runs `tuner.tools.export_speed_profile <name>`, then `tuner.tools.raceline_optimizer <name>` and `tuner.tools.raceline_optimizer <name> --mode centerline`, then copies the folder into the mirror. Re-exporting an existing name asks first. Track workflow: [integration_guide.md](../fsds/integration_guide.md).
 
-Edits the commonly-retuned `settings.py` constants in place: `Q_diag`, `R_diag`, `R_rate_diag`, `R_A_ACCEL`/`R_A_BRAKE`, every `NMPC_*` weight override (with an explicit "override vs. inherit (-1.0)" checkbox per field, matching `settings.py`'s own sentinel convention), and every feature-enable flag, grouped exactly the way `mpc_params.py`'s own per-field `"controller"` metadata already classifies them:
+Stop also offers to move the run's control and path CSVs from `fsae_logs/` into `fsds_simulator/recorded_runs/<Controller>/`. It only offers logs written after the current launch. The node closes its CSV asynchronously from its own signal handler, so the launcher polls for up to 5 seconds. An optional label is spliced between the tag and `_control_` or `_path_`.
 
-- **Both controllers**: `delay_compensation_enabled` (live-only, no `settings.py` equivalent — the offline rollout always has it on).
-- **LTV-QP only**: adaptive Q scaling, steer-rate anti-hunt, adaptive R-rate in corners, reference-heading rate limit, reversal penalty.
-- **NMPC only**: its own steer-rate anti-hunt, reversal penalty, rate-cost stage ramp, rate-cost 3-zone schedule, and corner rate-blend (experimental, all default off).
+### Settings tab
 
-Every field shows a short description (and unit, where one applies) pulled live from `mpc_params.py`'s own field metadata (or, for the 3 weight vectors, a hand-written per-index breakdown), so the tab's text can never drift out of sync with what the field actually means.
+Fields are grouped the way `MPCParams` field metadata classifies them:
 
-**Saving also updates the live simulator**, not just this repo: every weight/override/flag that has a matching field in `ros2/src/fsae_planning/control/fsae_control/fsae_control/mpc/mpc_params.py` or `nmpc_params.py` is rewritten there too, in the same click, per CLAUDE.md's "Single source of truth for MPC tuning" numeric-parity rule (`settings.py`'s `Q_diag[0]` ↔ `mpc_params.py`'s `q_e_y`, and so on). A handful of fields have no live counterpart and are settings.py-only: `R_diag[1]` (nominal-only, superseded by `R_A_ACCEL`/`R_A_BRAKE`) and `Q_diag`'s last three entries (`e_a`/`delta_act`/`a_act`, always 0.0). If the live file isn't found at the expected path (an unusual repo layout), Settings still saves to `settings.py` alone and says so with a warning, rather than silently only updating one side.
+- Both controllers: `delay_compensation_enabled`, with no offline constant because the offline rollout always has it on.
+- LTV-QP only: adaptive Q scaling, steer-rate anti-hunt, reference-heading rate limit, reversal penalty.
+- NMPC only: steer-rate anti-hunt, reversal penalty, rate-cost stage ramp, three-zone schedule, corner rate-blend.
 
-**The same click also writes `fsae_params.yaml` and the `fsds_simulator/` mirror** (both dataclasses, both YAMLs), not just the live dataclass default. This matters because `fsae_params.yaml` is what a launched node actually reads its runtime value from -- it OVERRIDES the dataclass default at ROS param declaration time, so writing only the dataclass leaves the car silently running an old value with the GUI showing the new one and nothing to say they'd diverged (`r_a_accel` stuck at 2.25 instead of a corrected 1.0, `nmpc_track_halfwidth` stuck at 3.0 instead of a reverted 3.5, each only caught by reading the YAML directly rather than trusting the dataclass). Every field, including the 20 experimental NMPC ones, is written to `fsae_params.yaml`; a field missing from that file is reported the same way a missing dataclass field is, not silently skipped.
+Every `NMPC_*` weight override has an override checkbox: checked uses the number, unchecked writes the `-1.0` inherit sentinel. Field descriptions and units come from the `mpc_params.py` metadata, so the text follows the field.
 
-**What it does NOT expose**: the full commented-out `MPC_*`/`NMPC_*` per-tick weight-override shortlist further down `launch_all.sh` (structural solver settings like `NMPC_HORIZON`, `NMPC_SQP_ITERS`) — those stay a manual edit, deliberately, since they're touched far less often than the Launch tab's fields and the enable/disable-by-comment mechanic for that whole block isn't worth the UI surface it would need.
+Settings with no live counterpart stay offline-only: `R_diag[1]` (nominal only, superseded by `R_A_ACCEL` and `R_A_BRAKE`) and the last three `Q_diag` entries (always 0.0). If the live files are missing at the expected path, Save writes `settings/` alone and warns.
 
-**File safety**: the first time a session rewrites `ros2/launch_all.sh`, `settings.py`, or the live `mpc_params.py`, it saves a `.bak` copy alongside the original (e.g. `launch_all.sh.bak`) before writing, so a bad edit has a one-command recovery (`mv launch_all.sh.bak launch_all.sh`) independent of git.
+Precedence hazard: a launched node reads a `launch_all.sh` argument before `fsae_params.yaml` and the dataclass. The Settings tab never writes `launch_all.sh`. A field that can be set by a launch argument therefore belongs on the Launch tab only, and the NMPC progress flag is deliberately absent here for that reason. A Settings save of a field that an uncommented `launch_all.sh` line overrides has no effect on the next launch.
 
-### "Overwrite All Params..." button
+Not exposed: solver internals such as `NMPC_HORIZON` and `NMPC_SQP_ITERS`, the corner-mode Q/R split and most still-default flags. They stay manual edits.
 
-A different sync direction from everything else on this tab. Save (above) writes what THIS GUI session's widgets currently hold, outward, to `settings.py`/the live dataclasses/YAML/the `fsds_simulator` mirror. "Overwrite All Params" instead runs `tuner/tools/sync_mpc_params.py` (its own section further down this doc has the full mechanism; a plain subprocess call, matching this file's "every button shells out" design), pushing the LIVE checkout's CURRENT on-disk `mpc_params.py`/ `nmpc_params.py`/`fsae_params.yaml` into `fsae_autonomous` and the `fsds_simulator` mirror. It does not read this tab's own widgets at all, and works regardless of whether the Settings tab has unsaved edits pending (those are a separate, earlier step: save/push live first, run this after).
+### Overwrite All Params
 
-Two-step, both against a background thread so the window stays responsive:
-1. A dry run first, to find out which destinations actually differ. "Already in sync" short-circuits to an info dialog with nothing written.
-2. If anything differs, a confirmation dialog names exactly which destinations (by the script's own labels, e.g. `fsae_autonomous`) will be overwritten, states plainly that local edits to those 3 files there are lost except for a `.bak` backup, and that `fsae_autonomous` itself is never committed or pushed by this tool, only its local tree is touched. Declining leaves every file untouched.
+Save pushes what the tab's widgets hold outward. Overwrite All Params runs `tuner.tools.sync_mpc_params` as a subprocess and pushes the live checkout's on-disk files into `fsae_autonomous` and the mirror. It ignores the tab's widgets and any unsaved edits, so save and push live first. Two steps: a dry run (already in sync stops with an info dialog), then a confirmation naming the destinations that differ. Declining writes nothing.
 
 ### Profiles tab
 
-Named snapshots of every field the Settings tab manages (the same set the "Saving also updates the live simulator" section above describes, derived from the Settings tab's own field tables so a profile can never drift out of covering less than a Settings-tab Save does), stored one JSON file per profile under `fsae_MPCTest/settings_profiles/<name>.json`. Tracked in git like any other project file, not gitignored -- a profile is meant to be a shareable, reusable tuning configuration, not a personal scratch file.
+A profile is one JSON file in `settings_profiles/` holding every Settings-tab field plus the Launch tab's track, controller, precomputed speed and path, `V_MAX`, `V_MIN` and progress choice.
 
-- **Save Current As Profile...** prompts for a name, reads the CURRENT value out of every Settings-tab widget (not `settings.py` -- this captures an unsaved in-progress edit too), and writes it as `{"name": ..., "values": {...}}`. An existing profile with the same name asks to confirm the overwrite first.
-- **Load Selected** pushes a profile's values into every matching Settings-tab widget, then runs the exact same save routine the Settings tab's own Save button uses -- settings.py, both live dataclasses, both `fsae_params.yaml` copies, and both `fsds_simulator/` mirrors are all rewritten immediately, precisely as if every field had been retyped by hand and Save clicked. There is no separate, second write path to keep in sync with the Settings tab's own. A name in the profile that no field table currently recognises (e.g. a profile saved by an older GUI version before a field was renamed or removed) is skipped silently rather than reported as an error, since a profile is a convenience snapshot, not a strict schema every version must satisfy.
-- **Delete Selected** removes the profile's JSON file. Not recoverable except via git history if the file had already been committed.
+- Save Current As Profile reads the widgets, so unsaved edits are captured. A same-name profile asks before overwrite.
+- Load Selected pushes values into the widgets and then runs the Settings tab's own save routine, so all files are rewritten as if each field were retyped. The Launch-tab part only updates that tab's widgets and does not write `launch_all.sh` until the next Launch click. A name no field table recognises is skipped silently.
+- Delete Selected removes the file. Recovery is git history only.
 
-Loading a profile only writes files; it does not restart a running sim. The confirmation dialog says so, matching the Settings tab's own "restart the sim to pick up the live change" reminder.
+Loading a profile writes files but does not restart a running sim.
 
-## Pushing live-tested params to `fsae_autonomous` and the `fsds_simulator` mirror: `tuner/tools/sync_mpc_params.py`
+## Pushing live-tested params: `tuner/tools/sync_mpc_params.py`
 
-**What it answers**: a param has been retuned and validated on a live/FSDS run in `fsae_planning` (the ONLY place params get tuned, per this project's stated workflow) — is `fsae_autonomous` (the production repo) or the `fsds_simulator` mirror still running the old value?
+**Question.** A param was retuned and validated in `fsae_planning`. Is `fsae_autonomous`, or the `fsds_simulator` mirror, still on the old value?
 
 ```bash
 python -m tuner.tools.sync_mpc_params            # dry run, prints a diff per file per destination
-python -m tuner.tools.sync_mpc_params --apply     # actually overwrite
+python -m tuner.tools.sync_mpc_params --apply    # overwrite
 ```
 
-Or from the GUI: Settings tab's "Overwrite All Params..." button, see that tab's own section above.
+- **Scope.** Exactly `mpc_params.py`, `nmpc_params.py` and `fsae_params.yaml`. Code changes to `mpc_controller.py`, the `lmpc/` and `nmpc/` packages or `live_viz/` need the ordinary manual propagation.
+- **Direction.** One way, from `ros2/src/fsae_planning/` to `fsae_autonomous` and `fsae_MPCTest/fsds_simulator/`. Destination values are never read as a source.
+- **Why the YAML is in scope.** It overrides the dataclass default, so syncing only the `.py` files would leave the destination on an old number.
+- **Safety.** Dry run by default. Each destination file gets a one-time `.bak` before an overwrite. Only the local working tree of `fsae_autonomous` is written. Commit and push there stay separate human steps.
+- **`fsae_autonomous` location.** The script tries `fsae_autonomous` and `ros2_autonomous/src/fsae_autonomous/` under the FSDS root (`_AUTONOMOUS_CANDIDATES`) and warns and skips that destination if neither has a `.git`. If the checkout moves again, add the new path there.
 
-**Scope**: exactly the 3 files CLAUDE.md's "Single source of truth for MPC tuning" section names as the live side of the parity boundary — `mpc_params.py`, `nmpc_params.py`, `fsae_params.yaml`. Nothing else; a code change to `mpc_core.py`/`nmpc_core.py`/`mpc_controller.py`/ `live_viz.py` still needs the ordinary manual propagation step (see CLAUDE.md's "Third copy" section for the mirror, and the standing `fsae_autonomous`/`fsae_MPCRos` workflow for that side).
+## Live debug window: `live_viz`
 
-**Direction: one-way, from `fsae_planning` only.** `ros2/src/fsae_planning/` is always the source; `fsae_autonomous` and `fsae_MPCTest/fsds_simulator/` are always the destinations. This script never reads either destination's current values as a source for anything — it does not matter what they currently hold, only what live currently holds.
-
-**Why `fsae_params.yaml` is in scope, not just the two `.py` files**: the YAML overrides the dataclass `default=` at ROS param declaration time (see the Settings tab's own writeup above for the two times this caused a value to go silently stale), so syncing only the `.py` files would leave `fsae_autonomous`/the mirror running an old number even after their `mpc_params.py` looked updated.
-
-**Safety**: dry run by default, nothing written until `--apply`. Each destination file gets a one-time `.bak` backup (skipped if one from this run already exists) before being overwritten, same convention as `gui/launcher.py`'s own file-safety mechanism. `fsae_autonomous` is a production repo this project's CLAUDE.md never lets an agent commit or push — this script only ever writes into its LOCAL working tree; review and commit there stays a separate, deliberate, human step.
-
-**`fsae_autonomous`'s actual checkout location isn't fixed** — it has already moved once (from the sibling-checkout path `fsae_autonomous/` to `ros2_autonomous/src/fsae_autonomous/`), and CLAUDE.md's documented path can go stale again the same way. The script searches a short list of known-observed locations and prints a clear warning (skipping that destination, not failing outright) if none are found, rather than silently doing nothing or hardcoding a single path.
-
-## Live debug window: `live_viz.py`
-
-Sim-only debug visualiser (car, cone map, reference path, driven trail, and a live weighted-error breakdown), redrawn from live ROS2 topics on a timer. Never launched by `fsae_autonomous`, only by `ros2/launch_all.sh` alongside the sim, or the launcher's Launch Sim tab.
+Sim-only visualiser: car, cone map, reference path, driven trail, NMPC predicted horizon and a weighted-error breakdown, redrawn from ROS 2 topics on a timer. The code is the `live_viz/` package under `fsae_control` (`panels.py`, `node.py`, `app.py`). It is started by `ros2/launch_all.sh` or the launcher, never by `fsae_autonomous`.
 
 ```bash
 ros2 run fsae_control live_viz
 ```
 
-**Adapts to whichever controller is actually running.** MPC and Stanley share one ROS node name and, in `cmd_vel` output mode, one output topic, so `live_viz.py` cannot tell them apart by topic alone — it identifies the active controller by which debug topic last published (`/fsae/control/debug_weights` for MPC, `/fsae/control/debug_stanley` for Stanley), and switches both the main window's title/stats text and which debug figure is shown accordingly:
+**It follows the running controller.** MPC and Stanley share a node name and, in `cmd_vel` mode, an output topic, so the active controller is identified by which debug topic last published: `/fsae/control/debug_weights` (MPC) or `/fsae/control/debug_stanley` (Stanley). The window title, stats text and debug figure switch accordingly.
 
-- **MPC active**: the weighted-cost breakdown described under "Centralized launcher" above — grouped step-0 panels (tracking/effort/rate) plus the horizon-summed panel, all against `total_cost`.
-- **Stanley active**: a separate two-panel figure —
-  1. **Heading vs. lateral error**: Stanley's own two tracking errors (`e_y`, `e_psi`), one shared scale, share of `|e_y| + |e_psi|`.
-  2. **Control-law term breakdown**: Stanley's three additive terms (`δ = heading_error + atan2(k_cte·e, v+k_soft) − k_d·yaw_rate`, see `control_utils.py`'s `StanleyController`), each as a share of the sum of their absolute values — "how much of this tick's steering command came from which term."
+- **MPC active.** Grouped step-0 panels (tracking, effort, rate) plus a horizon-summed panel, all against `total_cost`.
+- **Stanley active.** Two panels: heading against lateral error (`e_y`, `e_psi`, share of their sum), and the three additive law terms `heading_error + atan2(k_cte e, v + k_soft) - k_d yaw_rate` (see `StanleyController` in `control_utils.py`), each as a share of the sum of absolute values.
 
-**Per-lap score + horizon accuracy.** A yellow panel in the bottom-left of the main map window lists every completed lap: lap number, lap time, composite score, and prediction-horizon accuracy. It fills in live as the car crosses the finish line, fed by `/fsae/control/lap_summary` (JSON, published by whichever controller node is running — see `telemetry_logger.py`'s `ControlLogger.finish_lap()`). Reads "none completed (needs precomputed path)" until the first lap finishes; a live-planner run (no precomputed speed profile, hence no `LapProgressTracker`) never publishes to this topic at all.
+**Per-lap score and horizon accuracy.** A panel at bottom left of the map lists each completed lap: number, time, composite score, horizon accuracy. It is fed by `/fsae/control/lap_summary` (JSON from `ControlLogger.finish_lap()`) and reads "none completed (needs precomputed path)" until a lap finishes. A live-planner run has no `LapProgressTracker` and never publishes a lap.
 
-**Horizon accuracy** answers "how well did the controller's own 1-second look-ahead actually predict where the car went", as a percentage (100% = predicted path matched the driven path exactly). It is independent of the composite score: a car can drive well with a model that predicts itself poorly, or vice versa. NMPC-only — the LTV-QP path never exposes a Cartesian predicted trajectory (only Frenet error states), so its lap rows always show "horizon n/a". See `telemetry_logger.py`'s `HorizonAccuracyTracker` docstring for the exact formula (mean predicted- vs-actual position error over the horizon, divided by the horizon's own arc length).
+Horizon accuracy is how well the controller's 1-second prediction matched the driven path (100 percent is exact). It is mean predicted-against-actual position error over the horizon divided by the horizon's arc length, computed by `HorizonAccuracyTracker` in `telemetry/horizon_tracker.py`. It is independent of the composite score and NMPC-only, because the LTV-QP exposes no Cartesian prediction. LTV-QP rows show "horizon n/a".
 
-Both figures are built once at startup and shown/hidden as a whole rather than rebuilt each frame, so switching controllers mid-session (stopping one run and launching the other) updates the display without a restart. "Shown/hidden" means the actual OS window, not just the figure's own artists: `Figure.set_visible()` alone only controls whether a figure's contents draw onto ITS OWN canvas, it does not touch the window the TkAgg backend opened for it, so the inactive controller's debug figure was left on screen the whole time showing nothing -- a third, unlabelled, empty window with no visible reason to be there. Fixed by calling `fig.canvas.manager.window.withdraw()`/`.deiconify()` (Tk's own window object) on top of `set_visible()`, gated to fire only on an actual controller-switch transition rather than every redraw frame, so a manually moved/resized debug window isn't fought back into place ~50 times a second by the two figures' animations.
+**Display design.** Each of these fixes a specific defect:
 
-**Every bar-graph panel's row order is fixed for the lifetime of the window**, not recomputed each frame. Previously, a panel's y-axis category list was built by filtering a fixed name list down to only the terms with data THIS tick (`[n for n in names if n in terms]`), and the horizon panel additionally re-sorted that filtered list by current value, descending, every frame. Both meant the list `ax.barh()` drew from could change length or order tick to tick even though the values themselves were moving smoothly: a term temporarily absent (e.g. `progress`/ `v_cap_hinge` outside progress mode) collapsed every row below it upward by one slot, and the horizon panel's own sort visibly swapped two rows the instant one term's cost share crossed another's. Fixed by always drawing one row per name in the full declared table (`DEBUG_BAR_GROUPS`, `DEBUG_HORIZON_TERMS`, `STANLEY_ERROR_TERMS`, `STANLEY_LAW_TERMS`), with an absent term shown as an empty grey row at its own fixed position rather than omitted, and the horizon panel's per-frame sort removed entirely in favour of its declared order.
+- Both debug figures are built once and shown or hidden as a whole. `Figure.set_visible()` does not touch the Tk window, so the inactive figure's window is also `withdraw()`n and `deiconify()`ed, only on an actual controller switch so a moved window is not fought back into place.
+- Bar panels keep a fixed row order for the window's lifetime (`DEBUG_BAR_GROUPS`, `DEBUG_HORIZON_TERMS`, `STANLEY_ERROR_TERMS`, `STANLEY_LAW_TERMS`). A term with no data this tick shows as an empty grey row, and the horizon panel is not re-sorted per frame. Otherwise rows shifted or swapped while values moved smoothly.
+- The debug figures use `layout='constrained'` with explicit `hspace` and `wspace` (0.6 and 0.35). A one-time `tight_layout()` cannot re-reserve margin after a resize, which clipped y-axis labels.
 
-**`fig_dbg`/`fig_stanley` use `layout='constrained'`, not a one-shot `tight_layout()` call.** `tight_layout()` computes fixed axes-position fractions once, right before `plt.show()`, and never again -- a window later resized smaller than its requested `figsize` (dragged by the user, or placed smaller by the window manager) has no way to re-reserve margin for the y-axis category labels at the new size, and the longer ones get clipped by the figure's own left edge. Measured directly against a screenshot showing exactly that on both figures (`"g error (e_psi)"`, `"eral error (e_y)"`, MPC panel names losing their first several characters). `constrained_layout` re-solves the whole layout on every draw, including a resize, so labels always get the margin the CURRENT window size actually needs; confirmed offline at both the intended figsize and a synthetic resize to under half of it, no label clipped either way. The stacked panels' gridspecs were also given explicit `hspace`/`wspace` (0.6/0.35), since once labels started reserving real margin instead of being clipped away, the default spacing let adjacent panels' rows visually run into each other.
+## Steering system-ID harness
 
-## Steering system-ID harness: `run_steering_sysid.sh` / `run_steering_step.sh`
+FSDS's lateral-acceleration ceiling was found by commanding fixed steering angles at fixed speeds on an empty map and recording the achieved yaw rate. Repeat that methodology whenever a plant-versus-car discrepancy is suspected, because a closed-loop lap log cannot separate a plant defect from a controller or reference one.
 
-Isolating the plant from the controller, commanding fixed steering angles at fixed speeds on an empty map and recording the achieved yaw rate, is how FSDS's lateral-acceleration ceiling was found (see [simulator_fidelity.md](reference/simulator_fidelity.md)'s "Root cause" section). Reuse this methodology whenever a plant-vs-car discrepancy is suspected: a closed-loop lap log alone cannot separate a plant defect from a controller/reference one.
+**Current state.** The nodes `steering_sysid` and `steering_step` do not exist. No module named `steering_sysid` or `steering_step` exists under `fsae_control`, and `setup.py` has no `entry_points` line for either. `ros2/run_steering_sysid.sh` and `ros2/run_steering_step.sh` invoke them with `ros2 run fsae_control steering_sysid` and `steering_step`, so both scripts fail at that step today. The status of these files, and why they are not mirrored, is recorded in [offline_live_parity.md](../reference/offline_live_parity.md). This guide does not repeat it.
 
-**Where the pieces live** (the ROS 2 node and the harness script are working-tree-only files in the live ROS 2 workspace, no mirror in this repo):
+What survives:
 
-| File | Repo | Role |
-|---|---|---|
-| `control/fsae_control/fsae_control/steering_sysid.py` | `fsae_planning` (live ROS 2 ws) | the node, drives FSDS directly |
-| `ros2/run_steering_sysid.sh` | FSDS repo root, next to `launch_all.sh` | one-command harness |
-| `tuner/checks/steering_sysid_analysis.py` | `fsae_MPCTest` | reads the log, names the mechanism |
-| `fsae_control/steering_step.py` / `ros2/run_steering_step.sh` / `tuner/checks/steering_step_analysis.py` | same split | the step-input companion test (50 Hz, isolates the transient) |
+- The analysers `tuner/investigations/steering_sysid_analysis.py` and `steering_step_analysis.py` read a log and name the mechanism. The sweep analyser fits candidate models to achieved yaw rate and reports the margin to the runner-up, and refuses a verdict when too few windows contain real motion. The step analyser separates a hard yaw-rate clip, speed-scaled authority and active damping from overshoot, plateau and rise shape.
+- `tuner/validation/plant_openloop_validation.py` replays previously recorded sweeps and steps through the offline plant. Run it after any change to the vehicle model.
+- The brake harness is intact. `brake_sysid` is a registered entry point, and `ros2/run_brake_sysid.sh` runs the sweep and analyses the log. Flags: `--no-sim` (FSDS already running), `--quick` (6 points instead of 20), and `-p name:=value` passes through to the node. It bypasses the controller and does not steer or avoid cones, so run it in open space. The launcher's Run Brake Sysid button starts it through `RUN_BRAKE_SYSID`. Logs land in `fsae_logs/brake_sysid_<epoch>.csv`.
+- All three harness scripts are diagnostic-only and separate from `launch_all.sh`. Any other publisher on `/fsds/control_command` interleaves with the sweep and corrupts the measurement.
 
-`steering_sysid.py`/`steering_step.py` and their harness scripts are **deliberately not mirrored** into `fsds_simulator/`, they never existed in `fsae_planning`'s committed git history; see [offline_live_parity.md](reference/offline_live_parity.md).
-
-**Run it with one command** (starts FSDS, waits for RPC, starts the bridge, waits for odom, runs the sweep, analyses the log, tears everything down, including on Ctrl+C):
-
-```bash
-cd <FSDS repo>/ros2 && ./run_steering_sysid.sh
-```
-
-Flags: `--no-sim` (FSDS already running), `--quick` (fewer points), and any `-p name:=value` passes through to the node. **Run it on an empty map**: it circles at up to 14 m/s and does not brake for cones. The harness refuses to start if `mpc_controller`, `fsds_bridge`, or `stanley` is already running, since two publishers on `/fsds/control_command` would interleave and corrupt the log.
-
-**Geometry is bounded automatically.** The node reaches target speed while already turning (so it orbits rather than travelling), checks a geofence (`home_radius`/`max_radius`) from every phase, and predicts each point's orbit size in advance (using a deliberately pessimistic `K_US_ESTIMATE = 0.05`) to skip any (speed, steering) pair whose orbit won't fit in the geofence, logging what it dropped. Default steering commands (`[0.5, 0.65, 0.8, 1.0]`) are biased high since low-angle, high-speed points are both the least informative and the least likely to fit.
-
-**Reading the log.** It records the raw normalised `cmd.steering` alongside the roadwheel angle it's assumed to map to, since recording only the assumed angle would beg the question the test exists to answer. A falling `s = δ_ach/δ_cmd` is not by itself diagnostic (a speed-scaled rack, genuine understeer, and grip saturation all produce one), so the analyser fits all five candidate mechanisms to achieved yaw rate and reports the margin to the runner-up:
-
-| Winning model | Meaning |
-|---|---|
-| neutral (s≈1) | steering path is fine, look at the controller/reference |
-| constant scale | `MAX_STEER_RAD` wrong, fix in all three copies |
-| speed-scaled rack | FSDS reduces lock with speed, model it in the plant |
-| understeer (v²) | real vehicle dynamics |
-| grip saturation | yaw capped by lateral grip |
-
-The default speed sweep is **3–14 m/s**, wide enough to separate speed-scaled rack from understeer (near-degenerate over a narrow band). If the analyser prints a margin warning, widen the speed range and re-run rather than trusting the verdict; it also refuses a verdict when fewer than 3 windows contain real motion (a car wedged against a wall otherwise reports a confident, meaningless answer from all-zero data).
-
-`run_steering_step.sh` is the transient companion: same one-command pattern, same `--no-sim`/`--quick`/`-p name:=value` flags, but a 50 Hz step-input hold instead of a speed sweep, isolating *which* mechanism caps yaw rate rather than just confirming that one exists.
-
-Both harnesses are **diagnostic-only, deliberately separate from `launch_all.sh`**: they must not run alongside the planning/control stack, since any other node publishing to `/fsds/control_command` would interleave with the sweep's commands and corrupt the measurement. If either one is suspected to be measuring something stale, re-measure, don't guess, this is a measured property of the simulator, not a tuning knob (see [tuning.md](tuning.md) §4.8).
+The analysis step at the end of each `run_*_sysid.sh` script still calls the old module paths (`tuner.checks...`, `tuner.steering_*_analysis`). Run the analyser by hand with its `tuner.investigations` path.
 
 ## Telemetry playback: `tuner/tools/plot_playback.py`
 
-Turns one or more control-telemetry CSVs (see [fsds/fsds_integration_guide.md](fsds/fsds_integration_guide.md#csv-telemetry-logging) for how those get written) into an interactive matplotlib figure that answers both "what did this signal do over the whole run" and "where was the car, and what did the path look like, at this specific moment" at once:
+Turns one or more control-telemetry CSVs (written as described in [integration_guide.md](../fsds/integration_guide.md)) into an interactive figure showing both what a signal did over the run and where the car was at a chosen moment.
 
-- **left:** the scored signals (`e_y`, `e_psi_deg`, `kappa`, `steer_deg`, `v`) stacked on a shared time axis, one line per signal per run when comparing multiple logs, with a vertical cursor marking "now"
-- **top right:** each run's full driven trajectory, plus the planner's most-recent path snapshot at "now", with a triangle marking that run's car position/heading
-- **bottom right:** the same scene zoomed tightly to the car's current section of track (with `e_y`/`e_psi` in its title)
+- **Left.** Scored signals on a shared time axis, one line per signal per run, with a cursor at "now". Default signals: `e_y`, `e_psi_deg`, `corner_frac`, `steer_deg`, `v`.
+- **Top right.** Each run's driven trajectory plus the planner's latest path snapshot at "now", with a triangle marking car position and heading.
+- **Bottom right.** The same scene zoomed to the car's current section of track, with `e_y` and `e_psi` in the title.
 
-A slider under the metrics panel scrubs a shared "now" time through the run; dragging it updates every run's cursor, triangle, and path overlay together. Each run gets its own colour, used consistently for its signal lines, driven trajectory, path overlay, and car marker, and, when more than one log is given, its own checkbox to show/hide it everywhere at once. Built for eyeballing a single run or comparing two controllers head-to-head (e.g. an MPC log against a Stanley log recorded on the same `map_path`) without writing a one-off script each time.
+A slider scrubs one shared "now" through all runs. Each run has its own colour, used for its lines, trajectory, path overlay and marker. With more than one run, a Show/hide checkbox per run and a Zoom focus radio (which run the zoomed view follows, first-loaded by default) appear at bottom left.
 
 ```bash
-# no CSV given -> auto-loads and overlays every run in
-# fsds_simulator/recorded_runs/ (one CSV -> single-run playback,
-# several -> automatic comparison with a checkbox per run)
-python -m tuner.tools.plot_playback
-
-# same, but only the newest run if recorded_runs/ has several and you
-# just want the latest one
-python -m tuner.tools.plot_playback --latest-only
-
-# default signal set: e_y, e_psi_deg, kappa, steer_deg, v (actual + desired)
-python -m tuner.tools.plot_playback ~/fsae_logs/mpc_standalone_control_<ts>.csv
-
-# overlay two explicit runs -- each gets its own colour, signal lines,
-# marker, trajectory, and path overlay, plus a checkbox to hide/show it
-python -m tuner.tools.plot_playback \
-    ~/fsae_logs/mpc_standalone_control_<ts>.csv \
-    ~/fsae_logs/stanley_control_<ts>.csv
-
-# choose your own signals (any numeric column the log has)
+python -m tuner.tools.plot_playback                       # auto-load, see below
+python -m tuner.tools.plot_playback --latest-only         # only the single newest run
+python -m tuner.tools.plot_playback --all                 # every run in every subfolder
+python -m tuner.tools.plot_playback run.csv               # one explicit run
+python -m tuner.tools.plot_playback a.csv b.csv           # overlay two runs
 python -m tuner.tools.plot_playback run.csv --signals e_y,yaw_rate,solve_ms
+python -m tuner.tools.plot_playback --recorded-runs <dir> # search another folder
 ```
 
-On Windows PowerShell, drop the `\` line continuations (use backtick `` ` `` or put everything on one line) and don't rely on `~`, PowerShell doesn't expand either the way bash does, and a bad path there fails with a raw `FileNotFoundError` from `csv_log.py`'s `open()`, not a friendlier CLI error. The multi-run examples above are bash syntax; on PowerShell write e.g. `python -m tuner.tools.plot_playback $HOME\fsae_logs\mpc_standalone_control_<ts>.csv $HOME\fsae_logs\stanley_control_<ts>.csv` on one line, or use the backtick continuation character in place of `\`.
+- A signal missing from a log (for example `solve_ms` on a Stanley run) is skipped for that run with a warning, so logs with different columns still overlay on what they share.
+- The sibling `<tag>_path_<stamp>.csv` (same folder and stamp) is loaded automatically and drives the path overlay. Copy both files together, or the map and zoom views fall back to the driven trajectory alone. The slider shows the latest snapshot at or before the selected time, with no interpolation.
+- Runs may differ in sampling and length. The slider spans the longest run, and the signal plots clip to the shortest run's end so the comparable part is not dwarfed.
+- Each completed lap gets a dashed marker on every signal plot (`L<n> <score>/<horizon%>`) and a running table in the map panel, from the `lap_score` and `lap_pred_acc_pct` columns. An older log falls back to the header's whole-run `composite_score`. Horizon accuracy is NMPC-only and shows "n/a" otherwise. `pred_acc_pct` is also selectable with `--signals` and is appended to the default set when any loaded log has the column.
+- On Windows PowerShell, put the command on one line, use `$HOME\...` in place of `~`, and note that a bad path fails with a raw `FileNotFoundError` from `csv_log.py`.
 
-Run from `fsae_MPCTest/` (so `tuner` resolves as a package). A signal missing from a given log (e.g. the `m_Q_*`/`m_R_*` adaptive-weight columns, `solve_ms`, on a Stanley run) is skipped for that run with a warning rather than plotting an empty line, runs don't need identical columns to overlay the ones they share. The figure title and each line's legend label include the run's short label (its controller subfolder name, e.g. `LMPC`/`NMPC`/ `Stanley`), so a comparison plot is self-labelled without cross-referencing the raw CSV.
+### Auto-search: `fsds_simulator/recorded_runs/`
 
-Each run's sibling `<tag>_path_<stamp>.csv` (same directory, same timestamp, the file `ControlLogger` writes alongside every control CSV) is loaded automatically if present, to draw that run's path as it looked at each moment, copy both files together into `recorded_runs/`, not just the `_control_` one, or that run's map/zoom views fall back to showing only its own driven trajectory with no live path overlay. The path CSV is a time series of path snapshots (see `telemetry_logger.py`'s `log_path()`); the slider always shows the most recent snapshot at or before the selected time, not an interpolation between two snapshots.
+With no CSV argument the tool searches `fsds_simulator/recorded_runs/` recursively for `*_control_*.csv`, including per-controller subfolders (`LMPC`, `NMPC`, `Stanley`).
 
-Runs may have different `t` sampling or length (e.g. an 80-sample Stanley log next to a 50-sample MPC log), the slider drives one shared time value, and each run independently looks up its own nearest sample, so mismatched logs still overlay correctly. The slider itself still scrubs the full range up to the **longest** run's end (so the map/zoom views can follow it to completion), but the left-hand signal plots' x-axis is clipped to the **shortest** run's end, past that point only one run has data left, which would otherwise dwarf the overlapping (comparable) part of the plot with a stretch that isn't a comparison anymore.
-
-**Per-lap score + horizon accuracy.** Each completed lap gets a vertical dashed marker on every signal plot (labelled `L<n> <score>/<horizon%>` at the top), and a running table in the bottom-left of the map panel that fills in as the slider crosses each lap's finish time, same as `live_viz.py`'s own lap panel does live. Lap data comes from the control CSV's `lap_score`/`lap_pred_acc_pct` columns (see `telemetry_logger.py`'s `ControlLogger.finish_lap()`); an older log recorded before these columns existed falls back to the header's whole-run `composite_score` instead, with no per-lap breakdown. Horizon accuracy is NMPC-only (see the live-viz section above for what it means) and shows "n/a" for Stanley/LTV-QP runs, or for an NMPC run with no completed laps. `pred_acc_pct` (the per-tick, not per-lap, horizon accuracy) is also selectable as a `--signals` entry, and gets appended to the default signal set automatically when at least one loaded log has the column.
-
-**Auto-search folder: `fsds_simulator/recorded_runs/`.** Running the script with no CSV argument searches this folder **recursively** for `*_control_*.csv` files, including one level of per-controller subfolders, e.g. `recorded_runs/LMPC/`, `recorded_runs/NMPC/`, `recorded_runs/Stanley/`, by the timestamp `ControlLogger` stamps into the filename (not file mtime). That stamp is either the current local `%Y%m%d-%H%M%S` form or the older epoch-seconds form. `plot_playback.py`'s `_stamp()` decodes both to epoch seconds so a folder holding runs from either era sorts correctly as one set.
-
-By default it loads just the **newest run from each subfolder** (one representative LMPC run, one NMPC run, one Stanley run, ...; runs left flat directly in `recorded_runs/` are grouped as one "folder" for this purpose), pass `--all` to overlay every run in every subfolder instead, or `--latest-only` to load only the single newest run across the whole tree (which may leave other controllers unrepresented).
-
-Each run's plot label is its `recorded_runs/<folder>/` name (e.g. `LMPC`, `NMPC`, `Stanley`) rather than the raw filename tag, since the tag alone is often ambiguous (both LMPC and NMPC logs use the same `mpc_standalone` tag). Runs left flat directly in `recorded_runs/` fall back to the filename tag; if a folder has multiple loaded runs (e.g. under `--all`), duplicates get a ` #2`, ` #3`, ... suffix. The CSVs under this folder are tracked in git (not gitignored) so reference runs for each controller travel with the repo.
-
-A live run's actual output location is `log_dir` (default `~/fsae_logs`, or whatever `ros2/launch_all.sh`'s `log_dir:=` argument points at, in the outer `fsae_planning`-adjacent launch script, outside this repo, not modified by this feature), so after a run, the CSV pair needs to be copied or moved into the right controller subfolder manually:
+- Runs are ordered by the timestamp in the filename, not file mtime. `_stamp()` decodes both the `%Y%m%d-%H%M%S` form and the older epoch-seconds form so mixed folders sort as one set.
+- By default it loads the newest run from each subfolder. Runs left flat in `recorded_runs/` count as one folder.
+- A run's label is its folder name (`LMPC`, `NMPC`, `Stanley`), because the filename tag is ambiguous (LMPC and NMPC both use `mpc_standalone`). Flat runs use the filename tag. Duplicates under `--all` get ` #2`, ` #3`.
+- A descriptive segment between tag and stamp (for example `mpc_standalone_postjitterfix_best_control_<stamp>.csv`) does not affect discovery or sibling pairing.
+- CSVs under `recorded_runs/` are tracked in git so reference runs travel with the repo.
+- A live run writes to `log_dir`. `ros2/launch_all.sh` sets it to `<FSDS root>/fsae_logs`. `ControlLogger`'s own fallback when no `log_dir` is given is `~/fsae_logs`. Copy or move the pair into the right subfolder afterward, or accept the launcher's Stop prompt:
 
 ```bash
-cp ~/fsae_logs/mpc_standalone_control_<stamp>.csv \
-   ~/fsae_logs/mpc_standalone_path_<stamp>.csv \
-   fsds_simulator/recorded_runs/LMPC/
-python -m tuner.tools.plot_playback       # picks up the file just copied in
+cp fsae_logs/mpc_standalone_control_<stamp>.csv fsae_logs/mpc_standalone_path_<stamp>.csv fsds_simulator/recorded_runs/LMPC/
 ```
 
-The recorded filenames under `recorded_runs/` may also carry a descriptive topic segment between the tag and the stamp (e.g. `mpc_standalone_postjitterfix_best_control_1787527398.csv`), added by hand when a run is stored specifically for later comparison. `plot_playback.py` only looks for `_control_`/`_path_` and the trailing stamp, so an inserted topic segment does not affect discovery or sibling pairing.
+**Curated drop zone: the `graph` folder in `recorded_runs`.** If it holds any `*_control_*.csv` (the folder is not scanned for subfolders), auto-load uses only those files. Copy runs in to control exactly what a bare `python -m tuner.tools.plot_playback` shows, without moving them from their controller folder. Every run in it loads, unlike the newest-per-folder default, and labels use the filename tag. `--latest-only` narrows it to its newest run. `--recorded-runs <dir>` bypasses it. The folder ships with a `.gitkeep`, and may hold comparison runs in a working checkout.
 
-**Curated drop zone: `recorded_runs/graph/`.** If this folder contains any `*_control_*.csv` files (directly, it's not scanned for further subfolders), auto-load uses **only** what's in `graph/` instead of scanning `LMPC/`/`NMPC/`/`Stanley/`/etc. This is the easiest way to control exactly what a plain `python -m tuner.tools.plot_playback` shows: move (or copy) the specific run(s) of interest into `graph/`, without deleting them from their controller subfolder or passing a path on the command line each time. It's empty by default (tracked via `.gitkeep`), drop files in, run the command, and it just works:
+## Live pose and RPC diagnostics
 
-```bash
-cp fsds_simulator/recorded_runs/NMPC/mpc_standalone_control_<ts>.csv \
-   fsds_simulator/recorded_runs/NMPC/mpc_standalone_path_<ts>.csv \
-   fsds_simulator/recorded_runs/graph/
-python -m tuner.tools.plot_playback       # loads every run in graph/, overlaid
-```
-
-`graph/` is flat by design (no per-controller subfolders of its own), so **every** run dropped into it loads and overlays, unlike the full-tree default, which keeps only the newest run per controller subfolder. This is what makes it useful for comparing runs across different controllers (e.g. an NMPC run against a Stanley run) without `--all`. `--latest-only` still narrows a populated `graph/` down to its single newest run when that's the desired result instead. Each run's label falls back to its filename tag rather than the folder name `graph` (which would be true of every run in it and so useless for telling them apart), same rule as a run left loose directly in `recorded_runs/` itself.
-
-Point the search elsewhere with `--recorded-runs <dir>` (e.g. to auto-load straight out of `~/fsae_logs` without copying, or to compare two specific takes kept in their own directories). This bypasses the `graph/` override too, since it changes the root being searched. When two or more runs are loaded, a **"Zoom focus"** radio-button widget appears bottom-left of the figure, pick a run there to change which one the bottom-right zoomed view tracks (it defaults to the first-loaded run). The separate **"Show/hide"** checkbox widget above it toggles each run's visibility everywhere (signals, map, zoom) without changing zoom focus.
-
-## Live pose/RPC diagnostics: `clock_drift_check.py` and the `topic_hz` capture block
-
-**Temporary instrumentation** for the open [periodic car-position teleport bug](logs/periodic_pose_teleport_investigation.md), not a permanent part of the launch flow. `ros2/launch_all.sh` launches it automatically right after the bridge comes up (search for `TEMPORARY (2026-08-19)`), and it should be removed (this block, its `cleanup()` teardown, and `ros2/clock_drift_check.py` itself) once that bug's root cause is found.
-
-What it captures, all logged into `fsae_logs/topic_hz_diagnostics/`:
+Temporary instrumentation for the open [periodic car-position teleport bug](../logs/periodic_pose_teleport_investigation.md). `ros2/launch_all.sh` starts it right after the bridge comes up (search for `TEMPORARY (2026-08-19)`). The block, its `cleanup()` teardown and `ros2/clock_drift_check.py` should be removed once the root cause is found.
 
 | Capture | What it checks |
 |---|---|
-| `ros2 topic hz -w 5 /fsds/testing_only/odom` | bridge's raw 250 Hz odom output, arrival rate |
-| `ros2 topic hz -w 5 /fsae/slam/car_position` | `sim_perception.py`'s 20 Hz relay, arrival rate |
-| `ros2 topic hz -w 5 /clock` | sim clock's arrival rate |
+| `ros2 topic hz -w 5 /fsds/testing_only/odom` | bridge's raw 250 Hz odom arrival rate |
+| `ros2 topic hz -w 5 /fsae/slam/car_position` | `sim_perception.py`'s 20 Hz relay arrival rate |
+| `ros2 topic hz -w 5 /clock` | sim clock arrival rate |
 | `ros2 topic hz -w 5 /fsds/imu` | IMU arrival rate |
-| `clock_drift_check.py` | whether `/clock`'s **value** (not just its arrival rate) falls behind wall time |
+| `ros2/clock_drift_check.py` | whether the `/clock` value falls behind wall time |
 
-`clock_drift_check.py` subscribes to `/clock` and logs `(wall_time, sim_time)` on every message to a CSV. Unlike `ros2 topic hz`, which only shows how often a message *arrives*, this shows whether the sim clock's *value* is falling behind wall time, directly testing whether FSDS/Unreal's own simulation is running slower than real time (a genuine frame/tick-rate problem), as distinct from a message-delivery problem on the ROS2/network side. `d(sim_time)/d(wall_time)` near 1.0 means the simulation is keeping up; a sustained value below 1.0 means FSDS itself is the bottleneck.
+Logs go to `fsae_logs/topic_hz_diagnostics/`.
+
+`ros2/clock_drift_check.py` subscribes to `/clock` and logs `(wall_time, sim_time)` per message. `ros2 topic hz` only shows how often a message arrives. This shows whether the clock's value lags, which tests whether FSDS itself runs slower than real time as opposed to a delivery problem. `d(sim_time)/d(wall_time)` near 1.0 means the simulation keeps up. A sustained value below 1.0 means FSDS is the bottleneck.
 
 ```bash
-# launched automatically by ros2/launch_all.sh; to run standalone
-# (after sourcing the workspace):
+# started by ros2/launch_all.sh; standalone, after sourcing the workspace:
 python3 clock_drift_check.py <output_csv_path>
 ```
 
-See [periodic_pose_teleport_investigation.md](logs/periodic_pose_teleport_investigation.md) for what these captures have found so far and what's still open, this document only covers what the tools do and how to run them.
+Findings so far and what remains open: [periodic_pose_teleport_investigation.md](../logs/periodic_pose_teleport_investigation.md).
 
 ## Doc conventions: `tuner/tools/doc_lint.py`
 
-Flags docs that break this project's writing conventions (see CLAUDE.md's "Writing style for docs, logs and comments"): prose blocks longer than a line ceiling (default 12, lists/tables/headings/code exempt), and stray references to AI-assistant instruction files, which aren't project documentation.
+Checks docs (every README and `docs/**/*.md`, with `docs/logs/` exempt apart from its README) for long unstructured prose, references to AI-assistant instruction files, transcript voice, broken relative links and heading anchors, backticked paths and `python -m` targets that do not exist, style (em dashes, extra H1s, intensifier words) and missing module-reference entries in `docs/modules/`. It also flags `from settings.<sub> import ...` in code, because consumers must use `import settings; settings.X` for runtime overrides to reach them.
 
 ```bash
-python -m tuner.tools.doc_lint            # report only
-python -m tuner.tools.doc_lint --max 10   # stricter paragraph ceiling
+python -m tuner.tools.doc_lint                          # report only
+python -m tuner.tools.doc_lint --strict                 # exit 1 if anything is flagged
+python -m tuner.tools.doc_lint --max 10                 # stricter paragraph ceiling (default 12)
+python -m tuner.tools.doc_lint docs/guides/tuning.md    # specific files
 ```
 
 ## Debugging solver failures
 
-If the live simulator reports `consecutive_solver_failures` or the console frequently shows `OPTIMAL_INACCURATE`:
+Offline, `settings.MAX_FAILS` (5) consecutive solver failures ends a rollout as a DNF. Live, the LTV-QP prints `[MPC] Warning: OSQP OPTIMAL_INACCURATE` when it accepts an inaccurate solution, and the NMPC reports a per-tick `nmpc_status` (`solved`, `budget`, `rejected` or `warm-start-only`).
 
-- **Weight scaling**: OSQP is sensitive to poorly-conditioned matrices. If any entry of `Q`, `R`, or `R_rate` exceeds `1e4` or drops below `1e-4`, convergence can suffer. Check `controller/model_utils.py`'s `adaptive_R_scaling()`'s output at your test speed isn't blowing up the steering cost unexpectedly.
-- **Kinematic vs. dynamic gap**: if the car consistently fails at tight hairpins, `sim/speed_profile.py` may be commanding a speed that demands more lateral force than the Pacejka friction circle can supply at that curvature. Lower `mu` in `compute_speed_profile()` to force more conservative corner-entry speeds.
-- **Model-plant mismatch at extremes**: remember the MPC's internal model is linear and only blends kinematic/dynamic behaviour between 1-2.5 m/s; well outside that (very low speed under load, or very high lateral acceleration near the tyre limit) is where the biggest prediction error will show up, and where `adaptive_R_scaling` matters most.
+- **Weight scaling.** OSQP is sensitive to poorly conditioned matrices. Entries of `Q`, `R` or `R_rate` far above 1e4 or below 1e-4 can hurt convergence. Check the output of `adaptive_R_scaling` in `controller/model_utils.py` at the test speed is not inflating the steering cost. The 1e4 and 1e-4 thresholds are a rule of thumb, not verified against this solver.
+- **Speed profile too aggressive.** If the car fails at tight hairpins, the profile may demand more lateral force than the plant supplies. The corner-speed knob is `CURVATURE_SPEED_A_LAT_MAX` in `sim/speed_profile.py`. The `mu` argument of `compute_speed_profile()` is kept for signature compatibility and has no effect.
+- **Model-plant mismatch at extremes.** The LTV-QP's linear model blends kinematic and dynamic behaviour between 1 and 2.5 m/s. The largest prediction errors appear well outside that band, at very low speed under load or at high lateral acceleration near the tyre limit.
 
-If the NMPC's SQP misbehaves instead (non-improving steps, oscillation), the usual suspects are the same as above, plus two NMPC-specific ones: `nmpc_solve_budget_ms`/`nmpc_sqp_iters` too tight for the horizon, or a weight override (`NMPC_Q_E_Y` etc. in `settings.py`, `-1` inherits from the base weight) pushing the cost badly out of scale. See [control_mechanisms.md](reference/control_mechanisms.md)'s "Nonlinear MPC (`use_nmpc`)" section for the model and weight-mapping details, and [tuning.md](tuning.md) §4.5d for the tuning surface.
-
-For the investigation narrative behind any of these tools, see [docs/logs/](logs/).
+For NMPC SQP problems (non-improving steps, oscillation), the usual causes are the same, plus `nmpc_solve_budget_ms` or `nmpc_sqp_iters` too tight for the horizon, or a weight override (`NMPC_Q_E_Y` and others, `-1` inherits) that pushes the cost out of scale. See [control_mechanisms.md](../reference/control_mechanisms.md) for the model and weight mapping and [tuning.md](tuning.md) for the NMPC tuning surface. A low-speed stall with a zero output is the RK4 instability described in the structural-settings table there.

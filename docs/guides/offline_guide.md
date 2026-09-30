@@ -1,127 +1,190 @@
 # Offline Guide: 2D GUI, Tuner, Manual Drive
 
-**This doc covers the offline (`fsae_MPCTest`) side only**: the 2D matplotlib GUI, the CMA-ES auto-tuner, manual drive mode, and offline dependencies/extension points. None of this runs against FSDS or the real car. For FSDS/live setup and integration, see [docs/fsds/fsds_integration_guide.md](fsds/fsds_integration_guide.md). For what "offline," "FSDS," and "2D GUI" mean and how they relate, see [docs/reference/simulator_glossary.md](reference/simulator_glossary.md).
+This guide covers the offline (`fsae_MPCTest`) tools: the 2D matplotlib GUI, the CMA-ES auto-tuner, manual drive mode, and the offline dependencies and extension points. None of it runs against FSDS or the real car.
 
-For the deep technical explanation of *why* the system is built this way, see [Architecture](architecture.md). For diagnostic/debugging tools, see [debugging_tools.md](debugging_tools.md).
+**What the offline tools are and are not.** The offline rollout checks that the control maths behaves sensibly and gets weights into the right range. Its plant is an approximation with no measured accuracy figure against FSDS or the car. A result here is a starting point, not a validated one. See [glossary.md](../reference/glossary.md) and [simulator_fidelity.md](../reference/simulator_fidelity.md).
 
-## Table of Contents
+Related docs:
 
-1. [Running the 2D GUI](#running-the-2d-gui)
-2. [Running the Offline Tuner](#running-the-offline-tuner)
-   - [The tuner/ layout at a glance](#the-tuner-layout-at-a-glance)
-   - [Plotting and scrubbing exported CSV telemetry](#plotting-and-scrubbing-exported-csv-telemetry)
-3. [Manual Drive Mode](#manual-drive-mode)
-4. [Dependencies](#dependencies)
-5. [Extending and Debugging](#extending-and-debugging)
-   - [Modifying vehicle parameters](#modifying-vehicle-parameters)
-   - [Adding a new synthetic path](#adding-a-new-synthetic-path)
-   - [Working with the NMPC (`USE_NMPC`)](#working-with-the-nmpc-use_nmpc)
+| Need | Doc |
+|---|---|
+| New to the project | [getting_started.md](getting_started.md) |
+| What each weight does and how to tune it | [tuning.md](tuning.md) |
+| Diagnostic tools and the launcher | [debugging_tools.md](debugging_tools.md) |
+| Design of the offline system | [architecture.md](../reference/architecture.md) |
+| Per-file module reference | [offline_sim.md](../modules/offline_sim.md) |
+| FSDS and live setup | [integration_guide.md](../fsds/integration_guide.md) |
 
----
+## Contents
 
-## Running the 2D GUI
+1. [How the offline pieces fit together](#how-the-offline-pieces-fit-together)
+2. [Install dependencies](#install-dependencies)
+3. [Running the 2D GUI](#running-the-2d-gui)
+4. [Running the offline tuner](#running-the-offline-tuner)
+5. [Overriding settings safely](#overriding-settings-safely)
+6. [The tuner package layout](#the-tuner-package-layout)
+7. [Manual drive mode](#manual-drive-mode)
+8. [Extending the offline simulator](#extending-the-offline-simulator)
 
-The 2D GUI (`gui/simulation.py`) is an interactive matplotlib tool for drawing or loading a path, running one closed-loop MPC rollout against the nonlinear vehicle plant, and reviewing the result frame by frame. **Its own dynamics do not match FSDS or the real car**; it's for visualization and manual prototyping, not a validated prediction of live behaviour (see [simulator_glossary.md](reference/simulator_glossary.md)).
+## How the offline pieces fit together
 
-### 1. Install dependencies
+**In plain terms:** one closed-loop rollout function drives a simulated car around a path with the MPC at the wheel and returns a score. The GUI calls it once and shows the result. The tuner calls it thousands of times and searches for better weights.
+
+```mermaid
+graph LR
+    G["gui/simulation.py<br/>one rollout, full history"] --> R["sim/rollout/core.py<br/>run_core_rollout()"]
+    T["tuner/offline_tuner.py<br/>thousands of rollouts, score only"] --> R
+    R --> S["sim/scoring.py<br/>13 metrics, composite score"]
+```
+
+**Why one rollout function.** The GUI and the tuner each once had their own copy of the per-step logic, and the copies drifted, so Show Metrics scores stopped matching tuner scores. `run_core_rollout()` is now the only implementation. It imports nothing GUI-related, so it is safe inside the tuner's worker processes.
+
+Each tick of `run_core_rollout()` runs roughly these steps, split across the `sim/rollout/` modules:
+
+| Step | What happens | Code |
+|---|---|---|
+| Pose corruption | Optional SLAM noise, then the pose-feed hold (the controller sees a stale pose for a few ticks) | `sim/sensor_noise.py` |
+| Reference and tracking error | Oracle path, or perception plus planner rebuilding the centreline from cones. Then the error state | `sim/rollout/reference.py`, `sim/perception.py`, `sim/planner.py` |
+| Speed target | Curvature-based target, tracking-error gate, rate limit | `sim/rollout/speed_target.py` |
+| Delay compensation | Roll the error forward through commands in flight | `sim/rollout/delay.py` |
+| MPC solve | LMPC (`controller/lmpc/`) or NMPC (`controller/nmpc/`) | `sim/rollout/tick_solve.py` |
+| Plant step | The 25-state nonlinear plant | `model/vehicle_physics/` |
+| Metrics and termination | Accumulate the 13 metrics, check DNF conditions | `sim/scoring.py`, `sim/rollout/core.py` |
+
+The main defaults: `USE_PLANNER = False` (oracle path, faster), `USE_NMPC = False` (LMPC), `POSE_HOLD_ENABLED = True`, `SLAM_NOISE_ENABLED = False`. The live launch script defaults to NMPC, so the offline default does not match the live default.
+
+## Install dependencies
 
 ```bash
 pip install numpy scipy matplotlib cvxpy cma
 pip install cvxpy[osqp] cvxpy[clarabel]
+pip install optuna  # optional: only for USE_OPTUNA_PRESEARCH
 ```
+
+| Package | Purpose |
+|---|---|
+| `numpy` | All numerical computation |
+| `scipy` | ZOH discretisation (`expm`), spline fitting (`CubicSpline`) |
+| `matplotlib` | 2D GUI and manual-drive GUI |
+| `cvxpy` | LMPC QP formulation |
+| `osqp` | Primary QP solver (via CVXPY, also used directly by NMPC) |
+| `clarabel` | Fallback QP solver (via CVXPY) |
+| `cma` | CMA-ES optimiser (`fmin_lq_surr2`, BIPOP with surrogate) |
+| `optuna` | Optional TPE pre-search that seeds CMA-ES (needed only if `USE_OPTUNA_PRESEARCH = True`) |
+
+No requirements file or version pin exists for the offline side. A working development environment has numpy 2.5, scipy 1.18, matplotlib 3.11, cvxpy 1.9, osqp 1.1, clarabel 0.11 and cma 4.4. Older minimum versions previously listed here were never enforced and are not verified.
+
+The ROS 2 packages (`rclpy`, `fs_msgs`, `fsae_interfaces`, `nav_msgs`, `geometry_msgs`) are needed only for the live nodes, not for anything in this guide. The `fsds_simulator/` staging mirror carries its own pip list in `fsds_simulator/requirements.txt`.
+
+## Running the 2D GUI
+
+The 2D GUI (`gui/simulation.py`) is an interactive matplotlib tool. Draw or load a path, run one closed-loop MPC rollout against the nonlinear plant, and review the result frame by frame. Its dynamics do not match FSDS or the car. Use it for visualisation and prototyping, not as a prediction of live behaviour.
+
+### 1. Launch
+
+```bash
+cd fsae_MPCTest
+python -m gui.simulation
+```
+
+Or open the tabbed launcher (live sim, log playback, offline sim, settings editing):
+
+```bash
+python -m gui.launcher
+```
+
+See [debugging_tools.md](debugging_tools.md) for the launcher tabs.
+
+### 2. Get a path onto the map
+
+One of:
+
+- **Draw one.** Click and drag on the map, at least 6 points. On release the path is splined, headings are computed and a speed profile is generated.
+- **Load a synthetic one.** **Load Test Path** cycles through the 10 built-in Formula Student style paths: `PATH_SUDDEN_TURN`, `PATH_S_BEND`, `PATH_SPIRAL`, `PATH_MICRO_SLALOM`, `PATH_OFFSET_CHICANE`, `PATH_ACCELERATION`, `PATH_HAIRPIN`, `PATH_CHICANE`, `PATH_FS_CORNER`, `PATH_MIXED`. Each click advances to the next. The camera frames the path with a 15 m margin.
+- **Load a recorded track.** **Load Recorded Track** cycles, newest first, through `tracks/*/cone_map.json` and the older `fsds_simulator/cone_maps/*.json` captures. These are cone maps written by the `cone_recorder` ROS 2 node after a live FSDS lap, see "Recording, exporting and driving a track" in [integration_guide.md](../fsds/integration_guide.md).
+
+Recorded tracks differ from synthetic ones in two ways:
+
+- The cones drawn are the actual recorded cones, not `place_cones()` output. They are resimulated as `SimPerception` and `SimPlanner` would see them live.
+- The centreline drawn on load is a reconstruction (`sim/track_io.py`) used for the oracle reference path and initial camera framing. With `USE_PLANNER = True`, the driving line comes from `SimPlanner` rebuilding it cone by cone. With the default `False`, the rollout tracks the reconstructed oracle path and speed profile directly, matching the live side's precomputed-path mode.
+
+Recorded tracks are stored in `ros2/src/fsae_planning/tracks/`. The `tracks/` package in this repo only points at that directory (`TRACKS_DIR`) and holds no data.
+
+### 3. Optional initial conditions
+
+Once a path exists, two sliders appear:
+
+- **Initial Lat Error** (plus or minus 4 m): start offset sideways from the path.
+- **Initial Yaw Error** (plus or minus 30 degrees): start pointing the wrong way.
+
+Use them to stress recovery instead of always starting on the line.
+
+### 4. Run and review
+
+- **Start Sim** runs the rollout synchronously. There is no live animation while it solves, and a long path can take a few seconds. When it finishes the title turns green and a **Time** scrub slider appears.
+- Drag **Time** to replay frame by frame. The trail, the cyan MPC horizon prediction, the car marker and the telemetry panel (speed, position, heading, tracking errors, steering and acceleration commands) update together.
+
+### 5. Score it
+
+- **Show Metrics** prints the full 13-metric breakdown to the console and puts a one-line summary in the plot title. The metrics and composite score are explained in [getting_started.md](getting_started.md#53-how-a-run-gets-scored).
+- **Benchmark All Paths** runs every synthetic path 3 times with the current weights and prints a per-path score table. Use it to check a weight set generalises instead of working on one path only.
+
+### 6. Reset
+
+**Reset Environment** clears everything.
+
+## Running the offline tuner
+
+The tuner (`tuner/offline_tuner.py`) searches for cost weights that minimise the composite score across a library of synthetic corner shapes, using CMA-ES. It has no GUI. It is a long-running batch job. Design and rationale of the search: [architecture.md](../reference/architecture.md).
+
+**A tuned result is a starting point.** The tuner scores candidates with the headless rollout, which is rough validation only. A weight set found here still needs FSDS validation and then the car.
+
+### 1. Check the settings first
+
+Confirm these constants (in the `settings/` package, find one with `grep -rn "^NAME" settings/`):
+
+| Constant (file) | Check |
+|---|---|
+| `VALIDATION_SUITE` (`scoring.py`) | The corner shapes to optimise for. Default: `PATH_SPIRAL`, `PATH_SUDDEN_TURN`, `PATH_HAIRPIN`, `PATH_FS_CORNER`, `PATH_MICRO_SLALOM` |
+| `MAX_EVALS` (`solver.py`) | The budget. Default 1500. A good run takes 20 minutes to a few hours depending on cores and budget |
+| `USE_PLANNER` (`general.py`) | `True` tests the full perception and planning pipeline. `False` (default) drives the perfect reference line and is faster |
+| `USE_NMPC` (`nmpc.py`) | Default `False` (LMPC). Set `True` before import to tune NMPC, see the note below |
+| `USE_OPTUNA_PRESEARCH` (`solver.py`) | Default `True`. `False` skips the short Optuna TPE search that seeds CMA-ES and starts from the fixed geometric midpoint. Needs `optuna` installed |
+| `Q_diag`, `R_diag`, `R_rate_diag`, `SCORE_WEIGHTS`, `METRIC_SCALES` | The weights and scoring the tuner works against. See [tuning.md](tuning.md) |
+
+**The search vector has 14 numbers, not 9.** 9 are multipliers on the Q, R and R_rate weights. The other 5 are the NMPC fields in `TUNABLE_NMPC` (`rjerk_delta`, `corner_factor_k`, `rrate_zone_boost_straight`, `rrate_zone_ease_approach`, `rrate_zone_floor_corner`). They change the score only when the rollout runs NMPC. With `USE_NMPC = False` they are dead dimensions that waste population. Set `USE_NMPC = True` before importing the tuner to tune NMPC, or empty `TUNABLE_NMPC` to tune LMPC only.
 
 ### 2. Launch
 
 ```bash
-cd /path/to/project
-python -m gui.simulation
-```
-
-Or launch it (plus the live sim, log playback, and settings.py editing) from one place: `python -m gui.launcher` — see [debugging_tools.md](debugging_tools.md#centralized-launcher-guilauncherpy).
-
-### 3. Get a path onto the map
-
-Either:
-
-- **Draw one**, click and drag on the map (at least 6 points). On release the path is automatically splined, headings computed, and a speed profile generated.
-- **Load a synthetic one**, click **Load Test Path** to cycle through the 10 built-in FS-spec paths (`PATH_SUDDEN_TURN`, `PATH_S_BEND`, `PATH_SPIRAL`, `PATH_MICRO_SLALOM`, `PATH_OFFSET_CHICANE`, `PATH_ACCELERATION`, `PATH_HAIRPIN`, `PATH_CHICANE`, `PATH_FS_CORNER`, `PATH_MIXED`). Each click advances to the next path; the camera auto-frames around it with a 15 m margin.
-- **Load a recorded track**, click **Load Recorded Track** to cycle (newest-first) through `tracks/*/cone_map.json` (and, for captures predating that layout, `fsds_simulator/cone_maps/*.json`), the cone maps written by `fsae_planning`'s `cone_recorder` ROS 2 node after a live FSDS lap (see [Recording, exporting and driving a track](fsds/fsds_integration_guide.md#recording-exporting-and-driving-a-track), an FSDS/live workflow with one offline step in the middle). Unlike the synthetic paths, the blue/yellow cones rendered are the *actual recorded cones*, not `place_cones()` output, a real perception recording, resimulated exactly as `SimPerception`/`SimPlanner` would drive it live (see [Simulated Perception and Planning](architecture.md#simulated-perception-and-planning-use_planner) for how those two work). The centreline drawn on load is only a reconstruction for the oracle-mode reference path and initial camera framing (see `sim/track_io.py`). With `USE_PLANNER = True`, the actual driving line during the rollout instead comes from `SimPlanner` rebuilding it cone-by-cone, exactly as for a synthetic path, but `USE_PLANNER = False` is the default, so by default the rollout tracks this reconstructed oracle path/speed profile directly, matching the live ROS side's `path_map_path` mode.
-
-### 4. (Optional) set initial conditions
-
-Once a path exists, two sliders appear:
-
-- **Initial Lat Error** (±4 m), starts the car offset sideways from the path.
-- **Initial Yaw Error** (±30°), starts the car pointing the wrong way.
-
-Useful for stress-testing recovery behaviour rather than always starting perfectly on-line.
-
-### 5. Run it
-
-Click **Start Sim**. The rollout runs synchronously (no live animation while it solves, this can take a few seconds for a long path). When it finishes, the title turns green and a **Time** scrub slider appears below the map.
-
-### 6. Review the run
-
-Drag the **Time** slider to replay the run frame by frame. The trail, the cyan MPC horizon prediction, the car marker, and the telemetry panel (speed, position, heading, tracking errors, steering/accel commands) all update together.
-
-### 7. Score it
-
-Click **Show Metrics** to print a full 13-metric breakdown to the console (see [Composite Score](architecture.md#the-composite-score) below) and show a one-line summary in the plot title. Click **Benchmark All Paths** to run every synthetic path 3× each with the currently loaded weights and print a per-path score table, useful for checking a weight set generalises rather than only working on whichever single path was tested.
-
-### 8. Reset
-
-Click **Reset Environment** to clear everything and start over.
-
----
-
-## Running the Offline Tuner
-
-The offline tuner (`tuner/offline_tuner.py`) automatically searches for `Q`, `R`, `R_rate` cost weights that minimise the [composite score](architecture.md#the-composite-score) across a library of synthetic corner shapes, using CMA-ES (see [How the Offline Tuner Works](architecture.md#how-the-offline-tuner-works) for the algorithm itself). It has no GUI. It's a long-running batch job left to finish on its own.
-
-**A tuned result is a starting point, not a validated one.** The tuner scores candidates against the headless rollout (`sim/rollout_core.py` driving `model/vehicle_physics.py`), which is rough validation only: it checks the control math behaves sensibly and gets weights into the right ballpark, it is not matched against FSDS or the real car and carries no measured accuracy figure. A weight set found here still needs validation against FSDS and, ultimately, the real car (see [simulator_glossary.md](reference/simulator_glossary.md) and [simulator_fidelity.md](reference/simulator_fidelity.md)) before it's trusted.
-
-### 1. Install dependencies
-
-Same as the 2D GUI (see above). `tuner/offline_tuner.py` uses the same `cvxpy`/`osqp`/`clarabel`/`cma` stack, plus Python's built-in `multiprocessing` to spread rollouts across CPU cores.
-
-### 2. Check `settings.py` first
-
-Before running, confirm:
-
-- `VALIDATION_SUITE` lists the corner shapes the tuner should optimise for (see [Configuring the Project](architecture.md#configuring-the-project-settingspy)).
-- `MAX_EVALS` is set to an acceptable budget to wait for (a good run is 20 minutes to a few hours depending on core count and `MAX_EVALS`).
-- `USE_PLANNER` reflects whether the tuner should test the full perception/planning pipeline (`True`, see [Simulated Perception and Planning](architecture.md#simulated-perception-and-planning-use_planner)) or drive on the perfect reference line (`False`, the default, also faster).
-- The `Q_diag`/`R_diag`/`R_rate_diag` cost weights and `SCORE_WEIGHTS`/ `METRIC_SCALES` the tuner optimises against, see [tuning.md](tuning.md) for what each one does and how to tune it.
-- `USE_OPTUNA_PRESEARCH` (default `True`), set `False` to skip the short Optuna TPE search that runs before CMA-ES starts and seeds its starting point, falling back instead to the fixed geometric midpoint (see [Optional Optuna TPE pre-search](architecture.md#optional-optuna-tpe-pre-search)). Requires `optuna` to be installed (see [Dependencies](#dependencies)).
-
-### 3. Launch
-
-```bash
-cd /path/to/project
+cd fsae_MPCTest
 python -m tuner.offline_tuner
 ```
 
-This uses all available CPU cores minus one (one is left free for the OS). If `USE_OPTUNA_PRESEARCH` is enabled, the Optuna TPE pre-pass runs first and prints one line per trial, then a short summary before CMA-ES begins:
+The tuner uses all CPU cores but one. With `USE_OPTUNA_PRESEARCH` on, the Optuna pass runs first (10% of `MAX_EVALS`, 150 trials by default) and prints one line per trial, then a summary:
 
 ```
-[Optuna TPE] trial   12/ 375 | score 0.3120 | best 0.1896
-[Offline Tuner] Optuna pre-pass done in 8.42 min | trials run: 375/375 | best score: 0.1896
-  x0 (Optuna-seeded): [2.451, 0.873, 4.201, 1.05, 0.612, 3.31, 0.774, 2.9, 5.14]
+[Optuna TPE] trial   12/ 150 | score 0.3120 | best 0.1896
+[Offline Tuner] Optuna pre-pass done in 8.42 min | trials run: 150/150 | best score: 0.1896
+  x0 (Optuna-seeded): [...]
 ```
 
-CMA-ES then starts from that seeded point instead of the fixed midpoint. Progress prints once per CMA-ES generation:
+CMA-ES then starts from that seeded point and prints one line per generation:
 
 ```
 [lq-CMA-ES] gen    5 | true_evals    90 | gen_best 0.2341 | overall_best 0.1892 | sigma 6.123e-01
 ```
 
-`gen_best` is this generation's best score; `overall_best` is the best score seen so far across the whole run; `sigma` is CMA-ES's current search-radius (shrinks as it converges). Lower scores are better throughout.
+- `gen_best`: this generation's best score.
+- `overall_best`: best score so far.
+- `sigma`: CMA-ES's current search radius, shrinking as it converges.
+- Lower is better throughout.
 
-It is safe to stop early with **Ctrl+C**. The tuner finishes its current generation, then reports the best weights found so far rather than exiting uncleanly.
+**Ctrl+C is safe.** The tuner finishes the current generation and reports the best weights so far.
 
-### 4. Read the result
+### 3. Read the result
 
-On completion (or early stop), the tuner prints the best weight arrays found:
+On completion or early stop the tuner prints the best weights, then a list of improvement milestones (the true-evaluation count at which each meaningfully better score appeared):
 
 ```
 Replace your gui/simulation.py weights with:
@@ -130,124 +193,123 @@ R_diag      = [49.3, 45.4]
 R_rate_diag = [50.0, 49.6]
 ```
 
-It also prints a list of "improvement milestones", the point in the search (by true-evaluation count) at which each meaningfully better score was found, showing how much of the run's time was productive.
+The numbers are illustrative. The banner text names `gui/simulation.py`, which is stale: the weights live in `settings/lmpc.py`.
 
-### 5. Apply the weights
+### 4. Apply the weights
 
-Copy the values into **both**:
+Copy into both sides:
 
-- `settings.py`: `Q_diag`, `R_diag`, `R_rate_diag` (used by `gui/simulation.py` and, from there, everything that imports them)
-- `mpc_params.py` (`ros2/src/fsae_planning/control/fsae_control/fsae_control/`, staged under `fsds_simulator/`), the matching individual fields on the `MPCParams` dataclass (`q_e_y`, `q_e_yd`, `q_e_psi`, `q_r`, `q_e_v`, `r_delta`, `r_a_accel`/`r_a_brake`, `r_rate_delta`, `r_rate_a`). `mpc_core.py` builds its own `Q_diag`/`R_diag`/`R_rate_diag` from `self.params.*` at `MPCController.__init__` time, with no hardcoded weights, so `mpc_params.py` is the file to edit, not `mpc_core.py` itself.
+| Side | Where | Fields |
+|---|---|---|
+| Offline | `settings/lmpc.py` | `Q_diag`, `R_diag`, `R_rate_diag` |
+| Live | `mpc_params.py` in `ros2/src/fsae_planning/control/fsae_control/fsae_control/mpc/` | `MPCParams`: `q_e_y`, `q_e_yd`, `q_e_psi`, `q_r`, `q_e_v`, `r_delta`, `r_rate_delta`, `r_rate_a` |
 
-Both must stay in sync manually. The tuner runs against the same plant and horizon used by both, but there is no single shared import between them (the live ROS 2 node has no simulator dependencies). See [`docs/reference/`](reference/)'s "MPC weight/gain parity" table for the full field-by-field mapping.
+Mapping between the two: `Q_diag[0:5]` maps to `q_e_y`, `q_e_yd`, `q_e_psi`, `q_r`, `q_e_v`. `R_diag[0]` maps to `r_delta`. `R_rate_diag` maps to `r_rate_delta`, `r_rate_a`.
 
-### 6. Log the result
+Notes:
 
-Every run appends its result to `tuning_history.txt` automatically (timestamp, weight diagonals, duration, tuner score, git commit hash). Go back and manually fill in the `Overall score` field once you've tested the weights in FSDS or on the real car. The offline tuner score alone doesn't perfectly predict real-world performance, so this file is where the two get reconciled over time. See existing entries in `tuning_history.txt` for the expected format.
+- The live LMPC builds its weights from `self.params.*` at construction (`lmpc/controller.py`) with no hardcoded weights. Edit `mpc_params.py`, not the controller.
+- `R_diag[1]` is nominal only. The QP reads `R_A_ACCEL` and `R_A_BRAKE` (`settings/lmpc.py`, live `r_a_accel` and `r_a_brake`), so the tuner's second R entry has no effect on the score. Set those by hand.
+- The tuner prints and logs only the 9 Q, R and R_rate weights. The values found for the 5 NMPC fields are not printed or logged.
+- The two sides have no shared import, because the live node has no simulator dependency. They stay in sync by hand. The field-by-field table is in [offline_live_parity.md](../reference/offline_live_parity.md).
+- `python -m tuner.tools.sync_mpc_params` copies live params (not `settings/`) from the live tree to the `fsds_simulator/` mirror and `fsae_autonomous`. It does not touch offline settings.
 
-### Key constants to adjust
+### 5. Log the result
 
-All of these live in `settings.py`, not `tuner/offline_tuner.py`, see the next section for what each one does and how much to change it by:
+Every run appends an entry to `docs/logs/tuning_history.txt` automatically: timestamp, the three weight arrays, the `SCORE_WEIGHTS` in force, duration, tuner score, Optuna pre-pass details and the git commit hash. The `Overall score` line is pre-filled with "Haven't been tested." Replace it by hand once the weights have been tested in FSDS or on the car, since the offline score does not predict real-world performance. The file's header marks entries before 2026-08-06 as not comparable to later ones (different scoring and planner).
 
-```python
-MAX_EVALS         # Total true rollout budget (surrogate reduces actual count ~3-10x)
-VALIDATION_SUITE  # Which synthetic corner shapes the tuner scores against
-```
+### Constants that control the run
 
-`sigma0` (CMA-ES's initial search radius) and `max_restarts` (BIPOP restart budget) are algorithm-internal tuning knobs rather than project settings. They're set near the bottom of `tuner/offline_tuner.py`'s `__main__` block if you need to adjust them; see [How the Offline Tuner Works](architecture.md#how-the-offline-tuner-works) for what they control.
+| Constant | Where | Effect |
+|---|---|---|
+| `MAX_EVALS` | `settings/solver.py` | Total true-rollout budget. The surrogate makes the effective search roughly 3 to 10 times larger |
+| `VALIDATION_SUITE` | `settings/scoring.py` | Corner shapes the tuner scores against |
+| `sigma0`, `max_restarts` | near the bottom of `tuner/offline_tuner.py`'s `__main__` block | CMA-ES initial search radius (0.65) and BIPOP restart budget (7). Algorithm internals, not project settings |
 
-### The tuner/ layout at a glance
+## Overriding settings safely
 
-`tuner/` has grown past the offline weight search it started as, it now holds the CMA-ES tuner, its benchmark/scoring companion, shared CSV-parsing helpers, reusable standalone tools, and a library of one-off/reusable sim-to-real investigation scripts. Three tiers:
+**In plain terms:** a settings override reaches code that reads `settings.X` when it runs, and misses values that were computed once at import. Set overrides before importing the rollout or tuner, and the question does not arise.
 
-**`tuner/` root, core infra, imported by the other two tiers:**
+Rules:
+
+- In-repo consumers read `import settings; settings.X`, so a runtime `setattr(settings, name, value)` reaches them. `settings/__init__.py` re-exports every name. A consumer that imported from a submodule (`from settings.lmpc import Q_diag`) would hold its own reference and never see an override. `python -m tuner.tools.doc_lint` flags that pattern in code.
+- Values evaluated at import time miss a later override. Examples: default arguments of `run_core_rollout()` (`use_planner=settings.USE_PLANNER`, `use_nmpc=settings.USE_NMPC`, `n_horizon`, `eps`, `max_iter`), `EVAL_TASKS` and `SYNTHETIC_PATHS` in `tuner/offline_tuner.py` (built from `VALIDATION_SUITE` and `PATH_N_POINTS`), and the module-level globals in `gui/simulation.py`.
+- A script that overrides settings must therefore do so before the first import of `sim.rollout.core` or `tuner.offline_tuner`, in a fresh process. `tuner/investigations/steering_chatter_check.py` does this with `--set NAME=VALUE`.
+- To try NMPC from a script, pass `use_nmpc=True` to `run_core_rollout()` instead of mutating `settings.USE_NMPC` after import.
+- For NMPC rate-shaping fields, pass `nmpc_overrides={...}` to `run_core_rollout()`. One process can then evaluate many configurations. Keys are not validated, so a typo is silently ignored. Check that a swept field moves the score before trusting a null result.
+
+## The tuner package layout
+
+`tuner/` holds the CMA-ES tuner, its scoring companion, reusable tools and one-off diagnostics, in four tiers:
+
+**`tuner/` root:**
 
 | File | Purpose |
 |---|---|
-| `offline_tuner.py` | CMA-ES weight search, see [Running the Offline Tuner](#running-the-offline-tuner). |
-| `performance_stats.py` | Scoring/benchmarking a fixed weight set across `VALIDATION_SUITE`. |
-| `csv_log.py` | Shared CSV parsing helpers (comment-header stripping, malformed-row filtering, column loading) used by every script below that reads a telemetry CSV. |
-| `recorded_map_rollout.py` | Headless rollout baseline against the default recorded map (`comp_test_map_3`), the shared "run the sim against this map" entry point `tuner/checks/` scripts build on. |
+| `offline_tuner.py` | CMA-ES weight search (this guide) |
+| `performance_stats.py` | Scoring and benchmarking a fixed weight set across the paths. Powers Show Metrics and Benchmark All Paths |
+| `csv_log.py` | Shared CSV parsing helpers (comment-header stripping, malformed-row filtering, column loading) used by every script that reads a telemetry CSV |
 
-**`tuner/tools/`, reusable standalone tools:**
+**`tuner/validation/`: correctness checks, run from `fsae_MPCTest/` with the commands below:**
+
+| Command | Purpose |
+|---|---|
+| `python -m tuner.validation.recorded_map_rollout` | Headless rollout on the default recorded map (about 2 minutes). Reproduces the offline column of the sim-to-real comparison table. Run after any change to weights, the plant or scoring |
+| `python -m tuner.validation.nmpc_offline_check` | NMPC self-consistency: model parity, turn-in sign, SQP convergence, closed-loop LMPC-versus-NMPC A/B. Run after touching `controller/nmpc/` |
+| `python -m tuner.validation.plant_openloop_validation` | Replays the open-loop system-ID experiments through the plant. Run after any change to `model/vehicle_physics/` |
+
+**`tuner/tools/`: reusable standalone tools:**
 
 | File | Purpose |
 |---|---|
-| `plot_playback.py` | Time-scrubbing map/telemetry viewer, see [debugging_tools.md](debugging_tools.md#telemetry-playback-tunertoolsplot_playbackpy). |
-| `export_speed_profile.py` | Exports a recorded cone map's oracle path + speed profile to CSV, see [Export the speed profile and raceline](fsds/fsds_integration_guide.md#2-export-the-speed-profile-and-raceline-offline-fsae_mpctest) in the FSDS integration guide. |
-| `raceline_optimizer.py` | Minimum-time racing line optimiser, same CSV output, see the same section above. `--mode centerline` exports the centreline instead. |
-| `doc_lint.py` | Flags docs that break this project's writing conventions, see [debugging_tools.md](debugging_tools.md#doc-conventions-tunertoolsdoc_lintpy). |
+| `plot_playback.py` | Time-scrubbing map and telemetry viewer, see [debugging_tools.md](debugging_tools.md) |
+| `export_speed_profile.py` | Exports a recorded cone map's oracle path and speed profile to CSV, see "Export the speed profile and raceline" in [integration_guide.md](../fsds/integration_guide.md) |
+| `raceline_optimizer.py` | Minimum-time racing line optimiser with the same CSV output. `--mode centerline` exports the centreline instead |
+| `sync_mpc_params.py` | One-way copy of live param files to `fsae_autonomous` and the `fsds_simulator/` mirror |
+| `doc_lint.py` | Flags docs that break the project's writing conventions |
 
-**`tuner/checks/`, one-off and reusable diagnostic scripts from sim-to-real debugging**, plus a few similar scripts at `tuner/` root (`steering_chatter_check.py`, `reference_heading_geometry_check.py`, `reference_excess_mechanism_check.py`, `nmpc_offline_check.py`, `recorded_map_rollout.py`). See [debugging_tools.md](debugging_tools.md#which-tool-for-which-question) for what question each answers and how to run it, and [docs/logs/sim_to_real_investigation.md](logs/sim_to_real_investigation.md) for the investigation narrative behind them.
+**`tuner/investigations/`: one-off and reusable diagnostics from sim-to-real debugging** (`steering_chatter_check.py`, `reference_heading_geometry_check.py`, `live_vs_sim_diagnostics.py` and others). See [debugging_tools.md](debugging_tools.md) for which question each answers, and [sim_to_real_investigation.md](../logs/sim_to_real_investigation.md) for the history behind them.
+
+`DEFAULT_MAP`, the recorded map every validation and investigation script defaults to, lives in `tracks/__init__.py`.
 
 ### Plotting and scrubbing exported CSV telemetry
 
-`tuner/tools/plot_playback.py` turns one or more of the control CSVs from a live/FSDS run (see [CSV telemetry logging](fsds/fsds_integration_guide.md#csv-telemetry-logging) in the FSDS integration guide) into an interactive, time-scrubbing map/telemetry viewer. See [debugging_tools.md](debugging_tools.md#telemetry-playback-tunertoolsplot_playbackpy) for the full usage, flags, and auto-search-folder behaviour.
+`tuner/tools/plot_playback.py` turns one or more control CSVs from a live or FSDS run into an interactive time-scrubbing map and telemetry viewer. Usage, flags and the auto-search folder are in [debugging_tools.md](debugging_tools.md). The CSV format is in "CSV telemetry logging" in [integration_guide.md](../fsds/integration_guide.md).
 
----
+## Manual drive mode
 
-## Manual Drive Mode
-
-`gui/manual_drive.py` is a small standalone app for driving the nonlinear plant directly, useful for building intuition for the vehicle's handling limits, eyeballing track/cone geometry, and generating a human reference trace to compare against MPC runs on the same path. It shares the same 24-state nonlinear plant and synthetic path library as the 2D GUI, but is entirely open-loop: no tracking error is computed, no MPC solve happens, and nothing is scored.
-
-**Run it:**
+`gui/manual_drive.py` is a small standalone app for driving the nonlinear plant by hand. Use it to build intuition for the vehicle's handling limits, eyeball track and cone geometry, or generate a human reference trace to compare against MPC runs on the same path. It shares the 25-state plant and the synthetic path library with the 2D GUI, but it is open-loop: no tracking error, no MPC solve, nothing scored.
 
 ```bash
 python -m gui.manual_drive
 ```
 
-**Controls:** `W`/`S` throttle/brake, `A`/`D` steer left/right, `SPACE` full brake (overrides throttle). Inputs are rate-limited toward the key-held target so taps feel analog rather than an on/off step.
+**Controls:** `W` and `S` throttle and brake, `A` and `D` steer left and right, `SPACE` full brake (overrides throttle). Inputs ramp toward the key-held target so taps feel analog instead of a step.
 
-**Workflow:** **Load Test Path** to cycle through the synthetic path library and place cones → **Start Driving** to spawn the plant at the path's start pose → drive → **Reset** to stop and clear the trail.
+**Workflow:** **Load Test Path** cycles the synthetic library and places cones, **Start Driving** spawns the plant at the path start, drive, then **Reset** stops and clears the trail.
 
----
-
-## Dependencies
-
-| Package | Version | Purpose |
-|---|---|---|
-| `numpy` | ≥1.24 | All numerical computation |
-| `scipy` | ≥1.10 | ZOH discretisation (`expm`), spline fitting (`CubicSpline`) |
-| `matplotlib` | ≥3.7 | 2D GUI / manual-drive GUI |
-| `cvxpy` | ≥1.4 | MPC QP formulation |
-| `osqp` | ≥0.6 | Primary QP solver (via CVXPY) |
-| `clarabel` | ≥0.6 | Fallback QP solver (via CVXPY) |
-| `cma` | ≥3.3 | CMA-ES optimiser (`fmin_lq_surr2`, BIPOP+surrogate) |
-| `optuna` | ≥4.0 | Optional TPE pre-search that seeds CMA-ES's starting point (`tuner/offline_tuner.py`, only needed if `USE_OPTUNA_PRESEARCH = True` in `settings.py`) |
-| `rclpy` | ROS 2 Humble+ | ROS 2 nodes only |
-| `fs_msgs` | FSDS | `ControlCommand`, `GoSignal` message types |
-| `fsae_interfaces` | `fsae_planning` | `ConeDetection` (cone-proximity brake input) |
-| `nav_msgs` | ROS 2 | `Odometry` |
-| `geometry_msgs` | ROS 2 | `Pose`, `PoseArray` |
-
-```bash
-pip install numpy scipy matplotlib cvxpy cma
-pip install cvxpy[osqp] cvxpy[clarabel]
-pip install optuna  # optional: only needed for USE_OPTUNA_PRESEARCH in settings.py
-```
-
----
-
-## Extending and Debugging
-
-These guidelines keep the MPC/plant architecture consistent when extending the offline simulator or tuning the vehicle.
+## Extending the offline simulator
 
 ### Modifying vehicle parameters
 
-See [Configuring the Vehicle](architecture.md#configuring-the-vehicle-modelvehicle_physicspy) above. The short version: `VehicleParams` in `model/vehicle_physics.py` is the single source of truth; importing new Pacejka tyre data also requires recomputing `Cf`/`Cr` to match its initial slope, or the MPC's internal model will silently diverge from the plant it's controlling.
+`VehicleParams` in `model/vehicle_physics/params.py` is the single source of truth for the plant. See [vehicle_physics.md](../reference/vehicle_physics.md) for what each parameter does.
+
+When importing new Pacejka tyre data, the linear cornering stiffnesses `Cf` and `Cr` must match the new curve's initial slope. The offline `VehicleParams` derives them from the Pacejka coefficients, so offline follows automatically. The live LMPC hardcodes them (`self.Cf`, `self.Cr` in `lmpc/controller.py`) and needs the new values pasted in by hand. Missing that makes the MPC's internal model diverge from the plant it controls, with no error raised.
+
+After any change to `model/vehicle_physics/`, run `python -m tuner.validation.plant_openloop_validation`, then `python -m tuner.validation.recorded_map_rollout`.
 
 ### Adding a new synthetic path
 
 1. In `tuner/offline_tuner.py`, open `build_synthetic_paths()`.
-2. Define your segments, `_make_arc(cx, cy, radius, start_deg, end_deg, n)` for constant-radius corners, `np.linspace()` for straights.
-3. Concatenate the segment arrays and pass them through `_resample_path(wx, wy)`.
+2. Define the segments: `_make_arc(cx, cy, radius, theta_start_deg, theta_end_deg, n=20)` for constant-radius corners, `np.linspace()` for straights.
+3. Concatenate the segment arrays and pass them through `_resample_path(waypoints_x, waypoints_y)`.
 4. Add the resulting tuple to the `paths` dictionary under a new key.
-5. *(Optional)* Add that key to `VALIDATION_SUITE` in `settings.py` if you want the tuner to optimise against it, see [Configuring the Project](architecture.md#configuring-the-project-settingspy).
+5. Optional: add that key to `VALIDATION_SUITE` in `settings/scoring.py` so the tuner optimises against it.
 
-### Working with the NMPC (`USE_NMPC`)
+### Working with NMPC (`USE_NMPC`)
 
-To try the nonlinear controller during development, flip `settings.USE_NMPC = True` and re-run any tuner/rollout script, `run_core_rollout()` takes `use_nmpc` explicitly, so nothing else needs to change.
+To try the nonlinear controller offline, set `settings.USE_NMPC = True` before importing the rollout, or pass `use_nmpc=True` to `run_core_rollout()`. See [Overriding settings safely](#overriding-settings-safely).
 
-Before trusting a result, run `python -m tuner.nmpc_offline_check`: it re-verifies model parity, Jacobians, SQP convergence, and a closed-loop LTV-QP-vs-NMPC A/B on every call, so a broken change fails loudly instead of silently degrading a tuning run.
+Before trusting a result, run `python -m tuner.validation.nmpc_offline_check`. It re-verifies model parity, turn-in sign, SQP convergence and a closed-loop LMPC-versus-NMPC A/B on every call, so a broken change fails loudly.
 
-If the LTV-QP's solver fails (`consecutive_solver_failures`, `OPTIMAL_INACCURATE`) or the NMPC's SQP misbehaves (non-improving steps, oscillation), see [debugging_tools.md](debugging_tools.md#debugging-solver-failures) for the checklist, plus, for the NMPC specifically, `nmpc_solve_budget_ms`/ `nmpc_sqp_iters` too tight for the horizon, or a weight override (`NMPC_Q_E_Y` etc. in `settings.py`, `-1` inherits from the base weight) pushing the cost badly out of scale. See `docs/reference/control_mechanisms.md`'s "Nonlinear MPC (`use_nmpc`)" section for the model and weight-mapping details, and `tuning.md` §4.5d for the tuning surface.
+If the LMPC solver fails (`consecutive_solver_failures`, `OPTIMAL_INACCURATE`) or the NMPC SQP misbehaves (non-improving steps, oscillation), see "Debugging solver failures" in [debugging_tools.md](debugging_tools.md). For NMPC specifically, check `nmpc_solve_budget_ms` and `nmpc_sqp_iters` against the horizon, and check that a weight override (`NMPC_Q_E_Y` and others in `settings/nmpc.py`, where `-1` inherits the base weight) is not pushing the cost out of scale. Model and weight-mapping details: "Nonlinear MPC" in [control_mechanisms.md](../reference/control_mechanisms.md). Tuning surface: [tuning.md](tuning.md).

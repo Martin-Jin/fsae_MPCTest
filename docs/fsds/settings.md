@@ -1,42 +1,69 @@
-# FSDS/Live Settings
+# FSDS and Live Settings: Where a Value Comes From
 
-**This doc covers the FSDS/live settings surface only**: how MPC/NMPC tuning values and feature flags are configured on the ROS 2 side. For the offline (`fsae_MPCTest`) equivalent, `settings.py`, see [docs/architecture.md](../architecture.md)'s "Configuring the Project" and "Configuring the Vehicle" sections, and [docs/tuning.md](../tuning.md) for what each weight/flag does. For what "FSDS" vs "offline" mean, see [docs/reference/simulator_glossary.md](../reference/simulator_glossary.md).
+This doc covers the live (ROS 2) settings surface: how MPC and NMPC weights and flags are declared, and which of three places decides the value a running controller uses. It is not a tuning guide. For what each weight does see [tuning.md](../guides/tuning.md). For the offline equivalent, the `settings/` package, see [architecture.md](../reference/architecture.md). For the meaning of "FSDS" and "offline" see [glossary.md](../reference/glossary.md).
 
-The two sides are kept numerically identical by hand, not by a shared import (`fsae_MPCTest` cannot import from `fsae_planning`, or vice versa). See `CLAUDE.md`'s "Single source of truth for MPC tuning, per side" section for the standing rule, and [offline_live_parity.md](../reference/offline_live_parity.md) for the field-by-field mapping table. This doc only covers the live side's own mechanics: where its settings live and how they reach the running controller.
+## Summary
 
-## The three places a live setting can be set, and how they relate
+- Every tuning field is declared once, as a dataclass field with metadata. YAML defaults, launch arguments and ROS parameters are generated from or checked against it.
+- Under `ros2 launch` the value that runs is the launch argument. `ros2/launch_all.sh` sets a few of them. The dataclass default alone does not tell what is live.
+- The live and offline sides are kept numerically identical by hand. See [offline_live_parity.md](../reference/offline_live_parity.md) for the rule and the field-by-field table.
 
-Every MPC/NMPC weight, gain, and feature flag (~56 `MPCParams` fields + ~34 `NMPCParams` fields) is declared **once**, as dataclass fields with metadata (`unit`, `desc`, which controller it applies to), and everything else is generated from that, so the value can't drift out of sync with its own launch arg or YAML default:
+## Declaring a field once
 
-1. **`MPCParams`** (`ros2/src/fsae_planning/control/fsae_control/fsae_control/mpc/mpc_params.py`) and **`NMPCParams`** (`.../mpc/nmpc_params.py`, a separate sibling dataclass, not a subclass) are the actual source of truth. Each field carries a default value and metadata directly on it, e.g.:
+`MPCParams` (69 fields) and `NMPCParams` (35 fields, a separate sibling dataclass, not a subclass) hold 104 fields in total. They live in `mpc/mpc_params.py` and `mpc/nmpc_params.py` under `ros2/src/fsae_planning/control/fsae_control/fsae_control/`. Each field carries a default and metadata:
 
-   ```python
-   q_e_y: float = field(default=6.4, metadata={
-       "unit": "1/m^2",
-       "desc": "lateral deviation from path centreline",
-       "controller": "both",
-   })
-   ```
+```python
+q_e_y: float = field(default=6.4, metadata={
+    "unit": "1/m^2",
+    "desc": "lateral deviation from path centreline",
+    "controller": "both",
+})
+```
 
-   `declare_mpc_params(node)` / `declare_nmpc_params(node)` declare every field as a ROS 2 parameter on the controller node (defaulting to `DEFAULT_MPC_PARAMS`/`DEFAULT_NMPC_PARAMS`), and `mpc_params_from_node(node)` / `nmpc_params_from_node(node)` read them back into a fresh `MPCParams`/`NMPCParams` instance at node-construction time, which is what `MPCController`/`NMPCController` actually receive.
+Counts drift as fields are added. Recount with `dataclasses.fields()` before quoting them.
 
-2. **`common/fsae_bringup/config/fsae_params.yaml`**'s `controller:` block lists every field with the *same* default as the dataclass, under the comment "single source of truth for tunables." This is the YAML a deployment edits to change a default without touching code.
+Three consumers read the declaration:
 
-3. **`control.launch.py`/`sim.launch.py`** generate one `DeclareLaunchArgument` per field directly from `MPC_PARAM_FIELDS`/`NMPC_PARAM_FIELDS` (the dataclasses' own field-metadata tuples), via a small helper applied in a list comprehension. **Launch args are not hand-written**: adding a field to `MPCParams`/`NMPCParams` is enough for it to show up as a launch arg automatically, so the dataclass, the YAML defaults, and the launch args can't independently drift out of field-name sync (their *values* can still differ, since YAML/launch args are meant to override the dataclass default; that's the point of having them).
+1. **ROS parameters on the node.** `declare_mpc_params(node)` and `declare_nmpc_params(node)` declare every field as a parameter. `mpc_params_from_node(node)` and `nmpc_params_from_node(node)` read them back into fresh `MPCParams` and `NMPCParams` instances at node construction. `MPCController` (`lmpc/controller.py`) and `NMPCController` (`nmpc/solver.py`) receive those instances.
+2. **`fsae_params.yaml`.** The `controller:` block in `common/fsae_bringup/config/fsae_params.yaml` lists every field. All 104 defaults match the dataclasses now. The same block also holds `v_max`, `v_min`, `stanley_gain` and the dynamic-speed-cap fields, which are not `MPCParams` fields.
+3. **Launch arguments.** `control.launch.py` and `sim.launch.py` build one `DeclareLaunchArgument` per field from `MPC_PARAM_FIELDS` and `NMPC_PARAM_FIELDS`. Adding a field to a dataclass is enough to get a launch argument. Names cannot drift apart. Values can, by design, which is what the next section covers.
 
-**Effective value at runtime, in override order**: dataclass default → `fsae_params.yaml` → a launch arg (either passed directly to `ros2 launch`, or forwarded by `ros2/launch_all.sh`'s shortlist below). The dataclass default alone is not necessarily what's running; check the launch args actually in effect for a given run before assuming a field's dataclass default is live.
+## Which value runs
 
-## `ros2/launch_all.sh`'s shortlist
+Order of precedence, lowest to highest:
 
-`ros2/launch_all.sh` is the day-to-day launch script (see [fsds_integration_guide.md](fsds_integration_guide.md)), and it carries a small, commented-out-by-default shortlist of the fields most commonly retuned interactively, forwarded via a `_append_mpc_arg field value` helper that only adds `field:=value` to the launch command when the shell variable is actually set. An untouched shortlist changes nothing; the dataclass/YAML defaults still apply.
+1. The dataclass default.
+2. `fsae_params.yaml`.
+3. A launch argument, either typed on the `ros2 launch` line or forwarded by `launch_all.sh`.
 
-Two shortlist blocks exist:
+Under `ros2 launch` in this workspace, layer 3 always applies. `control.launch.py` forwards every field to the node as a launch value whose default is the dataclass default, and lists those values after the YAML file in the node's parameters. A ROS 2 launch parameter dictionary listed later overrides an earlier source. An edit made only to the YAML block therefore has no effect on a launch-started node. Change the dataclass default as well, or pass a launch argument. This follows from the code order and was not run live.
 
-- **Top-of-file basics**: `CONTROLLER`, `STANDALONE_OUTPUT`, `V_MAX`, `V_MIN`, and **`USE_NMPC`**, active (uncommented) by default rather than left at the dataclass's own default. This is the file to check before assuming which controller (LTV-QP vs. NMPC) or speed cap is actually running on a given launch, the dataclass default alone does not tell you.
-- **"MPC tuning shortlist"**, further down: a longer commented-out list covering the weights/gains most likely to be tuned interactively (`MPC_Q_E_Y`, `MPC_Q_E_PSI`, `MPC_R_DELTA`, `MPC_R_A_ACCEL`/`_BRAKE`, `MPC_SPEED_TARGET_DEFICIT_MAX`, adaptive-gain and corner-factor fields, dynamic speed cap), plus a large NMPC-specific shortlist (horizon, SQP iteration count, corner-factor/rrate-zone/rjerk fields, progress term). A handful of these are also left active rather than commented out; **read the script directly for the current state** rather than trusting a cached description, this shortlist changes as tuning continues.
+`tuner/tools/sync_mpc_params.py` copies the three live parameter files (`mpc_params.py`, `nmpc_params.py`, `fsae_params.yaml`) one way from `fsae_planning` to `fsae_autonomous` and the `fsds_simulator/` mirror. See [debugging_tools.md](../guides/debugging_tools.md).
+
+## What `launch_all.sh` overrides
+
+`ros2/launch_all.sh` is the day-to-day launcher. A helper `_append_mpc_arg field value` adds `field:=value` to the launch command only when the shell variable is non-empty. A variable left unset changes nothing.
+
+The active (uncommented) lines differ from the dataclass or launch defaults as follows:
+
+| Variable | Value in script | Default it overrides |
+|---|---|---|
+| `USE_NMPC` | `true` | `use_nmpc` dataclass default `false` |
+| `REVERSAL_PENALTY_ENABLED` | `true` | `reversal_penalty_enabled` default `false` |
+| `MPC_ADAPTIVE_Q_SCALING_ENABLED` | `false` | `adaptive_q_scaling_enabled` default `true` |
+| `ENABLE_DYNAMIC_SPEED_CAP` | `false` | launch and YAML default `true` |
+| `V_MAX` | `20.0` | launch and YAML default `15.0` |
+
+These active lines set the same value as the dataclass default: `V_MIN=1.5`, `NMPC_SLACK_LINEAR_WEIGHT=500.0`, `NMPC_CORNER_RRATE_BLEND_ENABLED=false`, `NMPC_CORNER_FACTOR_K=27.0`, `NMPC_RRATE_ZONE_ENABLED=true` with its three endpoints (`2.0`, `0.80`, `0.15`), `NMPC_RJERK_DELTA=150.0` and `NMPC_REVERSAL_PENALTY_ENABLED=false`.
+
+- **Top of the script**: `CONTROLLER=mpc`, `STANDALONE_OUTPUT=true`, `V_MAX`, `V_MIN` and `USE_NMPC`, plus the track and precomputed-data toggles.
+- **The tuning shortlist**: a longer block further down, mostly commented out, covering the commonly retuned weights and gains, the adaptive-gain and corner-factor fields, the dynamic speed cap and a large NMPC set. The shortlist changes as tuning proceeds. Read the script for the current state, not this table.
+- **`V_MAX` does not reach the precomputed-speed branch.** With `use_precomputed_speed` on, the CSV's own top speed is the car's top speed. A speed cap for a test means swapping the CSV. See [reference_path_and_speed.md](../reference/reference_path_and_speed.md).
+
+Why three layers exist (dataclass, YAML and launch argument, instead of one) is not recorded. The practical roles are: the dataclass is the authoritative default, the YAML is a deployment file, and a launch argument is a per-run override.
 
 ## Perception feeding the live planner
 
-The live stack's `sim_perception` node (an FOV/box/radius filter over FSDS's cone ground truth) publishes `left_track`/`right_track`, `cone_detection`, and `car_position` on separate timers; one of `centerline_planner`/`skidpad_planner` (selected via the `planner` launch arg) turns those into a published centreline the controller tracks. This is a live ROS 2 node graph, not a Python function call, so its behaviour (publish rates, FOV limits) is fixed by the running nodes' own parameters in `fsae_params.yaml`, not by anything in this doc.
+`sim_perception` (`fsae_sim_perception`) filters FSDS's cone ground truth by field of view, box and radius. It publishes `left_track` and `right_track`, `cone_detection` and `car_position`/`car_odom` on separate timers. `pose_rate` defaults to 20 Hz and `cone_rate` to 10 Hz. One planner (`centerline_planner` or `skidpad_planner`, chosen by the `planner` launch argument) turns them into the centreline the controller tracks. Its behaviour is set by the node parameters in `fsae_params.yaml`, not by anything in this doc.
 
-The offline side has its own reimplementation of this same idea (`SimPerception`/`SimPlanner` in `sim/sim_track.py`, gated by `USE_PLANNER`) built specifically to mirror this live behaviour closely enough that a bug reproduced offline is a real perception/planning bug, not a simulator artifact. See [architecture.md's "Simulated Perception and Planning"](../architecture.md#simulated-perception-and-planning-use_planner) section for how that offline reimplementation works; it is not covered further here since this doc is FSDS/live-only.
+The offline side has its own reimplementation, `SimPerception` in `sim/perception.py` and `SimPlanner` in `sim/planner.py`, gated by `USE_PLANNER`. It exists so a bug reproduced offline is a perception or planning bug and not a simulator artefact. See [architecture.md](../reference/architecture.md).

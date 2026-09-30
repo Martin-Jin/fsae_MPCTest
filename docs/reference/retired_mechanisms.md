@@ -1,216 +1,199 @@
-# Removed Mechanisms: The Lookahead Gain-Scheduling Family
+# Retired Mechanisms
 
-This doc is the single home for a whole family of mechanisms that **no longer exist in the code**, removed in the corner-factor rewrite. They're preserved here, in one place, for two reasons:
+Mechanisms that were built and then removed, superseded or disabled. Each entry states what it was, why it went away (with numbers), and where the full record is.
 
-- **The elimination reasoning is the direct motivation for the nonlinear MPC (NMPC).** Understanding why this family had to fail structurally is the fastest way to understand why `nmpc_core.py` exists and what it does differently. See [Section 1](#1-the-structural-limit-the-argument-that-motivates-nmpc).
-- **Several of these were tried, measured, and rejected for specific, non-obvious reasons.** Without this doc, it's easy to reinvent one of them from scratch and rediscover the same failure the hard way.
+This doc exists so a future session does not re-invent something already tried and measured. Mechanisms that are live today are in [control_mechanisms.md](control_mechanisms.md).
 
-**None of the fields, functions, or flags described below exist on `MPCParams`, `mpc_core.py`, or `controller/model_utils.py` today.** For the tuning knobs that currently exist, see [`tuning.md`](tuning.md) instead. It links back here only for history.
+## Summary
 
----
+| Mechanism | Status | Why it went away | Record |
+|---|---|---|---|
+| Lookahead gain-scheduling family (about 15 functions) | Removed | Reweights cost the prediction never sees. Offline replacement result: 4.8% to 0% saturation | [section](#the-lookahead-gain-scheduling-family-removed-structurally-unable-to-anticipate) |
+| Exit-heading boost | Removed with the family | Decay clock keyed on the wrong curvature, then window too short | [section](#exit-heading-boost-removed-decay-timing-and-window) |
+| Curvature-forcing term | Removed | Solver defers externally supplied data; wrong-direction steer at every useful gain | [section](#curvature-forcing-term-removed-the-solver-defers-external-data) |
+| Low-speed steering-rate boost | Removed | Speed alone cannot tell turn-in from post-exit wobble | [section](#low-speed-steering-rate-boost-removed) |
+| Adaptive `R_rate` curvature floor | Removed | Output always overwritten before reaching the QP | [section](#adaptive-r_rate-curvature-floor-removed-computed-then-always-overwritten) |
+| Post-solve output smoothing | Removed | Added lag, never beat the rate cost | [section](#post-solve-output-smoothing-removed) |
+| Single shared `r_a` weight | Superseded | One weight could not serve both accel and brake | [section](#single-shared-accel-effort-weight-superseded) |
+| NMPC horizon speed profile (two variants) | Removed | Cost variant overspeeds corners, constraint variant never engages | [section](#nmpc-horizon-speed-profile-two-variants-removed) |
+| NMPC friction-circle constraint | Disabled, code present | Hard rows without slack go infeasible in normal cornering | [section](#nmpc-friction-circle-constraint-disabled) |
+| NMPC progress term | Disabled, code present | Does not reliably complete a lap at any weight | [section](#nmpc-progress-term-disabled) |
+| Dynamic speed cap | Disabled by the shipped launch, code default on | Improved its target metric, worsened the ones that matter | [section](#dynamic-speed-cap-disabled-in-the-shipped-launch) |
 
-## Table of contents
+None of the removed fields, functions or flags below exist on `MPCParams`, the live controller modules or `controller/model_utils.py`. Names appear in code comments only. Constants quoted for removed code come from git history (`bb8863d^`) and cannot be re-checked against a running tree.
 
-- [1. The structural limit: the argument that motivates NMPC](#1-the-structural-limit-the-argument-that-motivates-nmpc)
-- [2. What the whole family did](#2-what-the-whole-family-did)
-- [3. Lookahead corner anticipation](#3-lookahead-corner-anticipation)
-- [4. Demand normalisation](#4-demand-normalisation)
-- [5. U-turn detection](#5-u-turn-detection)
-- [6. Straight-line adjustments](#6-straight-line-adjustments)
-- [7. Precomputed corner segmentation (`CornerMap`)](#7-precomputed-corner-segmentation-cornermap)
-- [8. Curvature forcing: the closest attempt, and why it still failed](#8-curvature-forcing-the-closest-attempt-and-why-it-still-failed)
-- [9. Low-speed steering-rate boost](#9-low-speed-steering-rate-boost-removed)
-- [10. FSDS lateral-acceleration ceiling as a lookahead input](#10-fsds-lateral-acceleration-ceiling-as-a-lookahead-input)
-- [10a. Adaptive R_rate current-curvature floor (removed 2026-09-29): computed, then always overwritten before reaching the QP](#10a-adaptive-r_rate-current-curvature-floor-removed-2026-09-29-computed-then-always-overwritten-before-reaching-the-qp)
-- [11. What replaced all of this](#11-what-replaced-all-of-this)
+## The lookahead gain-scheduling family (removed, structurally unable to anticipate)
 
----
-
-## 1. The structural limit: the argument that motivates NMPC
-
-It's tempting to read every mechanism below as "the MPC looks ahead at the path, notices it curves, and plans to turn early." **That is not what happens**, and the distinction is the single most important thing to take from this doc.
-
-- Every mechanism here computes something real: a genuine forward scan of the path ahead, finding real upcoming curvature (`kappa_max_abs`).
-- But that number only ever reaches the solver as a **reweighting** of the cost function (`Q[0,0]`, `Q[2,2]`, `R[0,0]`, ...). It changes how *expensive* an existing tracking error is. It never changes what the solver's own prediction of the future *looks like*.
-- The solver's internal model of "what happens over the next 35 steps" (`Ad`/`Bd`, see [`lmpc.md`'s "Building the prediction model"](lmpc.md#building-the-prediction-model-modelbicycle_modelpy)) has **no path-curvature term at all**. Given the car dead on-line (`e_y ≈ e_psi ≈ 0`, exactly the situation on the straight approach to a corner) and no other input, that model predicts `e_y`/`e_psi` staying at ≈0 for the whole horizon, corner or no corner, because nothing in the model represents the road bending away from the car.
-
-**Consequence:** every boost/relaxation below only helps once *some* real tracking error already exists to reweight. None of them can make the controller *start* turning while `e_y ≈ e_psi ≈ 0`, no matter how cheap steering is made. Measured directly: `kappa_max_abs` and the derived boosts moved correctly and over a full second early (`m_R_steer_relax` falling to ~0.55, `Q_ey_eff` climbing from 2.5 to 4.5+), while `steer_deg` stayed at ≈0° the entire time, because `e_y`/`e_psi` stayed at ≈0 throughout. Turn-in didn't begin until the car had already entered the curved section and *current-position* curvature started feeding real state error.
-
-**The actual fix needed a model that predicts the road bending, not a cheaper cost on a road that already bent.** That's what the nonlinear MPC (`nmpc_core.py`, `use_nmpc`) does: see [`architecture.md`'s "Second controller: nonlinear MPC" section](architecture.md#second-controller-nonlinear-mpc-use_nmpc) or, for the full derivation with worked numbers, [`error_state_reference.md`](error_state_reference.md).
-
----
-
-## 2. What the whole family did
+**What it was.** About 15 interacting LTV-QP functions scanned forward along the path each tick for the sharpest upcoming curvature (`kappa_max_abs`) and reweighted `Q`, `R` and `R_rate` from it.
 
 | Mechanism | What it scanned for | What it reweighted |
 |---|---|---|
-| Lookahead corner anticipation | Peak curvature in a speed-scaled window ahead | `Q[0,0]`/`Q[2,2]` (up), `Q[3,3]` (down) approaching/exiting a corner |
-| Demand normalisation | Same, scaled by how much of available grip the corner needs at the current speed | Made the boosts above scale-free across corner types/speeds |
-| U-turn detector | Accumulated heading change in the window (not just peak curvature) | Extra `Q[0,0]`/`Q[2,2]`/`Q[3,3]` boost for long, gradual turns |
-| Straight-line adjustments | Window clear of curvature | `Q[0,0]` down, `Q[2,2]`/`Q[3,3]`/`R[0,0]` up |
-| Precomputed corner segmentation (`CornerMap`) | Same scan, but precomputed once per static path instead of live | Replaced the live scan with an exact index lookup: same reweighting, cheaper |
-| Curvature forcing | Curvature at each *horizon step's* predicted arc length | Injected directly into the predicted dynamics (not a cost reweight): the one attempt that tried to fix Section 1's actual limit |
-| Low-speed steering-rate boost | Car speed alone (no curvature gate) | `R_rate[0,0]` (steering smoothness) |
-| alat-ceiling as lookahead input | N/A (a measured plant constant, not a scan) | Fed `_corner_demand` above; the ceiling law itself lives on |
+| Lookahead corner anticipation | Peak curvature in a speed-scaled window ahead | `Q[0,0]`, `Q[2,2]` up and `Q[3,3]` down approaching and exiting a corner |
+| Demand normalisation | Same, scaled by how much grip the corner needs at the current speed | Made the boosts scale-free across corners and speeds |
+| U-turn detector | Accumulated heading change in the window | Extra `Q[0,0]`, `Q[2,2]`, `Q[3,3]` boost for long gradual turns |
+| Straight-line adjustments | Window clear of curvature | `Q[0,0]` down, `Q[2,2]`, `Q[3,3]`, `R[0,0]` up |
+| Corner segmentation (`CornerMap`) | Same scan, precomputed once per static path | Replaced the live scan with an index lookup |
+| Steer-effort relax | Corner demand | `R[0,0]` toward a floor on approach |
+| Low-speed rate boost, exit boost | See their own sections | See their own sections |
 
----
+**Why it was retired.** In plain terms: the controller looked ahead, saw the bend, made steering cheaper, and still did not turn until the car was already off the line, because the solver's own prediction did not contain the bend.
 
-## 3. Lookahead corner anticipation
+- The scan only ever reached the solver as a reweighting of cost (`Q[0,0]`, `Q[2,2]`, `R[0,0]`, ...). It changes how expensive an existing tracking error is. It never changes what the solver's own rollout predicts.
+- The LTV-QP's model (`Ad`/`Bd`) has no path-curvature term. With the car on the line (`e_y` and `e_psi` near 0), the rollout predicts near-zero error for the whole horizon, bend or no bend, so there is nothing for a cheaper weight to act on.
+- Measured directly in live telemetry: `kappa_max_abs` and the boosts moved correctly and over a full second early (`m_R_steer_relax` falling to about 0.55, `Q_ey_eff` climbing from 2.5 to 4.5 and above) while `steer_deg` stayed near 0 for the whole approach. Turn-in began only when current-position curvature started producing real error.
+- Piecemeal tuning never produced a net win. Three separate "raise the boost" changes (curvature-forcing gain, `adaptive_q_lookahead_q_boost_max` 2.0 to 3.0, the `e_psi` approach boost 1.5 to 2.5) each measured worse live and were reverted. A widened extended-lookahead window (`adaptive_q_extended_lookahead_dist_max` 60.0) performed badly live and was reverted (root cause not established). Several members (`adaptive_q_scaling`, anti-hunt, straight `R[0,0]` boost) carried no before/after evidence at all.
+- Replacement (commit `bb8863d`, offline `python -m tuner.validation.recorded_map_rollout` on `comp_test_map_3`): steering saturation 4.8% to 0% and `|e_psi|` mean/p90 from 6.9/18.5 to 2.45/5.66 degrees, no DNF. These are offline figures from the commit message, not live results.
 
-**`adaptive_Q_lookahead` / `ADAPTIVE_Q_LOOKAHEAD_ENABLED`**
+**What replaced it.** The current-curvature [corner-factor scheduler](control_mechanisms.md#corner-factor-scheduler-ltv-qp-weights-follow-the-current-curvature), and, for actual anticipation, the [NMPC](control_mechanisms.md#nonlinear-mpc-use_nmpc-the-second-controller), whose model contains `e_psi_dot = r - kappa(s) * s_dot`.
 
-Every *current-state* mechanism reacts to curvature the car is at right now. This one instead scanned a speed-scaled window of path ahead: `lookahead_curvature_profile(path, base_idx, lookahead_dist)`, with `lookahead_dist = clip(vx · 1.13 s, 3 m, 17 m)`, for the sharpest curvature coming up (`kappa_max_abs`) and the total accumulated heading change over that window.
+**Where the record is.** [late_turn_in_investigation.md](../logs/late_turn_in_investigation.md), Parts 1 to 6 (mechanisms and the `CornerMap` design), Part 2 (the failed boost raises), Part 3f (evidence audit), Part 15b (extended lookahead); [error_states.md](error_states.md) for the model-side argument.
 
-- **Approaching a corner:** boosted `Q[0,0]` (lateral error, ceiling 2.0×) and `Q[2,2]` (heading error, ceiling 1.5×) so the controller committed steering authority before drifting, and relaxed `Q[3,3]` (yaw rate, floor 0.5×) so a high straight-line yaw-rate penalty didn't itself make turn-in feel slow. Added after a live log showed steering only starting to ramp ~0.6 s before saturating, by which point `e_y` had already grown to -1.86 m.
-- **Exiting a corner:** continued boosting `Q[2,2]` for a short distance afterward (`decay_dist`, 5 m), linear decay, scaled by how sharp the corner was. Used a rising-edge-after-a-clear-peak detector rather than a running maximum, since a running max would silently fail to re-trigger on a second corner of equal or lesser curvature, an ordinary case on tracks that reuse corner radii.
-- **On a clear straight** (`kappa_max_abs → 0`): softened `Q[0,0]` (floor 0.7×) and mildly boosted `Q[2,2]`/`Q[3,3]` (ceilings 1.1×/1.5×). Added after residual hunting persisted despite the boosts above. `Q[2,2]`'s ceiling was kept small deliberately: a stronger heading-error weight on a straight amplifies the QP's reaction to ordinary heading noise, the exact small-error hunting `adaptive_Q_scaling` (still live today) exists to fight.
+### What each member did, and the specific lessons
 
-**Later addition, also removed: `lookahead_steer_effort_relax`.** Neither `adaptive_R_scaling`'s speed-based steering penalty nor the straight-line `R[0,0]` boost (Section 6) ever pushed `R[0,0]` *below* baseline for an approaching corner, so a car entering a corner hot still paid the full speed-based steering-effort cost right when it most needed to commit. This relaxed `R[0,0]` toward a floor as corner demand rose, mirroring the yaw-rate relaxation above.
+- **Lookahead approach and exit boosts.** Window `clip(v_x * 1.13 s, 3 m, 17 m)` (later raised to a 25 m ceiling). Approaching: `Q[0,0]` up to 2.0x, `Q[2,2]` up to 1.5x, `Q[3,3]` down to 0.5x. Exit: `Q[2,2]` boosted for a decaying 5 m window. It used a rising-edge-after-a-clear-peak detector, because a running maximum would not re-trigger on a second corner of equal or lesser curvature.
+- **Demand normalisation.** Boosts were driven by `demand = kappa_max_abs / kappa_limit(v)` with `kappa_limit = a_lat_ceiling(v) / v²`, not raw curvature. Raw curvature left the whole driven range on the flat part of the curve: a 40 m radius sweeper (`kappa` 0.025) reached 17% of the boost and a 12 m corner (0.083) reached 40%. The ceiling law itself lives on (see the last section).
+- **U-turn detector.** Extra boost past 60 degrees of accumulated heading change in the window, full at 120. 60 rather than 90 because 17 m of arc at a 12 m radius subtends only about 81 degrees. It only helped before the corner. On its motivating log the steering was already at full lock for over a second mid-corner, limited by the lateral-acceleration ceiling, and no `Q` boost adds steering that is saturated. On a two-lap log it fired on 14.6% of ticks and never exceeded severity 0.29 of 1.
+- **Straight-line adjustments.** `Q[0,0]` floor 0.7x, `Q[2,2]` and `Q[3,3]` ceilings 1.1x and 1.5x, `R[0,0]` up to 1.5x, all fading out as a corner entered the window. The straight `Q[2,2]` ceiling stayed small on purpose: a strong heading weight on a straight amplifies the reaction to heading noise.
+- **`CornerMap` (`use_precomputed_corner_map`).** Per-waypoint precomputed segmentation, added and removed within a day. Offline-validated (bit-identical when off), never live-tested.
+- **Steer-effort relax.** Relaxed `R[0,0]` toward a floor on approach. Added because neither the speed-based scaling nor the straight boost ever pushed `R[0,0]` below baseline before a corner.
 
-**Known constraints, historically:** never validated against `VALIDATION_SUITE`/a recorded map as a whole mechanism, treat as experimental even in hindsight. And per Section 1: this whole mechanism only reweights the cost of an *existing* error; it cannot manufacture one.
+## Exit-heading boost (removed, decay timing and window)
 
----
+**What it was.** `Q[2,2]` boosted for a decaying distance after a corner's peak curvature, to help the car straighten on exit.
 
-## 4. Demand normalisation
+**Why it was retired.** Removed with the family. Before that it needed two fixes:
 
-**`ADAPTIVE_Q_DEMAND_NORMALISED`, on by default while it existed**
+- The decay clock reset on the lookahead-window peak, which appears 10 to 17 m before the car reaches the corner. In a live log the clock read more than 28 m by the physical apex, against a 5 m window, so the boost was already a no-op before the car reached the exit. Keying it on current-position curvature improved every offline metric slightly (score 0.520 to 0.517, `|e_psi|` mean 8.01 to 7.60 degrees), and was reported as performing well live, qualitatively.
+- The 5 m window was still too short: in a later log the car was 11.7 to 20.6 m (mean about 15.7 m) past the peak when `|e_y|` peaked, with no boost applied at any of 10 excursions, because errors keep growing 1.5 to 2.7 s after the apex.
 
-The boosts in Section 3 were driven by corner **demand**, not raw curvature:
+**Record.** [late_turn_in_investigation.md](../logs/late_turn_in_investigation.md), "Addendum: exit-heading boost was firing at the wrong time".
 
-```
-kappa_limit(v) = a_lat_ceiling(v) / v²    # tightest curvature holdable before FSDS's lateral-accel ceiling binds
-demand         = kappa_max_abs / kappa_limit(v)
-```
+## Curvature-forcing term (removed, the solver defers external data)
 
-`demand ≈ 0` means straight, `≈ 1` means "this corner needs everything available at this speed," `> 1` means it cannot be held (must slow).
+**What it was.** A term added to the QP dynamics constraint to inject the path's curvature at each horizon step: `predicted_e_psi[k+1] += -v_x * kappa(s_k) * dt * gain`, with `gain` 1.0 being the physically exact value (`path_yaw_rate = v_x * kappa`).
 
-**Why not raw curvature:** the raw-curvature curve turned out badly mis-scaled against real corner radii, the whole range of curvatures the car drives sat in the flat, low-response part of the curve, so raising the boost ceiling barely changed anything in practice:
+**Why it was retired.** The forcing term is known to the solver before it chooses any input, so the solver is free to decide when across the horizon to respond to it. At every gain that produced a meaningful response, the cheapest total-cost trajectory steered away from the corner first.
 
-| Corner | Raw curvature | Boost reached (raw curve) |
+Isolated QP test (no noise, no other adaptive mechanism, 13 m radius corner at 17 m/s starting about 15 m ahead):
+
+| `gain` | Accumulated forcing | Commanded steer |
 |---|---|---|
-| Gradual sweeper (R = 40 m) | κ = 0.025 | 17% |
-| Typical corner (R = 12 m) | κ = 0.083 | 40% |
+| 1.0 | -1.19 | -0.27 degrees (noise scale) |
+| 3.0 | -3.56 | -0.96 degrees |
+| 6.0 | -7.13 | -25.0 degrees, away from the corner |
+| 9.0 to 15.0 | -10.7 to -17.8 | -25.0 degrees, away from the corner |
+| 20.0 | -23.8 | +25.0 degrees, correct direction but saturated at 20x the physical value |
 
-**Why demand fixed it:** scale-free and speed-aware, so a gradual sweeper taken fast and a tight corner taken slow are judged by the same criterion: one set of constants covers both instead of a hand-tuned threshold per corner type.
+At `gain = 1.0` the QP's own `e_psi` decay (`Ad[2,2]` about 0.946 per step, as recorded in the log) bled the forcing off almost as fast as it accumulated. Live, the disabled term left the car turning in late but without wrong-direction flicks.
 
----
+**Lesson.** Getting curvature into the dynamics was the right instinct. Injecting it as external data the solver can defer does not work. The NMPC makes `kappa` a function of a state the solver chooses (arc length `s`), which removes the separate slot. A shaped heading reference was tried as a redesign ([control_mechanisms.md](control_mechanisms.md#precomputed-shaped-heading-lead-profile-ltv-qp-only-off)), with the same trap warned against for per-step extensions. The NMPC comparison is worked through in [error_states.md](error_states.md).
 
-## 5. U-turn detection
+**Record.** [late_turn_in_investigation.md](../logs/late_turn_in_investigation.md), Part 6b.
 
-Every boost in Section 3 keyed off `kappa_max_abs`, peak curvature *magnitude*, which under-scores a long, gradual U-turn: a large radius means unremarkable peak curvature even though the turn demands a huge total rotation.
+## Low-speed steering-rate boost (removed)
 
-- **Mechanism:** the same lookahead scan also returned accumulated `|heading change|` over the window. Past 60° of accumulated turning, an extra multiplicative boost applied to `Q[0,0]`/`Q[2,2]` (ceiling 1.6× each) and `Q[3,3]` (floor 0.6×), scaling to full strength by 120°.
-- **Why 60°, not the 90° "U-turn" might suggest:** the threshold was measured *within* the lookahead window, not over the whole corner: 17 m of arc at a 12 m corner radius only subtends ~81°, so a 90° threshold could never fire on approach.
-- **Scope limit:** this only ever helped *before* a corner, while steering was still unsaturated. On the log that motivated it, the controller was already at the full steering stop for over a second mid-corner, with achieved curvature varying 6× at constant steering input due to speed alone: the binding constraint there was FSDS's lateral-acceleration ceiling, not steering angle, and no `Q` boost can add steering that's already saturated.
+**What it was.** `R_rate[0,0] *= 1 + (boost_max - 1) / (1 + k * v_x)` with `boost_max = 2.5` and `k = 0.35` (about 1.73x at 3 m/s, about 1.0x at race speed). It was inverted from a Stanley-style `k / (v + eps)` shape, making fast steering changes costlier at low speed.
 
----
+**Why it was retired.** It targeted a post-exit low-speed wobble (steering swinging +25 to -9 to 0 degrees over about 1.5 s at 3 to 4 m/s), which neither anti-hunt nor the corner blend touched. Live, it also suppressed turn-in, which is low-speed and needs a fast steering-rate change too, so the car struggled to turn early. Speed alone cannot separate the two.
 
-## 6. Straight-line adjustments
+**Note for a rework.** It needs a curvature gate so it fires only when the car is not approaching or inside a corner. The corner-factor scheduler's `_low_speed_corner_boost` is gated on `corner_factor` for that reason.
 
-Three independent mechanisms, active only when the lookahead window was clear of curvature, each fading back to baseline sharply as a corner entered the window:
+**Record.** [late_turn_in_investigation.md](../logs/late_turn_in_investigation.md), "Appendix: Low-speed steering-rate boost: full incident".
 
-- **`adaptive_q_straight_ey_floor`**: reduced `Q[0,0]` on a clear straight (nothing to track hard against), fading back to full authority as a corner appeared. Its fade sharpness was lowered from 20.0 to 8.0 after the old, sharper fade left the car still mid-recovery from the relaxation exactly when turn-in needed full lateral authority.
-- **`adaptive_q_straight_epsi_boost_max`** / **`_r_boost_max`**: boosted `Q[2,2]`/`Q[3,3]` on a straight to keep the car pointed straight and damp yaw wander. Kept deliberately small: a strong straight-line heading weight amplifies the QP's reaction to ordinary heading noise, which can itself introduce oscillation, the opposite of the intent.
-- **`steer_effort_straight_boost`**: the `R[0,0]` (steering *effort*, not its rate of change) counterpart: 1.5× on a clear straight, fading toward 1.0 as a corner entered the window, sharper than the `Q`-side fades so it collapsed to baseline almost as soon as a real turn was needed.
+## Adaptive `R_rate` curvature floor (removed, computed then always overwritten)
 
-Composition order mattered: the lookahead boost applied to `Q` first, then `adaptive_Q_scaling`'s centred-softening (still live today) multiplied on top, so a corner boost was never silently cancelled by the centred softening.
+**What it was.** `_adaptive_R_rate` (live) and `adaptive_R_rate` (offline) relaxed `R_rate[0,0]` in sharp corners using `scale = max(during_floor, 1 / (1 + 3 |kappa|))`, with `during_floor` 0.625, gated by `adaptive_r_rate_enable_in_corners`.
 
----
+**Why it was retired.** It never reached the solver. `compute()` and `solve_ltv_tick()` computed it, stored it in `R_rate_scaled`, and logged `adapt["m_Rrate_corner"]`. A few lines later the corner-factor blend assigned `R_rate_scaled[0,0]` from scratch and did not multiply the adaptive term back in, so the logged value looked live while having no effect. Only tracing the assignment order shows it. Commit `8b666eb` removed the function, both fields, the `settings/` constants and the telemetry column on both sides.
 
-## 7. Precomputed corner segmentation (`CornerMap`)
+**Lesson.** A new `R_rate[0,0]` multiplier must be threaded through the blend line, or composed into the blend's output the way anti-hunt and the reversal penalty are. A logged multiplier is not evidence that it took effect.
 
-**`use_precomputed_corner_map`, added and removed within a day**
+## Post-solve output smoothing (removed)
 
-A `CornerMap` dataclass, built once per static path (`mpc_core.py`'s `_segment_corners`), replaced the live per-tick forward scan with an exact index lookup: same reweighting as Sections 3-6, computed once instead of scanned every tick. It existed for barely a day before the whole family it served was deleted in the corner-factor rewrite.
+**What it was.** A low-pass filter on the solved steering command: `filtered += alpha * (raw - filtered)`, then `steering = (1 - w) * raw + w * filtered`. Unlike the cost reweights, it kept state from tick to tick.
 
-Offline-validated (regression-checked bit-for-bit identical when disabled, measurably different when enabled), never live-tested before removal. See `docs/reference/control_mechanisms.md`'s "Corner-factor scheduler" section for what replaced it.
+**Why it was retired.** It added lag and never beat the QP's own steering-rate cost, which attacks jitter at the source. The levers that worked were `r_rate_delta` and the NMPC input-jerk cost. The shipped default was always off, and the node parameters, `peak_kappa_ahead()`, the offline mirror and the launch wiring were deleted from both sides (commit `10c4406`). The chatter investigation lists it as made redundant by `r_rate_delta` and `nmpc_rjerk_delta`.
 
----
+**Record.** [steering_chatter_investigation.md](../logs/steering_chatter_investigation.md), "Resolution summary". No isolated before/after numbers for the filter are recorded.
 
-## 8. Curvature forcing: the closest attempt, and why it still failed
+## Single shared accel effort weight (superseded)
 
-**`curvature_forcing_enabled` / `CURVATURE_FORCING_ENABLED`: tried, disabled, then fully removed**
+**What it was.** One scalar `R_diag[1]` (`MPCParams.r_a`) weighting `|a_cmd|` for both accelerating and braking.
 
-Every mechanism above only reweighted the *cost* of an existing tracking error. This one tried something structurally different: injecting the path's curvature directly into the **predicted dynamics**, not the cost.
+**Why it was superseded.** Cutting `r_a` from 0.85 to 0.77 freed acceleration on clean straights (live lap time 69.99 s to 59.52 s), and cut braking authority by the same amount. A live corner-entry log then showed the car arriving hot, with `a_cmd` floored near -1.4 m/s² through a 2 s speed deficit. Separate `r_a_accel` and `r_a_brake` weights replaced it ([control_mechanisms.md](control_mechanisms.md#accelbrake-effort-weight-split)). Do not reintroduce one shared weight without accounting for this.
 
-**Mechanism:** look up the reference path's curvature at each horizon step's own predicted arc-length position, and add a forcing term to the predicted `e_psi` there:
+**Record.** [sim_to_real_investigation.md](../logs/sim_to_real_investigation.md), section 59; [late_turn_in_investigation.md](../logs/late_turn_in_investigation.md), "Part 0 (background)".
 
-```
-predicted_e_psi[k+1] += -v_x * kappa(s_k) * dt * curvature_forcing_gain
-```
+## NMPC horizon speed profile (two variants, removed)
 
-This comes directly from `path_yaw_rate = v_x·κ`, a physically-motivated term, not another cost reweight.
+**What it was.** Sampling the precomputed speed profile at each horizon stage's predicted arc length (`PathReference.v_ref_at(s)`) instead of holding one `v_ref` across the horizon.
 
-**Why it still failed: a gain sweep found no working operating point:**
+**Why it was retired.** Both variants failed live.
 
-- At `gain = 1.0` (physically exact), the QP's own `e_psi` decay (`Ad[2,2] ≈ 0.946` per step) bled off the forcing almost as fast as it accumulated. The resulting steering response was under 1°, noise-scale, too weak to matter.
-- Raising the gain to compensate made it worse in a *new* way: past `gain ≈ 6`, the QP's cheapest predicted trajectory involved steering hard **away** from the corner first, then reversing.
-- Only `gain ≈ 20` restored the correct net direction, by which point steering was saturated the entire time anyway.
+| Variant | Live result |
+|---|---|
+| Cost term (`nmpc_horizon_speed_profile_enabled`) | `v_actual` climbed from about 5.7 to 16.7 m/s while `v_desired` dropped to 3.3 to 5 m/s, with `a_cmd` positive throughout and `e_y` reaching -3.6 m. A high `v_ref` at a later stage offset a low one at an earlier stage in the summed cost. |
+| Hard per-stage constraint (`nmpc_speed_limit_enabled`), two runs | Off-track both times: `|e_y|` max 4.40 and 2.19 m against a 3.5 m half-width, `v_actual` max 16.5 and 16.3 m/s. The constraint diagnostic read exactly 0.0 throughout, because the solver's own predicted braking already satisfied it while the real car did not brake that way. |
 
-**Why this happened, mechanically:** the forcing term was added to the same dynamics recursion the QP minimises total cost over, giving the solver complete freedom to choose the *cheapest way to absorb it* across the whole horizon, which is not the same thing as "track the bend." A brief wrong-direction dip can be mathematically cheaper in total squared cost than committing immediately. No gain was simultaneously large enough to produce meaningful anticipation and free of this wrong-direction transient: **a structural property of forcing terms inside the dynamics constraint, not a tuning gap.**
+The constraint fixed the cost variant's loophole and still failed, because it constrains a prediction that is wrong in this regime. Both flags and their plumbing (`v_ref_at`, per-stage slack rows) were removed. A third variant should address the model-prediction gap first ([simulator_fidelity.md](simulator_fidelity.md)), not retune margins.
 
-This is the single most important lesson from the whole family: getting curvature into the *dynamics* (rather than just the cost) was the right instinct, but injecting it as **external data the solver is free to defer** doesn't work. The fix that actually worked (NMPC) makes curvature a function of a **state the solver is actively choosing** (arc length `s`), so there's no separate slot to schedule around. See [`error_state_reference.md` Section 3](error_state_reference.md#3-why-the-ltv-qp-cant-just-re-project-at-every-future-step) for the direct comparison.
+**Record.** [late_turn_in_investigation.md](../logs/late_turn_in_investigation.md), Part 16.10; [nmpc_speed_limit_investigation.md](../logs/nmpc_speed_limit_investigation.md).
 
-Full numeric gain-sweep trace and the anti-hunt interaction found alongside this: `docs/reference/superseded_mechanisms.md`'s "Curvature-forcing term" section.
+## NMPC friction-circle constraint (disabled)
 
----
+**What it is.** `nmpc_friction_circle_enabled` (default false, code present). A hard `|F_yf|, |F_yr| <= F_max` bound in the SQP, additional to the soft `tanh` ceiling, with `F_max = m * ceiling(v_x) / 2` per axle.
 
-## 9. Low-speed steering-rate boost: removed
+**Why it is disabled.** Live on `comp_test_map_3`, the SQP subproblem failed (`nmpc_status = 0`) on 77.5% of 614 ticks, steering sat at full lock on 30.8% of ticks from t = 0.65 s, and the run ended in a stall 4.94 m off-track with heading error -52 degrees. The hard rows have no slack, so ordinary cornering geometry and the bound conflict under normal driving, the subproblem goes infeasible, and the controller stops updating steering. No offline A/B was run first.
 
-`low_speed_steer_rate_boost` no longer exists in either codebase: the function, its `MPCParams`/`settings.py` fields, and its telemetry column have all been deleted along with the rest of the lookahead gain-scheduling family.
+**To retry.** Re-derive a looser `F_max` and add slack. The missing telemetry columns (`nmpc_fyf_max_abs`, `nmpc_fyr_max_abs`) are now declared in `fsae_control/telemetry/columns.py`. Run an offline A/B with `python -m tuner.validation.nmpc_offline_check` first.
 
-- **Purpose:** damp a low-speed (3-4 m/s) post-corner-exit steering wobble that neither the anti-hunt nor corner-softening mechanisms touched, since both gate on curvature/tracking-error rather than speed.
-- **Shape:** deliberately inverted from a Stanley-style `k/(v+eps)` curve: it made *fast* steering-rate changes **more** expensive at low speed, not cheaper.
-- **Why it was disabled, then removed:** live-tested and found to also suppress fast turn-in, which also needs a fast steering-rate change at low speed. Speed alone can't distinguish "post-exit overcorrection" from "turn-in," so it taxed both identically.
-- **If a future rework revisits this idea, it needs a curvature/lookahead gate** so it only fires when the car is *not* approaching or inside a corner. The tuned values from the original attempt, kept here as a starting point: `boost_max = 2.5, k = 0.35`.
+**Record.** [late_turn_in_investigation.md](../logs/late_turn_in_investigation.md), Part 16.10.
 
-See `docs/logs/late_turn_in_investigation.md`'s "Appendix: Low-speed steering-rate boost" for the full incident, and `docs/reference/superseded_mechanisms.md`'s "Low-speed steering-rate boost" section for the current-state pointer.
+## NMPC progress term (disabled)
 
----
+**What it is.** `nmpc_progress_enabled` (default false, code present). A reward for arc-length progress plus a one-sided speed cap, replacing the `q_e_v` speed-tracking cost, so the solver picks its own speed.
 
-## 10a. Adaptive R_rate current-curvature floor (removed 2026-09-29): computed, then always overwritten before reaching the QP
+**Why it is disabled.** It does not reliably complete a lap at any weight, and never beat the tracking controller (offline score 0.757, or 0.714 at the later deficit setting):
 
-**Not part of the lookahead family above** (it reacted to CURRENT curvature only, no forward scan), but removed for a related reason: its output never reached the solver on either side.
+| Configuration | Score | Progress | Off-track |
+|---|---|---|---|
+| `q_progress` 3 | 13.000 | 0.000 | no (never launches) |
+| `q_progress` 5 | 12.583 | 0.570 | yes |
+| `q_progress` 7 | 15.417 | 0.097 | yes |
+| `q_progress` 5 plus linear slack | 0.892 | 0.995 | no, but not repeatable |
 
-- **What it was:** `mpc_core.py`'s `_adaptive_R_rate` (live) / `model_utils.adaptive_R_rate` (offline), gated by `MPCParams.adaptive_r_rate_enable_in_corners` and floored by `adaptive_r_rate_during_floor` (default `0.625`). Relaxed `R_rate[0,0]` (steering rate-of-change cost) in sharp corners so the controller was not over-penalised for the extra steering rate a tight corner demands:
+- Below the band the reward cannot pay for the roughly 2.3 m/s² needed to break static friction (`F_stiction` 600 N over 255 kg), so the car never moves.
+- Above it the car carries too much speed into corners. The Frenet progress rate `s_dot` rewards sitting on the inside of a bend, and a quadratic track penalty has zero gradient at zero violation.
+- The one completed lap was a lucky draw. At `SPEED_TARGET_DEFICIT_MAX` 5.0, raising the slack weight 50x changed nothing at any `q_progress`. Enabling it by default was attempted on 2026-09-21 and reverted the same day.
 
-```python
-kappa_straight = 0.03
-if not enable_in_corners and abs(kappa) > kappa_straight:
-    scale = 1.0
-else:
-    scale = max(during_floor, 1.0 / (1.0 + 3.0 * abs(kappa)))
-R[0, 0] *= scale
-```
+**Side result kept.** `SPEED_TARGET_DEFICIT_MAX` 2.5 was the binding acceleration constraint for 36.8% of a normal lap. Raising it to 5.0 made the lap about 2.5 s faster with lower `|e_y|` and saturation. The dataclass default `speed_target_deficit_max` is 2.55, and the `launch_all.sh` line for 5.0 is commented out.
 
-- **Exact mechanism that killed it:** `compute()` (live) and `solve_ltv_tick()` (`rollout_phases.py`, offline) both called this function first, stored its result in `R_rate_scaled`, and logged its multiplier to `adapt["m_Rrate_corner"]`. A few lines later in the same tick, the corner-factor blend introduced by the corner-factor rewrite (see `docs/reference/control_mechanisms.md`'s "Corner-factor scheduler" section) set `R_rate_scaled[0,0]` again from scratch:
+**Record.** [nmpc_progress_term_investigation.md](../logs/nmpc_progress_term_investigation.md).
 
-```python
-R_rate_scaled[0, 0] = _blend(
-    self.params.rrate_steer_straight, self.params.rrate_steer_corner,
-    corner_frac,
-) * adapt["m_Rrate_antihunt"] * adapt["m_Rrate_reversal"]
-```
+## Dynamic speed cap (disabled in the shipped launch)
 
-  This assignment replaces `R_rate_scaled[0,0]` outright rather than multiplying onto the existing value, and `adapt["m_Rrate_corner"]` (the adaptive-R_rate multiplier) is not one of the terms re-multiplied back in. The value computed by `_adaptive_R_rate`/`adaptive_R_rate` was correctly logged to telemetry every tick, and never once reached the QP.
-- **Why this survived unnoticed:** the telemetry column `m_Rrate_corner` looked like it was reporting a live, active multiplier, since it was computed from real inputs and varied tick to tick exactly as expected; only tracing the assignment order in `compute()`/`solve_ltv_tick()` shows the blend line discards it.
-- **Removed, not just disabled:** the function, its `MPCParams.adaptive_r_rate_enable_in_corners`/`adaptive_r_rate_during_floor` fields, `settings.py`'s matching constants, and the `m_Rrate_corner` telemetry column have been deleted from both `mpc_core.py`/`model_utils.py` and their call sites, rather than left as dead code that still runs and logs without effect.
-- **Recoverable from git history** if the underlying idea (curvature-dependent R_rate relaxation, independent of the corner-factor blend's own `R_rate[0,0]` endpoints) is ever revisited; any reintroduction must either replace what the corner-factor blend does to `R_rate[0,0]` or explicitly compose with it (multiply into the blend's output the way the anti-hunt and reversal-penalty multipliers already do), not run in parallel and get silently discarded again.
+**What it is.** `min(precomputed profile, live curvature cap)` on the target speed ([control_mechanisms.md](control_mechanisms.md#dynamic-speed-cap-a-live-brake-early-floor-under-the-precomputed-profile)). Code default and YAML default are on. `ENABLE_DYNAMIC_SPEED_CAP=false` in `ros2/launch_all.sh` turns it off.
 
----
+**Why it is disabled.** Offline with the planner in the loop (`--planner`, `comp_test_map_3`):
 
-## 10. FSDS lateral-acceleration ceiling as a lookahead input
+| Metric | Cap off | Cap on |
+|---|---|---|
+| Steering saturation | 4.37% | 5.54% |
+| `|e_psi|` mean/p90 | 7.04 / 15.94 degrees | 8.01 / 16.82 degrees |
+| a_lat max | 10.06 | 10.61 |
+| a_lat above ceiling | 2.92% | 0.62% |
+| Score (lower is better) | 0.503 | 0.520 |
 
-**The measured ceiling law itself is not removed.** It lives in `nmpc_core.py`'s `_Plant` class (hardcoded there, since only the NMPC path uses it) and `model/vehicle_physics.py`'s `alat_ceiling_at()`, not on `MPCParams` as three separate fields (`alat_ceiling_flat`/`_slope`/`_intercept`) the way it did when it fed the demand normalisation in Section 4. Only its role as a *lookahead-scan input* is gone, along with the rest of this family.
+The cap does what it targets (a_lat above the ceiling fell 4.7x), while saturation, heading error and the score got worse. The cause was not diagnosed. A candidate is interaction with the rise limiter and the tracking gate (braking early for one corner leaves a worse heading into the next), never confirmed. It also performed worse subjectively on the live car the same day.
 
-This is a measured property of the simulator, not a tuning knob. See `docs/reference/simulator_fidelity.md`'s "The sim-to-real gap" section for the measurement, and re-measure with the [steering system-ID harness](debugging_tools.md#steering-system-id-harness-run_steering_sysidsh-run_steering_stepsh) if it's ever suspected wrong, rather than guessing.
+**Do not re-enable** for a live run without diagnosing why saturation and heading error rose.
 
----
+**Record.** [late_turn_in_investigation.md](../logs/late_turn_in_investigation.md), "Addendum: dynamic speed cap".
 
-## 11. What replaced all of this
+## What survives from the retired code
 
-A single, much simpler mechanism: `_corner_factor` / `_low_speed_corner_boost` / `_blend`, one continuous **current-curvature-only** fraction blending four `Q`/`R_rate` weights between a straight endpoint and a corner endpoint, plus an independent, always-on heading-error-driven accel/brake asymmetry.
-
-This deliberately does **not** attempt to replicate the lookahead scanning above. Per Section 1's argument, a forward scan can only reweight costs, never fix the underlying blindness, so the rewrite stopped trying to patch around it with current-state-only logic instead, and left the *actual* fix (seeing the corner in the prediction itself) to the NMPC.
-
-Full formulas: [`architecture.md`'s "Corner-factor scheduler"](architecture.md#corner-factor-scheduler) section. Tuning-surface reference: [`tuning.md` §4.3b](tuning.md#43b-corner-factor-scheduler).
+| Item | Where it lives now |
+|---|---|
+| The measured lateral-acceleration ceiling law (7.5 flat, 0.47 slope, 2.46 intercept) | `_Plant` defaults in `fsae_control/nmpc/dynamics.py`, `alat_ceiling_at()` in `model/vehicle_physics/params.py`. It is a measured simulator property, not a tuning knob ([simulator_fidelity.md](simulator_fidelity.md), [vehicle_physics.md](vehicle_physics.md)). |
+| Current-curvature `_corner_factor`, `_blend`, `_low_speed_corner_boost` | [control_mechanisms.md](control_mechanisms.md) |
+| `adaptive_Q_scaling`, `steer_rate_anti_hunt`, `reversal_penalty_boost` (current-state only) | [control_mechanisms.md](control_mechanisms.md) |

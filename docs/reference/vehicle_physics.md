@@ -1,242 +1,243 @@
-# Understanding `vehicle_physics.py`, A Plain-English Guide
+# The Nonlinear Vehicle Plant, in Plain English
 
-This document explains the physics inside `vehicle_physics.py` without assuming prior knowledge of vehicle dynamics. It's meant to sit alongside the code as a lookup for "what does this number actually do?" while tuning the car.
+Walkthrough of the physics in the `model/vehicle_physics/` package: what each state and parameter means, what changing it does, and where to look when the simulated car misbehaves.
 
-The short version: this file simulates a car the way the real world would push it around: tyres gripping, springs compressing, weight shifting under braking and cornering, so that the MPC controller (which uses a much simpler model) has something realistic to be tested against.
+The plant simulates a car the way the world pushes it around (tyres gripping, springs compressing, weight shifting under braking and cornering) so that the controllers, which use far simpler models, have a realistic stand-in to be tested against. It is the ground truth of the offline rollout, not a validated copy of FSDS or the real car ([simulator_fidelity.md](simulator_fidelity.md)).
 
----
+## Where the code lives
 
-## 1. The Big Picture
+| File | Contents |
+|---|---|
+| `model/vehicle_physics/state.py` | `IDX_*` state indices, `N_STATES`, `init_plant_state()` |
+| `model/vehicle_physics/params.py` | `VehicleParams`, every physical constant, `alat_ceiling_at()` |
+| `model/vehicle_physics/tyres.py` | `pacejka_lateral_mf94()`, `pacejka_longitudinal_mf94()` |
+| `model/vehicle_physics/plant_step.py` | `step_nonlinear_plant()`, one control tick of the plant |
+| `model/vehicle_physics/tracking.py` | `plant_to_tracking_error()` and the reference-point helpers |
 
-There are two "cars" in this project:
+The package `__init__.py` re-exports the public names, so callers import from `model.vehicle_physics`. The plant steps at 20 Hz (`dt = 0.05` s) and sub-steps four times internally (0.0125 s each, explicit Euler) to stay stable through the stiff suspension and tyre-relaxation dynamics.
 
-1. **The MPC's internal model** (`bicycle_model.py`), a simplified, 8-state, straight-line-tyre-force version of a car. Simple on purpose, because the controller has to solve an optimisation problem with it many times per second.
-2. **This file's plant model**, a 25-state model with soft suspension, tyres that take time to build up grip, weight transfer, aerodynamics, and more. This is the "real" car in the simulation, the ground truth that the MPC's simplified model is only ever an approximation of.
+## Three models of the car exist
 
-The gap between what the MPC *thinks* the car will do and what this plant *actually* makes the car do is deliberate. It's what makes the simulation a meaningful test of the controller, instead of the controller grading its own homework.
+1. **The LTV-QP's internal model** (`model/bicycle_model.py`): an 8-state linear bicycle model in path-error coordinates. Simple on purpose, because the QP is solved every tick.
+2. **The NMPC's internal model** (`controller/nmpc/dynamics.py` offline, `fsae_control/nmpc/dynamics.py` live): an 8-state nonlinear Frenet bicycle model with a lateral-acceleration ceiling.
+3. **This plant**: 25 states with soft suspension, tyres that take distance to build grip, weight transfer and aerodynamics.
 
----
+The gap between what a controller predicts and what the plant does is deliberate. It stops the controller from grading its own homework. The plant does not include the tyre-force cap the real FSDS car shows unless `alat_ceiling_enabled` is on (see the last section).
 
-## 2. What Each State Actually Describes
+## The 25 states
 
-The car's full situation at any instant is stored as 25 numbers (the "state vector"). The table below lists what each one means physically, not just its units, but what part of the car each is describing.
+The car's situation at any instant is a 25-number vector (`N_STATES = 25`). Indices are the `IDX_*` constants in `state.py`.
 
-| # | Name | What it's describing |
-|---|------|-------------------------------|
-| 0 | `X` | Where the car is, left-right, on the track map. |
-| 1 | `Y` | Where the car is, forward-back, on the track map. |
-| 2 | `psi` | Which way the car is *pointing* (its heading), not which way it's *moving*. These can differ, think of a car sliding sideways through a corner. |
-| 3 | `vx` | Forward speed, measured along the car's own nose-to-tail axis. This is "how fast the speedometer would read." |
-| 4 | `vy` | Sideways speed, measured across the car. Non-zero `vy` means the car is sliding, e.g. drifting or understeering wide. |
-| 5 | `r` | Yaw rate, how fast the car's heading is rotating (spinning). High `r` with low actual cornering means the car is spinning out, not turning cleanly. |
-| 6 | `delta_act` | The steering angle the front wheels are *actually* sitting at right now, after accounting for the small delay in the steering rack responding to a command. |
-| 7 | `a_act` | The acceleration/braking the drivetrain is *actually* delivering right now, after its own small response delay. |
-| 8, 9 | `omega_RL`, `omega_RR` | How fast the rear-left and rear-right wheels are spinning. These are the driven wheels. |
-| 22, 23 | `omega_FL`, `omega_FR` | How fast the front wheels are spinning. These aren't driven, they free-roll, so they mostly just reflect ground speed. |
-| 10–13 | `z_FL`, `z_FR`, `z_RL`, `z_RR` | How compressed or extended each corner's suspension spring currently is, relative to its resting position. Positive = compressed (squashed down); negative = extended (drooping). |
-| 14–17 | `dz_FL_dt` … `dz_RR_dt` | How *fast* each corner's suspension is currently moving up or down. This is what the dampers react to. |
-| 18–21 | `Fy_FL_rlx` … `Fy_RR_rlx` | The actual sideways grip force each tyre is currently producing. "Relaxed" (`_rlx`) because tyres don't grip instantly, this value chases the ideal target with a short lag, explained in §4. |
-| 24 | `alat_lim` | The current buildup of the FSDS lateral-acceleration-ceiling's restoring term (§5), a memory state, not a directly physical quantity, since that mechanism is a lagged pushback rather than an instantaneous clip. |
+| # | Name | What it describes |
+|---|---|---|
+| 0 | `X` | Where the car is, left to right, on the track map. |
+| 1 | `Y` | Where the car is, forward to back, on the track map. |
+| 2 | `psi` | Which way the car points (heading), not which way it moves. The two differ when the car slides. |
+| 3 | `vx` | Forward speed along the car's own nose-to-tail axis. |
+| 4 | `vy` | Sideways speed across the car. Non-zero means it is sliding. |
+| 5 | `r` | Yaw rate, how fast the heading rotates. High `r` with little actual cornering means a spin. |
+| 6 | `delta_act` | The steering angle the front wheels sit at right now, after the steering-rack lag. |
+| 7 | `a_act` | The acceleration or braking delivered right now, after its own lag. |
+| 8, 9 | `omega_RL`, `omega_RR` | Rear wheel spin speeds. These are the driven wheels. |
+| 10 to 13 | `z_FL`, `z_FR`, `z_RL`, `z_RR` | Spring compression at each corner relative to rest. Positive is squashed, negative is drooping. |
+| 14 to 17 | `dz_FL_dt` to `dz_RR_dt` | How fast each corner's suspension is moving. The dampers react to this. |
+| 18 to 21 | `Fy_FL_rlx` to `Fy_RR_rlx` | The sideways grip force each tyre is producing now. "Relaxed" because grip chases its ideal value with a lag (see tyre relaxation). |
+| 22, 23 | `omega_FL`, `omega_FR` | Front wheel spin speeds. Not driven, so they mostly track ground speed. |
+| 24 | `alat_lim` | Build-up of the lateral-acceleration-ceiling restoring term. A memory state, not a directly physical quantity. |
 
-**Why do positions 0–7 match the MPC's own 8 states?** So that other files (`gui/simulation.py`, `tuner/offline_tuner.py`) can read "where is the car / how fast is it going" straight out of this plant's state vector without needing to convert between two different numbering schemes. States 8–24 are extra detail the simple MPC model doesn't track at all.
+### The plant's first 8 states are not the controllers' 8 states
 
----
+The plant vector is not laid out like either controller's vector. Only some slots hold the same quantity:
 
-## 3. Vehicle Parameters, What Each One Does, and the Effect of Changing It
-
-These live in `VehicleParams`. Grouped by what part of the car they affect.
-
-### Geometry, the car's basic shape
-
-| Parameter | Plain English | Increase it → | Decrease it → |
+| Slot | Plant | LTV-QP error vector | NMPC Frenet vector |
 |---|---|---|---|
-| `lf`, `lr` | Distance from the car's centre of mass to the front axle (`lf`) and rear axle (`lr`). | Moving `lf` up (mass further from front axle) puts more weight over the rear, so the car becomes more prone to understeer (front loses grip first). | Less weight over that axle, so that end grips relatively better, other end worse. |
-| `m` | Total mass of car + driver. | Everything gets harder: more force needed to accelerate, brake, and corner at the same rate. Tyres are more loaded (which can help peak grip a little, but hurts accel/braking much more). | Car responds faster to the same forces, with quicker acceleration, braking, and direction changes. |
-| `Iz` | Yaw moment of inertia, how resistant the car is to *spinning* (as opposed to just moving). Think of it like the car's "rotational mass." | Car resists spinning more, more stable but slower to react to steering, feels "lazy" turning in. | Car spins more readily for the same yaw moment, sharper turn-in, but also easier to spin out if grip is lost. |
-| `tf`, `tr` | Track width, the distance between left and right wheels, front and rear. | Wider track = more resistance to weight rolling from side to side in a corner, generally more cornering stability. | Narrower track = car rolls/transfers weight more readily side-to-side, less stable at the limit. |
-| `h_cg` | Height of the centre of mass above the ground. | Higher CoG = more weight thrown onto the outside/front tyres under cornering/braking = less usable grip on the tyres losing load = worse handling balance. | Lower CoG = less weight transfer, generally more predictable, higher-grip handling. |
+| 0 | `X` | `e_y` | `s` |
+| 1 | `Y` | `e_y_dot` | `e_y` |
+| 2 | `psi` | `e_psi` | `e_psi` |
+| 3 | `vx` | yaw rate `r` | `v_x` |
+| 4 | `vy` | `e_v` | `v_y` |
+| 5 | `r` | unused placeholder | `r` |
+| 6 | `delta_act` | `delta_act` | `delta_act` |
+| 7 | `a_act` | `a_act` | `a_act` |
 
-### Actuator limits, what the car is physically allowed to do
+- With the LTV-QP only slots 6 and 7 mean the same thing. With the NMPC slots 3 to 7 match by quantity, while slots 0 to 2 are path-relative there and global here.
+- A conversion is always needed. `plant_to_tracking_error()` in `tracking.py` returns `(e_y, e_y_dot, e_psi, e_psi_dot, delta_act, a_act, vx)` for the LTV-QP, and the rollout builds `x0` from those values ([error_states.md](error_states.md)).
+- Module docstrings in `state.py` and `__init__.py` still claim indices 0 to 7 are identical to the MPC's 8 states and still say 24 states. Both statements are stale. `N_STATES` (25) and this table are correct.
 
-| Parameter | Plain English | Increase it → | Decrease it → |
-|---|---|---|---|
-| `max_steer` | The furthest the steering rack can physically turn the front wheels. | Tighter minimum turning radius available. | Car can't turn as sharply regardless of what's commanded. |
-| `max_accel` | The hardest the car can accelerate forward. | Faster off the line / out of corners (if the tyres can actually put that much force down). | Slower acceleration, more conservative. |
-| `max_accel_brake` | The hardest the car can brake (negative = deceleration). | (More negative = stronger braking) shorter stopping distances, later braking points possible. | Longer stopping distances required. |
-| `max_v` | Absolute speed ceiling, the car will not accelerate past this no matter what. | Higher top speed allowed. | Car is artificially capped lower, even on a straight where it has more to give. |
+## Vehicle parameters: what each does and what changing it does
 
-### Unsprung mass, the parts *not* held up by the springs
+Everything lives in `VehicleParams` (`params.py`). The "Default" column is the value in the file today. Three module-level scales multiply groups of values: `GRIP_SCALE = 1.1` (tyre stiffness and peak factor), `INERTIA_SCALE = 0.8` (wheel and drivetrain inertia), `COASTING_SCALE = 3.0` (rolling drag).
 
-| Parameter | Plain English | Increase it → | Decrease it → |
-|---|---|---|---|
-| `m_us` | Mass of each wheel/tyre/upright assembly, the bits that move with the road surface, below the springs. | Heavier wheels react more sluggishly to bumps, suspension struggles to keep the tyre pressed to the road over rough surfaces, hurting grip consistency. | Lighter wheels track the road surface more faithfully, generally better grip over imperfections. |
+### Geometry: the car's basic shape
 
-### Tyre geometry
+| Parameter | Default | Plain English | Increase it | Decrease it |
+|---|---|---|---|---|
+| `lf`, `lr` | 0.70, 0.85 m | Distance from the centre of mass to the front axle (`lf`) and the rear axle (`lr`). | Raising `lf` puts more weight over the rear, so the car understeers more (front loses grip first). | Less weight over that axle, so that end grips better and the other worse. |
+| `m` | 255 kg | Mass of car and driver. | More force needed to accelerate, brake and corner. Tyres are more loaded, which helps peak grip a little and hurts accel and braking much more. | Quicker acceleration, braking and direction change. |
+| `Iz` | 150 kg m² | Yaw inertia, how resistant the car is to spinning. | More stable but lazier turn-in. | Sharper turn-in, easier to spin. |
+| `tf`, `tr` | 1.25, 1.20 m | Track width, front and rear. | More resistance to side-to-side weight roll. | Rolls and transfers weight more readily. |
+| `h_cg` | 0.25 m | Height of the centre of mass. | More weight transfer under braking and cornering, worse balance. | Less transfer, more predictable. |
 
-| Parameter | Plain English | Increase it → | Decrease it → |
-|---|---|---|---|
-| `r_eff` | Effective rolling radius of the tyre, roughly, how far the car travels per wheel revolution. | Wheel needs to spin slower to hit the same ground speed; for the same motor torque, more force reaches the ground (bigger "lever arm"), but also more rotational inertia to overcome. | Opposite: wheel spins faster for the same speed, less torque converted to ground force per unit of wheel torque. |
+`lf`, `lr`, `m`, `Iz` must match the live controller constants (parity). The true values are not in the FSDS repo, so they are a deliberate choice: `lf < lr` makes the bicycle model understeer, which is stable at every speed.
 
-### Rotational inertia, how hard it is to spin a wheel up or down
+### Actuator limits: what the car may do
 
-| Parameter | Plain English | Increase it → | Decrease it → |
-|---|---|---|---|
-| `I_wheel` | How much a wheel "resists" changing its spin speed, its own rotational mass. | Wheel takes longer to spin up under power or spin down under braking, slower throttle/brake response at the wheel, can mask wheelspin/lockup onset (takes longer to develop). | Wheel spins up/down almost instantly with torque, sharper, twitchier response; wheelspin or lockup shows up faster. |
-| `I_drivetrain` | Same idea, but for the motor/gearbox's rotating mass, felt through the wheel. | Same effect as `I_wheel` above, but only on the driven (rear) wheels. | Same, opposite direction. |
+| Parameter | Default | Plain English | Increase it | Decrease it |
+|---|---|---|---|---|
+| `max_steer` | 25 degrees | The furthest the rack can turn the front wheels. | Tighter minimum turning radius. | Cannot turn as sharply whatever is commanded. |
+| `max_steer_rate` | 180 degrees/s | How fast the rack can move. Feeds the controllers' `du_max` slew limit ([control_mechanisms.md](control_mechanisms.md#slew-rate-limit-du_max-identical-on-both-sides-at-180-degs)). | The controller may command faster steering changes. | Slower allowed changes, more rate-limit saturation. |
+| `max_accel` | 12 m/s² | Hardest forward acceleration. | Faster out of corners, if the tyres can deliver it. | Slower, more conservative. |
+| `max_accel_brake` | -7 m/s² | Hardest braking (negative is deceleration). | A more negative value brakes harder and later. | Longer stopping distances. |
+| `max_v` | 16.7 m/s | Absolute speed ceiling (the real car tops out near 60 km/h). | Higher top speed. | Capped lower even on a straight. |
 
-### Suspension, springs, dampers, anti-roll bars
+### Unsprung mass, tyre geometry and rotational inertia
 
-Think of suspension as: **springs** hold the car up and push back when compressed, **dampers** resist *how fast* the suspension moves (slowing down bounce), and **anti-roll bars (ARBs)** link the left and right sides together so the car resists leaning in corners.
+| Parameter | Default | Plain English | Increase it | Decrease it |
+|---|---|---|---|---|
+| `m_us` | 7.5 kg | Mass of each wheel, tyre and upright, the parts below the springs. | Sluggish over bumps, less consistent grip on rough surfaces. | Tracks the road surface more faithfully. |
+| `r_eff` | 0.2286 m | Effective rolling radius. | Wheel spins slower for the same ground speed, more ground force per unit of wheel torque, more inertia to overcome. | The opposite. |
+| `I_wheel` | 0.72 kg m² (0.9 x scale) | How much a wheel resists changing spin speed. | Slower wheel response, can mask wheelspin or lockup onset. | Twitchier, wheelspin and lockup show sooner. |
+| `I_drivetrain` | 0.04 kg m² (0.05 x scale) | Same, for the motor and gearbox, felt at the driven rear wheels only. | As `I_wheel`, rear only. | As `I_wheel`, rear only. |
 
-| Parameter | Plain English | Increase it → | Decrease it → |
-|---|---|---|---|
-| `k_susp_f`, `k_susp_r` | Spring stiffness, front/rear. How much force it takes to compress the suspension by 1 metre. | Stiffer spring: less body roll/dive/squat, but a harsher ride and less ability to keep the tyre in contact with bumpy ground (grip suffers over rough surfaces). | Softer spring: smoother ride, better bump absorption, but more body movement (roll, dive, squat) which can upset handling balance. |
-| `c_damp_f`, `c_damp_r` | Damper (shock absorber) rate, front/rear. Resists the *speed* of suspension movement. | Suspension settles faster after a bump but transmits sharper impacts; too much and the tyre can be forced to skip off bumps instead of following them. | Suspension moves more freely, better at absorbing sharp bumps, but the car "wallows" (takes longer to settle) after a disturbance. |
-| `k_arb_f`, `k_arb_r` | Anti-roll bar stiffness, front/rear. Resists the car leaning side-to-side in a corner by linking left and right suspension. | Less body roll in that axle, and (importantly) that axle loses relative grip in hard corners because more load gets pushed onto the *outside* tyre and taken off the inside one, so stiffening the front ARB, for instance, is a classic way to *reduce* front grip and add understeer, or the reverse at the rear to reduce oversteer. | Less coupling between left/right, more body roll for that axle, and that axle keeps relatively more even (and often more total) grip through a corner. |
-| `z_max`, `z_min` | The hard mechanical limits of suspension travel (bump stop and droop stop). | Wider range before hitting the hard stop, more room to absorb big hits before the suspension "runs out" and transmits the impact straight to the chassis. | Narrower range, car hits the hard stops sooner under heavy braking/cornering/bumps, causing a sudden harsh jolt. |
+### Suspension: springs, dampers, anti-roll bars
 
-### Kinematic camber, how suspension movement tilts the tyre
+Springs hold the car up and push back when compressed. Dampers resist how fast the suspension moves. Anti-roll bars link left and right so the car resists leaning.
 
-Camber is the tilt of the tyre when viewed from the front (top-in or top-out). As the suspension compresses, the geometry of the suspension arms naturally changes this tilt, that's "kinematic" camber.
+| Parameter | Default | Plain English | Increase it | Decrease it |
+|---|---|---|---|---|
+| `k_susp_f`, `k_susp_r` | 25000, 30000 N/m | Spring stiffness per corner. | Less roll, dive and squat, harsher over bumps. | Smoother ride, more body movement that can upset balance. |
+| `c_damp_f`, `c_damp_r` | 1500, 1800 N s/m | Damper rate. | Settles faster after a bump, transmits sharper impacts. | Wallows longer after a disturbance. |
+| `k_arb_f`, `k_arb_r` | 8000, 6000 N/m | Anti-roll bar stiffness. | Less roll on that axle, and that axle loses relative grip in hard corners (load shifts to the outside tyre). Stiffening the front bar adds understeer. | More roll on that axle, more even grip. |
+| `z_max`, `z_min` | +0.040, -0.040 m | Bump and droop stops. | More travel before hitting a hard stop. | Hits the stops sooner, with a harsh jolt. |
 
-| Parameter | Plain English | Increase it → | Decrease it → |
-|---|---|---|---|
-| `camber_gain` | How much camber angle changes per unit of suspension travel. | More aggressive camber change with suspension movement, can add useful grip on the loaded (outside) tyre in a corner as the suspension compresses, but if overdone, unsettles the car as it moves through its travel. | Less camber change with movement, more predictable but potentially leaves grip on the table in hard cornering. |
-| `camber_stiff_f`, `camber_stiff_r` | How much extra sideways grip force a given camber angle actually produces (per axle). | Camber changes translate into more actual grip change, camber gain becomes a more powerful (and more sensitive) tuning tool. | Camber angle matters less to grip, the car becomes less sensitive to how the suspension geometry tilts the tyres. |
+### Kinematic camber: how suspension movement tilts the tyre
 
----
+| Parameter | Default | Plain English | Increase it | Decrease it |
+|---|---|---|---|---|
+| `camber_gain` | 8.73 rad/m | Camber change per unit suspension travel. | More grip on the loaded outside tyre as it compresses, unsettling if overdone. | More predictable, leaves some cornering grip unused. |
+| `camber_stiff_f`, `camber_stiff_r` | 0.15, 0.12 | How much extra sideways force a given camber angle produces. | Camber becomes a more powerful and more sensitive lever. | Camber matters less. |
 
-## 4. What is "Full MF94 Pacejka", and What Is a Tyre Model At All?
+## Tyre model: full MF94 Pacejka
 
-### What a tyre model is, conceptually
+### What a tyre model is
 
-A tyre doesn't grip the road like a rigid block of rubber sliding on sandpaper. It *deforms*, the contact patch stretches and distorts slightly before it actually slides. Because of this, the force a tyre produces isn't a simple constant "friction coefficient × weight on it", it depends, in a curved, non-linear way, on **how much the tyre is being asked to slip**.
+A tyre does not grip like a rigid block. The contact patch deforms before it slides, so force depends in a curved way on how much the tyre is asked to slip:
 
-There are two kinds of "slip" a tyre experiences:
+- **Slip angle** (`alpha`): the angle between where the tyre points and where it travels. It produces sideways (lateral) force, the force that turns the car.
+- **Slip ratio** (`kappa`): the mismatch between wheel speed and ground speed. It produces forward and backward (longitudinal) force.
 
-- **Slip angle** (α, alpha), the angle between where the tyre is *pointed* and where it's actually *travelling*. This produces **sideways (lateral)** grip force, the force that turns the car.
-- **Slip ratio** (κ, kappa), the mismatch between the tyre's rotating speed and the car's actual ground speed (spinning faster = wheelspin, slower = lockup/braking slip). This produces **forward/backward (longitudinal)** grip force, the force that accelerates or brakes the car.
-
-A "tyre model" is just a mathematical curve that says: *given this much slip angle (or slip ratio) and this much weight on the tyre, how much grip force comes out?* A bad tyre model (e.g., "grip is just a constant times weight, always") makes the whole vehicle simulation unrealistic, because real tyres have a grip *peak*, push past a certain slip angle and grip starts to *fall off* (this is what a slide or a spin feels like).
+A tyre model is a curve that gives force from slip and load. A real tyre has a grip peak, and past it grip falls off, which is what a slide feels like.
 
 ### What "Pacejka" and "MF94" mean
 
-**Pacejka** refers to Hans B. Pacejka, the researcher whose tyre force formula became the standard used across motorsport and vehicle dynamics research. **MF94** stands for "Magic Formula 1994", a specific, well established version of his formula. It's called the "Magic Formula" because a single, fairly compact equation using a handful of coefficients can closely reproduce the S-shaped force curve real tyres produce on a test rig.
+Hans Pacejka's Magic Formula (1994 version) reproduces the S-shaped force curve of a real tyre with one compact equation and a few coefficients. "Full" here means the code keeps the curved shape, offsets and camber effects, unlike the straight-line tyre in the controllers' internal models.
 
-**"Full"** here means the code isn't using a stripped-down straight-line approximation (which is what the MPC's simple internal model uses instead). It includes the full curved shape, offsets, and camber effects, matching real tyre-test-rig behaviour far more closely.
+### What the coefficients do
 
-### The shape of the curve, and what each coefficient controls
+Lateral defaults in `params.py`: front `B_f` 16.5, `C_f` 1.45, `D_f` 1.1, `E_f` -1.5; rear `B_r` 13.2, `C_r` 1.45, `D_r` 1.1, `E_r` -1.8 (`B` and `D` include `GRIP_SCALE`).
 
-Picture a graph: slip angle (or slip ratio) along the bottom, grip force up the side. As slip starts at zero and increases, force rises steeply, reaches a peak, and then, for a real tyre, can fall back down slightly (this falling-off is why sliding a car past its grip peak makes it feel like it has "let go"). The MF94 formula reproduces exactly this shape using four main coefficients:
-
-| Coefficient | Plain English | Increase it → | Decrease it → |
+| Coefficient | Plain English | Increase it | Decrease it |
 |---|---|---|---|
-| `B` (stiffness factor) | How steeply the grip force ramps up for small amounts of slip, the tyre's initial "sharpness." | Tyre reaches its peak grip at a smaller slip angle, feels sharper, more responsive, "grabbier" near centre. | Tyre needs more slip to build up the same force, feels vaguer, more gradual, less immediately responsive. |
-| `C` (shape factor) | Controls how rounded vs. peaky the top of the curve is. | Curve peak becomes flatter/broader, grip stays high over a wider slip range, more forgiving near the limit. | Curve peak becomes sharper/narrower, grip falls away more suddenly past the ideal slip angle, less forgiving. |
-| `D` (peak factor) | Scales the maximum force the tyre can ever produce (combined with `mu` and the load `Fz`). | Higher maximum grip available overall. | Lower maximum grip ceiling, the tyre can't produce as much force no matter what. |
-| `E` (curvature factor) | Fine-tunes the curve's shape near and past the peak, in this file it's negative, which is typical for a racing slick and makes the peak sharper. | Making `E` more negative sharpens the peak further, grip falls off more abruptly once past the ideal slip point (a more "on/off" feeling tyre). | Making `E` less negative (toward 0 or positive) rounds the peak out, a more gradual, forgiving transition into sliding. |
-| `Sv` (vertical offset) | A small constant force offset, real tyres aren't perfectly symmetric, so they can produce a tiny bit of force even at zero slip (from tyre construction quirks). | The tyre has a small built-in pull to one side even when going straight. | Removes that built-in pull, the tyre is perfectly neutral at zero slip. |
-| `Sh` (horizontal offset) | Shifts *where* zero net force occurs, along the slip-angle axis. | Shifts the "neutral point" of the tyre's response to one side. | Shifts it the other way, or removes the shift entirely at `Sh = 0`. |
+| `B` (stiffness) | How steeply force ramps up for small slip. | Peak grip at a smaller slip angle, sharper and grabbier near centre. | Needs more slip for the same force, vaguer. |
+| `C` (shape) | How rounded or peaky the top of the curve is. | Flatter, broader peak, more forgiving near the limit. | Sharper peak, grip falls away more suddenly. |
+| `D` (peak) | Scales the maximum force (with `mu` and the load `Fz`). | Higher grip ceiling. | Lower ceiling. |
+| `E` (curvature) | Shape near and past the peak. Negative here, typical of a racing slick. | More negative sharpens the peak, a more on/off tyre. | Toward zero rounds it out, a gentler slide. |
+| `Sv` (vertical offset) | Small force at zero slip from tyre construction. | A built-in pull to one side when straight. | Perfectly neutral at zero slip. |
+| `Sh` (horizontal offset) | Shifts where zero force occurs on the slip axis. | Shifts the neutral point one way. | The other way, or none at zero. |
 
-### Two flavours in this file: lateral and longitudinal
+- `pacejka_lateral_mf94` uses slip angle for cornering force and adds camber thrust.
+- `pacejka_longitudinal_mf94` uses slip ratio for accel and braking force. Rear coefficients `Bx_r` 12, `Cx_r` 1.65, `Dx_r` 1.0, `Ex_r` -0.5.
 
-- **`pacejka_lateral_mf94`**, uses slip *angle* to produce **sideways** grip force (cornering). Also adds camber thrust, extra sideways force from the tyre being tilted (see §3's camber section).
-- **`pacejka_longitudinal_mf94`**, uses slip *ratio* to produce **forward/backward** grip force (accelerating/braking). No offsets needed here, since accelerating and braking are naturally symmetric.
+### Friction and load sensitivity
 
-### Friction and load sensitivity: how `mu` fits in
+| Parameter | Default | Plain English | Increase it | Decrease it |
+|---|---|---|---|---|
+| `mu` | 1.76 (1.6 x scale) | Peak grip of the compound and surface. | More grip everywhere. | Slides, spins and locks up sooner everywhere. |
+| `k_sens` | 0.00012 per N | Load sensitivity: grip is not proportional to load, heavier loading gives diminishing returns. | Heavily loaded tyres (outside front in a corner) benefit less from extra load. | Grip stays closer to proportional to load. |
+| `road_mu` | 1.0 (argument to `step_nonlinear_plant`) | Multiplier on `mu` for the surface: about 0.6 damp, about 0.3 wet. | Grippier surface. | Slicker surface. |
 
-| Parameter | Plain English | Increase it → | Decrease it → |
-|---|---|---|---|
-| `mu` | The tyre's overall peak grip potential, think "how sticky is the rubber compound," combined with track surface quality. | More available grip everywhere, higher cornering speeds, shorter braking distances, more traction out of corners. | Less available grip everywhere, the car will slide/spin/lock up sooner in every situation. |
-| `k_sens` | Load sensitivity, real tyres don't produce grip perfectly proportional to the weight on them; heavier loading gives *diminishing returns* on grip. | Grip falls off more sharply as load increases, heavily loaded tyres (e.g. the outside front under hard cornering) give proportionally less benefit from that extra load. | Grip stays closer to proportional with load, heavily loaded tyres keep giving nearly their "fair share" of extra grip. |
-| `road_mu` (passed into `step_nonlinear_plant`) | A simple multiplier on top of `mu` representing the *surface*, dry tarmac, damp, wet, etc. | Grippier surface, all tyre forces scale up. | Slicker surface, all tyre forces scale down (this is how "rain" or "low-grip track" scenarios are simulated). |
+`mu` was set inside the published FSAE 13-inch slick range (1.4 to 1.8) because FSDS does not publish its tyre model. Scaling `mu` to imitate the FSDS lateral-acceleration cap was tried and failed, see [sim_to_real_investigation.md](../logs/sim_to_real_investigation.md).
 
-### Tyre relaxation, why grip doesn't appear instantly
+### Tyre relaxation: grip does not appear instantly
 
-Real tyres don't produce their full grip force the instant a slip angle appears, the rubber and carcass have to physically deform first, which takes a small amount of travel distance (not time directly, distance). This file models that with a **relaxation length**, `sigma_y_f` / `sigma_y_r`.
+The rubber and carcass must deform, which takes distance travelled, not time. The plant models it with a relaxation length: `dFy/dt = (vx / sigma) * (Fy_steady_state - Fy)`.
 
-| Parameter | Plain English | Increase it → | Decrease it → |
-|---|---|---|---|
-| `sigma_y_f`, `sigma_y_r` | Distance (in metres of travel) the tyre needs to build up to its full steady-state grip force after a slip angle change. | Grip response becomes laggier/slower to build, the car feels less immediately responsive to steering input, especially noticeable at higher speed. | Grip responds almost instantly to slip angle changes, sharper, more immediate steering feel. |
+| Parameter | Default | Plain English | Increase it | Decrease it |
+|---|---|---|---|---|
+| `sigma_y_f`, `sigma_y_r` | 0.45, 0.40 m | Distance the tyre needs to build to full grip after a slip change. | Laggier grip build-up, a less responsive feel at speed. | Near-instant grip response. |
 
-This is the difference between states 18–21 (`Fy_*_rlx`, the *actual, lagged* force being applied to the car right now) and the steady-state value computed fresh each sub-step inside the function (`Fy_*_ss`, what the tyre is *heading toward*).
+This is the difference between states 18 to 21 (the lagged force applied now) and the steady-state force computed fresh each sub-step (`Fy_ss`, what the tyre is heading toward). At 10 m/s with `sigma` 0.45 m the time constant is about 45 ms, significant at 20 Hz.
 
-### The friction ellipse: grip is a shared budget, not two separate pools
+### The friction ellipse: grip is one shared budget
 
-A tyre has one finite total amount of grip to give at any instant, it can't produce maximum sideways force *and* maximum forward force simultaneously; using some grip for one leaves less available for the other. This is why braking hard *while* cornering hard is a classic way to lose the car, it asks the tyre for more total grip than it has.
+A tyre has one finite amount of grip. Using some for longitudinal force leaves less for lateral. The plant enforces it per wheel by scaling lateral force by `sqrt(1 - (Fx / Fmax)²)`, where `Fmax = mu_eff * Fz`. This is why hard braking while cornering hard loses the car.
 
-The code enforces this with the *friction ellipse*: whatever fraction of the tyre's total grip budget is being spent on longitudinal force (`Fx`) directly reduces how much lateral force (`Fy`) is still available.
+## Other physics features
 
----
+### Aerodynamics
 
-## 5. Other Physics Features
-
-### Aerodynamics, drag and downforce
-
-| Parameter | Plain English | Increase it → | Decrease it → |
-|---|---|---|---|
-| `Cd_A` | Drag area, how much the car resists moving through the air. | More aerodynamic drag, slower top speed, more energy needed to maintain speed. | Less drag, higher achievable top speed for the same power. |
-| `Cl_A_f`, `Cl_A_r` | Downforce area, front/rear, how much the wings/bodywork push the car *down* into the road at speed (which increases tyre grip, since more weight = more available grip, up to the load-sensitivity limits above). | More downforce on that axle, more cornering grip available there at speed, but also (indirectly, alongside `Cd_A`) generally more drag in real cars. | Less downforce, less "free" grip from aerodynamics at that axle, especially noticeable at high speed. |
-| `Cl_pitch_sens` | How much braking (nose dipping down, "pitching forward") temporarily shifts downforce toward the front and away from the rear. | Braking creates a bigger front-grip boost / rear-grip reduction, and can make the rear feel looser while braking hard. | Braking has little effect on the front/rear downforce balance. |
+| Parameter | Default | Plain English | Increase it | Decrease it |
+|---|---|---|---|---|
+| `Cd_A` | 0.33 m² | Drag area. | More drag, lower top speed. | Less drag. |
+| `Cl_A_f`, `Cl_A_r` | 0.645, 0.855 m² | Downforce area, front and rear (a 43/57 split). | More grip on that axle at speed. | Less free grip, especially at high speed. |
+| `Cl_pitch_sens` | 0.03 | How much braking pitch shifts downforce toward the front. | Braking loads the front more and can loosen the rear. | Little effect on balance. |
 
 ### Rolling resistance and stiction
 
-| Parameter | Plain English | Increase it → | Decrease it → |
-|---|---|---|---|
-| `Crr` | A steady drag force that's always present while the car is moving, representing tyre rolling resistance plus drivetrain drag that isn't modelled elsewhere. | Car coasts to a stop faster with no throttle/brake input, more "engine braking"-like feel. | Car coasts further and longer with no input, freer rolling. |
-| `F_stiction` | The breakaway force needed to get a stationary car moving at all (static friction is higher than moving/rolling friction). | Takes more force to get the car moving from a dead stop. | Car starts moving more easily from rest. |
+| Parameter | Default | Plain English | Increase it | Decrease it |
+|---|---|---|---|---|
+| `Crr` | 61.5 N (20.5 x `COASTING_SCALE`) | A constant drag force while moving. It lumps rolling resistance with drivetrain drag that is not modelled elsewhere, and is the deliberate coast-down knob. | Coasts to a stop faster. | Coasts further. |
+| `F_stiction` | 600 N | Breakaway force to start a stationary car, across all four wheels. | Takes more force to get moving. | Starts more easily. Also sets the roughly 2.3 m/s² needed to break static friction. |
 
-### Actuator lag, steering and throttle don't respond instantly
+### Actuator lag
 
-| Parameter | Plain English | Increase it → | Decrease it → |
-|---|---|---|---|
-| `tau_delta` | How long the steering rack takes to catch up to a commanded steering angle. | Steering feels laggier/slower to respond to inputs. | Steering responds almost immediately to commands. |
-| `tau_a` | Same idea, for the throttle/brake actuator. | Acceleration/braking response lags behind commands more. | Acceleration/braking responds almost immediately. |
+| Parameter | Default | Plain English | Increase it | Decrease it |
+|---|---|---|---|---|
+| `tau_delta` | 0.08 s | Time for the steering rack to catch up to a command. | Laggier steering. | Near-immediate steering. |
+| `tau_a` | 0.02 s | Same, for the throttle and brake actuator. | Accel and braking lag behind commands. | Near-immediate response. |
 
-### Torque vectoring (optional, off by default)
+### Torque vectoring (optional, off)
 
-`tv_gain` (default 0, disabled) lets the rear differential push more drive force to one rear wheel than the other, based on yaw rate, to help rotate the car through a corner. Increasing it makes the car turn in more eagerly under power; too much can make it feel unpredictable or nervous.
+`tv_gain` is an argument to `step_nonlinear_plant`, not a `VehicleParams` field. Default 0 disables it. When set it splits rear drive force between the wheels in proportion to yaw rate to help rotate the car. Too much makes the car nervous.
 
-### The FSDS lateral-acceleration ceiling (`alat_ceiling*`)
+### Linear cornering stiffness for the controllers
 
-This is not a real tyre-grip limit. It's a model of a *simulator quirk*. FSDS itself caps how much sustained lateral acceleration a car can actually achieve to roughly 7-9 m/s² depending on speed, well below what this plant's own tyres are otherwise capable of (measured up to ~14.5 m/s² unaided, and the real car reaches ~12.3 m/s² on a lap). Without modelling this, the offline simulator lets the car take corners the real FSDS car physically cannot, so weights tuned against the unconstrained plant assume cornering authority that doesn't exist once actually driving in FSDS.
+`VehicleParams.Cf` and `Cr` are computed from the Pacejka coefficients (`mu_eff * Fz_nominal * B * C * D` per axle), not hard-coded, so the linear model's initial slope matches the plant. The live controllers keep a hard-coded copy (`Cf` 29155.5, `Cr` 19512.3 N/rad in `MPCController.__init__` and the NMPC `_Plant`). Changing any tyre coefficient means updating both copies by hand ([offline_live_parity.md](offline_live_parity.md)).
 
-The mechanism works by adding a **restoring yaw moment** once the car's current lateral acceleration exceeds a speed-dependent ceiling, pulling the yaw rate back down, the same way FSDS itself apparently does internally (its exact internal cause is unknown; this only reproduces the external symptom). It is a soft, lagged pushback, not a hard clip. The car can briefly exceed the ceiling before being pulled back, which is what produces the small measured overshoot on a hard, sudden corner entry.
+## The FSDS lateral-acceleration ceiling (`alat_ceiling*`)
 
-| Parameter | Plain English | Increase it → | Decrease it → |
-|---|---|---|---|
-| `alat_ceiling_enabled` | Whether this mechanism runs at all. | N/A, set `False` to recover the unconstrained plant (e.g. for real-vehicle work, where this ceiling doesn't apply). | N/A |
-| `alat_ceiling`, `alat_ceiling_slope`, `alat_ceiling_intercept` | Together define the ceiling itself as a function of speed: flat at low speed, then rising as `intercept + slope·v` once that line climbs above the flat value. | Higher ceiling, the car is allowed more sustained lateral g before the restoring moment engages. | Lower ceiling, the pushback engages sooner and more often, capping cornering speed harder. |
-| `alat_ceiling_mode` | Which control law converts "how far over the ceiling" into restoring moment. Leave on `'pi'` (the validated choice); `'p'` is a legacy mode kept only to reproduce the measurement that rejected it. | N/A | N/A |
-| `alat_ceiling_gain` | How strongly the restoring moment reacts to sustained excess above the ceiling. | Pulls the car back to the ceiling more firmly, less overshoot past it. | Weaker pushback, the car can run further over the ceiling before being reined in. |
-| `alat_ceiling_tau` | How quickly the restoring moment builds once the ceiling is exceeded (a lag, not an instant clip). | Slower to engage, bigger transient overshoot on a sudden hard corner entry, but no effect on the settled cornering level. | Faster to engage, less overshoot, again with no effect on the settled level. |
+This is not a real tyre-grip limit. It models a simulator quirk: FSDS caps sustained lateral acceleration well below what the plant's tyres reach unaided (about 14 m/s² measured offline, against about 12.3 m/s² on a real lap), and the measured cap varies with speed. Without the model, the offline sim takes corners the FSDS car cannot, and weights tuned against it assume cornering authority that does not exist in FSDS.
 
-Full derivation (the open-loop measurements this was fitted to, why the integral law replaced an earlier proportional one, and what's still unresolved) lives in `docs/reference/simulator_fidelity.md`'s "The sim-to-real gap: a lateral-acceleration ceiling, partly closed" section, not repeated here.
+Mechanism: once `|vx * r|` (the plant's lateral-acceleration estimate) exceeds a speed-dependent ceiling, a restoring yaw moment pulls the yaw rate back. In the default `'pi'` mode the excess is a leaky integral held in state 24 (`alat_lim`), so the settled value pins at the ceiling for any gain. The car can briefly exceed the ceiling before being pulled back, which reproduces the roughly 30% overshoot measured on a sudden corner entry and which a hard clip cannot. FSDS's internal cause is unknown. The model reproduces the external symptom only.
 
----
+The ceiling is `alat_ceiling_at(vx) = max(alat_ceiling, alat_ceiling_intercept + alat_ceiling_slope * vx)`.
 
-## 6. Quick Reference: Symptom → Likely Parameter
+| Parameter | Default | Plain English | Increase it | Decrease it |
+|---|---|---|---|---|
+| `alat_ceiling_enabled` | `True` | Whether the mechanism runs. It models FSDS, not the physical car. | Set `False` to recover the unconstrained plant for real-vehicle work. | n/a |
+| `alat_ceiling`, `alat_ceiling_slope`, `alat_ceiling_intercept` | 7.5 m/s², 0.47, 2.46 | Flat low-speed floor and the rising line above it (the line exceeds the floor above about 10.7 m/s). | A higher ceiling, more sustained lateral g allowed. | Pushback engages sooner and more often. |
+| `alat_ceiling_mode` | `'pi'` | The control law. `'p'` is a rejected proportional law kept only to reproduce the measurement that rejected it. | n/a | n/a |
+| `alat_ceiling_gain` | 450 N m per m/s² | Strength of the restoring moment, fitted to the measured peak. | Firmer pull-back, less overshoot. | Weaker pushback, more overshoot. |
+| `alat_ceiling_tau` | 0.40 s | Lag on the restoring moment. Affects only the transient under the integral law. | Slower to engage, larger overshoot on a sudden entry. | Faster, less overshoot. |
 
-When a specific handling symptom shows up during tuning, these are usually the first places to look:
+Derivation, the open-loop measurements and what remains unresolved: [simulator_fidelity.md](simulator_fidelity.md). Check the plant still reproduces the measurements after any change with `python -m tuner.validation.plant_openloop_validation`.
 
-- **Car understeers (won't turn in, pushes wide)** → increase front `mu`/grip, reduce `k_arb_f` (front anti-roll stiffness), check `Cf`/front `B_f`,`D_f`, or reduce front downforce loss under braking.
-- **Car oversteers (rear steps out, spins)** → the mirror image: increase rear grip/downforce, reduce `k_arb_r`, check `Cr`/rear `B_r`,`D_r`.
-- **Car feels laggy/unresponsive to steering** → check `tau_delta` (actuator lag) and `sigma_y_f` (tyre relaxation length), both add delay between the steering input and the car actually responding.
-- **Car spins its rear wheels under acceleration** → check `mu`, `Fmax_RL`/ `Fmax_RR` friction ceilings (driven by `mu` and rear `Fz`), or whether `max_accel`/torque demand is asking for more force than the tyres can deliver.
-- **Ride feels harsh over bumps** → reduce `k_susp_f`/`k_susp_r` (softer springs) or `c_damp_f`/`c_damp_r` (softer dampers).
-- **Car rolls/wallows too much in corners** → increase `k_arb_f`/`k_arb_r` or `k_susp_f`/`k_susp_r`.
-- **Car coasts too far / doesn't slow down off-throttle** → increase `Crr`.
-- **Car corners noticeably harder in the offline simulator than it can on the real FSDS car** → check `alat_ceiling_enabled` is `True` and the ceiling parameters match the latest measurement, this is the known, deliberately modelled gap, not a tyre-grip mismatch.
+## Symptom to likely parameter
 
----
+- **Understeer (pushes wide)**: raise front grip (`mu`, front `B_f`, `D_f`), reduce `k_arb_f`, or reduce front downforce loss under braking.
+- **Oversteer (rear steps out)**: the mirror image. Raise rear grip and downforce, reduce `k_arb_r`, check rear `B_r`, `D_r`.
+- **Laggy steering response**: check `tau_delta` and `sigma_y_f`, both add delay between input and response.
+- **Rear wheelspin under power**: check `mu`, the per-wheel friction ceiling (`mu * Fz`), or whether `max_accel` demands more force than the tyres can give.
+- **Harsh ride over bumps**: reduce `k_susp_*` or `c_damp_*`.
+- **Too much roll or wallow**: raise `k_arb_*` or `k_susp_*`.
+- **Coasts too far off-throttle**: raise `Crr`.
+- **Corners harder offline than in FSDS**: check `alat_ceiling_enabled` is `True` and the ceiling parameters match the latest measurement. This is the known modelled gap, not a tyre-grip mismatch.
 
-## 7. Glossary
+## Short glossary
 
-- **Slip angle (α)**, angle between where a tyre points and where it actually travels; drives sideways (cornering) grip.
-- **Slip ratio (κ)**, mismatch between wheel spin speed and ground speed; drives forward/backward (accel/braking) grip.
-- **Yaw**, rotation of the car about a vertical axis (spinning left/right, viewed from above). Yaw *rate* is how fast that rotation is happening.
-- **Load transfer / weight transfer**, under braking, accelerating, or cornering, weight shifts off some tyres and onto others (e.g. braking shifts weight forward, onto the front tyres).
-- **Unsprung mass**, the parts of the car (wheels, tyres, uprights) that sit *below* the springs and move with the road surface, as opposed to the "sprung" chassis the springs are holding up.
-- **Contact patch**, the small area where the tyre actually touches the road; all grip forces originate here.
-- **Friction ellipse/circle**, the idea that a tyre's total grip is a shared, finite budget between sideways and forward/backward force.
-- **Relaxation length**, the travel distance a tyre needs before its grip force catches up to a new slip angle, rather than responding instantly.
+Terms specific to this plant. General terms are in [glossary.md](glossary.md).
+
+- **Load transfer**: under braking, accelerating or cornering, weight shifts off some tyres and onto others (braking shifts weight forward).
+- **Unsprung mass**: wheels, tyres and uprights, which sit below the springs and move with the road.
+- **Contact patch**: the small area where the tyre touches the road, where all grip forces originate.
+- **Relaxation length**: the travel distance a tyre needs before its force catches up with a new slip angle.

@@ -1,347 +1,362 @@
-# MPC Tuning Reference
+# MPC Tuning Guide
 
-This is the single canonical reference for tuning the MPC: every weight, adaptive-gain shape constant, and feature flag, what it does, how to adjust it, and anything specific to keep in mind when changing it. Other docs (`architecture.md`, `offline_guide.md`, `fsds/fsds_integration_guide.md`, `docs/reference/`) link here instead of repeating this material. Check those docs only for things tuning doesn't cover (system architecture, how to run the tuner, live/offline resync procedure).
+This is the reference for tuning the MPC: what each weight and flag does, what is shipped, what was tried and rejected, and how to change a value safely.
 
-**Source of truth for exact numbers**: `settings.py` (offline) and `ros2/src/fsae_planning/control/fsae_control/fsae_control/mpc/mpc_params.py` (live). This doc explains *what each one does and how to tune it*; it deliberately does not restate every current numeric value, since those drift as tuning continues and a second copy of the numbers here would just be one more place to fall out of sync. See `docs/reference/offline_live_parity.md`'s parity rule: any change here must be applied to **both** `settings.py` and `mpc_params.py`.
+Current numbers live in code, not here. Offline: the `settings/` package (`settings/lmpc.py`, `settings/nmpc.py`, `settings/general.py`, `settings/scoring.py`). Live: `mpc_params.py` and `nmpc_params.py` under `ros2/src/fsae_planning/control/fsae_control/fsae_control/mpc/`, plus `fsae_params.yaml` and `ros2/launch_all.sh`. Values quoted below are shipped defaults at the time of writing. Re-read the source before relying on one.
 
-**Two controllers, two tuning surfaces.** Sections 1-4.4/4.9 below tune the default linear time-varying MPC (LTV-QP). The NMPC (`use_nmpc=true`, see [§4.5d](#45d-nonlinear-mpc-use_nmpc)) shares the LTV-QP's base weights (section 1) as its starting point but is entirely unaffected by all of section 4's adaptive machinery, and can be retuned independently via its own `nmpc_q_*`/`nmpc_r_*` override fields without touching the LTV-QP. See [architecture.md](architecture.md#second-controller-nonlinear-mpc-use_nmpc) for what the NMPC is and why it exists.
+## Two controllers, two tuning surfaces
 
-## How to use this doc
+- The LTV-QP (linear time-varying quadratic program, `use_nmpc=false`) uses the base weights plus an adaptive-gain layer that reshapes them every tick. See [lmpc.md](../controllers/lmpc.md).
+- The NMPC (nonlinear MPC, `use_nmpc=true`) reads the same base weights as a starting point. It ignores the adaptive-gain layer and has its own override fields and rate-shaping terms. See [nmpc.md](../controllers/nmpc.md).
+- `ros2/launch_all.sh` ships `USE_NMPC=true` and `CONTROLLER=mpc`. The offline default `settings.USE_NMPC` is `False`, so the offline tuner and rollouts run the LTV-QP unless `USE_NMPC` is set.
+- The shared weights are not unit-normalised. Each raw weight multiplies its raw-unit error term (`q_e_y` on metres squared, `q_e_psi` on radians squared). Do not compare two weights by size alone.
 
-1. Locate the parameter or feature to change below.
-2. Read its purpose and the "how to tune it" guidance.
-3. Check the "known constraints" column: some values have a hard floor/ ceiling discovered by prior testing. Don't re-cross a boundary already shown to make things worse without a specific reason to re-test it.
-4. Change the value in **both** `settings.py` and `mpc_params.py`.
-5. Re-validate: `python -m tuner.recorded_map_rollout` (offline, ~2 min) at minimum; for anything touching adaptive gains or delay handling, also run `VALIDATION_SUITE`. Never trust an offline-only score for a change that affects saturation or heading error, see `docs/reference/offline_live_parity.md`'s project rule 3, "the offline simulator does not fully predict the car".
+## How to change a value
 
----
+1. Find the parameter below and read its known constraints.
+2. Change it on both sides: the offline constant in `settings/` and the live field in `mpc_params.py` or `nmpc_params.py`. A one-sided edit makes offline scores meaningless. Field mapping: [offline_live_parity.md](../reference/offline_live_parity.md).
+3. Check for runtime overrides. A launched node reads `ros2/launch_all.sh` arguments first, `fsae_params.yaml` second and the dataclass default last. Editing only the dataclass leaves the car on the old value. See the status table below.
+4. Change one value at a time, by 20 to 30 percent, then re-validate. Weights interact and a second change hides the first.
+5. Validate with `python -m tuner.validation.recorded_map_rollout` (headless, about 2 minutes). For anything touching adaptive gains or delay handling also run the synthetic `VALIDATION_SUITE`. For NMPC solver changes run `python -m tuner.validation.nmpc_offline_check`.
+6. Do not trust an offline score alone for a change that moves saturation or heading error. The offline sim does not fully predict the car. See [simulator_fidelity.md](../reference/simulator_fidelity.md).
 
-## 1. Core cost weights (`Q_diag` / `R_diag` / `R_rate_diag`)
+## What is shipped and what runs on the car
 
-These three vectors are the base "driving personality": how much the controller cares about tracking accuracy vs. control effort vs. smoothness. Every adaptive gain below is a *multiplier* applied on top of these values, not a replacement for them.
+Three layers can hold a value. The launch layer wins.
 
-| Field | Penalises | Purpose |
+| Mechanism | Dataclass default | `fsae_params.yaml` | `ros2/launch_all.sh` | Offline `settings/` | Runs on the car |
+|---|---|---|---|---|---|
+| NMPC (`use_nmpc`) | off | off | `USE_NMPC=true` | `USE_NMPC=False` | on |
+| Steering-rate three-zone schedule (`nmpc_rrate_zone_enabled`) | on | on | `true`, endpoints 2.0 / 0.80 / 0.15 | on | on (NMPC only) |
+| Input-jerk cost (`nmpc_rjerk_delta`) | 150.0 | 150.0 | `NMPC_RJERK_DELTA=150.0` | 150.0 | on (NMPC only) |
+| `nmpc_corner_factor_k` | 27.0 | 27.0 | `27.0` | 27.0 | 27.0 (NMPC only) |
+| Adaptive Q scaling (`adaptive_q_scaling_enabled`) | on | on | `MPC_ADAPTIVE_Q_SCALING_ENABLED=false` | on | off (LTV-QP only, inert under NMPC) |
+| Steer-rate anti-hunt (`steer_rate_anti_hunt_enabled`) | on | on | line commented out | on | on (LTV-QP only, inert under NMPC) |
+| Reversal penalty (`reversal_penalty_enabled`) | off | off | `REVERSAL_PENALTY_ENABLED=true` | off | on (LTV-QP only, inert under NMPC) |
+| NMPC reversal penalty | off | off | `false` | off | off |
+| Dynamic speed cap (`enable_dynamic_speed_cap`) | on (node parameter) | on | `ENABLE_DYNAMIC_SPEED_CAP=false` | on | off |
+| Reference-heading rate limit | off | off | not exposed | off | off |
+| Precomputed heading profile | off (node parameter) | not present | `false` | not modelled | off |
+
+The launch file disagrees with the offline default for adaptive Q scaling and the reversal penalty. Both only matter when the LTV-QP runs, which needs `USE_NMPC=false`. Offline LTV-QP results are then not a like-for-like preview of a launched LTV-QP.
+
+## Core cost weights
+
+`Q_diag`, `R_diag`, `R_rate_diag` (offline) and the matching `MPCParams` fields set the base driving personality: tracking accuracy against control effort against smoothness. Every adaptive gain multiplies these, none replaces them.
+
+| Field | Penalises | Shipped | Purpose |
+|---|---|---|---|
+| `q_e_y` | lateral deviation from the path | 6.4 | primary tracking term |
+| `q_e_yd` | rate of change of lateral deviation | 0.0 | damps lateral oscillation, unused |
+| `q_e_psi` | heading error against the path tangent | 1.65 | keeps the car pointed along the path |
+| `q_r` | yaw rate (LTV-QP) or heading-error rate (NMPC) | 1.0 | damping |
+| `q_e_v` | speed error, car speed minus target | 1.5 | tracks the speed profile |
+| `r_delta` | steering command size | 1.8 | discourages large steering angles |
+| `r_a_accel` | acceleration command size, `a_cmd >= 0` | 0.9 | discourages large throttle |
+| `r_a_brake` | acceleration command size, `a_cmd < 0` | 0.6 | discourages large braking |
+| `r_rate_delta` | steering rate of change | 100.0 | discourages jerky steering |
+| `r_rate_a` | acceleration rate of change | 2.0 | discourages jerky throttle and brake |
+| `terminal_q_scale` | final predicted state in the horizon | 1.0 | extra weight on where the plan ends |
+
+Known constraints:
+
+- `terminal_q_scale`: 1.0 (no-op) is the only value validated against the current weights. Changing it shifts the effective tuning of everything else.
+- `r_a_accel` and `r_a_brake`: an acceleration command is a rate. Its effort cost is paid immediately and its benefit (removed speed error) arrives slowly. A weight that looks reasonable can leave most of the car's braking authority unused. Lower the relevant weight first when braking looks weak, and sweep around the current value, because the relationship has a measured local optimum and is not "lower is better". `r_a_brake` alone is the more targeted lever for weak braking. History of the two-weight split: [control_mechanisms.md](../reference/control_mechanisms.md).
+- `R_diag[1]` (offline) and the tuner's `a_cmd` effort dimension do not change the acceleration effort cost. Both controllers take `R_A_ACCEL` and `R_A_BRAKE` instead. Confirmed by reading `sim/rollout/tick_solve.py`, not by a sweep.
+- `q_e_v`: matters more in the corner-approach phase than in whole-run averages, since most of a lap is straight with small speed error. Compare corner-approach metrics, not just whole-run RMSE.
+- `r_rate_delta` moved from 52.5 to 100.0 in a Q/R retune commit on 2026-09-20. Rationale not recorded. The measurements in the steering-smoothness section below were taken at 52.5 and have not been repeated at 100.0.
+
+## Steering smoothness: chatter and turn-in
+
+Chatter (the wheel twitching instead of holding an angle) and late or jerky turn-in at tight corners are two different faults. Diagnose which one is present before tuning, because each ignores the other's controls. Full history: [steering_chatter_investigation.md](../logs/steering_chatter_investigation.md).
+
+### Chatter is a cost-function problem
+
+Order of measured impact:
+
+| Lever | Setting | Effect |
 |---|---|---|
-| `q_e_y` | lateral deviation from centreline | primary tracking-accuracy term |
-| `q_e_yd` | rate of change of lateral deviation | damps lateral oscillation |
-| `q_e_psi` | heading error vs. path tangent | keeps the car pointed along the path |
-| `q_r` | yaw rate | damps spin/yaw oscillation |
-| `q_e_v` | speed error (car speed − target speed) | tracks the speed profile |
-| `r_delta` | steering command effort | discourages large steering angles |
-| `r_a_accel` | acceleration command effort, `a_cmd >= 0` | discourages large throttle commands |
-| `r_a_brake` | acceleration command effort, `a_cmd < 0` | discourages large braking commands |
-| `r_rate_delta` | steering rate of change | discourages jerky steering |
-| `r_rate_a` | acceleration rate of change | discourages jerky throttle/brake |
-| `terminal_q_scale` | final predicted state in the horizon | extra weight on where the plan ends up |
+| Steering-rate cost | `r_rate_delta` 2.8 to 52.5 (100.0 today) | mean steering step per tick 2.54 to 1.92 deg live, sign-flip rate off its 65 percent floor. Largest single lever. |
+| Input-jerk cost | `nmpc_rjerk_delta` 150.0 | on the centreline reference: 0 saturated ticks, 0 slew-limited ticks and 1 steering reversal over three laps, at `r_rate_delta=52.5` |
+| Three-zone rate schedule | `nmpc_rrate_zone_*` with `nmpc_corner_factor_k=27` | smallest contributor, and only after `k` was raised from 8 |
+| Post-solve output smoothing | removed | made redundant by the first two |
 
-**How to tune**: change one value at a time by no more than 20–30%, then re-run the tuner/validation suite. These interact, and a change to one can be masked or amplified by another, so isolate.
+The `r_rate_delta=0.0` control run measured 4.72 deg per tick against 1.92 deg at 52.5, which confirms the diagnosis.
 
-**Known constraints**:
-- `terminal_q_scale`: 1.0 (no-op) is the only value ever validated against the current `Q_diag`/`R_diag`/`R_rate_diag` set. Changing it changes the effective tuning of everything else; re-validate fully rather than treating it as an independent knob.
-- `r_a_accel` / `r_a_brake`: because `a_cmd` is a *rate* term, its effort cost is paid immediately per tick while its benefit (removed speed error) accrues slowly; a naively "reasonable-looking" weight can leave a large fraction of the car's real braking/accel authority unused. If braking/acceleration looks underused relative to what the car demonstrably sustains elsewhere in the same lap, the corresponding one of these is the first thing to lower, but sweep around the current value rather than assuming further cuts keep helping; a single shared weight is not a monotonic "lower is better" relationship, it has a measured local optimum (see `docs/reference/control_mechanisms.md`'s "Accel/brake effort weight split" for the history behind why this is two independent weights rather than one). Lowering ONLY `r_a_brake` (leaving `r_a_accel` fixed) is the more targeted lever if the specific symptom is weak braking without also making the car over-eager to accelerate. These two are actively live-tuned; check `mpc_params.py` for the current values rather than trusting a number quoted here.
-- `q_e_v`: has more effect on the corner-approach phase specifically than on whole-run averages, since a large fraction of any lap is spent on straights where speed error is naturally small. When re-tuning this, compare corner-approach-phase metrics (ticks with high corner demand), not just whole-run RMSE, since whole-run numbers can hide a real improvement or regression.
+### Input-jerk cost (`nmpc_rjerk_delta`, `nmpc_rjerk_a`), NMPC only
 
----
+**What it does.** The plain rate cost charges the same for a steady ramp into a corner as for one leg of an oscillation, so raising it to stop a wobble also makes the car reluctant to turn. The jerk term prices the change in the steering rate instead. A steady turn scores near zero and a wobble scores high.
 
-## 2. Delay compensation
+**Why this design.** Measured on a live run of 2910 ticks, classified by whether steering reversed or continued:
 
-| Field | Purpose |
-|---|---|
-| `delay_compensation_enabled` | roll the MPC's belief about its own state forward through pending commands (`predict_ahead()`) before optimizing, so the plan accounts for the actuation lag between deciding and acting |
-| `max_delay_compensation_steps` | caps how far forward `predict_ahead()` is allowed to roll |
-| `predict_epsi_clip` | small-angle bound used inside `predict_ahead()`'s heading-error prediction |
-| `pose_age_lp_alpha` | low-pass filter coefficient smoothing the estimated pose age each tick |
-| `n_delay_hysteresis` | deadband either side of an `n_delay` bin boundary, to stop the compensation depth flip-flopping tick-to-tick near a boundary |
+| Behaviour | Ticks | mean \|d1\| (rate) | mean \|d2\| (acceleration) |
+|---|---|---|---|
+| reversals (chatter) | 1739 | 2.375 deg | 4.669 deg |
+| same direction (ramp) | 1171 | 1.247 deg | 1.083 deg |
 
-`DELAY_STEPS`/`DELAY_JITTER_STEPS`/`DELAY_JITTER_SEED` (offline-only, simulator-side) model how much actuation lag exists and how much the controller's *belief* about that lag is allowed to be wrong, independent of the true plant delay. This is what makes an offline score meaningful: with zero jitter, the offline tuner is optimizing against an easier problem than the real car (a real control loop's period jitters, so its lag estimate is never perfect).
+The second difference separates the two by 4.31 times against about 1.9 times for the first. 96 percent of slew-limited ticks were reversals, so even the large catch-up events are mostly the tail of an oscillation.
 
-**How to tune**: `DELAY_STEPS` should reflect a realistic actuation lag for the current hardware. `DELAY_JITTER_STEPS` should be set from a measured live control-loop jitter (loop-period standard deviation, converted to steps). Don't leave it at 0 unless deliberately testing the idealized case.
-
-**Known constraints**: `n_delay_hysteresis` exists specifically to prevent oscillation at a bin boundary, so don't remove it without confirming that oscillation doesn't reappear.
-
----
-
-## 3. Reference-heading rate limit
-
-| Field | Purpose |
-|---|---|
-| `ref_heading_rate_limit_enabled` | caps how fast the *tracked reference heading* itself is allowed to change per tick, independent of the car's own yaw dynamics |
-| `ref_heading_rise_rate_deg_s` | the cap, in deg/s, when enabled |
-
-This exists because the planner's reference heading can swing faster than either the sim or the real car can ever physically yaw. See `docs/logs/sim_to_real_investigation.md`'s reference-heading-lead sections (§12.8, §26). The limiter only ever slows down how fast the *target* is allowed to change; it never reverses a correction's sign.
-
-**Known constraints**: **do not re-enable without a specific reason to re-test.** Live testing found it makes saturation/heading-error *worse*, not better, despite being a reasonable-sounding hypothesis. See `docs/logs/sim_to_real_investigation.md` for the investigation. It remains in the codebase as a validated-off feature, not a half-finished one. Lowering `ref_heading_rise_rate_deg_s` much below ~85 deg/s risks holding the reference back so hard that a fast, tight slalom goes off-track. If re-testing this, re-run `tuner/checks/ref_heading_limiter_suite_check.py` first.
-
----
-
-## 4. Adaptive-gain overview
-
-Every adaptive gain below is an *enable flag* (whether the mechanism runs) plus a set of *shape constants* (the floors/ceilings/ramp sharpness of the curve it applies). The flags decide whether a mechanism is active; the shape constants decide how strongly it acts once active. Change shape constants only for mechanisms that are enabled. Tuning a disabled mechanism's shape has no effect until its flag is also flipped on.
-
-**Two generations, same as `architecture.md`'s "Adaptive gain scheduling" section.** §4.1-4.3 below describe mechanisms still active today. §4.4-§4.8 describe the forward-scanning "lookahead" family that the corner-factor rewrite deleted wholesale, kept collapsed for the tuning history and the reasoning behind what replaced it, not because there's anything left in that family to tune. §4.3b documents the replacement: the corner-factor scheduler this whole family was replaced with. §4.9-§4.10 describe two further mechanisms that were tried and disabled/removed independently of the corner-factor rewrite, for their own separate reasons.
-
-### 4.1 Adaptive Q-scaling near centreline (`adaptive_q_scaling_enabled`)
-
-**Purpose**: relax the lateral-error penalty (`Q[0,0]`) when the car is already close to the centreline, to reduce small-error "hunting": a controller that penalises tiny lateral errors as heavily as large ones will often make small, unnecessary corrections that look like steering chatter.
-
-**Known constraints**: not currently reproduced by the offline recorded-map rollout as tuned (steering-reversal rate rises *with* `|e_y|` offline, the opposite of the live trend), this may be a live-only symptom. Treat offline validation of this specific mechanism with caution; the live behavior is the one it was built to fix.
-
-### 4.2 Steering-rate anti-hunt boost (`steer_rate_anti_hunt_enabled`)
-
-**Purpose**: extra penalty on steering-rate-of-change (`R_rate[0,0]`), on top of the corner-softening in §4.3, but only when the car is already centred, not currently curving, *and* well-aligned, i.e. specifically targets residual steering chatter on a genuine straight, not steering rate needed for cornering.
-
-| Field | Purpose |
-|---|---|
-| `anti_hunt_boost_max` | ceiling multiplier when the car is straight/centred/aligned |
-
-**Known constraints**: detects "currently curving"/"centred"/"aligned" only via current curvature/`e_y`/`e_psi` (reactive); these three alone cannot anticipate a corner before the car is already turning into it. Not validated against `VALIDATION_SUITE`/recorded-map or any live log as a whole mechanism; treat as experimental. (`anti_hunt_k_lookahead`, a lookahead-curvature fade gate that once paired with this mechanism, does not exist on `MPCParams`, removed along with the rest of the lookahead family in the corner-factor rewrite; see §4.4.)
-
-### 4.3 Adaptive R-rate corner softening, REMOVED
-
-`adaptive_r_rate_enable_in_corners`/`adaptive_r_rate_during_floor` no longer exist on `MPCParams`. This mechanism continuously softened `R_rate[0,0]` as current curvature rose, but its computed scale was always overwritten by the corner-factor blend (§4.3b) immediately after, so it never reached the QP on either side, live or offline, despite looking wired (the multiplier was still logged to telemetry as `m_Rrate_corner`). Removed rather than left as dead code; see [`removed_mechanisms.md`](removed_mechanisms.md) for the full mechanism and recovery from git history.
-
-### 4.3b Corner-factor scheduler
-
-**Purpose**: replaces the entire forward-scanning lookahead family in §4.4 below with one continuous, CURRENT-curvature-only fraction (`corner_frac`, 0=straight → 1=full corner) that blends four weights between a straight endpoint and a corner endpoint, plus an independent low-speed boost and an always-on heading-error-driven accel/brake asymmetry. See `architecture.md`'s "Corner-factor scheduler" section for the formulas and the reasoning behind each piece; this section is the tuning-surface reference.
-
-| Field | Purpose |
-|---|---|
-| `corner_factor_k` | sharpness of the `corner_factor` curve vs. CURRENT `\|kappa\|`, higher means the straight/corner transition happens over a narrower curvature range |
-| `q_ey_straight` / `q_ey_corner` | `Q[0,0]` (lateral error) blend endpoints |
-| `q_epsi_straight` / `q_epsi_corner` | `Q[2,2]` (heading error) blend endpoints |
-| `q_r_straight` / `q_r_corner` | `Q[3,3]` (yaw rate) blend endpoints, `_corner` is normally LOWER than `_straight` (relaxes in-corner) |
-| `rrate_steer_straight` / `rrate_steer_corner` | `R_rate[0,0]` (steering rate) blend endpoints, `_corner` is normally LOWER than `_straight` (relaxes in-corner) |
-| `r_steer_corner_mid` | `R[0,0]` (steering effort) blend target at full corner, a MIDDLE value between the straight weight and the corner-relaxed extreme used by the other weights above, so turn-in isn't made maximally cheap right when saturation risk is highest |
-| `low_speed_corner_boost_v_half` | speed at which the low-speed corner boost has decayed to half its `max_extra` |
-| `low_speed_corner_boost_max_extra` | max extra `corner_frac` added at `car_speed=0`, fully inside a corner, gated multiplicatively on `corner_factor`, so this is an exact no-op on a straight regardless of speed |
-| `epsi_ra_half_rad` | `\|e_psi\|` at which the accel/brake asymmetry reaches half its max effect |
-| `epsi_ra_accel_boost_max` | max multiplier on `r_a_accel` at large `\|e_psi\|` (more expensive, discourages accelerating through a heading error) |
-| `epsi_ra_brake_floor` | min multiplier on `r_a_brake` at large `\|e_psi\|` (cheaper, frees up braking authority) |
-
-**Known constraints**: not validated against `VALIDATION_SUITE`/recorded-map or any live log as a whole mechanism; treat as experimental, same status the lookahead family it replaced carried before its own removal. The `epsi_ra_*` asymmetry is independent of `corner_frac` and always active, tune it separately from the four corner-blend weights above.
-
-### 4.4 Historical: lookahead corner anticipation (removed)
-
-None of these fields exist on `MPCParams` anymore. Full description, reasoning, and the field-by-field purpose table: [`removed_mechanisms.md` §3](removed_mechanisms.md#3-lookahead-corner-anticipation) (anticipation boosts) and [§4](removed_mechanisms.md#4-demand-normalisation) (demand normalisation). Kept for the tuning history and the elimination reasoning that's the direct motivation for the nonlinear MPC (§5). **This whole mechanism only reweighted the COST of an existing tracking error, it could not manufacture one.**
-
-### 4.5 Exit-boost decay distance
-
-Part of the same removed family. [`removed_mechanisms.md` §3](removed_mechanisms.md#3-lookahead-corner-anticipation) covers the exit-boost decay alongside the approach-side boosts it paired with.
-
-### 4.5b Precomputed corner segmentation (`use_precomputed_corner_map`), REMOVED
-
-**This mechanism no longer exists.** The corner_factor rewrite deleted `use_precomputed_corner_map`, `CornerMap`, and `_segment_corners` along with the rest of the lookahead adaptive-gain family. Full description: [`removed_mechanisms.md` §7](removed_mechanisms.md#7-precomputed-corner-segmentation-cornermap). §4.5d's "everything in section 4 is inactive under NMPC" is a different, independent statement (about what the _current_ `MPCParams` mechanisms do) and is unaffected by this removal.
-
-### 4.5c Precomputed shaped heading-lead profile (`use_precomputed_heading_profile`), LIVE-ONLY
-
-| Field | Purpose |
-|---|---|
-| `use_precomputed_heading_profile` | node-level launch parameter (NOT an `MPCParams` field), use `raceline.csv`'s shaped `psi_target` column as `e_psi`'s reference instead of the geometric path tangent. Default `false`. Only has an effect when `use_precomputed_path` is ALSO true, and requires a re-exported `raceline.csv` with the `psi_target` column (an older 4-column file degrades to the geometric tangent, a no-op). |
-| `HEADING_LEAD_AUTHORITY_FRAC` | (offline constant, `tuner/tools/raceline_optimizer.py`, NOT an `MPCParams` field, set at export time, baked into the CSV) fraction of the car's achievable yaw rate to pre-spend as heading lead. Default `0.5`. Re-export the CSV to change it. |
-| `SLIP_LIMIT_RAD` | (offline constant, `tuner/tools/raceline_optimizer.py`) diagnostic-only rear-slip-angle bound used to flag stations, unvalidated placeholder (5°). |
-
-**Purpose**: precompute a heading reference that already leads the geometric path tangent by however much yaw is achievable at the planned speed, so `e_psi` carries a real, current error approaching a corner instead of relying on Q/R reweighting of an error that doesn't exist yet. See `docs/reference/control_mechanisms.md`'s "Precomputed shaped heading-lead profile" section for the full design and why this avoids curvature-forcing's wrong-direction-transient failure.
-
-**Status: implemented, offline-validated, live-tested with an inconclusive result.** Offline, the no-op-when-off case is confirmed and the profile shape has been sanity-checked. Live, four runs at the default `authority_frac=0.5` produced a high-variance result: they ranged from the single best run recorded all session (zero steering saturation) to some of the worst, against a baseline that itself varied nearly as much run-to-run, not enough runs to call it a net win or a net loss.
-
-Currently shipped **OFF** (`USE_PRECOMPUTED_HEADING_PROFILE=false` in `ros2/launch_all.sh`) pending more data, not because it's confirmed not to help, check that file's shortlist before assuming either default.
-
-`comp_test_map_3` has few true straights, so the lead is active almost everywhere on that track at the default `authority_frac`, a plausible explanation for the variance (the lead can't selectively target the approach phase on this track) that further runs haven't yet confirmed or ruled out. See `docs/reference/control_mechanisms.md`'s "Precomputed shaped heading-lead profile" section and `docs/logs/late_turn_in_investigation.md` Parts 7-13 for the full run-by-run data before drawing conclusions from any single result.
-
-### 4.6 Historical: U-turn detector and straight-line adjustments (removed)
-
-None of these fields exist on `MPCParams` anymore, part of the same lookahead family removed in §4.4. Full description and field-by-field purpose tables: [`removed_mechanisms.md` §5](removed_mechanisms.md#5-u-turn-detection) (U-turn detector) and [§6](removed_mechanisms.md#6-straight-line-adjustments) (straight-line adjustments).
-
-### 4.8 Historical: FSDS lateral-acceleration ceiling law as a lookahead input (removed)
-
-The ceiling law's three fields (`alat_ceiling_flat`/`_slope`/`_intercept`) no longer exist on `MPCParams`. **The law itself is not gone**, it moved to `nmpc_core.py`'s `_Plant` (hardcoded there, since only the NMPC path uses it now) and `model/vehicle_physics.py`'s `alat_ceiling_at()`, see §5. This is a measured property of the simulator, not a free tuning knob; if it's ever suspected wrong, re-measure with the [steering system-ID harness](debugging_tools.md#steering-system-id-harness-run_steering_sysidsh-run_steering_stepsh), don't guess. Full history: [`removed_mechanisms.md` §10](removed_mechanisms.md#10-fsds-lateral-acceleration-ceiling-as-a-lookahead-input).
-
-### 4.9 Historical: low-speed steering-rate boost (removed)
-
-No fields remain on either side (`mpc_params.py`, `settings.py`). This mechanism, which made `R_rate[0,0]` more expensive at low speed to damp a post-corner-exit wobble, was tried and live-tested, then removed entirely along with the rest of the lookahead gain-scheduling family. It gated purely on speed with no curvature/lookahead signal, so it could not distinguish "post-exit overcorrection at low speed" (the case it was built for) from "turn-in at low speed" (also low speed, but wanted), so it suppressed both identically. Full incident and the tuned values it used (kept on record in case a future curvature-gated rework wants a starting point): [`removed_mechanisms.md` §9](removed_mechanisms.md#9-low-speed-steering-rate-boost-removed).
-
-### 4.10 Historical: curvature forcing term, removed, structurally unsound
-
-`curvature_forcing_enabled`/`curvature_forcing_gain` and the code behind them no longer exist. Of the whole removed family, this is the one attempt that tried to fix the *actual* structural limit (injecting curvature into the predicted dynamics, not just reweighting cost), and the reason it still failed (the solver can defer a forcing term added to its own dynamics recursion, producing a wrong-direction transient at every gain tried) is the direct motivation for the nonlinear MPC in §5. Full gain sweep and mechanism: [`removed_mechanisms.md` §8](removed_mechanisms.md#8-curvature-forcing-the-closest-attempt-and-why-it-still-failed).
-
----
-
-### 4.5d Nonlinear MPC (`use_nmpc`)
-
-`use_nmpc=true` swaps `mpc_core.MPCController` (linear time-varying QP) for `nmpc_core.NMPCController` (Frenet-frame nonlinear MPC, Gauss-Newton SQP). Default **false**. This repo now has its own offline port too (`controller/nmpc/` package, selected by `settings.USE_NMPC`, same default false), see `docs/reference/README.md`'s "Nonlinear MPC (`use_nmpc`)" section for the full description, and `tuner/nmpc_offline_check.py` for the reproducible validation suite (`python -m tuner.nmpc_offline_check`, no ROS/FSDS session needed).
-
-**Tuning implications, which is what this doc is for:**
-
-- **Everything in section 4 above is INACTIVE** when `use_nmpc=true`, including §4.1-4.3/4.3b's still-current mechanisms, not just the historical §4.4/4.6/4.8/4.10 ones. Every adaptive multiplier, gate, floor, boost, and the corner-factor scheduler itself exist to synthesise corner anticipation a curvature-blind prediction cannot produce. The NMPC's model carries `kappa(s)` directly, so none of section 4 is applied at all. Retuning any of it has no effect on an NMPC run.
-- **The tuning surface is therefore ~6 numbers, not ~56**: the base weights of section 1 (`q_e_y`, `q_e_yd`, `q_e_psi`, `q_r`, `q_e_v`, `r_delta`, `r_a_accel`/`r_a_brake`, `r_rate_delta`/`r_rate_a`, `terminal_q_scale`), which the NMPC reads from the SAME `MPCParams` the QP uses, so the current tuned set is the starting point, not a blank slate.
-- **`q_r` is the one weight whose MEANING changes.** In the QP it weights absolute yaw rate `r`; in the NMPC it weights heading-error rate `r - kappa*s_dot`, which is zero for a car correctly tracking a corner rather than proportional to how hard the corner is. Penalising absolute `r` in a curvature-aware model would fight cornering. Same number, different regressor: **re-sweep this one first**.
-- **To retune the NMPC without touching the LTV-QP's own weights**, use the `nmpc_q_*` / `nmpc_r_*` override fields, which live IN `MPCParams` itself (not a separate `NMPCParams`), alongside the base weights they inherit from at their `-1.0` sentinel, see `mpc_params.py`'s own "NMPC weight overrides" section). Both the base weights and these overrides carry the same `settings.py` (`NMPC_Q_E_Y`, ...) parity obligation as every other `MPCParams` field. `ros2/launch_all.sh` carries a commented-out shortlist of the likely ones.
-- **Structural knobs and where their values came from** (all measured, see `late_turn_in_investigation.md` Part 16 §16.7): `nmpc_horizon=20` (1.0 s, measured BETTER than 35, because the prediction model is optimistic and the mismatch compounds; N=35 gave the fastest lap but the worst tracking), `nmpc_sqp_iters=1` (measured better AND ~2x cheaper than 2), `nmpc_solve_budget_ms=25` (hard stop; ships the best feasible iterate rather than overrunning the 50 ms tick), `nmpc_rk_substeps=2` (needed because `tau_a=0.02 s` is stiff against `dt=0.05 s`), `nmpc_jac_substeps=1` (only sets the SQP step direction, never the prediction).
-- **`nmpc_alat_ceiling_enabled=true` is not optional on FSDS.** With it false the linear-tyre prediction believes it can hold any corner at any speed and the car spins mid-lap offline. Set false only for real-vehicle work, mirroring `VehicleParams.alat_ceiling_enabled`.
-- `nmpc_track_halfwidth=3.5` / `nmpc_slack_weight=10000` are copies of `_build_qp`'s existing soft-track literals, and `nmpc_curvature_dense_step=0.5` / `nmpc_curvature_smooth_w=3` are `control_utils.curvature_speed()`'s existing denoise precedent, none of the four is a new constant to tune.
-- **Three MPCC-inspired flags, all NMPC-only**: `nmpc_spline_reference_enabled` (default true, not really "tunable", a numerical-quality fix; set false only to A/B against the old moving-average path), `nmpc_horizon_speed_profile_enabled` and `nmpc_friction_circle_enabled` (both default false, genuine unvalidated experiments), do not enable for a live run without an offline A/B first). See `docs/reference/README.md`'s "Three MPCC-inspired additions" subsection for the mechanism and "Which settings affect which controller" for the complete field-by-field controller-scope map (which settings are LTV-QP-only, NMPC-only, or shared).
-
-## 4b. Steering smoothness: the three levers that actually worked
-
-Chatter (the wheel twitching instead of holding an angle) and jerks at tight corners are **two different faults**. Diagnose which one before tuning, because each is deaf to the other's controls.
-
-### Chatter, a cost-function problem
-
-Tune in this order; the first item dominates.
-
-| setting | value | effect |
-|---|---|---|
-| `R_rate_diag[0]` / `r_rate_delta` | **52.5** (from 2.8) | halves chatter. Biggest single lever by far. |
-| `NMPC_RJERK_DELTA` | **150.0** | prices the *change in* steering rate, so a wobble is expensive but a steady turn stays cheap |
-
-`NMPC_RJERK_DELTA` is the one to reach for when raising `r_rate_delta` starts making the car reluctant to turn. A plain rate cost charges the same for a steady ramp into a corner and for one leg of an oscillation, so it cannot suppress one without resisting the other; the jerk term separates them (live data: reversals carry ~4.3× the second difference of ramps, versus only ~1.9× the first). Mechanism in `docs/tuning.md`'s "Input-jerk cost".
-
-Untested pairing worth trying: `r_rate_delta=5.0` with `NMPC_RJERK_DELTA=250.0` beats the flat-52.5 baseline on every offline metric.
-
-### Corner-dependent rate weight (`NMPC_RRATE_ZONE_*`)
-
-Slides the steering-rate price between three levels, high on straights, lower approaching a corner, lowest mid-corner, continuously, with no thresholds.
-
-| field | value |
-|---|---|
-| `NMPC_RRATE_ZONE_ENABLED` | true |
-| `_BOOST_STRAIGHT` / `_EASE_APPROACH` / `_FLOOR_CORNER` | 2.0 / **0.80** / 0.15 |
-| `NMPC_CORNER_FACTOR_K` | **27.0** |
-
-**`NMPC_CORNER_FACTOR_K` gates this entirely and is not cosmetic.** At the inherited 8.0 the ease and floor levels are unreachable on a track whose tightest corner is |κ|≈0.2, so the mechanism silently degrades to a mild global rate boost. Measured live, it never left its boost band and the A/B was a wash. Size it from the track: `k ≈ target/((1−target)·κ_max)`.
-
-Two cautions:
-
-- **Check the `m_Rrate_zone` telemetry column** before believing any A/B of the endpoints. If it never approaches `_FLOOR_CORNER`, the endpoints are not what was tested.
-- `_EASE_APPROACH=0.35` is the intended value and **DNFs offline**; 0.80 ships instead. Raising `k` past 27 does *not* help, k=60 measured worse live.
-
-### Jerks at tight corners, a SPEED problem, not a steering one
-
-If the car turns in late, runs wide and the steering slams over at the tightest corners, **check the speed before touching any steering weight.**
-
-`CURVATURE_SPEED_A_LAT_MAX` **5.5 → 4.75** took stutters from 33.3 to 9.8 per minute and `|d_steer|>5°` events from 20 to 1. Four steering-side weights (`r_rate_delta`, `NMPC_CORNER_FACTOR_K`, `NMPC_Q_E_Y`, `NMPC_SQP_ITERS`) were each tried first and none moved it, because the steering command was already arriving *early* and at ~94% of the required angle. The car was reaching the hardest curvature ramp needing ~15 m/s² of lateral acceleration against the plant's ~7.5 ceiling.
-
-Note this constant only affects `speed_profile.csv`, see section 7 and `docs/reference/reference_path_and_speed.md`'s "Speed-profile aggressiveness".
-
----
-
-### Input-jerk cost (`nmpc_rjerk_delta` / `nmpc_rjerk_a`), NMPC only
-
-**Plain version:** the controller already pays a price for *moving* the steering wheel. That price is the same whether it is turning steadily into a corner or wobbling back and forth, so raising it to stop the wobble also makes the car reluctant to turn. This term prices something different: how much the *rate* of steering changes, which is small for a steady turn and large for a wobble. It lets the wobble be penalised without penalising turning in.
-
-Technically: a **second-difference** penalty on the control inputs, alongside the existing first-difference rate cost. `nmpc_rjerk_delta` weights steering *acceleration* (the change in the change); `nmpc_rjerk_a` does the same for the longitudinal input. Both default to `0.0`, which removes the term from the QP entirely (no Hessian contribution). Live/offline defaults today: **150.0 / 0.0**.
-
-**Why it exists.** The plain rate cost charges by `|du|`, which is identical for a sustained ramp into a corner and for one leg of an oscillation, so it cannot suppress hunting without also resisting turn-in. That is the trade the whole steering-chatter investigation kept running into. Measured on live data, direction **reversals** carry ~4.3× the `|d2|` of same-direction ramps versus only ~1.9× the `|d1|`, so the second difference separates the two about twice as sharply. A steady ramp scores near zero here and is nearly free; an alternating wiggle is expensive.
-
-**How it enters the QP.** `E` is the first-difference operator already built for the rate cost; the jerk term reuses it as `E2 = E @ E`, so `du_k − du_{k−1}` is the discrete input acceleration:
+**How it works.** `E` is the first-difference operator already built for the rate cost. The jerk term uses `E2 = E @ E`:
 
 ```
-Hess += E2ᵀ · diag(rj) · E2          rj = tile([rjerk_delta, rjerk_a], N)
-grad += E2ᵀ · (rj · e_jerk)
+Hess += E2' diag(rj) E2          rj = tile([rjerk_delta, rjerk_a], N)
+grad += E2' (rj * e_jerk)
 ```
 
-Two implementation points that matter before modifying this term:
+- The term is anchored to the two previous applied inputs. A second difference spanning the tick boundary needs `u_prev` and `u_prev2`, so `e_jerk[:NU] -= (2 u_prev - u_prev2)` and `e_jerk[NU:2NU] += u_prev`. Without this the term misses a reversal that straddles the boundary. The controller carries `_u_prev2`, updated before `_u_prev`.
+- The OSQP sparsity pattern is unchanged. `p_mask[:n_du,:n_du]` is already a dense upper triangle, so `E2' R E2` adds no nonzeros and the term can be switched between runs.
+- `_cost()` carries a matching `jerk` term. The SQP line search scores steps with `_cost()`, so a term in the Hessian but not in `_cost()` makes the search optimise a different objective from the one solved. The rate cost once had exactly this bug.
+- Setting both weights to 0.0 removes the term from the QP entirely.
 
-- **It is anchored to the two previous applied inputs, not just one.** A second difference spanning the tick boundary needs `u_prev` *and* `u_prev2`, hence the corrections `e_jerk[:NU] -= (2·u_prev − u_prev2)` and `e_jerk[NU:2NU] += u_prev`. Without them the term is blind to a reversal that straddles the boundary, exactly the case it exists to catch. The controller therefore carries `_u_prev2` state, which must be updated before `_u_prev`.
-- **No OSQP sparsity change.** `p_mask[:n_du,:n_du]` is already a dense upper triangle, so `E2ᵀ·R·E2` adds no new nonzeros and the solver's pattern is unchanged, so the term can be enabled/disabled between runs without rebuilding the problem structure.
+**Tuning and pitfalls.**
 
-`_cost()` carries a matching `jerk` term. **This must stay in step with the QP**: the SQP line search scores candidate steps with `_cost()`, so a term present in the Hessian but absent from `_cost()` means the search is optimising a different objective than the one being solved. That exact bug existed for the rate cost (it used the flat `self.r_rate` while the QP used `_Rr_flat`) and affected every rate-reshaping flag.
+- Shipped 150.0 for `nmpc_rjerk_delta` and 0.0 for `nmpc_rjerk_a`. `nmpc_rjerk_a` has never been run at a nonzero value.
+- `rjerk_delta=0` fails the recorded-map rollout offline where 150 completes. The tuner searches it for that reason (see the tuner section).
+- Reach for this term when raising `r_rate_delta` starts to make the car reluctant to turn.
+- An earlier live run showed about 4.5 percent steering saturation at `rjerk=150`, first read as the jerk term trading smoothness for saturation. That was the raceline reference. The same weight on the centreline saturates 0.00 percent. See [reference_path_and_speed.md](../reference/reference_path_and_speed.md).
+- A pairing of `r_rate_delta=5.0` with `nmpc_rjerk_delta=250.0` beat the flat 52.5 baseline on every offline metric in an earlier session. The source log for that number was not found, and it has not been run live or against the current weights. Not verified.
 
-**Measured effect (live, `centerline.csv`).** At `rjerk_delta=150` with `r_rate_delta=52.5`: 0 saturated ticks, 0 slew-limited ticks and 1 steering reversal over three laps. Offline at the same pair, slew-limited ticks fall 7.80% → 2.77% and chatter 2.825 → 1.686 °/tick.
+### Three-zone rate schedule (`nmpc_rrate_zone_*`) and why `k` gates it
 
-**Caution on attributing a saturation figure to this term.** An earlier live run showed ~4.5% steering saturation with `rjerk=150` and it was initially read as the jerk penalty trading smoothness for saturation. That was the *reference line*, not this weight. The same weight on the centreline saturates 0.00%. See "Reference line: raceline vs centreline" below.
+**What it does.** The steering-rate price slides continuously between three levels: high on a straight so the car holds still, lower on the approach to a corner so it is willing to start turning, lowest mid-corner.
 
-**Untested:** the offline low-rate pairing `r_rate_delta=5.0` with `rjerk_delta=250.0`, which beats the flat-52.5 baseline on every offline metric. Set both together if trying it. `nmpc_rjerk_a` has never been exercised at a nonzero value on either side.
+**How it works.** A multiplier on the NMPC steering-rate cost, driven by current curvature and the peak curvature the horizon predicts ahead:
 
-### Three-zone rate schedule (`nmpc_rrate_zone_*`), and why `k` gates it
-
-**Plain version:** the price the controller pays for moving the steering wheel should not be the same everywhere. On a straight it should be high, so the car holds still instead of hunting. Approaching a corner it should drop, so the car is willing to start turning. Through the corner it should be lowest. This mechanism slides that price continuously between three levels based on how much the road is bending now and how much it will bend just ahead.
-
-Technically: a continuous multiplier on the NMPC's steering-rate cost, driven by current curvature and the peak curvature the horizon predicts ahead:
-
-| zone | condition | multiplier |
+| Zone | Condition | Multiplier (shipped) |
 |---|---|---|
-| straight | nothing now, nothing ahead | `boost_straight` (2.0) |
-| approach | nothing now, corner ahead | `ease_approach` (0.35) |
-| corner | turning now | `floor_corner` (0.15) |
+| straight | nothing now, nothing ahead | `nmpc_rrate_zone_boost_straight` 2.0 |
+| approach | nothing now, corner ahead | `nmpc_rrate_zone_ease_approach` 0.80 |
+| corner | turning now | `nmpc_rrate_zone_floor_corner` 0.15 |
 
-It **multiplies** `r_rate_delta` rather than overwriting it, so it composes with the tuned 52.5, unlike `nmpc_corner_rrate_blend_enabled`, which overwrites `R_rate[0,0]` and silently discards it.
+- It multiplies `r_rate_delta`, so it composes with the tuned value. `nmpc_corner_rrate_blend_enabled` overwrites `R_rate[0,0]` and discards it.
+- Both the "now" and "ahead" signals pass through `corner_factor(|kappa|, k) = 1 - 1/(1 + k |kappa|)`. The floor is only reached as that approaches 1, so the schedule is only as strong as `k` allows over the track's own curvature range.
 
-**The endpoints are gated by `nmpc_corner_factor_k`, and this is easy to miss.** Both `now` and `ahead` pass through `_corner_factor(|κ|, k) = 1 − 1/(1 + k|κ|)`, and the corner floor is only reached as that approaches 1. So the schedule is only as strong as `k` lets it saturate **over the track's own curvature range**:
-
-| `\|κ\|` | `_corner_factor` at k=8 | at k=27 |
+| `\|kappa\|` (1/m) | `corner_factor` at k=8 | at k=27 |
 |---|---|---|
 | 0.00 | 0.000 | 0.000 |
 | 0.06 | 0.390 | 0.618 |
-| 0.209 (this track's tightest) | **0.626** | **0.850** |
+| 0.209 (tightest corner on `comp_test_map_3`) | 0.626 | 0.850 |
 | 1.125 | 0.900 | 0.968 |
 
-At the LTV-QP's inherited `k=8.0`, reaching `_corner_factor`=0.9 needs `|κ|`=1.125, but `comp_test_map_3`'s tightest corner is 0.209. Measured live with the zone enabled at 2.0/0.35/0.15 and `k` inherited, `m_Rrate_zone` ranged **0.829–1.962 with 0% of ticks in either the ease or floor band**, so the multiplier never left the boost band, and what actually ran was a mild global rate *boost*, not a three-zone schedule. Scores were a wash against the zone-off baseline (0.522 vs 0.488), which is the expected result of a mechanism that never engaged.
+- Size `k` from the track: `k ≈ target / ((1 - target) * kappa_max)`.
+- At the inherited `k=8` the zone never left its boost band. Measured live: `m_Rrate_zone` ranged 0.829 to 1.962 with 0 percent of ticks in the ease or floor band, and the score was a wash against the zone-off baseline (0.522 against 0.488).
+- Read the `m_Rrate_zone` telemetry column before believing any A/B of the endpoints. If it never nears `floor_corner`, the endpoints were not what was tested.
+- `nmpc_corner_factor_k` is shared with `nmpc_corner_rrate_blend_enabled`. Raising it sharpens that blend too.
+- `corner_frac` in telemetry and the node-level output smoothing use `params.corner_factor_k` (the LTV-QP field), not the NMPC override, so raising `nmpc_corner_factor_k` does not change smoothing.
+- `k` past 27 does not help. `k=60` measured worse live.
 
-`k=27.0` puts 0.209 at `_corner_factor`=0.85, giving a real swing rather than the 2.4× the inherited `k=8` allowed. Derive it from the track, not by feel:
+**Open: the intended `ease_approach=0.35` fails offline.** With `k=27` and 0.35 the offline rollout leaves the track at the tightest corner (x about 41.4, y about 49.6) with full-lock steering and `|e_y|` growing to 2.53 m. Explanations tested and rejected:
 
-```
-k ≈ target_corner_frac / ((1 − target_corner_frac) · κ_max)
-```
+- Too much release: raising `floor_corner` to 0.5 or 0.7 still fails.
+- Not monotonic: `boost_straight=0.8`, which makes the multiplier at most 1 everywhere (weaker than no zone), also fails.
+- Speed profile: matching the harness `v_max` to the centreline's 16.70 changes nothing.
+- `k`: with the zone disabled, `k` of 15, 27 and 40 are identical to baseline.
+- Weight compounding: `_Rr_flat` is rebuilt each tick, so scaling does not accumulate.
 
-**OPEN: the schedule DNFs offline at the intended endpoints, unexplained.** With `k=27` and `ease_approach`=0.35 the offline rollout goes off-track at the track's tightest corner (x≈41.4, y≈49.6, the same corner as the live raceline excursion), full-lock steering with `|e_y|` growing monotonically to 2.53 m. That is a late-turn-in failure, i.e. the *opposite* of what releasing the rate weight on approach should do. The obvious readings are all contradicted by measurement:
+The failing runs carry high non-`solved` SQP rates (42 percent at `boost_straight=0.8` against 14 percent at baseline). The leading hypothesis is that rescaling `_Rr_flat` late in the tick interacts with the warm start or line search. Not confirmed. `ease_approach` ships at 0.80, where the offline rollout completes (score 0.796 against 0.822 baseline, `|e_y|` 0.476 against 0.496). The 0.35 turn-in release is untested live and offline. These numbers are from an earlier configuration and were not re-run for this rewrite.
 
-- Not "too much release": raising `floor_corner` to 0.5 or 0.7 still DNFs.
-- **Not a monotonic tuning effect at all:** `boost_straight`=0.8, which makes the multiplier ≤1 everywhere, i.e. uniformly *weaker* than no zone, also DNFs, at step 289. A configuration strictly gentler than the baseline cannot cause worse turn-in than the baseline through the rate weight alone.
-- Not the speed profile: matching the harness's `v_max` to the driven centreline's 16.70 changes nothing.
-- Not `k`: with the zone disabled, k=15/27/40 are all identical to baseline (the field is inert without the zone), and k=15/40 with the zone on complete.
-- Not weight compounding: `_Rr_flat` is rebuilt fresh from `r_rate_tick` each tick, because `rrate_zone_enabled` is in the rebuild guard's condition, so the scaling does not accumulate across ticks.
+The sim and the car disagree here. The same zone at `k=8` and 0.35 completed two clean laps live while failing offline. An offline failure is not automatically a live failure.
 
-The DNF runs also carry high non-`solved` SQP rates (42% at `boost_straight`=0.8 vs 14% at baseline), so the leading hypothesis is that rescaling `_Rr_flat` *after* the rollout, since the zone is applied later than every other rate-reshaping flag because it needs horizon curvature, interacts badly with the warm start or line search. **Not confirmed.**
+Check `python -m tuner.investigations.steering_chatter_check` before shipping a zone or `k` change. The `k=27` and 0.35 pair was chosen from saturation arithmetic alone and would have reached the car as an offline failure.
 
-`ease_approach` is therefore set to **0.80**, the value at which the offline rollout completes (score 0.796 vs 0.822 baseline, `|e_y|` 0.476 vs 0.496, p90 0.976 vs 1.044, a modest improvement). **The intended 0.35 turn-in release remains untested**, live and offline.
+### Tight-corner jerks are a speed problem
 
-Note the sim and the car disagree here: the same zone at `k=8`/0.35 completed two clean laps live (score 0.522) while DNFing offline at step 274. Given the documented sim-to-real gap, that is not proof either side is right, but it does mean an offline DNF here is not automatically a live DNF.
+If the car turns in late, runs wide and the steering slams over at the tightest corners, check the speed before touching a steering weight.
 
-Consequences:
-
-- **Read `m_Rrate_zone` before believing an A/B of the endpoints.** If it never approaches `floor_corner`, the endpoints are not what was tested and `k` is the thing to change. A null result here means "did not engage" at least as often as it means "does not help."
-- **Run `tuner.steering_chatter_check` before shipping a zone/`k` change.** The `k=27`/0.35 combination was set from the saturation arithmetic alone and would have gone to the car as an offline DNF had the check not been run afterwards.
-- **`nmpc_corner_factor_k` is shared** with `nmpc_corner_rrate_blend_enabled`. Raising it for the zone also sharpens that blend, harmless while the blend is off, but not independent.
-- `corner_frac` is published in telemetry and read by the node-level output smoothing, but through `params.corner_factor_k` (the LTV-QP field), **not** the NMPC override, so raising `nmpc_corner_factor_k` does not perturb smoothing even when it is enabled.
+- `CURVATURE_SPEED_A_LAT_MAX` 5.5 to 4.75 cut stutters from 33.3 to 9.8 per minute and `|d_steer| > 5 deg` events from 20 to 1.
+- Four steering-side weights (`r_rate_delta`, `NMPC_CORNER_FACTOR_K`, `NMPC_Q_E_Y`, `NMPC_SQP_ITERS`) were tried first and none moved it. The steering command was already arriving early at about 94 percent of the needed angle. The car reached the hardest curvature ramp needing about 15 m/s^2 against a plant ceiling of about 7.5.
+- The constant lives in `sim/speed_profile.py` (4.75 shipped) and only affects the exported `speed_profile.csv`. See [reference_path_and_speed.md](../reference/reference_path_and_speed.md).
 
 ### Turn-in timing: the command leads, and six levers do not move it
 
-**Plain version:** when the car seems to turn in late, the steering command itself is not late. Comparing what the wheel was told to do against what the corner geometrically required shows the command arriving about 0.15 s *early* and at roughly 94% of the needed angle. So a "turns in late" complaint is about what happens after the command, not about the controller's timing.
+When the car seems to turn in late, the steering command is not late. Measured live on `centerline.csv` over 3 runs (correlation 0.93): the command leads the geometrically required angle (`atan(L * kappa)` at the car's station) by 0.15 s and delivers 0.936 of it in corners. `delta_cmd` and applied `steer_deg` match to 0.0005 deg. A late-turn-in report is about what happens after the command.
 
-Measured live on `centerline.csv` (3 runs, correlation 0.93): the commanded steering **leads** the geometrically-required angle (`atan(L·κ)` at the car's own station, the steering angle a simple bicycle model needs for that curvature) by **0.15 s**, and delivers **0.936** of it in corners. `delta_cmd` and the applied `steer_deg` are identical to 0.0005°.
+Six candidate causes were tested and falsified (evidence in the chatter log):
 
-So a "turns in late" report is not the controller deciding late. Whatever produces the residual symptom, it is downstream of a command that is early and close to the right magnitude.
+| Candidate | Result |
+|---|---|
+| `r_rate_delta` | 52.5 is the best value tried, lower runs wider and fails |
+| `nmpc_corner_factor_k` past 27 | `k=60` measurably worse live |
+| `nmpc_q_e_y` | 7.5 does not change the drift rate |
+| `NMPC_SQP_ITERS` | slew-limited fraction flat across 1, 2, 3 |
+| speed-profile braking feasibility | 0.00 percent of stations exceed -7.0 m/s^2 |
+| delay compensation | same lag in the high and low latency halves of one run |
+| `alat_ceiling` model | conservative, not optimistic, in the 6 to 14 m/s band |
 
-**Six candidate causes were tested and falsified**, full evidence in `docs/logs/steering_chatter_investigation.md` ("Session N+1"): `r_rate_delta` (52.5 is the *best* value tried; lower is wider and DNFs), `nmpc_corner_factor_k` past 27 (k=60 measurably worse live), `nmpc_q_e_y` (kept at 7.5 but does not change the drift rate), `NMPC_SQP_ITERS` (slew-limited tick fraction flat across 1/2/3), speed-profile braking feasibility (exported profiles are feasible; 0.00% of stations exceed −7.0 m/s²), delay compensation (same lag in high- and low-latency halves of the same run), and the `alat_ceiling` model (it is *conservative* in the 6–14 m/s band, not optimistic).
+Invariant: across every configuration tried on this track (`r_rate` 5 to 52.5, `k` 8 to 60, `q_e_y` 6.35 to 7.5) the rate-normalised count of sustained lateral-error-growth episodes stays near 31.5 per minute. A cost-weight change moves episode size, not episode rate. Divide raw counts by run duration: the same configuration gave 29 episodes in 55 s and 48 in 90 s.
 
-**A drift-rate invariant worth knowing before tuning this again:** across every configuration tried on this track (`r_rate` 5→52.5, `k` 8→60, `q_e_y` 6.35→7.5), the rate-normalised count of sustained lateral-error-growth episodes sits at **~31.5 per minute**. A cost-weight change redistributes episode size, not episode rate. Treat a raw episode count as uninterpretable unless divided by run duration: the same config gave 29 episodes in 55 s and 48 in 90 s, which was briefly mis-read as a regression.
+Two metric traps produced a plausible wrong conclusion before being caught:
 
-**Two metric traps found here**, both of which produced a plausible wrong conclusion before being caught:
+- Lap-wide ratios are dominated by straights. "Plant yaw gain" (achieved yaw rate over `v/L * tan(delta)`) reads 0.42 at p10, which looks like understeer. Binned by speed it is an artefact of near-zero denominators, and it rises with `a_lat`, the opposite of a grip limit.
+- The time derivative of the speed target along a rollout is not the profile's gradient. It read -26.9 m/s^2 where the exported file's spatial gradient is -5.03. Read feasibility off the exported file.
 
-- **Lap-wide ratios are dominated by straights.** "Plant yaw gain" (achieved yaw rate ÷ `v/L·tan(δ)`) reads 0.42 at p10, which looks like severe understeer. Binned by speed it is an artefact: the low-gain ticks are fast and nearly straight, where the denominator is near zero. The gain *rises* with `a_lat` (0.13 at 0–2 m/s² → 1.10 at 6–8), the opposite of a grip limit. The same applies to a steering-vs-yaw-rate cross-correlation over a full lap, it measures the phase of the straights.
-- **`dv_target/dt` along a rollout is not the profile's gradient.** It reads −26.9 m/s² (apparently infeasible) where the exported CSV's own spatial gradient is −5.03; the car crossing stations faster inflates the time derivative. Read feasibility off the exported file, not off a rollout.
+### Outcome of the turn-in option study
 
-## 4c. What the offline tuner searches (and the NMPC gate)
+The `r_rate_delta` increase fixed chatter and introduced a new fault on shallow corners: the car holds a smooth line, refuses to turn, then jerks once predicted errors overpower the rate cost. Every jerk landed at exactly 9.00 deg per tick, the actuator slew limit (`du_max`, 180 deg/s times 0.05 s). The controller deferred until it had to catch up faster than the plant allows.
 
-`tuner/offline_tuner.py` searches **14** parameters:
+**Why a flat weight cannot fix it.** The rate cost scales with step size and the tracking cost with error squared, so their ratio swings with corner severity:
 
-| block | count | form | fields |
+| Corner | `e_y` | `e_psi` | tracking cost | rate cost of a 1 deg step | ratio |
+|---|---|---|---|---|---|
+| shallow | 0.05 m | 1.0 deg | 0.328 | 0.016 | 20 times |
+| moderate | 0.20 m | 4.0 deg | 5.241 | 0.016 | 328 times |
+| sharp | 0.50 m | 12.0 deg | 33.198 | 0.016 | 2076 times |
+
+On a sharp corner tracking overwhelms the rate cost at once. On a shallow one the two are the same order, so waiting is the optimal plan. The QP behaves correctly and the weighting is wrong. Live baseline at the time (`r_rate_delta=52.5`): slew-limited ticks 1.75 percent against 0.00 percent at 2.8, `max|e_psi|` 21.7 to 29.4 deg, and `mean|d_steer|` 0.833 deg per tick at `corner_frac < 0.1` against 2.482 deg at 0.25 to 0.50.
+
+| Option | Result | Status |
+|---|---|---|
+| Per-stage rate ramp (`nmpc_rrate_stage_ramp_enabled`, `nmpc_rrate_stage_near`): cheap steering rate at near horizon stages, full price late | Offline (`comp_test_map_3`, `a_lat_max` 5.5): flat 8.43 percent slew-limited (and failed), ramp near=0.40 12.38 percent, near=0.30 15.42 percent. Live at near=0.30: slew 1.75 to 5.10 percent, `mean\|d_steer\|` 1.919 to 2.804 deg, `\|e_y\|` 0.288 to 0.434 m, `max\|e_psi\|` 29.4 to 42.3 deg, saturation 0.03 to 0.27 percent. | Rejected offline and live. Kept in code, default off, because it cleared the offline failure at the time. |
+| Curvature-scheduled rate (`nmpc_corner_rrate_blend_enabled`, `k=20`, straight 52.5, corner 8.0) | Live, schedule delivered as designed (applied `Rrate_steer` min 16.5, p50 29.2, max 52.5): slew 1.75 to 2.54 percent, `\|e_y\|` 0.288 to 0.467 m, `max\|e_psi\|` 29.4 to 36.8 deg, saturation 0.03 to 1.52 percent. Worse on every metric. | Rejected. Do not retry. |
+| Lookahead-curvature scheduling (same idea keyed on peak curvature ahead) | Not built. One second before each of 51 slew-limited jerks, median `corner_frac` was 0.360 and median `\|e_psi\|` 3.42 deg. 14 of 51 (27 percent) had `corner_frac < 0.15` and `\|e_psi\| < 3` deg, indistinguishable from a straight. `nmpc_kappa_horizon_end` one second before a jerk was 0.0908 against 0.0569 overall. | Deprioritised. The horizon holds the information, state-keyed signals do not. The three-zone schedule above is the later horizon-keyed variant. |
+| Second-difference (jerk) penalty | Basis is the 4.31 times separation table above. | Chosen, shipped as `nmpc_rjerk_delta` 150.0. |
+| Raise `du_max` | Treats the symptom. 180 deg/s is a measured lower-bound estimate of the real actuator, and a higher value commands motion the plant cannot deliver. | Rejected. Revisit only with a fresh system-ID. See [control_mechanisms.md](../reference/control_mechanisms.md). |
+| Lower `r_rate_delta` and suppress chatter another way | Re-opens a solved problem. | Kept as a retreat, not taken. |
+
+The two rejected schedules attacked the problem from opposite directions (soften by horizon position, soften by track position) and both traded chatter for compliance at about 1 to 1. Any weakening that lets turn-in happen early also lets oscillation happen. The fix changed what is penalised, not when.
+
+Two caveats from the study. The offline closed-loop harness once failed on shipped defaults because of `a_lat_max=5.5`, and a later run showed the 4.75 speed-profile value clears it, so the "live A/B is authoritative" caveat from that period is dated. The per-stage ramp was the first result where offline and live agreed. Earlier offline mispredictions were all on the `a_lat_max` by `r_rate_delta` interaction.
+
+## Delay compensation
+
+| Field | Purpose | Shipped |
+|---|---|---|
+| `delay_compensation_enabled` | roll the controller's state estimate forward through pending commands before optimising, so the plan accounts for actuation lag | on |
+| `max_delay_compensation_steps` | cap on the rollforward depth | 3 |
+| `predict_epsi_clip` | small-angle bound on heading error inside `predict_ahead()` (LTV-QP only) | 0.5 rad |
+| `pose_age_lp_alpha` | low-pass coefficient smoothing the estimated pose age per tick | 0.15 |
+| `n_delay_hysteresis` | deadband either side of an `n_delay` bin boundary, so depth does not flip-flop | 0.25 steps |
+
+Offline-only settings model the lag itself and how wrong the controller's belief about it may be:
+
+- `DELAY_STEPS` (1), `DELAY_JITTER_STEPS` (0.2), `DELAY_JITTER_SEED` (12345) in `settings/general.py`. With zero jitter the tuner solves an easier problem than the car, whose loop period jitters.
+- Set `DELAY_STEPS` from a realistic hardware lag and `DELAY_JITTER_STEPS` from a measured live loop-period standard deviation converted to steps. Leave jitter above 0 unless deliberately testing the ideal case.
+- `n_delay_hysteresis` prevents oscillation at a bin boundary. Do not remove it without confirming the oscillation does not return.
+- A stalled pose feed inflates `pose_age_s` and pins `n_delay` at its cap. See [periodic_pose_teleport_investigation.md](../logs/periodic_pose_teleport_investigation.md).
+
+## LTV-QP adaptive gains
+
+Each adaptive gain is an enable flag plus shape constants. Shape constants only matter while the flag is on and the LTV-QP is running. All of this is inert under NMPC. The lookahead family that used to precede these (approach and exit boosts, demand normalisation, U-turn detector, curvature forcing, the precomputed corner map) is gone. See [retired_mechanisms.md](../reference/retired_mechanisms.md) for why.
+
+### Adaptive Q scaling (`adaptive_q_scaling_enabled`)
+
+Relaxes `Q[0,0]` (lateral error) when the car is near the centreline, to reduce small-error hunting. Scale is 0.5 below `|e_y|` of 0.05 m, rising linearly to 1.0 at 0.3 m. Dataclass and offline default on. The launch file overrides it to off, so the car does not run it under the LTV-QP. The offline recorded-map rollout does not reproduce the live symptom it was built for (steering reversals rise with `|e_y|` offline, the opposite of live), so treat offline validation of this mechanism with caution. Mechanism: [control_mechanisms.md](../reference/control_mechanisms.md).
+
+### Steering-rate anti-hunt (`steer_rate_anti_hunt_enabled`, `anti_hunt_boost_max`)
+
+Extra penalty on `R_rate[0,0]` when the car is centred, not curving and well aligned. Three saturating factors multiply: `1/(1 + 30|kappa|)`, `1/(1 + 15|e_y|)`, `1/(1 + 11.5|e_psi|)`. The boost is `1 + (boost_max - 1)` times that product, with `boost_max=6.0`.
+
+- Half-fade points: `|kappa|` 0.033 (a 30 m radius), `|e_y|` 6.7 cm, `|e_psi|` 5.0 deg. The constants were halved from 60 / 30 / 23 because the boost faded out too fast on gentle curves, leaving jitter under-damped.
+- It reads only current curvature, `e_y` and `e_psi`, so it cannot anticipate a corner.
+- Default on, and the launch file leaves it on. Not validated against `VALIDATION_SUITE`, the recorded map or any live log as a whole mechanism. Treat as experimental.
+
+### Reversal penalty (`reversal_penalty_enabled`, `_boost_max`, `_k`)
+
+Boosts `R_rate[0,0]` when last tick's steering was near zero, the state every sign flip must pass through. Defaults 4.0 and 8.0 (half-boost at about 7.2 deg of previous steering). Dataclass default off, launch file on. Experimental and not validated live. Keyed on `u_prev`, not the current decision, so the cost stays convex. On the NMPC path an offline A/B was a net regression (reversal count barely improved, composite worse), so `nmpc_reversal_penalty_enabled` stays off.
+
+### Speed-dependent steering effort
+
+`R[0,0]` is multiplied by `1 + 1.5 vx / (6 + vx)`, a saturating ramp reaching 2.5 at high speed. The acceleration effort multiplier is fixed at 1.0: a speed-dependent one made `R[1,1]` rise with speed exactly where corner-entry braking needs to be strongest. Not a tunable field.
+
+### Corner-factor scheduler
+
+Replaces the retired lookahead family with one continuous fraction, `corner_frac` (0 straight, 1 full corner), from current curvature only. It blends four weights between a straight and a corner endpoint, adds a low-speed boost and applies an always-on heading-error accel and brake asymmetry. Formulas: [control_mechanisms.md](../reference/control_mechanisms.md).
+
+| Field | Purpose | Shipped |
+|---|---|---|
+| `corner_factor_k` | sharpness of `corner_factor` against current `\|kappa\|` | 8.0 |
+| `q_ey_straight` / `q_ey_corner` | `Q[0,0]` endpoints | 4.5 / 9.0 |
+| `q_epsi_straight` / `q_epsi_corner` | `Q[2,2]` endpoints | 1.5 / 3.0 |
+| `q_r_straight` / `q_r_corner` | `Q[3,3]` endpoints, corner lower (relaxes in corner) | 1.0 / 0.5 |
+| `rrate_steer_straight` / `rrate_steer_corner` | `R_rate[0,0]` endpoints, corner lower | 2.0 / 1.25 |
+| `r_steer_corner_mid` | `R[0,0]` at full corner, a middle value so turn-in is not made cheapest where saturation risk peaks | 1.35 |
+| `low_speed_corner_boost_v_half` | speed at which the low-speed boost has halved | 4.0 m/s |
+| `low_speed_corner_boost_max_extra` | extra `corner_frac` at zero speed, gated on `corner_factor` so it is a no-op on a straight | 0.3 |
+| `epsi_ra_half_rad` | `\|e_psi\|` at which the asymmetry is half strength | 0.1745 rad (10 deg) |
+| `epsi_ra_accel_boost_max` | max multiplier on `r_a_accel` at large `\|e_psi\|` | 2.0 |
+| `epsi_ra_brake_floor` | min multiplier on `r_a_brake` at large `\|e_psi\|` | 0.5 |
+
+The `rrate_steer_*` endpoints (2.0 and 1.25) are on a much lower scale than `r_rate_delta` (100.0). Enabling a blend that overwrites `R_rate[0,0]` with them discards the tuned rate weight. The blend is not validated against `VALIDATION_SUITE`, the recorded map or a live log as a whole. The `epsi_ra_*` asymmetry is independent of `corner_frac`. Tune it separately.
+
+## Reference-heading rate limit
+
+`ref_heading_rate_limit_enabled` (default off, LTV-QP only) caps how fast the tracked reference heading may change per tick, at `ref_heading_rise_rate_deg_s` (90.0 deg/s). Offline names: `REF_HEADING_RATE_LIMIT_ENABLED`, `REF_HEADING_RISE_RATE`.
+
+- Motivation: the planner's reference heading can swing faster than either car can yaw. See [sim_to_real_investigation.md](../logs/sim_to_real_investigation.md), sections 12.8 and 26.
+- Live testing found it makes saturation and heading error worse. It stays in the code as a validated-off feature. Do not re-enable without a specific reason to re-test.
+- A rise rate much below about 85 deg/s risks holding the reference back so hard that a fast slalom leaves the track.
+- To re-test, run `python -m tuner.investigations.ref_heading_limiter_suite_check` first.
+
+## Precomputed heading-lead profile (`use_precomputed_heading_profile`)
+
+A live node parameter, not an `MPCParams` field. It uses the `psi_target` column of `raceline.csv` as the `e_psi` reference in place of the geometric path tangent, so `e_psi` carries a current error approaching a corner. Default false, and the launch file ships `USE_PRECOMPUTED_HEADING_PROFILE=false`. It only acts when `use_precomputed_path` is true and the CSV has the `psi_target` column. It is ignored under NMPC, whose curvature model already carries what the profile approximates.
+
+- `HEADING_LEAD_AUTHORITY_FRAC` (0.5) in `tuner/tools/raceline_optimizer.py`: fraction of achievable yaw rate pre-spent as lead. Baked into the CSV at export, so re-export to change it.
+- `SLIP_LIMIT_RAD` (5 deg) in the same file: diagnostic bound used to flag stations, an unvalidated placeholder.
+- Status: offline no-op-when-off confirmed. Live, four runs at the default 0.5 ranged from the best single run recorded (zero saturation) to some of the worst, against a baseline that varied nearly as much. Inconclusive.
+- `comp_test_map_3` has few true straights, so the lead is active almost everywhere, a plausible but unconfirmed explanation for the variance.
+- Design and run data: [control_mechanisms.md](../reference/control_mechanisms.md) and [late_turn_in_investigation.md](../logs/late_turn_in_investigation.md), parts 7 to 13.
+
+## NMPC tuning surface
+
+The NMPC reads the base weights above, so the tuned set is the starting point. Everything in the LTV-QP adaptive-gain section is inactive under NMPC. Tuning it has no effect on an NMPC run.
+
+- **`q_r` changes meaning.** In the LTV-QP it weights absolute yaw rate. In the NMPC it weights heading-error rate `r - kappa * s_dot`, zero for a car tracking a corner correctly. Same number, different regressor. Re-sweep it first.
+- **Overrides.** The `nmpc_q_*` and `nmpc_r_*` fields live in `MPCParams` (`nmpc_q_epsi_dot` overrides `q_r`). A value of `-1.0` inherits the base weight. Offline names are `NMPC_Q_E_Y` and so on. `NMPCParams` holds only structural, solver and feature fields. All overrides ship at `-1.0`. A `NMPC_Q_E_Y=7.5` line in `launch_all.sh` is commented out. It measured score-neutral live (0.4538 against 0.4542) with lower peak lateral error (1.023 against 1.116 m), and is not the shipped value.
+- **`nmpc_alat_ceiling_enabled` (true) is required on FSDS.** With it off the prediction believes it can hold any corner at any speed and the car spins offline. Set false only for real-vehicle work.
+- **NMPC-only rate-shaping and experiments.** `nmpc_steer_rate_anti_hunt_enabled`, `nmpc_reversal_penalty_enabled`, `nmpc_corner_rrate_blend_enabled` and `nmpc_rrate_stage_ramp_enabled` all default off. Do not enable one for a live run without an offline A/B.
+- **`nmpc_corner_rrate_blend_enabled` trap.** It overwrites `R_rate[steer]`. If its two endpoints stay at `-1` they inherit the LTV-QP's 2.0 and 1.25, a 30 times cut from 52.5 that produced 21 percent saturation. Always set both endpoints explicitly, scaled to the current `r_rate_delta`.
+- **MPCC-inspired flags.** `nmpc_spline_reference_enabled` (default true) is a numerical-quality fix, set false only to compare against the old moving-average reference. `nmpc_friction_circle_enabled` (default false) was rejected live with no offline A/B first. `nmpc_progress_enabled` (default false) failed to complete a lap at every setting tried and stays off. A per-stage horizon speed profile flag existed, was rejected live and was removed. See [control_mechanisms.md](../reference/control_mechanisms.md) and [nmpc_progress_term_investigation.md](../logs/nmpc_progress_term_investigation.md).
+- **`nmpc_track_halfwidth` (3.35) and `nmpc_slack_weight` (10000).** The soft track bound. Narrowing to 3.0 for the progress experiment also tightened ordinary tracking and measurably hurt it, and was reverted. `nmpc_slack_linear_weight` ships at 500.0 and is inert while the progress term is off.
+- **`nmpc_curvature_dense_step` (0.5) and `nmpc_curvature_smooth_w` (3)** copy the denoising precedent of `curvature_speed()`. Not new constants to tune.
+
+### Structural settings and where their values came from
+
+Live source is `nmpc_params.py`, with the reasons in its field comments. Offline names are `NMPC_*` in `settings/nmpc.py`.
+
+| Field | Shipped | Reason |
+|---|---|---|
+| `nmpc_horizon` | 20 (1.0 s) | measured better than 35: the prediction model is optimistic and the mismatch compounds. N=35 gave the fastest lap and the worst tracking. |
+| `nmpc_sqp_iters` | 1 | measured better and about 2 times cheaper than 2. Real-time-iteration style: the shifted previous solution is the warm start. |
+| `nmpc_solve_budget_ms` | 25 | hard stop, ships the best feasible iterate rather than overrunning the 50 ms tick |
+| `nmpc_rk_substeps` | 4 | 2 was RK4-unstable across 2.25 to 3.5 m/s (about 6e8 disturbance growth), which freezes the output at exactly zero |
+| `nmpc_rk_substeps_fast`, `nmpc_rk_gate_speed` | 3 above 4.0 m/s | 3 is fully stable at and above the gate. 2 is the one count confirmed unstable in the 2.25 to 3.75 m/s band. |
+| `nmpc_jac_substeps` | 4 | 1 was sound about accuracy but divergent below about 6.5 to 7 m/s, because the same 1/`v_x` lateral stiffness compounds through condensing into a Hessian whose only solution is zero. Keep equal to `nmpc_rk_substeps`. |
+| `nmpc_jac_substeps_fast`, `nmpc_jac_gate_speed` | 2 above 8.0 m/s | the instability is confined to low speed, so the cost of 4 substeps need not apply above it. 1 is not safe: inaccurate rather than unstable. |
+| `nmpc_standstill_*` | damping on, `r_delta` scale 200 on stage 0 | at `v_x=0` steering cannot move the car, and the SQP pre-commits stage 0 toward what helps later stages, so the car launched already turned (about -6.8 deg). The 200 scale is a tuning value, not derived. |
+
+## Speed-side settings
+
+| Setting | Shipped | Notes |
+|---|---|---|
+| `speed_target_deficit_max` | 2.55 m/s | caps how far the ramped speed target may lead the car's speed, read by both controllers before the speed-error row sees the target |
+| `CURVATURE_SPEED_A_LAT_MAX` | 4.75 | corner speed in the exported profile. See the tight-corner section above. |
+| `enable_dynamic_speed_cap` | on in code, off at launch | see below |
+
+`speed_target_deficit_max` was 2.5 and binding on acceleration for 36.8 percent of a lap. A raise to 5.0 improved lap time, `|e_y|` and saturation offline only. It ships at 2.55. Rationale for 2.55 not recorded. It has not been re-measured at that value.
+
+**Dynamic speed cap.** `enable_dynamic_speed_cap`, `dynamic_cap_a_lat_max` (3.2) and `dynamic_cap_safety` (0.9) layer a curvature-lookahead speed cap under the precomputed profile. They are node parameters in `mpc_controller.py` and keys in `fsae_params.yaml`, not `MPCParams` fields. The offline constants are `ENABLE_DYNAMIC_SPEED_CAP` (True), `DYNAMIC_CAP_A_LAT_MAX` and `DYNAMIC_CAP_SAFETY` in `settings/general.py`. When built and live-tested it improved the lateral-acceleration-over-ceiling ratio but worsened steering saturation and heading error, and the score regressed. The cause was never diagnosed. `launch_all.sh` sets it false, so check that file before assuming the code default drives a run. Do not re-enable it without first finding out why it regressed. Writeup: the dynamic speed cap addendum in [late_turn_in_investigation.md](../logs/late_turn_in_investigation.md).
+
+## What the offline tuner searches
+
+`tuner/offline_tuner.py` runs CMA-ES (a derivative-free evolutionary optimiser) over 14 parameters. Usage: [offline_guide.md](offline_guide.md).
+
+| Block | Count | Form | Fields |
 |---|---|---|---|
 | `Q_diag` | 5 | multiplier on the template | `e_y`, `e_y_dot`, `e_psi`, `e_psi_dot`, `e_v` |
 | `R_diag` | 2 | multiplier | `delta_cmd`, `a_cmd` |
-| `R_rate_diag` | 2 | multiplier | steering rate, accel rate |
-| `TUNABLE_NMPC` | 5 | **absolute value** | `rjerk_delta`, `corner_factor_k`, `rrate_zone_boost_straight`, `_ease_approach`, `_floor_corner` |
+| `R_rate_diag` | 2 | multiplier | steering rate, acceleration rate |
+| `TUNABLE_NMPC` | 5 | absolute value | `rjerk_delta`, `corner_factor_k`, `rrate_zone_boost_straight`, `rrate_zone_ease_approach`, `rrate_zone_floor_corner` |
 
-The NMPC block is absolute rather than multiplicative because those fields have no template to scale and their useful ranges are not centred on 1.0 (`rjerk_delta` spans 1–400). Generation 0's `x0` is seeded from the shipped `settings.py` values for these dimensions, so the first thing evaluated is the current car rather than an arbitrary midpoint.
+- The `R_diag` `a_cmd` dimension does not move the cost (see core weights above), so the effective search is 13 parameters. Not confirmed by a run.
+- The NMPC block is absolute because those fields have no template to scale and their useful ranges are not centred on 1.0 (`rjerk_delta` spans 1 to 400). Generation 0 starts from the shipped `settings/` values, so the first thing evaluated is the current car.
+- The NMPC block only acts when `settings.USE_NMPC` is True, which defaults to False. Under the LTV-QP all five fields are ignored, every candidate scores the same in those dimensions and the population is wasted. Either set `USE_NMPC=True` before importing the tuner or empty `TUNABLE_NMPC`.
+- These are searched rather than held fixed because `rjerk_delta=0` fails the recorded-map rollout where 150 completes. A weight set tuned with them pinned is only valid at those values.
+- `MAX_EVALS` is 1500 and `USE_OPTUNA_PRESEARCH` is True in `settings/solver.py`.
+- `run_core_rollout` takes an `nmpc_overrides` dict keyed by the controller's own argument names (`rjerk_delta`, `rrate_zone_ease_approach`, and so on). This lets one process evaluate many configurations. Keys are not validated, so a mistyped name is silently ignored. Confirm a swept field moves the score before trusting a null result.
+- `sim/rollout/tick_solve.py` reads `settings.NMPC_*` at call time, so a runtime `setattr` on `settings` reaches the NMPC. Default arguments of `run_core_rollout` (`use_nmpc`, `n_horizon`, `use_planner`) bind at import, which is why `USE_NMPC` must be set before the import.
 
-**Gate: the NMPC block only does anything when `settings.USE_NMPC` is True**, and it defaults to False. Under the LTV-QP the controller ignores all five fields, so every candidate scores identically in those dimensions and the search wastes five dimensions of its population. Either set `USE_NMPC=True` before importing the tuner, or empty `TUNABLE_NMPC` when tuning the LTV-QP.
-
-**Why these are searched at all rather than held fixed:** `rjerk_delta=0` DNFs the recorded-map rollout where the shipped 150 completes. These are load-bearing, not refinements, so a weight set tuned with them pinned is only valid at those pinned values.
-
-**Mechanism note.** `settings.py` constants are imported into `sim/rollout_core.py` **by name at import time**, so mutating `settings.NMPC_*` after that module loads has no effect. Historically this forced a fresh subprocess per configuration. `run_core_rollout` now takes an `nmpc_overrides` dict for exactly this reason, which is what lets one process evaluate many configurations. Keys are not validated against the controller's signature: **a mistyped field name is silently ignored**, so confirm a swept field actually moves the score before trusting a null result.
-
-Smoke-test the wiring after editing `TUNABLE_NMPC` (a full CMA-ES run is not needed and takes far too long):
+Smoke-test the wiring after editing `TUNABLE_NMPC`. A full run is not needed:
 
 ```python
 # with USE_NMPC=True set before importing the tuner
@@ -349,49 +364,40 @@ score = run_headless_rollout(x0, "PATH_SUDDEN_TURN", 400, 0.0, 0.0)
 # then move one field to its far bound and confirm the score changes
 ```
 
----
+## Scoring: `METRIC_SCALES` and `SCORE_WEIGHTS`
 
-## 5. Dynamic speed cap, code default on, shipped off pending re-diagnosis
+`sim/scoring.py` is the single source of the composite score. The live copy at `telemetry/scoring.py` under `fsae_control` is a copy with the constants inlined. Change the offline file first, then recopy. See [offline_live_parity.md](../reference/offline_live_parity.md).
 
-`enable_dynamic_speed_cap` / `dynamic_cap_a_lat_max` / `dynamic_cap_safety` layer a real-time curvature-lookahead speed cap under the precomputed speed profile, catching the case where the car is running ahead of the oracle profile's own pace and needs to start braking for a corner sooner than the static profile alone would trigger.
+The score has three tiers:
 
-**`ENABLE_DYNAMIC_SPEED_CAP` defaults to `True` in both `settings.py` and `mpc_params.py`**. This mechanism is not disabled at the code level. It made overall driving worse despite improving its own target metric when built and live-tested: the lateral-acceleration-over-ceiling ratio improved sharply, but steering saturation and heading error both got worse, and the composite score regressed. The root cause of that regression was never diagnosed.
+- Runs that crash, leave the track or never finish land above `CONSTRAINT_FLOOR` (10.0). No amount of good driving lifts an infeasible run above a feasible one.
+- Feasible runs score `TIME_OBJECTIVE_WEIGHT * time_cost + QUALITY_WEIGHT * quality` (1.0 and 0.35), where `time_cost = 1 - optimal_time / actual_time`.
+- `quality` is the weighted sum below. It shapes a solution and cannot buy lap time.
 
-Because of that result, `ros2/launch_all.sh`'s MPC tuning shortlist currently overrides the flag to `false` at runtime, check that shortlist before assuming the code-level default is what actually drives a given run. Do not re-enable it for a live run without first diagnosing why it regressed saturation/heading-error, not just re-tuning `dynamic_cap_a_lat_max`/`dynamic_cap_safety` and hoping. Full writeup: `docs/logs/late_turn_in_investigation.md`'s "Dynamic speed cap" addendum.
+Metric sets:
 
----
+- **`METRIC_SCALES`**: a typical magnitude for each of the 13 metrics, dividing each onto a comparable scale before weighting. Without it a metric's influence is weight times typical magnitude, which collapsed the score to tracking RMSE and peak lateral error. Change an entry only when that metric's typical magnitude has shifted (after a plant or planner change), not to change its priority.
+- **`SCORE_WEIGHTS`**: the priority of each normalised metric. Lower score is better. The 13 weights sum to 1.0, so `quality` is 1.0 for a run sitting at every reference scale. Change a weight by 20 to 30 percent of its value at a time and take the offsetting change from another to keep the sum.
 
-## 6. Scoring: `METRIC_SCALES` and `SCORE_WEIGHTS`
+The 13 metrics in order: `rmse`, `yaw_rms`, `smooth_rms`, `steer_rms`, `accel_rms`, `max_steering`, `steering_sat_ratio`, `jerk_rms`, `max_yaw_rate`, `steering_reversal_rms`, `peak_lateral_error`, `speed_rmse`, `accel_reversal_rms`. The two reversal metrics are magnitude-weighted so hunting is distinguished from a path that legitimately demands frequent small direction changes. Definitions: the `sim/scoring.py` module and [architecture.md](../reference/architecture.md).
 
-These two arrays define what the tuner is trying to optimize. `sim/scoring.py` is the single source of truth for the composite-score formula; the live copy at `ros2/src/fsae_planning/control/fsae_control/fsae_control/scoring.py` must stay a verbatim numeric copy (see `docs/reference/offline_live_parity.md`'s "Live/offline score parity" section).
+## Simulator-only fidelity settings
 
-- **`METRIC_SCALES`**: a typical/reference magnitude for each of the 13 scored metrics, used to normalise them onto a comparable scale before weighting. Without this, a metric's real influence on the score is `weight × typical magnitude`, not `weight`, and the 12–13 metrics have wildly different natural magnitudes (e.g. `steering_reversal_rms` ~0.007 vs. `accel_rms` ~1.3), which without normalisation collapses the score to being effectively single-objective (dominated almost entirely by tracking RMSE and peak lateral error). Change a `METRIC_SCALES` entry only if that metric's typical magnitude has shifted (e.g. after a plant or planner change), not to change how much it matters, which is what `SCORE_WEIGHTS` is for.
-- **`SCORE_WEIGHTS`**: how much each of the 13 normalised metrics contributes to the final composite score (lower is better). This is the tuner's definition of "good driving." Must sum to ~1.0 so a run scoring exactly at every metric's reference scale scores 1.0 before bonuses/penalties. Changing one weight requires taking the offsetting change from another to preserve the sum. Typical adjustment: change a weight by roughly 20–30% of its own value at a time, then re-tune and compare.
+These are not MPC weights, but they decide whether an offline result transfers to the car.
 
-The 13 metrics, in order: `rmse`, `yaw_rms`, `smooth_rms`, `steer_rms`, `accel_rms`, `max_steering`, `steering_sat_ratio`, `jerk_rms`, `max_yaw_rate`, `steering_reversal_rms`, `peak_lateral_error`, `speed_rmse`, `accel_reversal_rms`. See `sim/scoring.py`'s module docstring for exactly what each one measures and why the two reversal-RMS metrics are magnitude-weighted rather than flat reversal counts.
-
----
-
-## 7. Simulator-only fidelity settings
-
-Not MPC weights, but directly affect whether an offline tuning result will transfer to the real car. Get these wrong and a weight set can look excellent offline while being fragile live.
-
-| Setting | Purpose | Tuning guidance |
+| Setting | Shipped | Guidance |
 |---|---|---|
-| `N_HORIZON` | planning horizon length, in 0.05s steps | must exactly match the live controller's horizon length or tuned weights won't behave the same on the car. Change by 5 steps at a time; longer horizon smooths anticipation but each step's compute cost roughly squares. |
-| `DELAY_STEPS` | fixed actuation lag modelled, in steps | set to a realistic lag for the current hardware; 0 = idealized/no lag |
-| `DELAY_JITTER_STEPS` | how much the controller's *belief* about lag is allowed to be wrong (std dev, in steps) | set from a measured live control-loop jitter; leaving at 0 makes the tuner optimize against an easier problem than reality, a classic way for a weight set to score well offline and still wobble live |
-| `SLAM_NOISE_ENABLED` + `SLAM_POS_JITTER_STD`/`SLAM_YAW_JITTER_STD` | simulate real SLAM pose jitter instead of FSDS's perfect ground-truth pose | currently OFF, re-calibrate against a current live log's reversal rate before turning back on; do not use this to try to reproduce steering chatter caused by the steering slew limit or delay-estimation jitter, since pose noise is a different mechanism and won't reproduce that specific symptom |
+| `N_HORIZON` | 35 (1.75 s) | LTV-QP horizon. Must match the live `MPCController(dt, N=35)` or tuned weights behave differently. The NMPC has its own `NMPC_HORIZON` of 20. |
+| `DELAY_STEPS` | 1 | fixed actuation lag in 0.05 s steps. 0 is the idealised case. |
+| `DELAY_JITTER_STEPS` | 0.2 | spread of the controller's belief about the lag. Set from measured loop jitter. Zero makes the tuner solve an easier problem than reality. |
+| `SLAM_NOISE_ENABLED`, `SLAM_POS_JITTER_STD`, `SLAM_YAW_JITTER_STD` | off, 0.02 m, 0.3 deg | simulates SLAM pose jitter instead of FSDS ground truth. Recalibrate against a current live log's reversal rate before turning on. Pose noise does not reproduce chatter caused by the steering slew limit or delay-estimate jitter. |
 
----
+## Related documents
 
-## 8. Where NOT to look for tuning guidance
-
-The following docs contain tuning-*adjacent* material but are not the canonical tuning reference, they're kept focused on their own scope, and link here for anything about what to change and why:
-
-- `architecture.md`: system architecture and module reference; points here for weight/gain guidance.
-- `offline_guide.md`: how to run the offline tuner and 2D GUI; points here for what the tuner is optimizing.
-- `fsds/fsds_integration_guide.md` / `fsds/fsds_settings.md`: how to run and configure the live/FSDS side; points here for what each weight does.
-- `docs/reference/`: the live/offline field-mapping table (which `settings.py` constant matches which `MPCParams` field) and the upstream-resync procedure; not a tuning-values guide.
-- `docs/logs/sim_to_real_investigation.md`: the full chronological investigation history behind several of the "known constraints" above. Read it for *how* a constraint was discovered; this doc states *what* the constraint is without requiring the whole investigation to be read.
-- `junior_project_mpc_docs.md`: a standalone, self-contained onboarding wiki page; intentionally still explains tuning from scratch rather than linking here, since it's meant to be readable without any other doc open.
+- [architecture.md](../reference/architecture.md): system structure and the tuner's internals.
+- [offline_guide.md](offline_guide.md): running the tuner and the 2D GUI.
+- [offline_live_parity.md](../reference/offline_live_parity.md): field-by-field mapping between `settings/` and `MPCParams`, and the resync procedure.
+- [control_mechanisms.md](../reference/control_mechanisms.md): mechanism design for each adaptive gain and the NMPC.
+- [retired_mechanisms.md](../reference/retired_mechanisms.md): removed mechanisms and why.
+- [sim_to_real_investigation.md](../logs/sim_to_real_investigation.md): the history behind several constraints above. Read it for how a constraint was found. This guide states what the constraint is.
+- [getting_started.md](getting_started.md): a standalone onboarding page that explains tuning from scratch.

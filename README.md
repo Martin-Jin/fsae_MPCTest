@@ -1,166 +1,92 @@
-# FSAE MPC Path Tracking Simulator
+# fsae_MPCTest: offline MPC tuning and the FSDS staging mirror
 
-This repo is used to test MPC control offline (implementing both LTV-QP/ LMPC and NMPC), and the relevant ROS 2 files here are what get pasted into `fsae_planning` to run that same controller and test it on the [FSDS](https://github.com/FS-Driverless/Formula-Student-Driverless-Simulator) simulator, the AirSim/UE4-based 3D simulator this whole project targets, either standalone (via `fsds_simulator/`, no separate `fsae_planning` checkout needed) or alongside an existing [`fsae_planning`](https://github.com/UOA-FSAE/fsae_planning) checkout.
+This repo is the offline half of a Formula Student Driverless autonomy project. It tunes and tests the MPC path-tracking controllers (LTV-QP, called LMPC here, and NMPC) without FSDS running, and it stages the ROS 2 code that runs the same controllers inside [FSDS](https://github.com/FS-Driverless/Formula-Student-Driverless-Simulator), the AirSim and Unreal simulator.
 
-This repo pairs a nonlinear 24-state vehicle plant with a Model Predictive Controller, and provides CMA-ES-based automated weight optimisation so the controller's cost weights don't have to be hand-tuned by trial and error. The plant model is a detailed approximation, not a validated match to FSDS or the real car; see [`docs/junior_project_mpc_docs.md`](docs/junior_project_mpc_docs.md#what-this-project-delivers).
+- **Offline simulator**: a nonlinear 24-state vehicle plant driven by the controller, headless or through a 2D matplotlib GUI. It is a detailed approximation. It is not validated against FSDS or the real car.
+- **Automatic tuner**: CMA-ES search over the cost weights, so they are not hand-tuned by trial and error.
+- **Staging mirror**: `fsds_simulator/` holds a snapshot of the live `ros2/src/fsae_planning` workspace. It is where changes to that workspace are stored.
 
-**This project has two separate simulators, easy to conflate:** FSDS (above) and this repo's own offline 2D GUI/headless rollout, used for tuning. Neither is validated against the real car; FSDS is a closer approximation since it's a real physics engine, but is not itself confirmed accurate. See [docs/reference/simulator_glossary.md](docs/reference/simulator_glossary.md) for the full explanation and which docs cover which side — [docs/offline_guide.md](docs/offline_guide.md) for this repo's own 2D GUI/tuner, [docs/fsds/](docs/fsds/) for FSDS/live-only docs.
+The project has two separate simulators that are easy to conflate: FSDS and this repo's offline simulator. Neither is a validated stand-in for the car. Do not trust an offline score on its own. See [glossary.md](docs/reference/glossary.md) and [simulator_fidelity.md](docs/reference/simulator_fidelity.md).
 
-## How it runs
+Start with the [documentation index](docs/README.md). Per-module references: [offline simulator](docs/modules/offline_sim.md) and [FSDS ROS 2 package](docs/modules/fsds_ros2.md).
 
-Either controller family can drive **with** the live perception/planner pipeline, or **without** it against a precomputed path — the two are independent choices, not tied to a specific controller. The one exception is recording a brand-new track: that specifically needs the live planner (there's no map yet to precompute from) and defaults to Stanley for it, see [Recording, exporting and driving a track](docs/fsds/fsds_integration_guide.md#recording-exporting-and-driving-a-track).
+## Repo map
 
-Stanley and the two MPC controllers (LTV-QP, NMPC) differ in what they output, not just how they steer: Stanley always produces a steering angle plus a desired speed and hands throttle/brake off to `fsds_bridge`; the MPC controllers solve for steering AND throttle/brake themselves.
+| Path | Contents |
+|---|---|
+| `settings/` | All offline tuning, scoring and DNF constants, split into `general`, `noise`, `planner`, `lmpc`, `nmpc`, `solver` and `scoring`. `__init__.py` re-exports every name. Consumers use `import settings; settings.X` |
+| `model/` | `bicycle_model.py` (the controller's linear prediction model) and `model/vehicle_physics/` (the 24-state plant: `state`, `params`, `tyres`, `plant_step`, `tracking`) |
+| `controller/` | `lmpc/` (QP build and solve), `nmpc/` (Frenet-frame nonlinear MPC: layout, reference, dynamics, outputs, weight schedule, QP model, SQP step, solver) and `model_utils.py` (adaptive gains) |
+| `sim/` | Closed-loop rollout in `sim/rollout/` (`core`, `reference`, `speed_target`, `delay`, `tick_solve`), plus `perception.py`, `planner.py`, `speed_profile.py`, `scoring.py`, `sensor_noise.py`, `track_io.py` |
+| `planning/` | Shared planning code taken from `fsae_planning`: `boundary`, `cone_map`, `cone_sorting`, `path_utils`, `geometry` |
+| `tracks/` | Python helpers for track paths (`TRACKS_DIR`, `newest_track()`, `DEFAULT_MAP`). Track data is not here. It lives in `ros2/src/fsae_planning/tracks/` |
+| `tuner/` | `offline_tuner.py` (CMA-ES), `tuner/validation/` (the three checks below), `tuner/investigations/` (one-off diagnostic scripts), `tuner/tools/` (exporters, `plot_playback.py`, `sync_mpc_params.py`, `doc_lint.py`) |
+| `gui/` | `gui/launcher/` (tabbed control app), `simulation.py` (2D simulator), `manual_drive.py` |
+| `settings_profiles/` | Saved settings sets (JSON) loaded by the launcher's Profiles tab |
+| `angles.py` | `wrap_angle` |
+| `fsds_simulator/` | Staging mirror of the live ROS 2 workspace. See [its README](fsds_simulator/README.md) |
+| `docs/` | Guides, controller docs, reference, FSDS docs and frozen logs. See the [index](docs/README.md) |
 
-**Stanley:**
+The repo expects to sit at `<FSDS repo root>/fsae_MPCTest/`, beside the outer repo's `ros2/` folder. The launcher and the track helpers find `ros2/launch_all.sh`, the live parameter files and the track data by that relative location.
 
-```mermaid
-flowchart LR
-    PATH["Path + speed target<br/>(live planner or<br/>precomputed CSV)"]
-    POSE["Car pose + speed<br/>(perception)"]
-    PATH --> STANLEY(("Stanley"))
-    POSE --> STANLEY
-    STANLEY -->|"steering + desired speed"| BRIDGE["fsds_bridge<br/>(→ throttle/brake)"]
-    BRIDGE --> VEHICLE["Vehicle"]
-    VEHICLE -.->|"next tick's pose"| POSE
-```
+## Quickstart
 
-**LTV-QP / NMPC:**
-
-```mermaid
-flowchart LR
-    PATH["Path + speed target<br/>(live planner or<br/>precomputed CSV)"]
-    POSE["Car pose + speed<br/>(perception)"]
-    PATH --> MPC(("MPC solve<br/>(LTV-QP or NMPC)"))
-    POSE --> MPC
-    MPC -->|"steering + throttle/brake"| VEHICLE["Vehicle"]
-    VEHICLE -.->|"next tick's pose"| POSE
-```
-
-See [docs/architecture.md](docs/architecture.md#architecture-overview) for the full closed-loop diagram (perception/planner internals, the MPC solve loop), [docs/fsds/fsds_ros_integration.md](docs/fsds/fsds_ros_integration.md) for how this connects to FSDS and ROS 2 when running live, and [docs/lmpc.md](docs/lmpc.md#what-mpc-means-here) / [docs/nmpc.md](docs/nmpc.md#structure-and-solve-method) / [docs/stanley.md](docs/stanley.md#the-steering-law) for each controller's own per-tick flow.
-
-## What's in this repo
-
-This is the offline half of the project, everywhere below that talks about developing, tuning, or testing the MPC without needing FSDS running, this repo is what does it.
-
-**`python -m gui.launcher` is the main entry point.** It's a single tabbed app for the four things below: launching the live sim (with debug windows, including a "record a new track" mode), debugging a recorded log, running the offline simulator, and editing the commonly-retuned `settings.py` constants, all without hand-editing a script or remembering a CLI. See "Centralized launcher" under [Quick Start](#quick-start) below and [docs/debugging_tools.md](docs/debugging_tools.md#centralized-launcher-guilauncherpy) for the full tab-by-tab reference. Everything it does is also directly reachable the manual way described throughout this doc, the launcher is a faster path to the same tools, not a separate implementation of them.
-
-Four things live here:
-
-- A fast **2D simulator** (`gui/simulation.py`, backed by `sim/`, `model/`, `controller/`) for closed-loop testing a controller against a path, independent of FSDS.
-- A catalog of **debugging tools** (`tuner/tools/plot_playback.py` for graphing exported telemetry CSVs, plus offline correctness checks and live-vs-sim diagnostics), see "Debugging tools" below.
-- The **automatic tuner** (`tuner/offline_tuner.py`) that searches the simulator for good cost-function weights via CMA-ES.
-- **`fsds_simulator/`**, a staging mirror of the live `fsae_planning` ROS 2 workspace, not a live module of this repo (nothing here imports it), but the only place the changes made to that workspace are actually stored, since nothing is ever pushed to `fsae_planning` itself. See "Staging area for the live ROS 2 workspace" below.
-
-The rest of this document expands on each of these, plus the two interchangeable MPC implementations and how offline-tuned weights carry over to the live car.
-
-## Two MPC implementations
-
-There are **two interchangeable MPC implementations**, selected by a single flag (`use_nmpc` in `settings.py` / the live ROS 2 node's launch args):
-
-- **LTV-QP** (default): `mpc_core.MPCController`, a linear time-varying MPC solved as one convex QP per tick.
-- **NMPC**: `nmpc_core.NMPCController`, a Frenet-frame nonlinear MPC that tracks arc length as a state and looks up path curvature directly, closing a structural blind spot the LTV-QP's linear prediction has no term for.
-
-See [docs/architecture.md](docs/architecture.md)'s "Second controller: nonlinear MPC" section for the full comparison and why the NMPC exists.
-
-## From offline weights to the live car
-
-This repository also includes a ROS 2 control node (`mpc/mpc_controller.py`'s `standalone_output=true` mode / `mpc/mpc_core.py`, staged under `fsds_simulator/`, see below) that runs the same MPC live inside the [FSDS](https://github.com/FS-Driverless/Formula-Student-Driverless-Simulator) simulator, by pasting it into the matching file in the [fsae_planning](https://github.com/UOA-FSAE/fsae_planning) repo.
-
-See [`docs/reference/`](`docs/reference/`) for the exact file mapping. `mpc_controller.py`'s `standalone_output=true` mode is a distinct code path from its own `standalone_output=false` mode, the direct descendant of upstream's original `mpc_controller.py` design. Weights tuned offline in this project transfer directly to that live controller, because both preserve the MPC's own throttle/brake output rather than routing speed through `fsds_bridge.py`'s separate P-loop.
-
-## Staging area for the live ROS 2 workspace
-
-`fsds_simulator/` is a staging area, not a live module of this repo: it mirrors `fsae_planning`'s entire ROS 2 workspace, every package (`fsae_interfaces`, `fsae_bringup`, `fsae_sim_perception`, `fsae_planning`, `fsae_control`), including build scaffolding, not just the MPC-relevant files, at the exact same relative paths, so someone with only this repo and FSDS can build and run the full stack (Stanley or `mpc`, either `standalone_output` mode) with no separate `fsae_planning` checkout. See [fsds_simulator/README.md](fsds_simulator/README.md) for build/run steps. Nothing under `fsds_simulator/` is imported by the simulator or tuner, those live under `planning/`, `sim/`, `model/`, `controller/` instead.
-
-## Perception/planning simulation and recorded tracks
-
-The 2D simulator can optionally simulate the full perception + planning pipeline (`USE_PLANNER` in `settings.py`) by placing cones along a path (`sim_track.place_cones()`) and reconstructing a centreline from them using the shared planning code in the `planning/` folder (taken from the `fsae_planning` repo). See [architecture.md's Simulated Perception and Planning](docs/architecture.md#simulated-perception-and-planning-use_planner) for exactly how `SimPerception`/`SimPlanner` do this. When `USE_PLANNER` is off, the simulator instead tracks the true reference path directly, faster, and useful for isolating driving behaviour from planner behaviour. **Load Recorded Track** in `gui/simulation.py` loads a real cone map recorded from a live FSDS lap (via `fsae_planning`'s `cone_recorder` node) instead of a synthetic one. Recorded tracks, and their exported speed/raceline CSVs, live one-per-directory under `tracks/<name>/`, physically inside the separate `fsae_planning` repo (`tracks/__init__.py` here just points at it), so FSDS + `fsae_planning` alone can drive any already-recorded track with no `fsae_MPCTest` checkout. See [Recording, exporting and driving a track](docs/fsds/fsds_integration_guide.md#recording-exporting-and-driving-a-track) for the full record → export → drive workflow and how to switch which track the live car uses.
-
-fsds simulator repo: https://github.com/FS-Driverless/Formula-Student-Driverless-Simulator (current implementation uses commit 59f03fa, and the V2.20 release)\
-fsae planning repo: https://github.com/UOA-FSAE/fsae_planning (current implementation uses commit 28dcd4d)
-
-## Debugging tools
-
-Beyond the interactive simulator, this repo (plus a few scripts in the outer `ros2/` folder) has a set of standalone diagnostic tools for answering specific questions when tuning or investigating a bug: does a plant/weight change still reproduce a known baseline (`tuner.recorded_map_rollout`, `tuner.nmpc_offline_check`), where does a live run diverge from an offline one (`tuner/checks/live_vs_sim_diagnostics.py`), what does FSDS's actual steering response look like (`ros2/run_steering_sysid.sh`/ `run_steering_step.sh`), and how did a specific run behave, signal by signal and on the map (`tuner/tools/plot_playback.py`). See [docs/debugging_tools.md](docs/debugging_tools.md) for the full catalog and how to run each one.
-
----
-
-## Quick Start
-
-### 1. Install dependencies
+Install the dependencies:
 
 ```bash
 pip install numpy scipy matplotlib cvxpy cma
 pip install cvxpy[osqp] cvxpy[clarabel]
-pip install optuna  # optional: only needed for USE_OPTUNA_PRESEARCH in settings.py
+pip install optuna   # optional, only for USE_OPTUNA_PRESEARCH
 ```
 
-### 2. Centralized launcher (start here)
+Run everything from the repo root.
 
-**Requires this repo to be cloned directly inside the outer FSDS simulator repo's root**, i.e. `<FSDS repo root>/fsae_MPCTest/`, a sibling of that repo's `ros2/` folder — the standard layout this whole project assumes. The launcher finds `ros2/launch_all.sh` and the live `mpc_params.py` relative to its own location, so a different layout (a sibling checkout instead of nested inside, or a different drive/path entirely) will fail to find them.
+### Launcher (main entry point)
 
 ```bash
-cd /path/to/project/fsae_MPCTest
 python -m gui.launcher
 ```
 
-This is the fastest way into everything in this repo and the outer FSDS/ `ros2/` tree: a tabbed app for **Launch Sim** (drives `ros2/launch_all.sh`, including a "record a new track" mode with its own Stop/Export workflow), **Debug a Log** (browse and open a recorded run in `plot_playback.py`), **Run Offline Sim** (launches `gui/simulation.py`), and **Settings** (the commonly-retuned `Q`/`R` weights, NMPC overrides, and feature flags in `settings.py`, kept in sync with the live `mpc_params.py` on save). See [docs/debugging_tools.md](docs/debugging_tools.md#centralized-launcher-guilauncherpy) for the full reference.
+A tabbed Tk app: launch the live simulation (including a record-a-new-track mode), debug a recorded log, run the offline simulator, edit `settings/` constants and manage profiles. See [debugging_tools.md](docs/guides/debugging_tools.md).
 
-### 3. Or, launch the simulator directly
+### 2D simulator
 
 ```bash
-cd /path/to/project
 python -m gui.simulation
 ```
 
-Click **Load Test Path** to cycle through the built-in synthetic paths (or **Load Recorded Track** to load a real cone map recorded from FSDS, see below), then **Start Sim** to run a closed-loop MPC rollout. See [docs/offline_guide.md](docs/offline_guide.md#running-the-2d-gui) for the full walkthrough (drawing a path, initial-condition sliders, scoring a run), and [docs/offline_guide.md](docs/offline_guide.md#running-the-offline-tuner) for how to run the CMA-ES weight tuner instead.
+Load a test path or a recorded track, then start a closed-loop rollout. See [offline_guide.md](docs/guides/offline_guide.md).
 
----
+### Validation checks
+
+There is no test suite. These three scripts are the correctness bar for a change. Each is headless.
+
+| Command | Run after changing | What it does |
+|---|---|---|
+| `python -m tuner.validation.recorded_map_rollout` | MPC weights, the plant model, scoring | Replays the recorded map and prints the metrics the sim-to-real comparison tables are quoted in (steering saturation, heading error, lateral acceleration) |
+| `python -m tuner.validation.nmpc_offline_check` | `controller/nmpc/` | Solver self-consistency checks for the NMPC path |
+| `python -m tuner.validation.plant_openloop_validation` | `model/vehicle_physics/` | Replays the two open-loop FSDS system-ID experiments through the plant and reports the residuals |
+
+Passing them does not validate a change on the car. Validate in a full FSDS session or on the car. See [simulator_fidelity.md](docs/reference/simulator_fidelity.md).
+
+### Offline tuner
+
+```bash
+python -m tuner.offline_tuner
+```
+
+Stop early with Ctrl+C and it reports the best weights so far. Results append to `docs/logs/tuning_history.txt`. See [tuning.md](docs/guides/tuning.md).
+
+## Live and offline stay identical by hand
+
+The MPC and planning stack exists twice: in `ros2/src/fsae_planning/` (live) and in this repo (offline). This repo cannot import the live code, so numeric parity is kept by hand. A change to weights, the plant model, delay handling, tracking-error maths or scoring must land on both sides. See [offline_live_parity.md](docs/reference/offline_live_parity.md).
 
 ## Documentation
 
-| Doc | Covers |
-|---|---|
-| [docs/reference/simulator_glossary.md](docs/reference/simulator_glossary.md) | What "FSDS," "offline rollout," and "2D GUI" mean, how trustworthy each is as a stand-in for the real car, and which doc to read for each side. Start here if that distinction is unclear. |
-| [docs/architecture.md](docs/architecture.md) | How the offline side works: the closed-loop architecture, `settings.py`/`model/vehicle_physics.py` configuration reference, the full MPC and NMPC formulations (state vector, cost function, solver), how the offline CMA-ES tuner works, the composite scoring function, and a per-file module reference. |
-| [docs/tuning.md](docs/tuning.md) | Practical tuning reference: what each `Q`/`R`/`R_rate` weight and adaptive-gain constant actually does, the corner-factor scheduler's fields, and how to change/validate a weight set, the "which knob, and why" companion to architecture.md's "how it works." Covers both offline `settings.py` and live `mpc_params.py`. |
-| [docs/offline_guide.md](docs/offline_guide.md) | How to use and extend the offline side: running the 2D GUI and offline tuner, manual drive mode, offline dependencies, adding a new synthetic path. |
-| [docs/fsds/fsds_integration_guide.md](docs/fsds/fsds_integration_guide.md) | How to run/integrate against FSDS: workspace layout, controller/planner selection, recording/exporting/driving a track, CSV telemetry logging, and from-scratch Windows/WSL/Docker setup. |
-| [docs/fsds/fsds_settings.md](docs/fsds/fsds_settings.md) | The live/FSDS settings surface: `MPCParams`/`NMPCParams`, `fsae_params.yaml`, generated launch args, and `launch_all.sh`'s shortlist. |
-| [docs/fsds/fsds_ros_integration.md](docs/fsds/fsds_ros_integration.md) | High-level map of how FSDS (Unreal/AirSim), the `fsds_ros2_bridge`, and this project's ROS 2 nodes connect: where each piece runs, what topics cross the bridge, and how to work with it without needing to modify it. |
-| [docs/debugging_tools.md](docs/debugging_tools.md) | Catalog of diagnostic/debugging tools (offline correctness checks, live-vs-sim comparison, steering system-ID, telemetry playback, pose/RPC diagnostics) and which question each answers. |
-| [docs/reference/reference_path_and_speed.md](docs/reference/reference_path_and_speed.md) | Where the car drives and how fast: the three-pass speed profile, the raceline/centreline exporters, which exported file supplies speed vs geometry, and how to switch either. |
-| [docs/vehicle_physics_guide.md](docs/vehicle_physics_guide.md) | Plain-English walkthrough of the 24-state nonlinear plant in `model/vehicle_physics.py` (tyres, suspension, weight transfer, aero) for readers who don't already know vehicle dynamics. |
-| [`docs/reference/`](`docs/reference/`) | Reference for re-syncing `planning/` and `fsds_simulator/` against a newer `fsae_planning` upstream clone: file mapping, deliberate non-mirrors, numeric-parity constants, and the resync procedure. |
-| [docs/junior_project_mpc_docs.md](docs/junior_project_mpc_docs.md) | Standalone high-level wiki page introducing MPC/NMPC/tuning to a newcomer with no prior control-theory background, self-contained by design, so it overlaps other docs rather than just linking to them. |
-| [docs/fsae_planning_pending_pr.md](docs/fsae_planning_pending_pr.md) | Running summary of uncommitted changes in the live `fsae_planning` checkout, for PR purposes, mirrors that repo's own `CHANGES.md`. |
-| [docs/logs/](docs/logs/) | Append-only research/investigation logs (sim-to-real gap, late-turn/lookahead history, NMPC introduction), historical record, not current-state reference; see each file's own header for scope. |
-| [fsds_simulator/README.md](fsds_simulator/README.md) | How to build and run the full ROS 2 stack (Stanley / MPC / MPC-standalone) from `fsds_simulator/` alone, plus FSDS, no separate `fsae_planning` checkout needed. |
+- [docs/README.md](docs/README.md): index of every doc.
+- [docs/modules/offline_sim.md](docs/modules/offline_sim.md) and [docs/modules/fsds_ros2.md](docs/modules/fsds_ros2.md): what each module does.
+- [docs/guides/getting_started.md](docs/guides/getting_started.md): newcomer introduction to MPC, NMPC and tuning.
+- [docs/fsds/integration_guide.md](docs/fsds/integration_guide.md): running against FSDS, recording and driving a track.
+- [docs/logs/README.md](docs/logs/README.md): frozen investigation logs.
 
----
-
-## Key modules
-
-| File | Purpose |
-|---|---|
-| `gui/launcher.py` | **Main entry point.** Tabbed tkinter app: launch the live sim (incl. recording a new track), debug a recorded log, run the offline simulator, and edit `settings.py`'s commonly-retuned constants, all from one window. See [docs/debugging_tools.md](docs/debugging_tools.md#centralized-launcher-guilauncherpy). |
-| `gui/simulation.py` | Interactive matplotlib GUI, draw/load a path, run one closed-loop rollout, scrub through history, view metrics. Also renders the live planner centreline (magenta) alongside the true target path when `USE_PLANNER=True`. |
-| `sim/track_io.py` | Loads a recorded cone map (JSON, from `fsae_planning`'s `cone_recorder` node) into the same path/cones tuple shape as a synthetic path, for **Load Recorded Track**. |
-| `tuner/offline_tuner.py` | Headless CMA-ES weight search across a library of synthetic corner shapes. |
-| `tuner/tools/plot_playback.py` | Time-scrubbing map/telemetry viewer for one or more exported control-telemetry CSVs, signals + slider on the left (one line per signal per run, with a per-run checkbox when comparing multiple), full trajectory and live planner-path overlay top right, zoomed current-section view (with live e_y/e_psi) bottom right. Each run gets its own colour, consistent across all panels. Run with no args to auto-load and overlay every CSV dropped into `fsds_simulator/recorded_runs/` (`--latest-only` for just the newest). See [docs/debugging_tools.md#telemetry-playback-tunertoolsplot_playbackpy](docs/debugging_tools.md#telemetry-playback-tunertoolsplot_playbackpy). |
-| `sim/rollout_core.py` | The single shared closed-loop rollout loop used by both `gui/simulation.py` and `tuner/offline_tuner.py`. |
-| `model/vehicle_physics.py` | `VehicleParams`, the single source of truth for vehicle physics (mass, geometry, tyres, suspension, aero, actuator limits). |
-| `model/bicycle_model.py` / `controller/optimiser.py` / `controller/model_utils.py` | The MPC's linear prediction model, QP formulation/solve, and adaptive gain scheduling. |
-| `settings.py` | All project-level tuning/scoring/DNF configuration. |
-| `gui/manual_drive.py` | Standalone keyboard-driven test mode against the nonlinear plant. |
-| `mpc/mpc_controller.py` / `mpc/mpc_core.py` / `control_utils.py` (staged under `fsds_simulator/control/fsae_control/fsae_control/`) | The live ROS 2 MPC controller for FSDS, `mpc_controller.py`'s `standalone_output` parameter selects its output mode. |
-| `fsds_simulator/` | Full staging mirror of the live ROS 2 workspace (all packages, not just control), see [fsds_simulator/README.md](fsds_simulator/README.md). |
-
-See [docs/architecture.md#module-reference](docs/architecture.md#module-reference) for the complete per-file index.
-
----
-
-## Dependencies
-
-Core stack: `numpy`, `scipy`, `matplotlib`, `cvxpy` (with `osqp` and `clarabel` solvers), and `cma`. `optuna` is optional, only needed for the offline tuner's TPE pre-search (`USE_OPTUNA_PRESEARCH` in `settings.py`). ROS 2 nodes additionally need `rclpy`, `fs_msgs`, `nav_msgs`, and `geometry_msgs`. See [docs/offline_guide.md#dependencies](docs/offline_guide.md#dependencies) for the full version/purpose table and FSDS/ROS 2 setup instructions.
+Upstream versions this work targets: FSDS release V2.2.0 (the Windows `.exe` used by `ros2/launch_all.sh` is `fsds-v2.2.0-windows`). Commit pins are not recorded here. Read `git log -1` in each repo instead.
