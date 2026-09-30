@@ -586,7 +586,7 @@ Does: intended to answer "does the reference-heading rate limit close the steeri
 Change it to:
 - set the values through `settings` (`settings.REF_HEADING_RATE_LIMIT_ENABLED`, `settings.REF_HEADING_RISE_RATE`) instead of on the `sim.rollout.core` module. `compute_reference` reads them from `settings`.
 Don't:
-- trust any row of its table, because it assigns `rc.REF_HEADING_RATE_LIMIT_ENABLED` and `rc.REF_HEADING_RISE_RATE` on a module that never bound those names, so every row silently uses the `settings` default (limiter off), not the rate the row claims. See `docs/restructure_plan.md`, "Found during execution".
+- trust any row of its table, because it assigns `rc.REF_HEADING_RATE_LIMIT_ENABLED` and `rc.REF_HEADING_RISE_RATE` on a module that never bound those names, so every row silently uses the `settings` default (limiter off), not the rate the row claims.
 - read `rollout.get("score")` as a score, because the result key is `composite_score` (the value is not printed).
 Key API: `run_once`, `main`
 
@@ -595,7 +595,7 @@ Does: intended to answer "does the reference-heading limiter's gain hold across 
 Change it to:
 - patch `settings` rather than `sim.rollout.core`, as for `ref_heading_limiter_ab.py`.
 Don't:
-- trust its OFF, 70 and 65 deg/s rows, because it monkeypatches `rc.REF_HEADING_*` names never bound where patched, so all rows silently use the `settings` default. See `docs/restructure_plan.md`, "Found during execution".
+- trust its OFF, 70 and 65 deg/s rows, because it monkeypatches `rc.REF_HEADING_*` names never bound where patched, so all rows silently use the `settings` default.
 Key API: `run_one`, `main`
 
 ### `tuner/investigations/reference_excess_mechanism_check.py`
