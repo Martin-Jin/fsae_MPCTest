@@ -7,7 +7,13 @@ nmpc_params.py/fsae_params.yaml when present.
 
 from __future__ import annotations
 
+import queue
+import re
+import subprocess
+import sys
+import threading
 import tkinter as tk
+from pathlib import Path
 from tkinter import messagebox, ttk
 
 from gui.launcher.file_edit import (

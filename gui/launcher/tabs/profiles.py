@@ -7,6 +7,8 @@ configuration, stored as one JSON file per profile.
 from __future__ import annotations
 
 import json
+import re
+from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
