@@ -241,6 +241,30 @@ Other mirror changes (MPC-file paths only):
 - every `ros2 run` target resolves
 - `sync_mpc_params` dry run reports "no differences"
 
+### Phase 4 outcome (executed 2026-09-30)
+
+Done, all gated. Deviations from the target layout above, and why:
+
+- `mpc_params.py`/`nmpc_params.py` were **not** moved or split (no `params/`, no
+  `ros_params.py`): `sync_mpc_params` writes them by relative path into
+  `fsae_autonomous`, whose layout is not being changed, and the launch files and
+  GUI `RepoPaths` import them by that path. They stay in `fsae_control/mpc/`.
+- `mpc_core.py` -> `lmpc/` (constants, predict, adaptive_gains, controller).
+- `nmpc_core.py` -> `nmpc/` (1:1 with offline `controller/nmpc/`).
+- `telemetry_logger.py` -> `telemetry/` (columns, config_lines, horizon_tracker,
+  lap_progress, control_logger); `scoring.py` moved in unchanged.
+- `mpc_controller.py` stays the node module (entry point unchanged) with
+  `_ControlStepMixin`, `_DebugPublishMixin` and `node_constants.py` beside it in `mpc/`.
+- `live_viz.py` -> `live_viz/` (panels, node, app); `main()` itself was not split,
+  it is one closure-heavy matplotlib builder and a split would be a logic change.
+- Verification: AST-identical entities, pyflakes (no undefined names), mirror MPC and
+  NMPC goldens, mirror `nmpc_offline_check`, a telemetry CSV golden, real `colcon
+  build` of the mirror in a temporary workspace, `--show-args` and `ros2 pkg
+  executables` identical to a build of the pre-split tree, real node startup.
+- Overwrite: `ros2/src/fsae_planning` working tree now equals the mirror (backup of
+  the previous state in `fsae_logs/restructure_baseline/`), uncommitted. The real
+  `ros2/install` was not rebuilt; `launch_all.sh` rebuilds on launch.
+
 ## Phase 5: docs restructure and rewrite
 
 ### Target tree and mapping
