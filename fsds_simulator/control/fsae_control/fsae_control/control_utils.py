@@ -57,9 +57,16 @@ class StanleyController:
                   This is the primary fix for left-right sway: the CTE term
                   alone has no memory of how fast the heading is already
                   changing, so it overshoots; k_d·ω counters each swing.
-      wheelbase — distance from rear to front axle (m).  Used to project
-                  the control point to the front axle, which is where Stanley
-                  measures cross-track error.
+      pose_to_front_axle — distance (m) from the reported pose point forward
+                  to the front axle, which is where Stanley measures
+                  cross-track error.  The FSDS pose is at (or very near) the
+                  CG, not the rear axle (logged low-speed v_y / r puts it
+                  ~0.8 m ahead of the rear axle), so this is lmpc/controller.py's
+                  lf (0.70), not the wheelbase.  Shifting by the full wheelbase
+                  measured e from ~0.7 m ahead of the real front axle.  Keep it
+                  equal to lf so Stanley and MPC e_y are measured at one point.
+                  On a camera/SLAM pose (the kart) this is the camera-to-front-
+                  axle distance instead.
     """
 
     def __init__(
@@ -67,12 +74,12 @@ class StanleyController:
         k_cte: float = 1.0,
         k_soft: float = 1.0,
         k_d: float = 0.1,
-        wheelbase: float = 1.5,
+        pose_to_front_axle: float = 0.70,
     ):
         self.k_cte     = k_cte
         self.k_soft    = k_soft
         self.k_d       = k_d
-        self.wheelbase = wheelbase
+        self.pose_to_front_axle = pose_to_front_axle
         # Last tick's tracking error, in the SAME sign convention as
         # lmpc/controller.py's last_telemetry (+ve = left/CCW) so both controllers'
         # e_y/e_psi are directly comparable in telemetry/control_logger.py's CSV —
@@ -112,7 +119,7 @@ class StanleyController:
             return 0.0
 
         # Project control point to front axle
-        fa = car_pos + self.wheelbase * np.array([math.cos(car_yaw), math.sin(car_yaw)])
+        fa = car_pos + self.pose_to_front_axle * np.array([math.cos(car_yaw), math.sin(car_yaw)])
 
         # Nearest waypoint index to front axle
         idx = int(np.argmin(np.linalg.norm(path - fa, axis=1)))

@@ -129,6 +129,7 @@ Change it to:
 - Add a CSV column to the loaders, then check `tuner/tools/export_speed_profile.py` and `tuner/tools/raceline_optimizer.py` still write it.
 Don't:
 - Change loader return shapes without editing every caller, because `mpc_controller.py` and `control_step.py` index the arrays directly.
+- Set `StanleyController`'s `pose_to_front_axle` back to the wheelbase, because the FSDS pose is at the CG, not the rear axle (see `docs/reference/error_states.md`). Keep it equal to the MPC's `lf`.
 Key API: `StanleyController`, `curvature_speed`, `dynamic_speed_cap`, `tracking_error_speed_gate`, `load_speed_profile_csv`, `load_path_profile_csv`, `load_path_heading_profile_csv`, `precomputed_speed_at`
 
 ### `fsds_simulator/control/fsae_control/fsae_control/fsds_bridge.py`

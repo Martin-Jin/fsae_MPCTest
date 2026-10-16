@@ -35,7 +35,31 @@ The live tree and the mirror in `fsds_simulator/` hold identical files.
 | Reference heading | Raw tangent of the one segment ahead of the nearest waypoint | Linear interpolation of per-segment headings | Spline `psi_ref(s)` at the refined arc length |
 | Curvature for gain scheduling | Finite difference about 1 m ahead | `abs(yaw_rate / v_x)` from the plant state | Spline `kappa(s)` at the projected arc length |
 
-Offline, `plant_to_tracking_error()` supplies `e_y`, `e_psi` and `e_psi_dot`, and the rollout computes `e_y_dot` from `v_x`, `v_y` and `e_psi` directly. Whether the offline LTV-QP should measure at the front axle like the live one is not recorded. The live docstring calls `car_pos` the rear-axle reference point, while the code adds `lf` (0.70 m), a distance that lands on the centre of mass from a rear-axle origin, not on the front axle. Which point the FSDS odometry reports is not verified here.
+Offline, `plant_to_tracking_error()` supplies `e_y`, `e_psi` and `e_psi_dot`, and the rollout computes `e_y_dot` from `v_x`, `v_y` and `e_psi` directly. Whether the offline LTV-QP should measure at the front axle like the live one is not recorded.
+
+## The FSDS pose is at the CG, so the `lf` shift reaches the front axle
+
+**In plain terms:** FSDS reports one point as "where the car is". Every controller shifts that point forward to the front axle before measuring how far off the path the car is. The shift is only correct if it starts from the right point. Logged laps show the reported point is about 0.8 m ahead of the rear axle, which is at or near the centre of gravity (CG). So the `lf` = 0.70 m shift used by the LTV-QP, the NMPC and now Stanley lands on the front axle.
+
+**Method.** At low speed and low lateral acceleration the tyres barely slip, so the rear axle has almost no sideways velocity. A point `x_p` ahead of the rear axle then slides sideways at `v_y = r * x_p` (`r` is yaw rate), so `v_y / r` gives `x_p`. `tuner/investigations/pose_point_check.py` computes this from the control CSVs in the outer repo's `fsae_logs/`. `v_y` comes from differenced positions rotated into the body frame. `r` is differenced from the same pose's yaw.
+
+**Result** (30 MPC/NMPC runs, about 9000 samples, `|a_lat| < 3` m/s²):
+
+| `v_x` (m/s) | `v_y / r`, pose-derived `r` (m) | `v_y / r`, logged `yaw_rate` (m) |
+|---|---|---|
+| 1 to 3 | 0.71 | 0.43 |
+| 3 to 5 | 0.68 | 0.57 |
+| 5 to 7 | 0.62 | 0.57 |
+| intercept at `v_x` = 0 | **0.81** | 0.44 |
+
+- **Rear axle is falsified.** A rear-axle pose would give `v_y / r` near 0. Every run gives a clearly positive value.
+- **CG is consistent.** 0.81 m is close to the controllers' `lr` = 0.85 m. The pose-derived column falls with speed, which is what growing rear slip should do.
+- **Caveat on the absolute value.** FSDS's true `lf`/`lr` and wheelbase are not readable (they live in git-LFS `.uasset` binaries). The measurement fixes "about 0.8 m ahead of the rear axle"; calling that the CG relies on `lr` = 0.85 being roughly right.
+- **Open side finding.** The logged `yaw_rate` reads about 11% higher than the yaw rate differenced from the pose (median ratio 0.89). The cause is not identified.
+
+**Stanley used to assume a rear-axle pose.** It shifted by the full 1.5 m wheelbase, which measured its cross-track error about 0.7 m ahead of the real front axle, and 0.8 m from the MPC's point. It now shifts by `pose_to_front_axle` = 0.70 m, the same as `lf`. Its gain `k_cte` was tuned against the old point and has not been re-checked.
+
+**This applies to the FSDS pose only.** On the kart the pose is the ZED camera, through SLAM, and the offset to the front axle has to be measured.
 
 ## LTV-QP live error calculation, step by step
 
@@ -47,7 +71,7 @@ Source: `MPCController._error_state()`.
 front_axle = car_pos + lf * [cos(car_yaw), sin(car_yaw)]
 ```
 
-`lf` is the distance from the centre of mass to the front axle (0.70 m). The code names the result the front axle, the end that steers. See the note above on the reference point.
+`lf` is the distance from the centre of mass to the front axle (0.70 m). The code names the result the front axle, the end that steers. The FSDS pose is at or near the CG, so this does land on the front axle; see the section above.
 
 **Step 2. Find the nearest waypoint.**
 

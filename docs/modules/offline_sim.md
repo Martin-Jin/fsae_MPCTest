@@ -581,6 +581,14 @@ Don't:
 - expect live rows without logs, because `live_report` globs `mpc_standalone_control_*.csv` in `<repo>/fsae_logs` (note: `plant_openloop_validation` reads `~/fsae_logs`, a different folder). Use `--no-sim` for live only.
 Key API: `live_report`, `sim_report`, `episodes`, `reference_quality`
 
+### `tuner/investigations/pose_point_check.py`
+Does: answers "which body point does the FSDS pose report" from logged control CSVs, via low-speed `v_y / r` (about 0 at the rear axle, about `lr` at the CG).
+Change it to:
+- change the sample filters (`DT_MIN`/`DT_MAX`, `ALAT_MAX`, `R_MIN`) or `SPEED_BINS`.
+Don't:
+- read the high-speed bins as the answer, because rear tyre slip grows with speed and pulls `v_y / r` down. The `v_x` = 0 intercept with pose-derived `r` is the estimate.
+Key API: `main`
+
 ### `tuner/investigations/ref_heading_limiter_ab.py`
 Does: intended to answer "does the reference-heading rate limit close the steering-saturation gap" by sweeping `REF_HEADING_RISE_RATE` on the recorded map.
 Change it to:

@@ -805,8 +805,11 @@ class MPCController:
         car_pos : np.ndarray, shape (2,)
             Vehicle reference position [x, y] (global frame), treated as the
             CoG: _error_state adds self.lf (CoG to front axle) to reach the
-            front axle. Which body point FSDS odometry actually reports is
-            not established; Stanley assumes the rear axle (1.5 m offset).
+            front axle. Logged low-speed v_y / r puts the FSDS pose ~0.8 m
+            ahead of the rear axle, i.e. at or near the CoG (lr = 0.85), so
+            the lf shift is the right one; Stanley's control_utils uses the
+            same lf. A different pose source (camera/SLAM on the kart) needs
+            its own measured offset.
         car_yaw : float
             Vehicle heading (rad, global frame).
         car_speed : float

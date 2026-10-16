@@ -29,11 +29,11 @@ Reference for the third selectable controller, `stanley_controller.py` (steering
 | `k_soft` | speed softening, 1.0 m/s. Stops the arctan term saturating steering near zero speed, where a tiny `e` would demand full lock |
 | `k_d` | yaw-rate damper gain, 0.1. Subtracts damping proportional to the car's own yaw rate `ω` (positive left) |
 
-Only `stanley_gain` is exposed as a ROS parameter. `k_soft`, `k_d` and the wheelbase (1.5 m) are constructor defaults in `StanleyController`.
+Only `stanley_gain` is exposed as a ROS parameter. `k_soft`, `k_d` and `pose_to_front_axle` (0.70 m) are constructor defaults in `StanleyController`.
 
 Each tick, `StanleyController.compute()`:
 
-1. Projects the control point to the front axle: `fa = car_pos + wheelbase * [cos(yaw), sin(yaw)]`. Stanley is defined at the front axle.
+1. Projects the control point to the front axle: `fa = car_pos + pose_to_front_axle * [cos(yaw), sin(yaw)]`. Stanley is defined at the front axle. The FSDS pose is at or near the CG, so the shift is `lf`, not the wheelbase.
 2. Finds the nearest path waypoint to `fa` by a raw `argmin` over Euclidean distance.
 3. Takes the unit tangent of the segment leaving that waypoint (or entering it, at the last waypoint).
 4. Sets `θ_e` to that tangent's angle minus car yaw, wrapped to `(-π, π)`.
@@ -93,7 +93,7 @@ Stanley does not compute speed itself. Without a precomputed profile it calls `c
 ## Tuning and pitfalls
 
 - **Sign conventions:** `StanleyController` sets `last_e_y = -e`, so its exposed cross-track error is positive left, the same as `last_telemetry['e_y']` in the MPC controllers. `θ_e` already matches (positive when the path turns left of the car). A Stanley CSV and an MPC CSV therefore plot on one axis with no flip, and `tracking_error_speed_gate()` reads `last_e_y` and `last_e_psi` directly.
-- **Front-axle offset differs from the MPC:** Stanley projects by a 1.5 m wheelbase from the reported position, while the MPC projects by `lf = 0.70`. The two `e_y` values are therefore not measured at the same point. Whether that is intended is not recorded.
+- **Front-axle offset matches the MPC:** Stanley and the MPC both project by 0.70 m (`lf`), so their `e_y` values are measured at the same point. Stanley used to project by the 1.5 m wheelbase, which assumed a rear-axle pose. Logged `v_y / r` falsifies that and places the pose about 0.8 m ahead of the rear axle; see [error_states.md](../reference/error_states.md), "The FSDS pose is at the CG". `stanley_gain` was tuned against the old point and has not been re-checked live.
 - **Gain:** raise `stanley_gain` for faster lateral correction, lower it if the car sways on a fast straight. The damper `k_d` is the primary anti-sway lever but is not a launch parameter.
 - **Telemetry:** set `log_csv` to write a `stanley` CSV. No MPC columns are filled, and there is no horizon accuracy, so predicted-accuracy fields read n/a in summaries.
 
