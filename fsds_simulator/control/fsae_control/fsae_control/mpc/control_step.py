@@ -227,9 +227,9 @@ class _ControlStepMixin:
         else:
             steering = float(self._mpc.last_telemetry.get('delta_cmd', 0.0))
 
-            # Low-pass the steering command across ticks (matches the
-            # Stanley node) so rapid left-right jitter never reaches the
-            # servo. 1.0 disables. Only applied in this mode.
+            # Low-pass the steering command across ticks so rapid
+            # left-right jitter never reaches the servo. The Stanley node has
+            # no such filter. 1.0 disables. Only applied in this mode.
             if self._delta_filt is None or self._steer_lp >= 1.0:
                 self._delta_filt = steering
             else:

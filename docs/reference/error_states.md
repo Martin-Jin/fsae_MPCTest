@@ -94,7 +94,7 @@ Two optional substitutions change only the reference `e_psi` is measured against
 e_y_dot = car_speed * sin(e_psi) + car_vy * cos(e_psi)
 ```
 
-A car pointed slightly off the path while moving forward drifts sideways at a rate proportional to `sin(e_psi)` times speed. The second term adds real sideslip (`car_vy`, body-frame lateral velocity, 0.0 when the caller does not measure it).
+A car pointed slightly off the path while moving forward drifts sideways at a rate proportional to `sin(e_psi)` times speed. The second term adds real sideslip (`car_vy`, body-frame lateral velocity, positive left like the yaw rate, 0.0 when the caller does not measure it). The FSDS bridge publishes this component right-positive, so `sim_perception` negates it before relaying it on `/fsae/slam/car_odom`.
 
 **Step 7. Speed error (`e_v`).**
 
@@ -121,7 +121,7 @@ This never enters the prediction model. It only reweights the cost for this tick
 x0 = [ e_y, e_y_dot, e_psi, car_yaw_rate, e_v, 0.0, delta_act, a_act ]
 ```
 
-`x0[3]` is the measured absolute yaw rate, which equals `e_psi_dot` only on a straight. `x0[5]` is an unused placeholder. `delta_act` and `a_act` are not measured. They are the controller's own record of the last steering and acceleration commands, because a real rack and throttle do not reach a command instantly. Delay compensation (`predict_ahead`) then rolls `x0` forward through the commands still in flight.
+`x0[3]` is the measured absolute yaw rate, which equals `e_psi_dot` only on a straight. `x0[5]` is an unused placeholder. `delta_act` and `a_act` are not measured. They are the controller's own record of the last steering and acceleration commands, because a real rack and throttle do not reach a command instantly. Delay compensation (`predict_ahead`) then rolls `x0` forward through the commands still in flight, starting these two from their values when the oldest of those commands was issued.
 
 ### Worked example
 

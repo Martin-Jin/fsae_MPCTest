@@ -580,6 +580,7 @@ Change it to:
 Don't:
 - Set `pose_rate` below the controller rate, because the MPC then re-solves on unchanged poses and over-corrects.
 - Treat the pose as SLAM output, because it is ground truth with no noise.
+- Remove the sign flip on the relayed lateral velocity, because the FSDS bridge's `linear.y` is right-positive while both controllers assume `v_y` and yaw rate share the left-positive convention.
 Key API: `SimPerception`, `main`
 
 ### `fsds_simulator/perception/fsae_sim_perception/fsae_sim_perception/cone_recorder.py`

@@ -200,6 +200,8 @@ def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max, R_rate=None, u_prev=None,
     _mpc_cache['u_prev'].value           = np.asarray(u_prev, dtype=float)
 
     # ── Solve: OSQP primary, Clarabel fallback ─────────────────────────────────
+    # An OSQP SolverError falls through to Clarabel rather than returning
+    # straight away, matching the live lmpc/controller.py's _solve_qp.
     try:
         _mpc_cache['prob'].solve(
             solver=cp.OSQP,
@@ -209,20 +211,24 @@ def solve_mpc(x0, Ad, Bd, N, Q, R, u_min, u_max, R_rate=None, u_prev=None,
             max_iter=max_iter,       # Iteration cap
         )
         status = _mpc_cache['prob'].status
-
-        if status == cp.OPTIMAL_INACCURATE and not silent:
-            # Usable despite inaccuracy; better than falling back to a held command.
-            print(f"[MPC] Warning: OSQP returned OPTIMAL_INACCURATE "
-                  f"(consider tightening eps or checking weight magnitudes)")
-
-        if status not in (cp.OPTIMAL, cp.OPTIMAL_INACCURATE):
-            _mpc_cache['prob'].solve(solver=cp.CLARABEL)
-            status = _mpc_cache['prob'].status
-
     except cp.error.SolverError as e:
         if not silent:
-            print(f"[MPC] Warning: Solver error: {e}")
-        return None
+            print(f"[MPC] Warning: OSQP solver error: {e}")
+        status = None
+
+    if status == cp.OPTIMAL_INACCURATE and not silent:
+        # Usable despite inaccuracy; better than falling back to a held command.
+        print(f"[MPC] Warning: OSQP returned OPTIMAL_INACCURATE "
+              f"(consider tightening eps or checking weight magnitudes)")
+
+    if status not in (cp.OPTIMAL, cp.OPTIMAL_INACCURATE):
+        try:
+            _mpc_cache['prob'].solve(solver=cp.CLARABEL)
+            status = _mpc_cache['prob'].status
+        except cp.error.SolverError as e:
+            if not silent:
+                print(f"[MPC] Warning: Clarabel solver error: {e}")
+            return None
 
     if status not in (cp.OPTIMAL, cp.OPTIMAL_INACCURATE):
         # Both solvers failed; return None so caller can hold the previous command.

@@ -5,8 +5,9 @@ A drop-in alternative to the Stanley controller: it follows the planned
 centreline using one of two optimisers, constructed unconditionally in
 __init__ (lmpc.controller.MPCController, a linear time-varying MPC, by default; or
 nmpc.solver.NMPCController when use_nmpc=true). Unlike Stanley (which reacts
-to the instantaneous cross-track/heading error), the MPC plans a 1.25 s
-horizon, which is what damps the high-speed left-right sway.
+to the instantaneous cross-track/heading error), the MPC plans ahead over a
+horizon (1.75 s for the LTV-QP, N=35; 1.0 s for the NMPC, N=20), which is
+what damps the high-speed left-right sway.
 
 This node has TWO output modes, selected by the `standalone_output` ROS2
 parameter (default true):

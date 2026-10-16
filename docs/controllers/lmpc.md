@@ -206,7 +206,7 @@ subject to
 ### The solver is OSQP with a Clarabel fallback
 
 - **OSQP (primary):** exploits sparsity and warm starts from last tick's solution. Consecutive solves differ by one horizon step, so the previous answer is a good start. Live settings are `eps_abs = eps_rel = 1e-5`, `max_iter = 8000`. Solve time at the current `N = 35` is not re-measured. The `1-5 ms at N=25` figure in older comments refers to a shorter horizon.
-- **Clarabel (fallback):** interior-point, slower but more robust. Used only when OSQP returns infeasible, unbounded or hits numerical trouble.
+- **Clarabel (fallback):** interior-point, slower but more robust. Used whenever OSQP does not return an optimal status (infeasible, unbounded, numerical trouble, iteration limit) or raises a solver error. Both sides catch an OSQP `SolverError` and fall through to Clarabel.
 - **If both fail:** the live controller holds the last steering command and commands full brake (`[u_prev[0], -a_max_brake]`), because braking is the safer default than coasting on a stale plan. The offline solver returns `None` and the caller holds the previous command.
 - **`OPTIMAL_INACCURATE`** (OSQP answered but not to full tolerance) is accepted and used. Refusing it would be worse than a slightly under-converged answer at 20 Hz. The offline tuner counts these and inflates the score by 10% per occurrence up to 5 (`sim/scoring.py`), so weight sets that cause them are discouraged without being discarded.
 
@@ -297,6 +297,7 @@ scale = 1 + (boost_max - 1) * boost_kappa * boost_ey * boost_epsi
 
 - **Mechanism:** each solve is told the pose's age (`pose_age_s`, from the pose message timestamp), converts it to a step count, and rolls the error state forward through that many recent commands before solving.
 - **Why filtered first:** the raw `round(pose_age_s / dt)` flips between adjacent integers with ordinary loop jitter, and each flip changes the rollforward depth discontinuously, injecting a step disturbance at the control rate. The age is low-passed (`pose_age_lp_alpha = 0.15`) and hysteresis-gated (`n_delay_hysteresis = 0.25`).
+- **Actuator states start in the past:** the pose is `n_delay` ticks old, but `delta_act`/`a_act` are the estimates for now. The rollforward therefore starts the actuator states from where they stood when the oldest pending command was issued (`_act_history`), so the pending commands bring them back to now instead of `n_delay` ticks past it. Starting from the current estimate would also drive the lateral states with a too-advanced steering angle. Offline needs no equivalent: its delay is commands in transit to a plant whose actuator state is measured now, so rolling that state forward is already correct.
 - **Why capped:** `predict_ahead` iterates the linear model with no ground-truth correction, so pose noise compounds with depth and the QP tracks the jitter into the steering command. The cap is `max_delay_compensation_steps = 3`, with a small-angle clip on `e_psi` (`predict_epsi_clip = 0.5 rad`, about 28.6 deg). Disabling compensation outright was tried and was worse.
 - **Related failure:** a stalled pose inflates `pose_age_s` and pins the step count at its cap, which is implicated in a spin-out described in [periodic_pose_teleport_investigation.md](../logs/periodic_pose_teleport_investigation.md).
 

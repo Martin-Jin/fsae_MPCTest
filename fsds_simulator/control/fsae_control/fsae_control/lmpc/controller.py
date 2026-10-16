@@ -81,10 +81,13 @@ class MPCController:
         # (docs/reference/vehicle_physics.md). The true lf/lr, Iz and Cf/Cr are NOT in the
         # FSDS repo (they live in git-LFS .uasset binaries), so these are chosen
         # from physical reasoning rather than read off:
-        #   - lf < lr (CoG biased toward the front axle) makes the bicycle model
-        #     UNDERSTEER (understeer gradient K_us > 0), i.e. stable at every
-        #     speed — a needless oversteer stability risk otherwise, on a car
-        #     whose real balance we can't measure.
+        #   - lf < lr puts the CoG toward the front axle. That alone does not
+        #     set the balance: Cf/Cr below come from per-corner load, so the
+        #     heavier front also gets the stiffer tyres (Cf/Cr ~= 1.49 against
+        #     lr/lf ~= 1.21), and the linear model is mildly OVERSTEER
+        #     (K_us ~= -5.5e-4 rad/(m/s^2), critical speed ~53 m/s). That is
+        #     far above any speed the car reaches, so the model is stable in
+        #     practice; do not read lf < lr as a guarantee of understeer.
         #   - Iz ~= m*lf*lr (~152) is the standard yaw-inertia estimate.
         # Wheelbase L = lf + lr = 1.55 m is an estimate for a FS car (the FSDS
         # collision box is 1.80 m long — an upper bound on car length, not the
@@ -262,6 +265,13 @@ class MPCController:
         # measured pose_age_s indicates (see compute()). Sized to the delay
         # cap since older entries are never needed.
         self._u_history: deque = deque(
+            maxlen=self.params.max_delay_compensation_steps
+        )
+        # [delta_act, a_act] as they stood just BEFORE each _u_history entry
+        # was applied, row-aligned with _u_history. The delay rollforward
+        # starts from the entry matching its oldest pending command; see
+        # compute().
+        self._act_history: deque = deque(
             maxlen=self.params.max_delay_compensation_steps
         )
 
@@ -665,17 +675,24 @@ class MPCController:
         qp["weighted_u_prev"].value = sqrtRr * self._u_prev
 
         # ── Primary solve: OSQP ──────
-        qp["prob"].solve(
-            solver=cp.OSQP,
-            verbose=False,
-            warm_start=True,
-            eps_abs=1e-5,
-            eps_rel=1e-5,
-            max_iter=8000,
-        )
-
-        status = qp["prob"].status
-        u_val  = qp["u"][:, 0].value
+        # CVXPY raises SolverError (rather than returning a status) when
+        # OSQP itself errors. Catch it so that case still reaches the
+        # Clarabel fallback and the hold-steer/full-brake fail-safe below
+        # instead of escaping compute() and the control step.
+        try:
+            qp["prob"].solve(
+                solver=cp.OSQP,
+                verbose=False,
+                warm_start=True,
+                eps_abs=1e-5,
+                eps_rel=1e-5,
+                max_iter=8000,
+            )
+            status = qp["prob"].status
+            u_val  = qp["u"][:, 0].value
+        except cp.error.SolverError as exc:
+            print(f"[MPC] Warning: OSQP raised {exc!r}; trying Clarabel.")
+            status, u_val = None, None
 
         if status == cp.OPTIMAL_INACCURATE and u_val is not None:
             print("[MPC] Warning: OSQP OPTIMAL_INACCURATE — Proceeding with viable solution.")
@@ -786,8 +803,10 @@ class MPCController:
         path : np.ndarray, shape (n, 2)
             Planner centreline waypoints [x, y] in the global frame.
         car_pos : np.ndarray, shape (2,)
-            Vehicle rear-axle-reference position [x, y] (global frame);
-            front axle position is derived inside _error_state via self.lf.
+            Vehicle reference position [x, y] (global frame), treated as the
+            CoG: _error_state adds self.lf (CoG to front axle) to reach the
+            front axle. Which body point FSDS odometry actually reports is
+            not established; Stanley assumes the rear axle (1.5 m offset).
         car_yaw : float
             Vehicle heading (rad, global frame).
         car_speed : float
@@ -861,6 +880,16 @@ class MPCController:
             n_delay = self._update_n_delay(pose_age_s)
             if n_delay > 0 and len(self._u_history) > 0:
                 pending_cmds = list(self._u_history)[-n_delay:]
+                # x0[6:8] is the actuator estimate for NOW, but the pose is
+                # n_delay ticks old and the pending commands are the ones
+                # issued since. Start the actuator states from where they
+                # stood when the oldest pending command was issued, so the
+                # rollforward brings them back to now instead of n_delay
+                # ticks past it (which would also drive the lateral states
+                # with a too-advanced steering angle).
+                if len(self._act_history) >= len(pending_cmds):
+                    x0 = x0.copy()
+                    x0[6:8] = self._act_history[-len(pending_cmds)]
                 x0 = predict_ahead(
                     x0, Ad, Bd, pending_cmds,
                     epsi_clip=self.params.predict_epsi_clip,
@@ -1022,6 +1051,7 @@ class MPCController:
         )
         solve_ms = (time.perf_counter() - _t_solve0) * 1e3
         self._u_history.append(u_opt.copy())
+        self._act_history.append(np.array([self._delta_act, self._a_act]))
 
         # Actual step-0 rate-of-change the QP's R_rate term penalised this
         # tick (u_opt vs the previous command), for last_telemetry only.
@@ -1099,5 +1129,6 @@ class MPCController:
         self._v_des_filtered  = None
         self._ref_psi_prev    = None
         self._u_history.clear()
+        self._act_history.clear()
         self._pose_age_filtered = None
         self._n_delay           = 0

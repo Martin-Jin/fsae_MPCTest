@@ -463,6 +463,10 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
             self._Rr_flat = self._Rr_flat * np.tile(
                 np.array([m_rrate_zone, 1.0]), self.N)
             self._ErE = self._E.T @ (self._Rr_flat[:, None] * self._E)
+            # Keep the logged Rrate_steer_corner_blend the weight the QP
+            # actually uses: the zone factor multiplies it after the
+            # composition above.
+            rrate_steer_current *= m_rrate_zone
 
         # Progress mode: `desired_speed` becomes a CAP (row 4 of h(), see
         # _outputs) rather than a two-sided target, and s_target_N is an

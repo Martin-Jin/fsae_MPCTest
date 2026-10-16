@@ -101,7 +101,7 @@ controller:
     r_rate_delta: 100.0          # steering rate of change (1/(rad/s)^2)
     r_rate_a: 2.0             # acceleration rate of change (1/(m/s^3)^2)
     terminal_q_scale: 1.0      # extra weight on terminal predicted state; 1.0 = no-op
-    speed_target_deficit_max: 2.55   # max the ramped speed target may lead the car's current speed by (m/s); read by both controllers before either's speed-error/cap row sees the target. Was a bare module constant with no ROS param; binding constraint on acceleration for 36.8% of a lap at the old default (2.5). NOT yet live-validated at 5.0
+    speed_target_deficit_max: 2.55   # max the ramped speed target may lead the car's current speed by (m/s); read by both controllers before either's speed-error/cap row sees the target. Was a bare module constant with no ROS param; near 2.5 this clamp is the binding limit on acceleration for a large share of a lap; 5.0 removes that offline but is not live-validated
 
     # Feature enable/disable flags
     adaptive_q_scaling_enabled: true              # soften Q[0,0] near centreline to reduce small-error hunting
@@ -241,9 +241,9 @@ controller:
     nmpc_trust_delta_rad: 0.15707963267948966   # per-iteration trust region on each stage's steering deviation. 9 deg = MPCController's own du_max steering slew per tick (180 deg/s * 0.05 s) — reused, not invented (rad)
     nmpc_trust_a: 0.6   # per-iteration trust region on each stage's accel deviation. 0.6 = MPCController's du_max[1] — reused, not invented (m/s^2)
     nmpc_backtrack_max: 2   # max step halvings if a full SQP step increases the true nonlinear cost (divergence guard). 0 disables backtracking (halvings)
-    nmpc_track_halfwidth: 3.35   # soft |e_y| bound with slack (both quadratic and linear), matching the LTV-QP's own +-3.5m literal. Narrowing to 3.0 was tried 2026-09-21 for the progress-term experiment and reverted the same day: this field is read unconditionally, so it also tightened ordinary tracking mode and measurably hurt it. <=0 removes the constraint entirely (m)
+    nmpc_track_halfwidth: 3.35   # soft |e_y| bound with slack (both quadratic and linear), slightly inside the LTV-QP's +-3.5m literal. Narrowing to 3.0 was tried 2026-09-21 for the progress-term experiment and reverted the same day: this field is read unconditionally, so it also tightened ordinary tracking mode and measurably hurt it. <=0 removes the constraint entirely (m)
     nmpc_slack_weight: 10000.0   # penalty on the track-bound slack, copied from _build_qp's existing W_slack = 10000.0 (1/m^2)
-    nmpc_slack_linear_weight: 500.0   # [NMPC only] LINEAR track-bound slack penalty, additional to the quadratic nmpc_slack_weight above. 0.0 = no-op, and inert anyway while nmpc_progress_enabled is false (nothing else rewards violating the boundary). Set ~1000 alongside any progress-term experiment: necessary there, but measured NOT sufficient
+    nmpc_slack_linear_weight: 500.0   # [NMPC only] LINEAR track-bound slack penalty, additional to the quadratic nmpc_slack_weight above. 0.0 disables it; inert anyway while nmpc_progress_enabled is false (nothing else rewards violating the boundary). Set ~1000 alongside any progress-term experiment: necessary there, but measured NOT sufficient
     nmpc_curvature_dense_step: 0.5   # arc-length resampling step for the kappa(s) reference (= curvature_speed()'s dense_step) (m)
     nmpc_curvature_smooth_w: 3   # moving-average width applied before differencing headings (= curvature_speed()'s w). 1 disables smoothing (samples)
     nmpc_kappa_clip: 0.5   # hard clamp on |kappa(s)|. GUARD, not a tuning knob: 0.5 = a 2 m radius, the tightest corner curvature_speed()'s own docstring contemplates, so it is inert on any real track line and only catches a ... (1/m)

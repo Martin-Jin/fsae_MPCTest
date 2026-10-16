@@ -176,7 +176,7 @@ dx_k = S[k] @ dU_flat
 
 ### Delay compensation rolls the state through the nonlinear model
 
-When `delay_compensation_enabled`, the measured pose age is low-passed (`pose_age_lp_alpha`), converted to a step count with hysteresis (`n_delay_hysteresis`) and capped (`max_delay_compensation_steps`). The measured state is then rolled forward through that many recent commands with the nonlinear model. The linear controller does the same with its linear model (`predict_ahead`). An optional `nmpc_latency_compensation_enabled` (default false) rolls forward by `nmpc_latency_compensation_ms` to cover the solve's own wall-clock time. It was a suspect in a smoothness regression and stays off.
+When `delay_compensation_enabled`, the measured pose age is low-passed (`pose_age_lp_alpha`), converted to a step count with hysteresis (`n_delay_hysteresis`) and capped (`max_delay_compensation_steps`). The measured state is then rolled forward through that many recent commands with the nonlinear model, starting the actuator states (`delta_act`, `a_act`) from their values when the oldest pending command was issued, as in the linear controller (see [lmpc.md](lmpc.md)). The linear controller does the same with its linear model (`predict_ahead`). An optional `nmpc_latency_compensation_enabled` (default false) rolls forward by `nmpc_latency_compensation_ms` to cover the solve's own wall-clock time. It was a suspect in a smoothness regression and stays off.
 
 ## Shaping the steering rate cost
 

@@ -33,7 +33,7 @@ class StanleyController:
     """
     Stanley path-tracking steering controller (Thrun et al., DARPA 2005).
 
-    δ = θ_e + arctan(k_cte · e / (v + k_soft))
+    δ = θ_e + arctan(k_cte · e / (v + k_soft)) − k_d · ω
 
     θ_e — heading error: path tangent angle minus car yaw (rad).
           Positive when path turns left relative to the car.
@@ -42,10 +42,10 @@ class StanleyController:
           the RIGHT of the path.
     v   — car speed (m/s); k_soft prevents division by zero at standstill.
 
-    Sign convention (FSDS ENU: x forward, y left):
-      output > 0  → steer right
-      output < 0  → steer left
-      output ∈ [-1, 1]
+    Sign convention (ENU: x forward, y left):
+      output is the front-wheel steering ANGLE in radians, positive = left,
+      clipped to ±MAX_STEER_RAD. FSDS's normalised command (+1 = right) is
+      produced downstream by fsds_bridge, not here.
 
     Tuning:
       k_cte     — cross-track gain.  Higher values correct lateral error faster
@@ -53,7 +53,7 @@ class StanleyController:
       k_soft    — speed softening (m/s).  Set to ~walking speed so the CTE
                   term doesn't saturate the steering at low speeds.
       k_d       — yaw-rate damper gain.  Subtracts k_d·ω from the Stanley
-                  angle before normalising, opposing rapid heading changes.
+                  angle, opposing rapid heading changes.
                   This is the primary fix for left-right sway: the CTE term
                   alone has no memory of how fast the heading is already
                   changing, so it overshoots; k_d·ω counters each swing.
@@ -96,7 +96,8 @@ class StanleyController:
         car_yaw_rate: float = 0.0,
     ) -> float:
         """
-        Return a steering command in [-1, 1].
+        Return the steering angle in radians (positive = left), clipped to
+        ±MAX_STEER_RAD.
 
         path         — (N, 2) array of waypoints in map frame (must have N ≥ 2)
         car_pos      — (2,) car position in map frame

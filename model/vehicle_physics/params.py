@@ -41,10 +41,12 @@ class VehicleParams:
         # plant/model parity rule). Neither set of values is measured (the
         # true lf/lr/Iz aren't in the FSDS repo -- they live in git-LFS
         # .uasset binaries), so these are a deliberate choice, not a guess:
-        # lf=0.85 > lr=0.70 would make the bicycle model OVERSTEER
-        # (understeer gradient K_us < 0, v_crit ~35 m/s) -- a needless
-        # stability risk on a car whose real balance can't be measured.
-        # lf < lr instead makes it UNDERSTEER (stable at every speed).
+        # lf < lr puts the CoG toward the front axle. That alone does not set
+        # the balance: Cf/Cr below come from per-corner load, so the heavier
+        # front also gets the stiffer tyres (Cf/Cr ~= 1.49 against lr/lf ~=
+        # 1.21), and the linear MPC model is mildly OVERSTEER (K_us ~= -5.5e-4
+        # rad/(m/s^2), critical speed ~53 m/s), far above any speed the car
+        # reaches. Do not read lf < lr as a guarantee of understeer.
         # Iz ~= m*lf*lr (~151.7) is the standard yaw-inertia estimate; a
         # smaller value under-estimates it, making the model expect a
         # twitchier car than reality. Keep these two files in sync manually.

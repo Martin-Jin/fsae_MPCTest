@@ -289,18 +289,13 @@ class NMPCParams:
     })
 
     # ── Soft track constraint (mirrors MPCController's own) ─────────────
-    # Back to 3.5, matching the LTV-QP's own +-3.5 m literal. Was narrowed
-    # to 3.0 on 2026-09-21 for the progress-term experiment (both the
-    # quadratic and linear slack read this same bound, see nmpc/solver.py's
-    # _cost()/_solve_step()), on the reasoning that progress's analytic
-    # incentive to hug the boundary (kappa(s)'s 1/(1-kappa*e_y) metric
-    # factor rises toward the inside) needs slack headroom before the car
-    # reaches the true track edge. REVERTED the same day: narrowing this
-    # also tightens ORDINARY TRACKING mode (this field is read unconditionally,
-    # not gated on nmpc_progress_enabled), and was found to make tracking
-    # noticeably worse in practice. If the progress experiment needs a
-    # tighter boundary again, override it alongside NMPC_PROGRESS_ENABLED
-    # rather than changing this default.
+    # 3.35 m, slightly inside the LTV-QP's +-3.5 m literal. Both the
+    # quadratic and linear slack read this bound (nmpc/solver.py's
+    # _cost()/_solve_step()). It is read unconditionally, not gated on
+    # nmpc_progress_enabled, so narrowing it for a progress-term experiment
+    # also tightens ordinary tracking, which measurably hurt tracking when
+    # tried at 3.0. Override it alongside NMPC_PROGRESS_ENABLED rather than
+    # changing this default.
     nmpc_track_halfwidth: float = field(default=3.35, metadata={
         "unit": "m",
         "desc": "soft |e_y| bound with slack (both quadratic and linear). "
@@ -313,16 +308,15 @@ class NMPCParams:
                 "existing W_slack = 10000.0",
         "controller": "nmpc_only",
     })
-    # Back to 0.0, following nmpc_progress_enabled back to False. Inert
-    # without the progress reward anyway (nothing else rewards violating the
-    # boundary), so this is a no-op in the shipped configuration rather than
-    # a behaviour change. Set it to ~1000 alongside any progress-term
-    # experiment; it is necessary there, just not sufficient.
+    # Effectively inert without the progress reward (nothing else rewards
+    # violating the boundary, so slack stays 0 and this term adds nothing).
+    # Raise it to ~1000 alongside any progress-term experiment; it is
+    # necessary there, just not sufficient.
     nmpc_slack_linear_weight: float = field(default=500.0, metadata={
         "unit": "1/m",
         "desc": "LINEAR track-bound slack penalty, additional to the "
-                "quadratic nmpc_slack_weight above. 0.0 (default) is a "
-                "no-op. A purely quadratic penalty has ZERO gradient at "
+                "quadratic nmpc_slack_weight above. 0.0 disables it. "
+                "A purely quadratic penalty has ZERO gradient at "
                 "zero violation, so the first small boundary violation is "
                 "nearly free; that matters once nmpc_progress_enabled gives "
                 "the solver an unbounded incentive to find it (corner "

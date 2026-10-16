@@ -212,7 +212,7 @@ The corner-factor scheduler replaced the older lookahead and demand-normalisatio
 | `anti_hunt_boost_max` | `6.0` | literal `boost_max = 6.0` inside `steer_rate_anti_hunt()` in `controller/model_utils.py` | one-sided by construction. The value is equal today but nothing links them |
 | `nmpc_anti_hunt_boost_max` | `-1.0` (inherit) | none. `settings/nmpc.py` notes there is no override path | live-only |
 | `predict_epsi_clip` | `0.5` rad | literal `_PREDICT_EPSI_CLIP = 0.5` in `sim/rollout/delay.py` | equal today, hard-coded offline |
-| `delay_compensation_enabled` | `True` | offline always compensates (`predict_ahead()`) | no toggle offline |
+| `delay_compensation_enabled` | `True` | offline always compensates (`predict_ahead()`) | no toggle offline. Live also starts the rollforward's actuator states from the snapshot taken when the oldest pending command was issued (its delay is a stale pose). Offline's delay is commands in transit to a plant measured now, so it rolls the current actuator state forward, which is correct for that model |
 | `max_delay_compensation_steps` | `3` | offline caps a believed lag at `n_true + 2`, not at 3 | different rule |
 | `pose_age_lp_alpha`, `n_delay_hysteresis` | `0.15`, `0.25` | no offline equivalent. Offline has no measured pose age | live-only |
 

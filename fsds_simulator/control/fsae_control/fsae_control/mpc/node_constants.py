@@ -45,27 +45,11 @@ SPEED_TARGET_RISE_RATE = 7.0
 # Not specific to launch: the same rule stops the target running away after a
 # spin or a heavy brake, for the same reason.
 #
-# 5.0, not the original 2.5. At 2.5 the clamp is not a launch/recovery guard
-# at all, it is the binding constraint on acceleration for a THIRD of a
-# normal lap: measured OFFLINE 36.8% of ticks pinned at exactly the limit,
-# holding a_cmd to 4.45 against a plant that delivers ~12. Raising it to 5.0
-# drops the pinned fraction to 2.3%, nearly doubles peak a_cmd to 8.32, and
-# improves every metric at once rather than trading any against another:
-#
-#   DEFICIT_MAX   score (3 runs)        lap steps   a_cmd max   |e_y| mean   steer sat
-#   2.5           0.757/0.804/0.757     1081-1117   4.45        0.418        4.71%
-#   5.0           0.693/0.692/0.693     1033-1034   8.32        0.402        3.77%
-#
-# Lower score is better. The launch behaviour the clamp exists to protect is
-# unchanged (launch at step 9 either way, launch-phase |e_y| 0.27 m against
-# a 3.5 m boundary). Values above ~5 buy nothing further (10.0 and 100.0
-# both plateau at a_cmd 8.87), so this is the knee, not a ceiling to keep
-# raising.
-#
-# NOT YET LIVE-VALIDATED. This is an offline-only result, and the documented
-# sim-to-real gap (live saturates ~4x more often than the sim) is exactly
-# the failure mode of trusting one. Faster corner entry is the specific risk
-# to watch on the car. See docs/logs/nmpc_progress_term_investigation.md.
+# Careful: near 2.5 this clamp is not a launch/recovery guard at all but the
+# binding limit on acceleration for a large share of a normal lap (offline,
+# 5.0 removes that and is the knee; values above ~5 buy nothing). The shipped
+# default stays 2.55 until 5.0 is validated live, faster corner entry being the
+# specific risk to watch. See docs/logs/nmpc_progress_term_investigation.md.
 #
 # Promoted to a real MPCParams field (params.speed_target_deficit_max,
 # tunable via ROS param/YAML/launch arg/GUI) rather than this module
