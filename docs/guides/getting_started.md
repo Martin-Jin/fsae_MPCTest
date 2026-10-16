@@ -124,7 +124,7 @@ The tuned weights are optimised for one average operating point. A few small fun
 - **Steering gets more conservative at higher speed.** The same angle gives more lateral acceleration, so the steering cost rises smoothly with speed (`adaptive_R_scaling`). The acceleration cost is deliberately not scaled with speed.
 - **The smoothness penalty relaxes in corners and stiffens on straights.** It is floored, not removed, in a tight corner via the corner-factor blend. It stiffens again once the car is straight, centred and aligned, to stop small unnecessary corrections (`steer_rate_anti_hunt`).
 - **The lateral-error cost softens near the centreline.** This prevents a correct-then-overcorrect cycle just where the car should settle onto the line (`adaptive_Q_scaling`).
-- **Delay compensation** rolls the tracking error forward through commands already in flight, so the controller plans against where the car will be, not where it was measured. Both the live node and the offline rollout do this (`predict_ahead`).
+- **Delay compensation** rolls the tracking error forward through commands already in flight, so the controller plans against where the car will be, not where it was measured. Live, the steering and throttle estimates are first wound back to where they were when the oldest pending command was sent (`_act_history`), so replaying the pending commands brings them up to now instead of past it. Both the live controllers and the offline rollout roll forward (`predict_ahead` for LMPC).
 - **Tracking-error speed gate** slows the car when it is far from the path it is following, independent of the path's own shape. Both sides implement it.
 
 Full detail: [control_mechanisms.md](../reference/control_mechanisms.md).
@@ -187,7 +187,7 @@ Solve time depends on the RK4 sub-step counts (`nmpc_rk_substeps`, `nmpc_jac_sub
 | Original defaults (`nmpc_jac_substeps=1`) | 8.9 ms | 11.6 ms | [late_turn_in_investigation.md](../logs/late_turn_in_investigation.md) |
 | `nmpc_jac_substeps=1` versus `4`, full lap | 9.56 ms versus 18.63 ms | 14.05 ms versus 23.61 ms | [nmpc_low_speed_accel_stall_investigation.md](../logs/nmpc_low_speed_accel_stall_investigation.md) |
 
-The shipped defaults are now `nmpc_rk_substeps=4` and a speed-gated Jacobian (`nmpc_jac_substeps=4` below the gate speed, `nmpc_jac_substeps_fast=2` above). No solve-time measurement of that exact configuration is recorded, so the current figure is not verified. The soft per-iteration budget `nmpc_solve_budget_ms` is 25 ms.
+The shipped defaults are now `nmpc_rk_substeps=4` (3 above `nmpc_rk_gate_speed`, 4 m/s, via `nmpc_rk_substeps_fast`) and a speed-gated Jacobian (`nmpc_jac_substeps=4` below the gate speed, `nmpc_jac_substeps_fast=2` above). No solve-time measurement of that exact configuration is recorded, so the current figure is not verified. The soft per-iteration budget `nmpc_solve_budget_ms` is 25 ms.
 
 ### 3.3 Does it help
 
@@ -207,11 +207,11 @@ The live figures are one matched pair, not repeated runs. Sources: sections 16.6
 NMPC carries two optional refinements on top of the core fix:
 
 - **A smoother spline-fitted curvature reading** (`nmpc_spline_reference_enabled`): on by default, no known trade-off.
-- **A friction-circle hard constraint on tyre force** (`nmpc_friction_circle_enabled`): off by default and experimental, pending a telemetry fix and a looser force bound.
+- **A friction-circle hard constraint on tyre force** (`nmpc_friction_circle_enabled`): off by default and experimental. It failed its first live test: the hard force rows have no slack, so 77.5% of SQP subproblems failed to solve and the car stalled off track.
 
 A third idea, sampling a precomputed speed profile per horizon step, was tried as a cost term and then as a hard per-stage constraint. Both failed live tests for different reasons (a corner overspeed in the first, the same overspeed surviving in the second because the constraint checked the solver's own prediction, not the real car). It was removed, not left as an off-by-default option.
 
-Full detail: "Three MPCC-inspired additions" in [control_mechanisms.md](../reference/control_mechanisms.md).
+Full detail: section 16.10 of [late_turn_in_investigation.md](../logs/late_turn_in_investigation.md), and "Spline path reference" in [control_mechanisms.md](../reference/control_mechanisms.md).
 
 ## 4. LMPC versus NMPC
 
@@ -221,7 +221,7 @@ Full detail: "Three MPCC-inspired additions" in [control_mechanisms.md](../refer
 | Solved as | One convex QP per tick | A sequence of QPs (SQP) per tick |
 | Solve time | 7.4 ms mean, 9.9 ms p95 (offline, section 1.4) | 8.9 to 18.6 ms mean depending on sub-steps (section 3.2) |
 | Horizon | 35 steps (1.75 s) | 20 steps (1.0 s) |
-| Adaptive gain scheduling (section 1.5) | Active | Inert, except `nmpc_steer_rate_anti_hunt_enabled` (opt-in) |
+| Adaptive gain scheduling (section 1.5) | Active | Inert, except two opt-ins: `nmpc_steer_rate_anti_hunt_enabled` and `nmpc_reversal_penalty_enabled` |
 | Delay compensation, speed gate, e-braking, GO-gating | Shared | Shared |
 | Yaw-rate weight | `q_r` penalises absolute yaw rate | `nmpc_q_epsi_dot` penalises yaw rate relative to what the corner demands |
 | Live code | `lmpc/` package (`controller.py`, `predict.py`, `adaptive_gains.py`, `constants.py`) | `nmpc/` package |
@@ -229,7 +229,7 @@ Full detail: "Three MPCC-inspired additions" in [control_mechanisms.md](../refer
 
 Why the adaptive gains are inert under NMPC: they exist to compensate for LMPC's blind spot, which NMPC's model does not have, so reweighting on top would double-count the effect. The NMPC horizon is 20 steps because a horizon sweep chose it, see the "Defaults therefore: N=20" passage in [late_turn_in_investigation.md](../logs/late_turn_in_investigation.md).
 
-The delay compensation, speed gate, e-braking and GO-gating are computed by the ROS 2 node upstream of either controller, and by the offline rollout for the first two.
+The speed gate, e-braking and GO-gating are computed by the ROS 2 node upstream of either controller. Delay compensation runs inside each controller (`predict_ahead` for LMPC, the nonlinear rollforward in `nmpc/solver.py` for NMPC). The offline rollout implements delay compensation and the speed gate.
 
 For exact formulas and the full feature-by-feature comparison see [nmpc.md](../controllers/nmpc.md) and [error_states.md](../reference/error_states.md).
 
@@ -259,7 +259,7 @@ Each candidate is scored on every shape in `VALIDATION_SUITE` (5 shapes), from a
 
 ### 5.3 How a run gets scored
 
-Every rollout is scored by the same logic: the tuner, **Show Metrics** and **Benchmark All Paths** in the GUI, and the real car (the ROS 2 package carries a copy of the same formula with the constants inlined). Scores from any of them are directly comparable, with one caveat for the car. It cannot measure `offtrack` (no ground-truth track edges) or a lap-time optimum, so a live run has no lap-time bonus reference and the log header records `score_is_partial=1`.
+Every rollout is scored by the same logic: the tuner, **Show Metrics** and **Benchmark All Paths** in the GUI, and the real car (the ROS 2 package carries a copy of the same formula with the constants inlined). Scores from any of them are directly comparable, with one caveat for the car. It cannot measure `offtrack` (no ground-truth track edges). With a precomputed path loaded (`map_path`, the `launch_all.sh` default), `LapProgressTracker` supplies progress, lap completion and the time bonus. Against the live planner there is no known path end, so the log header records `score_is_partial=1`.
 
 #### 5.3.1 The 13 raw metrics
 
@@ -321,14 +321,14 @@ Every tuning run appends an entry to `docs/logs/tuning_history.txt`: timestamp, 
 
 Two gaps to know about:
 
-- The tuner prints and logs the 9 Q/R/R_rate weights and the 5 NMPC values (an `NMPC tail` line). Copy the NMPC values into `settings/nmpc.py` and the live `nmpc_params.py` by hand output.
+- The tuner prints and logs the 9 Q/R/R_rate weights and the 5 NMPC values (an `NMPC tail` line). Copy the NMPC values by hand into `settings/nmpc.py` and the matching `nmpc_*` fields of the live `mpc_params.py`.
 - `R_diag[1]` (the accel weight) is nominal only. The QP's acceleration and braking costs read `R_A_ACCEL` and `R_A_BRAKE`, so the tuner's `R_diag[1]` has no effect on the score. Set those two by hand.
 
 The full field-by-field parity mapping is in [offline_live_parity.md](../reference/offline_live_parity.md). Full tuner usage is in [offline_guide.md](offline_guide.md).
 
 ### 5.5 Manual tuning guide
 
-Hand-editing individual entries is not recommended. They interact, so an apparent improvement in one corner can quietly break another. Prefer the tuner. If a value must be nudged by hand:
+Hand-editing individual entries is not recommended. They interact, so an apparent improvement in one corner can break another. Prefer the tuner. If a value must be nudged by hand:
 
 - **Change one number at a time**, by no more than 20 to 30%, then re-test. Small changes can have large effects.
 - **Test against multiple corner shapes**, using **Benchmark All Paths** in the GUI, not only **Show Metrics** on one run.
@@ -384,7 +384,7 @@ The controller only receives the plant's tracking error, never its internal stat
 
 `gui/simulation.py` is the interactive matplotlib GUI: draw or load a path, run one closed-loop rollout, scrub through it frame by frame, and score it (**Show Metrics**, **Benchmark All Paths**, section 5.3). Step-by-step: [offline_guide.md](offline_guide.md). A keyboard-driven manual drive mode (`gui/manual_drive.py`) is rarely needed, see the same guide.
 
-`python -m gui.launcher` opens a tabbed launcher for the live sim, log playback, the offline sim and settings. See [debugging_tools.md](debugging_tools.md).
+`python -m gui.launcher` opens a tabbed launcher with five tabs: Launch Sim, Debug a Log, Run Offline Sim, Settings and Profiles. See [debugging_tools.md](debugging_tools.md).
 
 ### 6.4 Module reference
 
