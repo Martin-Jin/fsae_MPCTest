@@ -17,8 +17,8 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 from gui.launcher.file_edit import (
-    _backup_once, _read_dataclass_field, _read_dataclass_field_desc, _read_var,
-    _rewrite_dataclass_field, _rewrite_var, _rewrite_yaml_field,
+    _backup_once, _launch_arg_vars, _read_dataclass_field, _read_dataclass_field_desc,
+    _read_var, _rewrite_dataclass_field, _rewrite_var, _rewrite_yaml_field,
 )
 from gui.launcher.paths import RepoPaths
 from gui.launcher.theme import _field_label, _make_scrollable
@@ -244,9 +244,8 @@ def _profile_field_names() -> list[str]:
     for _label, name, _desc in _NMPC_PROGRESS_FIELDS:
         names.append(name)
     for _group_title, entries in _FEATURE_GROUPS:
-        for _label, settings_name, _mpc_field in entries:
-            if settings_name is not None:
-                names.append(settings_name)
+        for _label, settings_name, mpc_field in entries:
+            names.append(settings_name if settings_name is not None else mpc_field)
     return names
 
 
@@ -264,6 +263,8 @@ class SettingsTab(ttk.Frame):
         super().__init__(parent, padding=0)
         self._paths = paths
         self._backed_up: set[Path] = set()
+        self._launch_vars = (_launch_arg_vars(paths.launch_all_sh)
+                             if paths.launch_all_sh.is_file() else {})
 
         header = ttk.Frame(self, padding=(24, 24, 24, 0))
         header.pack(fill="x")
@@ -298,6 +299,10 @@ class SettingsTab(ttk.Frame):
             r += 2 if desc else 1
             raw = _read_var(paths.settings_dir, name) or "[]"
             current = _parse_float_list(raw, length)
+            for i, mpc_field in enumerate(mpc_fields):
+                pinned = _to_float(self._pinned_launch_value(mpc_field))
+                if pinned is not None:
+                    current[i] = pinned
             # One labelled row per index, not one wide horizontal row -- the
             # old layout packed up to 8 entries side by side in a fixed-width
             # card, which ran off the visible window with no way to see or
@@ -346,9 +351,9 @@ class SettingsTab(ttk.Frame):
                 desc = _read_dataclass_field_desc(paths.nmpc_params_py, _mpc_field)
             _field_label(weights_card, r, label, desc, label_style="Card.TLabel",
                          desc_style="CardMuted.TLabel", wraplength=420)
-            raw = _read_var(paths.settings_dir, name)
+            raw = self._pinned_launch_value(_mpc_field) or _read_var(paths.settings_dir, name)
             if kind == "bool":
-                var = tk.BooleanVar(value=(raw or "False").strip() == "True")
+                var = tk.BooleanVar(value=(raw or "False").strip().lower() == "true")
                 ttk.Checkbutton(weights_card, style="Card.TCheckbutton", variable=var).grid(
                     row=r, column=1, sticky="w")
             else:
@@ -368,7 +373,8 @@ class SettingsTab(ttk.Frame):
             desc = _read_dataclass_field_desc(paths.mpc_params_py, mpc_field)
             _field_label(overrides_card, r, label, desc, label_style="Card.TLabel",
                          desc_style="CardMuted.TLabel", columnspan=3, wraplength=520)
-            raw = _read_var(paths.settings_dir, name) or "-1.0"
+            raw = (self._pinned_launch_value(mpc_field)
+                   or _read_var(paths.settings_dir, name) or "-1.0")
             is_override = _to_float(raw) is not None and _to_float(raw) >= 0.0
             enabled_var = tk.BooleanVar(value=is_override)
             value_var = tk.StringVar(value=raw if is_override else "")
@@ -392,7 +398,8 @@ class SettingsTab(ttk.Frame):
         for label, name, desc in _NMPC_PROGRESS_FIELDS:
             _field_label(progress_card, r, label, desc, label_style="Card.TLabel",
                          desc_style="CardMuted.TLabel", wraplength=520)
-            var = tk.StringVar(value=_read_var(paths.settings_dir, name) or "0.0")
+            var = tk.StringVar(value=self._pinned_launch_value(name.lower())
+                               or _read_var(paths.settings_dir, name) or "0.0")
             ttk.Entry(progress_card, textvariable=var, width=10).grid(
                 row=r, column=1, sticky="w")
             self._progress_vars[name] = var
@@ -416,7 +423,9 @@ class SettingsTab(ttk.Frame):
                     desc = (desc + " " if desc else "") + "(live-only, no settings equivalent)"
                 _field_label(group_card, r, label, desc, label_style="Card.TLabel",
                              desc_style="CardMuted.TLabel", wraplength=520)
-                raw = _read_var(paths.settings_dir, settings_name) if settings_name else None
+                raw = self._pinned_launch_value(mpc_field)
+                if raw is None and settings_name:
+                    raw = _read_var(paths.settings_dir, settings_name)
                 if raw is None:
                     raw = _read_dataclass_field(paths.mpc_params_py, mpc_field)
                 var = tk.BooleanVar(value=(raw or "False").strip() in ("True", "true"))
@@ -504,6 +513,27 @@ class SettingsTab(ttk.Frame):
         if p.mirror_fsae_params_yaml.is_file():
             if not _rewrite_yaml_field(p.mirror_fsae_params_yaml, mpc_field, yaml_literal):
                 errors.append(f"{mpc_field}: key not found in the mirror fsae_params.yaml")
+        # An uncommented launch_all.sh shortlist line is passed as a launch
+        # arg, which beats both the YAML and the dataclass default. Without
+        # this write, a save (or a loaded profile) changed every file above
+        # while FSDS kept running the shortlist's old value, and the offline
+        # settings silently disagreed with the car. Commented-out lines are
+        # left commented: they pass nothing, so the YAML value already wins.
+        var = self._launch_vars.get(mpc_field)
+        if var and self._pinned_launch_value(mpc_field) is not None:
+            if not _rewrite_var(p.launch_all_sh, var, yaml_literal):
+                errors.append(f"{mpc_field}: launch_all.sh line {var} could not be rewritten")
+
+    def _pinned_launch_value(self, mpc_field: str | None) -> str | None:
+        """The value an UNCOMMENTED launch_all.sh shortlist line passes for
+        mpc_field, or None when the line is commented out or absent. Read
+        fresh each call so a hand edit made while the GUI is open is seen.
+        Widgets start from this value when present, because it is what FSDS
+        actually runs."""
+        var = self._launch_vars.get(mpc_field) if mpc_field else None
+        if not var or not self._paths.launch_all_sh.is_file():
+            return None
+        return _read_var(self._paths.launch_all_sh, var)
 
     def _on_save(self) -> None:
         settings_path = self._paths.settings_dir
@@ -516,7 +546,8 @@ class SettingsTab(ttk.Frame):
             if sync_live:
                 for path in (mpc_params_path, nmpc_params_path,
                              self._paths.mirror_mpc_params_py, self._paths.mirror_nmpc_params_py,
-                             self._paths.fsae_params_yaml, self._paths.mirror_fsae_params_yaml):
+                             self._paths.fsae_params_yaml, self._paths.mirror_fsae_params_yaml,
+                             self._paths.launch_all_sh):
                     if path.is_file():
                         _backup_once(path, self._backed_up)
             elif not getattr(self, "_warned_no_live_file", False):
@@ -610,8 +641,8 @@ class SettingsTab(ttk.Frame):
                 if sync_live:
                     self._set_status(
                         "Saved to the settings package, the live mpc_params.py/nmpc_params.py, "
-                        "fsae_params.yaml, and their fsds_simulator/ mirrors. Restart the "
-                        "sim to pick up the live change.",
+                        "fsae_params.yaml, their fsds_simulator/ mirrors, and any active "
+                        "launch_all.sh shortlist line. Restart the sim to pick up the live change.",
                         style="Success.TLabel", flash=True, auto_clear=True)
                 else:
                     self._set_status(
@@ -820,8 +851,8 @@ class SettingsTab(ttk.Frame):
             values[name] = repr(_to_float(self._progress_vars[name].get()) or 0.0)
         for _group_title, entries in _FEATURE_GROUPS:
             for _label, settings_name, mpc_field in entries:
-                if settings_name is not None:
-                    values[settings_name] = "True" if self._feature_vars[mpc_field].get() else "False"
+                key = settings_name if settings_name is not None else mpc_field
+                values[key] = "True" if self._feature_vars[mpc_field].get() else "False"
         return values
 
     def apply_profile_values(self, values: dict[str, str]) -> None:
@@ -861,8 +892,9 @@ class SettingsTab(ttk.Frame):
                 self._progress_vars[name].set(str(_to_float(values[name]) or 0.0))
         for _group_title, entries in _FEATURE_GROUPS:
             for _label, settings_name, mpc_field in entries:
-                if settings_name is not None and settings_name in values:
-                    self._feature_vars[mpc_field].set(values[settings_name].strip() == "True")
+                key = settings_name if settings_name is not None else mpc_field
+                if key in values:
+                    self._feature_vars[mpc_field].set(values[key].strip() == "True")
         self._on_save()
 
 

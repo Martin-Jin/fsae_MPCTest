@@ -75,6 +75,14 @@ def _rewrite_var(path: Path, name: str, new_value: str) -> bool:
     return True
 
 
+def _launch_arg_vars(launch_all_sh: Path) -> dict[str, str]:
+    """{MPCParams/NMPCParams field: launch_all.sh shell variable}, parsed
+    from that file's own `_append_mpc_arg <field> "$<VAR>"` lines, so the
+    mapping cannot drift from the script that applies it."""
+    text = launch_all_sh.read_text()
+    return dict(re.findall(r'^_append_mpc_arg (\w+) "\$(\w+)"', text, re.MULTILINE))
+
+
 def _shortlist_var_pattern(name: str) -> re.Pattern:
     """Like _var_pattern, but also matches a shortlist entry that is
     currently COMMENTED OUT (`# NAME=value  # ...`), which is how most of

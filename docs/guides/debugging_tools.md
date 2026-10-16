@@ -98,7 +98,7 @@ Every `NMPC_*` weight override has an override checkbox: checked uses the number
 
 Settings with no live counterpart stay offline-only: `R_diag[1]` (nominal only, superseded by `R_A_ACCEL` and `R_A_BRAKE`) and the last three `Q_diag` entries (always 0.0). If the live files are missing at the expected path, Save writes `settings/` alone and warns.
 
-Precedence hazard: a launched node reads a `launch_all.sh` argument before `fsae_params.yaml` and the dataclass. The Settings tab never writes `launch_all.sh`. A field that can be set by a launch argument therefore belongs on the Launch tab only, and the NMPC progress flag is deliberately absent here for that reason. A Settings save of a field that an uncommented `launch_all.sh` line overrides has no effect on the next launch.
+Precedence hazard: a launched node reads a `launch_all.sh` argument before `fsae_params.yaml` and the dataclass. A Settings save (and a loaded profile) also rewrites any uncommented `launch_all.sh` shortlist line for the same field, and the tab's widgets start from that line's value, so what the tab shows is what FSDS runs. Commented-out shortlist lines stay commented. The NMPC progress flag is deliberately absent here, because the Launch tab comments its line in and out.
 
 Not exposed: solver internals such as `NMPC_HORIZON` and `NMPC_SQP_ITERS`, the corner-mode Q/R split and most still-default flags. They stay manual edits.
 

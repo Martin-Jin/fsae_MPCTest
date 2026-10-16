@@ -748,12 +748,12 @@ This table is the precedence map. A launched node reads a param from a `launch_a
 | Tab | Writes | Layer it controls |
 |---|---|---|
 | Launch Sim | `ros2/launch_all.sh` (plain vars and the commented-out `NMPC_PROGRESS_ENABLED` shortlist line) | top layer (CLI args) |
-| Settings | `settings/*.py`, live `mpc_params.py` and `nmpc_params.py`, live `fsae_params.yaml`, and the same three files under `fsds_simulator/` | offline constants, YAML layer, dataclass layer |
+| Settings | `settings/*.py`, live `mpc_params.py` and `nmpc_params.py`, live `fsae_params.yaml`, the same three files under `fsds_simulator/`, and any **uncommented** `launch_all.sh` shortlist line for the same field | offline constants, YAML layer, dataclass layer, and the CLI layer where it is already set |
 | Profiles | nothing directly, it calls Settings' and Launch's own capture and apply methods | both |
 | Debug a Log | nothing | none |
 | Run Offline Sim | nothing | none |
 
-A field that can be set both by a `launch_all.sh` CLI arg and by a dataclass or YAML default belongs in the Launch tab only. A Settings-tab copy silently does nothing while the `launch_all.sh` line is honoured. `NMPC_PROGRESS_ENABLED` was duplicated this way and the Settings copy was removed.
+A Settings save also rewrites an uncommented `launch_all.sh` shortlist line for the same field (the field-to-variable map is parsed from that file's `_append_mpc_arg` lines), and Settings widgets start from that line's value, since it is what FSDS runs. Before this, 11 Settings fields were pinned by uncommented shortlist lines, so a save or a loaded profile changed every file except the one that won, and the offline settings drifted from the car (`adaptive_q_scaling_enabled` and `reversal_penalty_enabled` were both inverted). Commented-out lines stay commented. A field whose shortlist line the Launch tab toggles on and off (`NMPC_PROGRESS_ENABLED`) still belongs in the Launch tab only.
 
 ### `gui/__init__.py`
 
@@ -889,9 +889,9 @@ Key API: `OfflineSimTab`.
 Does: Tab 4, Settings. Edits the commonly retuned constants and syncs them to every place a launched node could read them.
 Change it to:
 - Add a scalar field: add a row to `_SCALAR_FIELDS` (label, `settings/` name, dataclass field name or `None`, kind). Add an NMPC override to `_NMPC_OVERRIDE_FIELDS`, a flag to `_FEATURE_GROUPS`, a progress-term numeric to `_NMPC_PROGRESS_FIELDS`. `_profile_field_names()` is derived from these tables, so profiles pick the field up automatically. Check by saving, then running `git diff` in `fsae_MPCTest/` and the live tree.
-- Add a live-only flag: use `None` for the `settings/` name (as `delay_compensation_enabled` does). Such a flag is not captured by profiles.
+- Add a live-only flag: use `None` for the `settings/` name (as `delay_compensation_enabled` does). Profiles key such a flag by its dataclass field name.
 Don't:
-- Add a field that a `launch_all.sh` CLI arg can also set, because the CLI arg overrides what this tab writes. Put it in the Launch tab.
+- Add a field whose `launch_all.sh` line the Launch tab comments in and out. Put it in the Launch tab. A field with an ordinary shortlist line is fine here, a save keeps that line in step.
 - Write only the dataclass default. `_sync_live_field` writes the dataclass in `mpc_params.py` or `nmpc_params.py`, both `fsds_simulator/` copies, and both `fsae_params.yaml` copies. The YAML overrides the dataclass at ROS parameter declaration, and a stale YAML kept `r_a_accel` and `nmpc_track_halfwidth` at old values after a GUI save.
 - Treat the `None` entries in `_LIST_FIELDS` as unused states. They mean no live dataclass field to sync to. `R_diag[1]` (a_cmd) is a real, nominal-only weight. Display names come from `_LIST_FIELD_INDEX_NAMES`.
 - Expect a save to change a running sim. Restart the sim.

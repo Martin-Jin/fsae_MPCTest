@@ -148,9 +148,9 @@ class ProfilesTab(ttk.Frame):
                 "Load profile",
                 f"Overwrite EVERY current Settings-tab AND Launch-tab value with "
                 f"'{path.stem}' ({len(values)} values)? The Settings-tab values write "
-                "the settings package, the live dataclasses, both fsae_params.yaml copies, and "
-                "both fsds_simulator/ mirrors immediately, the same as pressing Save on "
-                "the Settings tab. The Launch-tab values (track/controller/precomputed "
+                "the settings package, the live dataclasses, both fsae_params.yaml copies, "
+                "both fsds_simulator/ mirrors, and any uncommented launch_all.sh shortlist "
+                "line immediately, the same as pressing Save on the Settings tab. The Launch-tab values (track/controller/precomputed "
                 "speed & path/V_MAX/V_MIN/progress term) only update that tab's widgets "
                 "-- launch_all.sh itself is not touched until the next Launch click."):
             return
