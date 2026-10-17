@@ -36,6 +36,7 @@ The shipped `ros2/launch_all.sh` (mirrored in `fsds_simulator/launch_all.sh`) se
 | Accel/brake effort split | both | `r_a_accel` 0.9, `r_a_brake` 0.6 | not overridden |
 | Precomputed heading-lead profile | LTV-QP | off (`use_precomputed_heading_profile`) | `USE_PRECOMPUTED_HEADING_PROFILE=false` |
 | Dynamic speed cap | node, both controllers | on (`enable_dynamic_speed_cap`) | `ENABLE_DYNAMIC_SPEED_CAP=false` |
+| [End-of-path speed cap](#end-of-path-speed-cap-never-faster-than-the-car-can-stop-on-the-path-it-has) | node, both controllers | on (`PATH_END_DECEL` 1.5), skipped on closed laps | on; slows planner-mode runs |
 | Stanley speed-target smoothing | Stanley | always on (live-path branch) | n/a |
 | NMPC corner rate blend | NMPC | off (`nmpc_corner_rrate_blend_enabled`) | `NMPC_CORNER_RRATE_BLEND_ENABLED=false` |
 | NMPC three-zone rate schedule | NMPC | on (`nmpc_rrate_zone_enabled`), 2.0 / 0.80 / 0.15 | on, same values |
@@ -246,6 +247,48 @@ v_curv = min(precomputed_speed_at(...), dynamic_speed_cap(path_ahead, a_lat_max=
 
 - Status is disabled in the shipped launch ([retired_mechanisms.md](retired_mechanisms.md#dynamic-speed-cap-disabled-in-the-shipped-launch)). The YAML default is still `true`, so a launch path that bypasses `launch_all.sh` runs with the cap on.
 - The offline rollout only reaches this code with the planner in the loop (`python -m tuner.validation.recorded_map_rollout --planner`).
+
+## End-of-path speed cap: never faster than the car can stop on the path it has
+
+**What it does.** The last step of the speed-target pipeline. It lowers the target so the car can still stop 0.5 m before the end of the path it is following. With the live planner, the path ends where the visible cones end, so **the car runs slower with the planner on**. That is intended: the controller never asks for more speed than it could brake from on the path it can see. A closed-loop precomputed lap has no end and is never capped.
+
+**Why it exists.** The target came from the profile or path curvature alone, with a `v_min` floor of 1.5 m/s, so nothing knew where the path ended. At the last waypoint the controller kept asking for speed; with the live planner, the curvature branch falls back to the whole path once the car nears its end and returns `v_max` on a straight.
+
+**Why this design.** It is a cap on the target, not a constraint in either MPC and not a clip on the output. Both controllers (LTV-QP and NMPC) get it from the shared speed pipeline without touching a solver. The MPC still plans the braking itself through its speed-error cost and acceleration limits. Structural alternatives (a per-stage speed profile, a terminal stop constraint, a hard progress bound) were not built: the per-stage profile was tried for another purpose and retired ([retired_mechanisms.md](retired_mechanisms.md#nmpc-horizon-speed-profile-two-variants-removed)), and a 1 s horizon sees the end of the path too late for a terminal constraint.
+
+**How it works.** Speed-target pipeline, in order, every tick:
+
+1. Base target: precomputed profile at the car (`USE_PRECOMPUTED_SPEED=true`), or `curvature_speed()` of the path ahead (live planner).
+2. Tracking-error gate (`tracking_error_speed_gate`, rate-limited by `GATE_RATE_LIMIT`), then the `v_min` floor.
+3. Rise limiter (`SPEED_TARGET_RISE_RATE`) and deficit clamp (`speed_target_deficit_max`).
+4. **End-of-path cap:** `target = min(target, sqrt(2 * PATH_END_DECEL * d))`, `d = remaining path - PATH_END_MARGIN_M - v * PATH_END_LAG_S`.
+5. The MPC low-passes the target and holds it across its horizon ([frozen target speed](#frozen-target-speed-across-the-horizon)).
+
+- `path_end_speed_cap()`, `remaining_path_length()`, `path_is_closed_loop()` in `fsae_control/control_utils.py` (live) and `sim/speed_profile.py` (offline), identical.
+- Applied in `fsae_control/mpc/control_step.py` (live) and `sim/rollout/speed_target.py`'s `gate_and_rate_limit_speed_target()` (offline).
+- Constants: `PATH_END_DECEL` 1.5 m/s^2, `PATH_END_MARGIN_M` 0.5 m, `PATH_END_LAG_S` 1.0 s, in `mpc/node_constants.py` and `sim/rollout/speed_target.py`. `fsae_autonomous` has the same values as `path_end_*` node parameters.
+- Closed loop: end within 10 m of the start and at least 50 m long (`PATH_END_CLOSED_GAP_M`, `PATH_END_CLOSED_MIN_LENGTH_M`).
+- `PATH_END_LAG_S` exists because the MPC follows a falling target late (low-pass plus the frozen-horizon target). In an offline closed-loop check on a straight, lag 1.0 s stopped the car at the margin from 3 and 6 m/s; lag 0 ran 1.5 to 2.7 m past the end.
+
+**Measured effect.**
+
+| Run | Cap | Lap | Speed | Steering sat | \|e_psi\| mean | Score |
+|---|---|---|---|---|---|---|
+| FSDS, precomputed lap, NMPC (`20261017-222517` / `-223908`) | on / off | 50.8 s / 51.1 s | unchanged near the finish | | | 0.450 / 0.431 |
+| FSDS, live planner, NMPC (`20261017-224053`) | on | full lap, 95 s | mean 6.0, top 7.4 m/s | | \|e_y\| 0.06 m | partial (no path end) |
+| Offline `recorded_map_rollout --planner` | off | 62.2 s (1243 steps) | | 5.71% | 7.30 deg | 0.530 |
+| Offline `recorded_map_rollout --planner` | on | 87.8 s (1756 steps) | | 3.08% | 5.81 deg | 0.535 |
+| Offline `recorded_map_rollout` (recorded lap) | on vs off | identical | | | | 0.428 |
+
+- Precomputed laps are unaffected (closed loop).
+- With the planner, the cap holds speed to what the visible path allows (about 6.5 m/s for a visible path of roughly 21 m, estimated from the logged speed). Offline it costs 41% lap time and buys lower saturation, heading error and peak lateral acceleration.
+
+**Tuning and pitfalls.**
+
+- Raising `PATH_END_DECEL` raises the planner-mode speed (estimated for a ~21 m visible path: 1.5 -> 6.5 m/s, 3.0 -> 8.5, 5.0 -> 10.2). Change it on all three sides together.
+- `PATH_END_DECEL = 0` turns the cap off everywhere it is read.
+- The node logs `Near the end of the path: speed target capped at ...` (1 Hz throttle) whenever the cap binds; with the planner on, that is most of the lap.
+- The closed-loop thresholds are a heuristic. A planner path that loops back within 10 m and is over 50 m long would skip the cap.
 
 ## Stanley speed-target smoothing: the MPC limiters ported to Stanley
 

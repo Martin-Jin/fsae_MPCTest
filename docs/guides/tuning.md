@@ -332,6 +332,7 @@ Live source is `nmpc_params.py`, with the reasons in its field comments. Offline
 | `speed_target_deficit_max` | 2.55 m/s | caps how far the ramped speed target may lead the car's speed, read by both controllers before the speed-error row sees the target |
 | `CURVATURE_SPEED_A_LAT_MAX` | 4.75 | corner speed in the exported profile. See the tight-corner section above. |
 | `enable_dynamic_speed_cap` | on in code, off at launch | see below |
+| `PATH_END_DECEL` / `_MARGIN_M` / `_LAG_S` | 1.5 m/s^2 / 0.5 m / 1.0 s | end-of-path cap: never faster than the car can stop on the path ahead. **Slows the car with the live planner on** (about 6.5 m/s on a ~21 m visible path), no effect on a closed precomputed lap. Same values in `mpc/node_constants.py`, `sim/rollout/speed_target.py` and `fsae_autonomous`'s `path_end_*`. See [control_mechanisms.md](../reference/control_mechanisms.md#end-of-path-speed-cap-never-faster-than-the-car-can-stop-on-the-path-it-has) |
 
 `speed_target_deficit_max` was 2.5 and binding on acceleration for 36.8 percent of a lap. A raise to 5.0 improved lap time, `|e_y|` and saturation offline only. It ships at 2.55. Rationale for 2.55 not recorded. It has not been re-measured at that value.
 
