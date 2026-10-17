@@ -103,6 +103,17 @@ V_CURV_FALL_RATE = 7.0
 
 
 
+# End of path: cap the speed target so the car can stop PATH_END_MARGIN_M before the
+# last waypoint at PATH_END_DECEL (m/s^2), allowing PATH_END_LAG_S for the controller
+# to follow a lowered target. Closed-loop (full-lap) paths are never capped, so a
+# recorded-lap rollout is unchanged. Mirrors mpc/node_constants.py's PATH_END_*; keep
+# in sync. PATH_END_DECEL 0 disables.
+PATH_END_DECEL = 1.5
+PATH_END_MARGIN_M = 0.5
+PATH_END_LAG_S = 1.0
+
+
+
 def compute_speed_target(
     planner_cl, cl_idx, car_pos_np, path_v_profile, idx, v_curv_prev,
 ):
@@ -172,10 +183,12 @@ def compute_speed_target(
     return v_target, v_curv_prev
 
 
-def gate_and_rate_limit_speed_target(v_target, e_y, e_psi, v_actual, gate_prev, v_des_prev):
+def gate_and_rate_limit_speed_target(v_target, e_y, e_psi, v_actual, gate_prev, v_des_prev,
+                                     path_xy=None, car_pos=None):
     """
-    Tracking-error speed gate plus the target's rise-rate and deficit limits.
-    Returns (v_target, gate_prev, v_des_prev).
+    Tracking-error speed gate plus the target's rise-rate and deficit limits, then the
+    end-of-path cap when `path_xy` (the path the controller follows) and `car_pos` are
+    given. Returns (v_target, gate_prev, v_des_prev).
 
     Mirrors mpc_controller.py's Phase 3 exactly (see
     control_utils.tracking_error_speed_gate for the rationale and the live
@@ -213,6 +226,10 @@ def gate_and_rate_limit_speed_target(v_target, e_y, e_psi, v_actual, gate_prev, 
     # through the min() above untouched.
     if v_target - v_actual > settings.SPEED_TARGET_DEFICIT_MAX:
         v_target = min(v_target, max(v_des_prev, v_actual + settings.SPEED_TARGET_DEFICIT_MAX))
+    # End of path, applied last so the target can reach 0. Mirrors control_step.py.
+    if path_xy is not None and car_pos is not None:
+        v_target = min(v_target, sp.path_end_speed_cap(
+            path_xy, car_pos, v_actual, PATH_END_DECEL, PATH_END_MARGIN_M, PATH_END_LAG_S))
     v_des_prev = v_target
     return v_target, gate_prev, v_des_prev
 

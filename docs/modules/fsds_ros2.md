@@ -183,10 +183,11 @@ Key API: `_DebugPublishMixin._process_lap_and_horizon`, `_DebugPublishMixin._pub
 
 Does: node-level constants: `CONTROL_HZ`, cone-brake corridor, path timeout, speed-target rise and fall rates, gate rate limit.
 Change it to:
-- Retune `SPEED_TARGET_RISE_RATE`, `V_CURV_FALL_RATE` or `GATE_RATE_LIMIT`. Set the same value in `sim/rollout/speed_target.py`, then run the rollout check.
+- Retune `SPEED_TARGET_RISE_RATE`, `V_CURV_FALL_RATE`, `GATE_RATE_LIMIT` or the `PATH_END_*` end-of-path cap. Set the same value in `sim/rollout/speed_target.py` (and the `path_end_*` node parameters in `fsae_autonomous`), then run the rollout check.
+- The end-of-path cap (`control_step.py`, after the deficit clamp) lowers the speed target so the car stops before the end of an open path; a closed-loop (full-lap) precomputed path is never capped. `PATH_END_DECEL = 0` disables it.
 Don't:
 - Change `CONTROL_HZ` alone, because it must equal `1 / dt` of both controllers and the `pose_rate` floor in `fsae_params.yaml`.
-Key API: `CONTROL_HZ`, `CONE_BRAKE_DIST`, `PATH_TIMEOUT`, `SPEED_TARGET_RISE_RATE`, `V_CURV_FALL_RATE`, `GATE_RATE_LIMIT`
+Key API: `CONTROL_HZ`, `CONE_BRAKE_DIST`, `PATH_TIMEOUT`, `SPEED_TARGET_RISE_RATE`, `V_CURV_FALL_RATE`, `GATE_RATE_LIMIT`, `PATH_END_DECEL`, `PATH_END_MARGIN_M`, `PATH_END_LAG_S`
 
 ### `fsds_simulator/control/fsae_control/fsae_control/mpc/mpc_params.py`
 

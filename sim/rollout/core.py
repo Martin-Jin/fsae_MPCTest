@@ -355,6 +355,9 @@ def run_core_rollout(
     LAUNCH_SPEED_MPS = 0.5
     launch_step = None
 
+    # The recorded path the controller follows when no planner path exists this tick;
+    # used by the end-of-path speed cap (gate_and_rate_limit_speed_target).
+    path_xy_followed = np.column_stack([path_X, path_Y])
     for step in range(max_steps):
         X_g, Y_g, psi_g = state[0], state[1], state[2]
 
@@ -403,6 +406,8 @@ def run_core_rollout(
         )
         v_target, gate_prev, v_des_prev = gate_and_rate_limit_speed_target(
             v_target, e_y, e_psi, state[3], gate_prev, v_des_prev,
+            path_xy=planner_cl if planner_cl is not None else path_xy_followed,
+            car_pos=car_pos_np,
         )
         e_y_true, e_psi_true = true_tracking_error(
             state, e_y, e_psi, path_X, path_Y, path_Psi,

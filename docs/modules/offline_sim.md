@@ -436,9 +436,9 @@ Don't:
 Key API: `compute_reference`, `_rate_limit_ref_psi`
 
 ### `sim/rollout/speed_target.py`
-Does: builds the speed target (oracle profile, optional live curvature cap), then applies the tracking-error gate, rise-rate limit and deficit clamp; also the time bonus.
+Does: builds the speed target (oracle profile, optional live curvature cap), then applies the tracking-error gate, rise-rate limit, deficit clamp and the end-of-path cap (`PATH_END_*`, via `sim.speed_profile.path_end_speed_cap`; never applied to a closed-loop recorded lap, so recorded-lap scores are unchanged); also the time bonus.
 Change it to:
-- change `SPEED_TARGET_RISE_RATE`, `GATE_RATE_LIMIT` or `V_CURV_FALL_RATE`. Each mirrors a constant in the live controller node, so change both sides. Run `python -m tuner.validation.recorded_map_rollout`.
+- change `SPEED_TARGET_RISE_RATE`, `GATE_RATE_LIMIT`, `V_CURV_FALL_RATE` or `PATH_END_*`. Each mirrors a constant in the live controller node, so change both sides. Run `python -m tuner.validation.recorded_map_rollout`.
 - change the deficit clamp value. That value is `settings.SPEED_TARGET_DEFICIT_MAX`, not a constant in this file, so edit it in the `settings/` submodule that holds it (grep for it) and mirror `MPCParams.speed_target_deficit_max`.
 Don't:
 - gate the target on measured speed near zero, because no target means no speed error, so no throttle and the car never moves (the clamp holds the target at `v_actual + DEFICIT_MAX` instead).

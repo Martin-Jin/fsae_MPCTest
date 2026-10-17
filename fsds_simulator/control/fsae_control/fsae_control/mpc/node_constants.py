@@ -100,3 +100,13 @@ V_CURV_FALL_RATE = 7.0
 # single-tick cliff. Sized to the same order of magnitude as
 # SPEED_TARGET_RISE_RATE by design choice, not measurement.
 GATE_RATE_LIMIT = 2.0
+
+# End of path: the speed target is capped so the car can stop PATH_END_MARGIN_M before
+# the last waypoint at PATH_END_DECEL (m/s^2), allowing PATH_END_LAG_S for the
+# controller to follow a lowered target (control_utils.path_end_speed_cap). A
+# closed-loop (full-lap) path is never capped. Mirrors fsae_MPCTest
+# sim/rollout/speed_target.py's PATH_END_* constants and fsae_autonomous's
+# path_end_* node parameters; keep all three in sync. PATH_END_DECEL 0 disables.
+PATH_END_DECEL = 1.5
+PATH_END_MARGIN_M = 0.5
+PATH_END_LAG_S = 1.0

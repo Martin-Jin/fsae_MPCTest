@@ -717,6 +717,67 @@ def curvature_speed(waypoints, v_max=15.0, v_min=1.5, a_lat_max=4.75,
     return float(np.clip(v_target, v_min, v_max))
 
 
+# A path counts as a closed loop (a full lap) when its two ends are within
+# PATH_END_CLOSED_GAP_M of each other and it is at least PATH_END_CLOSED_MIN_LENGTH_M
+# long. A recorded full-lap centreline closes to within a few metres; an open path ahead
+# of the car does not. Heuristic thresholds, UNVERIFIED.
+PATH_END_CLOSED_GAP_M = 10.0
+PATH_END_CLOSED_MIN_LENGTH_M = 50.0
+
+
+def remaining_path_length(waypoints, car_pos) -> float:
+    """Distance (m) along the polyline from the car's projection onto it to its last
+    point. 0 once the car is level with or past the end."""
+    pts = np.asarray(waypoints, dtype=np.float64)
+    if len(pts) < 2:
+        return 0.0
+    seg = np.diff(pts, axis=0)
+    seg_len = np.linalg.norm(seg, axis=1)
+    cum = np.concatenate([[0.0], np.cumsum(seg_len)])
+    i = int(np.argmin(np.linalg.norm(pts - np.asarray(car_pos, dtype=np.float64), axis=1)))
+    j = min(i, len(seg) - 1)   # segment starting at, or ending at, the nearest point
+    if seg_len[j] < 1e-9:
+        return max(0.0, float(cum[-1] - cum[i]))
+    along = float(np.dot(np.asarray(car_pos, dtype=np.float64) - pts[j], seg[j]) / seg_len[j])
+    # Inside the path, stay on the segment; on the last segment, allow running past the end.
+    along = max(0.0, along) if j == len(seg) - 1 else float(np.clip(along, 0.0, seg_len[j]))
+    return max(0.0, float(cum[-1] - (cum[j] + along)))
+
+
+def path_is_closed_loop(waypoints) -> bool:
+    """True for a full-lap path whose end meets its start (see PATH_END_CLOSED_*)."""
+    pts = np.asarray(waypoints, dtype=np.float64)
+    if len(pts) < 3:
+        return False
+    length = float(np.sum(np.linalg.norm(np.diff(pts, axis=0), axis=1)))
+    gap = float(np.linalg.norm(pts[-1] - pts[0]))
+    return length >= PATH_END_CLOSED_MIN_LENGTH_M and gap <= PATH_END_CLOSED_GAP_M
+
+
+def path_end_speed_cap(waypoints, car_pos, car_speed: float, decel: float,
+                       margin_m: float, lag_s: float) -> float:
+    """
+    Highest speed (m/s) from which the car can still stop `margin_m` before the end of
+    the path at a constant deceleration `decel` (m/s^2): sqrt(2 * decel * d), with
+    d = remaining path length - margin_m - car_speed * lag_s. 0 when d <= 0.
+
+    The speed target otherwise comes from path curvature alone and has no notion of
+    where the path ends, so without this cap the controller keeps asking for speed at
+    the last waypoint. A planner path ends where the visible cones end, so this also
+    caps speed to what the visible path allows. A closed-loop (full-lap) path has no
+    end and is never capped. `decel` 0 disables the cap.
+
+    `lag_s` allows for the controller following a lowered speed target with a delay.
+    In an offline closed-loop check on a straight, lag_s 1.0 stopped the car at the
+    margin from 3 and 6 m/s, while 0 ran 1.5-2.7 m past the end. `decel` is a comfort
+    value, not the braking limit. UNVERIFIED on a real vehicle.
+    """
+    if decel <= 0.0 or path_is_closed_loop(waypoints):
+        return float('inf')
+    d = remaining_path_length(waypoints, car_pos) - margin_m - max(0.0, car_speed) * lag_s
+    return math.sqrt(2.0 * decel * d) if d > 0.0 else 0.0
+
+
 def optimal_lap_time(path_X, path_Y, v_max=None, a_lat_max=None,
                      a_accel_max=None, a_brake_max=None, v_min=None,
                      v_start=0.0):

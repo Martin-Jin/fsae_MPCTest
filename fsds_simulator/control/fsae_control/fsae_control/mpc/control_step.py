@@ -18,6 +18,7 @@ from rclpy.time import Time
 from fsae_control.control_utils import (
     curvature_speed,
     dynamic_speed_cap,
+    path_end_speed_cap,
     precomputed_speed_at,
     tracking_error_speed_gate,
 )
@@ -31,6 +32,9 @@ from fsae_control.mpc.node_constants import (
     SPEED_TARGET_RISE_RATE,
     V_CURV_FALL_RATE,
     GATE_RATE_LIMIT,
+    PATH_END_DECEL,
+    PATH_END_LAG_S,
+    PATH_END_MARGIN_M,
 )
 
 
@@ -189,6 +193,16 @@ class _ControlStepMixin:
             desired_speed = min(desired_speed,
                                 max(self._v_des_prev,
                                     self._car_speed + deficit_max))
+        # End of path. Applied last, after the v_min floor, so the target can reach 0.
+        # It lowers the speed the cost tracks; it is not a constraint. A closed-loop
+        # (full-lap) precomputed path is never capped. See PATH_END_DECEL.
+        v_end = path_end_speed_cap(self._path, self._car_pos, self._car_speed,
+                                   PATH_END_DECEL, PATH_END_MARGIN_M, PATH_END_LAG_S)
+        if v_end < desired_speed:
+            desired_speed = v_end
+            self.get_logger().info(
+                f'Near the end of the path: speed target capped at {v_end:.2f} m/s',
+                throttle_duration_sec=1.0)
         self._v_des_prev = desired_speed
 
         # Age of the pose the MPC is about to solve against — how long ago it
