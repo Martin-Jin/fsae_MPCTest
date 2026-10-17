@@ -19,7 +19,7 @@ python3 -m tuner.tools.render_diagrams --all     # re-render everything (after a
 
 - **Names.** A new chart's SVG is named `<doc>_<nearest heading>.svg`. After that, the name in the image line is the chart's identity, so a heading can be renamed without breaking it.
 - **Staleness.** `manifest.json` stores the SHA-1 of each chart's source when its SVG was rendered. Hashes, not file times, because a git checkout rewrites every file time.
-- **Renderer.** the Mermaid CLI (npm package @mermaid-js/mermaid-cli, version 11.4.2) through `npx`, white background, `htmlLabels: false` so labels are SVG text and not embedded HTML, which some viewers drop. Under WSL with the Windows `npx`, files are staged through the Windows temp directory. Set `MMDC` to use a different render command.
+- **Renderer.** The Mermaid CLI (npm package @mermaid-js/mermaid-cli, version 11.4.2) through `npx`, white background, `htmlLabels: false` so labels are SVG text and not embedded HTML, which some viewers drop. Under WSL with the Windows `npx`, files are staged through the Windows temp directory. Set `MMDC` to use a different render command.
 - **Removed charts.** The tool reports an SVG no chart uses any more as an orphan. Delete it by hand.
 
 `docs/logs/` is a frozen record and is not scanned.
