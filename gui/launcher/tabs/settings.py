@@ -474,12 +474,9 @@ class SettingsTab(ttk.Frame):
     def _sync_live_field(self, mpc_field: str, literal: str, errors: list[str]) -> None:
         """Writes mpc_field's value to every place a launched node could
         actually read it from, not just the dataclass default the rest of
-        this tab edits. fsae_params.yaml OVERRIDES the dataclass default at
-        ROS param declaration time, so a field saved here without also
-        fixing the YAML can keep running at the OLD number indefinitely --
-        this is exactly how r_a_accel (2.25 vs the corrected 1.0) and
-        nmpc_track_halfwidth (3.0 vs the reverted 3.5) both went silently
-        stale after a GUI save. Tries the live dataclass fields first (one
+        this tab edits. Under control.launch.py the dataclass default shadows
+        fsae_params.yaml, but a node started without that launch file reads
+        the YAML, so both are kept equal. Tries the live dataclass fields first (one
         of mpc_params.py/nmpc_params.py will have it, never both), then the
         matching fsds_simulator/ mirror copies (the change-ledger for
         fsae_planning, see CLAUDE.md's "Third copy" section), then both

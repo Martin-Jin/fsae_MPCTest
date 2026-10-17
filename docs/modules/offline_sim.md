@@ -33,6 +33,7 @@ Conceptual background: [architecture](../reference/architecture.md) and [offline
 - import a newly recorded track: `sim/track_io.py` (only if reconstruction fails), then run `python -m tuner.tools.export_speed_profile <track>` and `python -m tuner.tools.raceline_optimizer <track>`
 - run automatic weight search: `tuner/offline_tuner.py` bounds and `TUNABLE_NMPC`, then run `python -m tuner.offline_tuner` and re-check the result with `python -m tuner.validation.recorded_map_rollout`
 - push tuned live params to the mirror and production tree: `tuner/tools/sync_mpc_params.py`, then run `python -m tuner.tools.sync_mpc_params` (dry run) and `--apply`
+- see which value of each field runs per repo, and where repos disagree: run `python3 -m tuner.tools.param_report` (read-only)
 - diagnose a live steering-saturation gap: `tuner/investigations/live_vs_sim_diagnostics.py`, then run `python -m tuner.investigations.live_vs_sim_diagnostics --no-sim` for live logs only
 - test a reference-heading limiter idea: fix `tuner/investigations/ref_heading_limiter_ab.py` to patch `settings` first, then run `python -m tuner.investigations.ref_heading_limiter_ab`
 - replay a live log: `tuner/tools/plot_playback.py`, then run `python -m tuner.tools.plot_playback <control_csv>`
@@ -697,6 +698,16 @@ Don't:
 - commit or push `fsae_autonomous` from it, because it only writes the local working tree.
 Key API: `main`, `_destinations`, `_find_autonomous_root`
 
+### `tuner/tools/param_report.py`
+Does: read-only report of every `MPCParams`/`NMPCParams` field's effective value in the live tree (`launch_all.sh` + launch file + dataclass + YAML), the `fsds_simulator/` mirror, offline `settings/` and `fsae_autonomous`, with the layer it came from and `OFFLINE`/`MIRROR`/`LAUNCH`/`SHADOW`/`PROD` flags. `--check` exits 1 on `OFFLINE` or `MIRROR`.
+Change it to:
+- map a field whose offline name is not `UPPER(field)` or `NMPC_<UPPER>`: add it to `_OFFLINE_ALIASES` (or `_LIST_FIELDS` for a vector index).
+- mark a field as live-only by design: add it to `_NO_OFFLINE` and to the parity doc's "no matched offline constant" table.
+Don't:
+- assume YAML beats the dataclass, because `control.launch.py` forwards every field after the YAML. `_node_params` detects this per launch file by parsing it.
+- treat a `PROD` flag as a bug, because production is maintained separately and may differ on purpose.
+Key API: `build_rows`, `_Tree.effective`, `_node_params`, `_launch_all_overrides`, `_offline_value`
+
 ### `tuner/tools/doc_lint.py`
 Does: lints docs and code conventions: links and anchors, backticked paths, `python -m` targets, style, voice, module-reference coverage, and `from settings.<sub> import` misuse.
 Change it to:
@@ -860,7 +871,7 @@ Change it to:
 - Add a `launch_all.sh` variable: add its widget, then add it to `_pending_values` (plain `NAME=value` lines only), `refresh_from_disk` and `apply_profile_values`. Check by clicking Launch, confirming, and diffing `ros2/launch_all.sh` (a `.bak` is made on the first write of the session).
 - Add a commented-out shortlist var: use `_read_shortlist_var` and `_rewrite_shortlist_var`, like `NMPC_PROGRESS_ENABLED`. The plain helpers only match uncommented lines.
 Don't:
-- Add a checkbox here for a field the Settings tab also edits (or the reverse), because the CLI arg written here overrides YAML, which overrides the dataclass default. The Settings copy would have no effect.
+- Add a checkbox here for a field the Settings tab also edits (or the reverse), because the CLI arg written here overrides the dataclass default, which in turn shadows the YAML under `control.launch.py`. The Settings copy would have no effect.
 - Skip `refresh_from_disk` on new fields, because the tab otherwise reverts newer on-disk edits on the next Launch click.
 - Do the export work on the Tk thread or call `after()` from the worker, because `after()` from a worker thread hung in practice. The worker only pushes onto a queue that `_poll_export_queue` drains on the main thread.
 - Rely on the record-new-track toggle to persist, because it saves the prior controller and precomputed toggles, forces Stanley with both precomputed toggles off, and restores them on uncheck. Record mode is not captured in profiles.

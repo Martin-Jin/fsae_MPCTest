@@ -70,7 +70,7 @@ cd fsae_MPCTest && python -m gui.launcher
 | `ros2/launch_all.sh` | Launch button | `TRACK`, `CONTROLLER`, `USE_NMPC`, `STANDALONE_OUTPUT`, `USE_PRECOMPUTED_SPEED`, `USE_PRECOMPUTED_PATH`, `V_MAX`, `V_MIN`, and (NMPC only) the commented-out `NMPC_PROGRESS_ENABLED` line. It does not set `NMPC_SLACK_LINEAR_WEIGHT`. Brake Sysid flips `RUN_BRAKE_SYSID` on for the launch and back to false. |
 | `settings/*.py` | Settings Save, Profiles Load | `Q_diag`, `R_diag`, `R_rate_diag`, `R_A_ACCEL`, `R_A_BRAKE`, `SPEED_TARGET_DEFICIT_MAX`, the NMPC rate-shaping scalars, every `NMPC_*` weight override, the NMPC progress-term numbers and the feature flags. Each name is located by searching the submodules. |
 | Live `mpc_params.py` and `nmpc_params.py` | Settings Save, Profiles Load | the matching field for each setting that has a live counterpart |
-| Live `fsae_params.yaml` | Settings Save, Profiles Load | the same fields. The YAML overrides the dataclass default at ROS parameter declaration, so a save that skipped it would leave the car on the old value with no visible sign. |
+| Live `fsae_params.yaml` | Settings Save, Profiles Load | the same fields. Under `control.launch.py` the dataclass default shadows the YAML, but a node started without that launch file reads the YAML, so both are kept equal. |
 | `fsds_simulator/.../mpc_params.py`, `nmpc_params.py`, `fsae_params.yaml` | Settings Save, Profiles Load | the same fields again, keeping the mirror identical to live |
 | `settings_profiles/<name>.json` | Profiles Save and Delete | a snapshot, tracked in git |
 | `ros2/src/fsae_planning/tracks/<name>/` and `fsds_simulator/tracks/<name>/` | Export & Save Track | `speed_profile.csv`, `raceline.csv`, `centerline.csv` for a new track, then a copy into the mirror |
@@ -127,7 +127,7 @@ python -m tuner.tools.sync_mpc_params --apply    # overwrite
 
 - **Scope.** Exactly `mpc_params.py`, `nmpc_params.py` and `fsae_params.yaml`. Code changes to `mpc_controller.py`, the `lmpc/` and `nmpc/` packages or `live_viz/` need the ordinary manual propagation.
 - **Direction.** One way, from `ros2/src/fsae_planning/` to `fsae_autonomous` and `fsae_MPCTest/fsds_simulator/`. Destination values are never read as a source.
-- **Why the YAML is in scope.** It overrides the dataclass default, so syncing only the `.py` files would leave the destination on an old number.
+- **Why the YAML is in scope.** A launch file that passes only a literal parameter dict (production's `nmpc_gokart`/`nmpc_shadow`) lets the YAML apply, so a stale YAML there runs. Under `control.launch.py` it is shadowed by the dataclass default.
 - **Safety.** Dry run by default. Each destination file gets a one-time `.bak` before an overwrite. Only the local working tree of `fsae_autonomous` is written. Commit and push there stay separate human steps.
 - **`fsae_autonomous` location.** The script tries `fsae_autonomous` and `ros2_autonomous/src/fsae_autonomous/` under the FSDS root (`_AUTONOMOUS_CANDIDATES`) and warns and skips that destination if neither has a `.git`. If the checkout moves again, add the new path there.
 

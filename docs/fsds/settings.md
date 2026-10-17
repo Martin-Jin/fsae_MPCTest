@@ -36,7 +36,7 @@ Order of precedence, lowest to highest:
 2. `fsae_params.yaml`.
 3. A launch argument, either typed on the `ros2 launch` line or forwarded by `launch_all.sh`.
 
-Under `ros2 launch` in this workspace, layer 3 always applies. `control.launch.py` forwards every field to the node as a launch value whose default is the dataclass default, and lists those values after the YAML file in the node's parameters. A ROS 2 launch parameter dictionary listed later overrides an earlier source. An edit made only to the YAML block therefore has no effect on a launch-started node. Change the dataclass default as well, or pass a launch argument. This follows from the code order and was not run live.
+Under `ros2 launch` in this workspace, layer 3 always applies. `control.launch.py` forwards every field to the node as a launch value whose default is the dataclass default, and lists those values after the YAML file in the node's parameters. A ROS 2 launch parameter dictionary listed later overrides an earlier source. An edit made only to the YAML block therefore has no effect on a launch-started node. Change the dataclass default as well, or pass a launch argument. Confirmed with a minimal `launch_ros` test (YAML `1.0`, later launch dict defaulting to `2.0`, node received `2.0`). `python3 -m tuner.tools.param_report` shows the value that runs for every field.
 
 `tuner/tools/sync_mpc_params.py` copies the three live parameter files (`mpc_params.py`, `nmpc_params.py`, `fsae_params.yaml`) one way from `fsae_planning` to `fsae_autonomous` and the `fsds_simulator/` mirror. See [debugging_tools.md](../guides/debugging_tools.md).
 

@@ -11,12 +11,11 @@ WHY THIS EXISTS
 ---------------
 The car's actual runtime weights live in THREE files per side
 (mpc_params.py, nmpc_params.py, fsae_params.yaml, see CLAUDE.md's "Single
-source of truth for MPC tuning"), and fsae_params.yaml specifically
-OVERRIDES the dataclass default= at ROS param declare time -- syncing the
-.py files without it leaves the old number running with no visible sign
-anything is wrong (this happened at least twice: r_a_accel and
-nmpc_track_halfwidth both went stale this way before the fix that added
-fsae_params.yaml to the GUI's own save path). This script exists so a
+source of truth for MPC tuning"). Under control.launch.py the dataclass
+default shadows the YAML (every field is forwarded as a launch argument
+after it), but a launch file that passes only a literal dict, or a bare
+`ros2 run --params-file`, reads the YAML, so a stale YAML still runs there.
+tuner/tools/param_report.py shows which layer wins per field. This script exists so a
 live-tested change only has to be copied by hand ONCE (into
 fsae_planning, the live checkout) and then pushed everywhere else with
 one command, rather than three manual file edits repeated across two

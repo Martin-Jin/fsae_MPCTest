@@ -20,7 +20,7 @@ Start with the [documentation index](docs/README.md). Per-module references: [of
 | `sim/` | Closed-loop rollout in `sim/rollout/` (`core`, `reference`, `speed_target`, `delay`, `tick_solve`), plus `perception.py`, `planner.py`, `speed_profile.py`, `scoring.py`, `sensor_noise.py`, `track_io.py` |
 | `planning/` | Shared planning code taken from `fsae_planning`: `boundary`, `cone_map`, `cone_sorting`, `path_utils`, `geometry` |
 | `tracks/` | Python helpers for track paths (`TRACKS_DIR`, `newest_track()`, `DEFAULT_MAP`). Track data is not here. It lives in `ros2/src/fsae_planning/tracks/` |
-| `tuner/` | `offline_tuner.py` (CMA-ES), `tuner/validation/` (the three checks below), `tuner/investigations/` (one-off diagnostic scripts), `tuner/tools/` (exporters, `plot_playback.py`, `sync_mpc_params.py`, `doc_lint.py`) |
+| `tuner/` | `offline_tuner.py` (CMA-ES), `tuner/validation/` (the three checks below), `tuner/investigations/` (one-off diagnostic scripts), `tuner/tools/` (exporters, `plot_playback.py`, `sync_mpc_params.py`, `param_report.py`, `doc_lint.py`) |
 | `gui/` | `gui/launcher/` (tabbed control app), `simulation.py` (2D simulator), `manual_drive.py` |
 | `settings_profiles/` | Saved settings sets (JSON) loaded by the launcher's Profiles tab |
 | `angles.py` | `wrap_angle` |

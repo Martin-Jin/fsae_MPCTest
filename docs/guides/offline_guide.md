@@ -266,6 +266,7 @@ Rules:
 | `export_speed_profile.py` | Exports a recorded cone map's oracle path and speed profile to CSV, see "Export the speed profile and raceline" in [integration_guide.md](../fsds/integration_guide.md) |
 | `raceline_optimizer.py` | Minimum-time racing line optimiser with the same CSV output. `--mode centerline` exports the centreline instead |
 | `sync_mpc_params.py` | One-way copy of live param files to `fsae_autonomous` and the `fsds_simulator/` mirror |
+| `param_report.py` | Read-only: the value each repo runs per MPC/NMPC field, its layer, and where repos disagree (`--check` for a parity gate) |
 | `doc_lint.py` | Flags docs that break the project's writing conventions |
 
 **`tuner/investigations/`: one-off and reusable diagnostics from sim-to-real debugging** (`steering_chatter_check.py`, `reference_heading_geometry_check.py`, `live_vs_sim_diagnostics.py` and others). See [debugging_tools.md](debugging_tools.md) for which question each answers, and [sim_to_real_investigation.md](../logs/sim_to_real_investigation.md) for the history behind them.

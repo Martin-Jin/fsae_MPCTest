@@ -28,11 +28,11 @@ class RepoPaths:
     # from mpc_params.py's weights -- see nmpc_params.py's own docstring.
     # Only the fields this GUI actually writes need to be found here.
     nmpc_params_py: Path
-    # fsae_params.yaml is what ROS actually loads a field's RUNTIME value
-    # from -- it overrides the dataclass default the GUI edits above, so a
-    # value the GUI "saved" could silently keep running at the OLD number
-    # until this file was found and fixed by hand (r_a_accel 2.25 vs 1.0,
-    # nmpc_track_halfwidth 3.0 vs 3.5 both did this). The mirror copies
+    # fsae_params.yaml is kept equal to the dataclass default. Under
+    # control.launch.py the dataclass default shadows it (every field is
+    # forwarded as a launch argument after the YAML), but any node started
+    # without that launch file reads the YAML, so a stale entry still runs
+    # there. tuner/tools/param_report.py shows which layer wins. The mirror copies
     # under fsds_simulator/ are the change-ledger for fsae_planning (see
     # CLAUDE.md's "Third copy" section) and must track the live ones.
     fsae_params_yaml: Path

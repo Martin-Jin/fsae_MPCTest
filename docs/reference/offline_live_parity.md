@@ -129,13 +129,38 @@ The two paths share the same QP core. The file's own module docstring lists whic
 
 ### Where a live value comes from
 
-The live node reads a parameter from the first of these that sets it.
+**For a node started through `sim.launch.py`/`control.launch.py`, the YAML value of an `MPCParams`/`NMPCParams` field never reaches the node.** Precedence, highest first:
 
-1. A launch argument. `ros2/launch_all.sh` appends `name:=value` for each uncommented shortlist variable (`_append_mpc_arg`). `control.launch.py` and `sim.launch.py` expose every `MPCParams` and `NMPCParams` field as a launch argument, generated from the field metadata.
-2. The YAML default in `common/fsae_bringup/config/fsae_params.yaml`, `controller:` block. It overrides the dataclass default at parameter-declare time.
-3. The dataclass default in `mpc_params.py` or `nmpc_params.py`.
+1. A launch argument set explicitly. `ros2/launch_all.sh` appends `name:=value` for each uncommented shortlist variable (`_append_mpc_arg`).
+2. The dataclass default in `mpc_params.py` or `nmpc_params.py`. `control.launch.py` passes every field to the node as a launch argument whose default is the dataclass default, listed after the YAML file in the node's `parameters=[...]`. A later entry wins.
+3. The YAML in `common/fsae_bringup/config/fsae_params.yaml`, `controller:` block. Shadowed for every dataclass field under these launch files. It only applies to a node started without them (`ros2 run ... --params-file`).
 
-Syncing only the `.py` files and not the YAML leaves the old value running with no visible sign. `python -m tuner.tools.sync_mpc_params` handles all three files together, see [Syncing params](#syncing-live-params-to-the-other-checkouts).
+The ordering was confirmed with a minimal `launch_ros` test: YAML `x: 1.0`, a later launch dict `{'x': LaunchConfiguration('x')}` defaulting to `2.0`, and the node received `2.0`. Keep the YAML equal to the dataclass anyway. `python -m tuner.tools.sync_mpc_params` handles all three files together, see [Syncing params](#syncing-live-params-to-the-other-checkouts).
+
+### Checking which value runs: `tuner.tools.param_report`
+
+**One command shows, per field, the value each repo would run, the layer it came from, and every disagreement.** Read-only.
+
+```bash
+cd fsae_MPCTest
+python3 -m tuner.tools.param_report                  # flagged rows only
+python3 -m tuner.tools.param_report --all            # every field
+python3 -m tuner.tools.param_report --field rrate    # name filter
+python3 -m tuner.tools.param_report --prod-launch nmpc_gokart   # which fsae_autonomous launch file to resolve
+python3 -m tuner.tools.param_report --check          # exit 1 on OFFLINE or MIRROR
+```
+
+Columns: live (`fsae_planning` via `launch_all.sh`), mirror (`fsds_simulator/` files), offline (`settings/`), prod (`fsae_autonomous` via the chosen launch file). Rows are grouped by the field's `controller` metadata (shared, LTV-QP only, NMPC only).
+
+| flag | meaning | fails `--check` |
+|---|---|---|
+| `OFFLINE` | offline constant differs from the live dataclass default, or has no constant. Fields in the "no matched offline constant" table below are shown as `live-only` and never flagged | yes |
+| `MIRROR` | mirror dataclass or YAML differs from the live file | yes |
+| `LAUNCH` | `launch_all.sh` runs a value other than the dataclass default, so the live run differs from what the offline constant tunes against | no |
+| `SHADOW` | YAML differs from the dataclass default but the launch file shadows it (a dead YAML edit) | no |
+| `PROD` | production differs from live, or the field exists on only one side. `UNV` marks a production field carrying the `UNVERIFIED` token | no |
+
+The production launch file is parsed, not assumed: `control.launch.py` shadows the YAML like the sim side does, while `nmpc_gokart`/`nmpc_shadow` pass only a literal dict, so there the YAML applies. Stanley gains and node-level parameters (`v_max`, `map_path`, ...) are not dataclass fields and are not covered.
 
 The offline side has one layer: a constant in the `settings/` package, edited in the submodule that holds it (find it with `grep`). Consumers use `import settings; settings.X`, so a runtime `setattr(settings, name, value)` reaches every consumer.
 
