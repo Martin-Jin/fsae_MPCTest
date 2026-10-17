@@ -75,6 +75,8 @@ flowchart LR
     MPC -->|"standalone_output=false"| CV["/fsae/control/cmd_vel"]
 ```
 
+This map covers the default MPC path only. Every node and topic, including Stanley, `fsds_bridge`, the skidpad planner, `cone_recorder` and `live_viz`, is in [live_architecture.md](live_architecture.md), together with a flowchart of each phase below.
+
 - `car_odom` carries the pose and the speed and yaw rate from one atomic odom sample. The controller reads speed from it so the state vector never mixes samples from two ticks. See `sim_perception.py`'s module docstring.
 - The node has no desired-speed topic. It derives `desired_speed` each tick from the current path with `control_utils.curvature_speed()`, or looks it up in a precomputed CSV (see [what the live controller reads](#3-what-the-live-controller-reads)). The `v_max` and `v_min` parameters bound the live curvature speed.
 - With `use_precomputed_path` on (launch default) `planning.launch.py` is not included, so nothing publishes `/fsae/planning/selected_trajectory`. The node loads the CSV path and publishes it once, latched, on `/fsae/control/static_reference_path` for the debug viewer.

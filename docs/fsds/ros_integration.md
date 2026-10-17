@@ -47,7 +47,7 @@ flowchart LR
     FBRIDGE -.->|"/fsds/control_command"| BRIDGE
 ```
 
-This diagram shows the shape only. The [integration guide](integration_guide.md#choosing-the-controller-and-planner) has the full topic map, including why the controller reads `car_odom` and not the raw odom topic, and the cone-proximity brake.
+This diagram shows the shape only. [live_architecture.md](live_architecture.md) has the full node and topic graph, the exhaustive connection table, the launch tree and a flowchart for each node. The [integration guide](integration_guide.md#choosing-the-controller-and-planner) has the controller-side topic map, including why the controller reads `car_odom` and not the raw odom topic, and the cone-proximity brake.
 
 - **The bridge translates and does not decide.** It turns AirSim's sensor and state RPCs into ROS 2 messages, and turns the `fs_msgs` `ControlCommand` message back into AirSim throttle, steering and brake calls. Perception, planning and control all live in this project's nodes.
 - **Two return paths reach the bridge.** With `standalone_output=true` the controller publishes the `fs_msgs` `ControlCommand` message directly. With `standalone_output=false` it publishes `cmd_vel` and `fsds_bridge.py` owns GO gating, cone e-braking and throttle conversion. `fsds_bridge.py` is a different node from `fsds_ros2_bridge` and is easy to confuse by name. Never run both paths into `/fsds/control_command` at once.

@@ -178,6 +178,52 @@ dx_k = S[k] @ dU_flat
 
 When `delay_compensation_enabled`, the measured pose age is low-passed (`pose_age_lp_alpha`), converted to a step count with hysteresis (`n_delay_hysteresis`) and capped (`max_delay_compensation_steps`). The measured state is then rolled forward through that many recent commands with the nonlinear model, starting the actuator states (`delta_act`, `a_act`) from their values when the oldest pending command was issued, as in the linear controller (see [lmpc.md](lmpc.md)). The linear controller does the same with its linear model (`predict_ahead`). An optional `nmpc_latency_compensation_enabled` (default false) rolls forward by `nmpc_latency_compensation_ms` to cover the solve's own wall-clock time. It was a suspect in a smoothness regression and stays off.
 
+### What one live `compute()` call does
+
+**Plain version.** The live node calls the NMPC exactly as it calls the linear controller and gets the same `(steering, throttle, brake)` back. Inside, the NMPC turns the path into a smooth curve, measures the car's position along and across it, moves that estimate forward to cover the pose's age, starts from last tick's plan shifted by one step, improves the plan once, and only keeps the improvement if the true nonlinear cost went down. Where this call sits in the node's tick is in [live_architecture.md](../fsds/live_architecture.md#43-mpc_controller-caches-inputs-and-does-all-work-on-a-20-hz-timer).
+
+Code: `NMPCController.compute()` in `nmpc/solver.py` (live), with `nmpc/reference.py`, `nmpc/dynamics.py`, `nmpc/qp_model.py`, `nmpc/sqp_step.py` and `nmpc/weight_schedule.py`. The offline `controller/nmpc/` package mirrors these one to one.
+
+```mermaid
+flowchart TD
+    IN(["compute(path, car_pos, car_yaw, car_speed,<br/>desired_speed, car_yaw_rate, pose_age_s, car_vy)"])
+    G{"path < 3 points?"}
+    G0["return (0, 0, 0.5)"]
+    F["low-pass desired_speed<br/>(nmpc_v_des_filter_alpha) → v_ref"]
+    REF["_path_reference: PathReference (cubic spline;<br/>precomputed once for a static path),<br/>curvature rate-limited against last tick"]
+    X0["ref.project(front axle) → s, e_y, e_psi<br/>x0 = [s, e_y, e_psi, v_x, v_y, r, delta_act, a_act]"]
+    W["R_rate[steer] multipliers from the current state<br/>(corner blend or anti-hunt, reversal; all opt-in)"]
+    D{"delay_compensation_enabled?"}
+    D1["_update_n_delay → roll x0 through recent commands<br/>with the nonlinear model (_step_scalar)"]
+    WS["warm start: last plan shifted one step<br/>(or hold last command), _project_feasible"]
+    RO["_rollout(x0, U) → predicted states X<br/>three-zone R_rate schedule from predicted curvature"]
+    SQP["_solve_step: finite-difference Jacobians,<br/>condense, OSQP inside a trust region → dU"]
+    OK{"dU found and inside<br/>nmpc_solve_budget_ms?"}
+    LS["line search: U + step·dU, step = 1, ½, ¼<br/>re-roll and evaluate the true nonlinear cost"]
+    AC{"cost lower than before?"}
+    KEEP["accept: U, X updated"]
+    REJ["reject: keep the shifted plan"]
+    SHIP["u = U[0], clipped to limits and per-tick slew<br/>update lag states, store command"]
+    OUT["same FSDS conversion as the LTV-QP<br/>last_telemetry incl. nmpc_pred_xy (for live_viz)"]
+    RET(["return (steering, throttle, brake)"])
+
+    IN --> G
+    G -->|"yes"| G0
+    G -->|"no"| F --> REF --> X0 --> W --> D
+    D -->|"yes"| D1 --> WS
+    D -->|"no"| WS
+    WS --> RO --> SQP --> OK
+    OK -->|"no"| SHIP
+    OK -->|"yes"| LS --> AC
+    AC -->|"yes"| KEEP --> SHIP
+    AC -->|"no, after all halvings"| REJ --> SHIP
+    SHIP --> OUT --> RET
+```
+
+- **`nmpc_sqp_iters = 1`**, so the SQP and line-search boxes run once per tick. With more iterations the loop returns to `_solve_step` while the budget allows.
+- **Why a rejected step keeps the old plan.** Accepting the smallest trial step regardless of cost once wrote a bad direction into the warm start and grew into a wrong-way full-lock ramp offline. The shifted plan from last tick is always feasible.
+- **No hard fail-safe brake inside the NMPC.** A failed QP leaves the warm-start plan in place. Braking on a lost path is the node's job (Phase 2).
+
 ## Shaping the steering rate cost
 
 **Plain version.** A high flat penalty on steering-rate stops the wheel twitching but makes the car reluctant to start a turn. Two mechanisms shape the cost so both hold.

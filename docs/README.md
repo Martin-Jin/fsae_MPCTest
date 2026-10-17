@@ -23,6 +23,7 @@ Files under `docs/logs/` are a frozen investigation record, see [logs/README.md]
 | Judge how far to trust the offline sim against the car | [reference/simulator_fidelity.md](reference/simulator_fidelity.md) |
 | Understand the vehicle plant model | [reference/vehicle_physics.md](reference/vehicle_physics.md) |
 | Look up a term | [reference/glossary.md](reference/glossary.md) |
+| See every live node, topic and launch file, with a flowchart per module | [fsds/live_architecture.md](fsds/live_architecture.md) |
 | Set up FSDS and connect the ROS 2 bridge | [fsds/integration_guide.md](fsds/integration_guide.md), [fsds/ros_integration.md](fsds/ros_integration.md), [fsds/settings.md](fsds/settings.md) |
 | Find which file does what in the offline repo | [modules/offline_sim.md](modules/offline_sim.md) |
 | Find which file does what in the ROS 2 workspace, and how the mirror workflow works | [modules/fsds_ros2.md](modules/fsds_ros2.md) |

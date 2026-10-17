@@ -307,6 +307,50 @@ scale = 1 + (boost_max - 1) * boost_kappa * boost_ey * boost_epsi
 
 `ref_heading_rate_limit_enabled` (default false, `REF_HEADING_RATE_LIMIT_ENABLED = False`) caps how fast the tracked reference heading may change per tick at `ref_heading_rise_rate_deg_s = 90.0`. It is disabled because holding the reference back during turn-in leaves a larger heading deficit to recover later and worsens steering saturation.
 
+### What one live `compute()` call does
+
+**Plain version.** Each tick the live node hands the controller the path, the car's pose, speed and yaw rate, a target speed and the age of the pose. The controller measures how far off the path the car is, moves that estimate forward to cover the pose's age, adjusts its weights for speed and corner, solves one QP, and returns pedal and steering values already in FSDS units. Where this call sits in the node's tick is in [live_architecture.md](../fsds/live_architecture.md#43-mpc_controller-caches-inputs-and-does-all-work-on-a-20-hz-timer).
+
+Code: `MPCController.compute()` in `lmpc/controller.py` (live), helpers in `lmpc/adaptive_gains.py` and `lmpc/predict.py`. The offline equivalent is the per-tick solve in `sim/rollout/tick_solve.py`.
+
+```mermaid
+flowchart TD
+    IN(["compute(path, car_pos, car_yaw, car_speed,<br/>desired_speed, car_yaw_rate, pose_age_s, car_vy)"])
+    G{"path < 2 points?"}
+    G0["return (0, 0, 0.5): mild brake,<br/>no state touched"]
+    F["low-pass desired_speed (alpha 0.08)"]
+    E["_error_state: project the front axle onto the nearest segment<br/>→ x0 = [e_y, e_y_dot, e_psi, r, e_v, e_a, delta_act, a_act], kappa"]
+    M["_discrete_model(v_x): kinematic/dynamic bicycle blend,<br/>ZOH-discretised → Ad, Bd"]
+    D{"delay_compensation_enabled?"}
+    D1["_update_n_delay(pose_age_s): low-pass, hysteresis, cap 3<br/>predict_ahead: roll x0 through the last n_delay commands"]
+    GS["gain schedule (current state only)<br/>_corner_factor(kappa) + low-speed boost → corner_frac<br/>_adaptive_R_scaling(v_x), anti-hunt, reversal boost<br/>blend Q[e_y], Q[e_psi], Q[r], R_rate[steer], R[steer]<br/>heading-error accel/brake asymmetry"]
+    QP["_solve_qp: write parameters into the persistent CVXPY problem<br/>OSQP (warm start)"]
+    QF{"OSQP optimal?"}
+    QC["Clarabel fallback"]
+    QX{"Clarabel optimal?"}
+    QB["fail-safe: hold last steering, full brake"]
+    U["u* = [delta_cmd, a_cmd] for step 0 only"]
+    LAG["update delta_act, a_act exactly (ZOH lag)<br/>store command for future delay compensation"]
+    OUT["steering = clip(-delta_cmd / 25°, -1, 1)<br/>a_cmd ≥ 0: throttle = a_cmd / a_max, else brake<br/>fill last_telemetry"]
+    RET(["return (steering, throttle, brake)"])
+
+    IN --> G
+    G -->|"yes"| G0
+    G -->|"no"| F --> E --> M --> D
+    D -->|"yes"| D1 --> GS
+    D -->|"no"| GS
+    GS --> QP --> QF
+    QF -->|"yes"| U
+    QF -->|"no"| QC --> QX
+    QX -->|"yes"| U
+    QX -->|"no"| QB --> LAG
+    U --> LAG --> OUT --> RET
+```
+
+- **The QP is built once.** `_build_qp` creates the CVXPY problem at construction. Each tick only overwrites its parameters (`Ad`, `Bd`, weights, `x0`), which is what keeps the solve inside the 50 ms tick.
+- **`reset()`** clears the actuator-lag estimates, the previous command, the speed filter, the pose-age filter and the command history used for delay compensation. The node calls it on a lost path or pose and after 0.3 s of cone braking.
+- **`last_telemetry`** is how the node reads `e_y`, `e_psi`, `delta_cmd`, `a_cmd`, `n_delay`, `solve_ms` and every adaptive multiplier. Its fields feed the CSV log and the speed gate of the next tick.
+
 ## Tuning and pitfalls
 
 - **Tune the endpoints, not the base fields.** See the note under the corner-factor scheduler: four base weights are overwritten every tick. The offline tuner still searches multipliers for `Q` entries 0 to 4 and `R_rate` entry 0, so with `USE_NMPC` false its search dimensions for `Q[0]`, `Q[2]`, `Q[3]` and `R_rate[0]` are no-ops and those dimensions do not change the score.
