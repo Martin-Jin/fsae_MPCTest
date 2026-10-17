@@ -60,7 +60,7 @@ These active lines set the same value as the dataclass default: `V_MIN=1.5`, `NM
 - **The tuning shortlist**: a longer block further down, mostly commented out, covering the commonly retuned weights and gains, the adaptive-gain and corner-factor fields, the dynamic speed cap and a large NMPC set. The shortlist changes as tuning proceeds. Read the script for the current state, not this table.
 - **`V_MAX` does not reach the precomputed-speed branch.** With `use_precomputed_speed` on, the CSV's own top speed is the car's top speed. A speed cap for a test means swapping the CSV. See [reference_path_and_speed.md](../reference/reference_path_and_speed.md).
 
-Why three layers exist (dataclass, YAML and launch argument, instead of one) is not recorded. The practical roles are: the dataclass is the authoritative default, the YAML is a deployment file, and a launch argument is a per-run override.
+Why three layers exist (dataclass, YAML and launch argument, instead of one) is not recorded. The practical roles are: the dataclass is the authoritative default, the YAML is a deployment file, and a launch argument is a per-run override. The constraints that keep the split, the full list of places a tuning value can sit (including hardcoded constants and offline `settings/`), and what to edit for each kind of change are in [tuning.md](../guides/tuning.md#where-every-setting-lives-and-what-to-edit).
 
 ## Perception feeding the live planner
 

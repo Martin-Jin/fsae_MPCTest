@@ -15,14 +15,58 @@ Current numbers live in code, not here. Offline: the `settings/` package (`setti
 
 1. Find the parameter below and read its known constraints.
 2. Change it on both sides: the offline constant in `settings/` and the live field in `mpc_params.py` or `nmpc_params.py`. A one-sided edit makes offline scores meaningless. Field mapping: [offline_live_parity.md](../reference/offline_live_parity.md).
-3. Check for runtime overrides. A launched node reads `ros2/launch_all.sh` arguments first, `fsae_params.yaml` second and the dataclass default last. Editing only the dataclass leaves the car on the old value. See the status table below.
+3. Check for runtime overrides. An uncommented `ros2/launch_all.sh` line beats the dataclass default, and the YAML never reaches a launched node. See [Where every setting lives](#where-every-setting-lives-and-what-to-edit) below, or run `python3 -m tuner.tools.param_report --field <name>`.
 4. Change one value at a time, by 20 to 30 percent, then re-validate. Weights interact and a second change hides the first.
 5. Validate with `python -m tuner.validation.recorded_map_rollout` (headless, about 2 minutes). For anything touching adaptive gains or delay handling also run the synthetic `VALIDATION_SUITE`. For NMPC solver changes run `python -m tuner.validation.nmpc_offline_check`.
 6. Do not trust an offline score alone for a change that moves saturation or heading error. The offline sim does not fully predict the car. See [simulator_fidelity.md](../reference/simulator_fidelity.md).
 
+## Where every setting lives, and what to edit
+
+**A tuning value can sit in up to six places. Only one of them decides what the car runs, and it is not always the obvious one.** Run `python3 -m tuner.tools.param_report` to see, per field, the value each repo runs and which layer it came from.
+
+### The layers, highest priority first (sim, `ros2/launch_all.sh` + `sim.launch.py`)
+
+| # | Where | What it holds | Wins over |
+|---|---|---|---|
+| 1 | `ros2/launch_all.sh`, an **uncommented** shortlist line (e.g. `NMPC_RJERK_DELTA=150.0`) | a per-run override, passed as `field:=value` by `_append_mpc_arg` | everything below |
+| 2 | `mpc_params.py` / `nmpc_params.py` dataclass default | the authoritative default for all 104 MPC/NMPC fields | the YAML |
+| 3 | `common/fsae_bringup/config/fsae_params.yaml`, `controller:` block | a copy of every default | **nothing, for a dataclass field.** `control.launch.py` forwards every field as a launch argument defaulting to the dataclass value, after the YAML, so the YAML is shadowed |
+
+Not in the layer stack, but still tuning:
+
+| Where | What it holds | How to change it |
+|---|---|---|
+| `mpc/node_constants.py`, `lmpc/constants.py`, `nmpc/layout.py`, `control_utils.py` | hardcoded constants: speed-target rise rate and deficit cap, cone-brake corridor, `MAX_STEER_RAD`, `MAX_ACCEL`, `MAX_BRAKE` | edit the code, then its offline twin (`sim/rollout/speed_target.py`, `controller/lmpc/`) by hand. Not a ROS parameter, so no launch override exists |
+| node-level parameters in `mpc_controller.py` (`v_max`, `v_min`, `enable_dynamic_speed_cap`, `map_path`, ...) | not `MPCParams` fields | `launch_all.sh` variable or the launch argument's default in `sim.launch.py`. The launch file passes these explicitly too, so their YAML keys are also shadowed |
+| offline `settings/` package (`lmpc.py`, `nmpc.py`, `general.py`, `scoring.py`, ...) | the offline copy of every field, plus offline-only settings | edit by hand or through the launcher's Settings tab. Must equal layer 2 |
+
+Production (`fsae_autonomous`) has the same three layers, but the order depends on the launch file. `control.launch.py` shadows the YAML exactly like the sim. Production's `nmpc_gokart` and `nmpc_shadow` launch files pass only a short literal dict, so there the YAML **does** apply: literal dict, then YAML, then dataclass. Check with `param_report --prod-launch nmpc_gokart`.
+
+### To change a value, edit these
+
+| Change | Edit | Check |
+|---|---|---|
+| Default of an MPC/NMPC weight or flag | dataclass default in `fsae_planning` + the same key in `fsae_params.yaml` + the matching `settings/` constant + the `fsds_simulator/` mirror copies. The launcher's Settings tab writes all of these in one save | `param_report --check` passes. If the field has an uncommented `launch_all.sh` line, that line still wins: change or comment it too |
+| A value for one run only | uncomment or edit the `launch_all.sh` shortlist line | `param_report` shows layer `launch_all` |
+| A hardcoded constant | the code file and its offline twin | `recorded_map_rollout` |
+| Production | the `fsae_autonomous` files (only on an explicit ask), and the launch file's literal dict if it sets the field. Mirror to `fsae_MPCRos` | `param_report --prod-launch <file>` |
+
+Editing only the YAML does nothing on a launched node. Editing only the dataclass does nothing for a field pinned by an uncommented `launch_all.sh` line.
+
+### Why it is split across locations
+
+The original reason for three live layers is not recorded. These are the constraints that keep the split in place now:
+
+- **The car cannot import the offline package.** `fsae_MPCTest/settings/` is not on the car's Python path and must not be, so the offline and live values are two hand-kept copies. `param_report --check` catches drift between them.
+- **ROS needs every parameter declared with a default.** The dataclass is that declaration, and it also generates the launch arguments, so a new field needs no hand-written launch code.
+- **The YAML is the standard ROS deployment file.** It is what a node reads when started without these launch files (`ros2 run --params-file`) and what production's kart launches use. It is kept equal to the dataclass so either start-up path gives the same value.
+- **Launch arguments are per-run overrides.** `launch_all.sh` exists so an experiment can change a value without editing a source default.
+- **Hardcoded constants were never promoted to parameters.** They are limits or node plumbing that rarely change. Promoting one means adding a dataclass field and its offline constant.
+- **Production is maintained separately.** It has its own copies so that a sim-only value never reaches the car unmarked.
+
 ## What is shipped and what runs on the car
 
-Three layers can hold a value. The launch layer wins.
+Three layers can hold a value. The launch layer wins, then the dataclass default. The YAML column is shown because it should match, not because it is read.
 
 | Mechanism | Dataclass default | `fsae_params.yaml` | `ros2/launch_all.sh` | Offline `settings/` | Runs on the car |
 |---|---|---|---|---|---|
