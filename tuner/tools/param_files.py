@@ -1,10 +1,16 @@
 """
-gui/launcher/file_edit.py — shared file-rewrite helpers (Launch tab ->
-launch_all.sh, Settings tab -> settings/*.py). All of the settings package's
-package files, launch_all.sh, fsae_params.yaml, and mpc_params.py/
-nmpc_params.py use the same flat "NAME = value" / "NAME=value" style with
-no multi-line assignments for any field this GUI touches, so a single
-regex substitution per field is enough.
+tuner/tools/param_files.py — where the MPC/NMPC parameter files live in
+each checkout, and the helpers that read and rewrite them. No CLI.
+
+Shared by tuner/tools/sync_mpc_params.py, tuner/tools/param_report.py and
+the launcher GUI (gui/launcher/), so the repo layout, the settings/ <->
+dataclass index map and the launch_all.sh parsing exist once. Kept free of
+tkinter so the command-line tools can import it headless.
+
+All of the settings package's files, launch_all.sh, fsae_params.yaml, and
+mpc_params.py/nmpc_params.py use the same flat "NAME = value" /
+"NAME=value" style with no multi-line assignments for any field these
+tools touch, so a single regex substitution per field is enough.
 """
 
 from __future__ import annotations
@@ -14,9 +20,56 @@ import shutil
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Shared file-rewrite helpers (Launch tab -> launch_all.sh, Settings tab ->
-# the settings package). Both files use the same flat "NAME = value" / "NAME=value"
-# style with no multi-line assignments for any field this GUI touches.
+# Repo layout. Resolved from this file, not the CWD, so every caller works
+# whether invoked from fsae_MPCTest/ or anywhere else.
+# ---------------------------------------------------------------------------
+
+_FSAE_MPCTEST = Path(__file__).resolve().parent.parent.parent
+_FSDS_ROOT = _FSAE_MPCTEST.parent
+_LAUNCH_ALL = _FSDS_ROOT / "ros2" / "launch_all.sh"
+_SETTINGS_DIR = _FSAE_MPCTEST / "settings"
+
+# Relative path (from a ROS tree's root) of each live parameter file. The
+# same relative paths hold in fsae_planning, the fsds_simulator/ mirror and
+# fsae_autonomous.
+_RELATIVE_PATHS = {
+    "mpc_params.py": Path("control/fsae_control/fsae_control/mpc/mpc_params.py"),
+    "nmpc_params.py": Path("control/fsae_control/fsae_control/mpc/nmpc_params.py"),
+    "fsae_params.yaml": Path("common/fsae_bringup/config/fsae_params.yaml"),
+}
+
+_LIVE_ROOT = _FSDS_ROOT / "ros2" / "src" / "fsae_planning"
+_MIRROR_ROOT = _FSAE_MPCTEST / "fsds_simulator"
+# fsae_autonomous has moved before, so a short list of observed locations
+# is searched instead of hardcoding one. Add the new path here if it moves
+# again (CLAUDE.md "Git layout").
+_AUTONOMOUS_CANDIDATES = [
+    _FSDS_ROOT / "fsae_autonomous",
+    _FSDS_ROOT / "ros2_autonomous" / "src" / "fsae_autonomous",
+]
+
+
+def _find_autonomous_root() -> Path | None:
+    for candidate in _AUTONOMOUS_CANDIDATES:
+        if (candidate / ".git").is_dir():
+            return candidate
+    return None
+
+
+# settings/ stores the core weights as index vectors rather than one
+# constant per field. Each list gives the live dataclass field for every
+# index; None marks an index with no live field (Q_diag[5:8] are always-0
+# states, R_diag[1] is nominal only, superseded by R_A_ACCEL/R_A_BRAKE).
+# Every other field maps to UPPER(field) in settings/.
+_LIST_FIELD_MAP: dict[str, list[str | None]] = {
+    "Q_diag": ["q_e_y", "q_e_yd", "q_e_psi", "q_r", "q_e_v", None, None, None],
+    "R_diag": ["r_delta", None],
+    "R_rate_diag": ["r_rate_delta", "r_rate_a"],
+}
+
+# ---------------------------------------------------------------------------
+# Read/rewrite helpers (launch_all.sh, settings/*.py, fsae_params.yaml,
+# mpc_params.py/nmpc_params.py).
 # ---------------------------------------------------------------------------
 
 def _var_pattern(name: str) -> re.Pattern:

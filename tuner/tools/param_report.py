@@ -68,22 +68,19 @@ from pathlib import Path
 
 import yaml
 
-from tuner.tools.sync_mpc_params import (
-    _FSAE_MPCTEST, _FSDS_ROOT, _LIVE_ROOT, _MIRROR_ROOT, _RELATIVE_PATHS,
-    _find_autonomous_root,
+from tuner.tools.param_files import (
+    _FSAE_MPCTEST, _LAUNCH_ALL, _LIST_FIELD_MAP, _LIVE_ROOT, _MIRROR_ROOT,
+    _RELATIVE_PATHS, _find_autonomous_root, _launch_arg_vars, _read_var,
 )
 
-_LAUNCH_ALL = _FSDS_ROOT / "ros2" / "launch_all.sh"
 _LAUNCH_DIR = Path("common/fsae_bringup/launch")
 
-# settings/ stores the core weights as index vectors rather than one
-# constant per field. Every other field maps to UPPER(field) or
-# NMPC_<UPPER(field)>.
+# {field: (settings vector, index)}, inverted from the shared map. Every
+# other field maps to UPPER(field) or NMPC_<UPPER(field)>.
 _LIST_FIELDS = {
-    "q_e_y": ("Q_diag", 0), "q_e_yd": ("Q_diag", 1), "q_e_psi": ("Q_diag", 2),
-    "q_r": ("Q_diag", 3), "q_e_v": ("Q_diag", 4),
-    "r_delta": ("R_diag", 0),
-    "r_rate_delta": ("R_rate_diag", 0), "r_rate_a": ("R_rate_diag", 1),
+    field: (name, i)
+    for name, fields_ in _LIST_FIELD_MAP.items()
+    for i, field in enumerate(fields_) if field is not None
 }
 # Offline values that live outside settings/ or under another name.
 _OFFLINE_ALIASES = {
@@ -169,16 +166,16 @@ def _load_yaml_block(path: Path, node: str) -> dict:
 
 def _launch_all_overrides(path: Path) -> dict:
     """{field: value} for every `_append_mpc_arg <field> "$VAR"` whose VAR has
-    a non-empty, uncommented top-level assignment (the last one wins, as in
-    the shell). Commented shortlist lines are ignored, as launch_all.sh does."""
+    a non-empty, uncommented assignment. Commented shortlist lines pass
+    nothing, as in launch_all.sh. Same helpers the GUI's Settings tab uses
+    to find a pinned value."""
     if not path.is_file():
         return {}
-    text = path.read_text()
     out = {}
-    for field, var in re.findall(r'^_append_mpc_arg (\w+) "\$(\w+)"', text, re.MULTILINE):
-        vals = re.findall(rf'^{var}=([^#\n]*)', text, re.MULTILINE)
-        if vals and vals[-1].strip().strip("'\""):
-            out[field] = vals[-1].strip()
+    for field, var in _launch_arg_vars(path).items():
+        value = _read_var(path, var)
+        if value and value.strip("'\""):
+            out[field] = value
     return out
 
 

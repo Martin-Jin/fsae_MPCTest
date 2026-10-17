@@ -40,7 +40,7 @@ Conceptual background: [architecture](../reference/architecture.md) and [offline
 - Add a Settings-tab field: `gui/launcher/tabs/settings.py` (one of the field tables), matching field in the live `mpc_params.py` or `nmpc_params.py` and `settings/`, then save in the GUI and `git diff` the live tree, the mirror and both `fsae_params.yaml`.
 - Add a Launch-tab option backed by a `launch_all.sh` variable: `gui/launcher/tabs/launch.py` (`_pending_values`, `refresh_from_disk`, `apply_profile_values`), then Launch once and diff `ros2/launch_all.sh`.
 - Change what a saved profile captures: `capture_profile_values` and `apply_profile_values` in the Settings or Launch tab file, then save and load a profile and inspect the JSON in `settings_profiles/`.
-- Fix or extend regex file editing: `gui/launcher/file_edit.py`, then rewrite a copy of the target file and diff it.
+- Fix or extend regex file editing: `tuner/tools/param_files.py`, then rewrite a copy of the target file and diff it.
 - Point the GUI at a moved checkout or new file: `gui/launcher/paths.py`, then print `_repo_paths()` and open every tab.
 - Add a launcher tab: new file in `gui/launcher/tabs/`, register in `gui/launcher/app.py`, update the docstring in `gui/launcher/__init__.py`, then run pyflakes on `gui/launcher` (a dev tool, not a repo dependency) and click through.
 - Add a telemetry CSV column: `ADAPTIVE_COLUMNS` in the live `telemetry/columns.py` and its `fsds_simulator/` mirror (append only), then a short run and check the header, and that `tuner.tools.plot_playback` still loads it.
@@ -691,12 +691,12 @@ Key API: `Playback`, `load_log`, `find_latest_log`, `find_latest_per_folder`, `f
 ### `tuner/tools/sync_mpc_params.py`
 Does: copies the three live param files (`mpc_params.py`, `nmpc_params.py`, `fsae_params.yaml`) from the live tree to the `fsds_simulator/` mirror and the `fsae_autonomous` working tree.
 Change it to:
-- add a destination in `_AUTONOMOUS_CANDIDATES` when the checkout moves. Dry run first: `python -m tuner.tools.sync_mpc_params`, then `--apply`.
+- add a destination in `_AUTONOMOUS_CANDIDATES` (in `param_files.py`) when the checkout moves. Dry run first: `python -m tuner.tools.sync_mpc_params`, then `--apply`.
 Don't:
 - use it for non-param source files (`controller.py`, `solver.py` and so on), because those need manual mirroring.
 - treat it as syncing `settings/`, because the offline constants are a separate parity boundary edited by hand.
 - commit or push `fsae_autonomous` from it, because it only writes the local working tree.
-Key API: `main`, `_destinations`, `_find_autonomous_root`
+Key API: `main`, `_destinations` (layout from `param_files.py`)
 
 ### `tuner/tools/param_report.py`
 Does: read-only report of every `MPCParams`/`NMPCParams` field's effective value in the live tree (`launch_all.sh` + launch file + dataclass + YAML), the `fsds_simulator/` mirror, offline `settings/` and `fsae_autonomous`, with the layer it came from and `OFFLINE`/`MIRROR`/`LAUNCH`/`SHADOW`/`PROD` flags. `--check` exits 1 on `OFFLINE` or `MIRROR`.
@@ -824,10 +824,11 @@ Don't:
 - Forget the mirror fields, because a Settings save writes the live files and their `fsds_simulator/` copies together.
 Key API: `RepoPaths`, `_repo_paths`. Fields: `fsae_mpctest`, `fsds_root`, `launch_all_sh`, `tracks_dir`, `recorded_runs_dir`, `fsae_logs_dir`, `settings_dir`, `mpc_params_py`, `nmpc_params_py`, `fsae_params_yaml`, `mirror_*` (three), `profiles_dir`.
 
-### `gui/launcher/file_edit.py`
+### `tuner/tools/param_files.py`
 
-Does: regex read and write helpers for `NAME = value` lines in `launch_all.sh` and `settings/*.py`, commented shortlist lines, YAML `controller:` fields, and dataclass `field(default=...)` values.
+Does: the one definition of the param-file layout (`_LIVE_ROOT`, `_MIRROR_ROOT`, `_RELATIVE_PATHS`, `_find_autonomous_root`, `_LAUNCH_ALL`, `_SETTINGS_DIR`), the `settings/` vector to dataclass index map (`_LIST_FIELD_MAP`), and regex read and write helpers for `NAME = value` lines in `launch_all.sh` and `settings/*.py`, commented shortlist lines, YAML `controller:` fields, and dataclass `field(default=...)` values. Used by the launcher GUI, `sync_mpc_params` and `param_report`. No tkinter import, so the command-line tools load it headless.
 Change it to:
+- Move a checkout: edit the layout constants here, never a copy in a caller.
 - Support a new file shape: add a `_xxx_pattern` plus a `_read_xxx` and `_rewrite_xxx` pair. Check by rewriting a copy of the file and diffing.
 Don't:
 - Loosen the `\b` after the name in the patterns, because `NMPC_Q_E_Y` would then match the `NMPC_Q_E_YD` line.
@@ -861,7 +862,7 @@ Does: empty package marker.
 Change it to:
 - Nothing.
 Don't:
-- Put shared helpers here, because shared code lives one level up (`theme.py`, `file_edit.py`, `process_utils.py`).
+- Put shared helpers here, because shared code lives one level up (`theme.py`, `paths.py`, `process_utils.py`, and `tuner/tools/param_files.py` for file editing).
 Key API: none.
 
 ### `gui/launcher/tabs/launch.py`

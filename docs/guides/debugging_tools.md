@@ -53,7 +53,7 @@ cd fsae_MPCTest && python -m gui.launcher
 
 **Required layout.** `fsae_MPCTest/` sits directly inside the outer FSDS repo root, next to `ros2/`. `gui/launcher/paths.py` resolves every path from its own location (`fsae_MPCTest` and its parent), so a checkout anywhere else cannot find `ros2/launch_all.sh`, the tracks or `mpc_params.py`.
 
-**Package layout.** `theme.py`, `paths.py`, `file_edit.py`, `process_utils.py`, `app.py` and one module per tab under `gui/launcher/tabs/`: `launch.py`, `log_debug.py`, `offline_sim.py`, `settings.py`, `profiles.py`.
+**Package layout.** `theme.py`, `paths.py`, `process_utils.py`, `app.py` and one module per tab under `gui/launcher/tabs/`: `launch.py`, `log_debug.py`, `offline_sim.py`, `settings.py`, `profiles.py`. The file read/write helpers and the param-file layout are in `tuner/tools/param_files.py`, shared with `sync_mpc_params` and `param_report`.
 
 | Tab | What it does |
 |---|---|
@@ -129,7 +129,7 @@ python -m tuner.tools.sync_mpc_params --apply    # overwrite
 - **Direction.** One way, from `ros2/src/fsae_planning/` to `fsae_autonomous` and `fsae_MPCTest/fsds_simulator/`. Destination values are never read as a source.
 - **Why the YAML is in scope.** A launch file that passes only a literal parameter dict (production's `nmpc_gokart`/`nmpc_shadow`) lets the YAML apply, so a stale YAML there runs. Under `control.launch.py` it is shadowed by the dataclass default.
 - **Safety.** Dry run by default. Each destination file gets a one-time `.bak` before an overwrite. Only the local working tree of `fsae_autonomous` is written. Commit and push there stay separate human steps.
-- **`fsae_autonomous` location.** The script tries `fsae_autonomous` and `ros2_autonomous/src/fsae_autonomous/` under the FSDS root (`_AUTONOMOUS_CANDIDATES`) and warns and skips that destination if neither has a `.git`. If the checkout moves again, add the new path there.
+- **`fsae_autonomous` location.** The script tries `fsae_autonomous` and `ros2_autonomous/src/fsae_autonomous/` under the FSDS root (`_AUTONOMOUS_CANDIDATES` in `tuner/tools/param_files.py`, shared with `param_report` and the GUI) and warns and skips that destination if neither has a `.git`. If the checkout moves again, add the new path there.
 
 ## Live debug window: `live_viz`
 

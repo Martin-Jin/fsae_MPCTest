@@ -24,13 +24,15 @@ subprocess. Rewriting ros2/launch_all.sh / settings/*.py in place is the
 only state this package mutates; both use plain `NAME = value` /
 `NAME=value` line-oriented fields with no multi-line assignments among the
 fields this GUI touches, so a single regex substitution per field is
-enough (see file_edit.py).
+enough (see tuner/tools/param_files.py).
 
 LAYOUT
 ------
   theme.py           the ttk "clam"-based palette and shared widget helpers
   paths.py           RepoPaths, every file/directory this GUI touches
-  file_edit.py        regex read/write helpers shared by every tab
+                     (regex read/write helpers and the param-file layout
+                     live in tuner/tools/param_files.py, shared with the
+                     command-line tools)
   process_utils.py    subprocess lifecycle + recorded-run filename helpers
   tabs/launch.py       Tab 1
   tabs/log_debug.py    Tab 2

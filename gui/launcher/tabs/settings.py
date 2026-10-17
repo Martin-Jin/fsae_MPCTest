@@ -16,9 +16,9 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
 
-from gui.launcher.file_edit import (
+from tuner.tools.param_files import (
     _backup_once, _launch_arg_vars, _read_dataclass_field, _read_dataclass_field_desc,
-    _read_var, _rewrite_dataclass_field, _rewrite_var, _rewrite_yaml_field,
+    _LIST_FIELD_MAP, _read_var, _rewrite_dataclass_field, _rewrite_var, _rewrite_yaml_field,
 )
 from gui.launcher.paths import RepoPaths
 from gui.launcher.theme import _field_label, _make_scrollable
@@ -73,16 +73,11 @@ _NMPC_OVERRIDE_FIELDS: list[tuple[str, str, str]] = [
 ]
 
 
-# (label, settings name, mpc_params.py field names for each list index).
-# Only indices with a real live-side weight are mapped -- Q_diag[5:8]
-# (e_a/delta_act/a_act) are always 0.0, not tunables, and R_diag[1] is
-# nominal-only now (superseded by R_A_ACCEL/R_A_BRAKE, see the settings package's own
-# comment on it), so neither gets a mpc_params.py entry (None = skip).
+# (label, settings name, length, mpc_params.py field name per list index).
+# The index map is tuner/tools/param_files.py's _LIST_FIELD_MAP, shared with
+# param_report; None = an index with no live field, skipped when syncing.
 _LIST_FIELDS: list[tuple[str, str, int, list[str | None]]] = [
-    ("Q_diag", "Q_diag", 8,
-     ["q_e_y", "q_e_yd", "q_e_psi", "q_r", "q_e_v", None, None, None]),
-    ("R_diag", "R_diag", 2, ["r_delta", None]),
-    ("R_rate_diag", "R_rate_diag", 2, ["r_rate_delta", "r_rate_a"]),
+    (name, name, len(fields_), fields_) for name, fields_ in _LIST_FIELD_MAP.items()
 ]
 
 
@@ -515,7 +510,8 @@ class SettingsTab(ttk.Frame):
         # this write, a save (or a loaded profile) changed every file above
         # while FSDS kept running the shortlist's old value, and the offline
         # settings silently disagreed with the car. Commented-out lines are
-        # left commented: they pass nothing, so the YAML value already wins.
+        # left commented: they pass nothing, so the dataclass default written
+        # above already wins (control.launch.py forwards it after the YAML).
         var = self._launch_vars.get(mpc_field)
         if var and self._pinned_launch_value(mpc_field) is not None:
             if not _rewrite_var(p.launch_all_sh, var, yaml_literal):

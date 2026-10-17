@@ -63,40 +63,12 @@ import difflib
 import sys
 from pathlib import Path
 
-# Paths are resolved relative to this file, not the CWD, so the script
-# works whether invoked from fsae_MPCTest/ (the documented way) or
-# anywhere else -- same reasoning as gui/launcher/'s _repo_paths().
-_FSAE_MPCTEST = Path(__file__).resolve().parent.parent.parent
-_FSDS_ROOT = _FSAE_MPCTEST.parent
-
-# Relative path (from a repo's fsae_control package root) of each synced
-# file, used to build every side's full path below. Order matches
-# CLAUDE.md's own file list.
-_RELATIVE_PATHS = {
-    "mpc_params.py": Path("control/fsae_control/fsae_control/mpc/mpc_params.py"),
-    "nmpc_params.py": Path("control/fsae_control/fsae_control/mpc/nmpc_params.py"),
-    "fsae_params.yaml": Path("common/fsae_bringup/config/fsae_params.yaml"),
-}
-
-_LIVE_ROOT = _FSDS_ROOT / "ros2" / "src" / "fsae_planning"
-_MIRROR_ROOT = _FSAE_MPCTEST / "fsds_simulator"
-# fsae_autonomous is a SIBLING checkout of the outer FSDS repo per
-# CLAUDE.md's documented layout. If that layout is stale (it was found to
-# be, 2026-09-23: the real checkout is at ros2_autonomous/src/
-# fsae_autonomous/), _find_autonomous_root() below searches a short list
-# of known-observed locations instead of hardcoding one, and reports
-# clearly if neither is found rather than silently doing nothing.
-_AUTONOMOUS_CANDIDATES = [
-    _FSDS_ROOT / "fsae_autonomous",
-    _FSDS_ROOT / "ros2_autonomous" / "src" / "fsae_autonomous",
-]
-
-
-def _find_autonomous_root() -> Path | None:
-    for candidate in _AUTONOMOUS_CANDIDATES:
-        if (candidate / ".git").is_dir():
-            return candidate
-    return None
+# Repo layout (live/mirror/fsae_autonomous roots, the three files' relative
+# paths) is shared with param_report and the launcher GUI.
+from tuner.tools.param_files import (
+    _AUTONOMOUS_CANDIDATES, _LIVE_ROOT, _MIRROR_ROOT, _RELATIVE_PATHS,
+    _find_autonomous_root,
+)
 
 
 def _destinations() -> list[tuple[str, Path]]:

@@ -15,7 +15,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, simpledialog, ttk
 
-from gui.launcher.file_edit import (
+from tuner.tools.param_files import (
     _backup_once, _read_shortlist_var, _read_var, _rewrite_shortlist_var, _rewrite_var,
 )
 from gui.launcher.paths import RepoPaths

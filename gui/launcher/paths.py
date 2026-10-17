@@ -9,6 +9,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from tuner.tools.param_files import (
+    _FSAE_MPCTEST, _FSDS_ROOT, _LAUNCH_ALL, _LIVE_ROOT, _MIRROR_ROOT, _RELATIVE_PATHS,
+    _SETTINGS_DIR,
+)
+
 @dataclass(frozen=True)
 class RepoPaths:
     fsae_mpctest: Path
@@ -48,19 +53,15 @@ class RepoPaths:
 
 
 def _repo_paths() -> RepoPaths:
-    # This file now lives at gui/launcher/paths.py (one level deeper than
-    # the original single-file gui/launcher.py), so resolving fsae_MPCTest/ needs one
-    # more .parent than before: paths.py -> launcher/ -> gui/ -> fsae_MPCTest/.
-    fsae_mpctest = Path(__file__).resolve().parent.parent.parent
-    fsds_root = fsae_mpctest.parent
-    fsae_planning_mpc = (fsds_root / "ros2" / "src" / "fsae_planning" / "control"
-                         / "fsae_control" / "fsae_control" / "mpc")
-    mirror_root = fsae_mpctest / "fsds_simulator"
-    mirror_mpc = mirror_root / "control" / "fsae_control" / "fsae_control" / "mpc"
+    # The parameter-file layout comes from tuner/tools/param_files.py, the
+    # same source sync_mpc_params and param_report use.
+    fsae_mpctest = _FSAE_MPCTEST
+    fsds_root = _FSDS_ROOT
+    rel = _RELATIVE_PATHS
     return RepoPaths(
         fsae_mpctest=fsae_mpctest,
         fsds_root=fsds_root,
-        launch_all_sh=fsds_root / "ros2" / "launch_all.sh",
+        launch_all_sh=_LAUNCH_ALL,
         tracks_dir=fsds_root / "ros2" / "src" / "fsae_planning" / "tracks",
         recorded_runs_dir=fsae_mpctest / "fsds_simulator" / "recorded_runs",
         # Matches launch_all.sh's own `log_dir:='$HOST_REPO_ROOT/fsae_logs'`
@@ -71,15 +72,13 @@ def _repo_paths() -> RepoPaths:
         # getting this directory right is what makes the Stop button's
         # "save this run?" prompt able to find anything at all.
         fsae_logs_dir=fsds_root / "fsae_logs",
-        settings_dir=fsae_mpctest / "settings",
-        mpc_params_py=fsae_planning_mpc / "mpc_params.py",
-        nmpc_params_py=fsae_planning_mpc / "nmpc_params.py",
-        fsae_params_yaml=(fsds_root / "ros2" / "src" / "fsae_planning" / "common"
-                          / "fsae_bringup" / "config" / "fsae_params.yaml"),
-        mirror_mpc_params_py=mirror_mpc / "mpc_params.py",
-        mirror_nmpc_params_py=mirror_mpc / "nmpc_params.py",
-        mirror_fsae_params_yaml=(mirror_root / "common" / "fsae_bringup"
-                                 / "config" / "fsae_params.yaml"),
+        settings_dir=_SETTINGS_DIR,
+        mpc_params_py=_LIVE_ROOT / rel["mpc_params.py"],
+        nmpc_params_py=_LIVE_ROOT / rel["nmpc_params.py"],
+        fsae_params_yaml=_LIVE_ROOT / rel["fsae_params.yaml"],
+        mirror_mpc_params_py=_MIRROR_ROOT / rel["mpc_params.py"],
+        mirror_nmpc_params_py=_MIRROR_ROOT / rel["nmpc_params.py"],
+        mirror_fsae_params_yaml=_MIRROR_ROOT / rel["fsae_params.yaml"],
         profiles_dir=fsae_mpctest / "settings_profiles",
     )
 
