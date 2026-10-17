@@ -30,12 +30,19 @@ Related docs:
 
 **In plain terms:** one closed-loop rollout function drives a simulated car around a path with the MPC at the wheel and returns a score. The GUI calls it once and shows the result. The tuner calls it thousands of times and searches for better weights.
 
+![How the offline pieces fit together](../diagrams/offline_guide_how_the_offline_pieces_fit_together.svg)
+
+<details>
+<summary>Mermaid source (edit this, then run <code>python3 -m tuner.tools.render_diagrams</code>)</summary>
+
 ```mermaid
 graph LR
     G["gui/simulation.py<br/>one rollout, full history"] --> R["sim/rollout/core.py<br/>run_core_rollout()"]
     T["tuner/offline_tuner.py<br/>thousands of rollouts, score only"] --> R
     R --> S["sim/scoring.py<br/>13 metrics, composite score"]
 ```
+
+</details>
 
 **Why one rollout function.** The GUI and the tuner each once had their own copy of the per-step logic, and the copies drifted, so Show Metrics scores stopped matching tuner scores. `run_core_rollout()` is now the only implementation. It imports nothing GUI-related, so it is safe inside the tuner's worker processes.
 

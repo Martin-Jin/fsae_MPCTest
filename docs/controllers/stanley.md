@@ -40,6 +40,11 @@ Each tick, `StanleyController.compute()`:
 5. Sets `e` to the offset of `fa` from the waypoint projected onto the path's right-normal.
 6. Assembles `δ` and clips it to `±MAX_STEER_RAD` (25 deg).
 
+![The steering law](../diagrams/stanley_the_steering_law.svg)
+
+<details>
+<summary>Mermaid source (edit this, then run <code>python3 -m tuner.tools.render_diagrams</code>)</summary>
+
 ```mermaid
 flowchart TD
     A["Project car position<br/>to front axle fa"]
@@ -51,6 +56,8 @@ flowchart TD
     A --> B --> C --> D --> F
     B --> E --> F
 ```
+
+</details>
 
 **Why the yaw-rate damper exists.** The textbook cross-track term has no memory of how fast heading is already changing, so it overshoots a correction and induces a left-right sway. Subtracting `k_d · ω` cuts `δ` exactly when the car is already swinging in the commanded direction. It is the primary fix for that sway.
 

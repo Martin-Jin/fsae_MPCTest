@@ -37,3 +37,4 @@ Files under `docs/logs/` are a frozen investigation record, see [logs/README.md]
 - `fsds/`: simulator and bridge setup.
 - `modules/`: file-by-file references.
 - `logs/`: frozen investigation record.
+- `diagrams/`: generated SVGs of every Mermaid chart, see [diagrams/README.md](diagrams/README.md).

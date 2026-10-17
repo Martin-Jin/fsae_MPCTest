@@ -53,6 +53,11 @@ State `x = [s, e_y, e_psi, v_x, v_y, r, delta_act, a_act]`, input `u = [delta_cm
 
 `nmpc_sqp_iters = 1`, so steps 1 to 5 run once per tick. This is the real-time-iteration scheme. Consecutive ticks differ by one horizon step, so the warm start is already close and one step per tick tracks the moving optimum. A wall-clock budget (`nmpc_solve_budget_ms = 25.0`) stops iterating early. OSQP runs with `nmpc_osqp_max_iter = 500`, `nmpc_osqp_eps = 1e-4`, warm starting on, polishing off. The looser tolerances are deliberate: the QP result is a step direction that the line search validates, not a final answer.
 
+![Each tick is one Gauss-Newton step, warm-started](../diagrams/nmpc_each_tick_is_one_gauss_newton_step_warm_.svg)
+
+<details>
+<summary>Mermaid source (edit this, then run <code>python3 -m tuner.tools.render_diagrams</code>)</summary>
+
 ```mermaid
 flowchart TD
     A["Roll the nonlinear model forward<br/>from the measured state"]
@@ -62,6 +67,8 @@ flowchart TD
     E["Line search on the true nonlinear cost"]
     A --> B --> C --> D --> E -->|"next tick, warm start"| A
 ```
+
+</details>
 
 Solve time is not re-measured for the current defaults. A measurement taken when the Jacobian pass still used one substep gave a mean of 9.56 ms. Raising both substep counts to 4 roughly doubled it to 18.63 ms with a maximum past the 25 ms budget (see [nmpc_low_speed_accel_stall_investigation.md](../logs/nmpc_low_speed_accel_stall_investigation.md)). The speed gates described below were added afterwards to cut that cost. Watch `solve_ms` and `nmpc_iters` in the log if the budget or substeps change.
 
@@ -184,6 +191,11 @@ When `delay_compensation_enabled`, the measured pose age is low-passed (`pose_ag
 
 Code: `NMPCController.compute()` in `nmpc/solver.py` (live), with `nmpc/reference.py`, `nmpc/dynamics.py`, `nmpc/qp_model.py`, `nmpc/sqp_step.py` and `nmpc/weight_schedule.py`. The offline `controller/nmpc/` package mirrors these one to one.
 
+![What one live `compute()` call does](../diagrams/nmpc_what_one_live_compute_call_does.svg)
+
+<details>
+<summary>Mermaid source (edit this, then run <code>python3 -m tuner.tools.render_diagrams</code>)</summary>
+
 ```mermaid
 flowchart TD
     IN(["compute(path, car_pos, car_yaw, car_speed,<br/>desired_speed, car_yaw_rate, pose_age_s, car_vy)"])
@@ -219,6 +231,8 @@ flowchart TD
     AC -->|"no, after all halvings"| REJ --> SHIP
     SHIP --> OUT --> RET
 ```
+
+</details>
 
 - **`nmpc_sqp_iters = 1`**, so the SQP and line-search boxes run once per tick. With more iterations the loop returns to `_solve_step` while the budget allows.
 - **Why a rejected step keeps the old plan.** Accepting the smallest trial step regardless of cost once wrote a bad direction into the warm start and grew into a wrong-way full-lock ramp offline. The shifted plan from last tick is always feasible.

@@ -41,20 +41,24 @@ no drift, no estimation lag. The offline tuner models this gap explicitly via
 `SLAM_NOISE_ENABLED` in fsae_MPCTest/settings/ (default off, since FSDS has
 no such error).
 
-Speed/yaw-rate synchronisation: mpc_controller.py gets car_pos/car_yaw AND
-car_speed/car_yaw_rate from /fsae/slam/car_odom (this
-node's 20 Hz relay), not from a separate direct subscription to the raw 250 Hz
-/fsds/testing_only/odom topic. Two independent subscriptions racing the same
-250 Hz publisher have no guarantee the "latest" sample each holds at a given
-20 Hz control tick came from the same underlying odom instant, so the MPC's
-x0 could be built from a position/heading snapshot and a speed/yaw-rate
-snapshot up to ~1/pose_rate apart, producing small accel/brake oscillation
-concentrated in curves. /fsae/slam/car_odom is published from this node's
-_odom_cb-updated state at the same 20 Hz timer tick as car_position, so pose
-and twist the controller reads for one solve always originate from one atomic
-snapshot. car_position (PoseStamped) keeps publishing unchanged for
+Speed/yaw-rate synchronisation: mpc_controller.py takes car_pos/car_yaw from
+/fsae/slam/car_position and car_speed/car_vy/car_yaw_rate from
+/fsae/slam/car_odom, both relayed by this node, not from a separate direct
+subscription to the raw 250 Hz /fsds/testing_only/odom topic. Two independent
+subscriptions racing the same 250 Hz publisher have no guarantee the "latest"
+sample each holds at a given 20 Hz control tick came from the same underlying
+odom instant, so the MPC's x0 could be built from a position/heading snapshot
+and a speed/yaw-rate snapshot up to ~1/pose_rate apart, producing small
+accel/brake oscillation concentrated in curves. Here car_position and
+car_odom are published back to back in one _publish_pose call from the same
+_odom_cb-updated state, so the pose and twist the controller reads for one
+solve come from the same odom sample. car_odom also carries the pose (real
+quaternion) for any consumer that wants both in one message; the controller
+does not read it. They are still two subscriptions on the controller side, so
+a tick that fires between the two deliveries, or a dropped best-effort
+car_odom message, can pair a fresh pose with the previous tick's twist.
 centerline_planner.py / stanley_controller.py / cone_recorder.py /
-skidpad_planner.py, none of which need speed.
+skidpad_planner.py read car_position, not car_odom.
 """
 import math
 

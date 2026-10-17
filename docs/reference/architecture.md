@@ -33,6 +33,11 @@ The same loop also exists live as the ROS 2 controller node. The live side canno
 
 The diagram shows the case `USE_PLANNER = True`, where the car only sees a path rebuilt from cones. With `USE_PLANNER = False` (the default) the perception and planner boxes are skipped and the true reference path is tracked directly.
 
+![One rollout function serves the GUI, the tuner and the checks](../diagrams/architecture_one_rollout_function_serves_the_gui_the_.svg)
+
+<details>
+<summary>Mermaid source (edit this, then run <code>python3 -m tuner.tools.render_diagrams</code>)</summary>
+
 ```mermaid
 flowchart TD
     INPUT["Path source<br/>(drawn, synthetic, or recorded cone map)"]
@@ -62,6 +67,8 @@ flowchart TD
     LOOP --> HIST["history dict for the scrub viewer +<br/>tuner/performance_stats.py<br/>(Show Metrics, Benchmark All Paths)"]
 ```
 
+</details>
+
 ### Termination checks
 
 A rollout ends on the first of these. All but the last mark a DNF (did not finish).
@@ -78,6 +85,11 @@ Scoring uses the true tracking error against ground truth, not the controller's 
 ## The plant and the MPC do not share a state vector
 
 **Plain version.** The car being simulated (the plant) is a detailed model with tyres, suspension and wheels. The controller predicts with a much smaller model of tracking error. They are different vectors with different meanings, so index `i` in one is not index `i` in the other. The gap between the two models is what makes feedback necessary.
+
+![The plant and the MPC do not share a state vector](../diagrams/architecture_the_plant_and_the_mpc_do_not_share_a_sta.svg)
+
+<details>
+<summary>Mermaid source (edit this, then run <code>python3 -m tuner.tools.render_diagrams</code>)</summary>
 
 ```mermaid
 flowchart LR
@@ -98,6 +110,8 @@ flowchart LR
     SOLVE -->|"u*"| PLANT
     PLANT -.->|"next state"| INPUTS
 ```
+
+</details>
 
 | | plant (`model/vehicle_physics/state.py`) | LMPC prediction model (`model/bicycle_model.py`) |
 |---|---|---|
@@ -175,6 +189,11 @@ This table describes the live/FSDS side (`fsae_planning`) against what the offli
 
 `tuner/offline_tuner.py` searches the MPC cost weights automatically by running many closed-loop rollouts and minimising one score. Run it with `python -m tuner.offline_tuner` from `fsae_MPCTest/`.
 
+![The tuner searches multiplicative weight scales](../diagrams/architecture_the_tuner_searches_multiplicative_weight.svg)
+
+<details>
+<summary>Mermaid source (edit this, then run <code>python3 -m tuner.tools.render_diagrams</code>)</summary>
+
 ```mermaid
 flowchart TD
     SETTINGS["settings/: Q/R/R_rate templates,<br/>VALIDATION_SUITE, INITIAL_CONDITIONS"]
@@ -201,6 +220,8 @@ flowchart TD
     CMAES --> POST
     POST --> RESULT["printed result +<br/>appended to docs/logs/tuning_history.txt"]
 ```
+
+</details>
 
 ### The search space is 9 scales plus 5 NMPC values
 

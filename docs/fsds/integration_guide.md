@@ -50,6 +50,11 @@ Rationale for the two modes: the `true` mode keeps the MPC's own longitudinal ou
 
 ### Topic map
 
+![Topic map](../diagrams/integration_guide_topic_map.svg)
+
+<details>
+<summary>Mermaid source (edit this, then run <code>python3 -m tuner.tools.render_diagrams</code>)</summary>
+
 ```mermaid
 flowchart LR
     T1["/fsds/testing_only/track"] --> PERC["sim_perception"]
@@ -74,6 +79,8 @@ flowchart LR
     MPC -->|"standalone_output=true"| CC["/fsds/control_command"]
     MPC -->|"standalone_output=false"| CV["/fsae/control/cmd_vel"]
 ```
+
+</details>
 
 This map covers the default MPC path only. Every node and topic, including Stanley, `fsds_bridge`, the skidpad planner, `cone_recorder` and `live_viz`, is in [live_architecture.md](live_architecture.md), together with a flowchart of each phase below.
 

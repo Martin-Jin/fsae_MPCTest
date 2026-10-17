@@ -8,6 +8,11 @@ This is an FSDS-only document. For how it relates to the offline side see [gloss
 
 ## Where each piece runs
 
+![Where each piece runs](../diagrams/ros_integration_where_each_piece_runs.svg)
+
+<details>
+<summary>Mermaid source (edit this, then run <code>python3 -m tuner.tools.render_diagrams</code>)</summary>
+
 ```mermaid
 flowchart LR
     subgraph WIN["Windows host"]
@@ -21,12 +26,19 @@ flowchart LR
     BRIDGE <-->|"ROS 2 topics"| STACK
 ```
 
+</details>
+
 - The simulator and the ROS 2 workspace are separate processes on two sides of a network boundary, even when both run on one machine (Windows host plus WSL).
 - The bridge is the only piece that speaks AirSim RPC. Everything else sees plain ROS 2 topics.
 - The RPC server listens on port `41451`. Under WSL2 the bridge reaches it through the host IP in `FSDS_HOST_IP`, because `localhost` inside WSL is not the Windows host.
 - **Start order matters.** The `.exe` opens the RPC port, so it must be running before the bridge starts. `ros2/launch_all.sh` waits for the port (up to 120 s) before starting the bridge.
 
 ## What the bridge hands off, and to what
+
+![What the bridge hands off, and to what](../diagrams/ros_integration_what_the_bridge_hands_off_and_to_what.svg)
+
+<details>
+<summary>Mermaid source (edit this, then run <code>python3 -m tuner.tools.render_diagrams</code>)</summary>
 
 ```mermaid
 flowchart LR
@@ -46,6 +58,8 @@ flowchart LR
     CTRL -.->|"/fsae/control/cmd_vel<br/>(standalone_output=false)"| FBRIDGE
     FBRIDGE -.->|"/fsds/control_command"| BRIDGE
 ```
+
+</details>
 
 This diagram shows the shape only. [live_architecture.md](live_architecture.md) has the full node and topic graph, the exhaustive connection table, the launch tree and a flowchart for each node. The [integration guide](integration_guide.md#choosing-the-controller-and-planner) has the controller-side topic map, including why the controller reads `car_odom` and not the raw odom topic, and the cone-proximity brake.
 

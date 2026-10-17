@@ -1,0 +1,102 @@
+{
+ "architecture_one_rollout_function_serves_the_gui_the_": {
+  "doc": "docs/reference/architecture.md",
+  "sha1": "a677657994727089dde4c70be1624b2dd71ce535"
+ },
+ "architecture_the_plant_and_the_mpc_do_not_share_a_sta": {
+  "doc": "docs/reference/architecture.md",
+  "sha1": "7a6d817b4681011592ce2a0bd1f4389680e44218"
+ },
+ "architecture_the_tuner_searches_multiplicative_weight": {
+  "doc": "docs/reference/architecture.md",
+  "sha1": "5f0f75e19cd3ad9a1c2624db82ccc5dec5877ef4"
+ },
+ "getting_started_1_1_receding_horizon_control": {
+  "doc": "docs/guides/getting_started.md",
+  "sha1": "38908d4bc1f0cf9ba2c82cd46bc63b33c9f4ffa0"
+ },
+ "integration_guide_topic_map": {
+  "doc": "docs/fsds/integration_guide.md",
+  "sha1": "d188b15607d6e71dccd6e40248987d6f9326ab95"
+ },
+ "live_architecture_1_high_level_pipeline_five_jobs_two_swit": {
+  "doc": "docs/fsds/live_architecture.md",
+  "sha1": "3a22326694fa3496e5a154eec0367735dd0bd02e"
+ },
+ "live_architecture_2_node_and_topic_graph_the_real_wiring": {
+  "doc": "docs/fsds/live_architecture.md",
+  "sha1": "de16f1a716ba12807f49b6c100d3fcc8e52d2312"
+ },
+ "live_architecture_3_launch_tree_what_launch_all_sh_starts": {
+  "doc": "docs/fsds/live_architecture.md",
+  "sha1": "f355eb7991b8338217bee2c63c59cc0b4dfb70f9"
+ },
+ "live_architecture_4_1_sim_perception_hides_the_cones_the_c": {
+  "doc": "docs/fsds/live_architecture.md",
+  "sha1": "beb3c4029540f68021e427c0fa5ec0f1c6cf45db"
+ },
+ "live_architecture_4_2_centerline_planner_rebuilds_the_cent": {
+  "doc": "docs/fsds/live_architecture.md",
+  "sha1": "8b195c2add35fddb3b9b77ab3f74b9871a55d1a6"
+ },
+ "live_architecture_4_3_mpc_controller_caches_inputs_and_doe": {
+  "doc": "docs/fsds/live_architecture.md",
+  "sha1": "3b9fb1e92629fb08fa6594ec81a9a6a36c33636a"
+ },
+ "live_architecture_4_3_mpc_controller_caches_inputs_and_doe_2": {
+  "doc": "docs/fsds/live_architecture.md",
+  "sha1": "6a67746f08bb9dc5047aef485c2a3fb2d005c1ba"
+ },
+ "live_architecture_4_4_the_speed_target_is_built_in_six_ste": {
+  "doc": "docs/fsds/live_architecture.md",
+  "sha1": "73128e77027e39c4f84a5adab52090a2934b2009"
+ },
+ "live_architecture_4_6_fsds_bridge_turns_cmd_vel_into_pedal": {
+  "doc": "docs/fsds/live_architecture.md",
+  "sha1": "f6b5ad4d68431c6addbcf9d49859b8978faaa8eb"
+ },
+ "live_architecture_4_7_stanley_controller_is_the_reactive_b": {
+  "doc": "docs/fsds/live_architecture.md",
+  "sha1": "f5aa563ee4867edce8b34e3300f56df6fa399b49"
+ },
+ "live_architecture_4_8_telemetry_and_live_viz_watch_the_loo": {
+  "doc": "docs/fsds/live_architecture.md",
+  "sha1": "36db01fee520644772102cdcea7f94da5eb396c8"
+ },
+ "live_architecture_4_9_cone_recorder_writes_one_lap_of_cone": {
+  "doc": "docs/fsds/live_architecture.md",
+  "sha1": "0e377b223d60341abaef52b66a2b0049250d5a39"
+ },
+ "lmpc_the_controller_re_plans_every_tick_and_a": {
+  "doc": "docs/controllers/lmpc.md",
+  "sha1": "f6a82947038ebab91db675b1e4ab1804f44df067"
+ },
+ "lmpc_what_one_live_compute_call_does": {
+  "doc": "docs/controllers/lmpc.md",
+  "sha1": "b34ff7d661ede39bbdd558237d111b8cba2cd02f"
+ },
+ "nmpc_each_tick_is_one_gauss_newton_step_warm_": {
+  "doc": "docs/controllers/nmpc.md",
+  "sha1": "cf48b8331115a146f70d5e85667656a7675c1d74"
+ },
+ "nmpc_what_one_live_compute_call_does": {
+  "doc": "docs/controllers/nmpc.md",
+  "sha1": "ff9ce0e447601251e19a872d5eb2448fd1595a91"
+ },
+ "offline_guide_how_the_offline_pieces_fit_together": {
+  "doc": "docs/guides/offline_guide.md",
+  "sha1": "24b5190918f14bd7567101e59f89f9d2949e80a1"
+ },
+ "ros_integration_what_the_bridge_hands_off_and_to_what": {
+  "doc": "docs/fsds/ros_integration.md",
+  "sha1": "7b1fad0c0a42f4c6b9a3c43b2ab2f56d5ff5588c"
+ },
+ "ros_integration_where_each_piece_runs": {
+  "doc": "docs/fsds/ros_integration.md",
+  "sha1": "ad4d29ff93ee9713c945f8bf42267c2fceeae6c6"
+ },
+ "stanley_the_steering_law": {
+  "doc": "docs/controllers/stanley.md",
+  "sha1": "62445bc7e7320ec679cc59e91e5c067b5352d0ae"
+ }
+}

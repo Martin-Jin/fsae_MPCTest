@@ -26,6 +26,11 @@ Reference for `MPCController`, the project's original controller: a linear time-
 
 ### The controller re-plans every tick and applies the first step
 
+![The controller re-plans every tick and applies the first step](../diagrams/lmpc_the_controller_re_plans_every_tick_and_a.svg)
+
+<details>
+<summary>Mermaid source (edit this, then run <code>python3 -m tuner.tools.render_diagrams</code>)</summary>
+
 ```mermaid
 flowchart TD
     A["Measure tracking error x0"]
@@ -35,6 +40,8 @@ flowchart TD
     E["Discard the rest of the plan"]
     A --> B --> C --> D --> E -->|"next tick"| A
 ```
+
+</details>
 
 Terms used below:
 
@@ -313,6 +320,11 @@ scale = 1 + (boost_max - 1) * boost_kappa * boost_ey * boost_epsi
 
 Code: `MPCController.compute()` in `lmpc/controller.py` (live), helpers in `lmpc/adaptive_gains.py` and `lmpc/predict.py`. The offline equivalent is the per-tick solve in `sim/rollout/tick_solve.py`.
 
+![What one live `compute()` call does](../diagrams/lmpc_what_one_live_compute_call_does.svg)
+
+<details>
+<summary>Mermaid source (edit this, then run <code>python3 -m tuner.tools.render_diagrams</code>)</summary>
+
 ```mermaid
 flowchart TD
     IN(["compute(path, car_pos, car_yaw, car_speed,<br/>desired_speed, car_yaw_rate, pose_age_s, car_vy)"])
@@ -346,6 +358,8 @@ flowchart TD
     QX -->|"no"| QB --> LAG
     U --> LAG --> OUT --> RET
 ```
+
+</details>
 
 - **The QP is built once.** `_build_qp` creates the CVXPY problem at construction. Each tick only overwrites its parameters (`Ad`, `Bd`, weights, `x0`), which is what keeps the solve inside the 50 ms tick.
 - **`reset()`** clears the actuator-lag estimates, the previous command, the speed filter, the pose-age filter and the command history used for delay compensation. The node calls it on a lost path or pose and after 0.3 s of cone braking.

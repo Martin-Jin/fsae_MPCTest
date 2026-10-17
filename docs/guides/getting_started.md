@@ -67,6 +67,11 @@ MPC drives by repeatedly asking "if the car did X for the next second or so, whe
 
 Every tick (20 Hz, so every 0.05 s), the controller plans a whole sequence of future commands, applies only the first, discards the rest, and re-plans from a fresh measurement next tick:
 
+![1.1 Receding horizon control](../diagrams/getting_started_1_1_receding_horizon_control.svg)
+
+<details>
+<summary>Mermaid source (edit this, then run <code>python3 -m tuner.tools.render_diagrams</code>)</summary>
+
 ```mermaid
 graph LR
     A["Measure error"] --> B["Predict ahead for<br/>many candidate plans"]
@@ -75,6 +80,8 @@ graph LR
     D --> E["Discard the rest"]
     E --> A
 ```
+
+</details>
 
 This is **receding horizon control**. Any prediction error in the internal model is corrected on the next tick. That is why MPC tolerates a simplified internal model instead of the full complexity of a real car.
 

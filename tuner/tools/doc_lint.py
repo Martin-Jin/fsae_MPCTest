@@ -18,7 +18,8 @@ record and only its README is checked):
 3. Transcript voice: first/second person and session scaffolding
    (docs/guides/getting_started.md may address the reader as "you").
 4. Broken relative links and heading anchors.
-5. Backticked file paths and `python -m` targets that do not exist.
+5. Backticked file paths and `python -m` targets that do not exist (ROS
+   message types such as `nav_msgs/Odometry` are not treated as paths).
 6. Style: em dashes, more than one H1, intensifier words.
 7. Module-reference coverage: every tracked .py/.sh/.launch.py/config file has
    an entry (its path in backticks) in docs/modules/*.md.
@@ -58,6 +59,9 @@ PYTHON_M = re.compile(r'python3?\s+-m\s+([A-Za-z_][\w.]*)')
 PATH_EXT = ('.py', '.sh', '.md', '.yaml', '.yml', '.json', '.csv', '.txt', '.cfg',
             '.xml', '.launch.py', '.msg', '.Dockerfile')
 SKIP_CHARS = re.compile(r'[*<>{}$~=:(),|\s\\]|\.\.\.|^https?|^-')
+# ROS message types (`nav_msgs/Odometry`, `fsae_interfaces/Track`) look like
+# relative paths but name an interface, not a file.
+ROS_MSG_TYPE = re.compile(r'^(\w+_msgs|fsae_interfaces)/[A-Z]\w*$')
 MODULE_REF_EXT = ('.py', '.sh', '.yaml', '.yml', '.cfg', '.xml', '.txt')
 MODULE_REF_SKIP = ('__init__.py', '__main__.py')
 
@@ -174,7 +178,8 @@ def check_paths(path, basenames):
                         or os.path.exists(os.path.join(ROOT, mod, '__main__.py'))):
                     yield i, f'python -m target not found: {m.group(1)}'
                 continue
-            if SKIP_CHARS.search(tok) or tok.startswith(('/', 'fsae_logs', '.')):
+            if (SKIP_CHARS.search(tok) or ROS_MSG_TYPE.match(tok)
+                    or tok.startswith(('/', 'fsae_logs', '.'))):
                 continue
             if '/' not in tok and not tok.endswith(PATH_EXT):
                 continue

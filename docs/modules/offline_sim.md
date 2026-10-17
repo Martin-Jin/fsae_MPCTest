@@ -716,6 +716,15 @@ Don't:
 - lint `docs/logs/` contents, because they are frozen (only their README is checked).
 Key API: `main`, `check_links`, `check_paths`, `check_style`, `module_ref_coverage`, `check_code_imports`
 
+### `tuner/tools/render_diagrams.py`
+Does: renders every Mermaid chart in `docs/` (except `docs/logs/`) to an SVG in `docs/diagrams/`, wraps a new bare chart in an image line plus a collapsed source block, and tracks each chart's source hash in `docs/diagrams/manifest.json` so only changed charts re-render. `--check` reports missing, stale or orphan SVGs without changing anything.
+Change it to:
+- change the render settings (`MMDC_DEFAULT`, `MMDC_CONFIG`). Run `python3 -m tuner.tools.render_diagrams --all` and look at a few SVGs.
+Don't:
+- hand-edit an SVG or the manifest. Edit the Mermaid source in the doc and re-run the tool.
+- drop `htmlLabels: False`. Without it labels are embedded HTML, which some Markdown viewers strip.
+Key API: `main`, `find_charts`, `render`
+
 ## `tuner/` (top level)
 
 The CMA-ES weight tuner, the metric reporter for the GUI, and the shared CSV helpers. `tuner/__init__.py` is a package marker.
