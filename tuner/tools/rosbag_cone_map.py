@@ -50,6 +50,8 @@ Usage
 -----
     python3 -m tuner.tools.rosbag_cone_map ~/fsae_data/bags/<bag_dir> --name gokart_night_loop
     python3 -m tuner.tools.rosbag_cone_map <bag_dir> --name <name> --plot preview.png
+    python3 -m tuner.tools.rosbag_cone_map <bag_dir> --name <name> --plot preview.png \
+        --spacing-reference 3.0 --note "any extra result line"     # edges + results box
     python3 -m tuner.tools.rosbag_cone_map <bag_dir> --out /tmp/cone_map.json   # no track dir
     python3 -m tuner.tools.rosbag_cone_map <slam_replay_bag> --slam --name <name>
 
@@ -324,13 +326,46 @@ def write_cone_map(path, cones, source, lap_closed=True):
         json.dump(payload, f, indent=2)
 
 
-def plot(path_png, cones, stats, title):
+def plot(path_png, cones, stats, title, spacing_reference=None, notes=()):
+    """Cones over the vehicle path. With spacing_reference, also each row's edges from
+    cone_spacing_check (coloured by result, labelled with their length) and a box with the
+    spacing summary; `notes` adds lines to that box (e.g. accuracy checks run elsewhere)."""
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
-    fig, ax = plt.subplots(figsize=(8, 8))
+    fig, ax = plt.subplots(figsize=(9, 9))
     p = stats['path']
     ax.plot(p[:, 0], p[:, 1], '-', color='0.7', lw=0.8, label=stats.get('path_label', 'vehicle path'))
+    box = []
+    if spacing_reference is not None:
+        from tuner.tools import cone_spacing_check as csc
+        colour_of = {'ok': 'tab:green', 'short': 'tab:orange', 'long': 'tab:orange',
+                     'duplicate?': 'tab:red', 'missing cone?': 'tab:purple'}
+        box.append(f'Row spacing vs {spacing_reference:.2f} m laid '
+                   f'(on spacing = within {csc.TOLERANCE_M:.1f} m):')
+        for g in ('yellow', 'blue'):
+            if len(cones[g]) < 2:
+                continue
+            pts = np.array([c[0] for c in cones[g]])
+            es = csc.row_edges(pts, csc.chain_row(pts, csc.MAX_EDGE_FACTOR * spacing_reference))
+            for i, j, length in es:
+                lab = csc.classify(length, spacing_reference, csc.TOLERANCE_M)
+                ax.plot(*np.array([pts[i], pts[j]]).T, '-', color=colour_of[lab], lw=1.8, zorder=1)
+                ax.annotate(f'{length:.2f}', tuple((pts[i] + pts[j]) / 2), fontsize=6,
+                            ha='center', va='center',
+                            bbox=dict(boxstyle='round,pad=0.1', fc='white', ec='none', alpha=0.7))
+            sm = csc.summarise([e[2] for e in es], spacing_reference, csc.TOLERANCE_M)
+            box.append(f'  {g}: median {sm["median"]:.2f} m, p10-p90 {sm["p10"]:.2f}-{sm["p90"]:.2f}, '
+                       f'on spacing {sm["ok"]}/{sm["n"]}, duplicates {sm["duplicate"]}, '
+                       f'missing {sm["missing"]}')
+        for lab, col in (('edge on spacing', 'tab:green'), ('edge outside tolerance', 'tab:orange'),
+                         ('probable duplicate', 'tab:red'), ('probable missing cone', 'tab:purple')):
+            ax.plot([], [], '-', color=col, lw=1.8, label=lab)
+    box.extend(notes)
+    if box:
+        # Below the axes, so it never hides cones.
+        ax.text(0.0, -0.08, '\n'.join(box), transform=ax.transAxes, fontsize=8, va='top',
+                family='monospace', bbox=dict(boxstyle='round', fc='white', ec='0.6'))
     for g, col in (('blue', 'tab:blue'), ('yellow', 'gold'), ('orange', 'tab:orange')):
         if cones[g]:
             xy = np.array([c[0] for c in cones[g]])
@@ -342,7 +377,7 @@ def plot(path_png, cones, stats, title):
     ax.set_xlabel('x (m, odometry frame)')
     ax.set_ylabel('y (m)')
     fig.tight_layout()
-    fig.savefig(path_png, dpi=120)
+    fig.savefig(path_png, dpi=120, bbox_inches='tight')
 
 
 def main(argv=None):
@@ -361,6 +396,10 @@ def main(argv=None):
                     help='minimum sightings per cone (default 5; 3 with --slam, its own promote_after)')
     ap.add_argument('--open', action='store_true', help='mark the track as not a closed loop')
     ap.add_argument('--plot', help='write a PNG preview here')
+    ap.add_argument('--spacing-reference', type=float,
+                    help='with --plot: draw row edges and their check against this laid spacing, m')
+    ap.add_argument('--note', action='append', default=[],
+                    help='with --plot: a line for the results box (repeatable)')
     a = ap.parse_args(argv)
 
     bag_dir = os.path.abspath(os.path.expanduser(a.bag_dir))
@@ -391,7 +430,7 @@ def main(argv=None):
                   f'spread median {np.median(sp):.2f} m, max {sp.max():.2f} m')
     print(f'wrote {out}')
     if a.plot:
-        plot(a.plot, cones, stats, source)
+        plot(a.plot, cones, stats, source, a.spacing_reference, a.note)
         print(f'wrote {a.plot}')
 
 

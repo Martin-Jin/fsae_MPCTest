@@ -302,7 +302,7 @@ Two ways to build the map:
 | Needs | Python and numpy | ROS 2, a built `fsae_slam` (GTSAM) |
 
 - **Method:** each detection on `/cone_detection_fused` is placed in the odometry frame with the `car_pose` carried in the same message, then repeats are clustered per colour (median position, at least `--min-obs` sightings). Only detections 1-7 m away are used, because the camera's range error grows with the square of distance.
-- **Output:** `--name <base>` writes `<TRACKS_DIR>/<base>_<bag date>/cone_map.json`, with `source: "rosbag:..."`. `--plot` writes a preview of the cones and the odometry path.
+- **Output:** `--name <base>` writes `<TRACKS_DIR>/<base>_<bag date>/cone_map.json`, with `source: "rosbag:..."`. `--plot` writes a preview of the cones and the vehicle path. Add `--spacing-reference <m>` to draw every row edge checked against the laid spacing (same check as `cone_spacing_check`) with a results box, and `--note "<line>"` (repeatable) for extra result lines such as accuracy checks.
 - **Not corrected: odometry drift.** The map is only as good as the run's odometry. A run whose path spirals in the preview (about 1 m per lap on two of the 2026-10-18 kart runs) duplicates cones; use a run whose laps overlap.
 - **One bag, one frame.** Every stack start moves the origin, so maps from two runs differ by a rotation and offset.
 - **Excluded from the default:** `newest_track()` skips these tracks, so a kart loop never becomes `DEFAULT_MAP`. Load it by name.

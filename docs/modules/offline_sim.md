@@ -687,7 +687,7 @@ Don't:
 - combine two bags into one map, because each stack start puts the odometry origin somewhere else.
 - raise `--merge-radius` past half the cone spacing, because neighbouring cones then merge.
 - trust a map from a run whose odometry drifts (laps spiralling in the preview), because drift duplicates cones and nothing corrects it.
-Also reads a SLAM replay bag (`--slam`): the last `/fsae/slam/cone_map` message, decoded by hand like `ConeDetection`, with `/fsae/slam/path` for the preview.
+Also reads a SLAM replay bag (`--slam`): the last `/fsae/slam/cone_map` message, decoded by hand like `ConeDetection`, with `/fsae/slam/path` for the preview. `--spacing-reference` draws `cone_spacing_check`'s row edges on the preview with a results box below the axes; `--note` adds lines to it.
 Key API: `build_cone_map`, `read_detections`, `read_slam_map`, `write_cone_map`, `plot`
 
 ### `tuner/tools/rosbag_slam_replay.sh`
