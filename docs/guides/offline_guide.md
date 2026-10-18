@@ -23,8 +23,9 @@ Related docs:
 4. [Running the offline tuner](#running-the-offline-tuner)
 5. [Overriding settings safely](#overriding-settings-safely)
 6. [The tuner package layout](#the-tuner-package-layout)
-7. [Manual drive mode](#manual-drive-mode)
-8. [Extending the offline simulator](#extending-the-offline-simulator)
+7. [Tracks rebuilt from a real-vehicle rosbag](#tracks-rebuilt-from-a-real-vehicle-rosbag) (go-kart bags: odometry-only and SLAM-built maps)
+8. [Manual drive mode](#manual-drive-mode)
+9. [Extending the offline simulator](#extending-the-offline-simulator)
 
 ## How the offline pieces fit together
 
@@ -115,7 +116,7 @@ Recorded tracks differ from synthetic ones in two ways:
 - The cones drawn are the actual recorded cones, not `place_cones()` output. They are resimulated as `SimPerception` and `SimPlanner` would see them live.
 - The centreline drawn on load is a reconstruction (`sim/track_io.py`) used for the oracle reference path and initial camera framing. With `USE_PLANNER = True`, the driving line comes from `SimPlanner` rebuilding it cone by cone. With the default `False`, the rollout tracks the reconstructed oracle path and speed profile directly, matching the live side's precomputed-path mode.
 
-Recorded tracks are stored in `ros2/src/fsae_planning/tracks/`. The `tracks/` package in this repo only points at that directory (`TRACKS_DIR`) and holds no data. Go-kart tracks rebuilt from a rosbag appear here too (see "Tracks rebuilt from a real-vehicle rosbag").
+Recorded tracks are stored in `ros2/src/fsae_planning/tracks/`. The `tracks/` package in this repo only points at that directory (`TRACKS_DIR`) and holds no data. Go-kart tracks rebuilt from a rosbag appear here too (see [Tracks rebuilt from a real-vehicle rosbag](#tracks-rebuilt-from-a-real-vehicle-rosbag)).
 
 ### 3. Optional initial conditions
 
@@ -272,8 +273,8 @@ Rules:
 | `plot_playback.py` | Time-scrubbing map and telemetry viewer, see [debugging_tools.md](debugging_tools.md) |
 | `export_speed_profile.py` | Exports a recorded cone map's oracle path and speed profile to CSV, see "Export the speed profile and raceline" in [integration_guide.md](../fsds/integration_guide.md) |
 | `raceline_optimizer.py` | Minimum-time racing line optimiser with the same CSV output. `--mode centerline` exports the centreline instead |
-| `rosbag_cone_map.py` | Rebuilds a cone map from a real-vehicle rosbag (go-kart), see "Tracks rebuilt from a real-vehicle rosbag" below |
-| `rosbag_slam_replay.sh`, `cone_range_relay.py` | Replay a rosbag through `fsae_autonomous`'s SLAM node for a SLAM-built map, same section |
+| `rosbag_cone_map.py` | Rebuilds a cone map from a real-vehicle rosbag (go-kart), see [Tracks rebuilt from a real-vehicle rosbag](#tracks-rebuilt-from-a-real-vehicle-rosbag) |
+| `rosbag_slam_replay.sh`, `cone_range_relay.py` | Replay a rosbag through `fsae_autonomous`'s SLAM node for a SLAM-built map, see [SLAM-built maps](#slam-built-maps) |
 | `sync_mpc_params.py` | One-way copy of live param files to `fsae_autonomous` and the `fsds_simulator/` mirror |
 | `param_report.py` | Read-only: the value each repo runs per MPC/NMPC field, its layer, and where repos disagree (`--check` for a parity gate) |
 | `doc_lint.py` | Flags docs that break the project's writing conventions |
@@ -282,7 +283,11 @@ Rules:
 
 `DEFAULT_MAP`, the recorded map every validation and investigation script defaults to, lives in `tracks/__init__.py`. It is the newest FSDS track; tracks rebuilt from a rosbag are skipped (`tracks.is_vehicle_track()`).
 
-### Tracks rebuilt from a real-vehicle rosbag
+### Plotting and scrubbing exported CSV telemetry
+
+`tuner/tools/plot_playback.py` turns one or more control CSVs from a live or FSDS run into an interactive time-scrubbing map and telemetry viewer. Usage, flags and the auto-search folder are in [debugging_tools.md](debugging_tools.md). The CSV format is in "CSV telemetry logging" in [integration_guide.md](../fsds/integration_guide.md).
+
+## Tracks rebuilt from a real-vehicle rosbag
 
 `tuner/tools/rosbag_cone_map.py` turns a go-kart rosbag into a `cone_map.json` the offline tools load like any FSDS capture. ==Prefer the SLAM-built map (below): on the 2026-10-18 kart bags its cone-to-cone distances match single-frame measurements to 1 cm, against 4-8 cm for the odometry-only map.== The tool reads the bag's sqlite3 files and decodes the messages itself, so it needs no ROS install.
 
@@ -307,7 +312,7 @@ python3 -m tuner.tools.rosbag_cone_map ~/fsae_data/bags/<bag_dir> --name gokart_
 python3 -m tuner.tools.raceline_optimizer gokart_night_loop_20261018 --mode centerline
 ```
 
-#### SLAM-built maps
+### SLAM-built maps
 
 1. Build `fsae_interfaces` and `fsae_slam` from an `fsae_autonomous` checkout (branch feat/SLAM or later) in a separate workspace, so nothing is written into the checkout. Without sudo, GTSAM can be unpacked from the ROS apt package instead of installed:
    ```bash
@@ -330,7 +335,7 @@ python3 -m tuner.tools.raceline_optimizer gokart_night_loop_20261018 --mode cent
 - Check the log's last `kf=` line: `landmarks` near the real cone count, `gated` small. No `kf=` lines means the replay started before discovery finished; rerun it.
 - Run the replays one at a time. Four in parallel lost one run's odometry entirely.
 
-#### Results on the 2026-10-18 kart bags
+### Results on the 2026-10-18 kart bags
 
 ==SLAM gives the better map wherever the odometry has no jumps.== Checked two ways that do not need ground truth: distances between two cones seen in the same camera frame (no odometry involved) against the same pair in the map, and agreement between runs after a rigid alignment.
 
@@ -347,10 +352,6 @@ How to read these numbers:
 - **SLAM fails on odometry jumps,** not slow drift: it has no relocalisation, so after a jump re-seen cones fail its gate and are added again (run 1).
 
 The first such track is `gokart_night_loop_20261018`: the SLAM map of run 2 of the 2026-10-18 kart session, with its own `README.md` on how far to trust it. A copy is kept in `fsds_simulator/tracks/`.
-
-### Plotting and scrubbing exported CSV telemetry
-
-`tuner/tools/plot_playback.py` turns one or more control CSVs from a live or FSDS run into an interactive time-scrubbing map and telemetry viewer. Usage, flags and the auto-search folder are in [debugging_tools.md](debugging_tools.md). The CSV format is in "CSV telemetry logging" in [integration_guide.md](../fsds/integration_guide.md).
 
 ## Manual drive mode
 
