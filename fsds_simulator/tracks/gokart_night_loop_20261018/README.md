@@ -25,6 +25,7 @@ Terms: *median* = half the values at or below it; *p90* = 90 % at or below it; *
   to be fixed. Run 4's SLAM map sits 0.15 m median from this one; that mixes moved cones
   with map error.
 - **Frame:** the ZED odometry frame of run 2 (origin where the stack started).
+- **Orange cones:** the gate had 3; SLAM recorded 1, at (6.3, 0.7). It joins the yellow row in the preview's spacing check.
 - **Cones left out:** the odometry-only map had 25 yellow and 4 orange; SLAM keeps a cone
   only once seen 3 times and associated consistently. Which cones those were is not
   pinned down; the odometry map's extras sit on the bottom row, where the start gate was.

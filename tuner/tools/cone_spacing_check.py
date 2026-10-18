@@ -2,7 +2,9 @@
 Check a cone map's spacing against the distance the cones were laid at.
 
 Joins each row of cones (blue, yellow) into a chain of edges, neighbour to neighbour, and
-compares every edge length with REFERENCE_SPACING_M. Use it on a map rebuilt from a rosbag
+compares every edge length with REFERENCE_SPACING_M. Orange cones are part of the track
+boundary (the start/finish area), so each is added to the row it sits in: the row whose
+nearest cone is closer (`with_orange`, `--no-orange` to leave them out). Use it on a map rebuilt from a rosbag
 (`rosbag_cone_map`) to judge the map, or on any track to check how it was laid out.
 
 How to read the result
@@ -25,12 +27,11 @@ middle 80 % fall in. *Median error* is the median length minus the reference.
 
 How the rows are chained
 ------------------------
-Greedy nearest neighbour: start at the cone nearest the map origin (where the recording
-started), repeatedly step to the nearest unvisited cone of the same colour within
-MAX_EDGE_FACTOR x the reference, then close the loop back to the start if it is that close.
-A row that cannot be walked in one chain (a cone too far from the rest, or an open track)
-is reported as several chains. Hairpins tighter than the spacing can make the chain jump
-across a corner; the plot shows that at a glance.
+Each row is ordered as the shortest closed loop through its cones (nearest-neighbour tour
+improved by 2-opt), then cut at any edge longer than MAX_EDGE_FACTOR x the reference. A row
+that cannot be walked in one piece (a gap, an open track) is reported as several chains.
+Hairpins tighter than the spacing can still make a row jump across a corner; the plot
+shows that at a glance.
 
 Usage
 -----
@@ -64,35 +65,75 @@ ROW_COLOURS = ('blue', 'yellow')
 
 
 def load_rows(map_arg):
+    """(path, rows, orange): blue and yellow rows and the orange cones, each (N, 2).
+    A map without an `orange` key (every FSDS capture) gives an empty orange array."""
     path = tracks.resolve_map_arg(map_arg)
     with open(path) as f:
         payload = json.load(f)
     rows = {c: np.array(payload.get(c, []), dtype=float).reshape(-1, 2) for c in ROW_COLOURS}
-    return path, rows
+    orange = np.array(payload.get('orange', []), dtype=float).reshape(-1, 2)
+    return path, rows, orange
+
+
+def with_orange(rows, orange):
+    """Add each orange cone to the row it belongs to, and return (rows, is_orange).
+
+    Orange cones stand in the boundary at the start/finish area, so they belong in the row
+    chain like any other boundary cone. A cone joins the row whose nearest cone is closer.
+    is_orange[c] is a bool array marking which points of rows[c] are orange."""
+    out = {c: rows[c].copy() for c in ROW_COLOURS}
+    is_orange = {c: np.zeros(len(rows[c]), dtype=bool) for c in ROW_COLOURS}
+    for p in orange:
+        dist = {c: (np.hypot(*(rows[c] - p).T).min() if len(rows[c]) else np.inf)
+                for c in ROW_COLOURS}
+        c = min(ROW_COLOURS, key=dist.get)
+        out[c] = np.vstack([out[c], p])
+        is_orange[c] = np.append(is_orange[c], True)
+    return out, is_orange
 
 
 def chain_row(points, max_edge):
-    """Greedy nearest-neighbour chains through one row. Returns a list of chains, each a
-    list of point indices; a chain ending with its own first index is a closed loop."""
-    remaining = set(range(len(points)))
-    chains = []
-    while remaining:
-        idx = sorted(remaining)
-        start = min(idx, key=lambda i: np.hypot(*points[i]))
-        chain = [start]
-        remaining.discard(start)
-        while remaining:
-            cur = points[chain[-1]]
-            cand = sorted(remaining)
-            d = np.hypot(*(points[cand] - cur).T)
-            k = int(np.argmin(d))
-            if d[k] > max_edge:
-                break
-            chain.append(cand[k])
-            remaining.discard(cand[k])
-        if len(chain) > 2 and np.hypot(*(points[chain[-1]] - points[chain[0]])) <= max_edge:
-            chain.append(chain[0])
-        chains.append(chain)
+    """Chains through one row: a list of chains, each a list of point indices; a chain that
+    ends with its own first index is a closed loop.
+
+    The row is first ordered as the shortest closed loop through all its cones (a greedy
+    nearest-neighbour tour from the cone nearest the origin, improved by 2-opt), then cut
+    wherever an edge is longer than max_edge. Greedy nearest neighbour alone is not enough:
+    one cone sitting between the rows (a misread colour, an orange start-gate cone) sends it
+    off the row and back, which shows up as false "missing cone" edges."""
+    n = len(points)
+    if n < 2:
+        return [list(range(n))]
+    dist = np.hypot(*(points[:, None, :] - points[None, :, :]).transpose(2, 0, 1))
+    start = int(np.argmin(np.hypot(*points.T)))
+    tour, left = [start], set(range(n)) - {start}
+    while left:
+        nxt = min(left, key=lambda k: dist[tour[-1], k])
+        tour.append(nxt)
+        left.discard(nxt)
+    improved = True
+    while improved and n > 3:
+        improved = False
+        for a in range(n - 1):
+            for b in range(a + 2, n if a else n - 1):
+                i1, i2, j1, j2 = tour[a], tour[a + 1], tour[b], tour[(b + 1) % n]
+                if dist[i1, j1] + dist[i2, j2] < dist[i1, i2] + dist[j1, j2] - 1e-9:
+                    tour[a + 1:b + 1] = tour[a + 1:b + 1][::-1]
+                    improved = True
+    # Cut the loop at every edge longer than max_edge; no cut means a closed loop.
+    cuts = [k for k in range(n) if dist[tour[k], tour[(k + 1) % n]] > max_edge]
+    if not cuts:
+        return [tour + [tour[0]]]
+    k0 = cuts[0] + 1
+    tour = tour[k0:] + tour[:k0]
+    chains, cur = [], [tour[0]]
+    for a, b in zip(tour[:-1], tour[1:]):
+        if dist[a, b] > max_edge:
+            chains.append(cur)
+            cur = [b]
+        else:
+            cur.append(b)
+    chains.append(cur)
     return chains
 
 
@@ -143,7 +184,7 @@ def summarise(lengths, reference, tolerance):
     }
 
 
-def plot(path_png, rows, edges, reference, tolerance, title, widths=None):
+def plot(path_png, rows, edges, reference, tolerance, title, widths=None, is_orange=None):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -165,7 +206,11 @@ def plot(path_png, rows, edges, reference, tolerance, title, widths=None):
                         bbox=dict(boxstyle='round,pad=0.1', fc='white', ec='none', alpha=0.7))
     for c, col in (('blue', 'tab:blue'), ('yellow', 'gold')):
         if len(rows[c]):
-            ax.scatter(rows[c][:, 0], rows[c][:, 1], s=45, c=col, edgecolors='k', zorder=3)
+            orn = is_orange[c] if is_orange else np.zeros(len(rows[c]), dtype=bool)
+            ax.scatter(rows[c][~orn, 0], rows[c][~orn, 1], s=45, c=col, edgecolors='k', zorder=3)
+            if orn.any():
+                ax.scatter(rows[c][orn, 0], rows[c][orn, 1], s=45, c='tab:orange',
+                           edgecolors='k', zorder=3)
     for lab, col in (('ok', 'tab:green'), ('outside tolerance', 'tab:orange'),
                      (f'< {DUPLICATE_M} m (duplicate?)', 'tab:red'),
                      (f'> {MISSING_FACTOR}x ref (missing cone?)', 'tab:purple')):
@@ -187,13 +232,16 @@ def main(argv=None):
     ap.add_argument('--tolerance', type=float, default=TOLERANCE_M,
                     help=f'an edge within this of the reference is on spacing, m (default {TOLERANCE_M})')
     ap.add_argument('--colours', nargs='+', choices=ROW_COLOURS, default=list(ROW_COLOURS))
+    ap.add_argument('--no-orange', action='store_true',
+                    help='leave orange cones out of the rows instead of adding each to its row')
     ap.add_argument('--width-reference', type=float,
                     help='also check yellow-to-nearest-blue distance against this track width, m')
     ap.add_argument('--plot', help='write a PNG of the edges, coloured by result')
     ap.add_argument('--csv', help='write every edge to a CSV')
     a = ap.parse_args(argv)
 
-    path, rows = load_rows(a.map)
+    path, rows, orange = load_rows(a.map)
+    rows, is_orange = with_orange(rows, np.empty((0, 2)) if a.no_orange else orange)
     max_edge = MAX_EDGE_FACTOR * a.reference
     print(f'{path}\nreference {a.reference:.2f} m, tolerance {a.tolerance:.2f} m')
     print('(median: half the edges at or below; p10-p90: range of the middle 80 % of edges; '
@@ -210,7 +258,8 @@ def main(argv=None):
         edges[c] = es
         s = summarise([e[2] for e in es], a.reference, a.tolerance)
         closed = sum(1 for ch in chains if len(ch) > 2 and ch[0] == ch[-1])
-        print(f'  {c:6s} {len(pts):3d} cones, {s["n"]} edges in {len(chains)} chain(s) '
+        n_or = int(is_orange[c].sum())
+        print(f'  {c:6s} {len(pts):3d} cones{f" (incl. {n_or} orange)" if n_or else ""}, {s["n"]} edges in {len(chains)} chain(s) '
               f'({closed} closed): median {s["median"]:.2f} m (error {s["median_error"]:+.2f}), '
               f'p10-p90 {s["p10"]:.2f}-{s["p90"]:.2f}, min {s["min"]:.2f}, max {s["max"]:.2f}')
         print(f'         on spacing {s["ok"]}/{s["n"]}, probable duplicates {s["duplicate"]}, '
@@ -239,7 +288,7 @@ def main(argv=None):
             w.writerows(records)
         print(f'wrote {a.csv}')
     if a.plot:
-        plot(a.plot, rows, edges, a.reference, a.tolerance, path, widths)
+        plot(a.plot, rows, edges, a.reference, a.tolerance, path, widths, is_orange)
         print(f'wrote {a.plot}')
 
 

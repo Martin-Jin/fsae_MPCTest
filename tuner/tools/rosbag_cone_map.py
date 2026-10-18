@@ -435,11 +435,14 @@ def plot(path_png, cones, stats, title, spacing_reference=None, notes=()):
         colour_of = {'ok': 'tab:green', 'short': 'tab:orange', 'long': 'tab:orange',
                      'duplicate?': 'tab:red', 'missing cone?': 'tab:purple'}
         box.append(f'Row spacing vs {spacing_reference:.2f} m laid '
-                   f'(on spacing = within {csc.TOLERANCE_M:.1f} m):')
+                   f'(on spacing = within {csc.TOLERANCE_M:.1f} m; orange cones join their row):')
+        rows, is_orange = csc.with_orange(
+            {g: np.array([c[0] for c in cones[g]]).reshape(-1, 2) for g in ('blue', 'yellow')},
+            np.array([c[0] for c in cones['orange']]).reshape(-1, 2))
         for g in ('yellow', 'blue'):
-            if len(cones[g]) < 2:
+            pts = rows[g]
+            if len(pts) < 2:
                 continue
-            pts = np.array([c[0] for c in cones[g]])
             es = csc.row_edges(pts, csc.chain_row(pts, csc.MAX_EDGE_FACTOR * spacing_reference))
             for i, j, length in es:
                 lab = csc.classify(length, spacing_reference, csc.TOLERANCE_M)
@@ -448,7 +451,10 @@ def plot(path_png, cones, stats, title, spacing_reference=None, notes=()):
                             ha='center', va='center',
                             bbox=dict(boxstyle='round,pad=0.1', fc='white', ec='none', alpha=0.7))
             sm = csc.summarise([e[2] for e in es], spacing_reference, csc.TOLERANCE_M)
-            box.append(f'  {g}: median {sm["median"]:.2f} m, p10-p90 {sm["p10"]:.2f}-{sm["p90"]:.2f}, '
+            n_or = int(is_orange[g].sum())
+            row = f'{g} (+{n_or} orange)' if n_or else g
+            box.append(f'  {row}: median {sm["median"]:.2f} m, '
+                       f'p10-p90 {sm["p10"]:.2f}-{sm["p90"]:.2f}, '
                        f'on spacing {sm["ok"]}/{sm["n"]}, duplicates {sm["duplicate"]}, '
                        f'missing {sm["missing"]}')
         for lab, col in (('edge on spacing', 'tab:green'), ('edge outside tolerance', 'tab:orange'),

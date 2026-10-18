@@ -172,7 +172,7 @@ The analysis step at the end of each `run_*_sysid.sh` script still calls the old
 
 ## Cone spacing check: `tuner/tools/cone_spacing_check.py`
 
-Joins each cone row (blue, yellow) neighbour to neighbour and compares every edge with the spacing the cones were laid at. ==Use it to judge a map rebuilt from a rosbag before trusting it: duplicates and missing cones show up as edges far from the reference.==
+Joins each cone row (blue, yellow) neighbour to neighbour and compares every edge with the spacing the cones were laid at. Orange cones are boundary cones too (the start/finish area): each joins the row whose nearest cone is closer (`--no-orange` to leave them out). ==Use it to judge a map rebuilt from a rosbag before trusting it: duplicates and missing cones show up as edges far from the reference.==
 
 ```bash
 python -m tuner.tools.cone_spacing_check gokart_night_loop_20261018                  # reference 3.0 m
@@ -199,18 +199,18 @@ How to read it:
 - **Median error** is the map against the layout. A spread inside tolerance is usually hand placement, not map error. Two maps of the same layout with the same edge lengths confirm placement.
 - **The reference is only as good as the layout.** A spacing estimated by eye checks consistency, not absolute accuracy; tape a few neighbouring cones for a real reference.
 - **A chain that bends into the other row** points at a cone with the wrong colour, which the planner reads as the wrong boundary.
-- **Note,** the chain is greedy nearest neighbour from the cone nearest the origin. On a track with hairpins tighter than the spacing, or an open track, a row splits into several chains (`comp_test_map_3` at 4 m gives two to four); check the plot.
+- **Note,** each row is ordered as the shortest closed loop through its cones (nearest-neighbour tour improved by 2-opt), then cut at any edge over 2.5x the reference. Plain nearest-neighbour chaining went off the row whenever one cone sat between the rows (an orange gate cone, a misread colour) and reported false missing cones. Hairpins tighter than the spacing can still make a row jump a corner; check the plot.
 
 Results on `gokart_night_loop_20261018` (the SLAM map of a go-kart run, laid at about 3 m by eye):
 
 | Row | Median edge | p10-p90 | On spacing (±0.5 m) | Flags |
 |---|---|---|---|---|
-| yellow (outer) | 3.04 m | 2.49-3.37 m | 18 / 22 | none |
+| yellow (outer, with the 1 orange cone in the map) | 2.98 m | 2.37-3.37 m | 18 / 23 | none |
 | blue (inner) | 2.70 m | 2.11-3.07 m | 11 / 17 | none |
 
 - The yellow row matches the layout. The inner blue row is about 0.3 m tighter.
 - The odometry-only map of the same run flags two yellow duplicates (0.77 and 0.88 m), which SLAM removed.
-- The yellow chain bends into the blue row at about (5.2, 3.0) near the start gate: a cone seen as yellow on the inner row, the likely orange or yellow misread there.
+- The yellow chain bends into the blue row at about (5.2, 3.0) near the start gate: a cone seen as yellow on the inner row, the likely orange or yellow misread there. Two of the three orange gate cones are missing from this map (SLAM did not record them), so the gate area has the 1.30 m edge.
 - Runs 2 and 3 give the same edge lengths in the same order, so the spread is the hand placement.
 
 ## Telemetry playback: `tuner/tools/plot_playback.py`
