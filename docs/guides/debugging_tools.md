@@ -190,6 +190,12 @@ python -m tuner.tools.cone_spacing_check <track> --plot spacing.png --csv edges.
 | `--width-reference` | off | also prints each yellow cone's distance to the nearest blue one, a lower bound on track width |
 
 How to read it:
+- **Terms** (also in [glossary.md](../reference/glossary.md)):
+  - **Edge:** the line between two neighbouring cones in the same row; its length is their gap.
+  - **On spacing:** an edge within the tolerance of the reference (green).
+  - **Median:** the middle edge length once sorted; half the edges are shorter.
+  - **p10-p90:** the range the middle 80 % of edges fall in (10 % are shorter than p10, 10 % longer than p90), so one odd edge does not set it.
+  - **Median error:** median edge length minus the reference. Negative means the map's row is tighter than the layout.
 - **Median error** is the map against the layout. A spread inside tolerance is usually hand placement, not map error. Two maps of the same layout with the same edge lengths confirm placement.
 - **The reference is only as good as the layout.** A spacing estimated by eye checks consistency, not absolute accuracy; tape a few neighbouring cones for a real reference.
 - **A chain that bends into the other row** points at a cone with the wrong colour, which the planner reads as the wrong boundary.

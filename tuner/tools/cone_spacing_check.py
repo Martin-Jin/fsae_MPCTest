@@ -7,6 +7,11 @@ compares every edge length with REFERENCE_SPACING_M. Use it on a map rebuilt fro
 
 How to read the result
 ----------------------
+Terms: an *edge* is the line between two neighbouring cones of one row, and its length
+is their gap. *Median* is the middle edge length once sorted (half are shorter). *p10* and
+*p90* are the lengths 10 % and 90 % of edges are at or below, so "p10-p90" is the range the
+middle 80 % fall in. *Median error* is the median length minus the reference.
+
 - **On spacing (within TOLERANCE_M):** the map agrees with the layout there.
 - **Short edge, under DUPLICATE_M:** almost always one cone mapped twice (a drift or
   association failure), not two real cones.
@@ -191,6 +196,8 @@ def main(argv=None):
     path, rows = load_rows(a.map)
     max_edge = MAX_EDGE_FACTOR * a.reference
     print(f'{path}\nreference {a.reference:.2f} m, tolerance {a.tolerance:.2f} m')
+    print('(median: half the edges at or below; p10-p90: range of the middle 80 % of edges; '
+          'error: median minus reference)')
     edges = {}
     records = []
     for c in a.colours:

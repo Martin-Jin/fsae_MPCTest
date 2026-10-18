@@ -343,7 +343,9 @@ def same_frame_accuracy(cones, det_bag, topic=DEFAULT_TOPIC, min_range=1.0, max_
     `max_pose_dt`), refined by a small rigid fit onto the map, and associated to map cones
     of the same colour within 0.4 m. The refinement only helps association: pairwise
     distances do not change under a rigid motion, so it cannot flatter the result.
-    Returns {'pairs', 'messages', 'median', 'p90'} or None when nothing could be paired."""
+    Returns {'pairs', 'messages', 'median', 'p90'} or None when nothing could be paired.
+    median: half the pair errors are at or below it. p90: 90 % are at or below it, so it
+    shows how bad the bad pairs get without being set by the single worst one."""
     m = {g: np.array([c[0] for c in cones[g]]).reshape(-1, 2) for g in ('blue', 'yellow')}
     if not len(m['blue']) and not len(m['yellow']):
         return None
@@ -454,6 +456,12 @@ def plot(path_png, cones, stats, title, spacing_reference=None, notes=()):
             ax.plot([], [], '-', color=col, lw=1.8, label=lab)
     box.extend(notes)
     if box:
+        # The box is read on its own (shared as an image), so it carries its own key.
+        box += ['',
+                'Key: median = half the values at or below; p90 = 90 % at or below;',
+                '     p10-p90 = range of the middle 80 %; on spacing = edge within tolerance',
+                '     of the laid spacing; same-frame = two cones in one camera frame,',
+                '     measured gap vs map gap (no odometry involved)']
         # Below the axes, so it never hides cones.
         ax.text(0.0, -0.08, '\n'.join(box), transform=ax.transAxes, fontsize=8, va='top',
                 family='monospace', bbox=dict(boxstyle='round', fc='white', ec='0.6'))

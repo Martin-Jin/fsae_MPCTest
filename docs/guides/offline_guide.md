@@ -303,7 +303,7 @@ Two ways to build the map:
 
 - **Method:** each detection on `/cone_detection_fused` is placed in the odometry frame with the `car_pose` carried in the same message, then repeats are clustered per colour (median position, at least `--min-obs` sightings). Only detections 1-7 m away are used, because the camera's range error grows with the square of distance.
 - **Output:** `--name <base>` writes `<TRACKS_DIR>/<base>_<bag date>/cone_map.json`, with `source: "rosbag:..."`, and next to it a preview named after the run, `preview_<bag folder>.png`.
-- **The preview is automatic.** It shows the cones, the vehicle path, every row edge checked against the laid spacing (`--spacing-reference`, default 3.0 m, the `cone_spacing_check` default) and a results box:
+- **The preview is automatic.** Terms in its results box (median, p10-p90, p90, on spacing, same-frame accuracy) are defined under "How to read these numbers" below and in the [glossary](../reference/glossary.md). It shows the cones, the vehicle path, every row edge checked against the laid spacing (`--spacing-reference`, default 3.0 m, the `cone_spacing_check` default) and a results box:
   - spacing per row (median, on-spacing count, duplicates, missing cones);
   - **accuracy without ground truth:** distances between two cones seen in the same camera frame against the same two cones in the map (no odometry involved). In SLAM mode the odometry-only map of the same run is scored too;
   - any `--note "<line>"` given (repeatable), for results measured elsewhere.
@@ -369,6 +369,12 @@ python3 -m tuner.tools.raceline_optimizer gokart_night_loop_20261018 --mode cent
 | 4 (drifts about 1 m per lap) | 107 cones (rings) | 41 cones, one loop; 0.15 m median from SLAM run 2 | not comparable: the odometry map's rings break the association |
 
 How to read these numbers:
+- **Terms** (also in [glossary.md](../reference/glossary.md)):
+  - **Median:** the middle value once sorted; half the values are at or below it.
+  - **p90:** 90 % of values are at or below it. It shows how bad the bad cases get without being set by the single worst one.
+  - **Same-frame pair error:** for two cones seen in the same camera frame, the distance measured in that frame against the same two cones' distance in the map. No odometry is involved, so it tests the map itself.
+  - **Run-to-run agreement:** the distance from each cone in one run's map to its counterpart in another run's map, after shifting and rotating one map onto the other.
+  - **Odometry-only map:** detections placed with the vehicle's uncorrected position estimate; **SLAM map:** the SLAM node's map, which corrects that estimate with re-seen cones.
 - **Same-frame pair error** measures local shape only: a map can pass it and still be bent overall.
 - **Run-to-run agreement** mixes map error with real cone moves: the cones were adjusted between runs and the orange cones were removed before run 4, so only within one lap are the cones known to be fixed. Run 4's 0.15 m is an upper bound on SLAM error, not a measurement of it.
 - **SLAM fails on odometry jumps,** not slow drift: it has no relocalisation, so after a jump re-seen cones fail its gate and are added again (run 1).

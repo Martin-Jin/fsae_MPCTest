@@ -13,6 +13,8 @@ script's default map. Load it by name.
 
 ## How far to trust it
 
+Terms: *median* = half the values at or below it; *p90* = 90 % at or below it; *same-frame* = two cones seen in one camera frame, their measured gap against the map's gap (no odometry involved). More in `fsae_MPCTest/docs/reference/glossary.md`.
+
 - **Local shape: about 1 cm.** Distances between two cones seen in the same camera frame
   match the map to 0.011 m median (0.03 m p90). The odometry-only map of the same run
   scored 0.059 m (0.22 m p90), so it was replaced.
