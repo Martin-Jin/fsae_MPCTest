@@ -687,11 +687,11 @@ Don't:
 - combine two bags into one map, because each stack start puts the odometry origin somewhere else.
 - raise `--merge-radius` past half the cone spacing, because neighbouring cones then merge.
 - trust a map from a run whose odometry drifts (laps spiralling in the preview), because drift duplicates cones and nothing corrects it.
-Also reads a SLAM replay bag (`--slam`): the last `/fsae/slam/cone_map` message, decoded by hand like `ConeDetection`, with `/fsae/slam/path` for the preview. `--spacing-reference` draws `cone_spacing_check`'s row edges on the preview with a results box below the axes; `--note` adds lines to it.
-Key API: `build_cone_map`, `read_detections`, `read_slam_map`, `write_cone_map`, `plot`
+Also reads a SLAM replay bag (`--slam`): the last `/fsae/slam/cone_map` message, decoded by hand like `ConeDetection`, with `/fsae/slam/path` for the preview. Always writes a preview `preview_<bag folder>.png` next to the map (`--plot` to move, `--no-plot` to skip): `cone_spacing_check`'s row edges against `--spacing-reference` (default its `REFERENCE_SPACING_M`) and a results box with the spacing summary and `same_frame_accuracy` (cone pairs from one detection message against the map; in SLAM mode initialised from the nearest `/fsae/slam/path` keyframe, and the odometry-only map scored alongside). `--detections-bag` points the check at the original bag for a replay without detections; `--note` adds lines.
+Key API: `build_cone_map`, `read_detections`, `read_slam_map`, `same_frame_accuracy`, `write_cone_map`, `plot`, `preview_name`
 
 ### `tuner/tools/rosbag_slam_replay.sh`
-Does: replays a real-vehicle rosbag through `fsae_autonomous`'s `cone_landmark_mapper` on simulated time and records `/fsae/slam/cone_map`, `/fsae/slam/path` and `/fsae/slam/odom_path` to a new bag for `rosbag_cone_map --slam`. Needs `FSAE_SLAM_WS` (built `fsae_slam`), `FSAE_PARAMS` (that checkout's `fsae_params.yaml`), optionally `GTSAM_LIB`.
+Does: replays a real-vehicle rosbag through `fsae_autonomous`'s `cone_landmark_mapper` on simulated time and records `/fsae/slam/cone_map`, `/fsae/slam/path`, `/fsae/slam/odom_path` and the range-limited `/cone_detection_fused` (for the preview's accuracy check) to a new bag for `rosbag_cone_map --slam`. Needs `FSAE_SLAM_WS` (built `fsae_slam`), `FSAE_PARAMS` (that checkout's `fsae_params.yaml`), optionally `GTSAM_LIB`.
 Change it to:
 - change the replayed topics or the range limit. Check that the log's last `kf=` line reports landmarks near the real cone count.
 Don't:
@@ -1063,7 +1063,7 @@ The current profile files hold 47 keys (`no_progress_tuned.json`, Settings and L
 
 Location: `ros2/src/fsae_planning/tracks/<name>/`, resolved by `tracks.TRACKS_DIR`. The data ships with the `fsae_planning` checkout, not this repo, so a `fsae_planning`-only checkout can drive. Edits there are local edits to that checkout and are reported, never committed by an agent. A new track name gets a date suffix (`<name>_<YYYYmmdd>`, `tracks.dated_track_name`). Re-recording an existing name keeps its directory. `tracks.list_tracks` only lists directories that contain `cone_map.json`.
 
-Present now: `acceleration_20260916` (cone map, speed profile, centreline), `comp_test_map_2_20260916` (all four), `comp_test_map_3` (all four plus an extra corner-test speed profile CSV written by `export_speed_profile` in corner-slowdown mode), `gokart_night_loop_20261018` (go-kart loop, the SLAM map of a rosbag replay: cone map, centreline, `preview.png`, `README.md`; also copied to `fsds_simulator/tracks/`).
+Present now: `acceleration_20260916` (cone map, speed profile, centreline), `comp_test_map_2_20260916` (all four), `comp_test_map_3` (all four plus an extra corner-test speed profile CSV written by `export_speed_profile` in corner-slowdown mode), `gokart_night_loop_20261018` (go-kart loop, the SLAM map of a rosbag replay: cone map, centreline, `preview_2026-10-18_gocart_run2_slam.png`, `README.md`; also copied to `fsds_simulator/tracks/`).
 
 | File | Writer | Readers |
 |---|---|---|

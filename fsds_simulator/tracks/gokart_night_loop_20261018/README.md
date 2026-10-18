@@ -8,8 +8,7 @@ script's default map. Load it by name.
 | File | What it is |
 |---|---|
 | `cone_map.json` | 17 blue, 22 yellow, 1 orange cone (`orange` is ignored by the simulator loaders). The final SLAM map of run 2 (`2026-10-18_gocart_run2_tierA_stanley11pct_night`), replayed through `fsae_autonomous`'s `cone_landmark_mapper` with `tuner/tools/rosbag_slam_replay.sh` (fused cones up to 7 m) and converted with `python3 -m tuner.tools.rosbag_cone_map <replay> --slam` |
-| `preview.png` | the cones, the SLAM-corrected path, every row edge checked against the 3 m laid spacing, and a box with the spacing and accuracy results (`rosbag_cone_map --plot ... --spacing-reference 3.0 --note ...`) |
-| `spacing.png` | `python3 -m tuner.tools.cone_spacing_check gokart_night_loop_20261018 --width-reference 3.5`: every row edge against the 3 m laid spacing. Yellow median 3.04 m (18 of 22 within 0.5 m), blue 2.70 m (11 of 17), no duplicates or missing cones |
+| `preview_2026-10-18_gocart_run2_slam.png` | written by `rosbag_cone_map` with the map: the cones, the SLAM-corrected path, every row edge checked against the 3 m laid spacing, and a results box (spacing; same-frame accuracy of this map and of the odometry-only map; run-3 agreement added with `--note`) |
 | `centerline.csv` | `tuner.tools.raceline_optimizer --mode centerline`. The geometry is the reconstructed centreline; the `v_target` column is the simulated car's speed profile and means nothing for the kart |
 
 ## How far to trust it

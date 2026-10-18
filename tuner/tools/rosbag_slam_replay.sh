@@ -13,7 +13,8 @@
 # What it runs, all on simulated time from the bag's /clock:
 #   cone_landmark_mapper  with FSAE_PARAMS
 #   cone_range_relay.py   drops fused cones beyond max_range (default 7 m), see that file
-#   ros2 bag record       /fsae/slam/cone_map, /fsae/slam/path, /fsae/slam/odom_path
+#   ros2 bag record       /fsae/slam/cone_map, /fsae/slam/path, /fsae/slam/odom_path, and
+#                         the range-limited /cone_detection_fused (for the accuracy check)
 #   ros2 bag play         /zed/zed_node/odom, /cone_detection_fused (renamed _raw), /tf, /tf_static
 # The replay runs in real time, as long as the bag.
 set -e
@@ -40,7 +41,7 @@ setsid python3 "$HERE/cone_range_relay.py" --ros-args -p max_range:="$RMAX" \
     -p use_sim_time:=true >> "$LOG" 2>&1 &
 RELAY=$!
 setsid ros2 bag record --use-sim-time -s sqlite3 -o "$OUT" \
-    /fsae/slam/cone_map /fsae/slam/path /fsae/slam/odom_path >> "$LOG" 2>&1 &
+    /fsae/slam/cone_map /fsae/slam/path /fsae/slam/odom_path /cone_detection_fused >> "$LOG" 2>&1 &
 REC=$!
 cleanup() { kill -INT -$REC -$RELAY -$SLAM 2>/dev/null; sleep 3; kill -9 -$REC -$RELAY -$SLAM 2>/dev/null; }
 trap cleanup EXIT

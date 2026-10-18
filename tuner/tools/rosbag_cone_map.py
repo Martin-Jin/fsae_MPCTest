@@ -49,14 +49,20 @@ What steps 1-5 cannot fix
 Usage
 -----
     python3 -m tuner.tools.rosbag_cone_map ~/fsae_data/bags/<bag_dir> --name gokart_night_loop
-    python3 -m tuner.tools.rosbag_cone_map <bag_dir> --name <name> --plot preview.png
-    python3 -m tuner.tools.rosbag_cone_map <bag_dir> --name <name> --plot preview.png \
-        --spacing-reference 3.0 --note "any extra result line"     # edges + results box
     python3 -m tuner.tools.rosbag_cone_map <bag_dir> --out /tmp/cone_map.json   # no track dir
     python3 -m tuner.tools.rosbag_cone_map <slam_replay_bag> --slam --name <name>
+    python3 -m tuner.tools.rosbag_cone_map <slam_replay_bag> --slam --name <name> \
+        --detections-bag <original bag> --note "an extra result line"
 
 `--name` writes `<TRACKS_DIR>/<name>_<YYYYmmdd of the bag>/cone_map.json` (see
 `tracks/__init__.py`); `--out` writes anywhere.
+
+Every run also writes `preview_<bag folder>.png` next to the map (`--plot` to move it,
+`--no-plot` to skip it): the cones, the vehicle path, every row edge checked against
+`--spacing-reference` (default `cone_spacing_check.REFERENCE_SPACING_M`, 3 m), and a
+results box with the spacing summary and `same_frame_accuracy` (cone pairs seen in one
+camera frame against the map, which involves no odometry). In SLAM mode the odometry-only
+map of the same detections is scored alongside, for comparison.
 """
 import argparse
 import datetime
@@ -163,18 +169,20 @@ def _decode_cone_map_stamped(data: bytes):
 
 
 def _decode_path(data: bytes):
-    """nav_msgs/Path: header, then PoseStamped[]. Returns an (N, 2) array of x, y."""
+    """nav_msgs/Path: header, then PoseStamped[]. Returns an (N, 4) array of
+    (stamp, x, y, yaw); yaw from the quaternion."""
     r = _Cdr(data)
     r.i32(), r.u32()
     r.string()
-    xy = []
+    rows = []
     for _ in range(r.u32()):
-        r.i32(), r.u32()
+        sec, nsec = r.i32(), r.u32()
         r.string()
         x, y, _z = r.f64s(3)
-        r.f64s(4)
-        xy.append((x, y))
-    return np.array(xy).reshape(-1, 2)
+        qx, qy, qz, qw = r.f64s(4)
+        yaw = math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
+        rows.append((sec + nsec * 1e-9, x, y, yaw))
+    return np.array(rows).reshape(-1, 4)
 
 
 def _messages(bag_dir: str, topic: str):
@@ -193,6 +201,16 @@ def _messages(bag_dir: str, topic: str):
                 'SELECT data FROM messages WHERE topic_id = ? ORDER BY timestamp', (row[0],)):
             yield bytes(data)
         con.close()
+
+
+def has_topic(bag_dir: str, topic: str) -> bool:
+    for f in glob.glob(os.path.join(bag_dir, '*.db3')):
+        con = sqlite3.connect(f'file:{f}?mode=ro', uri=True)
+        row = con.execute('SELECT id FROM topics WHERE name = ?', (topic,)).fetchone()
+        con.close()
+        if row is not None:
+            return True
+    return False
 
 
 def read_detections(bag_dir: str, topic: str = DEFAULT_TOPIC):
@@ -217,13 +235,12 @@ def read_slam_map(bag_dir: str, topic: str = SLAM_TOPIC, min_obs=3):
     for x, y, colour, conf, vx, vy in _decode_cone_map_stamped(last):
         if colour in names and conf >= min_obs:
             cones[names[colour]].append((np.array([x, y]), int(conf), math.sqrt(max(vx, vy, 0.0))))
-    path = np.empty((0, 2))
+    last_path = None
     for data in _messages(bag_dir, SLAM_PATH_TOPIC):
-        path = data
-    if not isinstance(path, np.ndarray):
-        path = _decode_path(path)
+        last_path = data
+    poses = _decode_path(last_path) if last_path is not None else np.empty((0, 4))
     return cones, {'messages': n_msgs, 'detections_used': 0, 'colour_conflicts': 0,
-                   'path': path}
+                   'path': poses[:, 1:3], 'poses': poses}
 
 
 # ── Building the map ─────────────────────────────────────────────────────────
@@ -300,6 +317,80 @@ def _resolve_colour_conflicts(blue, yellow, radius):
     keep_b = [c for i, c in enumerate(blue) if i not in drop_b]
     keep_y = [c for j, c in enumerate(yellow) if j not in drop_y]
     return keep_b, keep_y, len(drop_b) + len(drop_y)
+
+
+# ── Checking the map ─────────────────────────────────────────────────────────
+
+def _rigid(dst, src):
+    """R, t with dst ~ R @ src + t (least squares, 2D, no reflection)."""
+    md, ms = dst.mean(0), src.mean(0)
+    u, _, vt = np.linalg.svd((src - ms).T @ (dst - md))
+    rot = vt.T @ u.T
+    if np.linalg.det(rot) < 0:
+        vt[1] *= -1
+        rot = vt.T @ u.T
+    return rot, md - rot @ ms
+
+
+def same_frame_accuracy(cones, det_bag, topic=DEFAULT_TOPIC, min_range=1.0, max_range=7.0,
+                        poses=None, max_pose_dt=0.5):
+    """Odometry-free accuracy check: for every pair of cones seen in the SAME detection
+    message, |distance in the map - distance measured in that frame|. A single frame's
+    relative geometry involves no odometry, so it tests the map's local shape directly.
+
+    Each message's cones are placed with an initial pose (its own `car_pose` when the map
+    is in the odometry frame; with `poses`, the nearest SLAM keyframe pose within
+    `max_pose_dt`), refined by a small rigid fit onto the map, and associated to map cones
+    of the same colour within 0.4 m. The refinement only helps association: pairwise
+    distances do not change under a rigid motion, so it cannot flatter the result.
+    Returns {'pairs', 'messages', 'median', 'p90'} or None when nothing could be paired."""
+    m = {g: np.array([c[0] for c in cones[g]]).reshape(-1, 2) for g in ('blue', 'yellow')}
+    if not len(m['blue']) and not len(m['yellow']):
+        return None
+    errs, used = [], 0
+    for t, (x, y, yaw), det in read_detections(det_bag, topic):
+        pts = [(g, p) for g in ('blue', 'yellow') for p in det[g]
+               if min_range <= math.hypot(*p) <= max_range and len(m[g])]
+        if len(pts) < 3:
+            continue
+        if poses is not None:
+            if not len(poses):
+                return None
+            k = int(np.argmin(np.abs(poses[:, 0] - t)))
+            if abs(poses[k, 0] - t) > max_pose_dt:
+                continue
+            x, y, yaw = poses[k, 1:]
+        c, s_ = math.cos(yaw), math.sin(yaw)
+        w = np.array([[x + c * p[0] - s_ * p[1], y + s_ * p[0] + c * p[1]] for _, p in pts])
+        for _ in range(3):
+            src, dst = [], []
+            for (g, _), q in zip(pts, w):
+                d = np.hypot(*(m[g] - q).T)
+                if d.min() < 0.75:
+                    src.append(q)
+                    dst.append(m[g][int(np.argmin(d))])
+            if len(src) < 3:
+                break
+            rot, tr = _rigid(np.array(dst), np.array(src))
+            w = w @ rot.T + tr
+        ids = []
+        for (g, _), q in zip(pts, w):
+            d = np.hypot(*(m[g] - q).T)
+            ids.append((g, int(np.argmin(d))) if d.min() < 0.4 else None)
+        n_before = len(errs)
+        for i in range(len(pts)):
+            for j in range(i + 1, len(pts)):
+                if ids[i] is None or ids[j] is None or ids[i] == ids[j]:
+                    continue
+                measured = math.hypot(*(np.asarray(pts[i][1]) - pts[j][1]))
+                mapped = math.hypot(*(m[ids[i][0]][ids[i][1]] - m[ids[j][0]][ids[j][1]]))
+                errs.append(abs(mapped - measured))
+        used += len(errs) > n_before
+    if not errs:
+        return None
+    e = np.array(errs)
+    return {'pairs': len(e), 'messages': used,
+            'median': float(np.median(e)), 'p90': float(np.percentile(e, 90))}
 
 
 def bag_date(bag_dir):
@@ -380,7 +471,14 @@ def plot(path_png, cones, stats, title, spacing_reference=None, notes=()):
     fig.savefig(path_png, dpi=120, bbox_inches='tight')
 
 
+def preview_name(bag_dir):
+    """`preview_<bag folder name>.png`: one preview per source run, so a track folder can
+    hold the previews of several runs side by side without overwriting each other."""
+    return f'preview_{os.path.basename(os.path.normpath(bag_dir))}.png'
+
+
 def main(argv=None):
+    from tuner.tools import cone_spacing_check as csc
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('bag_dir')
     dest = ap.add_mutually_exclusive_group(required=True)
@@ -395,11 +493,17 @@ def main(argv=None):
     ap.add_argument('--min-obs', type=int, default=None,
                     help='minimum sightings per cone (default 5; 3 with --slam, its own promote_after)')
     ap.add_argument('--open', action='store_true', help='mark the track as not a closed loop')
-    ap.add_argument('--plot', help='write a PNG preview here')
-    ap.add_argument('--spacing-reference', type=float,
-                    help='with --plot: draw row edges and their check against this laid spacing, m')
+    ap.add_argument('--plot', help='preview PNG path (default: preview_<bag folder>.png next to '
+                                   'the cone map)')
+    ap.add_argument('--no-plot', action='store_true', help='skip the preview')
+    ap.add_argument('--spacing-reference', type=float, default=csc.REFERENCE_SPACING_M,
+                    help='laid cone spacing the preview checks row edges against, m '
+                         f'(default {csc.REFERENCE_SPACING_M}, cone_spacing_check\'s); 0 to skip')
+    ap.add_argument('--detections-bag',
+                    help='bag holding the cone detections for the accuracy check (default: '
+                         'bag_dir if it has them; for an older SLAM replay, the original bag)')
     ap.add_argument('--note', action='append', default=[],
-                    help='with --plot: a line for the results box (repeatable)')
+                    help='an extra line for the preview\'s results box (repeatable)')
     a = ap.parse_args(argv)
 
     bag_dir = os.path.abspath(os.path.expanduser(a.bag_dir))
@@ -429,9 +533,35 @@ def main(argv=None):
             print(f'  {g:6s} {len(n):3d} cones, sightings median {np.median(n):.0f}, '
                   f'spread median {np.median(sp):.2f} m, max {sp.max():.2f} m')
     print(f'wrote {out}')
-    if a.plot:
-        plot(a.plot, cones, stats, source, a.spacing_reference, a.note)
-        print(f'wrote {a.plot}')
+    if a.no_plot:
+        return
+
+    # Accuracy without ground truth: same-frame cone pairs against the map. In SLAM mode
+    # the odometry-only map of the same detections is scored too, for comparison.
+    notes = []
+    det_bag = os.path.abspath(os.path.expanduser(a.detections_bag)) if a.detections_bag else bag_dir
+    if has_topic(det_bag, a.topic):
+        acc = same_frame_accuracy(cones, det_bag, a.topic, a.min_range, a.max_range,
+                                  poses=stats.get('poses') if a.slam else None)
+        if acc:
+            notes.append('Accuracy (no ground truth): cone pairs seen in one camera frame vs the map')
+            notes.append(f'  this map: median {acc["median"]:.3f} m, p90 {acc["p90"]:.3f} m '
+                         f'({acc["pairs"]} pairs, {acc["messages"]} frames)')
+            if a.slam:
+                odo, _ = build_cone_map(det_bag, a.topic, a.min_range, a.max_range,
+                                        a.merge_radius, 5)
+                acc_o = same_frame_accuracy(odo, det_bag, a.topic, a.min_range, a.max_range)
+                if acc_o:
+                    notes.append(f'  odometry-only map of the same run: median {acc_o["median"]:.3f} m, '
+                                 f'p90 {acc_o["p90"]:.3f} m')
+            print('\n'.join(notes))
+    else:
+        notes.append(f'Accuracy not checked: no {a.topic} in {os.path.basename(det_bag)} '
+                     '(pass --detections-bag <original bag>)')
+        print(notes[-1])
+    plot_path = a.plot or os.path.join(os.path.dirname(os.path.abspath(out)), preview_name(bag_dir))
+    plot(plot_path, cones, stats, source, a.spacing_reference or None, notes + a.note)
+    print(f'wrote {plot_path}')
 
 
 if __name__ == '__main__':

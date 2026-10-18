@@ -302,14 +302,19 @@ Two ways to build the map:
 | Needs | Python and numpy | ROS 2, a built `fsae_slam` (GTSAM) |
 
 - **Method:** each detection on `/cone_detection_fused` is placed in the odometry frame with the `car_pose` carried in the same message, then repeats are clustered per colour (median position, at least `--min-obs` sightings). Only detections 1-7 m away are used, because the camera's range error grows with the square of distance.
-- **Output:** `--name <base>` writes `<TRACKS_DIR>/<base>_<bag date>/cone_map.json`, with `source: "rosbag:..."`. `--plot` writes a preview of the cones and the vehicle path. Add `--spacing-reference <m>` to draw every row edge checked against the laid spacing (same check as `cone_spacing_check`) with a results box, and `--note "<line>"` (repeatable) for extra result lines such as accuracy checks.
+- **Output:** `--name <base>` writes `<TRACKS_DIR>/<base>_<bag date>/cone_map.json`, with `source: "rosbag:..."`, and next to it a preview named after the run, `preview_<bag folder>.png`.
+- **The preview is automatic.** It shows the cones, the vehicle path, every row edge checked against the laid spacing (`--spacing-reference`, default 3.0 m, the `cone_spacing_check` default) and a results box:
+  - spacing per row (median, on-spacing count, duplicates, missing cones);
+  - **accuracy without ground truth:** distances between two cones seen in the same camera frame against the same two cones in the map (no odometry involved). In SLAM mode the odometry-only map of the same run is scored too;
+  - any `--note "<line>"` given (repeatable), for results measured elsewhere.
+- `--plot <path>` moves the preview, `--no-plot` skips it.
 - **Not corrected: odometry drift.** The map is only as good as the run's odometry. A run whose path spirals in the preview (about 1 m per lap on two of the 2026-10-18 kart runs) duplicates cones; use a run whose laps overlap.
 - **One bag, one frame.** Every stack start moves the origin, so maps from two runs differ by a rotation and offset.
 - **Excluded from the default:** `newest_track()` skips these tracks, so a kart loop never becomes `DEFAULT_MAP`. Load it by name.
 - **Exports:** `raceline_optimizer --mode centerline` works on the geometry, but its `v_target` column is the simulated car's speed profile, not the kart's.
 
 ```bash
-python3 -m tuner.tools.rosbag_cone_map ~/fsae_data/bags/<bag_dir> --name gokart_night_loop --plot preview.png
+python3 -m tuner.tools.rosbag_cone_map ~/fsae_data/bags/<bag_dir> --name gokart_night_loop   # + preview_<bag_dir>.png
 python3 -m tuner.tools.raceline_optimizer gokart_night_loop_20261018 --mode centerline
 ```
 
@@ -330,12 +335,27 @@ python3 -m tuner.tools.raceline_optimizer gokart_night_loop_20261018 --mode cent
    ```
 3. Build the track from the SLAM bag:
    ```bash
-   python3 -m tuner.tools.rosbag_cone_map ~/fsae_data/slam_replays/<bag_dir>_slam --slam --name <name> --plot preview.png
+   python3 -m tuner.tools.rosbag_cone_map ~/fsae_data/slam_replays/<bag_dir>_slam --slam --name <name>
+   ```
+   The replay records the range-limited cones too, so the preview's accuracy check runs on its own. For a replay made before that, add `--detections-bag ~/fsae_data/bags/<bag_dir>`:
+   ```bash
+   python3 -m tuner.tools.rosbag_cone_map ~/fsae_data/slam_replays/<bag_dir>_slam --slam --name <name> \
+       --detections-bag ~/fsae_data/bags/<bag_dir>
    ```
 
-- Check the map's spacing against the layout with `python3 -m tuner.tools.cone_spacing_check <name> --reference <laid spacing> --plot spacing.png`.
+- Read the preview's results box: spacing near the laid value with no duplicates, and a same-frame error of a few centimetres. `python3 -m tuner.tools.cone_spacing_check <name> --reference <laid spacing>` gives the spacing table and a CSV of every edge.
 - Check the log's last `kf=` line: `landmarks` near the real cone count, `gated` small. No `kf=` lines means the replay started before discovery finished; rerun it.
 - Run the replays one at a time. Four in parallel lost one run's odometry entirely.
+
+### Where the files are
+
+| What | Where | In git |
+|---|---|---|
+| Original kart bags | `~/fsae_data/bags/<bag_dir>/` on the laptop that copied them off the Jetson | no |
+| SLAM replay bags | `~/fsae_data/slam_replays/<bag_dir>_slam/` | no |
+| Tracks (cone map, centreline, `preview_<run>.png`, `README.md`) | `ros2/src/fsae_planning/tracks/<name>_<date>/` (`tracks.TRACKS_DIR`, what the tools read) | no: `fsae_planning` is never committed by an agent |
+| Copy of each track | `fsds_simulator/tracks/<name>_<date>/` in this repo | yes |
+| Kart bags the NMPC was validated on (LiDAR removed) | the `rosbags` folder of `fsae_MPCRos` (branch mpc-ground-test) | yes |
 
 ### Results on the 2026-10-18 kart bags
 
