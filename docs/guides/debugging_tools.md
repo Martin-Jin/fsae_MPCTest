@@ -21,6 +21,7 @@ Run every `python -m` command from `fsae_MPCTest/` so `tuner`, `gui` and `settin
 | `tuner/investigations/steering_step_analysis.py` | Is the yaw cap a hard limit, scaled authority or active damping (step-input transient)? | `python -m tuner.investigations.steering_step_analysis <log.csv>` |
 | `tuner/investigations/brake_sysid_analysis.py` and `ros2/run_brake_sysid.sh` | What deceleration does FSDS deliver for a given brake command and speed? | `cd ros2 && ./run_brake_sysid.sh` |
 | `tuner/tools/plot_playback.py` | What did this run, or these runs compared, do signal by signal and on the map? | `python -m tuner.tools.plot_playback [csv ...]` |
+| `tuner/tools/cone_spacing_check.py` | Does a cone map's spacing match the distance the cones were laid at, and where does it have duplicate or missing cones? | `python -m tuner.tools.cone_spacing_check <track> [--reference 3.0] [--plot out.png]` |
 | `tuner/investigations/steering_chatter_check.py` | Does a weight or setting change make tick-to-tick steering chatter better or worse? | `python -m tuner.investigations.steering_chatter_check [--controller nmpc\|ltv] [--set NAME=VALUE ...]` |
 | `tuner/investigations/reference_heading_geometry_check.py` | Is a reference-heading swing caused by the online planner's rebuild, or by the track geometry itself? | `python -m tuner.investigations.reference_heading_geometry_check` |
 | `tuner/investigations/reference_excess_mechanism_check.py` | Are fast-reference-heading ticks explained by the boundary planner's seed-midpoint anchor jump? | `python -m tuner.investigations.reference_excess_mechanism_check` |
@@ -168,6 +169,43 @@ What survives:
 - All three harness scripts are diagnostic-only and separate from `launch_all.sh`. Any other publisher on `/fsds/control_command` interleaves with the sweep and corrupts the measurement.
 
 The analysis step at the end of each `run_*_sysid.sh` script still calls the old module paths (`tuner.checks...`, `tuner.steering_*_analysis`). Run the analyser by hand with its `tuner.investigations` path.
+
+## Cone spacing check: `tuner/tools/cone_spacing_check.py`
+
+Joins each cone row (blue, yellow) neighbour to neighbour and compares every edge with the spacing the cones were laid at. ==Use it to judge a map rebuilt from a rosbag before trusting it: duplicates and missing cones show up as edges far from the reference.==
+
+```bash
+python -m tuner.tools.cone_spacing_check gokart_night_loop_20261018                  # reference 3.0 m
+python -m tuner.tools.cone_spacing_check <track or cone_map.json> --reference 4.0 --tolerance 0.5
+python -m tuner.tools.cone_spacing_check <track> --plot spacing.png --csv edges.csv --width-reference 3.5
+```
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `REFERENCE_SPACING_M` / `--reference` | 3.0 m | spacing along a row the cones were laid at |
+| `TOLERANCE_M` / `--tolerance` | 0.5 m | an edge within this of the reference is on spacing (green in the plot) |
+| `DUPLICATE_M` | 1.0 m | shorter edges are flagged as a probable duplicate cone (red) |
+| `MISSING_FACTOR` | 1.5 | edges longer than this x the reference are flagged as a probable missing cone (purple) |
+| `MAX_EDGE_FACTOR` | 2.5 | the chain never joins cones farther apart than this x the reference |
+| `--width-reference` | off | also prints each yellow cone's distance to the nearest blue one, a lower bound on track width |
+
+How to read it:
+- **Median error** is the map against the layout. A spread inside tolerance is usually hand placement, not map error. Two maps of the same layout with the same edge lengths confirm placement.
+- **The reference is only as good as the layout.** A spacing estimated by eye checks consistency, not absolute accuracy; tape a few neighbouring cones for a real reference.
+- **A chain that bends into the other row** points at a cone with the wrong colour, which the planner reads as the wrong boundary.
+- **Note,** the chain is greedy nearest neighbour from the cone nearest the origin. On a track with hairpins tighter than the spacing, or an open track, a row splits into several chains (`comp_test_map_3` at 4 m gives two to four); check the plot.
+
+Results on `gokart_night_loop_20261018` (the SLAM map of a go-kart run, laid at about 3 m by eye):
+
+| Row | Median edge | p10-p90 | On spacing (±0.5 m) | Flags |
+|---|---|---|---|---|
+| yellow (outer) | 3.04 m | 2.49-3.37 m | 18 / 22 | none |
+| blue (inner) | 2.70 m | 2.11-3.07 m | 11 / 17 | none |
+
+- The yellow row matches the layout. The inner blue row is about 0.3 m tighter.
+- The odometry-only map of the same run flags two yellow duplicates (0.77 and 0.88 m), which SLAM removed.
+- The yellow chain bends into the blue row at about (5.2, 3.0) near the start gate: a cone seen as yellow on the inner row, the likely orange or yellow misread there.
+- Runs 2 and 3 give the same edge lengths in the same order, so the spread is the hand placement.
 
 ## Telemetry playback: `tuner/tools/plot_playback.py`
 

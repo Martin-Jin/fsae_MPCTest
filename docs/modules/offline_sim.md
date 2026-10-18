@@ -706,6 +706,14 @@ Don't:
 - publish best-effort, because `cone_landmark_mapper` subscribes reliable.
 Key API: `ConeRangeRelay`
 
+### `tuner/tools/cone_spacing_check.py`
+Does: chains each cone row (blue, yellow) by greedy nearest neighbour and compares every edge with a reference spacing (`REFERENCE_SPACING_M`, 3.0 m), flagging probable duplicates and missing cones; optional track-width check, PNG of the edges and CSV of every edge. Usage and how to read it: [debugging_tools.md](../guides/debugging_tools.md).
+Change it to:
+- change the default reference or the flag thresholds (module constants, or the CLI flags).
+Don't:
+- read a spread inside tolerance as map error without a second map of the same layout, because hand placement varies too.
+Key API: `chain_row`, `row_edges`, `classify`, `width_edges`, `summarise`, `plot`
+
 ### `tuner/tools/plot_playback.py`
 Does: interactive time-scrubbing playback of one or more control logs, with signal panels, trajectory and a zoomed car view.
 Change it to:

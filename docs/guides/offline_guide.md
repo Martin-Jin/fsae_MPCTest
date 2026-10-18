@@ -274,6 +274,7 @@ Rules:
 | `export_speed_profile.py` | Exports a recorded cone map's oracle path and speed profile to CSV, see "Export the speed profile and raceline" in [integration_guide.md](../fsds/integration_guide.md) |
 | `raceline_optimizer.py` | Minimum-time racing line optimiser with the same CSV output. `--mode centerline` exports the centreline instead |
 | `rosbag_cone_map.py` | Rebuilds a cone map from a real-vehicle rosbag (go-kart), see [Tracks rebuilt from a real-vehicle rosbag](#tracks-rebuilt-from-a-real-vehicle-rosbag) |
+| `cone_spacing_check.py` | Checks a cone map's spacing against the laid spacing (default 3 m), see [debugging_tools.md](debugging_tools.md) |
 | `rosbag_slam_replay.sh`, `cone_range_relay.py` | Replay a rosbag through `fsae_autonomous`'s SLAM node for a SLAM-built map, see [SLAM-built maps](#slam-built-maps) |
 | `sync_mpc_params.py` | One-way copy of live param files to `fsae_autonomous` and the `fsds_simulator/` mirror |
 | `param_report.py` | Read-only: the value each repo runs per MPC/NMPC field, its layer, and where repos disagree (`--check` for a parity gate) |
@@ -332,6 +333,7 @@ python3 -m tuner.tools.raceline_optimizer gokart_night_loop_20261018 --mode cent
    python3 -m tuner.tools.rosbag_cone_map ~/fsae_data/slam_replays/<bag_dir>_slam --slam --name <name> --plot preview.png
    ```
 
+- Check the map's spacing against the layout with `python3 -m tuner.tools.cone_spacing_check <name> --reference <laid spacing> --plot spacing.png`.
 - Check the log's last `kf=` line: `landmarks` near the real cone count, `gated` small. No `kf=` lines means the replay started before discovery finished; rerun it.
 - Run the replays one at a time. Four in parallel lost one run's odometry entirely.
 
