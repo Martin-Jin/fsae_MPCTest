@@ -687,7 +687,24 @@ Don't:
 - combine two bags into one map, because each stack start puts the odometry origin somewhere else.
 - raise `--merge-radius` past half the cone spacing, because neighbouring cones then merge.
 - trust a map from a run whose odometry drifts (laps spiralling in the preview), because drift duplicates cones and nothing corrects it.
-Key API: `build_cone_map`, `read_detections`, `write_cone_map`, `plot`
+Also reads a SLAM replay bag (`--slam`): the last `/fsae/slam/cone_map` message, decoded by hand like `ConeDetection`, with `/fsae/slam/path` for the preview.
+Key API: `build_cone_map`, `read_detections`, `read_slam_map`, `write_cone_map`, `plot`
+
+### `tuner/tools/rosbag_slam_replay.sh`
+Does: replays a real-vehicle rosbag through `fsae_autonomous`'s `cone_landmark_mapper` on simulated time and records `/fsae/slam/cone_map`, `/fsae/slam/path` and `/fsae/slam/odom_path` to a new bag for `rosbag_cone_map --slam`. Needs `FSAE_SLAM_WS` (built `fsae_slam`), `FSAE_PARAMS` (that checkout's `fsae_params.yaml`), optionally `GTSAM_LIB`.
+Change it to:
+- change the replayed topics or the range limit. Check that the log's last `kf=` line reports landmarks near the real cone count.
+Don't:
+- run several replays at once, because one lost its odometry entirely when four ran in parallel.
+- drop the range relay for bags from the kart test branch (planning-teleop-ground-test), because their fused topic carries camera-only cones beyond 8 m.
+
+### `tuner/tools/cone_range_relay.py`
+Does: republishes `/cone_detection_fused_raw` as `/cone_detection_fused` without cones beyond `max_range` (default 7 m), for `rosbag_slam_replay.sh`.
+Change it to:
+- change the default range. Needs `rclpy` and a built `fsae_interfaces`.
+Don't:
+- publish best-effort, because `cone_landmark_mapper` subscribes reliable.
+Key API: `ConeRangeRelay`
 
 ### `tuner/tools/plot_playback.py`
 Does: interactive time-scrubbing playback of one or more control logs, with signal panels, trajectory and a zoomed car view.
@@ -1038,7 +1055,7 @@ The current profile files hold 47 keys (`no_progress_tuned.json`, Settings and L
 
 Location: `ros2/src/fsae_planning/tracks/<name>/`, resolved by `tracks.TRACKS_DIR`. The data ships with the `fsae_planning` checkout, not this repo, so a `fsae_planning`-only checkout can drive. Edits there are local edits to that checkout and are reported, never committed by an agent. A new track name gets a date suffix (`<name>_<YYYYmmdd>`, `tracks.dated_track_name`). Re-recording an existing name keeps its directory. `tracks.list_tracks` only lists directories that contain `cone_map.json`.
 
-Present now: `acceleration_20260916` (cone map, speed profile, centreline), `comp_test_map_2_20260916` (all four), `comp_test_map_3` (all four plus an extra corner-test speed profile CSV written by `export_speed_profile` in corner-slowdown mode), `gokart_night_loop_20261018` (go-kart loop rebuilt from a rosbag: cone map, centreline, `preview.png`, `README.md`; also copied to `fsds_simulator/tracks/`).
+Present now: `acceleration_20260916` (cone map, speed profile, centreline), `comp_test_map_2_20260916` (all four), `comp_test_map_3` (all four plus an extra corner-test speed profile CSV written by `export_speed_profile` in corner-slowdown mode), `gokart_night_loop_20261018` (go-kart loop, the SLAM map of a rosbag replay: cone map, centreline, `preview.png`, `README.md`; also copied to `fsds_simulator/tracks/`).
 
 | File | Writer | Readers |
 |---|---|---|

@@ -273,6 +273,7 @@ Rules:
 | `export_speed_profile.py` | Exports a recorded cone map's oracle path and speed profile to CSV, see "Export the speed profile and raceline" in [integration_guide.md](../fsds/integration_guide.md) |
 | `raceline_optimizer.py` | Minimum-time racing line optimiser with the same CSV output. `--mode centerline` exports the centreline instead |
 | `rosbag_cone_map.py` | Rebuilds a cone map from a real-vehicle rosbag (go-kart), see "Tracks rebuilt from a real-vehicle rosbag" below |
+| `rosbag_slam_replay.sh`, `cone_range_relay.py` | Replay a rosbag through `fsae_autonomous`'s SLAM node for a SLAM-built map, same section |
 | `sync_mpc_params.py` | One-way copy of live param files to `fsae_autonomous` and the `fsds_simulator/` mirror |
 | `param_report.py` | Read-only: the value each repo runs per MPC/NMPC field, its layer, and where repos disagree (`--check` for a parity gate) |
 | `doc_lint.py` | Flags docs that break the project's writing conventions |
@@ -283,7 +284,16 @@ Rules:
 
 ### Tracks rebuilt from a real-vehicle rosbag
 
-`tuner/tools/rosbag_cone_map.py` turns a go-kart rosbag into a `cone_map.json` the offline tools load like any FSDS capture. ==It needs no ROS install: it reads the bag's sqlite3 files and decodes `ConeDetection` itself.==
+`tuner/tools/rosbag_cone_map.py` turns a go-kart rosbag into a `cone_map.json` the offline tools load like any FSDS capture. ==Prefer the SLAM-built map (below): on the 2026-10-18 kart bags its cone-to-cone distances match single-frame measurements to 1 cm, against 4-8 cm for the odometry-only map.== The tool reads the bag's sqlite3 files and decodes the messages itself, so it needs no ROS install.
+
+Two ways to build the map:
+
+| | Odometry only (default) | SLAM (`--slam`) |
+|---|---|---|
+| Input | the recorded bag | a second bag, made by replaying the recorded one through `fsae_autonomous`'s `cone_landmark_mapper` (`rosbag_slam_replay.sh`) |
+| Positions | each detection placed with the odometry pose in its message, repeats clustered | the SLAM node's final landmark estimates |
+| Odometry drift | not corrected: drift duplicates cones | corrected while cones keep matching |
+| Needs | Python and numpy | ROS 2, a built `fsae_slam` (GTSAM) |
 
 - **Method:** each detection on `/cone_detection_fused` is placed in the odometry frame with the `car_pose` carried in the same message, then repeats are clustered per colour (median position, at least `--min-obs` sightings). Only detections 1-7 m away are used, because the camera's range error grows with the square of distance.
 - **Output:** `--name <base>` writes `<TRACKS_DIR>/<base>_<bag date>/cone_map.json`, with `source: "rosbag:..."`. `--plot` writes a preview of the cones and the odometry path.
@@ -297,7 +307,46 @@ python3 -m tuner.tools.rosbag_cone_map ~/fsae_data/bags/<bag_dir> --name gokart_
 python3 -m tuner.tools.raceline_optimizer gokart_night_loop_20261018 --mode centerline
 ```
 
-The first such track is `gokart_night_loop_20261018` (run 2 of the 2026-10-18 kart session), with its own `README.md` on how far to trust it. A copy is kept in `fsds_simulator/tracks/`.
+#### SLAM-built maps
+
+1. Build `fsae_interfaces` and `fsae_slam` from an `fsae_autonomous` checkout (branch feat/SLAM or later) in a separate workspace, so nothing is written into the checkout. Without sudo, GTSAM can be unpacked from the ROS apt package instead of installed:
+   ```bash
+   mkdir -p ~/slam_ws/src && cd ~/slam_ws/src
+   ln -s <fsae_autonomous>/common/fsae_interfaces && ln -s <fsae_autonomous>/perception/fsae_slam
+   cd ~/gtsam && apt-get download ros-jazzy-gtsam && dpkg -x ros-jazzy-gtsam_*.deb root
+   cd ~/slam_ws && colcon build --cmake-args -DCMAKE_PREFIX_PATH="$HOME/gtsam/root/opt/ros/jazzy"
+   ```
+2. Replay the bag through SLAM (real time, as long as the bag). The script drops fused cones beyond 7 m first (`cone_range_relay.py` explains why):
+   ```bash
+   FSAE_SLAM_WS=~/slam_ws GTSAM_LIB=~/gtsam/root/opt/ros/jazzy/lib/x86_64-linux-gnu \
+   FSAE_PARAMS=<fsae_autonomous>/common/fsae_bringup/config/fsae_params.yaml \
+   tuner/tools/rosbag_slam_replay.sh ~/fsae_data/bags/<bag_dir> ~/fsae_data/slam_replays/<bag_dir>_slam
+   ```
+3. Build the track from the SLAM bag:
+   ```bash
+   python3 -m tuner.tools.rosbag_cone_map ~/fsae_data/slam_replays/<bag_dir>_slam --slam --name <name> --plot preview.png
+   ```
+
+- Check the log's last `kf=` line: `landmarks` near the real cone count, `gated` small. No `kf=` lines means the replay started before discovery finished; rerun it.
+- Run the replays one at a time. Four in parallel lost one run's odometry entirely.
+
+#### Results on the 2026-10-18 kart bags
+
+==SLAM gives the better map wherever the odometry has no jumps.== Checked two ways that do not need ground truth: distances between two cones seen in the same camera frame (no odometry involved) against the same pair in the map, and agreement between runs after a rigid alignment.
+
+| Run | Odometry-only map | SLAM map | Same-frame pair error, odometry / SLAM (median, p90) |
+|---|---|---|---|
+| 1 (9 min, ends in a power loss) | 140 cones (rings) | 77 cones: the odometry jumps about 6 m mid-run and SLAM cannot re-match after it | 0.076 / 0.013 m; 0.36 / 0.05 m |
+| 2 | 42 cones | 39 cones | 0.059 / 0.011 m; 0.22 / 0.03 m |
+| 3 | 43 cones | 39 cones; matches SLAM run 2 to 0.012 m median after alignment | 0.039 / 0.011 m; 0.17 / 0.03 m |
+| 4 (drifts about 1 m per lap) | 107 cones (rings) | 41 cones, one loop; 0.15 m median from SLAM run 2 | not comparable: the odometry map's rings break the association |
+
+How to read these numbers:
+- **Same-frame pair error** measures local shape only: a map can pass it and still be bent overall.
+- **Run-to-run agreement** mixes map error with real cone moves: the cones were adjusted between runs and the orange cones were removed before run 4, so only within one lap are the cones known to be fixed. Run 4's 0.15 m is an upper bound on SLAM error, not a measurement of it.
+- **SLAM fails on odometry jumps,** not slow drift: it has no relocalisation, so after a jump re-seen cones fail its gate and are added again (run 1).
+
+The first such track is `gokart_night_loop_20261018`: the SLAM map of run 2 of the 2026-10-18 kart session, with its own `README.md` on how far to trust it. A copy is kept in `fsds_simulator/tracks/`.
 
 ### Plotting and scrubbing exported CSV telemetry
 

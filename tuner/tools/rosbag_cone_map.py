@@ -26,8 +26,18 @@ How the map is built
    a blue and a yellow cluster sit on the same spot keep only the better-supported one
    (a cone the classifier sometimes calls the other colour).
 
-What it cannot fix
-------------------
+SLAM mode (`--slam`, preferred)
+-------------------------------
+Steps 1-5 trust the odometry completely. With `--slam` the input is instead a bag made by
+`rosbag_slam_replay.sh`, which replays the recording through fsae_autonomous's
+`cone_landmark_mapper`. That node corrects the pose every time a known cone is re-seen,
+and its final `/fsae/slam/cone_map` message is taken as the map. On the 2026-10-18 kart
+bags its cone-to-cone distances match single-frame measurements to about 1 cm, against
+4-8 cm for steps 1-5 (docs/guides/offline_guide.md, "Results on the 2026-10-18 kart bags").
+It still fails after an odometry jump: the node has no relocalisation.
+
+What steps 1-5 cannot fix
+-------------------------
 - Odometry drift. The pose is visual-inertial odometry, never corrected by the cones, so
   cones re-seen on a later lap land slightly shifted. Small drift widens a cluster
   (reported as `spread`); drift past `--merge-radius` duplicates cones. Check the
@@ -41,6 +51,7 @@ Usage
     python3 -m tuner.tools.rosbag_cone_map ~/fsae_data/bags/<bag_dir> --name gokart_night_loop
     python3 -m tuner.tools.rosbag_cone_map <bag_dir> --name <name> --plot preview.png
     python3 -m tuner.tools.rosbag_cone_map <bag_dir> --out /tmp/cone_map.json   # no track dir
+    python3 -m tuner.tools.rosbag_cone_map <slam_replay_bag> --slam --name <name>
 
 `--name` writes `<TRACKS_DIR>/<name>_<YYYYmmdd of the bag>/cone_map.json` (see
 `tracks/__init__.py`); `--out` writes anywhere.
@@ -59,6 +70,8 @@ import numpy as np
 import tracks
 
 DEFAULT_TOPIC = '/cone_detection_fused'
+SLAM_TOPIC = '/fsae/slam/cone_map'
+SLAM_PATH_TOPIC = '/fsae/slam/path'
 COLOURS = ('yellow', 'blue', 'small_orange', 'big_orange')   # message field order
 
 
@@ -86,6 +99,17 @@ class _Cdr:
     def i32(self):
         self._align(4)
         (v,) = struct.unpack_from('<i', self.buf, self.pos)
+        self.pos += 4
+        return v
+
+    def u8(self):
+        v = self.buf[self.pos]
+        self.pos += 1
+        return v
+
+    def f32(self):
+        self._align(4)
+        (v,) = struct.unpack_from('<f', self.buf, self.pos)
         self.pos += 4
         return v
 
@@ -117,9 +141,42 @@ def _decode_cone_detection(data: bytes):
     return sec + nsec * 1e-9, (px, py, qw), cones
 
 
-def read_detections(bag_dir: str, topic: str = DEFAULT_TOPIC):
-    """Yield (t, (x, y, yaw), {colour: (N, 2) local}) for every message on `topic`,
-    in time order across all of the bag's split files."""
+def _decode_cone_map_stamped(data: bytes):
+    """fsae_interfaces/ConeMapStamped: header, then Cone[] (id, confidence, colour,
+    PoseWithCovariance, radius, height). Returns [(x, y, colour, confidence, var_x, var_y)]."""
+    r = _Cdr(data)
+    r.i32(), r.u32()
+    r.string()
+    out = []
+    for _ in range(r.u32()):
+        r.u32()                                  # id
+        conf = r.f32()                           # cone_landmark_mapper: observation count
+        colour = r.u8()                          # 0 blue, 1 orange, 2 yellow, 3 other
+        x, y, _z = r.f64s(3)
+        r.f64s(4)                                # orientation
+        cov = r.f64s(36)
+        r.f32(), r.f32()                         # radius, height
+        out.append((x, y, colour, conf, cov[0], cov[7]))
+    return out
+
+
+def _decode_path(data: bytes):
+    """nav_msgs/Path: header, then PoseStamped[]. Returns an (N, 2) array of x, y."""
+    r = _Cdr(data)
+    r.i32(), r.u32()
+    r.string()
+    xy = []
+    for _ in range(r.u32()):
+        r.i32(), r.u32()
+        r.string()
+        x, y, _z = r.f64s(3)
+        r.f64s(4)
+        xy.append((x, y))
+    return np.array(xy).reshape(-1, 2)
+
+
+def _messages(bag_dir: str, topic: str):
+    """Raw CDR payloads on `topic`, in time order across all of the bag's split files."""
     files = sorted(glob.glob(os.path.join(bag_dir, '*.db3')),
                    key=lambda f: int(os.path.splitext(f)[0].rsplit('_', 1)[-1]))
     if not files:
@@ -132,8 +189,39 @@ def read_detections(bag_dir: str, topic: str = DEFAULT_TOPIC):
             continue
         for (data,) in con.execute(
                 'SELECT data FROM messages WHERE topic_id = ? ORDER BY timestamp', (row[0],)):
-            yield _decode_cone_detection(bytes(data))
+            yield bytes(data)
         con.close()
+
+
+def read_detections(bag_dir: str, topic: str = DEFAULT_TOPIC):
+    """Yield (t, (x, y, yaw), {colour: (N, 2) local}) for every message on `topic`."""
+    for data in _messages(bag_dir, topic):
+        yield _decode_cone_detection(data)
+
+
+def read_slam_map(bag_dir: str, topic: str = SLAM_TOPIC, min_obs=3):
+    """The LAST cone map on `topic` (the SLAM node's final estimate), as the same
+    {colour: [(xy, count, spread_m)]} structure build_cone_map returns. spread is the
+    landmark's marginal standard deviation, sqrt of the larger axis variance."""
+    last = None
+    n_msgs = 0
+    for data in _messages(bag_dir, topic):
+        last = data
+        n_msgs += 1
+    if last is None:
+        raise ValueError(f'no messages on {topic} in {bag_dir}')
+    names = {0: 'blue', 1: 'orange', 2: 'yellow'}
+    cones = {'blue': [], 'yellow': [], 'orange': []}
+    for x, y, colour, conf, vx, vy in _decode_cone_map_stamped(last):
+        if colour in names and conf >= min_obs:
+            cones[names[colour]].append((np.array([x, y]), int(conf), math.sqrt(max(vx, vy, 0.0))))
+    path = np.empty((0, 2))
+    for data in _messages(bag_dir, SLAM_PATH_TOPIC):
+        path = data
+    if not isinstance(path, np.ndarray):
+        path = _decode_path(path)
+    return cones, {'messages': n_msgs, 'detections_used': 0, 'colour_conflicts': 0,
+                   'path': path}
 
 
 # ── Building the map ─────────────────────────────────────────────────────────
@@ -242,7 +330,7 @@ def plot(path_png, cones, stats, title):
     import matplotlib.pyplot as plt
     fig, ax = plt.subplots(figsize=(8, 8))
     p = stats['path']
-    ax.plot(p[:, 0], p[:, 1], '-', color='0.7', lw=0.8, label='vehicle path (odometry)')
+    ax.plot(p[:, 0], p[:, 1], '-', color='0.7', lw=0.8, label=stats.get('path_label', 'vehicle path'))
     for g, col in (('blue', 'tab:blue'), ('yellow', 'gold'), ('orange', 'tab:orange')):
         if cones[g]:
             xy = np.array([c[0] for c in cones[g]])
@@ -264,23 +352,33 @@ def main(argv=None):
     dest.add_argument('--name', help='track base name; written to TRACKS_DIR/<name>_<bag date>/')
     dest.add_argument('--out', help='explicit cone_map.json path')
     ap.add_argument('--topic', default=DEFAULT_TOPIC)
+    ap.add_argument('--slam', action='store_true',
+                    help=f'take the final SLAM map ({SLAM_TOPIC}) instead of clustering detections')
     ap.add_argument('--min-range', type=float, default=1.0)
     ap.add_argument('--max-range', type=float, default=7.0)
     ap.add_argument('--merge-radius', type=float, default=0.75)
-    ap.add_argument('--min-obs', type=int, default=5)
+    ap.add_argument('--min-obs', type=int, default=None,
+                    help='minimum sightings per cone (default 5; 3 with --slam, its own promote_after)')
     ap.add_argument('--open', action='store_true', help='mark the track as not a closed loop')
     ap.add_argument('--plot', help='write a PNG preview here')
     a = ap.parse_args(argv)
 
     bag_dir = os.path.abspath(os.path.expanduser(a.bag_dir))
-    cones, stats = build_cone_map(bag_dir, a.topic, a.min_range, a.max_range,
-                                  a.merge_radius, a.min_obs)
+    if a.slam:
+        cones, stats = read_slam_map(bag_dir, SLAM_TOPIC, 3 if a.min_obs is None else a.min_obs)
+        stats['path_label'] = 'vehicle path (SLAM)'
+        topic = SLAM_TOPIC
+    else:
+        cones, stats = build_cone_map(bag_dir, a.topic, a.min_range, a.max_range,
+                                      a.merge_radius, 5 if a.min_obs is None else a.min_obs)
+        stats['path_label'] = 'vehicle path (odometry)'
+        topic = a.topic
     if a.out:
         out = a.out
     else:
         name = tracks.dated_track_name(a.name, bag_date(bag_dir))
         out = os.path.join(tracks.TRACKS_DIR, name, tracks.CONE_MAP_NAME)
-    source = f'rosbag:{os.path.basename(bag_dir)} topic:{a.topic}'
+    source = f'rosbag:{os.path.basename(bag_dir)} topic:{topic}'
     write_cone_map(out, cones, source, lap_closed=not a.open)
 
     print(f'{stats["messages"]} messages, {stats["detections_used"]} detections used, '

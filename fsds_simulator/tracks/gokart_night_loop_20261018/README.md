@@ -7,21 +7,25 @@ script's default map. Load it by name.
 
 | File | What it is |
 |---|---|
-| `cone_map.json` | 17 blue, 25 yellow, 4 orange cones (`orange` is ignored by the simulator loaders). Built by `python3 -m tuner.tools.rosbag_cone_map` from `2026-10-18_gocart_run2_tierA_stanley11pct_night` (`/cone_detection_fused`, 1-7 m range, 0.75 m merge radius, at least 5 sightings) |
-| `preview.png` | the cones and the kart's odometry path for that run |
+| `cone_map.json` | 17 blue, 22 yellow, 1 orange cone (`orange` is ignored by the simulator loaders). The final SLAM map of run 2 (`2026-10-18_gocart_run2_tierA_stanley11pct_night`), replayed through `fsae_autonomous`'s `cone_landmark_mapper` with `tuner/tools/rosbag_slam_replay.sh` (fused cones up to 7 m) and converted with `python3 -m tuner.tools.rosbag_cone_map <replay> --slam` |
+| `preview.png` | the cones and the SLAM-corrected path of that run |
 | `centerline.csv` | `tuner.tools.raceline_optimizer --mode centerline`. The geometry is the reconstructed centreline; the `v_target` column is the simulated car's speed profile and means nothing for the kart |
 
 ## How far to trust it
 
-- **Frame:** the ZED odometry frame of that run (origin where the stack started). Another
-  run's map is in a different frame.
-- **Repeatability:** the same tool on run 3 (a separate stack start), rigidly aligned
-  onto this map, matches 41 of 43 cones within 0.5 m, median 0.11 m.
-- **Spread:** each cone's sightings sit a median 0.16-0.18 m from its position.
-- **Drift:** runs 1 and 4 show the odometry drifting about 1 m per lap, which duplicates
-  cones, so they were not used. Runs 2 and 3 are clean.
+- **Local shape: about 1 cm.** Distances between two cones seen in the same camera frame
+  match the map to 0.011 m median (0.03 m p90). The odometry-only map of the same run
+  scored 0.059 m (0.22 m p90), so it was replaced.
+- **Repeatability: about 1 cm.** SLAM on run 3 (a separate stack start), rigidly aligned,
+  matches all 39 cones to 0.012 m median.
+- **Cones may have moved between runs.** They were adjusted during the session (and the
+  orange start gate was removed before run 4), so only within one lap are positions known
+  to be fixed. Run 4's SLAM map sits 0.15 m median from this one; that mixes moved cones
+  with map error.
+- **Frame:** the ZED odometry frame of run 2 (origin where the stack started).
+- **Cones left out:** the odometry-only map had 25 yellow and 4 orange; SLAM keeps a cone
+  only once seen 3 times and associated consistently. Which cones those were is not
+  pinned down; the odometry map's extras sit on the bottom row, where the start gate was.
 - **Cone spacing** about 3 m along each row (estimated when laid out, not measured).
-- **The start gate:** the orange cones and one yellow cone sit inside the loop near
-  (6, 1-3). This is where the kart veered left on runs 1-3.
 - **The reconstructed centreline** stops 5 m short of its start by design
   (`sim.track_io._MARCH_TAIL_GAP`).
