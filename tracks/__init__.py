@@ -61,11 +61,13 @@ side. `fsae_planning` is a separate git repo with its own remote (see this
 project's CLAUDE.md) — changes under `TRACKS_DIR` are local edits to that
 checkout; committing/pushing them is a decision for that repo, not this one.
 
-Every path helper here is filesystem-only (no scipy, no ROS, no numpy) so the
+Every path helper here is filesystem-only (no scipy, no ROS, no numpy; `json` from
+the standard library only) so the
 live ROS package could adopt it later without pulling in this repo's
 dependency stack.
 """
 import datetime
+import json
 import os
 
 TRACKS_DIR = os.path.abspath(
@@ -115,10 +117,27 @@ def newest_track():
     and re-recording an existing track (refreshing its cone map in place)
     must make it newest again without renaming its directory.
     """
-    names = list_tracks()
+    names = [n for n in list_tracks() if not is_vehicle_track(n)]
     if not names:
         return None
     return max(names, key=lambda n: os.path.getmtime(cone_map_path(n)))
+
+
+def is_vehicle_track(name):
+    """
+    True for a track rebuilt from a real-vehicle rosbag (`tuner.tools.rosbag_cone_map`
+    writes `source: "rosbag:..."`), as opposed to an FSDS `cone_recorder` capture.
+
+    `newest_track()` skips these, so recording a go-kart track never silently becomes
+    the default map of every offline validation script (`DEFAULT_MAP`). A go-kart loop
+    driven at walking pace is a different vehicle and a different track from the FSDS
+    baselines those scripts are quoted against. Select one by name instead.
+    """
+    try:
+        with open(cone_map_path(name)) as f:
+            return str(json.load(f).get("source", "")).startswith("rosbag:")
+    except (OSError, ValueError):
+        return False
 
 
 def dated_track_name(base_name, when=None):

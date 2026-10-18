@@ -64,7 +64,7 @@ Flowcharts of this data flow, the launch tree and the inside of each node are in
 
 Packages are pure Python (`ament_python`) except `fsae_interfaces`. Each has a `resource/<package>` marker file (ament index) and a `setup.cfg` that points installed scripts at `lib/<package>`. Empty `__init__.py` files (`fsds_simulator/control/fsae_control/fsae_control/__init__.py`, `fsds_simulator/control/fsae_control/fsae_control/mpc/__init__.py`, `fsds_simulator/perception/fsae_sim_perception/fsae_sim_perception/__init__.py`, `fsds_simulator/planning/fsae_planning/fsae_planning/__init__.py`, `fsds_simulator/planning/fsae_planning/fsae_planning/special_utils/__init__.py`, `fsds_simulator/common/fsae_bringup/fsae_bringup/__init__.py`) only mark packages. The package `__init__.py` files of `lmpc/`, `nmpc/`, `telemetry/` and `live_viz/` carry the module docstrings and re-exports and are described in their package intros.
 
-Run-time data files in the mirror are not documented per file: `fsds_simulator/tracks/comp_test_map_3/` (cone map, speed profile, raceline, centreline CSVs), `fsds_simulator/cone_maps/` and `fsds_simulator/recorded_runs/` (per-controller reference run CSVs). The canonical track data is in `ros2/src/fsae_planning/tracks/`, the mirror copy is a snapshot.
+Run-time data files in the mirror are not documented per file: `fsds_simulator/tracks/comp_test_map_3/` (cone map, speed profile, raceline, centreline CSVs), `fsds_simulator/tracks/gokart_night_loop_20261018/` (go-kart loop rebuilt from a rosbag, see its `README.md`), `fsds_simulator/cone_maps/` and `fsds_simulator/recorded_runs/` (per-controller reference run CSVs). The canonical track data is in `ros2/src/fsae_planning/tracks/`, the mirror copy is a snapshot.
 
 ## fsae_control
 

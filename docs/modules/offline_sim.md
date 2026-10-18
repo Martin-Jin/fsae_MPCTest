@@ -398,7 +398,7 @@ Key API: `wrap_angle`
 Python package that locates recorded-track data (cone map, speed profile, raceline, centreline). Data files are not in this repo: `TRACKS_DIR` resolves to `ros2/src/fsae_planning/tracks/<name>/` and holds `cone_map.json`, `speed_profile.csv`, `raceline.csv`, `centerline.csv`. Filesystem-only, no numpy or scipy.
 
 ### `tracks/__init__.py`
-Does: track path helpers, newest-track resolution, dated names, `resolve_map_arg` and the `DEFAULT_MAP` constant.
+Does: track path helpers, newest-track resolution (FSDS tracks only; `is_vehicle_track` marks rosbag-built ones, which are skipped), dated names, `resolve_map_arg` and the `DEFAULT_MAP` constant.
 Change it to:
 - add an exported file kind; update the exporters in `tuner/tools/`, then run `python -m tuner.validation.recorded_map_rollout`
 - change default resolution; check `ros2/launch_all.sh` `TRACK=` and the launch-file defaults
@@ -407,7 +407,7 @@ Don't:
 - write a new track only into this repo, because a `fsae_planning`-only checkout must drive; files under `TRACKS_DIR` are local edits to the fsae_planning checkout and are never committed by an agent
 - make `resolve_map_arg` fall back silently on an unknown name, because exporting the wrong track is costly to notice
 - rename `DEFAULT_TRACK` semantics, because `None` means resolve the newest track at call time
-Key API: `TRACKS_DIR`, `newest_track`, `cone_map_path`, `speed_profile_path`, `raceline_path`, `centerline_path`, `geometry_path`, `list_tracks`, `resolve_map_arg`, `default_out_for`, `dated_track_name`, `DEFAULT_MAP`
+Key API: `TRACKS_DIR`, `newest_track`, `is_vehicle_track`, `cone_map_path`, `speed_profile_path`, `raceline_path`, `centerline_path`, `geometry_path`, `list_tracks`, `resolve_map_arg`, `default_out_for`, `dated_track_name`, `DEFAULT_MAP`
 
 ## `sim/`
 
@@ -678,6 +678,16 @@ Don't:
 - profile against the physical grip limit, because the car is held to the FSDS lateral-acceleration ceiling and the module uses `alat_ceiling_at(v)` with a margin (planning at 100 percent leaves no budget for corrections).
 - pair a raceline path with a centreline speed profile, because speed must describe the line being driven.
 Key API: `optimize_raceline`, `export`, `check_slip`, `build_shaped_heading_profile`, `max_yaw_rate`
+
+### `tuner/tools/rosbag_cone_map.py`
+Does: rebuilds a `cone_map.json` from a real-vehicle rosbag. Reads the bag's sqlite3 files and decodes `ConeDetection` by hand (no ROS needed), places every detection 1-7 m away in the odometry frame with the message's own `car_pose`, clusters per colour (median, minimum sightings) and keeps orange cones under an `orange` key. Writes `source: "rosbag:..."` so `tracks.newest_track()` skips the track.
+Change it to:
+- change the range window, merge radius or minimum sightings (CLI flags). Check with `--plot` that cones are single and the odometry path's laps overlap.
+Don't:
+- combine two bags into one map, because each stack start puts the odometry origin somewhere else.
+- raise `--merge-radius` past half the cone spacing, because neighbouring cones then merge.
+- trust a map from a run whose odometry drifts (laps spiralling in the preview), because drift duplicates cones and nothing corrects it.
+Key API: `build_cone_map`, `read_detections`, `write_cone_map`, `plot`
 
 ### `tuner/tools/plot_playback.py`
 Does: interactive time-scrubbing playback of one or more control logs, with signal panels, trajectory and a zoomed car view.
@@ -1028,11 +1038,11 @@ The current profile files hold 47 keys (`no_progress_tuned.json`, Settings and L
 
 Location: `ros2/src/fsae_planning/tracks/<name>/`, resolved by `tracks.TRACKS_DIR`. The data ships with the `fsae_planning` checkout, not this repo, so a `fsae_planning`-only checkout can drive. Edits there are local edits to that checkout and are reported, never committed by an agent. A new track name gets a date suffix (`<name>_<YYYYmmdd>`, `tracks.dated_track_name`). Re-recording an existing name keeps its directory. `tracks.list_tracks` only lists directories that contain `cone_map.json`.
 
-Present now: `acceleration_20260916` (cone map, speed profile, centreline), `comp_test_map_2_20260916` (all four), `comp_test_map_3` (all four plus an extra corner-test speed profile CSV written by `export_speed_profile` in corner-slowdown mode).
+Present now: `acceleration_20260916` (cone map, speed profile, centreline), `comp_test_map_2_20260916` (all four), `comp_test_map_3` (all four plus an extra corner-test speed profile CSV written by `export_speed_profile` in corner-slowdown mode), `gokart_night_loop_20261018` (go-kart loop rebuilt from a rosbag: cone map, centreline, `preview.png`, `README.md`; also copied to `fsds_simulator/tracks/`).
 
 | File | Writer | Readers |
 |---|---|---|
-| `cone_map.json` | `cone_recorder` node in `fsae_planning` (`perception/fsae_sim_perception/.../cone_recorder.py`), live during a lap | `sim/track_io.py` (`load_cone_map`, `load_recorded_track`), the exporters, `gui/simulation.py`, offline validation scripts |
+| `cone_map.json` | `cone_recorder` node in `fsae_planning` (`perception/fsae_sim_perception/.../cone_recorder.py`), live during a lap; or `tuner.tools.rosbag_cone_map` from a real-vehicle rosbag (`source: "rosbag:..."`, optional `orange` key) | `sim/track_io.py` (`load_cone_map`, `load_recorded_track`), the exporters, `gui/simulation.py`, offline validation scripts |
 | `speed_profile.csv` | `tuner.tools.export_speed_profile` | live launch arg `map_path`, `tracks.speed_profile_path` |
 | `raceline.csv` | `tuner.tools.raceline_optimizer <name>` | live launch arg `path_map_path` (via `launch_all.sh`), `tracks.raceline_path` |
 | `centerline.csv` | `tuner.tools.raceline_optimizer <name> --mode centerline` | live launch arg `path_map_path` (preferred over the raceline by `tracks.geometry_path` and by `launch_all.sh`'s `PATH_CSV` default) |

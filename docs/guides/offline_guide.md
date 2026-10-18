@@ -115,7 +115,7 @@ Recorded tracks differ from synthetic ones in two ways:
 - The cones drawn are the actual recorded cones, not `place_cones()` output. They are resimulated as `SimPerception` and `SimPlanner` would see them live.
 - The centreline drawn on load is a reconstruction (`sim/track_io.py`) used for the oracle reference path and initial camera framing. With `USE_PLANNER = True`, the driving line comes from `SimPlanner` rebuilding it cone by cone. With the default `False`, the rollout tracks the reconstructed oracle path and speed profile directly, matching the live side's precomputed-path mode.
 
-Recorded tracks are stored in `ros2/src/fsae_planning/tracks/`. The `tracks/` package in this repo only points at that directory (`TRACKS_DIR`) and holds no data.
+Recorded tracks are stored in `ros2/src/fsae_planning/tracks/`. The `tracks/` package in this repo only points at that directory (`TRACKS_DIR`) and holds no data. Go-kart tracks rebuilt from a rosbag appear here too (see "Tracks rebuilt from a real-vehicle rosbag").
 
 ### 3. Optional initial conditions
 
@@ -272,13 +272,32 @@ Rules:
 | `plot_playback.py` | Time-scrubbing map and telemetry viewer, see [debugging_tools.md](debugging_tools.md) |
 | `export_speed_profile.py` | Exports a recorded cone map's oracle path and speed profile to CSV, see "Export the speed profile and raceline" in [integration_guide.md](../fsds/integration_guide.md) |
 | `raceline_optimizer.py` | Minimum-time racing line optimiser with the same CSV output. `--mode centerline` exports the centreline instead |
+| `rosbag_cone_map.py` | Rebuilds a cone map from a real-vehicle rosbag (go-kart), see "Tracks rebuilt from a real-vehicle rosbag" below |
 | `sync_mpc_params.py` | One-way copy of live param files to `fsae_autonomous` and the `fsds_simulator/` mirror |
 | `param_report.py` | Read-only: the value each repo runs per MPC/NMPC field, its layer, and where repos disagree (`--check` for a parity gate) |
 | `doc_lint.py` | Flags docs that break the project's writing conventions |
 
 **`tuner/investigations/`: one-off and reusable diagnostics from sim-to-real debugging** (`steering_chatter_check.py`, `reference_heading_geometry_check.py`, `live_vs_sim_diagnostics.py` and others). See [debugging_tools.md](debugging_tools.md) for which question each answers, and [sim_to_real_investigation.md](../logs/sim_to_real_investigation.md) for the history behind them.
 
-`DEFAULT_MAP`, the recorded map every validation and investigation script defaults to, lives in `tracks/__init__.py`.
+`DEFAULT_MAP`, the recorded map every validation and investigation script defaults to, lives in `tracks/__init__.py`. It is the newest FSDS track; tracks rebuilt from a rosbag are skipped (`tracks.is_vehicle_track()`).
+
+### Tracks rebuilt from a real-vehicle rosbag
+
+`tuner/tools/rosbag_cone_map.py` turns a go-kart rosbag into a `cone_map.json` the offline tools load like any FSDS capture. ==It needs no ROS install: it reads the bag's sqlite3 files and decodes `ConeDetection` itself.==
+
+- **Method:** each detection on `/cone_detection_fused` is placed in the odometry frame with the `car_pose` carried in the same message, then repeats are clustered per colour (median position, at least `--min-obs` sightings). Only detections 1-7 m away are used, because the camera's range error grows with the square of distance.
+- **Output:** `--name <base>` writes `<TRACKS_DIR>/<base>_<bag date>/cone_map.json`, with `source: "rosbag:..."`. `--plot` writes a preview of the cones and the odometry path.
+- **Not corrected: odometry drift.** The map is only as good as the run's odometry. A run whose path spirals in the preview (about 1 m per lap on two of the 2026-10-18 kart runs) duplicates cones; use a run whose laps overlap.
+- **One bag, one frame.** Every stack start moves the origin, so maps from two runs differ by a rotation and offset.
+- **Excluded from the default:** `newest_track()` skips these tracks, so a kart loop never becomes `DEFAULT_MAP`. Load it by name.
+- **Exports:** `raceline_optimizer --mode centerline` works on the geometry, but its `v_target` column is the simulated car's speed profile, not the kart's.
+
+```bash
+python3 -m tuner.tools.rosbag_cone_map ~/fsae_data/bags/<bag_dir> --name gokart_night_loop --plot preview.png
+python3 -m tuner.tools.raceline_optimizer gokart_night_loop_20261018 --mode centerline
+```
+
+The first such track is `gokart_night_loop_20261018` (run 2 of the 2026-10-18 kart session), with its own `README.md` on how far to trust it. A copy is kept in `fsds_simulator/tracks/`.
 
 ### Plotting and scrubbing exported CSV telemetry
 
