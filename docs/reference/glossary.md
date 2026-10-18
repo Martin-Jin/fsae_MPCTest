@@ -46,7 +46,7 @@ Symbols are as in the code (`e_y`, `e_psi`, `kappa`). Names in `code font` are i
 | `launch_all.sh` | The shell script (`ros2/launch_all.sh`) that starts FSDS, the bridge and the ROS 2 nodes. Its shortlist can override dataclass and YAML defaults. | [integration_guide.md](../fsds/integration_guide.md) |
 | LTV-QP (LMPC) | The linear time-varying MPC (`MPCController`): one convex QP per tick against a linear bicycle model in path-error coordinates. | [lmpc.md](../controllers/lmpc.md) |
 | Mechanism | An extra layer on a controller's core solve, enabled and tuned independently, targeting one failure mode. | [control_mechanisms.md](control_mechanisms.md) |
-| Median | The middle value once sorted: half the values are at or below it. Unlike the mean, a few extreme values do not move it. | this page, p10/p90 |
+| Median | The middle value once sorted: half the values are at or below it (`np.median`; with an even count, the average of the two middle values). Unlike the mean, a few extreme values do not move it. | this page, p10/p90 |
 | Missing cone (map) | A row edge longer than 1.5x the laid spacing: a cone absent from the map, or a real gap in the layout (a start gate), flagged purple. | [debugging_tools.md](../guides/debugging_tools.md#cone-spacing-check-tunertoolscone_spacing_checkpy) |
 | `MPCParams`, `NMPCParams` | The dataclasses (`mpc_params.py`, `nmpc_params.py`) that hold every live tuning weight and flag. `settings/` mirrors them offline. | [offline_live_parity.md](offline_live_parity.md) |
 | NMPC | The nonlinear Frenet-frame MPC (`NMPCController`), selected by `use_nmpc`. | [nmpc.md](../controllers/nmpc.md) |
@@ -56,7 +56,7 @@ Symbols are as in the code (`e_y`, `e_psi`, `kappa`). Names in `code font` are i
 | On spacing | A row edge within the tolerance (default 0.5 m) of the laid spacing, drawn green. | [debugging_tools.md](../guides/debugging_tools.md#cone-spacing-check-tunertoolscone_spacing_checkpy) |
 | Oracle profile | The precomputed path and speed files for an already-recorded track, used in place of the live planner. | [reference_path_and_speed.md](reference_path_and_speed.md) |
 | OSQP | The QP solver both controllers use. | [lmpc.md](../controllers/lmpc.md) |
-| p10, p90 (percentiles) | p90: 90 % of the values are at or below it, so it describes the bad cases without being set by the single worst one. p10: 10 % are at or below it. "p10-p90" is the range the middle 80 % of values fall in. | this page, Median |
+| p10, p90 (percentiles) | p90: 90 % of the values are at or below it, so it describes the bad cases without being set by the single worst one. p10: 10 % are at or below it. "p10-p90" is the range the middle 80 % of values fall in. Read off the sorted values (`np.percentile(values, 90)`, interpolating between neighbours). | this page, Median |
 | Pacejka (MF94) | The Magic Formula tyre force model, an S-shaped curve of force against slip. | [vehicle_physics.md](vehicle_physics.md) |
 | Parity | The rule that the live and offline copies of any planning or control logic, weight, plant constant or scoring constant stay numerically identical, kept by hand because the two trees cannot import each other. | [offline_live_parity.md](offline_live_parity.md) |
 | Plant | The simulated car being controlled (`model/vehicle_physics/`), the ground truth against which controllers are tested. | [vehicle_physics.md](vehicle_physics.md) |

@@ -375,6 +375,13 @@ How to read these numbers:
   - **Same-frame pair error:** for two cones seen in the same camera frame, the distance measured in that frame against the same two cones' distance in the map. No odometry is involved, so it tests the map itself.
   - **Run-to-run agreement:** the distance from each cone in one run's map to its counterpart in another run's map, after shifting and rotating one map onto the other.
   - **Odometry-only map:** detections placed with the vehicle's uncorrected position estimate; **SLAM map:** the SLAM node's map, which corrects that estimate with re-seen cones.
+- **How the same-frame numbers are calculated** (`same_frame_accuracy` in `rosbag_cone_map.py`):
+  1. For every detection message, keep its blue and yellow cones 1-7 m away, and match each to its cone in the map (nearest same-colour map cone within 0.4 m, after placing the frame on the map).
+  2. For every pair of matched cones in that frame, in any direction (along a row, across the track, diagonal): `|distance between the two in the map - distance between the two as measured in the frame|`.
+  3. Sort all those differences (about 12,000 for run 2). **Median** = the middle one; **p90** = the one 90 % of the way up (`np.median`, `np.percentile(..., 90)`).
+
+  It compares distances between cones, not cone positions: a position would need the vehicle's pose, which is what is being tested, while a gap seen in one frame does not depend on it.
+- **How run-to-run agreement is calculated:** shift and rotate one run's map onto the other (rigid alignment, matching each cone to the nearest same-colour cone), take each cone's distance to its counterpart, then the median of those distances (39 for runs 2 and 3).
 - **Same-frame pair error** measures local shape only: a map can pass it and still be bent overall.
 - **Run-to-run agreement** mixes map error with real cone moves: the cones were adjusted between runs and the orange cones were removed before run 4, so only within one lap are the cones known to be fixed. Run 4's 0.15 m is an upper bound on SLAM error, not a measurement of it.
 - **SLAM fails on odometry jumps,** not slow drift: it has no relocalisation, so after a jump re-seen cones fail its gate and are added again (run 1).
