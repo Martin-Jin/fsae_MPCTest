@@ -404,7 +404,7 @@ Change it to:
 - change default resolution; check `ros2/launch_all.sh` `TRACK=` and the launch-file defaults
 Don't:
 - expect `DEFAULT_MAP` to follow a newly recorded track in a running process, because it is computed once at import from `newest_track()`
-- write a new track only into this repo, because a `fsae_planning`-only checkout must drive; files under `TRACKS_DIR` are local edits to the fsae_planning checkout and are never committed by an agent
+- store track data in this repo, because a `fsae_planning`-only checkout must be able to drive; new tracks are written to `TRACKS_DIR` in the `fsae_planning` checkout, which is a local edit there and is never committed by an agent
 - make `resolve_map_arg` fall back silently on an unknown name, because exporting the wrong track is costly to notice
 - rename `DEFAULT_TRACK` semantics, because `None` means resolve the newest track at call time
 Key API: `TRACKS_DIR`, `newest_track`, `is_vehicle_track`, `cone_map_path`, `speed_profile_path`, `raceline_path`, `centerline_path`, `geometry_path`, `list_tracks`, `resolve_map_arg`, `default_out_for`, `dated_track_name`, `DEFAULT_MAP`

@@ -111,10 +111,11 @@ u_bounds_max   = [ vehicle_params.max_steer, vehicle_params.max_accel]
 current_test_path_idx = -1
 
 # Recorded-track loading (see sim/track_io.py + fsae_planning's cone_recorder
-# node). Primary source is tracks/<name>/cone_map.json, where ros2/launch_all.sh
-# now points the cone_recorder node's out_path. TRACKS_DIR (from the tracks/
-# package, not a local path here) resolves into the separate fsae_planning
-# repo's own tracks/ -- see tracks/__init__.py's module docstring for why.
+# node). Primary source is <TRACKS_DIR>/<name>/cone_map.json, where
+# ros2/launch_all.sh points the cone_recorder node's out_path. TRACKS_DIR (from
+# this repo's tracks/ package, which holds no data) resolves to
+# ros2/src/fsae_planning/tracks/ in the separate fsae_planning repo -- see
+# tracks/__init__.py's module docstring for why.
 #
 # fsds_simulator/cone_maps/ is kept as a secondary source: it holds captures
 # that predate the tracks/ layout, and the mirror repo's own launch_all.sh
