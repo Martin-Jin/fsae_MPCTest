@@ -71,7 +71,7 @@ Stray `.bak` files (`mpc_params.py.bak`, `nmpc_params.py.bak`, `fsae_params.yaml
 | `control/fsae_control/fsae_control/mpc/` | the node and its parameters: `mpc_controller.py`, `control_step.py`, `debug_publish.py`, `node_constants.py`, `mpc_params.py`, `nmpc_params.py` |
 | `control/fsae_control/fsae_control/telemetry/` | CSV logging and scoring: `columns.py`, `config_lines.py`, `horizon_tracker.py`, `lap_progress.py`, `control_logger.py`, `scoring.py` |
 | `control/fsae_control/fsae_control/live_viz/` | live debug window: `panels.py`, `node.py`, `app.py` |
-| `control/fsae_control/fsae_control/` | `control_utils.py` (with `curvature_speed()` and `StanleyController`), `stanley_controller.py`, `fsds_bridge.py`, `brake_sysid.py` |
+| `control/fsae_control/fsae_control/` | `control_utils.py` (with `curvature_speed()` and `StanleyController`), `stanley/stanley_controller.py`, `fsds_bridge.py`, `brake_sysid.py` |
 | `control/fsae_control/setup.py` | registers five console scripts: `controller`, `mpc_controller`, `fsds_bridge`, `live_viz`, `brake_sysid` |
 
 `zip_safe=False` is set in all four mirror `setup.py` files (`common/fsae_bringup`, `control/fsae_control`, `perception/fsae_sim_perception`, `planning/fsae_planning`) and in the four live ones. It is the fix for a stale-`colcon build` bug (recorded in `docs/logs/sim_to_real_investigation.md`). Keep it on any new package on either side.

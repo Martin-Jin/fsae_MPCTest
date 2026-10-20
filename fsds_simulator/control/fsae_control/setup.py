@@ -20,7 +20,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'controller     = fsae_control.stanley_controller:main',
+            'controller     = fsae_control.stanley.stanley_controller:main',
             'mpc_controller = fsae_control.mpc.mpc_controller:main',
             'fsds_bridge    = fsae_control.fsds_bridge:main',
             'live_viz       = fsae_control.live_viz:main',

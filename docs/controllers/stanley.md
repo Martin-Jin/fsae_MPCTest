@@ -108,7 +108,7 @@ Stanley does not compute speed itself. Without a precomputed profile it calls `c
 
 | Piece | File (`fsds_simulator/control/fsae_control/fsae_control/`) |
 |---|---|
-| Node, speed-target limiters | `stanley_controller.py` |
+| Node, speed-target limiters | `stanley/stanley_controller.py` |
 | `StanleyController`, `curvature_speed`, `tracking_error_speed_gate`, `precomputed_speed_at` | `control_utils.py` |
 | Rate-limit constants for the MPC node | `mpc/node_constants.py` |
 | Bridge (speed to throttle and brake, angle to normalised steering) | `fsds_bridge.py` |

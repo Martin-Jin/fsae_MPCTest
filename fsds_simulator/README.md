@@ -25,7 +25,7 @@ fsds_simulator/
 │   └── fsae_planning/            centerline_planner, skidpad_planner, boundary/cone/path utilities
 ├── control/
 │   └── fsae_control/fsae_control/
-│       ├── stanley_controller.py     Stanley node (entry point: controller)
+│       ├── stanley/                  stanley_controller.py (node, entry point: controller)
 │       ├── fsds_bridge.py            cmd_vel to FSDS control command (entry point: fsds_bridge)
 │       ├── control_utils.py          curvature speed, CSV loaders, speed gates
 │       ├── brake_sysid.py            open-loop braking system-ID (entry point: brake_sysid)

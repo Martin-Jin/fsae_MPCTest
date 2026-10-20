@@ -112,7 +112,7 @@ def generate_launch_description():
         ])
     )
     # map_path and path_map_path are both declared by both controllers
-    # (mpc/mpc_controller.py, stanley_controller.py both declare_parameters
+    # (mpc/mpc_controller.py, stanley/stanley_controller.py both declare_parameters
     # both), so both Node() entries below receive both -- a Stanley run and
     # an MPC run on the same track can share the identical speed target
     # AND/OR the identical tracked path (e.g. a raceline.csv) for a directly

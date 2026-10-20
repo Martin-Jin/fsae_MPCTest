@@ -183,7 +183,7 @@ This table describes the live/FSDS side (`fsae_planning`) against what the offli
 | `telemetry/scoring.py` | `sim/scoring.py` (verbatim copy apart from inlined constants) |
 | `cone_recorder.py` | `sim/track_io.py` and the GUI's Load Recorded Track (the recorder writes what the loader reads) |
 
-`stanley_controller.py` is the live Stanley controller, mirrored so the staging copy can stand up the full stack. The tuner and offline sim only drive the MPC controllers. See [stanley.md](../controllers/stanley.md) for its steering law.
+`stanley/stanley_controller.py` is the live Stanley controller, mirrored so the staging copy can stand up the full stack. The tuner and offline sim only drive the MPC controllers. See [stanley.md](../controllers/stanley.md) for its steering law.
 
 ## The tuner searches multiplicative weight scales
 

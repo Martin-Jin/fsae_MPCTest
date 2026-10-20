@@ -508,7 +508,7 @@ flowchart TD
 
 **Plain version.** Stanley steers from the error right now (heading error plus a cross-track term, minus a yaw-rate damper) with no prediction. It runs once per pose message instead of on a timer and uses the same speed-target sources and safeguards as the MPC node.
 
-File: `control/fsae_control/fsae_control/stanley_controller.py`, steering law in `control_utils.StanleyController`. Steering law flowchart: [stanley.md](../controllers/stanley.md#the-steering-law).
+File: `control/fsae_control/fsae_control/stanley/stanley_controller.py`, steering law in `control_utils.StanleyController`. Steering law flowchart: [stanley.md](../controllers/stanley.md#the-steering-law).
 
 ![4.7 `stanley_controller` is the reactive baseline](../diagrams/live_architecture_4_7_stanley_controller_is_the_reactive_b.svg)
 

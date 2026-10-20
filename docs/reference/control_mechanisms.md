@@ -298,7 +298,7 @@ v_curv = min(precomputed_speed_at(...), dynamic_speed_cap(path_ahead, a_lat_max=
 
 **Why this design.** It reuses the three safeguards `control_step.py` already applies around `curvature_speed()`, so both controllers see the same speed logic.
 
-**How it works.** Live-path branch only (no `map_path`), in `fsae_control/stanley_controller.py`, applied in order with a measured `dt` (Stanley runs off pose arrival, not a fixed timer):
+**How it works.** Live-path branch only (no `map_path`), in `fsae_control/stanley/stanley_controller.py`, applied in order with a measured `dt` (Stanley runs off pose arrival, not a fixed timer):
 
 | Step | Constant | Value |
 |---|---|---|
