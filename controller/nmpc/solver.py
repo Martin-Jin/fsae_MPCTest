@@ -74,7 +74,7 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
         alat_ceiling_enabled=True,
         alat_flat=7.5, alat_slope=0.47, alat_intercept=2.46,
         spline_reference_enabled=True,
-        cartesian_model_enabled=False,
+        cartesian_model_enabled=True,
         friction_circle_enabled=False,
         steer_rate_anti_hunt_enabled=False,
         corner_rrate_blend_enabled=False,

@@ -262,7 +262,7 @@ def test_closed_loop():
     results = {}
     runs = ((False, 'LTV-QP (as shipped)', None),
             (True, 'NMPC (settings.py defaults)', None),
-            (True, 'NMPC, Cartesian model', {'cartesian_model_enabled': True}))
+            (True, 'NMPC, Frenet model', {'cartesian_model_enabled': False}))
     for use_nmpc, label, ov in runs:
         # Pass use_nmpc as an explicit CALL argument, not by mutating
         # settings.USE_NMPC -- run_core_rollout()'s default argument
@@ -287,7 +287,7 @@ def test_closed_loop():
               f'|e_psi| mean {ep.mean():5.2f} | sat {100*sat:5.1f}% | '
               f'n_ran {len(h["X"])} | reached_end={r["reached_end"]} dnf={r["dnf"]}')
     check('NMPC completes without DNF', not results['NMPC (settings.py defaults)']['dnf'])
-    check('Cartesian NMPC completes without DNF', not results['NMPC, Cartesian model']['dnf'])
+    print('  (NMPC defaults use the world-frame model; the Frenet row is for comparison only)')
     ltv_h = results['LTV-QP (as shipped)']['history']
     nmpc_h = results['NMPC (settings.py defaults)']['history']
     identical = (np.array(ltv_h['u_steer']) == np.array(nmpc_h['u_steer'])).all() if len(

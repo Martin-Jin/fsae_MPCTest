@@ -81,7 +81,7 @@
  },
  "nmpc_what_one_live_compute_call_does": {
   "doc": "docs/controllers/nmpc.md",
-  "sha1": "ff9ce0e447601251e19a872d5eb2448fd1595a91"
+  "sha1": "10875598fb3bdfbc18b65005c733c3178b02d750"
  },
  "offline_guide_how_the_offline_pieces_fit_together": {
   "doc": "docs/guides/offline_guide.md",

@@ -47,6 +47,7 @@
     "USE_PRECOMPUTED_PATH": "true",
     "USE_PRECOMPUTED_SPEED": "true",
     "V_MAX": "20.0",
-    "V_MIN": "1.5"
+    "V_MIN": "1.5",
+    "NMPC_CARTESIAN_MODEL_ENABLED": "true"
   }
 }

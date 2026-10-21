@@ -106,7 +106,7 @@ CMR also measured the steering rack's slew rate and the torque response lag, and
 **Taken:**
 
 - **The pose-age clock fix.** Reviewing how CMR timestamps its records led to checking how this project measures [pose age](../reference/glossary.md). The age was read across two clocks, and their drift pinned `n_delay` at its cap on fresh poses. It is now timed on the controller's own clock. See the "Delay-compensation fix" section of [periodic_pose_teleport_investigation.md](../logs/periodic_pose_teleport_investigation.md). Not yet merged to `main`: it is on the feat/cmr-controls-learnings branch.
-- **A world-frame NMPC model, experimental.** It applies CMR's "roll out in `x`/`y`, measure path error only in the cost" idea to this project's NMPC. See [nmpc.md](../controllers/nmpc.md), "An experimental world-frame model keeps curvature out of the prediction". Not yet merged to `main`: it is on the feat/nmpc-cartesian-model branch, which also carries the clock fix.
+- **A world-frame NMPC model, now the default.** It applies CMR's "roll out in `x`/`y`, measure path error only in the cost" idea to this project's NMPC. See [nmpc.md](../controllers/nmpc.md), "An experimental world-frame model keeps curvature out of the prediction". Not yet merged to `main`: it is on the feat/nmpc-cartesian-model branch, which also carries the clock fix.
 
 **Held off:**
 

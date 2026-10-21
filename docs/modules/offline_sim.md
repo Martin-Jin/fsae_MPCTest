@@ -134,7 +134,7 @@ Key API: `DNF_PENALTY`, `DNF_OFFTRACK_PENALTY`, `ROLLOUT_EPS`, `ROLLOUT_MAX_ITER
 
 ## controller/
 
-The two controllers the closed loop can solve each tick: `lmpc/` (linear time-varying QP via CVXPY) and `nmpc/` (Frenet-frame nonlinear MPC via Gauss-Newton SQP and OSQP), plus `model_utils.py` (adaptive-gain helpers). `sim/rollout/core.py` calls one of them per tick, chosen by `settings.USE_NMPC`. `controller/__init__.py` is empty apart from a docstring. `controller/` never imports from `sim/`. Both packages are hand-kept numerically identical to the live `lmpc/` and `nmpc/` packages under `fsds_simulator/control/fsae_control/fsae_control/` (and `ros2/src/fsae_planning/...`).
+The two controllers the closed loop can solve each tick: `lmpc/` (linear time-varying QP via CVXPY) and `nmpc/` (nonlinear MPC via Gauss-Newton SQP and OSQP, world-frame model by default, Frenet-frame selectable), plus `model_utils.py` (adaptive-gain helpers). `sim/rollout/core.py` calls one of them per tick, chosen by `settings.USE_NMPC`. `controller/__init__.py` is empty apart from a docstring. `controller/` never imports from `sim/`. Both packages are hand-kept numerically identical to the live `lmpc/` and `nmpc/` packages under `fsds_simulator/control/fsae_control/fsae_control/` (and `ros2/src/fsae_planning/...`).
 
 ### `controller/__init__.py`
 Does: package marker.

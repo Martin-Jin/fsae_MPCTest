@@ -21,8 +21,8 @@ Every other error term (the rate of `e_y`, speed error, curvature) is a derivati
 | LTV-QP curvature (gain scheduling only) | `_curvature()` in `lmpc/adaptive_gains.py` | `curvature_estimate()` in `controller/model_utils.py` |
 | Linear bicycle model `Ad`, `Bd` | `MPCController._discrete_model()` in `lmpc/controller.py` | `model/bicycle_model.py` |
 | NMPC projection, `PathReference` (spline `kappa(s)`, `psi_ref(s)`) | `PathReference` in `nmpc/reference.py` | `PathReference` in `controller/nmpc/reference.py` |
-| NMPC dynamics (`_f`, includes `e_psi_dot = r - kappa * s_dot`) | `_f()`, `_f_scalar()` in `nmpc/dynamics.py` | `_f()`, `_f_scalar()` in `controller/nmpc/dynamics.py` |
-| NMPC cost rows (`_outputs`) | `nmpc/outputs.py` | `controller/nmpc/outputs.py` |
+| NMPC dynamics (`_f`; the Frenet model includes `e_psi_dot = r - kappa * s_dot`, the default world-frame model integrates `x`, `y`, `psi` with no path input) | `_f()`, `_f_scalar()` in `nmpc/dynamics.py` | `_f()`, `_f_scalar()` in `controller/nmpc/dynamics.py` |
+| NMPC cost rows (`_outputs`; `e_y`, `e_psi` and their rates per stage from `_frenet_stages`, by `PathReference.frenet_batch` projection in the world-frame model) | `nmpc/outputs.py` | `controller/nmpc/outputs.py` |
 
 The live tree and the mirror in `fsds_simulator/` hold identical files.
 

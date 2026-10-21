@@ -150,13 +150,13 @@ class LaunchTab(ttk.Frame):
         # commented-out launch_all.sh shortlist entry, hidden unless NMPC is
         # selected), so it is read/written with the same shortlist pair.
         row += 2
-        self.cartesian_label = ttk.Label(body, text="World-frame prediction (NMPC only, experimental)")
+        self.cartesian_label = ttk.Label(body, text="World-frame prediction (NMPC only)")
         self.cartesian_label.grid(row=row, column=0, sticky="nw", pady=(8, 0))
         self.cartesian_desc = ttk.Label(
             body, style="Muted.TLabel", wraplength=420,
             text="Predicts the car in x/y instead of along the path, and measures path "
                  "error only in the cost, so path-curvature noise cannot enter the "
-                 "prediction. Same weights. Off = the original Frenet model.")
+                 "prediction. Same weights. On by default; off = the original Frenet model.")
         self.cartesian_desc.grid(row=row + 1, column=0, sticky="nw", pady=(0, 8))
         self.cartesian_var = tk.BooleanVar(value=_shortlist_true(
             paths.launch_all_sh, "NMPC_CARTESIAN_MODEL_ENABLED"))
@@ -393,7 +393,7 @@ class LaunchTab(ttk.Frame):
         if self.controller_var.get() == "nmpc" and self.progress_var.get():
             preview_lines.append("  NMPC_PROGRESS_ENABLED=true (EXPERIMENTAL, not validated)")
         if self.controller_var.get() == "nmpc" and self.cartesian_var.get():
-            preview_lines.append("  NMPC_CARTESIAN_MODEL_ENABLED=true (EXPERIMENTAL, world-frame prediction)")
+            preview_lines.append("  NMPC_CARTESIAN_MODEL_ENABLED=true (world-frame prediction)")
             preview_lines.append(
                 "  NMPC_SLACK_LINEAR_WEIGHT left as-is -- set it from the Settings tab; "
                 "measured NECESSARY (not just helpful) with the progress term on, or the "

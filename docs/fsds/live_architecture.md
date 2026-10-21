@@ -458,7 +458,7 @@ flowchart TD
 | solver | built when | horizon | one `compute()` call | flowchart |
 |---|---|---|---|---|
 | LTV-QP, `lmpc.controller.MPCController` | `use_nmpc:=false` | N = 35, 1.75 s | error state, delay roll-forward, gain schedule, one convex QP (OSQP, Clarabel fallback) | [lmpc.md: what one live `compute()` call does](../controllers/lmpc.md#what-one-live-compute-call-does) |
-| NMPC, `nmpc.solver.NMPCController` | `use_nmpc:=true` (current `launch_all.sh`) | N = 20, 1.0 s | Frenet state, nonlinear roll-forward, warm start, one Gauss-Newton SQP step with line search | [nmpc.md: what one live `compute()` call does](../controllers/nmpc.md#what-one-live-compute-call-does) |
+| NMPC, `nmpc.solver.NMPCController` | `use_nmpc:=true` (current `launch_all.sh`) | N = 20, 1.0 s | world-frame state by default (Frenet selectable), path error by projection in the cost, nonlinear roll-forward, warm start, one Gauss-Newton SQP step with line search | [nmpc.md: what one live `compute()` call does](../controllers/nmpc.md#what-one-live-compute-call-does) |
 
 ### 4.6 `fsds_bridge` turns `cmd_vel` into pedal and steering commands
 

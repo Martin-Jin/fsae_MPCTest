@@ -22,6 +22,12 @@ ahead is part of the dynamics rather than reweighted cost. Solved by
 Gauss-Newton SQP (repeated re-linearisation + a condensed dense QP per
 iteration, via OSQP), not one convex QP.
 
+By default (settings.NMPC_CARTESIAN_MODEL_ENABLED) the model instead predicts
+the CoG's world x/y/heading and the cost projects each predicted front axle
+onto the path (outputs._frenet_stages), so curvature never enters the
+integrated prediction; False selects the Frenet model described above. See
+docs/controllers/nmpc.md, "The default world-frame model".
+
 RELATIONSHIP TO THE LIVE SIDE
 ------------------------------
 This is a faithful, independent PORT of the live `nmpc/solver.py`'s `NMPCController` —

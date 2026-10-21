@@ -19,7 +19,7 @@ The package `__init__.py` re-exports the public names, so callers import from `m
 ## Three models of the car exist
 
 1. **The LTV-QP's internal model** (`model/bicycle_model.py`): an 8-state linear bicycle model in path-error coordinates. Simple on purpose, because the QP is solved every tick.
-2. **The NMPC's internal model** (`controller/nmpc/dynamics.py` offline, `fsae_control/nmpc/dynamics.py` live): an 8-state nonlinear Frenet bicycle model with a lateral-acceleration ceiling.
+2. **The NMPC's internal model** (`controller/nmpc/dynamics.py` offline, `fsae_control/nmpc/dynamics.py` live): an 8-state nonlinear bicycle model with a lateral-acceleration ceiling, predicted in the world frame by default or in the Frenet frame (`nmpc_cartesian_model_enabled`).
 3. **This plant**: 25 states with soft suspension, tyres that take distance to build grip, weight transfer and aerodynamics.
 
 The gap between what a controller predicts and what the plant does is deliberate. It stops the controller from grading its own homework. The plant does not include the tyre-force cap the real FSDS car shows unless `alat_ceiling_enabled` is on (see the last section).

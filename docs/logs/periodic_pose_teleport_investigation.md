@@ -560,8 +560,10 @@ every lap above 8 m/s, against 0.455 deg on the lap held at 0.
 the controller takes `now - stamp`. That is one clock, as the receipt-time
 version above was, and it also counts the relay wait. `car_odom` keeps the
 FSDS stamp, so `pose_stamp_age_s` still traces the drift. Expected median
-age is about one step, which makes `n_delay` 1 without the floor. Not yet
-live-tested.
+age is about one step, which makes `n_delay` 1 without the floor. In
+`mpc_standalone_control_20261021-225031.csv`, the first run with it, the
+median age is 59 ms and `n_delay` is 1 on 85% of ticks and 2 on 14%. The
+floor's default is now 1, as a guard.
 
 ## Next step (2026-08-20 — shared-bottleneck question answered; root cause still open)
 
