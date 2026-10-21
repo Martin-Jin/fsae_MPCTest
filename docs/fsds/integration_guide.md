@@ -130,7 +130,7 @@ The physical directory is `ros2/src/fsae_planning/tracks/<name>/`, inside the `f
 - It writes once the car returns near its start pose after travelling at least `min_lap_dist` (8 m) away, which is one closed lap.
 - If the lap never closes it writes after `max_record_time` (300 s) and sets `"lap_closed": false`.
 
-`sim.launch.py` starts it by default (`record_cones:=true`). Recording a new track needs the live planner in the loop, so `use_precomputed_speed` and `use_precomputed_path` must be off. The easiest place to set that is `ros2/launch_all.sh` (see step 4). Directly:
+`sim.launch.py` starts it by default (`record_cones:=true`), but `ros2/launch_all.sh` overrides that with `RECORD_CONES` (default `false`), and the launcher GUI sets it to `true` only when **Record new track** is checked. Recording a new track needs the live planner in the loop, so `use_precomputed_speed` and `use_precomputed_path` must be off. The easiest place to set that is `ros2/launch_all.sh` (see step 4). Directly:
 
 ```bash
 ros2 launch fsae_bringup sim.launch.py controller:=stanley \
@@ -147,7 +147,7 @@ ros2 launch fsae_bringup cone_recorder.launch.py out_path:=/path/to/cone_map.jso
 
 - Writing straight into `tracks/<name>/` means the export tools need only the track name.
 - The default output is `~/fsae_logs/cone_map_<timestamp>.json`. Move it into `tracks/<name>/cone_map.json`, or pass its full path to the export tools. Both accept a name or a path (`tracks.resolve_map_arg`).
-- `ros2/launch_all.sh` always passes `cone_out_path:=<track dir>/cone_map.json` for the current `TRACK`. Setting `TRACK=<name>` before a recording is the least fiddly route. Because `record_cones` is on by default, any run started this way also writes that file when a lap closes. Whether this overwrites an existing map on a normal driving run is not verified.
+- `ros2/launch_all.sh` always passes `cone_out_path:=<track dir>/cone_map.json` for the current `TRACK`. Setting `TRACK=<name>` before a recording is the least fiddly route. `RECORD_CONES=false` (the default) stops a normal driving run from writing that file. Before this flag existed, every launch rewrote the current track's `cone_map.json` when a lap closed, with the same cones in a different order. Set `RECORD_CONES=true` by hand, or tick **Record new track** in the GUI, to record.
 - `fsds_simulator/launch_all.sh` is currently byte-identical to `ros2/launch_all.sh`. It resolves tracks under its own `src/fsae_planning/tracks/`, so it works only from a workspace laid out that way. `fsds_simulator/cone_maps/` holds one older capture, and **Load Recorded Track** reads both `tracks/*/` and `fsds_simulator/cone_maps/`.
 
 ### 2. Export the speed profile and raceline (offline)

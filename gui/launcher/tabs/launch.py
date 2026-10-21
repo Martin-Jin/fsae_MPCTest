@@ -75,8 +75,10 @@ class LaunchTab(ttk.Frame):
         self.record_var = tk.BooleanVar(value=False)
         _field_label(
             body, row, "Record new track",
-            "Drives live (no precomputed path/speed) with Stanley, the recommended setup for "
-            "recording a fresh cone map -- see launch_all.sh's own note on this.")
+            "The only way to write a cone_map.json: every other launch leaves the track "
+            "files alone. Drives live (no precomputed path/speed) with Stanley, the "
+            "recommended setup for recording a fresh cone map -- see launch_all.sh's own "
+            "note on this.")
         ttk.Checkbutton(body, variable=self.record_var,
                          command=self._on_record_toggle).grid(row=row, column=1, sticky="w")
 
@@ -412,6 +414,9 @@ class LaunchTab(ttk.Frame):
             messagebox.showerror("Launch tab", "Enter a name for the new track first.")
             return
         values = self._pending_values()
+        # Not in _pending_values(): that dict also feeds saved profiles, and
+        # a profile must not carry a recording-in-progress flag.
+        values["RECORD_CONES"] = "true" if self.record_var.get() else "false"
         preview_lines = [f"  {k}={v}" for k, v in values.items()]
         if self.controller_var.get() == "nmpc" and self.progress_var.get():
             preview_lines.append("  NMPC_PROGRESS_ENABLED=true (EXPERIMENTAL, not validated)")

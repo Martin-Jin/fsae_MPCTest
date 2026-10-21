@@ -144,6 +144,12 @@ PATH_CSV="$TRACK_DIR/$_TRACK_GEOMETRY_NAME"
 # driving off the live planner, which defeats recording a fresh lap.
 USE_PRECOMPUTED_SPEED=true
 USE_PRECOMPUTED_PATH=true
+# Whether to run cone_recorder and write TRACK's cone_map.json. Keep this
+# false for every normal drive: the recorder rewrites cone_map.json when a
+# lap closes, which reorders the cones in the committed file of an existing
+# track even though no new track was recorded. The launcher GUI sets this to
+# true only while "Record new track" is checked.
+RECORD_CONES=false
 # Use raceline_optimizer.py's shaped psi_target column (heading-lead
 # reference, see late_turn_in_investigation.md Part 8/9/10/12) in place of
 # the geometric path tangent for e_psi's reference. Only has an effect
@@ -843,11 +849,11 @@ if [ "$USE_DOCKER" != true ]; then
 fi
 
 # 3. Launch Planning Stack in the foreground
-# sim.launch.py defaults to controller:=mpc, standalone_output:=true, and
-# record_cones:=true, so cone recording starts automatically alongside the
-# stack (no separate terminal needed). Controller is set via CONTROLLER
-# above; override record_cones:=false directly on the line below if ever
-# needed.
+# sim.launch.py defaults to controller:=mpc and standalone_output:=true.
+# Controller is set via CONTROLLER above. Cone recording follows
+# RECORD_CONES above (passed as record_cones:=), which overrides
+# sim.launch.py's own default of true, so a normal drive never touches
+# cone_map.json.
 #
 # The precomputed-speed/path toggles are set via USE_PRECOMPUTED_SPEED /
 # USE_PRECOMPUTED_PATH above, and WHICH track's CSVs they read via TRACK.
@@ -871,7 +877,10 @@ fi
 # track (TRACK_DIR already there) is NOT dated again -- it keeps refreshing
 # the same directory, which is the documented "refresh a cone map in place"
 # workflow above; only first creation gets a date.
-if [ ! -d "$TRACK_DIR" ]; then
+#
+# Both the dated directory and mkdir below apply only when RECORD_CONES=true.
+# A normal drive never creates or writes a track directory.
+if [ "$RECORD_CONES" = true ] && [ ! -d "$TRACK_DIR" ]; then
     TRACK="${TRACK}_$(date +%Y%m%d)"
     TRACK_DIR="$HOST_ROS2_DIR/src/fsae_planning/tracks/$TRACK"
     # Re-derive SPEED_CSV/PATH_CSV too (computed earlier, from the
@@ -884,10 +893,10 @@ if [ ! -d "$TRACK_DIR" ]; then
     PATH_CSV="$TRACK_DIR/$(_track_geometry_name "$TRACK_DIR")"
     echo "      new track — recording into: $TRACK_DIR"
 fi
-echo "[3/3] Launching Autonomous Stack (Perception, Planner, Control, Cone Recorder)..."
-echo "      track: $TRACK  (precomputed speed=$USE_PRECOMPUTED_SPEED path=$USE_PRECOMPUTED_PATH heading_profile=$USE_PRECOMPUTED_HEADING_PROFILE)"
+echo "[3/3] Launching Autonomous Stack (Perception, Planner, Control$( [ "$RECORD_CONES" = true ] && echo ", Cone Recorder" ))..."
+echo "      track: $TRACK  (precomputed speed=$USE_PRECOMPUTED_SPEED path=$USE_PRECOMPUTED_PATH heading_profile=$USE_PRECOMPUTED_HEADING_PROFILE record_cones=$RECORD_CONES)"
 echo "      controller: $CONTROLLER$( [ "$CONTROLLER" != stanley ] && echo "  [$( [ "$USE_NMPC" = true ] && echo 'NMPC (nonlinear, nmpc/solver.py)' || echo 'LTV-QP (lmpc/controller.py)' )]" )"
-mkdir -p "$TRACK_DIR"
+[ "$RECORD_CONES" = true ] && mkdir -p "$TRACK_DIR"
 if [ "$USE_DOCKER" = true ]; then
     # Container-side paths: the container mounts the repo at a different
     # root, so TRACK_DIR (a host path) cannot be reused verbatim here.
@@ -896,14 +905,14 @@ if [ "$USE_DOCKER" = true ]; then
         source /opt/ros/jazzy/setup.bash && \
         cd $CONTAINER_ROS2_DIR && \
         source install/local_setup.bash && \
-        ros2 launch fsae_bringup sim.launch.py controller:=$CONTROLLER cone_out_path:=$CONTAINER_TRACK_DIR/cone_map.json log_dir:=$CONTAINER_REPO_ROOT/fsae_logs map_path:=$CONTAINER_TRACK_DIR/$(basename "$SPEED_CSV") path_map_path:=$CONTAINER_TRACK_DIR/$(basename "$PATH_CSV") use_precomputed_speed:=$USE_PRECOMPUTED_SPEED use_precomputed_path:=$USE_PRECOMPUTED_PATH use_precomputed_heading_profile:=$USE_PRECOMPUTED_HEADING_PROFILE v_max:=$V_MAX v_min:=$V_MIN$MPC_LAUNCH_ARGS
+        ros2 launch fsae_bringup sim.launch.py controller:=$CONTROLLER cone_out_path:=$CONTAINER_TRACK_DIR/cone_map.json log_dir:=$CONTAINER_REPO_ROOT/fsae_logs map_path:=$CONTAINER_TRACK_DIR/$(basename "$SPEED_CSV") path_map_path:=$CONTAINER_TRACK_DIR/$(basename "$PATH_CSV") use_precomputed_speed:=$USE_PRECOMPUTED_SPEED use_precomputed_path:=$USE_PRECOMPUTED_PATH use_precomputed_heading_profile:=$USE_PRECOMPUTED_HEADING_PROFILE record_cones:=$RECORD_CONES v_max:=$V_MAX v_min:=$V_MIN$MPC_LAUNCH_ARGS
     "
 else
     bash -c "
         source /opt/ros/jazzy/setup.bash && \
         cd '$HOST_ROS2_DIR' && \
         source install/local_setup.bash && \
-        ros2 launch fsae_bringup sim.launch.py controller:=$CONTROLLER cone_out_path:='$TRACK_DIR/cone_map.json' log_dir:='$HOST_REPO_ROOT/fsae_logs' map_path:='$SPEED_CSV' path_map_path:='$PATH_CSV' use_precomputed_speed:=$USE_PRECOMPUTED_SPEED use_precomputed_path:=$USE_PRECOMPUTED_PATH use_precomputed_heading_profile:=$USE_PRECOMPUTED_HEADING_PROFILE v_max:=$V_MAX v_min:=$V_MIN$MPC_LAUNCH_ARGS
+        ros2 launch fsae_bringup sim.launch.py controller:=$CONTROLLER cone_out_path:='$TRACK_DIR/cone_map.json' log_dir:='$HOST_REPO_ROOT/fsae_logs' map_path:='$SPEED_CSV' path_map_path:='$PATH_CSV' use_precomputed_speed:=$USE_PRECOMPUTED_SPEED use_precomputed_path:=$USE_PRECOMPUTED_PATH use_precomputed_heading_profile:=$USE_PRECOMPUTED_HEADING_PROFILE record_cones:=$RECORD_CONES v_max:=$V_MAX v_min:=$V_MIN$MPC_LAUNCH_ARGS
     "
 fi
 

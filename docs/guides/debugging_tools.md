@@ -85,7 +85,7 @@ The first write of a session to `launch_all.sh` or any `settings/*.py` file save
 
 ### Launch tab: recording a new track
 
-Checking Record new track and typing a name applies the recommended recording setup: `CONTROLLER=stanley`, `USE_PRECOMPUTED_SPEED=false`, `USE_PRECOMPUTED_PATH=false`. The previous values are restored when the box is unchecked. `launch_all.sh` writes `cone_map.json` for whatever `TRACK` is set to, so recording mode makes sure it lands in a new folder from a live drive.
+Checking Record new track and typing a name applies the recommended recording setup: `CONTROLLER=stanley`, `USE_PRECOMPUTED_SPEED=false`, `USE_PRECOMPUTED_PATH=false`. The previous values are restored when the box is unchecked. Checking the box also sets `RECORD_CONES=true` in `launch_all.sh`, which is the only thing that starts `cone_recorder`. Every other launch writes `RECORD_CONES=false`, so a normal drive never rewrites an existing track's `cone_map.json`. The recorder reorders the cones on each run even when the track is unchanged, so an unwanted write shows up as a spurious diff in `fsae_planning`.
 
 After Stop, Export & Save Track runs `tuner.tools.export_speed_profile <name>`, then `tuner.tools.raceline_optimizer <name>` and `tuner.tools.raceline_optimizer <name> --mode centerline`, then copies the folder into the mirror. Re-exporting an existing name asks first. Track workflow: [integration_guide.md](../fsds/integration_guide.md).
 

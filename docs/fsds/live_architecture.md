@@ -228,7 +228,8 @@ flowchart LR
 | `use_precomputed_path` / `_speed` | `true` / `true` | `true` / `true` | `true` / `true` |
 | `use_nmpc` | dataclass `false` | dataclass `false` | `true` |
 | `v_max` | YAML | `15.0` | `20.0` |
-| `record_cones`, `log_csv` | n/a, `true` | `true`, `true` | not overridden |
+| `record_cones` | n/a | `true` | `false` (`RECORD_CONES`, `true` only when the GUI records a new track) |
+| `log_csv` | n/a | `true` | not overridden |
 
 - **Parameter precedence, highest first:** explicit launch argument, then the `MPCParams`/`NMPCParams` dataclass default, then `fsae_params.yaml`. The launch files forward every dataclass field as an argument after loading the YAML, so a YAML-only edit to a dataclass field never reaches the node. `python3 -m tuner.tools.param_report` shows which value wins for each field.
 - **`launch_all.sh` pins the track** (`TRACK=comp_test_map_3`). Comment the line out to follow the newest recording. See [integration_guide.md](integration_guide.md#4-switching-the-track-the-car-drives).
