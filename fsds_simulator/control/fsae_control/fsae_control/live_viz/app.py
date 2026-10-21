@@ -560,7 +560,13 @@ def main():
     timer = viz.fig.canvas.new_timer(interval=int(1000.0 / REDRAW_HZ))
     timer.add_callback(viz.tick)
     timer.start()
-    viz.tick(force=True)
+    # First frame from inside the event loop, not before plt.show(): show()
+    # maps every figure window, which undid the inactive debug window's
+    # withdraw() and left an empty Stanley window on screen under MPC.
+    first = viz.fig.canvas.new_timer(interval=50)
+    first.single_shot = True
+    first.add_callback(lambda: viz.tick(force=True))
+    first.start()
     plt.show()
 
     node.destroy_node()

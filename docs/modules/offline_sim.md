@@ -1030,7 +1030,7 @@ Files: `settings_profiles/no_progress_tuned.json` and `settings_profiles/progres
 Change it to:
 - Hand-editing is safe. Loading skips unknown keys, so removed fields do not break an old profile.
 Don't:
-- Expect a profile to reproduce a run unless it has the Launch keys. `progress_tuning.json` was saved before Launch state was captured and holds only Settings keys.
+- Expect a profile to reproduce a run unless it has the Launch keys. A profile saved before Launch state was captured holds only Settings keys; re-save it to add them.
 Key API: `ProfilesTab._save_current`, `ProfilesTab._load_selected`.
 
 **Schema**
@@ -1050,7 +1050,7 @@ Key API: `ProfilesTab._save_current`, `ProfilesTab._load_selected`.
 | Settings tab (`SettingsTab.capture_profile_values`) | every `settings/` name the tab manages: `Q_diag`, `R_diag`, `R_rate_diag`, scalar fields (`R_A_ACCEL`, `R_A_BRAKE`, `SPEED_TARGET_DEFICIT_MAX`, `NMPC_RJERK_*`, `NMPC_RRATE_ZONE_*`), the twelve `NMPC_*` overrides (`-1.0` means inherit), the five `NMPC_*` progress numerics, and the feature flags that have a `settings/` name | read from widgets, so unsaved edits are captured. `delay_compensation_enabled` has no `settings/` name and is not captured |
 | Launch tab (`LaunchTab.capture_profile_values`) | `TRACK`, `CONTROLLER`, `USE_NMPC`, `STANDALONE_OUTPUT`, `USE_PRECOMPUTED_SPEED`, `USE_PRECOMPUTED_PATH`, `V_MAX`, `V_MIN`, `NMPC_PROGRESS_ENABLED` | record-new-track mode is not captured. `NMPC_PROGRESS_ENABLED` is `"true"` only when the controller is NMPC and the box is ticked |
 
-The current profile files hold 47 keys (`no_progress_tuned.json`, Settings and Launch) and 33 keys (`progress_tuning.json`, Settings only, and it still lists `NMPC_PROGRESS_ENABLED` as a Settings key from before that flag moved to the Launch tab).
+The current profile files, `no_progress_tuned.json` and `progress_tuning_new.json`, each hold 48 keys (Settings and Launch).
 
 **How loading applies**
 

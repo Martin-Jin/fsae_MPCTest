@@ -109,7 +109,7 @@ Every `NMPC_*` weight override has an override checkbox: checked uses the number
 | NMPC corner rate-blend on | NMPC steer-rate anti-hunt, because the blend takes priority and anti-hunt is ignored |
 | An override unchecked | that override's value box |
 
-The Launch tab greys "Standalone output" for Stanley and `V_MAX` while the precomputed speed profile is on, since `V_MAX` only caps the live curvature speed. The progress term does not switch off `q_e_v`: the two-sided speed error becomes a one-sided speed-cap hinge, and `q_e_v` weights that hinge.
+The Launch tab greys "Standalone output" for Stanley and `V_MAX` while the precomputed speed profile is on, since `V_MAX` only caps the live curvature speed. The progress term does not switch off `q_e_v`: the two-sided speed error becomes a one-sided speed-cap hinge, and `q_e_v` (or its NMPC override) weights that hinge. The `e_v` row's description changes to say so while the progress term is on.
 
 Settings with no live counterpart stay offline-only: `R_diag[1]` (nominal only, superseded by `R_A_ACCEL` and `R_A_BRAKE`) and the last three `Q_diag` entries (always 0.0). If the live files are missing at the expected path, Save writes `settings/` alone and warns.
 

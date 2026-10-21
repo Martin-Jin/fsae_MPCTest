@@ -355,9 +355,11 @@ class SettingsTab(ttk.Frame):
                 entry.grid(row=r, column=1, sticky="w", pady=(6, 0 if index_desc else 6))
                 self._gate(entry, "mpc")
                 if index_desc:
-                    ttk.Label(weights_card, text=f"  {index_desc}", style="CardMuted.TLabel",
-                              wraplength=440).grid(
-                        row=r + 1, column=0, sticky="nw", padx=(16, 0), pady=(0, 6))
+                    desc_label = ttk.Label(weights_card, text=f"  {index_desc}",
+                                           style="CardMuted.TLabel", wraplength=440)
+                    desc_label.grid(row=r + 1, column=0, sticky="nw", padx=(16, 0), pady=(0, 6))
+                    if name == "Q_diag" and i == 4:
+                        self._e_v_desc = (desc_label, index_desc)
                 vars_for_field.append(var)
                 r += 2 if index_desc else 1
             self._list_vars[name] = vars_for_field
@@ -555,6 +557,16 @@ class SettingsTab(ttk.Frame):
         for widget, tags in self._gated:
             usable = all(self._tag_holds(t) for t in tags)
             widget.state(["!disabled"] if usable else ["disabled"])
+        # e_v stays editable with the progress term on: the NMPC still uses
+        # this weight (or its NMPC override), on the one-sided speed-cap
+        # hinge instead of the two-sided speed error. Say so on the row.
+        label, normal = self._e_v_desc
+        if self._context["controller"] == "nmpc" and self._context["progress"]:
+            label.configure(text="  Progress term on: weights the one-sided speed-CAP hinge "
+                                 "(only speed above the cap is penalised), not a two-sided "
+                                 "speed error. Usually needs its own value [1/(m/s)^2]")
+        else:
+            label.configure(text=f"  {normal}")
 
     def bind_launch_context(self, launch_tab) -> None:
         """Follow the Launch tab's controller and progress-term selection
