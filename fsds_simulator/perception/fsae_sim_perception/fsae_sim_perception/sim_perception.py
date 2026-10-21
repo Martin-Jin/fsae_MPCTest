@@ -12,13 +12,26 @@ republishes it on the exact topics/messages the car stack expects.
     in   /fsds/testing_only/odom   nav_msgs/Odometry   ground-truth pose
 
     out  /fsae/slam/car_position   geometry_msgs/PoseStamped     x,y in position; yaw in orientation.w;
-                                                                  header.stamp = odom's own measurement time
+                                                                  header.stamp = when THIS node received the
+                                                                  odom sample, on the ROS clock (see "Pose stamp")
     out  /fsae/slam/car_odom       nav_msgs/Odometry             SAME snapshot as car_position (position/
                                                                   yaw in pose, speed/yaw-rate in twist) --
-                                                                  see "Speed/yaw-rate synchronisation" below
+                                                                  see "Speed/yaw-rate synchronisation" below;
+                                                                  header.stamp = odom's own FSDS stamp
     out  /fsae/slam/left_track     fsae_interfaces/Track         blue (left) boundary, global frame
     out  /fsae/slam/right_track    fsae_interfaces/Track         yellow (right) boundary, global frame
     out  /fsae/perception/cone_detection  fsae_interfaces/ConeDetection  local-frame detections + car_pose
+
+Pose stamp: car_position is stamped with this node's ROS-clock receipt time
+of the odom sample, not the odom's own stamp. The odom stamp is on FSDS's
+clock, whose offset from the ROS clock drifts by up to ~0.9 s between the
+periodic resyncs, so now() - stamp in the controller read that drift as
+staleness. The receipt stamp shares the controller's clock and also counts
+the time a sample waits here before the 20 Hz relay (up to one bridge odom
+period), which a receipt time taken in the controller would miss. It stays
+fixed while odom stops arriving, so a frozen pose still ages. Transport from
+FSDS to this node is not counted. car_odom keeps the FSDS stamp so the
+cross-clock drift stays visible (the controller logs it as pose_stamp_age_s).
 
 Set the `full_track` parameter true to publish the entire map every frame (used by
 the skidpad planner, which reconstructs the whole figure-8 up front); the default
@@ -144,6 +157,7 @@ class SimPerception(Node):
         self._car_vy = 0.0
         self._car_yaw_rate = 0.0
         self._odom_stamp = None
+        self._odom_rx_stamp = None   # ROS-clock receipt time, car_position's stamp
 
         # Two timers, deliberately at different rates — see the module
         # docstring's "Two publish rates" note. Pose must keep up with the
@@ -206,6 +220,7 @@ class SimPerception(Node):
         self._car_vy = -v.y
         self._car_yaw_rate = msg.twist.twist.angular.z
         self._odom_stamp = msg.header.stamp
+        self._odom_rx_stamp = self.get_clock().now().to_msg()
         self._have_odom = True
 
     # ------------------------------------------------------------------
@@ -235,10 +250,9 @@ class SimPerception(Node):
 
     def _car_pose_msg(self) -> PoseStamped:
         msg = PoseStamped()
-        # Odom's own timestamp, not now() — this is the time the pose was
-        # actually measured, which is what delay/age estimation downstream
-        # (MPCController's pose_age_s) needs to be measured against.
-        msg.header.stamp = self._odom_stamp
+        # Receipt time on the ROS clock, not the odom's FSDS stamp and not
+        # now(): see the module docstring's "Pose stamp" note.
+        msg.header.stamp = self._odom_rx_stamp
         msg.header.frame_id = 'map'
         msg.pose.position.x = float(self._car_x)
         msg.pose.position.y = float(self._car_y)

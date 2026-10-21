@@ -1,7 +1,13 @@
 """
 fsae_control/nmpc/ — NONLINEAR model-predictive path-tracking controller
-(Frenet-frame / curvilinear coordinates, Gauss-Newton SQP, condensed dense QP
-subproblem solved by OSQP).
+(Gauss-Newton SQP, condensed dense QP subproblem solved by OSQP).
+
+STATE FRAME: by default (NMPCParams.nmpc_cartesian_model_enabled) the model
+predicts the CoG's world x/y/heading and the cost projects each predicted
+front axle onto the path (outputs._frenet_stages), so path curvature never
+enters the integrated prediction. False selects the original Frenet-frame
+model (s, e_y, e_psi as states), which the WHY IT EXISTS note below describes;
+both see the bend ahead, one through the cost and one through the dynamics.
 
 This is a SECOND, independently selectable controller. It does not modify,
 subclass or import behaviour from lmpc.controller.MPCController's solve path: that

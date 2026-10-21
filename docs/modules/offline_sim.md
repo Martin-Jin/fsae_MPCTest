@@ -134,7 +134,7 @@ Key API: `DNF_PENALTY`, `DNF_OFFTRACK_PENALTY`, `ROLLOUT_EPS`, `ROLLOUT_MAX_ITER
 
 ## controller/
 
-The two controllers the closed loop can solve each tick: `lmpc/` (linear time-varying QP via CVXPY) and `nmpc/` (Frenet-frame nonlinear MPC via Gauss-Newton SQP and OSQP), plus `model_utils.py` (adaptive-gain helpers). `sim/rollout/core.py` calls one of them per tick, chosen by `settings.USE_NMPC`. `controller/__init__.py` is empty apart from a docstring. `controller/` never imports from `sim/`. Both packages are hand-kept numerically identical to the live `lmpc/` and `nmpc/` packages under `fsds_simulator/control/fsae_control/fsae_control/` (and `ros2/src/fsae_planning/...`).
+The two controllers the closed loop can solve each tick: `lmpc/` (linear time-varying QP via CVXPY) and `nmpc/` (nonlinear MPC via Gauss-Newton SQP and OSQP, world-frame model by default, Frenet-frame selectable), plus `model_utils.py` (adaptive-gain helpers). `sim/rollout/core.py` calls one of them per tick, chosen by `settings.USE_NMPC`. `controller/__init__.py` is empty apart from a docstring. `controller/` never imports from `sim/`. Both packages are hand-kept numerically identical to the live `lmpc/` and `nmpc/` packages under `fsds_simulator/control/fsae_control/fsae_control/` (and `ros2/src/fsae_planning/...`).
 
 ### `controller/__init__.py`
 Does: package marker.
@@ -189,7 +189,7 @@ Change it to:
 - re-export a new helper used by `tuner/validation/nmpc_offline_check.py`
 Don't:
 - rename a file without renaming its live counterpart, because the split is 1:1 with live `nmpc/` (layout, reference, dynamics, outputs, weight_schedule, qp_model, sqp_step, solver)
-Key API: `NMPCController`, `PathReference`, `_step`, `_step_scalar`, `_outputs`
+Key API: `NMPCController`, `PathReference`, `_step`, `_step_scalar`, `_outputs`, `_frenet_stages`
 
 ### `controller/nmpc/layout.py`
 Does: state, input and output index constants (`IDX_*`, `NX`, `NU`, `NH_*`), finite-difference step sizes, `_DENOM_FLOOR`.
@@ -208,7 +208,8 @@ Don't:
 - use the raw per-waypoint tangent as reference heading, because it steps by ds/R, reads as tracking error and drives a steering limit cycle
 - remove the legacy path when the spline flag is on, because the flag-off branch is still selectable
 - point this at a planner change without re-reading the centreline-curvature-spike defect notes, because the smoothing here is a workaround layer
-Key API: `PathReference`
+- change `frenet_batch` without rerunning `nmpc_offline_check`, because the world-frame model's cost rows and their finite-difference Jacobians depend on it converging
+Key API: `PathReference`, `frenet_batch`
 
 ### `controller/nmpc/dynamics.py`
 Does: NMPC prediction model: `_Plant` constants read from `VehicleParams`, tyre forces, continuous dynamics `_f` and RK4 steppers.

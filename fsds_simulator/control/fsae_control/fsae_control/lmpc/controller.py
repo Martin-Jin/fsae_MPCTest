@@ -577,6 +577,10 @@ class MPCController:
         control rate. Returns the step count to use this tick.
         """
         age = max(0.0, float(pose_age_s))
+        # Floor for delay the pose age cannot see; see
+        # MPCParams.min_delay_compensation_steps.
+        lo = min(self.params.min_delay_compensation_steps,
+                 self.params.max_delay_compensation_steps)
 
         if self._pose_age_filtered is None:
             # First sample: adopt it outright rather than easing up from zero,
@@ -584,7 +588,7 @@ class MPCController:
             self._pose_age_filtered = age
             self._n_delay = int(np.clip(
                 round(age / self.dt),
-                0, self.params.max_delay_compensation_steps))
+                lo, self.params.max_delay_compensation_steps))
             return self._n_delay
 
         self._pose_age_filtered += (
@@ -597,7 +601,7 @@ class MPCController:
         # produces a constant n_delay instead of dithering.
         if abs(steps_f - self._n_delay) > 0.5 + self.params.n_delay_hysteresis:
             self._n_delay = int(np.clip(
-                round(steps_f), 0, self.params.max_delay_compensation_steps))
+                round(steps_f), lo, self.params.max_delay_compensation_steps))
 
         return self._n_delay
 

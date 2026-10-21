@@ -1,7 +1,7 @@
 """
 fsae_control/nmpc/dynamics.py — NMPC prediction model
 
-Frenet-frame vehicle model: `_Plant` constants, tyre forces, the continuous
+Vehicle model, Frenet or world frame (`_Plant.cartesian`): `_Plant` constants, tyre forces, the continuous
 dynamics `_f`/`_f_scalar` and their RK4 steps `_step`/`_step_scalar`.
 """
 
@@ -15,6 +15,7 @@ from fsae_control.nmpc.layout import (
     IDX_DELTA,
     IDX_EPSI,
     IDX_EY,
+    IDX_PSI,
     IDX_R,
     IDX_S,
     IDX_VX,
@@ -67,6 +68,12 @@ class _Plant:
     alat_ceiling_flat: float = 7.5
     alat_ceiling_slope: float = 0.47
     alat_ceiling_intercept: float = 2.46
+    # State frame (NMPCParams.nmpc_cartesian_model_enabled). False: slots 0-2
+    # are s/e_y/e_psi and their rates need kappa(s). True: they are the CoG's
+    # world x/y/heading, integrated with no path input at all, so a curvature
+    # artefact can no longer enter the prediction. Only the three kinematic
+    # rows differ; the tyre, actuator and ceiling rows are shared.
+    cartesian: bool = False
 
 
 def _tyre_forces(X, p):
@@ -111,30 +118,40 @@ def _f(X, U, ref, p):
     X: (M, NX), U: (M, NU) -> (M, NX) state derivatives. `ref` supplies
     kappa(s); `p` is a _Plant. See the module docstring for the equations.
     """
-    s     = X[:, IDX_S]
-    e_y   = X[:, IDX_EY]
-    e_psi = X[:, IDX_EPSI]
     v_x   = X[:, IDX_VX]
     v_y   = X[:, IDX_VY]
     r     = X[:, IDX_R]
     d     = X[:, IDX_DELTA]
     a     = X[:, IDX_A]
 
-    kap = ref.kappa_at(s)
+    if p.cartesian:
+        # World-frame CoG kinematics: rows 0-2 are x_dot, y_dot, psi_dot.
+        psi = X[:, IDX_PSI]
+        cos_p = np.cos(psi)
+        sin_p = np.sin(psi)
+        s_dot = v_x * cos_p - v_y * sin_p
+        e_y_dot = v_x * sin_p + v_y * cos_p
+        e_psi_dot = r
+    else:
+        s     = X[:, IDX_S]
+        e_y   = X[:, IDX_EY]
+        e_psi = X[:, IDX_EPSI]
 
-    denom = 1.0 - kap * e_y
-    # Keep the denominator away from zero WITHOUT flipping its sign (see
-    # _DENOM_FLOOR): a sign flip would reverse the predicted direction of
-    # travel along the path.
-    denom = np.where(denom >= 0.0,
-                     np.maximum(denom, _DENOM_FLOOR),
-                     np.minimum(denom, -_DENOM_FLOOR))
+        kap = ref.kappa_at(s)
 
-    cos_ep = np.cos(e_psi)
-    sin_ep = np.sin(e_psi)
-    s_dot   = (v_x * cos_ep - v_y * sin_ep) / denom
-    e_y_dot = v_x * sin_ep + v_y * cos_ep
-    e_psi_dot = r - kap * s_dot
+        denom = 1.0 - kap * e_y
+        # Keep the denominator away from zero WITHOUT flipping its sign (see
+        # _DENOM_FLOOR): a sign flip would reverse the predicted direction of
+        # travel along the path.
+        denom = np.where(denom >= 0.0,
+                         np.maximum(denom, _DENOM_FLOOR),
+                         np.minimum(denom, -_DENOM_FLOOR))
+
+        cos_ep = np.cos(e_psi)
+        sin_ep = np.sin(e_psi)
+        s_dot   = (v_x * cos_ep - v_y * sin_ep) / denom
+        e_y_dot = v_x * sin_ep + v_y * cos_ep
+        e_psi_dot = r - kap * s_dot
 
     # Tyre slip angles: floor the denominator at the top of the
     # kinematic/dynamic blend band so the linear-tyre expressions stay finite
@@ -236,17 +253,26 @@ def _f_scalar(x, u, kap, p):
     """
     s, e_y, e_psi, v_x, v_y, r, d, a = x
 
-    denom = 1.0 - kap * e_y
-    if denom >= 0.0:
-        denom = denom if denom > _DENOM_FLOOR else _DENOM_FLOOR
+    if p.cartesian:
+        # Mirror of _f's world-frame kinematics (s/e_y/e_psi hold x/y/psi
+        # here, and kap is unused).
+        cos_p = math.cos(e_psi)
+        sin_p = math.sin(e_psi)
+        s_dot = v_x * cos_p - v_y * sin_p
+        e_y_dot = v_x * sin_p + v_y * cos_p
+        e_psi_dot = r
     else:
-        denom = denom if denom < -_DENOM_FLOOR else -_DENOM_FLOOR
+        denom = 1.0 - kap * e_y
+        if denom >= 0.0:
+            denom = denom if denom > _DENOM_FLOOR else _DENOM_FLOOR
+        else:
+            denom = denom if denom < -_DENOM_FLOOR else -_DENOM_FLOOR
 
-    cos_ep = math.cos(e_psi)
-    sin_ep = math.sin(e_psi)
-    s_dot = (v_x * cos_ep - v_y * sin_ep) / denom
-    e_y_dot = v_x * sin_ep + v_y * cos_ep
-    e_psi_dot = r - kap * s_dot
+        cos_ep = math.cos(e_psi)
+        sin_ep = math.sin(e_psi)
+        s_dot = (v_x * cos_ep - v_y * sin_ep) / denom
+        e_y_dot = v_x * sin_ep + v_y * cos_ep
+        e_psi_dot = r - kap * s_dot
 
     v_safe = abs(v_x)
     if v_safe < p.v_blend_hi:
@@ -310,14 +336,16 @@ def _step_scalar(x, u, ref, p, dt, n_sub):
     h = dt / n_sub
     xk = tuple(float(v) for v in x)
     d0, a0 = xk[IDX_DELTA], xk[IDX_A]
+    # The Cartesian model never reads kappa, so skip the lookups.
+    kap_at = (lambda s: 0.0) if p.cartesian else ref.kappa_scalar
     for _ in range(n_sub):
-        k1 = _f_scalar(xk, u, ref.kappa_scalar(xk[IDX_S]), p)
+        k1 = _f_scalar(xk, u, kap_at(xk[IDX_S]), p)
         x2 = tuple(xk[i] + 0.5 * h * k1[i] for i in range(NX))
-        k2 = _f_scalar(x2, u, ref.kappa_scalar(x2[IDX_S]), p)
+        k2 = _f_scalar(x2, u, kap_at(x2[IDX_S]), p)
         x3 = tuple(xk[i] + 0.5 * h * k2[i] for i in range(NX))
-        k3 = _f_scalar(x3, u, ref.kappa_scalar(x3[IDX_S]), p)
+        k3 = _f_scalar(x3, u, kap_at(x3[IDX_S]), p)
         x4 = tuple(xk[i] + h * k3[i] for i in range(NX))
-        k4 = _f_scalar(x4, u, ref.kappa_scalar(x4[IDX_S]), p)
+        k4 = _f_scalar(x4, u, kap_at(x4[IDX_S]), p)
         xk = tuple(
             xk[i] + (h / 6.0) * (k1[i] + 2.0 * k2[i] + 2.0 * k3[i] + k4[i])
             for i in range(NX)

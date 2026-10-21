@@ -149,8 +149,14 @@ class _SQPStepMixin:
         if n_slack:
             r0 = 2 * n_du
             hw = self.nmpc.nmpc_track_halfwidth
-            S_ey = S[1:, IDX_EY, :]              # (N, n_du)
-            ey = X[1:, IDX_EY]
+            if self.plant.cartesian:
+                # e_y is an output here, not a state: its sensitivity is
+                # C's e_y row composed with S, as for the friction rows.
+                S_ey = np.einsum('kj,kjl->kl', C[1:, 0, :], S[1:])
+                ey = H[1:, 0]
+            else:
+                S_ey = S[1:, IDX_EY, :]              # (N, n_du)
+                ey = X[1:, IDX_EY]
             A_dense[r0:r0 + N, :n_du] = S_ey
             A_dense[r0:r0 + N, n_du:n_du + n_slack] = -np.eye(N)
             l[r0:r0 + N] = -np.inf

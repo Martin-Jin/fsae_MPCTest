@@ -73,7 +73,12 @@ class ControlLogger:
              # ControlLogger.finish_lap().
              'lap_idx', 'pred_err_m', 'pred_acc_pct',
              'lap_score', 'lap_pred_acc_pct',
-             ] + list(ADAPTIVE_COLUMNS))
+             ] + list(ADAPTIVE_COLUMNS) + [
+             # now() - pose stamp across two clocks. Not used for control
+             # (pose_age_s above is timed on one clock); kept because its
+             # drift and resync jumps are the trace of the periodic stall.
+             'pose_stamp_age_s',
+             ])
         self._path_w.writerow(['t', 'idx', 'x', 'y'])
 
         self._path_period = path_period
@@ -142,7 +147,7 @@ class ControlLogger:
                     pose_age_s=None, path_age_s=None, n_delay=None,
                     solve_ms=None, cmd_latency_ms=None, adaptive=None,
                     lap_idx=None, pred_err_m=None, pred_acc_pct=None,
-                    lap_summary=None) -> None:
+                    lap_summary=None, pose_stamp_age_s=None) -> None:
         """
         Record one control step.  See the module docstring for the units and
         frame of every argument.
@@ -159,6 +164,8 @@ class ControlLogger:
           n_delay         integer rollforward depth the controller chose
           solve_ms        QP solve wall time (ms)
           cmd_latency_ms  loop entry -> command publish (ms)
+        pose_stamp_age_s (s, optional, last column) is now() minus the pose
+        stamp across the two clocks, logged for diagnosis only.
 
         `adaptive` is the controller's last_telemetry dict (or any mapping);
         the ADAPTIVE_COLUMNS keys are pulled out of it and everything else is
@@ -203,6 +210,7 @@ class ControlLogger:
             # default, so "this feature was disabled/not reported" stays
             # distinguishable from "this feature reported exactly 1.0".
             *[_f((adaptive or {}).get(k), '.5f') for k in ADAPTIVE_COLUMNS],
+            _f(pose_stamp_age_s),
         ])
 
         # Same accumulation the offline tuner runs, step for step. Fed into

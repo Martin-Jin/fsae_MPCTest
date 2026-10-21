@@ -33,11 +33,12 @@ except ImportError as _exc:      # pragma: no cover - see package.xml
 from fsae_control.nmpc.layout import (
     IDX_A,
     IDX_DELTA,
-    IDX_EPSI,
-    IDX_EY,
+    IDX_PSI,
     IDX_R,
     IDX_S,
     IDX_VX,
+    IDX_X,
+    IDX_Y,
     NH_PROGRESS,
     NH_TRACKING,
     NU,
@@ -45,7 +46,7 @@ from fsae_control.nmpc.layout import (
 )
 from fsae_control.nmpc.reference import PathReference
 from fsae_control.nmpc.dynamics import _Plant, _step_scalar
-from fsae_control.nmpc.outputs import _outputs
+from fsae_control.nmpc.outputs import _frenet_stages, _outputs
 from fsae_control.nmpc.weight_schedule import (
     _rrate_stage_ramp,
     _rrate_zone_scale,
@@ -103,7 +104,8 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
         # precedent this class already follows for lf/lr/m/Iz/Cf/Cr. Only
         # nmpc_alat_ceiling_enabled (a genuine NMPC-only on/off switch, not a
         # shared plant constant) still comes from NMPCParams.
-        self.plant = _Plant(alat_ceiling_enabled=bool(nm0.nmpc_alat_ceiling_enabled))
+        self.plant = _Plant(alat_ceiling_enabled=bool(nm0.nmpc_alat_ceiling_enabled),
+                            cartesian=bool(nm0.nmpc_cartesian_model_enabled))
         # Convenience aliases so telemetry/geometry code reads like lmpc.controller's.
         self.lf, self.lr = self.plant.lf, self.plant.lr
 
@@ -241,6 +243,10 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
         self._act_history: list[np.ndarray] = []
         self._pose_age_filtered: float | None = None
         self._n_delay = 0
+        # Stage-0 arc length for this tick's solve, the seed the Cartesian
+        # model's per-stage projection starts from (outputs._frenet_stages).
+        # Unused by the Frenet model, whose state carries s directly.
+        self._s_anchor = 0.0
 
         self._ref: PathReference | None = None
         self._ref_signature = None
@@ -342,15 +348,16 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
         """
         age = max(0.0, float(pose_age_s))
         cap = self.params.max_delay_compensation_steps
+        lo = min(self.params.min_delay_compensation_steps, cap)
         if self._pose_age_filtered is None:
             self._pose_age_filtered = age
-            self._n_delay = int(np.clip(round(age / self.dt), 0, cap))
+            self._n_delay = int(np.clip(round(age / self.dt), lo, cap))
             return self._n_delay
         self._pose_age_filtered += (
             self.params.pose_age_lp_alpha * (age - self._pose_age_filtered))
         steps_f = self._pose_age_filtered / self.dt
         if abs(steps_f - self._n_delay) > 0.5 + self.params.n_delay_hysteresis:
-            self._n_delay = int(np.clip(round(steps_f), 0, cap))
+            self._n_delay = int(np.clip(round(steps_f), lo, cap))
         return self._n_delay
 
     # ------------------------------------------------------------------
@@ -398,11 +405,22 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
         fa = np.asarray(car_pos, dtype=float) + self.lf * np.array(
             [math.cos(car_yaw), math.sin(car_yaw)])
         s0, e_y, e_psi, base_idx, path_yaw = ref.project(fa, car_yaw)
-        x0 = np.array([
-            s0, e_y, e_psi,
-            max(float(car_speed), 0.0), float(car_vy), float(car_yaw_rate),
-            self._delta_act, self._a_act,
-        ])
+        if self.plant.cartesian:
+            # Heading unwrapped next to path_yaw so the state stays continuous
+            # with psi_ref(s); only its cos/sin and its wrapped difference
+            # from psi_ref are ever used.
+            x0 = np.array([
+                float(car_pos[0]), float(car_pos[1]), path_yaw + e_psi,
+                max(float(car_speed), 0.0), float(car_vy), float(car_yaw_rate),
+                self._delta_act, self._a_act,
+            ])
+        else:
+            x0 = np.array([
+                s0, e_y, e_psi,
+                max(float(car_speed), 0.0), float(car_vy), float(car_yaw_rate),
+                self._delta_act, self._a_act,
+            ])
+        self._s_anchor = s0
 
         # ── Corner-blend / anti-hunt (EXPERIMENTAL, default off — see module
         # docstring) — ALTERNATIVES, not composed: the corner-factor blend
@@ -515,6 +533,15 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
                                       self.nmpc.nmpc_rk_substeps)
                 x0 = np.array(xk)
 
+        # The rollforwards above may have moved x0 along the path; re-anchor
+        # the Cartesian projection on where stage 0 now is.
+        if self.plant.cartesian and (n_delay or n_latency):
+            fa0 = np.array([[x0[IDX_X] + self.lf * math.cos(x0[IDX_PSI]),
+                             x0[IDX_Y] + self.lf * math.sin(x0[IDX_PSI])]])
+            moved = math.hypot(fa0[0, 0] - fa[0], fa0[0, 1] - fa[1])
+            self._s_anchor = float(ref.frenet_batch(
+                fa0, np.array([x0[IDX_PSI]]), np.array([s0 + moved]))[0][0])
+
         # ── Warm start: shift the previous solution one step ────────────
         if self._have_warm_start:
             U = np.vstack([self._U[1:], self._U[-1:]])
@@ -531,7 +558,7 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
         # which only exists once X has been rolled out.
         m_rrate_zone = 1.0
         if self.rrate_zone_enabled:
-            kap_h = ref.kappa_at(X[:, IDX_S])
+            kap_h = ref.kappa_at(self._stage_s(X, ref))
             m_rrate_zone = _rrate_zone_scale(
                 kappa_now, float(np.abs(kap_h).max()), self.corner_factor_k,
                 self.rrate_zone_boost_straight, self.rrate_zone_ease_approach,
@@ -576,13 +603,14 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
             gap = v_cap * self.N * self.dt * self.progress_reach
             kinematic_floor = (0.5 * self.u_max[1] * (self.N * self.dt) ** 2
                                * self.progress_reach)
-            s_target_N = float(X[0, IDX_S]) + max(gap, kinematic_floor)
+            s_target_N = float(self._stage_s(X[:1], ref)[0]) + max(gap, kinematic_floor)
 
         H = _outputs(X, ref, self.plant, v_ref,
                      friction_circle_enabled=self.friction_circle_enabled,
                      progress_enabled=self.progress_enabled,
                      v_cap=v_cap, s_target_N=s_target_N,
-                     progress_v_min=self.progress_v_min)
+                     progress_v_min=self.progress_v_min,
+                     s_anchor=self._s_anchor)
         cost = self._cost(X, U, H)
         iters = 0
         status = 'warm-start-only'
@@ -603,7 +631,8 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
                                  friction_circle_enabled=self.friction_circle_enabled,
                                  progress_enabled=self.progress_enabled,
                                  v_cap=v_cap, s_target_N=s_target_N,
-                                 progress_v_min=self.progress_v_min)
+                                 progress_v_min=self.progress_v_min,
+                                 s_anchor=self._s_anchor)
                 cost_try = self._cost(X_try, U_try, H_try)
                 # ONLY a genuine improvement is accepted. Accepting the
                 # smallest trial regardless (an earlier version of this loop
@@ -671,7 +700,13 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
         # — kappa at the car, and peak |kappa| over the horizon's own predicted
         # arc length, which is the NMPC's natural analogue of the LTV-QP's
         # speed-scaled lookahead window.
-        kap_horizon = ref.kappa_at(X[:, IDX_S])
+        s_h, ey_h, epsi_h = _frenet_stages(X, ref, self.plant, self._s_anchor)[:3]
+        kap_horizon = ref.kappa_at(s_h)
+        if self.plant.cartesian:
+            pred_xy = (X[:, IDX_X] + self.lf * np.cos(X[:, IDX_PSI]),
+                       X[:, IDX_Y] + self.lf * np.sin(X[:, IDX_PSI]))
+        else:
+            pred_xy = ref.xy_at(s_h, ey_h)
         self.last_telemetry = {
             'e_y': float(e_y),
             'e_psi': float(e_psi),
@@ -723,15 +758,15 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
             'nmpc_status': 1.0 if status.lower().startswith('solved') else 0.0,
             'nmpc_s0': float(s0),
             'nmpc_kappa_horizon_end': float(kap_horizon[-1]),
-            'nmpc_pred_ey_end': float(X[-1, IDX_EY]),
-            'nmpc_pred_epsi_end': float(X[-1, IDX_EPSI]),
-            'nmpc_pred_ey_max_abs': float(np.abs(X[:, IDX_EY]).max()),
+            'nmpc_pred_ey_end': float(ey_h[-1]),
+            'nmpc_pred_epsi_end': float(epsi_h[-1]),
+            'nmpc_pred_ey_max_abs': float(np.abs(ey_h).max()),
             # Full predicted horizon in Cartesian (x, y), for live
             # visualisation only (live_viz/): not logged to CSV (that's
             # what the scalar nmpc_pred_* summaries above are for), and
             # cheap relative to the solve itself, one xy_at() call over N
             # points already computed by the rollout.
-            'nmpc_pred_xy': ref.xy_at(X[:, IDX_S], X[:, IDX_EY]),
+            'nmpc_pred_xy': pred_xy,
         }
         if self.friction_circle_enabled:
             # H's two extra (unweighted) rows -- realized per-axle force at
@@ -751,8 +786,14 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
             self.last_telemetry['nmpc_speed_cap_over'] = float(
                 max(0.0, float(X[0, IDX_VX]) - v_cap))
             self.last_telemetry['nmpc_s_target_gap_end'] = float(
-                s_target_N - X[-1, IDX_S])
+                s_target_N - s_h[-1])
         return steering, throttle, brake
+
+    def _stage_s(self, X, ref):
+        """Arc length of each stage's front axle, in either state frame."""
+        if not self.plant.cartesian:
+            return X[:, IDX_S]
+        return _frenet_stages(X, ref, self.plant, self._s_anchor)[0]
 
     def _path_reference(self, path) -> PathReference | None:
         """

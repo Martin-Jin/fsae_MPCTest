@@ -93,6 +93,7 @@ _OFFLINE_ALIASES = {
 _NO_OFFLINE = {
     "anti_hunt_boost_max", "nmpc_anti_hunt_boost_max",
     "delay_compensation_enabled", "max_delay_compensation_steps",
+    "min_delay_compensation_steps",
     "pose_age_lp_alpha", "n_delay_hysteresis",
 }
 

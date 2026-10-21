@@ -402,6 +402,8 @@ class MPCControllerNode(_ControlStepMixin, _DebugPublishMixin, Node):
         self._car_vy = 0.0
         self._car_yaw_rate = 0.0
         self._pose_stamp = None
+        # car_odom's FSDS-clock stamp, for the pose_stamp_age_s diagnostic.
+        self._odom_fsds_stamp = None
         # Previous tick's speed target, for the rise-rate limiter. None = no
         # history yet (first tick after start or after a reset), so the first
         # target passes through unlimited rather than ramping up from zero.
@@ -548,11 +550,16 @@ class MPCControllerNode(_ControlStepMixin, _DebugPublishMixin, Node):
         self._car_speed = float(v.x)
         self._car_vy = float(v.y)
         self._car_yaw_rate = float(msg.twist.twist.angular.z)
+        # FSDS-clock stamp, for the pose_stamp_age_s diagnostic only.
+        self._odom_fsds_stamp = msg.header.stamp
 
     def _pose_cb(self, msg: PoseStamped) -> None:
         # x,y in position; yaw (rad) is stuffed into orientation.w (upstream convention).
         self._car_pos = np.array([msg.pose.position.x, msg.pose.position.y])
         self._car_yaw = float(msg.pose.orientation.w)
+        # The stamp is sim_perception's ROS-clock receipt time of the odom
+        # sample (see its "Pose stamp" note), so now() - stamp in
+        # control_step is one clock and includes the relay wait.
         self._pose_stamp = msg.header.stamp
         self._have_pose = True
 

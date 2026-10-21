@@ -74,7 +74,7 @@ Controllers, FSDS command bridge, telemetry and the debug viewer. Console script
 |---|---|
 | `mpc/` | The ROS node, its per-tick step, debug publishing, node constants, and the two parameter dataclasses |
 | `lmpc/` | LTV-QP controller (linear time-varying model predictive control, a convex QP each tick) |
-| `nmpc/` | Frenet-frame nonlinear MPC (Gauss-Newton SQP, OSQP subproblem), file names match offline `controller/nmpc/` |
+| `nmpc/` | Nonlinear MPC, world-frame model by default or Frenet-frame (Gauss-Newton SQP, OSQP subproblem), file names match offline `controller/nmpc/` |
 | `telemetry/` | CSV logging, lap progress, horizon accuracy, score header |
 | `live_viz/` | Matplotlib debug window |
 
@@ -266,7 +266,7 @@ Key API: `IDX_VX`, `NX`, `NU`, `NH_TRACKING`, `NH_PROGRESS`, `_wrap`
 
 ### `fsds_simulator/control/fsae_control/fsae_control/nmpc/dynamics.py`
 
-Does: Frenet-frame vehicle model: plant constants, tyre forces, continuous dynamics `_f` and `_f_scalar`, RK4 steps `_step` and `_step_scalar`.
+Does: vehicle model in either state frame (`_Plant.cartesian`): plant constants, tyre forces, continuous dynamics `_f` and `_f_scalar`, RK4 steps `_step` and `_step_scalar`.
 Change it to:
 - Change the model, then edit both the scalar and vectorised versions and the offline twin. `nmpc_offline_check` parity test catches a mismatch. Also run `python -m tuner.validation.plant_openloop_validation` if the plant changes.
 Don't:
@@ -280,7 +280,7 @@ Change it to:
 - Change curvature estimation. Run the rollout check, curvature spikes affect corner behaviour.
 Don't:
 - Remove the old moving-average branch without checking `nmpc_spline_reference_enabled` A/B use.
-Key API: `PathReference`, `kappa_at`, `psi_ref_at`, `xy_at`, `project`
+Key API: `PathReference`, `kappa_at`, `psi_ref_at`, `xy_at`, `project`, `frenet_batch` (world-frame model's cost projection)
 
 ### `fsds_simulator/control/fsae_control/fsae_control/nmpc/outputs.py`
 
@@ -289,7 +289,7 @@ Change it to:
 - Add a cost residual. Extend `layout.py` sizes and the weight vector together, run `nmpc_offline_check`.
 Don't:
 - Weight the friction-circle rows into the cost, because they exist only to build QP constraints.
-Key API: `_outputs`
+Key API: `_outputs`, `_frenet_stages` (path-relative terms in either state frame)
 
 ### `fsds_simulator/control/fsae_control/fsae_control/nmpc/weight_schedule.py`
 

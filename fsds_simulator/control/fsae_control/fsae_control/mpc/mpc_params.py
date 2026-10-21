@@ -78,6 +78,7 @@ class MPCParams:
 
     # ── Delay compensation ──────────────────────────────────────────────
     max_delay_compensation_steps: int = field(default=3, metadata={"unit": "steps", "desc": "cap on predict_ahead() rollforward depth", "controller": "both"})
+    min_delay_compensation_steps: int = field(default=1, metadata={"unit": "steps", "desc": "floor on the rollforward depth, for delay the pose age does not see (transport before sim_perception, actuation). 1 matches the offline DELAY_STEPS=1; 0 lets n_delay fall to 0", "controller": "both"})
     predict_epsi_clip: float = field(default=0.5, metadata={"unit": "rad", "desc": "small-angle bound used inside predict_ahead()", "controller": "ltv_qp_only"})
 
     # ── n_delay stabilisation ────────────────────────────────────────────
