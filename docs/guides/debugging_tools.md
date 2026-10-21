@@ -123,13 +123,28 @@ Save pushes what the tab's widgets hold outward. Overwrite All Params runs `tune
 
 ### Profiles tab
 
-A profile is one JSON file in `settings_profiles/` holding every Settings-tab field plus the Launch tab's track, controller, precomputed speed and path, `V_MAX`, `V_MIN` and progress choice.
+A profile is one JSON file in `settings_profiles/` holding every Settings-tab field plus the Launch tab's track, controller, precomputed speed and path, `V_MAX`, `V_MIN`, standalone output, progress and world-frame choices.
 
 - Save Current As Profile reads the widgets, so unsaved edits are captured. A same-name profile asks before overwrite.
 - Load Selected pushes values into the widgets and then runs the Settings tab's own save routine, so all files are rewritten as if each field were retyped. The Launch-tab part only updates that tab's widgets and does not write `launch_all.sh` until the next Launch click. A name no field table recognises is skipped silently.
 - Delete Selected removes the file. Recovery is git history only.
 
-Loading a profile writes files but does not restart a running sim.
+**What a load writes, and when:**
+
+| Destination | Written |
+|---|---|
+| `settings/`, live `mpc_params.py`/`nmpc_params.py`, their `fsds_simulator/` copies, both `fsae_params.yaml` | at once, by the Settings-tab save |
+| An already-uncommented `launch_all.sh` line for a Settings field | at once, by the same save |
+| The Launch-tab fields in `launch_all.sh` (track, controller, progress, world-frame, precomputed path and speed, `V_MAX`, `V_MIN`) | on the next Launch click only, so starting the sim any other way keeps the old values |
+
+**What a load never touches,** and how to bring it in line:
+
+1. **Fields with no GUI widget** (most of the about 110 `MPCParams`/`NMPCParams` fields, for example `nmpc_horizon`, `min_delay_compensation_steps`, `nmpc_kappa_clip`). A profile cannot hold them, so they keep their current values. Edit them by hand in the live dataclass and `settings/`.
+2. **Fields the profile does not contain.** A profile saved before a widget existed has no entry for it, so that field keeps its current value. Re-save the profile to include it.
+3. **`fsae_autonomous`.** Use "Overwrite All Params..." on the Settings tab (or `sync_mpc_params`, below). It overwrites whole files, including production's own kart values and `UNVERIFIED` markers, so run `param_report` first and carry over only what is meant for the car. Then mirror the changed files to `fsae_MPCRos` and push.
+4. **Git.** Nothing is committed or pushed.
+
+**To confirm a load landed everywhere:** run `python3 -m tuner.tools.param_report --check` from `fsae_MPCTest/`. It fails on an `OFFLINE` or `MIRROR` mismatch, and its `LAUNCH` and `PROD` rows show what `launch_all.sh` will override and where production differs. Loading a profile writes files but does not restart a running sim, so restart it afterwards.
 
 ## Pushing live-tested params: `tuner/tools/sync_mpc_params.py`
 
