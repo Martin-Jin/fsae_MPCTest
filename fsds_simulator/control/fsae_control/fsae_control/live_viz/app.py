@@ -215,11 +215,19 @@ class LiveViz:
         # 100% scale each). Right column: one tall panel with every term's
         # horizon-summed share of total_cost on one shared scale (slack is
         # left out, see DEBUG_HORIZON_TERMS, so those bars fall a little
-        # short of summing to total_cost). hspace/wspace are widened because
-        # the y-axis labels overlapped neighbouring panels at the defaults.
+        # short of summing to total_cost). wspace is widened because the
+        # y-axis labels overlapped the neighbouring column at the default;
+        # hspace is kept small, since constrained layout already reserves
+        # room for each panel's x label and a large value only left empty
+        # bands that squeezed the panels.
         self.fig_dbg = plt.figure(figsize=(13, 9), layout='constrained')
-        gs = self.fig_dbg.add_gridspec(len(DEBUG_BAR_GROUPS), 2, width_ratios=[1.0, 1.0],
-                                       hspace=0.6, wspace=0.35)
+        # Left panels get height in proportion to their row count (plus one
+        # for the axis label), so the 9-row tracking panel is not squeezed
+        # into the same height as the 2-row effort and rate panels.
+        gs = self.fig_dbg.add_gridspec(
+            len(DEBUG_BAR_GROUPS), 2, width_ratios=[1.0, 1.0],
+            height_ratios=[len(names) + 1 for _g, _l, names in DEBUG_BAR_GROUPS],
+            hspace=0.12, wspace=0.35)
         self.mpc_panels = [
             _BarPanel(self.fig_dbg.add_subplot(gs[i, 0]), names, label, red_threshold=50.0)
             for i, (_group, label, names) in enumerate(DEBUG_BAR_GROUPS)

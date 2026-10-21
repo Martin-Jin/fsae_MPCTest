@@ -18,26 +18,44 @@ from tkinter import ttk
 # dependency: clam ships with tkinter itself.
 # ---------------------------------------------------------------------------
 
+def numeric_validator(widget) -> tuple:
+    """validatecommand for a number-only ttk.Entry: accepts every partial
+    form of a float while typing ('', '-', '1.', '1e', '1e-3') and rejects
+    anything else, such as a letter."""
+    import re
+    pattern = re.compile(r"^-?\d*\.?\d*(?:[eE][-+]?\d*)?$")
+    return (widget.register(lambda text: bool(pattern.match(text))), "%P")
+
+
 class Palette:
-    bg = "#1e1f22"          # app background
-    surface = "#26272b"     # panels/cards
-    surface_alt = "#2d2f34"  # inputs, list rows
-    border = "#3a3c42"
-    text = "#e7e8ea"
-    text_muted = "#9a9da5"
-    accent = "#5b8def"      # primary action
-    accent_hover = "#6f9bf2"
-    accent_text = "#0d1117"
-    danger = "#e5626b"
-    success = "#4caf6f"     # save-confirmation flash
-    font_family = "Segoe UI"
-    font_family_fallback = "Helvetica"
+    # A dark web-app palette: near-black page, slightly lighter header and
+    # cards separated by thin borders rather than heavy fills.
+    bg = "#0f1115"           # page background
+    header = "#151820"       # top navigation bar
+    surface = "#171a21"      # cards
+    surface_alt = "#1f232c"  # inputs, list rows
+    border = "#2a2f3a"
+    text = "#e6e8eb"
+    text_muted = "#8b93a1"
+    accent = "#3b82f6"       # primary action, active navigation link
+    accent_hover = "#60a5fa"
+    accent_soft = "#1c2a44"  # active navigation link background
+    accent_text = "#ffffff"
+    danger = "#ef4444"
+    danger_soft = "#3a1d22"  # unsaved-field tint
+    success = "#22c55e"      # save-confirmation flash
+    font_family = "Inter"
+    font_family_fallback = "Segoe UI"
+
+    # Widest the page content grows before it is centred, like a web page's
+    # content column, so lines do not stretch across a maximised window.
+    content_max_width = 860
 
 
 def _resolve_font_family() -> str:
     available = set(tkfont.families())
     for candidate in (Palette.font_family, Palette.font_family_fallback,
-                      "DejaVu Sans", "Arial"):
+                      "Lato", "Ubuntu", "DejaVu Sans", "Arial"):
         if candidate in available:
             return candidate
     return "TkDefaultFont"
@@ -49,7 +67,8 @@ def apply_theme(root: tk.Tk) -> None:
     are built -- ttk styles are process-global, not per-widget."""
     family = _resolve_font_family()
     base_font = (family, 10)
-    heading_font = (family, 11, "bold")
+    heading_font = (family, 12, "bold")
+    page_title_font = (family, 18, "bold")
     small_font = (family, 9)
 
     root.option_add("*Font", base_font)
@@ -61,7 +80,25 @@ def apply_theme(root: tk.Tk) -> None:
     style.configure(".", background=Palette.bg, foreground=Palette.text,
                      font=base_font, borderwidth=0)
     style.configure("TFrame", background=Palette.bg)
-    style.configure("Card.TFrame", background=Palette.surface)
+    style.configure("Card.TFrame", background=Palette.surface, borderwidth=1,
+                     relief="solid", bordercolor=Palette.border,
+                     lightcolor=Palette.border, darkcolor=Palette.border)
+    style.configure("Header.TFrame", background=Palette.header)
+    style.configure("HeaderTitle.TLabel", background=Palette.header, foreground=Palette.text,
+                     font=(family, 12, "bold"))
+    style.configure("HeaderMuted.TLabel", background=Palette.header,
+                     foreground=Palette.text_muted, font=small_font)
+    # Top navigation links (see LauncherApp): flat text buttons, the active
+    # one tinted with the accent like a web app's selected nav item.
+    style.configure("Nav.TButton", background=Palette.header, foreground=Palette.text_muted,
+                     padding=(14, 8), borderwidth=0, relief="flat", focusthickness=0,
+                     font=base_font)
+    style.map("Nav.TButton", background=[("active", Palette.surface_alt)],
+              foreground=[("active", Palette.text)])
+    style.configure("NavActive.TButton", background=Palette.accent_soft,
+                     foreground=Palette.accent_hover, padding=(14, 8), borderwidth=0,
+                     relief="flat", focusthickness=0, font=(family, 10, "bold"))
+    style.map("NavActive.TButton", background=[("active", Palette.accent_soft)])
     style.configure("TLabel", background=Palette.bg, foreground=Palette.text)
     style.configure("Card.TLabel", background=Palette.surface, foreground=Palette.text)
     style.configure("Muted.TLabel", background=Palette.bg, foreground=Palette.text_muted,
@@ -69,9 +106,9 @@ def apply_theme(root: tk.Tk) -> None:
     style.configure("CardMuted.TLabel", background=Palette.surface, foreground=Palette.text_muted,
                      font=small_font)
     style.configure("Heading.TLabel", background=Palette.bg, foreground=Palette.text,
-                     font=heading_font)
+                     font=page_title_font)
     style.configure("SectionHeading.TLabel", background=Palette.bg,
-                     foreground=Palette.text_muted, font=heading_font)
+                     foreground=Palette.text, font=heading_font)
     # Save-confirmation flash / unsaved-changes warning on a status label --
     # a distinct STYLE, not a direct .config(foreground=...) call, since
     # that is what ttk widgets require for a runtime color change to
@@ -81,6 +118,11 @@ def apply_theme(root: tk.Tk) -> None:
     style.configure("Warning.TLabel", background=Palette.bg, foreground=Palette.danger,
                      font=small_font)
 
+    # The notebook still holds the pages, but its tab strip is hidden: the
+    # header's navigation links select pages instead (see LauncherApp).
+    style.layout("Pages.TNotebook.Tab", [])
+    style.configure("Pages.TNotebook", background=Palette.bg, borderwidth=0,
+                     tabmargins=(0, 0, 0, 0))
     style.configure("TNotebook", background=Palette.bg, borderwidth=0, tabmargins=(0, 6, 0, 0))
     style.configure("TNotebook.Tab", background=Palette.surface, foreground=Palette.text_muted,
                      padding=(16, 8), borderwidth=0, font=base_font)
@@ -89,10 +131,13 @@ def apply_theme(root: tk.Tk) -> None:
               foreground=[("selected", Palette.text)])
 
     style.configure("TButton", background=Palette.surface_alt, foreground=Palette.text,
-                     padding=(12, 7), borderwidth=0, focusthickness=0, relief="flat",
-                     font=base_font)
+                     padding=(14, 8), borderwidth=1, focusthickness=0, relief="solid",
+                     bordercolor=Palette.border, lightcolor=Palette.surface_alt,
+                     darkcolor=Palette.surface_alt, font=base_font)
     style.map("TButton",
-              background=[("active", Palette.border), ("pressed", Palette.border)])
+              background=[("active", Palette.border), ("pressed", Palette.border),
+                          ("disabled", Palette.surface)],
+              foreground=[("disabled", Palette.text_muted)])
 
     style.configure("Accent.TButton", background=Palette.accent, foreground=Palette.accent_text,
                      padding=(14, 8), borderwidth=0, relief="flat", font=(family, 10, "bold"))
@@ -102,8 +147,10 @@ def apply_theme(root: tk.Tk) -> None:
     style.configure("TEntry", fieldbackground=Palette.surface_alt, foreground=Palette.text,
                      insertcolor=Palette.text, bordercolor=Palette.border,
                      lightcolor=Palette.surface_alt, darkcolor=Palette.surface_alt,
-                     borderwidth=1, padding=6)
-    style.map("TEntry", bordercolor=[("focus", Palette.accent)])
+                     borderwidth=1, padding=7)
+    style.map("TEntry", bordercolor=[("focus", Palette.accent)],
+              fieldbackground=[("disabled", Palette.surface)],
+              foreground=[("disabled", Palette.text_muted)])
 
     style.configure("TCombobox", fieldbackground=Palette.surface_alt, foreground=Palette.text,
                      background=Palette.surface_alt, bordercolor=Palette.border,
@@ -120,7 +167,21 @@ def apply_theme(root: tk.Tk) -> None:
     style.map("TCheckbutton", background=[("active", Palette.bg)])
     style.configure("Card.TCheckbutton", background=Palette.surface, foreground=Palette.text,
                      font=base_font, focuscolor=Palette.surface)
-    style.map("Card.TCheckbutton", background=[("active", Palette.surface)])
+    style.map("Card.TCheckbutton", background=[("active", Palette.surface)],
+              foreground=[("disabled", Palette.text_muted)],
+              indicatorcolor=[("disabled", Palette.surface), ("selected", Palette.accent)])
+
+    # Unsaved-edit highlight (Settings tab): a field whose value differs from
+    # what was last saved. Red border and tint on an entry, red tint behind a
+    # checkbox (which has no text to recolour).
+    style.configure("Unsaved.TEntry", fieldbackground=Palette.danger_soft,
+                     foreground=Palette.text, insertcolor=Palette.text,
+                     bordercolor=Palette.danger, lightcolor=Palette.danger,
+                     darkcolor=Palette.danger, borderwidth=1, padding=7)
+    style.map("Unsaved.TEntry", bordercolor=[("focus", Palette.danger)])
+    style.configure("Unsaved.Card.TCheckbutton", background=Palette.danger,
+                     foreground=Palette.text, font=base_font, focuscolor=Palette.danger)
+    style.map("Unsaved.Card.TCheckbutton", background=[("active", Palette.danger)])
 
     style.configure("TRadiobutton", background=Palette.bg, foreground=Palette.text,
                      font=base_font, focuscolor=Palette.bg)
@@ -128,7 +189,7 @@ def apply_theme(root: tk.Tk) -> None:
 
     style.configure("Vertical.TScrollbar", background=Palette.surface_alt,
                      troughcolor=Palette.bg, bordercolor=Palette.bg,
-                     arrowcolor=Palette.text_muted, borderwidth=0)
+                     arrowcolor=Palette.bg, borderwidth=0, arrowsize=6)
     style.map("Vertical.TScrollbar", background=[("active", Palette.border)])
 
     style.configure("TSeparator", background=Palette.border)
@@ -151,6 +212,21 @@ def _field_label(parent: tk.Widget, row: int, label: str, desc: str = "",
             row=row + 1, column=0, columnspan=columnspan, sticky="nw", pady=(0, 8))
 
 
+def center_column(frame: ttk.Frame, pad: int = 24, top: int | None = None,
+                  bottom: int | None = None) -> None:
+    """Keep a packed frame's content in a centred column no wider than
+    Palette.content_max_width, by widening its side padding as the window
+    grows. For pages that pack straight into their frame instead of using
+    _make_scrollable (which centres on its own)."""
+    top = pad if top is None else top
+    bottom = pad if bottom is None else bottom
+
+    def _fit(e):
+        side = max(pad, (e.width - Palette.content_max_width) // 2)
+        frame.configure(padding=(side, top, side, bottom))
+    frame.bind("<Configure>", _fit, add="+")
+
+
 def _make_scrollable(parent: tk.Widget, body_padding=(24, 24, 24, 24)) -> ttk.Frame:
     """Wraps `parent` in a vertically-scrollable canvas and returns the
     inner content frame to build a tab's widgets into. Every tab uses this
@@ -167,7 +243,13 @@ def _make_scrollable(parent: tk.Widget, body_padding=(24, 24, 24, 24)) -> ttk.Fr
     body = ttk.Frame(canvas, padding=body_padding)
     body_window = canvas.create_window((0, 0), window=body, anchor="nw")
     body.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
-    canvas.bind("<Configure>", lambda e: canvas.itemconfigure(body_window, width=e.width))
+    def _fit(e):
+        # Web-style content column: full width up to content_max_width,
+        # centred beyond it.
+        width = min(e.width, Palette.content_max_width)
+        canvas.itemconfigure(body_window, width=width)
+        canvas.coords(body_window, max(0, (e.width - width) // 2), 0)
+    canvas.bind("<Configure>", _fit)
     canvas.configure(yscrollcommand=scrollbar.set)
     canvas.pack(side="left", fill="both", expand=True)
     scrollbar.pack(side="right", fill="y")

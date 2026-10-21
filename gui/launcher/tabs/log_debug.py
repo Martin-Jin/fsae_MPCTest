@@ -13,7 +13,7 @@ from tkinter import messagebox, ttk
 
 from gui.launcher.paths import RepoPaths
 from gui.launcher.process_utils import _run_detached
-from gui.launcher.theme import Palette
+from gui.launcher.theme import Palette, center_column
 
 # ---------------------------------------------------------------------------
 # Tab 2: Debug a Log
@@ -22,6 +22,7 @@ from gui.launcher.theme import Palette
 class LogDebugTab(ttk.Frame):
     def __init__(self, parent: ttk.Notebook, paths: RepoPaths) -> None:
         super().__init__(parent, padding=24)
+        center_column(self)
         self._paths = paths
 
         ttk.Label(self, text="Debug a Log", style="Heading.TLabel").pack(anchor="w")

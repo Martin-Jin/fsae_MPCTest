@@ -54,6 +54,10 @@ cd fsae_MPCTest && python -m gui.launcher
 
 **Required layout.** `fsae_MPCTest/` sits directly inside the outer FSDS repo root, next to `ros2/`. `gui/launcher/paths.py` resolves every path from its own location (`fsae_MPCTest` and its parent), so a checkout anywhere else cannot find `ros2/launch_all.sh`, the tracks or `mpc_params.py`.
 
+**Look and navigation.** The window is laid out like a web app: a header bar with the app name and one navigation link per page, and each page's content in a centred column up to `Palette.content_max_width` (860 px) wide. The pages still live in a `ttk.Notebook` whose own tab strip is hidden (`Pages.TNotebook`). The links call `notebook.select()`, so the unsaved-changes guard on leaving Settings works as before. Colours, fonts and spacing are all in `theme.py`.
+
+**Input checks.** Every number field (all Settings entries, Launch `V_MAX` and `V_MIN`) refuses anything that cannot become a number as it is typed, so a letter never reaches a config file.
+
 **Package layout.** `theme.py`, `paths.py`, `process_utils.py`, `app.py` and one module per tab under `gui/launcher/tabs/`: `launch.py`, `log_debug.py`, `offline_sim.py`, `settings.py`, `profiles.py`. The file read/write helpers and the param-file layout are in `tuner/tools/param_files.py`, shared with `sync_mpc_params` and `param_report`.
 
 | Tab | What it does |
@@ -96,6 +100,8 @@ Fields are grouped the way `MPCParams` field metadata classifies them:
 - NMPC only: steer-rate anti-hunt, reversal penalty, rate-cost stage ramp, three-zone schedule, corner rate-blend.
 
 Every `NMPC_*` weight override has an override checkbox: checked uses the number, unchecked writes the `-1.0` inherit sentinel. Field descriptions and units come from the `mpc_params.py` metadata, so the text follows the field.
+
+**Unsaved fields are shown in red.** Each field is compared with its value at the last save (or when the tab opened). While it differs, an entry gets a red border and tint, and a checkbox a red background. So after the "unsaved changes" prompt on leaving the tab, coming back shows which fields still need saving. Typing a value back to the saved one clears the highlight, and the prompt only fires when at least one field differs.
 
 **Fields that the current selection does not use are greyed out.** The tab follows the Launch tab's controller and progress-term choice live. A greyed field keeps its value and is still saved, so switching back restores it.
 

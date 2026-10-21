@@ -34,15 +34,26 @@ class LauncherApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("FSDS / fsae_MPCTest launcher")
-        self.geometry("780x680")
+        self.geometry("1000x760")
         self.minsize(620, 480)
 
         apply_theme(self)
         self.configure(bg=Palette.bg)
 
         paths = _repo_paths()
-        notebook = ttk.Notebook(self, padding=(0, 0))
-        notebook.pack(fill="both", expand=True, padx=10, pady=10)
+        # Web-app layout: a header bar with the app name and navigation links,
+        # and the pages below it. The notebook holds the pages but its own tab
+        # strip is hidden (Pages.TNotebook); the links call notebook.select(),
+        # so <<NotebookTabChanged>> and the unsaved-changes guard still apply.
+        header = ttk.Frame(self, style="Header.TFrame", padding=(20, 10))
+        header.pack(fill="x")
+        ttk.Label(header, text="FSAE Driverless", style="HeaderTitle.TLabel").pack(side="left")
+        ttk.Label(header, text="sim launcher", style="HeaderMuted.TLabel").pack(
+            side="left", padx=(8, 24), pady=(3, 0))
+        self._nav = ttk.Frame(header, style="Header.TFrame")
+        self._nav.pack(side="left")
+        notebook = ttk.Notebook(self, padding=(0, 0), style="Pages.TNotebook")
+        notebook.pack(fill="both", expand=True)
 
         self._launch_tab = LaunchTab(notebook, paths)
         notebook.add(self._launch_tab, text="Launch Sim")
@@ -59,9 +70,18 @@ class LauncherApp(tk.Tk):
         # the more common way an edit gets silently forgotten, since nothing
         # else about the app suggests leaving a tab discards anything.
         self._notebook = notebook
+        self._nav_buttons = {}
+        for tab_id in notebook.tabs():
+            text = notebook.tab(tab_id, "text")
+            button = ttk.Button(self._nav, text=text, style="Nav.TButton",
+                                command=lambda t=tab_id: notebook.select(t))
+            button.pack(side="left", padx=(0, 4))
+            self._nav_buttons[tab_id] = button
+        notebook.bind("<<NotebookTabChanged>>", self._sync_nav, add="+")
+        self._sync_nav()
         self._last_tab_was_settings = False
         self._reentering_tab_guard = False
-        notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+        notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed, add="+")
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -122,6 +142,13 @@ class LauncherApp(tk.Tk):
             self._launch_tab.refresh_from_disk()
         self._last_tab_was_settings = (
             self._notebook.select() == str(self._settings_tab))
+
+    def _sync_nav(self, _event=None) -> None:
+        """Highlight the navigation link of the page actually shown, which
+        the unsaved-changes guard may have switched back."""
+        current = self._notebook.select()
+        for tab_id, button in self._nav_buttons.items():
+            button.configure(style="NavActive.TButton" if tab_id == current else "Nav.TButton")
 
     def _clear_reentering_tab_guard(self) -> None:
         self._reentering_tab_guard = False

@@ -22,7 +22,7 @@ from gui.launcher.paths import RepoPaths
 from gui.launcher.process_utils import (
     _insert_run_label, _run_detached, _sibling_path_csv, _stop_process,
 )
-from gui.launcher.theme import _field_label, _make_scrollable
+from gui.launcher.theme import _field_label, _make_scrollable, numeric_validator
 
 # How long (seconds) the Launch tab's Stop button polls fsae_logs/ for a
 # freshly-written CSV before giving up silently. ControlLogger.close()
@@ -195,13 +195,17 @@ class LaunchTab(ttk.Frame):
                      "Only used when speed is computed live (precomputed speed off).")
         self.v_max_var = tk.StringVar(value=_read_var(paths.launch_all_sh, "V_MAX") or "20.0")
         self.v_max_entry = ttk.Entry(body, textvariable=self.v_max_var, width=10)
+        self.v_max_entry.configure(validate="key",
+                                   validatecommand=numeric_validator(self.v_max_entry))
         self.v_max_entry.grid(row=row, column=1, sticky="w")
 
         row += 2
         _field_label(body, row, "V_MIN", "Lower speed floor (m/s) handed to the controller node "
                      "-- the car never targets slower than this even mid-corner.")
         self.v_min_var = tk.StringVar(value=_read_var(paths.launch_all_sh, "V_MIN") or "1.5")
-        ttk.Entry(body, textvariable=self.v_min_var, width=10).grid(row=row, column=1, sticky="w")
+        v_min_entry = ttk.Entry(body, textvariable=self.v_min_var, width=10)
+        v_min_entry.configure(validate="key", validatecommand=numeric_validator(v_min_entry))
+        v_min_entry.grid(row=row, column=1, sticky="w")
 
         # Grey out what the current selection does not use: the standalone
         # output switch is MPC-only, and V_MAX only feeds the live curvature

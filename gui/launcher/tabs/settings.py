@@ -22,7 +22,7 @@ from tuner.tools.param_files import (
     _rewrite_yaml_field,
 )
 from gui.launcher.paths import RepoPaths
-from gui.launcher.theme import _field_label, _make_scrollable
+from gui.launcher.theme import _field_label, _make_scrollable, center_column, numeric_validator
 
 # ---------------------------------------------------------------------------
 # Tab 4: Settings (the settings package)
@@ -292,6 +292,7 @@ class SettingsTab(ttk.Frame):
 
         header = ttk.Frame(self, padding=(24, 24, 24, 0))
         header.pack(fill="x")
+        center_column(header, top=24, bottom=0)
         ttk.Label(header, text="Settings", style="Heading.TLabel").pack(anchor="w")
         ttk.Label(header, text="the settings package — saved changes apply the next time it's imported.",
                   style="Muted.TLabel").pack(anchor="w", pady=(2, 0))
@@ -513,6 +514,24 @@ class SettingsTab(ttk.Frame):
         self._is_dirty = False
         self._dirty_trace_ids: list[tuple[tk.Variable, str]] = []
         self._wire_dirty_tracking()
+
+        # Every Entry on this tab is a number; refuse letters as they are typed.
+        for widget, _tags in self._gated:
+            if isinstance(widget, ttk.Entry):
+                widget.configure(validate="key", validatecommand=numeric_validator(widget))
+
+        # Unsaved-edit highlight: each field is compared with the value it had
+        # at the last save (or when the tab was built) and shown red while it
+        # differs, so after the "unsaved changes" prompt the tab shows which
+        # fields were not saved. Typing a value back to the saved one clears it.
+        self._widget_for_var = {}
+        for widget, _tags in self._gated:
+            opt = "textvariable" if isinstance(widget, ttk.Entry) else "variable"
+            self._widget_for_var[str(widget.cget(opt))] = widget
+        self._saved_values: dict[str, str] = {}
+        self._snapshot_saved()
+        for var, _tid in self._dirty_trace_ids:
+            var.trace_add("write", lambda name, *_a: self._update_unsaved_highlight(name))
 
         # Settings that switch other settings on or off.
         for var in (self._feature_vars["nmpc_rrate_zone_enabled"],
@@ -758,6 +777,7 @@ class SettingsTab(ttk.Frame):
                         "Saved. Takes effect next time the settings package is imported.",
                         style="Success.TLabel", flash=True, auto_clear=True)
                 self._is_dirty = False
+                self._snapshot_saved()
         except OSError as exc:
             messagebox.showerror("Settings tab", f"Failed to save: {exc!r}")
 
@@ -783,6 +803,29 @@ class SettingsTab(ttk.Frame):
 
     def _mark_dirty(self, *_args) -> None:
         self._is_dirty = True
+
+    def _snapshot_saved(self) -> None:
+        """Record every field's current value as its saved value and clear
+        all highlights. Called once the tab is built and after each save."""
+        self._saved_values = {str(var): str(var.get()) for var, _tid in self._dirty_trace_ids}
+        for name in self._saved_values:
+            self._update_unsaved_highlight(name)
+
+    def _unsaved_names(self) -> list[str]:
+        return [str(var) for var, _tid in self._dirty_trace_ids
+                if str(var.get()) != self._saved_values.get(str(var))]
+
+    def _update_unsaved_highlight(self, var_name: str) -> None:
+        widget = self._widget_for_var.get(var_name)
+        if widget is None:
+            return
+        var = next(v for v, _t in self._dirty_trace_ids if str(v) == var_name)
+        unsaved = str(var.get()) != self._saved_values.get(var_name)
+        if isinstance(widget, ttk.Entry):
+            widget.configure(style="Unsaved.TEntry" if unsaved else "TEntry")
+        else:
+            widget.configure(style="Unsaved.Card.TCheckbutton" if unsaved
+                             else "Card.TCheckbutton")
 
     def _set_status(self, text: str, style: str = "Muted.TLabel",
                      flash: bool = False, auto_clear: bool = False) -> None:
@@ -818,7 +861,9 @@ class SettingsTab(ttk.Frame):
         self.status_label.configure(style="Muted.TLabel")
 
     def has_unsaved_changes(self) -> bool:
-        return self._is_dirty
+        # Value-based, so an edit typed back to the saved value is not
+        # reported as unsaved.
+        return self._is_dirty and bool(self._unsaved_names())
 
     def _on_overwrite_all_params(self) -> None:
         """Runs tuner.tools.sync_mpc_params --apply: overwrites

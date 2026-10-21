@@ -15,7 +15,7 @@ from tkinter import messagebox, simpledialog, ttk
 from gui.launcher.paths import RepoPaths
 from gui.launcher.tabs.launch import LaunchTab
 from gui.launcher.tabs.settings import SettingsTab, _profile_field_names
-from gui.launcher.theme import Palette
+from gui.launcher.theme import Palette, center_column
 
 # ---------------------------------------------------------------------------
 # Tab 5: Profiles
@@ -41,6 +41,7 @@ class ProfilesTab(ttk.Frame):
     def __init__(self, parent: ttk.Notebook, paths: RepoPaths, settings_tab: "SettingsTab",
                  launch_tab: "LaunchTab") -> None:
         super().__init__(parent, padding=24)
+        center_column(self)
         self._paths = paths
         self._settings_tab = settings_tab
         self._launch_tab = launch_tab
