@@ -18,7 +18,8 @@ from tkinter import messagebox, ttk
 
 from tuner.tools.param_files import (
     _backup_once, _launch_arg_vars, _read_dataclass_field, _read_dataclass_field_desc,
-    _LIST_FIELD_MAP, _read_var, _rewrite_dataclass_field, _rewrite_var, _rewrite_yaml_field,
+    _LIST_FIELD_MAP, _read_shortlist_var, _read_var, _rewrite_dataclass_field, _rewrite_var,
+    _rewrite_yaml_field,
 )
 from gui.launcher.paths import RepoPaths
 from gui.launcher.theme import _field_label, _make_scrollable
@@ -222,6 +223,28 @@ _NMPC_PROGRESS_FIELDS: list[tuple[str, str, str]] = [
 
 
 
+# Applicability tag for each _FEATURE_GROUPS group (see SettingsTab._gate).
+_FEATURE_GROUP_TAGS = {"Both controllers": "mpc", "LTV-QP only": "ltv", "NMPC only": "nmpc"}
+
+# _NMPC_PROGRESS_FIELDS entries that are read only when the progress term is
+# on. The slack and track-halfwidth rows apply to every NMPC run.
+_PROGRESS_ONLY_FIELDS = {"NMPC_Q_PROGRESS", "NMPC_PROGRESS_REACH", "NMPC_PROGRESS_V_MIN"}
+
+
+def _launch_context_from_file(launch_all_sh: Path) -> dict:
+    """Controller ('stanley'/'ltv'/'nmpc') and progress-term state as
+    launch_all.sh currently sets them; the starting point before the Launch
+    tab is bound."""
+    if not launch_all_sh.is_file():
+        return {"controller": "nmpc", "progress": False}
+    controller = (_read_var(launch_all_sh, "CONTROLLER") or "mpc").strip()
+    use_nmpc = (_read_var(launch_all_sh, "USE_NMPC") or "false").strip().lower() == "true"
+    name = "stanley" if controller == "stanley" else ("nmpc" if use_nmpc else "ltv")
+    state = _read_shortlist_var(launch_all_sh, "NMPC_PROGRESS_ENABLED")
+    progress = bool(state and state[0] and state[1].strip().lower() == "true")
+    return {"controller": name, "progress": name == "nmpc" and progress}
+
+
 def _profile_field_names() -> list[str]:
     """Every settings NAME the Settings tab reads/writes, derived from
     the same field-group tables the tab itself builds its widgets from
@@ -260,6 +283,12 @@ class SettingsTab(ttk.Frame):
         self._backed_up: set[Path] = set()
         self._launch_vars = (_launch_arg_vars(paths.launch_all_sh)
                              if paths.launch_all_sh.is_file() else {})
+        # Widgets greyed out when their setting does not apply to the current
+        # selection (see _refresh_applicability). The controller and progress
+        # state come from the Launch tab once bind_launch_context() is called;
+        # until then they are read from launch_all.sh.
+        self._gated: list[tuple[ttk.Widget, tuple]] = []
+        self._context = _launch_context_from_file(paths.launch_all_sh)
 
         header = ttk.Frame(self, padding=(24, 24, 24, 0))
         header.pack(fill="x")
@@ -322,8 +351,9 @@ class SettingsTab(ttk.Frame):
                 ttk.Label(weights_card, text=f"  {index_label}", style="CardMuted.TLabel").grid(
                     row=r, column=0, sticky="nw", padx=(16, 0), pady=(6, 0 if index_desc else 6))
                 var = tk.StringVar(value=str(v))
-                ttk.Entry(weights_card, textvariable=var, width=10).grid(
-                    row=r, column=1, sticky="w", pady=(6, 0 if index_desc else 6))
+                entry = ttk.Entry(weights_card, textvariable=var, width=10)
+                entry.grid(row=r, column=1, sticky="w", pady=(6, 0 if index_desc else 6))
+                self._gate(entry, "mpc")
                 if index_desc:
                     ttk.Label(weights_card, text=f"  {index_desc}", style="CardMuted.TLabel",
                               wraplength=440).grid(
@@ -349,12 +379,17 @@ class SettingsTab(ttk.Frame):
             raw = self._pinned_launch_value(_mpc_field) or _read_var(paths.settings_dir, name)
             if kind == "bool":
                 var = tk.BooleanVar(value=(raw or "False").strip().lower() == "true")
-                ttk.Checkbutton(weights_card, style="Card.TCheckbutton", variable=var).grid(
-                    row=r, column=1, sticky="w")
+                widget = ttk.Checkbutton(weights_card, style="Card.TCheckbutton", variable=var)
             else:
                 var = tk.StringVar(value=raw or "0.0")
-                ttk.Entry(weights_card, textvariable=var, width=10).grid(
-                    row=r, column=1, sticky="w")
+                widget = ttk.Entry(weights_card, textvariable=var, width=10)
+            widget.grid(row=r, column=1, sticky="w")
+            if name.startswith("NMPC_RRATE_ZONE_"):
+                self._gate(widget, "nmpc", "zone")
+            elif name.startswith("NMPC_"):
+                self._gate(widget, "nmpc")
+            else:
+                self._gate(widget, "mpc")
             self._scalar_vars[name] = var
             r += 2 if desc else 1
 
@@ -373,10 +408,13 @@ class SettingsTab(ttk.Frame):
             is_override = _to_float(raw) is not None and _to_float(raw) >= 0.0
             enabled_var = tk.BooleanVar(value=is_override)
             value_var = tk.StringVar(value=raw if is_override else "")
-            ttk.Checkbutton(overrides_card, text="override", style="Card.TCheckbutton",
-                             variable=enabled_var).grid(row=r, column=1, sticky="w", padx=(0, 12))
-            ttk.Entry(overrides_card, textvariable=value_var, width=10).grid(
-                row=r, column=2, sticky="w")
+            check = ttk.Checkbutton(overrides_card, text="override", style="Card.TCheckbutton",
+                                    variable=enabled_var)
+            check.grid(row=r, column=1, sticky="w", padx=(0, 12))
+            entry = ttk.Entry(overrides_card, textvariable=value_var, width=10)
+            entry.grid(row=r, column=2, sticky="w")
+            self._gate(check, "nmpc")
+            self._gate(entry, "nmpc", ("override", name))
             self._override_vars[name] = (enabled_var, value_var)
             r += 2 if desc else 1
 
@@ -395,8 +433,12 @@ class SettingsTab(ttk.Frame):
                          desc_style="CardMuted.TLabel", wraplength=520)
             var = tk.StringVar(value=self._pinned_launch_value(name.lower())
                                or _read_var(paths.settings_dir, name) or "0.0")
-            ttk.Entry(progress_card, textvariable=var, width=10).grid(
-                row=r, column=1, sticky="w")
+            entry = ttk.Entry(progress_card, textvariable=var, width=10)
+            entry.grid(row=r, column=1, sticky="w")
+            if name in _PROGRESS_ONLY_FIELDS:
+                self._gate(entry, "nmpc", "progress")
+            else:
+                self._gate(entry, "nmpc")
             self._progress_vars[name] = var
             r += 2 if desc else 1
 
@@ -424,8 +466,12 @@ class SettingsTab(ttk.Frame):
                 if raw is None:
                     raw = _read_dataclass_field(paths.mpc_params_py, mpc_field)
                 var = tk.BooleanVar(value=(raw or "False").strip() in ("True", "true"))
-                ttk.Checkbutton(group_card, style="Card.TCheckbutton", variable=var).grid(
-                    row=r, column=1, sticky="w")
+                check = ttk.Checkbutton(group_card, style="Card.TCheckbutton", variable=var)
+                check.grid(row=r, column=1, sticky="w")
+                tags = [_FEATURE_GROUP_TAGS[group_title]]
+                if mpc_field == "nmpc_steer_rate_anti_hunt_enabled":
+                    tags.append("no_blend")
+                self._gate(check, *tags)
                 # Keyed by mpc_field (always present) since settings_name can be None.
                 self._feature_vars[mpc_field] = var
                 r += 2 if desc else 1
@@ -465,6 +511,64 @@ class SettingsTab(ttk.Frame):
         self._is_dirty = False
         self._dirty_trace_ids: list[tuple[tk.Variable, str]] = []
         self._wire_dirty_tracking()
+
+        # Settings that switch other settings on or off.
+        for var in (self._feature_vars["nmpc_rrate_zone_enabled"],
+                    self._feature_vars["nmpc_corner_rrate_blend_enabled"],
+                    *(enabled for enabled, _value in self._override_vars.values())):
+            var.trace_add("write", lambda *_a: self._refresh_applicability())
+        self._refresh_applicability()
+
+    # ------------------------------------------------------------------
+    # Applicability: grey out what the current selection does not use
+    # ------------------------------------------------------------------
+    def _gate(self, widget: ttk.Widget, *tags) -> None:
+        """Register `widget` as usable only when every tag holds (see
+        _tag_holds)."""
+        self._gated.append((widget, tags))
+
+    def _tag_holds(self, tag) -> bool:
+        controller = self._context["controller"]
+        if tag == "mpc":
+            return controller in ("ltv", "nmpc")
+        if tag == "ltv":
+            return controller == "ltv"
+        if tag == "nmpc":
+            return controller == "nmpc"
+        if tag == "progress":
+            return self._context["progress"]
+        if tag == "zone":
+            return self._feature_vars["nmpc_rrate_zone_enabled"].get()
+        if tag == "no_blend":
+            # The corner rate-blend takes priority over anti-hunt when both
+            # are on (nmpc/solver.py), so anti-hunt would be ignored.
+            return not self._feature_vars["nmpc_corner_rrate_blend_enabled"].get()
+        if isinstance(tag, tuple) and tag[0] == "override":
+            return self._override_vars[tag[1]][0].get()
+        return True
+
+    def _refresh_applicability(self) -> None:
+        """Disable every registered widget whose setting has no effect with
+        the current controller, progress-term and feature-flag selection.
+        A disabled field keeps its value and is still saved, so switching
+        back restores it unchanged."""
+        for widget, tags in self._gated:
+            usable = all(self._tag_holds(t) for t in tags)
+            widget.state(["!disabled"] if usable else ["disabled"])
+
+    def bind_launch_context(self, launch_tab) -> None:
+        """Follow the Launch tab's controller and progress-term selection
+        live, so this tab greys out what the next launch will not use."""
+        def update(*_args):
+            controller = launch_tab.controller_var.get()
+            self._context = {
+                "controller": controller,
+                "progress": controller == "nmpc" and launch_tab.progress_var.get(),
+            }
+            self._refresh_applicability()
+        launch_tab.controller_var.trace_add("write", update)
+        launch_tab.progress_var.trace_add("write", update)
+        update()
 
     def _sync_live_field(self, mpc_field: str, literal: str, errors: list[str]) -> None:
         """Writes mpc_field's value to every place a launched node could

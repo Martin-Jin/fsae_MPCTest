@@ -1,8 +1,10 @@
 """
 Live, close-up debug visualiser for the simulator: car (as a triangle), cone
 map, planner/reference path, NMPC's predicted horizon (NMPC only), the car's
-driven trail, and the controller's current output/stats, all redrawn from
-live ROS2 topics on a timer.
+driven trail, and the controller's current output/stats, all updated from
+live ROS2 topics on a timer. Only moving artists are redrawn (blitting, see
+app.py), and the map's axes are fixed metres around a point just ahead of the
+car rather than track coordinates.
 
 Sim-only debug tool, not part of the car's autonomy stack: never launched by
 `fsae_autonomous`, only by `ros2/launch_all.sh` alongside the simulator, the

@@ -168,6 +168,7 @@ class LaunchTab(ttk.Frame):
         ttk.Separator(body).grid(row=row, column=0, columnspan=2, sticky="ew", pady=16)
 
         row += 1
+        self._bool_widgets: dict[str, ttk.Checkbutton] = {}
         self.standalone_var = self._bool_row(
             row, "Standalone output (MPC only)",
             "On: the MPC node publishes steering+throttle+brake directly. Off: steering only, "
@@ -190,15 +191,25 @@ class LaunchTab(ttk.Frame):
         ttk.Separator(body).grid(row=row, column=0, columnspan=2, sticky="ew", pady=16)
 
         row += 1
-        _field_label(body, row, "V_MAX", "Upper speed cap (m/s) handed to the controller node.")
+        _field_label(body, row, "V_MAX", "Upper speed cap (m/s) handed to the controller node. "
+                     "Only used when speed is computed live (precomputed speed off).")
         self.v_max_var = tk.StringVar(value=_read_var(paths.launch_all_sh, "V_MAX") or "20.0")
-        ttk.Entry(body, textvariable=self.v_max_var, width=10).grid(row=row, column=1, sticky="w")
+        self.v_max_entry = ttk.Entry(body, textvariable=self.v_max_var, width=10)
+        self.v_max_entry.grid(row=row, column=1, sticky="w")
 
         row += 2
         _field_label(body, row, "V_MIN", "Lower speed floor (m/s) handed to the controller node "
                      "-- the car never targets slower than this even mid-corner.")
         self.v_min_var = tk.StringVar(value=_read_var(paths.launch_all_sh, "V_MIN") or "1.5")
         ttk.Entry(body, textvariable=self.v_min_var, width=10).grid(row=row, column=1, sticky="w")
+
+        # Grey out what the current selection does not use: the standalone
+        # output switch is MPC-only, and V_MAX only feeds the live curvature
+        # speed (and the disabled-by-default dynamic speed cap), not the
+        # precomputed speed profile.
+        for var in (self.controller_var, self.precomp_speed_var):
+            var.trace_add("write", lambda *_a: self._refresh_applicability())
+        self._refresh_applicability()
 
         row += 2
         self.status_var = tk.StringVar(value="")
@@ -242,6 +253,12 @@ class LaunchTab(ttk.Frame):
         else:
             for w in widgets:
                 w.grid_remove()
+
+    def _refresh_applicability(self) -> None:
+        mpc = self.controller_var.get() != "stanley"
+        self._bool_widgets["STANDALONE_OUTPUT"].state(["!disabled"] if mpc else ["disabled"])
+        live_speed = not self.precomp_speed_var.get()
+        self.v_max_entry.state(["!disabled"] if live_speed else ["disabled"])
 
     def _on_controller_changed(self) -> None:
         self._set_progress_row_visible(self.controller_var.get() == "nmpc")
@@ -365,7 +382,9 @@ class LaunchTab(ttk.Frame):
         _field_label(self._body, row, label, desc)
         current = (_read_var(self._paths.launch_all_sh, var_name) or "true").strip().lower()
         var = tk.BooleanVar(value=(current == "true"))
-        ttk.Checkbutton(self._body, variable=var).grid(row=row, column=1, sticky="w")
+        check = ttk.Checkbutton(self._body, variable=var)
+        check.grid(row=row, column=1, sticky="w")
+        self._bool_widgets[var_name] = check
         return var
 
     def _pending_values(self) -> dict[str, str]:

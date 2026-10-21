@@ -13,14 +13,15 @@ VIEW_AHEAD = 25.0
 VIEW_BEHIND = 8.0
 
 TRAIL_MAXLEN = 2000        # ~40s at 50 Hz control rate, plenty for a debug view
-REDRAW_HZ = 25.0           # window refresh rate; independent of the 50 Hz control loop.
-# Not pushed higher than this: each frame does a full ax.clear() + re-plot
-# (scatter/lines/legend/text), not a blit-based partial update, so redraw
-# cost scales with cone/path point counts: past ~25-30 Hz the redraw itself
-# starts taking longer than the interval on a typical track-sized cone map,
-# and frames just queue up behind rclpy.spin_once() instead of arriving
-# sooner. Move to blitting (redrawing only changed artists) if a higher rate
-# is ever needed.
+# Window refresh rates. Both windows blit (see app.py), so a frame costs
+# only its moving artists, and text dominates that: on the developer's WSL
+# machine each text label costs about 4 ms to render, so a map frame
+# measures about 30 ms and a debug-window frame (24 bar labels) about 100 ms.
+# The debug window therefore refreshes slower, so it does not starve the
+# map; both share one Tk thread. A rate the machine cannot keep up with just
+# drops frames, it does not queue them.
+REDRAW_HZ = 30.0           # map window
+DEBUG_REDRAW_HZ = 5.0      # cost-breakdown debug windows
 
 
 # Which terms (mpc_controller.py's _publish_debug_weights() dict keys)

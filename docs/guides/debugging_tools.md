@@ -97,6 +97,20 @@ Fields are grouped the way `MPCParams` field metadata classifies them:
 
 Every `NMPC_*` weight override has an override checkbox: checked uses the number, unchecked writes the `-1.0` inherit sentinel. Field descriptions and units come from the `mpc_params.py` metadata, so the text follows the field.
 
+**Fields that the current selection does not use are greyed out.** The tab follows the Launch tab's controller and progress-term choice live. A greyed field keeps its value and is still saved, so switching back restores it.
+
+| Selection | Greyed out |
+|---|---|
+| Stanley | every MPC setting |
+| LTV-QP | NMPC overrides, `NMPC_*` scalars, NMPC-only flags, the progress and slack rows |
+| NMPC | LTV-QP-only flags |
+| Progress term off | `q_progress`, `progress_reach`, `progress_v_min` (the slack and `track_halfwidth` rows always apply to the NMPC) |
+| Three-zone schedule off | the three `NMPC_RRATE_ZONE_*` values |
+| NMPC corner rate-blend on | NMPC steer-rate anti-hunt, because the blend takes priority and anti-hunt is ignored |
+| An override unchecked | that override's value box |
+
+The Launch tab greys "Standalone output" for Stanley and `V_MAX` while the precomputed speed profile is on, since `V_MAX` only caps the live curvature speed. The progress term does not switch off `q_e_v`: the two-sided speed error becomes a one-sided speed-cap hinge, and `q_e_v` weights that hinge.
+
 Settings with no live counterpart stay offline-only: `R_diag[1]` (nominal only, superseded by `R_A_ACCEL` and `R_A_BRAKE`) and the last three `Q_diag` entries (always 0.0). If the live files are missing at the expected path, Save writes `settings/` alone and warns.
 
 Precedence hazard: a launched node reads a `launch_all.sh` argument before `fsae_params.yaml` and the dataclass. A Settings save (and a loaded profile) also rewrites any uncommented `launch_all.sh` shortlist line for the same field, and the tab's widgets start from that line's value, so what the tab shows is what FSDS runs. Commented-out shortlist lines stay commented. The NMPC progress flag is deliberately absent here, because the Launch tab comments its line in and out.
@@ -134,7 +148,7 @@ python -m tuner.tools.sync_mpc_params --apply    # overwrite
 
 ## Live debug window: `live_viz`
 
-Sim-only visualiser: car, cone map, reference path, driven trail, NMPC predicted horizon and a weighted-error breakdown, redrawn from ROS 2 topics on a timer. The code is the `live_viz/` package under `fsae_control` (`panels.py`, `node.py`, `app.py`). It is started by `ros2/launch_all.sh` or the launcher, never by `fsae_autonomous`.
+Sim-only visualiser: car, cone map, reference path, driven trail, NMPC predicted horizon and a weighted-error breakdown, updated from ROS 2 topics on a timer. Only the moving parts are redrawn (blitting), so the map refreshes at up to `REDRAW_HZ` (30 Hz, about 20 Hz measured with the debug window open on the developer's machine) and the debug window at `DEBUG_REDRAW_HZ` (5 Hz), because each text label costs about 4 ms to render. The map's axes read metres relative to a point just ahead of the car, not track coordinates, because a fixed view is what makes blitting possible. The code is the `live_viz/` package under `fsae_control` (`panels.py`, `node.py`, `app.py`). It is started by `ros2/launch_all.sh` or the launcher, never by `fsae_autonomous`.
 
 ```bash
 ros2 run fsae_control live_viz

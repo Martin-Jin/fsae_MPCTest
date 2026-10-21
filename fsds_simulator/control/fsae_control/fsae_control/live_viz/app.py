@@ -1,162 +1,379 @@
 """
-fsae_control/live_viz/app.py — matplotlib window and `main`
+fsae_control/live_viz/app.py — matplotlib windows and `main`
 
-Builds the figure (map, path, horizon, driven trail, stats and bar panels) and
-redraws it from a LiveVizNode on a timer. The Tk backend must be selected
-before pyplot is imported, so that call stays above the pyplot import here.
+Builds the map window and the two debug windows once, then updates their
+artists in place from a LiveVizNode on one Tk timer. The Tk backend must be
+selected before pyplot is imported, so that call stays above the pyplot import
+here.
+
+Why artists are updated and blitted, not redrawn: the old loop did ax.clear()
+and rebuilt every scatter, line, legend, text box and bar each frame, moved the
+map's axes limits every frame (so every tick label was re-rendered) and
+re-solved the debug window's constrained layout on every draw. That capped the
+refresh at about 25 Hz and cost about 0.4 s of rendering per frame on the
+developer's WSL machine. Here:
+
+- each artist is created once and only its data changes (set_data,
+  set_offsets, set_width, set_text);
+- the map's axes are fixed and the data is drawn relative to a point just
+  ahead of the car, so the axes, ticks, labels and legend never change;
+- everything that never changes is rendered once into a cached background,
+  and each frame only restores it and redraws the moving artists
+  (blitting, see _Blitter);
+- a window is redrawn only when a new message arrived.
+
+A full redraw still happens on a resize, a legend change or a controller
+switch, and re-captures the background.
 """
 
 import os
 import signal
+import time
 
 import matplotlib
 import numpy as np
 
 matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt  # noqa: E402 (backend must be selected first)
-from matplotlib.animation import FuncAnimation  # noqa: E402
+from matplotlib.patches import Polygon  # noqa: E402
+from matplotlib.text import Text  # noqa: E402
 
 import rclpy  # noqa: E402
 
 from fsae_control.live_viz.node import LiveVizNode, get_car_triangle  # noqa: E402
 from fsae_control.live_viz.panels import (  # noqa: E402
-    DEBUG_BAR_GROUPS, DEBUG_HORIZON_TERMS, REDRAW_HZ, STANLEY_ERROR_TERMS,
+    DEBUG_BAR_GROUPS, DEBUG_HORIZON_TERMS, DEBUG_REDRAW_HZ, REDRAW_HZ, STANLEY_ERROR_TERMS,
     STANLEY_LAW_TERMS, VIEW_AHEAD, VIEW_BEHIND, VIEW_HALF_WIDTH,
 )
 
+_EMPTY = np.empty((0, 2))
 
-def main():
-    rclpy.init()
-    node = LiveVizNode()
 
-    # Tk's mainloop (entered below via plt.show()) is a blocking C event
-    # loop: CPython only runs a signal handler between bytecode
-    # instructions, so with no handler registered here, SIGTERM/SIGINT
-    # delivery while blocked in Tk was left to chance -- it only got through
-    # incidentally, whenever FuncAnimation's own timer happened to pump the
-    # loop back into Python. launch_all.sh's cleanup() sends SIGTERM (and
-    # Ctrl+C sends SIGINT) expecting a prompt exit; os._exit(0) rather than
-    # sys.exit()/plt.close() so the process dies immediately instead of
-    # waiting for Tk to unwind its own C loop cleanly (which is exactly the
-    # step that was hanging).
-    def _handle_shutdown_signal(_signum, _frame):
-        os._exit(0)
-    signal.signal(signal.SIGTERM, _handle_shutdown_signal)
-    signal.signal(signal.SIGINT, _handle_shutdown_signal)
+class _BarPanel:
+    """
+    One horizontal 0-100% bar per name, in a FIXED order, built once.
 
-    fig, ax = plt.subplots(figsize=(8, 8))
-    ax.set_aspect('equal')
+    Every name keeps its own row whether or not it has data this tick; a
+    missing one is drawn as an empty grey row. Omitting it used to shift every
+    row below it by one slot whenever that term's presence changed, which made
+    the panel look like it was jumping although no value had. Rows are in the
+    declared order (barh places the first name at the bottom), never sorted
+    by value, so a reader tracking one term does not have to re-find its row.
+    """
 
-    # Separate window (per the "too much for one window" call): the weighted
-    # cost breakdown has nothing spatial about it and doesn't need to share
-    # a canvas with the map view. Left column: the 3 step-0 unit-family
-    # panels (own 100% scale each). Right column: one tall panel with every
-    # term's horizon-summed share of total_cost, on one shared scale, since
-    # those percentages are genuinely comparable to each other (slack is
-    # deliberately excluded here, unused -- see DEBUG_HORIZON_TERMS, so
-    # these bars fall a little short of summing to total_cost).
-    #
-    # layout='constrained' (NOT the one-shot tight_layout() this used to
-    # call once before plt.show()) on both this figure and fig_stanley
-    # below: tight_layout() computes fixed axes-position fractions ONCE at
-    # startup and never again, so a window later resized smaller than its
-    # requested figsize (dragged by the user, or placed smaller by the
-    # window manager) has no way to re-reserve room for the y-axis category
-    # labels, and they get clipped by the figure's own left edge -- measured
-    # directly against a screenshot showing exactly that. constrained_layout
-    # re-solves the layout on every draw, including a resize, so the labels
-    # always get the margin they actually need at the CURRENT window size.
-    # hspace/wspace widened from the gridspec default: the per-panel y-axis
-    # labels (particularly the horizon panel's, one shared tall column) were
-    # visually overlapping the panel above/beside them at the default
-    # spacing once labels started reserving real margin instead of being
-    # clipped away.
-    fig_dbg = plt.figure(figsize=(13, 9), layout='constrained')
-    gs = fig_dbg.add_gridspec(len(DEBUG_BAR_GROUPS), 2, width_ratios=[1.0, 1.0],
-                              hspace=0.6, wspace=0.35)
-    ax_bars = [fig_dbg.add_subplot(gs[i, 0]) for i in range(len(DEBUG_BAR_GROUPS))]
-    ax_horizon = fig_dbg.add_subplot(gs[:, 1])
-    mpc_axes = ax_bars + [ax_horizon]
+    def __init__(self, ax, names, xlabel, red_threshold, title=None):
+        self.ax = ax
+        self.names = list(names)
+        self.red_threshold = red_threshold
+        self.bars = ax.barh(self.names, [0.0] * len(self.names), color='lightgrey')
+        # Labels in data coordinates with clip_on=False, so a wide label on a
+        # near-100% bar draws into the figure margin instead of being cut off.
+        self.labels = [
+            ax.text(1.5, bar.get_y() + bar.get_height() / 2, '', va='center',
+                    ha='left', fontsize=7, family='monospace', clip_on=False)
+            for bar in self.bars
+        ]
+        ax.set_xlim(0, 100)
+        ax.set_xlabel(xlabel, fontsize=8)
+        if title:
+            ax.set_title(title, fontsize=9)
 
-    # Stanley's own debug figure -- separate from fig_dbg (built once,
-    # same as fig_dbg, then shown/hidden as a whole depending on which
-    # controller is actually active, see redraw_debug()). Two panels: the
-    # user's own two asks, one shared window each.
-    fig_stanley = plt.figure(figsize=(8, 6), layout='constrained')
-    gs_stanley = fig_stanley.add_gridspec(2, 1, hspace=0.6)
-    ax_stanley_error = fig_stanley.add_subplot(gs_stanley[0, 0])
-    ax_stanley_law = fig_stanley.add_subplot(gs_stanley[1, 0])
-    stanley_axes = [ax_stanley_error, ax_stanley_law]
+    @property
+    def artists(self):
+        return list(self.bars) + self.labels
 
-    fig_dbg.suptitle('MPC weighted-cost breakdown (debug)')
-    fig_stanley.suptitle('Stanley control-law breakdown (debug)')
+    def update(self, values: dict) -> None:
+        """`values` maps a name with data this tick to (pct, label text)."""
+        for name, bar, label in zip(self.names, self.bars, self.labels):
+            if name in values:
+                pct, text = values[name]
+                bar.set_width(pct)
+                bar.set_color('tab:red' if pct >= self.red_threshold else 'tab:blue')
+                label.set_x(pct + 1.5)
+                label.set_text(text)
+            else:
+                bar.set_width(0.0)
+                bar.set_color('lightgrey')
+                label.set_text('')
 
-    def redraw(_frame):
-        # Process every callback queued since the last frame, not just one:
-        # at REDRAW_HZ < 50 Hz (the control loop's own rate), a single
-        # spin_once per frame falls behind and each redraw would show a
-        # stale, queued-up state rather than the latest tick. rclpy has no
-        # built-in "drain everything ready right now" call, so spin_once
-        # (non-blocking, timeout_sec=0) is called in a bounded loop instead;
-        # each of this node's callbacks is a cheap attribute write, so a
-        # 50 Hz backlog empties in well under a millisecond, and the loop
-        # exits itself (via the callback-count check) once nothing is left,
-        # rather than always running to the cap.
-        for _ in range(20):
-            before = node._callback_count
-            rclpy.spin_once(node, timeout_sec=0.0)
-            if node._callback_count == before:
-                break
-        ax.clear()
+
+class _FrozenLayout:
+    """
+    Solve a figure's constrained layout once, then stop re-solving it.
+
+    constrained_layout re-solves on every draw, which is most of a bar
+    figure's frame cost. A one-shot tight_layout() was tried before and
+    clipped the y-axis labels once the window was resized smaller than its
+    requested size, because it never recomputes. So the layout here is solved
+    on the first draw and again after each resize, and frozen in between.
+    """
+
+    def __init__(self, fig):
+        self.fig = fig
+        self._pending = True
+        fig.canvas.mpl_connect('draw_event', self._on_draw)
+        fig.canvas.mpl_connect('resize_event', self._on_resize)
+
+    def _on_draw(self, _event):
+        if self._pending:
+            self._pending = False
+            self.fig.set_layout_engine('none')
+
+    def _on_resize(self, _event):
+        self._pending = True
+        self.fig.set_layout_engine('constrained')
+
+
+class _Blitter:
+    """
+    Redraw only a figure's moving artists over a cached background.
+
+    The background is captured after every full draw (startup, resize, or an
+    explicit request), with the moving artists marked animated so the full
+    draw leaves them out. update() then restores it, draws only those artists
+    and blits the result, which skips the axes, ticks and labels entirely.
+
+    Text is the expensive part (about 4 ms per label on the developer's
+    machine, against about 5 ms for every cone, line and the car together), so
+    a text artist whose string and position have not changed is restored from
+    the pixels cached when it was last drawn instead of being re-rendered.
+    That cache holds whatever was underneath the text at the time, so text
+    drawn over moving data should have an opaque box (see the map's stats).
+    """
+
+    def __init__(self, fig, artists):
+        self.fig = fig
+        self.artists = list(artists)
+        self._bg = None
+        self._text_cache = {}
+        for a in self.artists:
+            a.set_animated(True)
+        fig.canvas.mpl_connect('draw_event', self._on_draw)
+
+    def add(self, artist):
+        artist.set_animated(True)
+        self.artists.append(artist)
+
+    def _on_draw(self, _event):
+        canvas = self.fig.canvas
+        self._bg = canvas.copy_from_bbox(self.fig.bbox)
+        self._text_cache.clear()
+        self._draw_artists()
+
+    def _draw_artists(self):
+        canvas = self.fig.canvas
+        for a in self.artists:
+            if not a.get_visible():
+                continue
+            if not isinstance(a, Text):
+                self.fig.draw_artist(a)
+                continue
+            key = (a.get_text(), a.get_position())
+            cached = self._text_cache.get(id(a))
+            if cached is not None and cached[0] == key:
+                canvas.restore_region(cached[1])
+                continue
+            self.fig.draw_artist(a)
+            if not key[0]:
+                self._text_cache.pop(id(a), None)
+                continue
+            renderer = canvas.get_renderer()
+            box = a.get_bbox_patch()
+            extent = (box.get_window_extent(renderer) if box is not None
+                      else a.get_window_extent(renderer)).expanded(1.0, 1.0).padded(2)
+            self._text_cache[id(a)] = (key, canvas.copy_from_bbox(extent))
+
+    def full_redraw(self):
+        """Re-render the background (it changed), e.g. a new legend."""
+        self._bg = None
+        self.fig.canvas.draw_idle()
+
+    def update(self):
+        canvas = self.fig.canvas
+        if self._bg is None:
+            canvas.draw_idle()
+            return
+        canvas.restore_region(self._bg)
+        self._draw_artists()
+        canvas.blit(self.fig.bbox)
+
+
+class LiveViz:
+    """The three windows and one update step. See the module docstring."""
+
+    def __init__(self, node):
+        self.node = node
+        self._last_count = -1
+        self._last_present = None
+        self._show_stanley = None
+
+        self.fig, self.ax = plt.subplots(figsize=(8, 8))
+        self._build_map()
+
+        # Separate window for the weighted cost breakdown: it has nothing
+        # spatial about it. Left column: the 3 step-0 unit-family panels (own
+        # 100% scale each). Right column: one tall panel with every term's
+        # horizon-summed share of total_cost on one shared scale (slack is
+        # left out, see DEBUG_HORIZON_TERMS, so those bars fall a little
+        # short of summing to total_cost). hspace/wspace are widened because
+        # the y-axis labels overlapped neighbouring panels at the defaults.
+        self.fig_dbg = plt.figure(figsize=(13, 9), layout='constrained')
+        gs = self.fig_dbg.add_gridspec(len(DEBUG_BAR_GROUPS), 2, width_ratios=[1.0, 1.0],
+                                       hspace=0.6, wspace=0.35)
+        self.mpc_panels = [
+            _BarPanel(self.fig_dbg.add_subplot(gs[i, 0]), names, label, red_threshold=50.0)
+            for i, (_group, label, names) in enumerate(DEBUG_BAR_GROUPS)
+        ]
+        self.horizon_panel = _BarPanel(
+            self.fig_dbg.add_subplot(gs[:, 1]), DEBUG_HORIZON_TERMS,
+            'Horizon-summed cost (% of true total solver cost)', red_threshold=30.0,
+            title='Every term, full predicted horizon')
+        self.fig_dbg.suptitle('MPC weighted-cost breakdown (debug)')
+        self.dbg_header = self.fig_dbg.text(0.5, 0.995, '', ha='center', va='top', fontsize=10)
+
+        # Stanley's own debug window, shown instead of the MPC one when
+        # Stanley is the active controller.
+        self.fig_stanley = plt.figure(figsize=(8, 6), layout='constrained')
+        gs_s = self.fig_stanley.add_gridspec(2, 1, hspace=0.6)
+        self._stanley_err_labels = {'e_y': 'lateral error (e_y)',
+                                    'e_psi': 'heading error (e_psi)'}
+        self._stanley_law_labels = {
+            'heading_error': 'heading error term',
+            'atan_cross_track': 'atan2 cross-track term',
+            'yaw_rate_damping': 'yaw-rate damping term',
+        }
+        self.stanley_error_panel = _BarPanel(
+            self.fig_stanley.add_subplot(gs_s[0, 0]),
+            [self._stanley_err_labels[n] for n in STANLEY_ERROR_TERMS],
+            'Tracking error (% of |e_y| + |e_psi|)', red_threshold=60.0,
+            title='Heading vs. lateral error')
+        self.stanley_law_panel = _BarPanel(
+            self.fig_stanley.add_subplot(gs_s[1, 0]),
+            [self._stanley_law_labels[n] for n in STANLEY_LAW_TERMS],
+            'Share of total steering magnitude (|heading| + |atan2| + |damping|)',
+            red_threshold=60.0, title='Control-law term breakdown')
+        self.fig_stanley.suptitle('Stanley control-law breakdown (debug)')
+        self.stanley_header = self.fig_stanley.text(0.5, 0.995, '', ha='center', va='top',
+                                                    fontsize=10)
+
+        self.fig.tight_layout()
+        self._layouts = [_FrozenLayout(self.fig_dbg), _FrozenLayout(self.fig_stanley)]
+        self.blit_map = _Blitter(self.fig, (
+            self.sc_left, self.sc_right, self.ln_ref, self.ln_pred, self.ln_trail,
+            self.car, self.txt_stats, self.txt_laps))
+        self.blit_dbg = _Blitter(self.fig_dbg, [a for p in self.mpc_panels + [self.horizon_panel]
+                                                for a in p.artists] + [self.dbg_header])
+        self.blit_stanley = _Blitter(self.fig_stanley, self.stanley_error_panel.artists
+                                     + self.stanley_law_panel.artists + [self.stanley_header])
+        self._title = None
+        self._last_debug = 0.0
+        self._last_stats = 0.0
+
+    # ------------------------------------------------------------------
+    # Map window
+    # ------------------------------------------------------------------
+    def _build_map(self):
+        ax = self.ax
         ax.set_aspect('equal')
+        # Fixed window around a point VIEW_AHEAD/VIEW_BEHIND-weighted ahead of
+        # the car (see _view_origin). Fixed limits are what make blitting
+        # possible; the axes therefore read metres relative to that point,
+        # not track coordinates.
+        r = 0.5 * (VIEW_AHEAD + VIEW_BEHIND) + VIEW_HALF_WIDTH
+        ax.set_xlim(-r, r)
+        ax.set_ylim(-r, r)
+        ax.set_xlabel('x relative to view centre (m)', fontsize=8)
+        ax.set_ylabel('y relative to view centre (m)', fontsize=8)
+        self.sc_left = ax.scatter([], [], c='tab:blue', marker='^', s=25, label='left (blue)')
+        self.sc_right = ax.scatter([], [], c='gold', marker='^', s=25, label='right (yellow)')
+        (self.ln_ref,) = ax.plot([], [], c='tab:gray', lw=1.5, ls='--',
+                                 label='reference/planner path')
+        (self.ln_pred,) = ax.plot([], [], c='tab:red', lw=2.0, marker='o', ms=3,
+                                  label='NMPC predicted horizon')
+        (self.ln_trail,) = ax.plot([], [], c='tab:green', lw=1.2, alpha=0.7,
+                                   label='driven trail')
+        self.car = Polygon(np.zeros((3, 2)), closed=True, fc='black', label='car',
+                           visible=False)
+        ax.add_patch(self.car)
+        # Opaque boxes: these are restored from cached pixels between text
+        # changes (see _Blitter), so anything showing through would be stale.
+        self.txt_stats = ax.text(0.02, 0.98, '', transform=ax.transAxes, va='top',
+                                 ha='left', fontsize=9, family='monospace',
+                                 bbox=dict(boxstyle='round', fc='white'))
+        self.txt_laps = ax.text(0.02, 0.02, '', transform=ax.transAxes, va='bottom',
+                                ha='left', fontsize=8, family='monospace',
+                                bbox=dict(boxstyle='round', fc='lightyellow'))
+        self.legend = None
 
-        if node.left_cones.size:
-            ax.scatter(node.left_cones[:, 0], node.left_cones[:, 1],
-                       c='tab:blue', marker='^', s=25, label='left (blue)')
-        if node.right_cones.size:
-            ax.scatter(node.right_cones[:, 0], node.right_cones[:, 1],
-                       c='gold', marker='^', s=25, label='right (yellow)')
+    def _view_origin(self):
+        """World point the fixed map window is centred on: midway along the
+        VIEW_BEHIND..VIEW_AHEAD span in the car's heading direction."""
+        node = self.node
+        if not node.have_pose:
+            return np.zeros(2)
+        fwd = np.array([np.cos(node.car_yaw), np.sin(node.car_yaw)])
+        return np.array([node.car_x, node.car_y]) + fwd * 0.5 * (VIEW_AHEAD - VIEW_BEHIND)
 
-        # Precomputed mode: the planner never runs (sim.launch.py gates it
-        # off), so ref_path stays empty and static_ref_path carries the real
-        # reference instead -- draw whichever one actually has data, not
-        # both (they're never populated at the same time in practice).
+    def _update_map(self):
+        node = self.node
+        o = self._view_origin()
+        self.sc_left.set_offsets(node.left_cones - o if node.left_cones.size else _EMPTY)
+        self.sc_right.set_offsets(node.right_cones - o if node.right_cones.size else _EMPTY)
+
+        # Precomputed mode: the planner never runs, so ref_path stays empty
+        # and static_ref_path carries the reference; draw whichever has data.
         if node.static_ref_path.size:
-            ax.plot(node.static_ref_path[:, 0], node.static_ref_path[:, 1],
-                    c='tab:gray', lw=1.5, ls='--', label='precomputed reference path')
+            ref, ref_label = node.static_ref_path, 'precomputed reference path'
         elif node.ref_path.size:
-            ax.plot(node.ref_path[:, 0], node.ref_path[:, 1],
-                    c='tab:gray', lw=1.5, ls='--', label='reference/planner path')
+            ref, ref_label = node.ref_path, 'reference/planner path'
+        else:
+            ref, ref_label = _EMPTY, self.ln_ref.get_label()
+        self.ln_ref.set_data(ref[:, 0] - o[0], ref[:, 1] - o[1])
+        self.ln_ref.set_label(ref_label)
 
-        if node.nmpc_pred_path.size:
-            ax.plot(node.nmpc_pred_path[:, 0], node.nmpc_pred_path[:, 1],
-                    c='tab:red', lw=2.0, marker='o', ms=3, label='NMPC predicted horizon')
-
-        if len(node.trail) >= 2:
-            trail = np.array(node.trail)
-            ax.plot(trail[:, 0], trail[:, 1], c='tab:green', lw=1.2, alpha=0.7,
-                    label='driven trail')
+        pred = node.nmpc_pred_path if node.nmpc_pred_path.size else _EMPTY
+        self.ln_pred.set_data(pred[:, 0] - o[0], pred[:, 1] - o[1])
+        trail = np.array(node.trail) if len(node.trail) >= 2 else _EMPTY
+        self.ln_trail.set_data(trail[:, 0] - o[0], trail[:, 1] - o[1])
 
         if node.have_pose:
             tx, ty = get_car_triangle(node.car_x, node.car_y, node.car_yaw)
-            ax.fill(tx, ty, c='black', label='car')
+            self.car.set_xy(np.column_stack([np.asarray(tx) - o[0], np.asarray(ty) - o[1]]))
+            self.car.set_visible(True)
 
-            fwd = np.array([np.cos(node.car_yaw), np.sin(node.car_yaw)])
-            right = np.array([np.sin(node.car_yaw), -np.cos(node.car_yaw)])
-            center = np.array([node.car_x, node.car_y])
-            forward_span = center + fwd * VIEW_AHEAD
-            backward_span = center - fwd * VIEW_BEHIND
-            ax.set_xlim(min(forward_span[0], backward_span[0]) - VIEW_HALF_WIDTH,
-                        max(forward_span[0], backward_span[0]) + VIEW_HALF_WIDTH)
-            ax.set_ylim(min(forward_span[1], backward_span[1]) - VIEW_HALF_WIDTH,
-                        max(forward_span[1], backward_span[1]) + VIEW_HALF_WIDTH)
-            del right  # reserved for a future car-relative (rotated) view
+        # The legend lists only artists that have data, as before, but is
+        # rebuilt only when that set (or the reference label) changes.
+        present = (bool(node.left_cones.size), bool(node.right_cones.size), bool(ref.size),
+                   ref_label, bool(pred.size), bool(trail.size), node.have_pose)
+        if present != self._last_present:
+            self._last_present = present
+            handles = [h for h, on in zip(
+                (self.sc_left, self.sc_right, self.ln_ref, self.ln_pred, self.ln_trail, self.car),
+                present[:3] + present[4:]) if on]
+            if self.legend is not None:
+                self.legend.remove()
+            self.legend = self.ax.legend(handles=handles, loc='lower right', fontsize=8)
+            self.blit_map.full_redraw()
 
         controller = node.active_controller()
-        controller_label = {'mpc': 'MPC', 'stanley': 'Stanley', 'unknown': '(unknown)'}[controller]
+        label = {'mpc': 'MPC', 'stanley': 'Stanley', 'unknown': '(unknown)'}[controller]
+        if label != self._title:
+            self._title = label
+            self.ax.set_title(f'Live {label} debug view')
+            self.blit_map.full_redraw()
+        # The numbers change every message, but re-rendering the stats box
+        # every frame costs most of a map frame, so its text refreshes at
+        # DEBUG_REDRAW_HZ and is restored from cache in between.
+        now = time.monotonic()
+        if now - self._last_stats >= 1.0 / DEBUG_REDRAW_HZ:
+            self._last_stats = now
+            self.txt_stats.set_text(self._stats_text(controller, label))
+        self.txt_laps.set_text(self._laps_text())
 
+    def _stats_text(self, controller, label):
+        node = self.node
         stats = (
-            f"controller = {controller_label}\n"
+            f"controller = {label}\n"
             f"v = {node.car_speed:.2f} m/s\n"
             f"steer = {node.steering:+.3f}\n"
             f"throttle = {node.throttle:.2f}  brake = {node.brake:.2f}\n"
@@ -164,17 +381,12 @@ def main():
         if node.cmd_speed_target is not None:
             stats += f"cmd v_target = {node.cmd_speed_target:.2f} m/s\n"
         stats += f"control topic: {node.control_topic or '(none yet)'}\n"
-        # NMPC horizon line is MPC-specific (Stanley never predicts a
-        # horizon at all) -- only shown when MPC is the one actually active,
-        # rather than printing a permanently-"no" line for a Stanley run.
+        # Stanley never predicts a horizon, so the line is MPC-only.
         if controller != 'stanley':
             stats += f"NMPC horizon: {'yes' if node.nmpc_pred_path.size else 'no'}"
-        # Progress-term diagnostics (nmpc_progress_enabled only; the key is
-        # absent on every other run, so nothing is printed then). cap_over
+        # Progress-term diagnostics (nmpc_progress_enabled only). cap_over
         # separates "the cap is holding the car back" from "the car chose to
-        # go slower than it was allowed", which is the question the progress
-        # term exists to change the answer to. s_gap GROWING tick-over-tick
-        # means the solve is stuck or regressing, not converging.
+        # go slower"; s_gap growing tick over tick means the solve is stuck.
         prog = (node.debug_weights or {}).get('progress')
         if prog:
             v_cap = prog.get('v_cap')
@@ -188,258 +400,167 @@ def main():
                 stats += f"\n  cap_over = {over:+.2f} m/s ({state})"
             if gap is not None:
                 stats += f"\n  s_gap_end = {gap:.2f} m"
-        ax.text(0.02, 0.98, stats.rstrip('\n'), transform=ax.transAxes, va='top', ha='left',
-                fontsize=9, family='monospace',
-                bbox=dict(boxstyle='round', fc='white', alpha=0.85))
+        return stats.rstrip('\n')
 
-        # Lap panel: one line per completed lap (score + horizon accuracy,
-        # see ControlLogger.finish_lap()), most recent highlighted. Shown
-        # bottom-left so it doesn't compete with the top-left stats box.
-        # "none completed" explains an otherwise-silent panel for a
-        # live-planner run (no precomputed speed profile -> no
-        # LapProgressTracker -> lap_summary never publishes, see
-        # mpc_controller.py's own _lap_tracker construction).
-        if node.lap_summaries:
-            lines = []
-            for i, lap in enumerate(node.lap_summaries):
-                marker = '>' if i == len(node.lap_summaries) - 1 else ' '
-                score = lap.get('composite_score')
-                lap_time = lap.get('lap_time_s')
-                acc = lap.get('pred_acc_pct')
-                acc_s = f"{acc:.1f}%" if acc is not None else "n/a"
-                time_s = f"{lap_time:.1f}s" if lap_time is not None else "?"
-                lines.append(
-                    f"{marker} Lap {lap.get('lap_idx', '?')}  {time_s}  "
-                    f"score {score:.3f}  horizon {acc_s}")
-            lap_text = "Laps:\n" + "\n".join(lines)
-        else:
-            lap_text = "Laps: none completed (needs precomputed path)"
-        ax.text(0.02, 0.02, lap_text, transform=ax.transAxes, va='bottom', ha='left',
-                fontsize=8, family='monospace',
-                bbox=dict(boxstyle='round', fc='lightyellow', alpha=0.85))
+    def _laps_text(self):
+        # One line per completed lap, most recent marked. "none completed"
+        # explains an empty panel on a live-planner run, which has no
+        # precomputed speed profile and so no lap tracker.
+        laps = self.node.lap_summaries
+        if not laps:
+            return "Laps: none completed (needs precomputed path)"
+        lines = []
+        for i, lap in enumerate(laps):
+            marker = '>' if i == len(laps) - 1 else ' '
+            score = lap.get('composite_score')
+            lap_time = lap.get('lap_time_s')
+            acc = lap.get('pred_acc_pct')
+            acc_s = f"{acc:.1f}%" if acc is not None else "n/a"
+            time_s = f"{lap_time:.1f}s" if lap_time is not None else "?"
+            lines.append(f"{marker} Lap {lap.get('lap_idx', '?')}  {time_s}  "
+                         f"score {score:.3f}  horizon {acc_s}")
+        return "Laps:\n" + "\n".join(lines)
 
-        ax.legend(loc='lower right', fontsize=8)
-        ax.set_title(f'Live {controller_label} debug view')
-
-    def _draw_pct_bars(ax, all_names, present, pcts, details, red_threshold, xlabel):
-        """Shared bar-graph renderer for every debug panel below: a
-        horizontal 0-100% bar per name in ALL_NAMES, in that FIXED order,
-        every single frame -- red past red_threshold else blue, with
-        details[i] appended to each present bar's label.
-
-        Takes the full fixed name list, not just the ones with data this
-        tick, and always draws one row per name in ALL_NAMES: a name
-        missing from `present` (this frame's actual mode has no data for
-        it, e.g. 'progress' when nmpc_progress_enabled is off) still gets
-        an empty grey row at its own fixed position instead of being
-        omitted. Omitting it used to collapse every row below it upward by
-        one slot the instant that term's presence changed tick to tick,
-        which is what made the whole panel appear to jump around even
-        though no single term's own value did anything unusual -- ax.clear()
-        every frame plus barh() placing bars in LIST order (not a fixed
-        category axis) means a shorter list is a visually different
-        layout, not just fewer bars. Centralised so every panel wraps its
-        label text the same way (see the wrap step below, added because
-        long detail strings were being clipped past the figure's right
-        edge)."""
-        ax.clear()
-        present_set = set(present)
-        pct_by_name = dict(zip(present, pcts))
-        detail_by_name = dict(zip(present, details))
-        pcts_fixed = [pct_by_name.get(n, 0.0) for n in all_names]
-        colors = ['tab:red' if p >= red_threshold else 'tab:blue'
-                  if n in present_set else 'lightgrey'
-                  for n, p in zip(all_names, pcts_fixed)]
-        # ALL_NAMES passed straight through, not reordered: barh's own
-        # bottom-to-top placement of a fixed list is exactly what the group
-        # panels already rendered before this fix (first declared name at
-        # the bottom), so this keeps their look unchanged and gives the
-        # horizon panel that same fixed, stable order instead of its old
-        # per-frame value sort.
-        bars = ax.barh(all_names, pcts_fixed, color=colors)
-        for name, bar in zip(all_names, bars):
-            if name not in present_set:
-                continue
-            detail = detail_by_name[name]
-            # Bar labels are drawn in DATA coordinates (x in [0, 100],
-            # not axes-fraction), so a wide label on a near-100% bar
-            # can extend past the axes' right edge and get clipped by
-            # the figure boundary -- clip_on=False lets it draw into
-            # the figure margin instead (tight_layout/subplots_adjust
-            # below reserves that margin), and a fixed-width right
-            # margin is reserved on every panel for exactly this.
-            ax.text(bar.get_width() + 1.5, bar.get_y() + bar.get_height() / 2,
-                    detail, va='center', ha='left', fontsize=7,
-                    family='monospace', clip_on=False)
-        ax.set_xlim(0, 100)
-        ax.set_xlabel(xlabel, fontsize=8)
-
-    def _set_window_visible(fig, visible: bool) -> None:
-        """Figure.set_visible() only controls whether the figure's ARTISTS
-        draw onto its own canvas -- it does not touch the OS-level window
-        the TkAgg backend opened for it, so the inactive controller's debug
-        figure (fig_stanley under MPC/NMPC, or vice versa) was left on
-        screen showing nothing, a blank numbered "Figure" window with no
-        way to tell why it was empty. Tk's own window object, reached via
-        the canvas manager, is what actually needs withdraw()/deiconify()."""
-        window = fig.canvas.manager.window
-        if visible:
-            window.deiconify()
-        else:
-            window.withdraw()
-
-    _debug_visibility_state = {'show_stanley': None}
-
-    def _sync_debug_visibility():
-        """Which of the two debug figures is actually meaningful right now
-        -- called from both figures' own animations (each figure needs its
-        own FuncAnimation to redraw its own canvas; a single animation
-        tied to one figure does not repaint a different figure's canvas)."""
-        show_stanley = node.active_controller() == 'stanley'
-        fig_dbg.set_visible(not show_stanley)
-        fig_stanley.set_visible(show_stanley)
-        for ax_ in mpc_axes:
-            ax_.set_visible(not show_stanley)
-        for ax_ in stanley_axes:
-            ax_.set_visible(show_stanley)
-        # withdraw()/deiconify() are window-manager calls, not cheap artist
-        # toggles -- only issue them on an actual transition (this function
-        # runs at REDRAW_HZ from TWO animations, ~50 calls/sec combined),
-        # or a manually moved/resized debug window gets fought back into
-        # place every frame even while the controller never changes.
-        if _debug_visibility_state['show_stanley'] != show_stanley:
-            _debug_visibility_state['show_stanley'] = show_stanley
-            _set_window_visible(fig_dbg, not show_stanley)
-            _set_window_visible(fig_stanley, show_stanley)
-        return show_stanley
-
-    def redraw_debug(_frame):
-        if not _sync_debug_visibility():
-            _redraw_mpc_debug()
-
-    def redraw_debug_stanley(_frame):
-        if _sync_debug_visibility():
-            _redraw_stanley_debug()
-
-    def _redraw_mpc_debug():
-        # Weighted-cost breakdown, one bar-graph panel per unit-family group
-        # (see DEBUG_BAR_GROUPS) -- which term is costing the solver the
-        # most right now, as a share of ITS OWN GROUP's sum. See
-        # mpc_controller.py's _publish_debug_weights() for what "weighted
-        # cost" means here (error^2 * effective weight, step-0 only) and why
-        # no group's bars sum to total_cost (shown in the figure suptitle):
-        # total_cost is the true full-horizon solved objective, including
-        # terms (full-horizon summation, jerk, slack) this bar graph does
-        # not attempt to decompose per-tick.
-        dw = node.debug_weights
+    # ------------------------------------------------------------------
+    # Debug windows
+    # ------------------------------------------------------------------
+    def _update_mpc_debug(self):
+        # Step-0 weighted cost per unit-family group, each as a share of its
+        # own group's sum (see mpc_controller.py's _publish_debug_weights());
+        # none sums to total_cost, the full-horizon objective in the title.
+        dw = self.node.debug_weights
         terms = dw.get('terms', {}) if dw is not None else {}
-        for ax_bar, (_group, label, names) in zip(ax_bars, DEBUG_BAR_GROUPS):
-            present = [n for n in names if n in terms]
-            pcts = [terms[n]['pct'] for n in present]
-            details = []
-            for name in present:
-                t = terms[name]
-                # 'steering'/'accel' are synthetic combined bars (effort
-                # + rate folded together, see _publish_debug_weights())
-                # with no single error/weight of their own to show.
+        for panel in self.mpc_panels:
+            values = {}
+            for name in panel.names:
+                t = terms.get(name)
+                if t is None:
+                    continue
+                # 'steering'/'accel' are synthetic combined bars (effort +
+                # rate) with no single error or weight of their own.
                 if t['error'] is None:
-                    detail = f"{t['pct']:.1f}%  (effort + rate combined)"
+                    text = f"{t['pct']:.1f}%  (effort + rate combined)"
                 else:
-                    detail = f"{t['pct']:.1f}%  (v={t['error']:+.4f}, w={t['weight']:.2f})"
-                details.append(detail)
-            _draw_pct_bars(ax_bar, names, present, pcts, details, red_threshold=50.0, xlabel=label)
+                    text = f"{t['pct']:.1f}%  (v={t['error']:+.4f}, w={t['weight']:.2f})"
+                values[name] = (t['pct'], text)
+            panel.update(values)
 
-        # Right-side panel: every term's horizon-summed cost as a share of
-        # total_cost, one shared scale (see DEBUG_HORIZON_TERMS' comment).
-        # Fixed row order (DEBUG_HORIZON_TERMS' own declared order), NOT
-        # sorted by current value -- sorting by value every frame was
-        # exactly what made a term's row visibly jump as its cost share
-        # crossed another term's, even though each term's OWN value was
-        # moving smoothly. A reader tracking "is e_y still climbing"
-        # should not have to re-find e_y's row after every redraw.
-        horizon_terms = dw.get('horizon_terms', {}) if dw is not None else {}
-        present_h = [n for n in DEBUG_HORIZON_TERMS if n in horizon_terms]
-        pcts_h = [horizon_terms[n]['pct'] for n in present_h]
-        details_h = [f"{horizon_terms[n]['pct']:.1f}%  (cost={horizon_terms[n]['cost']:.3f})"
-                     for n in present_h]
-        _draw_pct_bars(ax_horizon, DEBUG_HORIZON_TERMS, present_h, pcts_h, details_h,
-                       red_threshold=30.0,
-                       xlabel='Horizon-summed cost (% of true total solver cost)')
-        ax_horizon.set_title('Every term, full predicted horizon', fontsize=9)
+        horizon = dw.get('horizon_terms', {}) if dw is not None else {}
+        self.horizon_panel.update({
+            n: (horizon[n]['pct'], f"{horizon[n]['pct']:.1f}%  (cost={horizon[n]['cost']:.3f})")
+            for n in DEBUG_HORIZON_TERMS if n in horizon})
 
         header = []
         if dw is not None:
-            total_cost = dw.get('total_cost')
-            if total_cost is not None:
-                header.append(f"true total solver cost = {total_cost:.4f}")
-            solve_ms = dw.get('solve_ms')
-            if solve_ms is not None:
-                header.append(f"solve time = {solve_ms:.2f} ms")
-        fig_dbg.suptitle('MPC weighted-cost breakdown (debug)'
-                          + ('\n' + '   |   '.join(header) if header else ''))
+            if dw.get('total_cost') is not None:
+                header.append(f"true total solver cost = {dw['total_cost']:.4f}")
+            if dw.get('solve_ms') is not None:
+                header.append(f"solve time = {dw['solve_ms']:.2f} ms")
+        self.dbg_header.set_text('\n' + '   |   '.join(header) if header else '')
 
-    def _redraw_stanley_debug():
-        # Panel 1: Stanley's own two tracking errors (heading, cross-track/
-        # lateral), one shared 0-100% scale -- see STANLEY_ERROR_TERMS'
-        # comment for why "percentage" here is share of |e_y|+|e_psi|.
-        ds = node.debug_stanley
-        e_y = ds.get('e_y') if ds is not None else None
-        e_psi = ds.get('e_psi') if ds is not None else None
-        error_values = {'e_y': e_y, 'e_psi': e_psi}
-        total_abs = sum(abs(v) for v in error_values.values() if v is not None)
-        present_e = [n for n in STANLEY_ERROR_TERMS if error_values.get(n) is not None]
-        pcts_e = [(100.0 * abs(error_values[n]) / total_abs) if total_abs > 0.0 else 0.0
-                  for n in present_e]
-        labels_e = {'e_y': 'lateral error (e_y)', 'e_psi': 'heading error (e_psi)'}
-        details_e = [f"{p:.1f}%  (v={error_values[n]:+.4f} rad or m)"
-                     for n, p in zip(present_e, pcts_e)]
-        # Fixed row per STANLEY_ERROR_TERMS entry (translated to its own
-        # label), not just the ones with data this tick -- same fix as the
-        # MPC panels above, so a term temporarily missing (e.g. e_psi not
-        # yet published) gets an empty row at its own position instead of
-        # collapsing the other row up to fill the gap.
-        _draw_pct_bars(ax_stanley_error, [labels_e[n] for n in STANLEY_ERROR_TERMS],
-                       [labels_e[n] for n in present_e], pcts_e, details_e,
-                       red_threshold=60.0, xlabel='Tracking error (% of |e_y| + |e_psi|)')
-        ax_stanley_error.set_title('Heading vs. lateral error', fontsize=9)
+    def _update_stanley_debug(self):
+        ds = self.node.debug_stanley
+        errors = {'e_y': ds.get('e_y') if ds else None, 'e_psi': ds.get('e_psi') if ds else None}
+        total = sum(abs(v) for v in errors.values() if v is not None)
+        values = {}
+        for n, v in errors.items():
+            if v is not None:
+                pct = 100.0 * abs(v) / total if total > 0.0 else 0.0
+                values[self._stanley_err_labels[n]] = (pct, f"{pct:.1f}%  (v={v:+.4f} rad or m)")
+        self.stanley_error_panel.update(values)
 
-        # Panel 2: Stanley's own three additive control-law terms, as a
-        # share of the total steering magnitude they combine to produce --
-        # see stanley_controller.py's _publish_debug_stanley() and
-        # STANLEY_LAW_TERMS' own comment.
-        law_terms = ds.get('terms', {}) if ds is not None else {}
-        present_l = [n for n in STANLEY_LAW_TERMS if n in law_terms]
-        pcts_l = [law_terms[n]['pct'] for n in present_l]
-        labels_l = {
-            'heading_error': 'heading error term',
-            'atan_cross_track': 'atan2 cross-track term',
-            'yaw_rate_damping': 'yaw-rate damping term',
-        }
-        details_l = [f"{law_terms[n]['pct']:.1f}%  (v={law_terms[n]['value']:+.4f} rad)"
-                     for n in present_l]
-        _draw_pct_bars(ax_stanley_law, [labels_l[n] for n in STANLEY_LAW_TERMS],
-                       [labels_l[n] for n in present_l], pcts_l, details_l,
-                       red_threshold=60.0,
-                       xlabel='Share of total steering magnitude (|heading| + |atan2| + |damping|)')
-        ax_stanley_law.set_title('Control-law term breakdown', fontsize=9)
+        law = ds.get('terms', {}) if ds is not None else {}
+        self.stanley_law_panel.update({
+            self._stanley_law_labels[n]: (law[n]['pct'],
+                                          f"{law[n]['pct']:.1f}%  (v={law[n]['value']:+.4f} rad)")
+            for n in STANLEY_LAW_TERMS if n in law})
 
         header = []
         if ds is not None and ds.get('steering') is not None:
             header.append(f"steering command = {ds['steering']:+.4f} rad")
-        fig_stanley.suptitle('Stanley control-law breakdown (debug)'
-                              + ('\n' + '   |   '.join(header) if header else ''))
+        self.stanley_header.set_text('\n' + '   |   '.join(header) if header else '')
 
-    fig.tight_layout()
-    # fig_dbg/fig_stanley do NOT call tight_layout() here -- both were
-    # created with layout='constrained' above, which re-solves margins on
-    # every draw instead of once at startup, and calling tight_layout() on
-    # top of that either raises or silently fights it depending on
-    # matplotlib version, neither of which is wanted.
-    ani = FuncAnimation(fig, redraw, interval=1000.0 / REDRAW_HZ, cache_frame_data=False)
-    ani_dbg = FuncAnimation(fig_dbg, redraw_debug, interval=1000.0 / REDRAW_HZ,
-                             cache_frame_data=False)
-    ani_stanley = FuncAnimation(fig_stanley, redraw_debug_stanley, interval=1000.0 / REDRAW_HZ,
-                                 cache_frame_data=False)
+    def _sync_debug_visibility(self, show_stanley):
+        """
+        Show whichever debug window matches the active controller.
+        Figure.set_visible() does not hide the Tk window itself (it left a
+        blank numbered "Figure" window on screen), so the window manager's
+        withdraw()/deiconify() are used, and only on a transition, or a
+        window the user moved would be fought back into place every frame.
+        """
+        if show_stanley == self._show_stanley:
+            return
+        self._show_stanley = show_stanley
+        for fig, visible in ((self.fig_dbg, not show_stanley), (self.fig_stanley, show_stanley)):
+            window = getattr(fig.canvas.manager, 'window', None)
+            if window is not None:
+                (window.deiconify if visible else window.withdraw)()
+
+    # ------------------------------------------------------------------
+    # One frame
+    # ------------------------------------------------------------------
+    def tick(self, force=False) -> bool:
+        """
+        Drain queued messages, update every artist and request a redraw.
+        Returns False (and draws nothing) when no message arrived since the
+        last frame, so an idle stack costs almost no CPU.
+
+        All queued callbacks are processed, not one: the controller publishes
+        at 20 Hz and the other topics faster, so one spin_once per frame would
+        fall behind and show a stale state. Each callback is a cheap attribute
+        write, so the bounded loop empties quickly and stops as soon as
+        nothing new arrived.
+        """
+        node = self.node
+        for _ in range(50):
+            before = node._callback_count
+            rclpy.spin_once(node, timeout_sec=0.0)
+            if node._callback_count == before:
+                break
+        if not force and node._callback_count == self._last_count:
+            return False
+        self._last_count = node._callback_count
+
+        self._update_map()
+        self.blit_map.update()
+        show_stanley = node.active_controller() == 'stanley'
+        self._sync_debug_visibility(show_stanley)
+        now = time.monotonic()
+        if not force and now - self._last_debug < 1.0 / DEBUG_REDRAW_HZ:
+            return True
+        self._last_debug = now
+        if show_stanley:
+            self._update_stanley_debug()
+            self.blit_stanley.update()
+        else:
+            self._update_mpc_debug()
+            self.blit_dbg.update()
+        return True
+
+
+def main():
+    rclpy.init()
+    node = LiveVizNode()
+
+    # Tk's mainloop (entered below via plt.show()) is a blocking C event
+    # loop and CPython only runs a signal handler between bytecode
+    # instructions, so SIGTERM/SIGINT while blocked in Tk was left to chance.
+    # launch_all.sh's cleanup() sends SIGTERM (and Ctrl+C sends SIGINT)
+    # expecting a prompt exit; os._exit(0) rather than sys.exit()/plt.close()
+    # so the process does not wait for Tk to unwind its own loop, which is
+    # the step that used to hang.
+    def _handle_shutdown_signal(_signum, _frame):
+        os._exit(0)
+    signal.signal(signal.SIGTERM, _handle_shutdown_signal)
+    signal.signal(signal.SIGINT, _handle_shutdown_signal)
+
+    viz = LiveViz(node)
+    # One timer drives all three windows: Tk has one event loop, so a
+    # draw_idle() on any figure's canvas is serviced from it.
+    timer = viz.fig.canvas.new_timer(interval=int(1000.0 / REDRAW_HZ))
+    timer.add_callback(viz.tick)
+    timer.start()
+    viz.tick(force=True)
     plt.show()
 
     node.destroy_node()

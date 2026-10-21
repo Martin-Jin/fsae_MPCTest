@@ -51,6 +51,8 @@ class LauncherApp(tk.Tk):
         self._settings_tab = SettingsTab(notebook, paths)
         notebook.add(self._settings_tab, text="Settings")
         notebook.add(ProfilesTab(notebook, paths, self._settings_tab, self._launch_tab), text="Profiles")
+        # Grey out Settings fields the Launch tab's selection does not use.
+        self._settings_tab.bind_launch_context(self._launch_tab)
 
         # Warn on leaving the Settings tab with unsaved edits, not just on
         # window close -- switching to Launch Sim/Profiles/etc. and back is

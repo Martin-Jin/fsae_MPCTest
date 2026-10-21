@@ -960,7 +960,8 @@ Don't:
 - Write only the dataclass default. `_sync_live_field` writes the dataclass in `mpc_params.py` or `nmpc_params.py`, both `fsds_simulator/` copies, and both `fsae_params.yaml` copies. The YAML overrides the dataclass at ROS parameter declaration, and a stale YAML kept `r_a_accel` and `nmpc_track_halfwidth` at old values after a GUI save.
 - Treat the `None` entries in `_LIST_FIELDS` as unused states. They mean no live dataclass field to sync to. `R_diag[1]` (a_cmd) is a real, nominal-only weight. Display names come from `_LIST_FIELD_INDEX_NAMES`.
 - Expect a save to change a running sim. Restart the sim.
-Key API: `SettingsTab`, `_on_save`, `_sync_live_field`, `capture_profile_values`, `apply_profile_values` (fills widgets then calls `_on_save`, so profile loading writes every file exactly as a manual save does), `has_unsaved_changes`, `_profile_field_names`, `_on_overwrite_all_params` (dry run of `tuner.tools.sync_mpc_params`, a confirm dialog naming the destinations that differ, then `--apply`).
+- Add a field without registering it with `_gate(widget, *tags)`, because it would then stay editable when the selection does not use it. Tags: `mpc`, `ltv`, `nmpc`, `progress`, `zone`, `no_blend`, `("override", name)`.
+Key API: `SettingsTab`, `_gate`, `_refresh_applicability`, `bind_launch_context` (called from `gui/launcher/app.py`), `_on_save`, `_sync_live_field`, `capture_profile_values`, `apply_profile_values` (fills widgets then calls `_on_save`, so profile loading writes every file exactly as a manual save does), `has_unsaved_changes`, `_profile_field_names`, `_on_overwrite_all_params` (dry run of `tuner.tools.sync_mpc_params`, a confirm dialog naming the destinations that differ, then `--apply`).
 
 Behaviour to know:
 
@@ -1024,7 +1025,7 @@ Key API: `TRACKS_DIR`, `list_tracks`, `newest_track`, `dated_track_name`, `track
 
 ## Data format: settings profiles
 
-Files: `settings_profiles/no_progress_tuned.json` and `settings_profiles/progress_tuning.json`. Written by the Profiles tab, one file per profile, read only by the same tab. No other tool reads them.
+Files: `settings_profiles/no_progress_tuned.json` and `settings_profiles/progress_tuning_new.json`. Written by the Profiles tab, one file per profile, read only by the same tab. No other tool reads them.
 
 Change it to:
 - Hand-editing is safe. Loading skips unknown keys, so removed fields do not break an old profile.
