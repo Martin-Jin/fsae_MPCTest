@@ -22,6 +22,7 @@ Files under `docs/logs/` are a frozen investigation record, see [logs/README.md]
 | Understand the reference path and speed profile | [reference/reference_path_and_speed.md](reference/reference_path_and_speed.md) |
 | Judge how far to trust the offline sim against the car | [reference/simulator_fidelity.md](reference/simulator_fidelity.md) |
 | Understand the vehicle plant model | [reference/vehicle_physics.md](reference/vehicle_physics.md) |
+| Read what was learned from another team's controls stack (external reference, CMR Driverless MPPI and delay compensation) | [additional_readings/external_cmr_driverless_controls.md](additional_readings/external_cmr_driverless_controls.md) |
 | Look up a term | [reference/glossary.md](reference/glossary.md) |
 | See every live node, topic and launch file, with a flowchart per module | [fsds/live_architecture.md](fsds/live_architecture.md) |
 | Set up FSDS and connect the ROS 2 bridge | [fsds/integration_guide.md](fsds/integration_guide.md), [fsds/ros_integration.md](fsds/ros_integration.md), [fsds/settings.md](fsds/settings.md) |
@@ -37,4 +38,5 @@ Files under `docs/logs/` are a frozen investigation record, see [logs/README.md]
 - `fsds/`: simulator and bridge setup.
 - `modules/`: file-by-file references.
 - `logs/`: frozen investigation record.
+- `additional_readings/`: external references about other teams' stacks. They describe none of this project's code.
 - `diagrams/`: generated SVGs of every Mermaid chart, see [diagrams/README.md](diagrams/README.md).
