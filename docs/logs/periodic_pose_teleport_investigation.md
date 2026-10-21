@@ -550,8 +550,18 @@ from t=35.4 s to t=84.1 s and at 1 otherwise. Above 8 m/s:
 Loop timing, solve time and solver status are the same in both. The age
 leaves out the pose's wait in `sim_perception`, so the true delay is about
 one step. `MPCParams.min_delay_compensation_steps` (default 0, set to 1 in
-`launch_all.sh` for the test) floors `n_delay` at 1 to confirm this. Not
-yet tested.
+`launch_all.sh` for the test) floors `n_delay` at 1. In
+`mpc_standalone_control_20261021-222924.csv` (seven laps, floor 1) `n_delay`
+is 1 on 99% of ticks and steering change per tick is 0.245 to 0.255 deg on
+every lap above 8 m/s, against 0.455 deg on the lap held at 0.
+
+**Measurement change that replaces the floor.** `sim_perception` now stamps
+`car_position` with its own ROS-clock receipt time of the odom sample, and
+the controller takes `now - stamp`. That is one clock, as the receipt-time
+version above was, and it also counts the relay wait. `car_odom` keeps the
+FSDS stamp, so `pose_stamp_age_s` still traces the drift. Expected median
+age is about one step, which makes `n_delay` 1 without the floor. Not yet
+live-tested.
 
 ## Next step (2026-08-20 — shared-bottleneck question answered; root cause still open)
 

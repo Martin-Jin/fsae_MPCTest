@@ -47,8 +47,9 @@ See ADAPTIVE_COLUMNS below for the full list and what each one means
 (its tail carries the NMPC-only columns, empty on LTV-QP runs).
 
 The last column, pose_stamp_age_s, is now() minus the pose stamp across the
-FSDS and controller clocks. It is a diagnostic only: pose_age_s, which drives
-n_delay, is timed on the controller's clock (see mpc_controller._pose_cb).
+FSDS and controller clocks (from car_odom's FSDS stamp). It is a diagnostic
+only: pose_age_s, which drives n_delay, is measured from sim_perception's
+ROS-clock receipt stamp on car_position (see sim_perception's "Pose stamp").
 
 Path CSV columns: t, idx, x, y — waypoint snapshots at ~1 Hz.
 

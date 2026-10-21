@@ -276,7 +276,7 @@ Offline-only settings model the lag itself and how wrong the controller's belief
 - `DELAY_STEPS` (1), `DELAY_JITTER_STEPS` (0.2), `DELAY_JITTER_SEED` (12345) in `settings/general.py`. With zero jitter the tuner solves an easier problem than the car, whose loop period jitters.
 - Set `DELAY_STEPS` from a realistic hardware lag and `DELAY_JITTER_STEPS` from a measured live loop-period standard deviation converted to steps. Leave jitter above 0 unless deliberately testing the ideal case.
 - `n_delay_hysteresis` prevents oscillation at a bin boundary. Do not remove it without confirming the oscillation does not return.
-- `pose_age_s` is timed on the controller's clock from when a new pose arrived, so FSDS clock drift no longer inflates it. A pose feed that stops updating still pins `n_delay` at its cap. See [lmpc.md](../controllers/lmpc.md) ("Delay compensation") and [periodic_pose_teleport_investigation.md](../logs/periodic_pose_teleport_investigation.md).
+- `pose_age_s` is measured from `sim_perception`'s ROS-clock receipt stamp, so FSDS clock drift no longer inflates it and the relay wait is counted. A pose feed that stops updating still pins `n_delay` at its cap. See [lmpc.md](../controllers/lmpc.md) ("Delay compensation") and [periodic_pose_teleport_investigation.md](../logs/periodic_pose_teleport_investigation.md).
 
 ## LTV-QP adaptive gains
 

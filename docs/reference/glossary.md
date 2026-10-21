@@ -60,7 +60,7 @@ Symbols are as in the code (`e_y`, `e_psi`, `kappa`). Names in `code font` are i
 | Pacejka (MF94) | The Magic Formula tyre force model, an S-shaped curve of force against slip. | [vehicle_physics.md](vehicle_physics.md) |
 | Parity | The rule that the live and offline copies of any planning or control logic, weight, plant constant or scoring constant stay numerically identical, kept by hand because the two trees cannot import each other. | [offline_live_parity.md](offline_live_parity.md) |
 | Plant | The simulated car being controlled (`model/vehicle_physics/`), the ground truth against which controllers are tested. | [vehicle_physics.md](vehicle_physics.md) |
-| Pose age | How long ago the pose the controller is solving against arrived, timed on the controller's own clock (`pose_age_s`). Sets `n_delay`. The cross-clock figure is logged separately as `pose_stamp_age_s`. | [simulator_fidelity.md](simulator_fidelity.md) |
+| Pose age | How long ago `sim_perception` received the pose the controller is solving against, on the shared ROS clock (`pose_age_s`). Sets `n_delay`. The cross-clock figure is logged separately as `pose_stamp_age_s`. | [simulator_fidelity.md](simulator_fidelity.md) |
 | Precomputed path / speed profile | `raceline.csv`, `centerline.csv` and `speed_profile.csv` for a track, loaded through `map_path` and `USE_PRECOMPUTED_*`. | [reference_path_and_speed.md](reference_path_and_speed.md) |
 | `Q`, `R`, `R_rate` | The cost weights: `Q` on tracking error, `R` on control effort, `R_rate` on tick-to-tick change of the control. Raw units, not normalised. | [lmpc.md](../controllers/lmpc.md) |
 | QP | Quadratic program: minimise a quadratic cost under linear constraints. Convex, so one global optimum. | [lmpc.md](../controllers/lmpc.md) |

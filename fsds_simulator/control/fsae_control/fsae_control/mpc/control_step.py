@@ -205,15 +205,17 @@ class _ControlStepMixin:
                 throttle_duration_sec=1.0)
         self._v_des_prev = desired_speed
 
-        # Age of the pose the MPC is about to solve against: time since this
-        # sample first arrived, on this node's clock (see _pose_cb for why not
-        # now() - stamp). Lets MPCController compensate for a time-varying
-        # delay instead of assuming the state is fresh (see lmpc/controller.py
-        # compute()). pose_stamp_age_s is the old cross-clock figure, logged
+        # Age of the pose the MPC is about to solve against, from
+        # sim_perception's ROS-clock receipt stamp (one clock, and it counts
+        # the relay wait; see sim_perception's "Pose stamp" note). Lets
+        # MPCController compensate for a time-varying delay instead of
+        # assuming the state is fresh (see lmpc/controller.py compute()).
+        # pose_stamp_age_s is now() minus car_odom's FSDS-clock stamp, logged
         # only, because its drift is the evidence for the periodic stall.
         now = self.get_clock().now()
-        pose_age_s = (now - self._pose_rx_time).nanoseconds * 1e-9
-        pose_stamp_age_s = (now - Time.from_msg(self._pose_stamp)).nanoseconds * 1e-9
+        pose_age_s = (now - Time.from_msg(self._pose_stamp)).nanoseconds * 1e-9
+        pose_stamp_age_s = (None if self._odom_fsds_stamp is None else
+                            (now - Time.from_msg(self._odom_fsds_stamp)).nanoseconds * 1e-9)
 
         # MPCController/NMPCController.compute() always returns the
         # FSDS-normalised (steering, throttle, brake) tuple regardless of
