@@ -239,6 +239,7 @@ The corner-factor scheduler replaced the older lookahead and demand-normalisatio
 | `predict_epsi_clip` | `0.5` rad | literal `_PREDICT_EPSI_CLIP = 0.5` in `sim/rollout/delay.py` | equal today, hard-coded offline |
 | `delay_compensation_enabled` | `True` | offline always compensates (`predict_ahead()`) | no toggle offline. Live also starts the rollforward's actuator states from the snapshot taken when the oldest pending command was issued (its delay is a stale pose). Offline's delay is commands in transit to a plant measured now, so it rolls the current actuator state forward, which is correct for that model |
 | `max_delay_compensation_steps` | `3` | offline caps a believed lag at `n_true + 2`, not at 3 | different rule |
+| `min_delay_compensation_steps` | `0` (`launch_all.sh` sets `1` for testing) | offline always compensates its fixed `DELAY_STEPS = 1`, so a live floor of 1 matches it | different rule |
 | `pose_age_lp_alpha`, `n_delay_hysteresis` | `0.15`, `0.25` | no offline equivalent. Offline has no measured pose age | live-only |
 
 To tune one of the live-only knobs offline, add a `settings/` constant and a call-site keyword in the rollout first.

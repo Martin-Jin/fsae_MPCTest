@@ -537,6 +537,22 @@ settings. Expect `n_delay` to sit at 0 or 1 through the resync cycle while
 `pose_stamp_age_s` still ramps, and no spin at the index ~404 hairpin above
 7.2 m/s entry. Until that run exists, this fix is offline-reasoned only.
 
+**Follow-up (2026-10-21): the new age sits on the 0/1 rounding line.** In
+`mpc_standalone_control_20261021-222038.csv` (world-frame NMPC, two laps)
+the median age is 22 ms against the 25 ms boundary, and `n_delay` held at 0
+from t=35.4 s to t=84.1 s and at 1 otherwise. Above 8 m/s:
+
+| `n_delay` | ticks | steering change per tick | `e_y` rms | p90 abs(`e_psi`) | mean age |
+|---|---|---|---|---|---|
+| 0 | 702 | 0.52 deg | 0.177 m | 7.2 deg | 23.9 ms |
+| 1 | 965 | 0.28 deg | 0.127 m | 5.9 deg | 24.2 ms |
+
+Loop timing, solve time and solver status are the same in both. The age
+leaves out the pose's wait in `sim_perception`, so the true delay is about
+one step. `MPCParams.min_delay_compensation_steps` (default 0, set to 1 in
+`launch_all.sh` for the test) floors `n_delay` at 1 to confirm this. Not
+yet tested.
+
 ## Next step (2026-08-20 — shared-bottleneck question answered; root cause still open)
 
 `ros2/launch_all.sh` launches, right after the bridge comes up (search for

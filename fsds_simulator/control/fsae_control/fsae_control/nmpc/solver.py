@@ -348,15 +348,16 @@ class NMPCController(_QPModelMixin, _SQPStepMixin):
         """
         age = max(0.0, float(pose_age_s))
         cap = self.params.max_delay_compensation_steps
+        lo = min(self.params.min_delay_compensation_steps, cap)
         if self._pose_age_filtered is None:
             self._pose_age_filtered = age
-            self._n_delay = int(np.clip(round(age / self.dt), 0, cap))
+            self._n_delay = int(np.clip(round(age / self.dt), lo, cap))
             return self._n_delay
         self._pose_age_filtered += (
             self.params.pose_age_lp_alpha * (age - self._pose_age_filtered))
         steps_f = self._pose_age_filtered / self.dt
         if abs(steps_f - self._n_delay) > 0.5 + self.params.n_delay_hysteresis:
-            self._n_delay = int(np.clip(round(steps_f), 0, cap))
+            self._n_delay = int(np.clip(round(steps_f), lo, cap))
         return self._n_delay
 
     # ------------------------------------------------------------------

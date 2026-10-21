@@ -114,6 +114,7 @@ controller:
 
     # Delay compensation
     max_delay_compensation_steps: 3    # steps — cap on predict_ahead() rollforward depth
+    min_delay_compensation_steps: 0    # steps — floor on the rollforward depth, for delay the pose age does not see (1 matches offline DELAY_STEPS)
     predict_epsi_clip: 0.5             # rad — small-angle bound used inside predict_ahead()
 
     # n_delay stabilisation
