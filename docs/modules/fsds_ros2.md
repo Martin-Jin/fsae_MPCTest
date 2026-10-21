@@ -280,7 +280,7 @@ Change it to:
 - Change curvature estimation. Run the rollout check, curvature spikes affect corner behaviour.
 Don't:
 - Remove the old moving-average branch without checking `nmpc_spline_reference_enabled` A/B use.
-Key API: `PathReference`, `kappa_at`, `psi_ref_at`, `xy_at`, `project`
+Key API: `PathReference`, `kappa_at`, `psi_ref_at`, `xy_at`, `project`, `frenet_batch` (world-frame model's cost projection)
 
 ### `fsds_simulator/control/fsae_control/fsae_control/nmpc/outputs.py`
 
@@ -289,7 +289,7 @@ Change it to:
 - Add a cost residual. Extend `layout.py` sizes and the weight vector together, run `nmpc_offline_check`.
 Don't:
 - Weight the friction-circle rows into the cost, because they exist only to build QP constraints.
-Key API: `_outputs`
+Key API: `_outputs`, `_frenet_stages` (path-relative terms in either state frame)
 
 ### `fsds_simulator/control/fsae_control/fsae_control/nmpc/weight_schedule.py`
 

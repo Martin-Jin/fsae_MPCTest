@@ -7,15 +7,59 @@ hinge + progress reward, and optionally the friction-circle tyre forces).
 import numpy as np
 
 from controller.nmpc.layout import (
-    IDX_S, IDX_EY, IDX_EPSI, IDX_VX, IDX_VY, IDX_R,
+    IDX_S, IDX_EY, IDX_EPSI, IDX_VX, IDX_VY, IDX_R, IDX_X, IDX_Y, IDX_PSI,
     NH_TRACKING, NH_PROGRESS, NH_FRICTION, _DENOM_FLOOR,
 )
 from controller.nmpc.dynamics import _tyre_forces
 
 
+def _frenet_stages(X, ref, p, s_anchor=None):
+    """Path-relative (s, e_y, e_psi, e_y_dot, s_dot, kappa) per stage at the
+    front axle, in either state frame. Identical to the live
+    outputs._frenet_stages, whose docstring has the detail: the Frenet model
+    reads them off the state; the Cartesian one projects the predicted front
+    axle onto the path, seeded from `s_anchor` plus distance travelled."""
+    v_x = X[:, IDX_VX]
+    v_y = X[:, IDX_VY]
+    if not p.cartesian:
+        s = X[:, IDX_S]
+        e_y = X[:, IDX_EY]
+        e_psi = X[:, IDX_EPSI]
+        kap = ref.kappa_at(s)
+        denom = 1.0 - kap * e_y
+        denom = np.where(denom >= 0.0,
+                         np.maximum(denom, _DENOM_FLOOR),
+                         np.minimum(denom, -_DENOM_FLOOR))
+        cos_ep = np.cos(e_psi)
+        sin_ep = np.sin(e_psi)
+        s_dot = (v_x * cos_ep - v_y * sin_ep) / denom
+        e_y_dot = v_x * sin_ep + v_y * cos_ep
+        return s, e_y, e_psi, e_y_dot, s_dot, kap
+
+    psi = X[:, IDX_PSI]
+    r = X[:, IDX_R]
+    c, sn = np.cos(psi), np.sin(psi)
+    P = np.column_stack([X[:, IDX_X] + p.lf * c, X[:, IDX_Y] + p.lf * sn])
+    travelled = np.concatenate(
+        [[0.0], np.cumsum(np.hypot(np.diff(P[:, 0]), np.diff(P[:, 1])))])
+    s, e_y, e_psi, th = ref.frenet_batch(P, psi, float(s_anchor) + travelled)
+    v_lat = v_y + p.lf * r
+    vx_w = v_x * c - v_lat * sn
+    vy_w = v_x * sn + v_lat * c
+    ct, st = np.cos(th), np.sin(th)
+    kap = ref.kappa_at(s)
+    denom = 1.0 - kap * e_y
+    denom = np.where(denom >= 0.0,
+                     np.maximum(denom, _DENOM_FLOOR),
+                     np.minimum(denom, -_DENOM_FLOOR))
+    s_dot = (vx_w * ct + vy_w * st) / denom
+    e_y_dot = vy_w * ct - vx_w * st
+    return s, e_y, e_psi, e_y_dot, s_dot, kap
+
+
 def _outputs(X, ref, p, v_ref, friction_circle_enabled=False,
              progress_enabled=False, v_cap=None, s_target_N=None,
-             progress_v_min=0.0):
+             progress_v_min=0.0, s_anchor=None):
     """Stage output h(x). Two mutually exclusive layouts for row 4 onward,
     fixed per NMPCController instance (see NH_TRACKING/NH_PROGRESS):
 
@@ -66,6 +110,9 @@ def _outputs(X, ref, p, v_ref, friction_circle_enabled=False,
     violation (that mechanism summed a per-stage residual across the WHOLE
     horizon; this one only ever scores the last stage).
 
+    The path-relative terms come from _frenet_stages, so the rows mean the
+    same in both state frames; `s_anchor` is required for the Cartesian one.
+
     When `friction_circle_enabled` is True, TWO EXTRA rows (F_yf, F_yr, see
     NH_FRICTION) are appended after whichever of the two layouts above is
     active. These ride along through the exact same finite-difference
@@ -74,31 +121,21 @@ def _outputs(X, ref, p, v_ref, friction_circle_enabled=False,
     w_out slicing) -- only used to build the friction-circle QP constraint.
     Shape is IDENTICAL to before either feature existed when both flags are
     False (not just "the extra rows are empty")."""
-    e_y   = X[:, IDX_EY]
-    e_psi = X[:, IDX_EPSI]
     v_x   = X[:, IDX_VX]
-    v_y   = X[:, IDX_VY]
     r     = X[:, IDX_R]
-    kap = ref.kappa_at(X[:, IDX_S])
-    denom = 1.0 - kap * e_y
-    denom = np.where(denom >= 0.0,
-                     np.maximum(denom, _DENOM_FLOOR),
-                     np.minimum(denom, -_DENOM_FLOOR))
-    cos_ep = np.cos(e_psi)
-    sin_ep = np.sin(e_psi)
-    s_dot = (v_x * cos_ep - v_y * sin_ep) / denom
+    s, e_y, e_psi, e_y_dot, s_dot, kap = _frenet_stages(X, ref, p, s_anchor)
     nh = NH_PROGRESS if progress_enabled else NH_TRACKING
     n_cols = nh + NH_FRICTION if friction_circle_enabled else nh
     H = np.empty((X.shape[0], n_cols))
     H[:, 0] = e_y
-    H[:, 1] = v_x * sin_ep + v_y * cos_ep
+    H[:, 1] = e_y_dot
     H[:, 2] = e_psi
     H[:, 3] = r - kap * s_dot
     if progress_enabled:
         H[:, 4] = (np.maximum(0.0, v_x - v_cap)
                    - np.maximum(0.0, progress_v_min - v_x))
         h_prog = np.zeros(X.shape[0])
-        h_prog[-1] = s_target_N - X[-1, IDX_S]
+        h_prog[-1] = s_target_N - s[-1]
         H[:, 5] = h_prog
     else:
         H[:, 4] = v_x - v_ref

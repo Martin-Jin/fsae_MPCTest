@@ -44,7 +44,7 @@ def synthetic_corner(straight_m=60.0, radius=13.0, arc_deg=90.0, ds=0.25,
     return np.array(pts)
 
 
-def make_ctrl(N=20, sqp_iters=1, budget_ms=1e6, vp=None):
+def make_ctrl(N=20, sqp_iters=1, budget_ms=1e6, vp=None, cartesian=False):
     vp = vp or VehicleParams()
     u_min = np.array([-vp.max_steer, vp.max_accel_brake])
     u_max = np.array([vp.max_steer, vp.max_accel])
@@ -54,6 +54,7 @@ def make_ctrl(N=20, sqp_iters=1, budget_ms=1e6, vp=None):
         q_e_y=6.0, q_e_yd=0.8, q_e_psi=1.6, q_epsi_dot=1.0, q_e_v=5.55,
         r_delta=1.8, r_a_accel=3.0, r_a_brake=0.5, r_rate_delta=2.5, r_rate_a=2.4,
         sqp_iters=sqp_iters, solve_budget_ms=budget_ms,
+        cartesian_model_enabled=cartesian,
     )
 
 
@@ -61,7 +62,7 @@ def converge(ctrl, x0, v_ref, iters=25):
     ref = ctrl._ref
     U = np.zeros((ctrl.N, no.NU))
     X = ctrl._rollout(x0, U, ref)
-    H = no._outputs(X, ref, ctrl.plant, v_ref)
+    H = no._outputs(X, ref, ctrl.plant, v_ref, s_anchor=ctrl._s_anchor)
     costs = [ctrl._cost(X, U, H)]
     for _ in range(iters):
         dU, _status = ctrl._solve_step(X, U, ref, v_ref)
@@ -71,7 +72,7 @@ def converge(ctrl, x0, v_ref, iters=25):
         for _bt in range(5):
             U_t = np.clip(U + step * dU, ctrl.u_min, ctrl.u_max)
             X_t = ctrl._rollout(x0, U_t, ref)
-            H_t = no._outputs(X_t, ref, ctrl.plant, v_ref)
+            H_t = no._outputs(X_t, ref, ctrl.plant, v_ref, s_anchor=ctrl._s_anchor)
             c_t = ctrl._cost(X_t, U_t, H_t)
             if c_t <= costs[-1]:
                 U, X, H = U_t, X_t, H_t
@@ -108,6 +109,36 @@ def test_model_parity():
     check('_step_scalar == _step', worst < 1e-12, f'worst relative diff {worst:.2e}')
     check('kappa_scalar == kappa_at', worst_k < 1e-12, f'worst abs diff {worst_k:.2e}')
 
+    # Same parity for the world-frame model (slots 0-2 are x, y, heading).
+    pc = no._Plant(vp, cartesian=True)
+    worst_c = 0.0
+    for _ in range(300):
+        x = np.array([rng.uniform(-20, 120), rng.uniform(-20, 60),
+                      rng.uniform(-math.pi, math.pi), rng.uniform(0, 20),
+                      rng.uniform(-1, 1), rng.uniform(-1, 1),
+                      rng.uniform(-vp.max_steer, vp.max_steer),
+                      rng.uniform(vp.max_accel_brake, vp.max_accel)])
+        u = np.array([rng.uniform(-vp.max_steer, vp.max_steer),
+                      rng.uniform(vp.max_accel_brake, vp.max_accel)])
+        for n_sub in (1, 2, 3):
+            a = no._step(x[None, :], u[None, :], ref, pc, 0.05, n_sub)[0]
+            b = np.array(no._step_scalar(x, u, ref, pc, 0.05, n_sub))
+            worst_c = max(worst_c, float(np.max(np.abs(a - b) / np.maximum(np.abs(a), 1.0))))
+    check('Cartesian _step_scalar == _step', worst_c < 1e-12, f'worst relative diff {worst_c:.2e}')
+
+    # The Cartesian cost projection must recover a known offset exactly:
+    # points placed at (s, e_y) off the synthetic corner, seeded 1.5 m wrong.
+    s_true = np.linspace(5.0, ref.total - 5.0, 200)
+    e_true = rng.uniform(-2.0, 2.0, s_true.size)
+    th = ref.psi_ref_at(s_true)
+    px, py = ref._point_at(s_true)
+    P = np.column_stack([px - e_true * np.sin(th), py + e_true * np.cos(th)])
+    s_b, e_b, ep_b, _th = ref.frenet_batch(P, th + 0.1, s_true + 1.5)
+    err = max(np.abs(s_b - s_true).max(), np.abs(e_b - e_true).max(),
+              np.abs(ep_b - 0.1).max())
+    check('frenet_batch recovers (s, e_y, e_psi) from a 1.5 m-wrong seed',
+          err < 5e-3, f'worst error {err:.2e}')
+
 
 def test_convergence():
     print('\n2. SQP CONVERGENCE (cost must decrease monotonically)')
@@ -125,6 +156,26 @@ def test_convergence():
         U, costs = converge(ctrl, x0, x0[no.IDX_VX])
         mono = all(costs[i + 1] <= costs[i] + 1e-12 for i in range(len(costs) - 1))
         check(f'{label}', mono and len(costs) > 1,
+              f'cost {costs[0]:.4g} -> {costs[-1]:.4g} in {len(costs) - 1} iters, '
+              f'steer[0]={math.degrees(U[0, 0]):+.2f} deg')
+
+    # Same cases in the world-frame model: x0 is the CoG pose that puts the
+    # front axle at each case's (s, e_y, e_psi).
+    ctrl_c = make_ctrl(cartesian=True)
+    ref = ctrl_c.path_reference(path)
+    for label, xf in cases:
+        ctrl_c.reset()
+        s, e_y, e_psi = xf[0], xf[1], xf[2]
+        th = float(ref.psi_ref_at(np.array([s]))[0])
+        px, py = ref._point_at(np.array([s]))
+        yaw = th + e_psi
+        fa = np.array([px[0] - e_y * math.sin(th), py[0] + e_y * math.cos(th)])
+        cg = fa - ctrl_c.lf * np.array([math.cos(yaw), math.sin(yaw)])
+        x0 = np.concatenate([[cg[0], cg[1], yaw], xf[3:]])
+        ctrl_c._s_anchor = s
+        U, costs = converge(ctrl_c, x0, x0[no.IDX_VX])
+        mono = all(costs[i + 1] <= costs[i] + 1e-12 for i in range(len(costs) - 1))
+        check(f'Cartesian: {label}', mono and len(costs) > 1,
               f'cost {costs[0]:.4g} -> {costs[-1]:.4g} in {len(costs) - 1} iters, '
               f'steer[0]={math.degrees(U[0, 0]):+.2f} deg')
 
@@ -209,7 +260,10 @@ def test_closed_loop():
         return get_8state_discrete_model(vx, dt)
 
     results = {}
-    for use_nmpc, label in ((False, 'LTV-QP (as shipped)'), (True, 'NMPC (settings.py defaults)')):
+    runs = ((False, 'LTV-QP (as shipped)', None),
+            (True, 'NMPC (settings.py defaults)', None),
+            (True, 'NMPC, Cartesian model', {'cartesian_model_enabled': True}))
+    for use_nmpc, label, ov in runs:
         # Pass use_nmpc as an explicit CALL argument, not by mutating
         # settings.USE_NMPC -- run_core_rollout()'s default argument
         # (use_nmpc=settings.USE_NMPC) binds at import time, so reassigning the
@@ -222,7 +276,7 @@ def test_closed_loop():
             Q, R, R_rate, u_min, u_max, vp,
             max_steps=num_steps, dynamic_max_steps=dyn_max,
             use_planner=False, model_lookup=model_lookup,
-            want_history=True, use_nmpc=use_nmpc,
+            want_history=True, use_nmpc=use_nmpc, nmpc_overrides=ov,
         )
         results[label] = r
         h = r['history']
@@ -233,6 +287,7 @@ def test_closed_loop():
               f'|e_psi| mean {ep.mean():5.2f} | sat {100*sat:5.1f}% | '
               f'n_ran {len(h["X"])} | reached_end={r["reached_end"]} dnf={r["dnf"]}')
     check('NMPC completes without DNF', not results['NMPC (settings.py defaults)']['dnf'])
+    check('Cartesian NMPC completes without DNF', not results['NMPC, Cartesian model']['dnf'])
     ltv_h = results['LTV-QP (as shipped)']['history']
     nmpc_h = results['NMPC (settings.py defaults)']['history']
     identical = (np.array(ltv_h['u_steer']) == np.array(nmpc_h['u_steer'])).all() if len(

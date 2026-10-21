@@ -377,6 +377,16 @@ NMPC_ALAT_CEILING_ENABLED = True            # model FSDS's measured sustained a_
 # regression shows up. False restores the pre-existing behaviour exactly.
 NMPC_SPLINE_REFERENCE_ENABLED = True
 
+# [NMPC only] NMPC_CARTESIAN_MODEL_ENABLED -- False (default, EXPERIMENTAL):
+# True predicts the car in world x/y/heading instead of the Frenet s/e_y/e_psi,
+# and measures e_y/e_psi only in the cost by projecting each predicted front
+# axle onto the path. Path curvature then never enters the integrated
+# prediction (it stays only in the e_psi_dot cost row and the projection's
+# Newton step), so a curvature artefact cannot steer the car the way it can
+# through the Frenet e_psi_dot = r - kappa*s_dot. Same weights and tyre model.
+# Live twin: NMPCParams.nmpc_cartesian_model_enabled.
+NMPC_CARTESIAN_MODEL_ENABLED = False
+
 # [NMPC only] NMPC_FRICTION_CIRCLE_ENABLED -- False (default, EXPERIMENTAL): add a HARD
 # per-axle |F_yf|/|F_yr| bound to the condensed QP (on top of, not instead
 # of, the existing SOFT alat-ceiling tanh saturation inside _f/_f_scalar --

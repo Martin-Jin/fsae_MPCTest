@@ -65,7 +65,7 @@ MODULE MAP (live `nmpc/` is a package with the same file names; this offline cop
   layout.py           IDX_*/NX/NU/NH_* layout, FD step sizes, _DENOM_FLOOR, _wrap
   reference.py        PathReference
   dynamics.py         _Plant, _tyre_forces, _f, _f_scalar, _step_scalar, _step
-  outputs.py          _outputs (cost residual rows)
+  outputs.py          _outputs (cost residual rows), _frenet_stages
   weight_schedule.py  _rrate_zone_scale, _rrate_stage_ramp
   qp_model.py         _csc_pattern, _QPModelMixin (QP build, rollout, Jacobians, cost)
   sqp_step.py         _SQPStepMixin (_solve_step, _project_feasible)
@@ -82,7 +82,7 @@ from controller.nmpc.reference import PathReference  # noqa: F401
 from controller.nmpc.dynamics import (  # noqa: F401
     _Plant, _tyre_forces, _f, _f_scalar, _step_scalar, _step,
 )
-from controller.nmpc.outputs import _outputs  # noqa: F401
+from controller.nmpc.outputs import _frenet_stages, _outputs  # noqa: F401
 from controller.nmpc.weight_schedule import (  # noqa: F401
     _rrate_zone_scale, _rrate_stage_ramp,
 )

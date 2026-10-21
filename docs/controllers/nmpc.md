@@ -90,6 +90,28 @@ e_psi_dot = r - kappa(s)*s_dot
 
 The from-scratch worked arithmetic is in [error_states.md](../reference/error_states.md).
 
+### An experimental world-frame model keeps curvature out of the prediction
+
+`nmpc_cartesian_model_enabled` (offline `NMPC_CARTESIAN_MODEL_ENABLED`, default false) predicts the car on the map instead of along the path. Path error is then measured only in the cost. Offline on `comp_test_map_3` it completes the lap that the Frenet model does not. It is not yet live-validated.
+
+| `nmpc_offline_check` closed loop, recorded `comp_test_map_3` | mean abs(`e_y`) | p90 abs(`e_y`) | mean abs(`e_psi`) | steering saturation | result |
+|---|---|---|---|---|---|
+| LTV-QP | 0.224 m | 0.425 m | 2.16 deg | 0.1% | finishes |
+| NMPC, Frenet model (default) | 0.346 m | 1.153 m | 4.52 deg | 4.4% | DNF after 475 ticks |
+| NMPC, world-frame model | 0.163 m | 0.448 m | 3.35 deg | 0.2% | finishes |
+
+The Frenet row is identical with and without this change, so the Frenet path is unchanged. The offline NMPC weights differ from the live ones, so these rows rank the models but do not predict live numbers. Solve time is unchanged: the live solver, closed-loop against its own model on the same track, takes a median of about 18 ms per tick in both models.
+
+- **Why it exists:** in the Frenet model, `kappa(s)` enters `s_dot` and `e_psi_dot`, so it is integrated into every predicted state. A curvature artefact (a spline wiggle, a clipped or rate-limited sample) becomes a predicted heading error that the solver steers for. That is why the reference needs `nmpc_kappa_clip` and `nmpc_kappa_rate_max`. CMR Driverless runs its rollouts in x/y for the same reason (see [external_cmr_driverless_controls.md](../reference/external_cmr_driverless_controls.md)).
+- **What it does:** state slots 0 to 2 hold the centre of gravity's world `x`, `y` and heading (`IDX_X`, `IDX_Y`, `IDX_PSI`). Their rates are `x_dot = v_x*cos(psi) - v_y*sin(psi)`, `y_dot = v_x*sin(psi) + v_y*cos(psi)` and `psi_dot = r`, with no path input. The tyre, actuator and lateral-acceleration-ceiling rows are shared with the Frenet model.
+- **How the cost sees the path:** `outputs._frenet_stages` places each predicted front axle (centre of gravity plus `lf` along the heading) and projects it onto the path with `PathReference.frenet_batch`. That is 4 Newton steps, seeded from the stage-0 arc length (`_s_anchor`) plus the distance the front axle travels. The same `e_y`, `e_y_dot`, `e_psi`, `e_psi_dot` and progress rows are then built as before, with the same weights. The projection's fixed point is where the offset is perpendicular to `psi_ref(s)`, so `kappa` there sets only the convergence rate, not the answer.
+- **Where curvature remains:** only the `e_psi_dot = r - kappa*s_dot` cost row, and the Newton step size. Neither is integrated across the horizon.
+- **Why not full MPCC:** MPCC (model predictive contouring control) adds path progress as a state and a virtual input. That changes the QP layout. Projecting inside the cost keeps the existing condensed QP, weights and constraints unchanged.
+- **A modelling difference it removes:** the Frenet model propagates the front axle's `e_y` with the centre-of-gravity velocity, leaving out the `lf*r` term. So in a steady corner it holds `e_y` with a heading about `lf*kappa` different from what the front axle needs, roughly 8 deg at the tightest corner here (`kappa` 0.21). The world-frame model uses the front axle's own velocity. Whether this matters for the live heading-error gap is UNVERIFIED.
+- **Limitations:** stage-0 `e_y` comes from the projection, not `project()`'s nearest-waypoint scheme, so it can differ from the logged `e_y` by millimetres. Past either end of the path the reference is extended along the end tangent. Telemetry (`nmpc_pred_*`, `nmpc_pred_xy`) reports the projected values, so logs stay comparable.
+- **How to turn it on:** the Launch tab's "World-frame prediction" checkbox (NMPC only), which writes `NMPC_CARTESIAN_MODEL_ENABLED` in `ros2/launch_all.sh`. Offline, pass `nmpc_overrides={'cartesian_model_enabled': True}` to `run_core_rollout` or set the settings constant.
+- **How to check it:** `python3 -m tuner.validation.nmpc_offline_check` runs the scalar against vectorised parity for this model, a projection recovery test, the convergence cases and the closed-loop row above.
+
 ### The prediction model is a bicycle with a saturating tyre
 
 `dynamics.py` (`_f`, vectorised over stages, and `_f_scalar`, a hand-mirrored scalar copy for the sequential rollout) gives `x_dot = f(x, u)`.
@@ -298,6 +320,7 @@ Weights are inherited from `MPCParams` and overridden per field by the `nmpc_*` 
 | Feature | Default | Status |
 |---|---|---|
 | `nmpc_spline_reference_enabled` | true | Numerical-quality fix, no new coupling to the solver |
+| `nmpc_cartesian_model_enabled` | false | Experimental. World-frame prediction, path error in the cost only. Finishes `comp_test_map_3` offline where the Frenet model DNFs. Not yet live-validated. See [the world-frame model](#an-experimental-world-frame-model-keeps-curvature-out-of-the-prediction) |
 | `nmpc_friction_circle_enabled` | false | Experimental. Adds a hard per-axle bound `abs(F_y) <= m*ceiling(v_x)/2`, additional to the soft `tanh`. Unvalidated live |
 | `nmpc_progress_enabled` (with `nmpc_q_progress`, `nmpc_progress_reach`, `nmpc_progress_v_min`) | false | Replaces the two-sided speed error with a speed cap and a progress reward. Attempted and reverted: no lap completed at any setting tried (below about 5 the car never launches, 5 to 6 goes off track near 10% of a lap). Tracking mode completes and scores 0.714. See [nmpc_progress_term_investigation.md](../logs/nmpc_progress_term_investigation.md) |
 | Per-stage speed sampling (a target that varies across the horizon) | removed | Tried twice, as a cost term and as a constraint, rejected both times live. Flags and plumbing deleted. See [nmpc_speed_limit_investigation.md](../logs/nmpc_speed_limit_investigation.md) |

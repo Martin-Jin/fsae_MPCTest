@@ -35,6 +35,12 @@ from gui.launcher.theme import _field_label, _make_scrollable
 _STOP_LOG_POLL_TIMEOUT_S = 5.0
 
 
+def _shortlist_true(path: Path, name: str) -> bool:
+    """True only when NAME's shortlist line is uncommented and set to true."""
+    state = _read_shortlist_var(path, name)
+    return bool(state and state[0] and state[1].strip().lower() == "true")
+
+
 
 # ---------------------------------------------------------------------------
 # Tab 1: Launch Sim
@@ -140,6 +146,22 @@ class LaunchTab(ttk.Frame):
             value=bool(progress_state and progress_state[0] and progress_state[1] == "true"))
         self.progress_check = ttk.Checkbutton(body, variable=self.progress_var)
         self.progress_check.grid(row=row, column=1, sticky="w")
+        # NMPC prediction frame: same shape as the progress row above (a
+        # commented-out launch_all.sh shortlist entry, hidden unless NMPC is
+        # selected), so it is read/written with the same shortlist pair.
+        row += 2
+        self.cartesian_label = ttk.Label(body, text="World-frame prediction (NMPC only, experimental)")
+        self.cartesian_label.grid(row=row, column=0, sticky="nw", pady=(8, 0))
+        self.cartesian_desc = ttk.Label(
+            body, style="Muted.TLabel", wraplength=420,
+            text="Predicts the car in x/y instead of along the path, and measures path "
+                 "error only in the cost, so path-curvature noise cannot enter the "
+                 "prediction. Same weights. Off = the original Frenet model.")
+        self.cartesian_desc.grid(row=row + 1, column=0, sticky="nw", pady=(0, 8))
+        self.cartesian_var = tk.BooleanVar(value=_shortlist_true(
+            paths.launch_all_sh, "NMPC_CARTESIAN_MODEL_ENABLED"))
+        self.cartesian_check = ttk.Checkbutton(body, variable=self.cartesian_var)
+        self.cartesian_check.grid(row=row, column=1, sticky="w")
         self._set_progress_row_visible(initial == "nmpc")
 
         row += 2
@@ -212,7 +234,8 @@ class LaunchTab(ttk.Frame):
             self.new_track_entry.grid_remove()
 
     def _set_progress_row_visible(self, visible: bool) -> None:
-        widgets = (self.progress_label, self.progress_desc, self.progress_check)
+        widgets = (self.progress_label, self.progress_desc, self.progress_check,
+                   self.cartesian_label, self.cartesian_desc, self.cartesian_check)
         if visible:
             for w in widgets:
                 w.grid()
@@ -272,6 +295,7 @@ class LaunchTab(ttk.Frame):
             self.controller_var.set("ltv")
         progress_state = _read_shortlist_var(paths.launch_all_sh, "NMPC_PROGRESS_ENABLED")
         self.progress_var.set(bool(progress_state and progress_state[0] and progress_state[1] == "true"))
+        self.cartesian_var.set(_shortlist_true(paths.launch_all_sh, "NMPC_CARTESIAN_MODEL_ENABLED"))
         self.standalone_var.set(
             (_read_var(paths.launch_all_sh, "STANDALONE_OUTPUT") or "true").strip().lower() == "true")
         self.precomp_speed_var.set(
@@ -298,6 +322,8 @@ class LaunchTab(ttk.Frame):
         values = self._pending_values()
         values["NMPC_PROGRESS_ENABLED"] = (
             "true" if (self.controller_var.get() == "nmpc" and self.progress_var.get()) else "false")
+        values["NMPC_CARTESIAN_MODEL_ENABLED"] = (
+            "true" if (self.controller_var.get() == "nmpc" and self.cartesian_var.get()) else "false")
         return values
 
     def apply_profile_values(self, values: dict[str, str]) -> None:
@@ -322,6 +348,8 @@ class LaunchTab(ttk.Frame):
             self._on_controller_changed()
         if "NMPC_PROGRESS_ENABLED" in values:
             self.progress_var.set(values["NMPC_PROGRESS_ENABLED"].strip().lower() == "true")
+        if "NMPC_CARTESIAN_MODEL_ENABLED" in values:
+            self.cartesian_var.set(values["NMPC_CARTESIAN_MODEL_ENABLED"].strip().lower() == "true")
         if "STANDALONE_OUTPUT" in values:
             self.standalone_var.set(values["STANDALONE_OUTPUT"].strip().lower() == "true")
         if "USE_PRECOMPUTED_SPEED" in values:
@@ -364,6 +392,8 @@ class LaunchTab(ttk.Frame):
         preview_lines = [f"  {k}={v}" for k, v in values.items()]
         if self.controller_var.get() == "nmpc" and self.progress_var.get():
             preview_lines.append("  NMPC_PROGRESS_ENABLED=true (EXPERIMENTAL, not validated)")
+        if self.controller_var.get() == "nmpc" and self.cartesian_var.get():
+            preview_lines.append("  NMPC_CARTESIAN_MODEL_ENABLED=true (EXPERIMENTAL, world-frame prediction)")
             preview_lines.append(
                 "  NMPC_SLACK_LINEAR_WEIGHT left as-is -- set it from the Settings tab; "
                 "measured NECESSARY (not just helpful) with the progress term on, or the "
@@ -396,6 +426,11 @@ class LaunchTab(ttk.Frame):
                 progress_on, "true" if progress_on else "false")
             if not shortlist_ok:
                 missing.append("NMPC_PROGRESS_ENABLED")
+            cartesian_on = self.controller_var.get() == "nmpc" and self.cartesian_var.get()
+            if not _rewrite_shortlist_var(
+                    self._paths.launch_all_sh, "NMPC_CARTESIAN_MODEL_ENABLED",
+                    cartesian_on, "true" if cartesian_on else "false"):
+                missing.append("NMPC_CARTESIAN_MODEL_ENABLED")
             if missing:
                 messagebox.showerror(
                     "Launch tab",

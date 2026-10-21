@@ -170,6 +170,43 @@ class PathReference:
     def psi_ref_at(self, s):
         return np.interp(s, self.s_psi, self.psi_ref)
 
+    def _point_at(self, s):
+        """Path point(s) at arc length `s`, extended past either end along
+        the end tangent. Same as the live PathReference._point_at."""
+        x = np.interp(s, self.arc, self.path[:, 0])
+        y = np.interp(s, self.arc, self.path[:, 1])
+        over = np.maximum(s - self.total, 0.0) + np.minimum(s, 0.0)
+        if np.any(over != 0.0):
+            th = self.psi_ref_at(np.clip(s, 0.0, self.total))
+            x = x + over * np.cos(th)
+            y = y + over * np.sin(th)
+        return x, y
+
+    def frenet_batch(self, P, psi, s_guess, iters=4):
+        """
+        Path-relative (s, e_y, e_psi, path_yaw) of points P (M, 2) with
+        headings psi, by Newton iteration from `s_guess`. Used by the
+        Cartesian model's cost outputs. Identical to the live
+        PathReference.frenet_batch, whose docstring explains why kappa there
+        sets only the convergence rate, not the answer.
+        """
+        s = np.asarray(s_guess, dtype=float).copy()
+        px, py = P[:, 0], P[:, 1]
+        for _ in range(iters):
+            cx, cy = self._point_at(s)
+            th = self.psi_ref_at(s)
+            c, sn = np.cos(th), np.sin(th)
+            dx, dy = px - cx, py - cy
+            along = dx * c + dy * sn
+            e_y = dy * c - dx * sn
+            den = np.clip(1.0 - self.kappa_at(s) * e_y, 0.5, 2.0)
+            s = s + along / den
+        cx, cy = self._point_at(s)
+        th = self.psi_ref_at(s)
+        e_y = (py - cy) * np.cos(th) - (px - cx) * np.sin(th)
+        e_psi = _wrap(psi - th)
+        return s, e_y, e_psi, th
+
     def project(self, front_axle, car_yaw):
         """
         Frenet projection of a front-axle position onto the path — identical

@@ -257,7 +257,7 @@ Every `NMPCParams` field and every NMPC-shaped `MPCParams` field has an offline 
 | speed-gated sub-steps | `nmpc_rk_substeps 4`, `nmpc_jac_substeps 4`, `nmpc_jac_gate_speed 8.0`, `nmpc_jac_substeps_fast 2`, `nmpc_rk_gate_speed 4.0`, `nmpc_rk_substeps_fast 3` |
 | standstill damping | `nmpc_standstill_steer_damp_enabled True`, `nmpc_standstill_speed 0.5`, `nmpc_standstill_fade_speed 3.0`, `nmpc_standstill_steer_r_scale 200.0` |
 | trust region and slack | `nmpc_trust_delta_rad` = 9 deg, `nmpc_trust_a 0.6`, `nmpc_backtrack_max 2`, `nmpc_track_halfwidth 3.35`, `nmpc_slack_weight 10000.0`, `nmpc_slack_linear_weight 500.0` |
-| reference | `nmpc_curvature_dense_step 0.5`, `nmpc_curvature_smooth_w 3`, `nmpc_kappa_clip 0.5`, `nmpc_kappa_rate_max 2.0`, `nmpc_spline_reference_enabled True`, `nmpc_alat_ceiling_enabled True` |
+| reference | `nmpc_curvature_dense_step 0.5`, `nmpc_curvature_smooth_w 3`, `nmpc_kappa_clip 0.5`, `nmpc_kappa_rate_max 2.0`, `nmpc_spline_reference_enabled True`, `nmpc_alat_ceiling_enabled True`, `nmpc_cartesian_model_enabled False` (offline `NMPC_CARTESIAN_MODEL_ENABLED`) |
 | latency | `nmpc_latency_compensation_enabled False`, `nmpc_latency_compensation_ms 25.0` |
 | speed target filter | `nmpc_v_des_filter_alpha 0.09` |
 

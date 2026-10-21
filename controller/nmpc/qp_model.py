@@ -19,7 +19,7 @@ import numpy as np
 import scipy.sparse as sp
 
 from controller.nmpc.layout import (
-    IDX_EY, IDX_VX, NX, NU, _FD_EPS_X, _FD_EPS_U,
+    IDX_VX, NX, NU, _FD_EPS_X, _FD_EPS_U,
 )
 from controller.nmpc.dynamics import _step_scalar, _step
 from controller.nmpc.outputs import _outputs
@@ -212,13 +212,14 @@ class _QPModelMixin:
 
         When self.progress_enabled, v_cap/s_target_N are threaded through to
         _outputs unchanged (see that function's docstring) -- perturbing
-        X[:, IDX_S] here naturally captures h_prog's sensitivity to the
+        the state here naturally captures h_prog's sensitivity to the
         terminal arc length through the SAME pass, no extra rollout."""
         H0 = _outputs(X, ref, self.plant, v_ref,
                       friction_circle_enabled=self.friction_circle_enabled,
                       progress_enabled=self.progress_enabled,
                       v_cap=v_cap, s_target_N=s_target_N,
-                      progress_v_min=self.progress_v_min)
+                      progress_v_min=self.progress_v_min,
+                      s_anchor=self._s_anchor)
         n_rows = H0.shape[1]
         C = np.empty((X.shape[0], n_rows, NX))
         for j in range(NX):
@@ -228,7 +229,8 @@ class _QPModelMixin:
                          friction_circle_enabled=self.friction_circle_enabled,
                          progress_enabled=self.progress_enabled,
                          v_cap=v_cap, s_target_N=s_target_N,
-                         progress_v_min=self.progress_v_min)
+                         progress_v_min=self.progress_v_min,
+                         s_anchor=self._s_anchor)
             C[:, :, j] = (Hp - H0) / _FD_EPS_X[j]
         return H0, C
 
@@ -302,7 +304,8 @@ class _QPModelMixin:
             jerk = float(np.sum(np.array([self.rjerk_delta, self.rjerk_a]) * d2 ** 2))
         slack = 0.0
         if self._use_slack:
-            over = np.maximum(np.abs(X[1:, IDX_EY]) - self.track_halfwidth, 0.0)
+            # H column 0 is e_y in both state frames (see _outputs).
+            over = np.maximum(np.abs(H[1:, 0]) - self.track_halfwidth, 0.0)
             # Quadratic + linear, matching _solve_step's q[idx] line -- the
             # QP's own slack variable is driven to exactly this `over` at
             # the optimum (nothing else rewards it being larger), so scoring

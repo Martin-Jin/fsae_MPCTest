@@ -33,6 +33,20 @@ IDX_DELTA = 6   # actuator-lagged steering angle (rad)
 IDX_A     = 7   # actuator-lagged acceleration (m/s^2)
 
 
+# Cartesian model (nmpc_cartesian_model_enabled): slots 0-2 hold the CoG's
+# world position and heading instead of s/e_y/e_psi. Every slot from IDX_VX on
+# means the same in both models. Path-relative s/e_y/e_psi are then cost
+# outputs, computed by projecting the predicted front axle onto the path (see
+# outputs._frenet_stages), never integrated states.
+IDX_X     = 0   # CoG x, world frame (m)
+
+
+IDX_Y     = 1   # CoG y, world frame (m)
+
+
+IDX_PSI   = 2   # heading, world frame, unwrapped (rad)
+
+
 NX = 8
 
 

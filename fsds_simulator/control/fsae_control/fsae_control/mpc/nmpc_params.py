@@ -401,6 +401,23 @@ class NMPCParams:
         "controller": "nmpc_only",
     })
 
+    # ── Prediction state frame (EXPERIMENTAL, default off) ───────────────
+    nmpc_cartesian_model_enabled: bool = field(default=False, metadata={
+        "unit": "bool",
+        "desc": "EXPERIMENTAL: true -> predict in the world frame (CoG x, y, "
+                "heading) instead of the Frenet frame (s, e_y, e_psi), and "
+                "measure e_y/e_psi only in the cost by projecting each "
+                "predicted front axle onto the path. Path curvature then "
+                "never enters the integrated prediction, so a curvature "
+                "artefact cannot steer the car the way it can through the "
+                "Frenet e_psi_dot = r - kappa*s_dot; kappa remains only in "
+                "the e_psi_dot cost row and the projection's Newton step. "
+                "Same weights, constraints and tyre model either way. Read "
+                "once at construction. False (default) is the original "
+                "Frenet model, unchanged",
+        "controller": "nmpc_only",
+    })
+
     # ── Path reference construction ─────────────────────────────────────
     nmpc_spline_reference_enabled: bool = field(default=True, metadata={
         "unit": "bool",

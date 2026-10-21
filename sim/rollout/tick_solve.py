@@ -84,6 +84,7 @@ def build_nmpc(Q, R, R_rate, u_min, u_max, du_max, vehicle_params, nmpc_override
         alat_flat=settings.ALAT_CEILING_FLAT, alat_slope=settings.ALAT_CEILING_SLOPE,
         alat_intercept=settings.ALAT_CEILING_INTERCEPT,
         spline_reference_enabled=settings.NMPC_SPLINE_REFERENCE_ENABLED,
+        cartesian_model_enabled=_ov('cartesian_model_enabled', settings.NMPC_CARTESIAN_MODEL_ENABLED),
         friction_circle_enabled=settings.NMPC_FRICTION_CIRCLE_ENABLED,
         steer_rate_anti_hunt_enabled=settings.NMPC_STEER_RATE_ANTI_HUNT_ENABLED,
         corner_rrate_blend_enabled=settings.NMPC_CORNER_RRATE_BLEND_ENABLED,
