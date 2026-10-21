@@ -549,8 +549,9 @@ from t=35.4 s to t=84.1 s and at 1 otherwise. Above 8 m/s:
 
 Loop timing, solve time and solver status are the same in both. The age
 leaves out the pose's wait in `sim_perception`, so the true delay is about
-one step. `MPCParams.min_delay_compensation_steps` (default 0, set to 1 in
-`launch_all.sh` for the test) floors `n_delay` at 1. In
+one step. `MPCParams.min_delay_compensation_steps` (added with default 0 and set to
+1 in `launch_all.sh` for this test; the default is now 1) floors `n_delay`
+at 1. In
 `mpc_standalone_control_20261021-222924.csv` (seven laps, floor 1) `n_delay`
 is 1 on 99% of ticks and steering change per tick is 0.245 to 0.255 deg on
 every lap above 8 m/s, against 0.455 deg on the lap held at 0.
