@@ -13,15 +13,17 @@ VIEW_AHEAD = 25.0
 VIEW_BEHIND = 8.0
 
 TRAIL_MAXLEN = 2000        # ~40s at 50 Hz control rate, plenty for a debug view
-# Window refresh rates. Both windows blit (see app.py), so a frame costs
-# only its moving artists, and text dominates that: on the developer's WSL
-# machine each text label costs about 4 ms to render, so a map frame
-# measures about 30 ms and a debug-window frame (24 bar labels) about 100 ms.
-# The debug window therefore refreshes slower, so it does not starve the
-# map; both share one Tk thread. A rate the machine cannot keep up with just
-# drops frames, it does not queue them.
+# Window refresh rates. All windows share one Tk thread, so a slow frame in
+# one delays the others; a rate the machine cannot keep up with just drops
+# frames, it does not queue them. The map blits (see app.py) and its stats
+# text, the costly part (about 4 ms per matplotlib text label on the
+# developer's WSL machine), refreshes at STATS_REDRAW_HZ. The cost-breakdown
+# windows are plain Tk canvases, cheap to update, so they run at the
+# controller's own 20 Hz publish rate; faster would only redraw the same
+# numbers.
 REDRAW_HZ = 30.0           # map window
-DEBUG_REDRAW_HZ = 5.0      # cost-breakdown debug windows
+DEBUG_REDRAW_HZ = 20.0     # cost-breakdown windows
+STATS_REDRAW_HZ = 5.0      # the map's stats text box
 
 
 # Which terms (mpc_controller.py's _publish_debug_weights() dict keys)

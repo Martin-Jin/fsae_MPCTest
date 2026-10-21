@@ -396,7 +396,7 @@ Change it to:
 - Add a bar term to match a new debug value.
 Don't:
 - Import ROS or matplotlib here, because the module is meant to load without them.
-Key API: `VIEW_HALF_WIDTH`, `REDRAW_HZ`, `DEBUG_REDRAW_HZ`, `TRAIL_MAXLEN`, `DEBUG_BAR_GROUPS`, `DEBUG_HORIZON_TERMS`, `STANLEY_ERROR_TERMS`, `STANLEY_LAW_TERMS`
+Key API: `VIEW_HALF_WIDTH`, `REDRAW_HZ`, `DEBUG_REDRAW_HZ`, `STATS_REDRAW_HZ`, `TRAIL_MAXLEN`, `DEBUG_BAR_GROUPS`, `DEBUG_HORIZON_TERMS`, `STANLEY_ERROR_TERMS`, `STANLEY_LAW_TERMS`
 
 ### `fsds_simulator/control/fsae_control/fsae_control/live_viz/node.py`
 
@@ -409,14 +409,15 @@ Key API: `LiveVizNode`, `get_car_triangle`
 
 ### `fsds_simulator/control/fsae_control/fsae_control/live_viz/app.py`
 
-Does: builds the map and debug windows once (`LiveViz`), then on one Tk timer updates their artists in place and blits only the moving ones over a cached background (`_Blitter`), provides `main`.
+Does: builds the matplotlib map window and the two cost-breakdown windows once (`LiveViz`), then on one Tk timer updates them in place. The map blits only its moving artists over a cached background (`_Blitter`); the cost-breakdown windows are plain Tk canvases (`_TkDebugWindow`, `_TkBarPanel`). Provides `main`.
 Change it to:
-- Add a panel or plot element: create it once in `LiveViz.__init__`/`_build_map`, update its data in the matching `_update_*`, and register it with that window's `_Blitter`.
+- Add a map element: create it once in `_build_map`, update its data in `_update_map`, and register it with `blit_map`.
+- Add a cost-breakdown panel: create a `_TkBarPanel` on the window's canvas, add it to a column with `add_column`, and fill it in the matching `_update_*_debug`.
 Don't:
 - Move the Tk backend selection below the pyplot import, because it must run first.
 - Call `ax.clear()` or move the map's axes limits each frame, because blitting relies on a fixed background and that was what capped the old refresh.
 - Draw text over moving data without an opaque box, because unchanged text is restored from cached pixels.
-Key API: `main`, `LiveViz`, `_Blitter`, `_BarPanel`
+Key API: `main`, `LiveViz`, `_Blitter`, `_TkDebugWindow`, `_TkBarPanel`
 
 ## fsae_planning
 
