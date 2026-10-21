@@ -307,12 +307,14 @@ USE_NMPC=true
 # NMPC_R_RATE_DELTA=-1.0              # [NMPC only] -1 = inherit r_rate_delta
 # NMPC_ALAT_CEILING_ENABLED=true      # [NMPC only] models FSDS's measured sustained a_lat ceiling inside the prediction. Keep true for FSDS; disabling it let the NMPC oscillate and eventually spin offline
 # NMPC_SPLINE_REFERENCE_ENABLED=true         # [NMPC only] default true; analytic-spline kappa(s)/psi_ref(s) instead of moving-average+finite-difference. Numerical-quality fix, not a tuning knob -- see docs/reference/control_mechanisms.md's "Three MPCC-inspired additions"
+NMPC_CARTESIAN_MODEL_ENABLED=true          # [NMPC only] default true: predict in world x/y/heading and measure path error only in the cost, so path curvature never enters the prediction. false = the original Frenet model. Toggled by the GUI Launch tab's "World-frame prediction" checkbox
+MIN_DELAY_COMPENSATION_STEPS=1             # [both MPCs] default 1: floor on n_delay (matches offline DELAY_STEPS=1). 0 lets n_delay fall to 0, which wobbled live when the pose age missed the sim_perception wait
 # NMPC_FRICTION_CIRCLE_ENABLED=false         # [NMPC only, EXPERIMENTAL] hard per-axle tyre-force bound, additional to the soft alat-ceiling saturation. REJECTED live with no offline A/B first ("pretty much doesn't work anymore"). Do not re-enable without an offline A/B (tuner.validation.nmpc_offline_check) first.
-# NMPC_PROGRESS_ENABLED=false                # [NMPC only, EXPERIMENTAL] ON was attempted 2026-09-21 and REVERTED the same day: it does not complete a lap at any setting tried (q_progress 4.0 never launches, 5.0/6.0 go off track at ~10%, raising the slack weight 50x changes nothing). Tracking scores 0.714 and completes. See fsae_MPCTest/docs/logs/nmpc_progress_term_investigation.md.
+NMPC_PROGRESS_ENABLED=true                # [NMPC only, EXPERIMENTAL] ON was attempted 2026-09-21 and REVERTED the same day: it does not complete a lap at any setting tried (q_progress 4.0 never launches, 5.0/6.0 go off track at ~10%, raising the slack weight 50x changes nothing). Tracking scores 0.714 and completes. See fsae_MPCTest/docs/logs/nmpc_progress_term_investigation.md.
 # NMPC_Q_PROGRESS=5.0                        # [NMPC only] progress-reward weight; only read when NMPC_PROGRESS_ENABLED=true. NARROW usable band at r_a_accel=1.0: below ~5 the car never breaks static friction and never launches, above ~6 it carries too much speed into corners and goes off-track
 # NMPC_PROGRESS_REACH=2.0                    # [NMPC only] how far out of reach the progress target sits: s_target = s0 + max(v_cap*N*dt*REACH, 0.5*a_max*(N*dt)^2*REACH). The kinematic floor is what lets the car launch at all (v_cap is deliberately small at a standing start); below ~1.8 it stalls indefinitely
 # NMPC_PROGRESS_V_MIN=0.5                    # [NMPC only] low-speed floor sharing the speed-cap row/weight, guards the standstill trivial solution. Only read when NMPC_PROGRESS_ENABLED=true
-NMPC_SLACK_LINEAR_WEIGHT=500.0               # [NMPC only] set ~1000 alongside any progress-term experiment: necessary there, measured NOT sufficient. Inert while the progress term is off.
+NMPC_SLACK_LINEAR_WEIGHT=1000.0               # [NMPC only] set ~1000 alongside any progress-term experiment: necessary there, measured NOT sufficient. Inert while the progress term is off.
 # NMPC_TRACK_HALFWIDTH=3.5                   # [NMPC only] soft |e_y| bound with slack (both quadratic and linear); <=0 removes the constraint entirely. Matches the LTV-QP's own 3.5m. Narrowing to 3.0 was tried 2026-09-21 for the progress-term experiment and reverted the same day: this field is read unconditionally, so it also tightened ordinary tracking mode and measurably hurt it
 # NMPC_STEER_RATE_ANTI_HUNT_ENABLED=false    # [NMPC only, EXPERIMENTAL] reuses the LTV-QP's steer_rate_anti_hunt penalty on the NMPC, independent of MPC_STEER_RATE_ANTI_HUNT_ENABLED above. Mutually exclusive with NMPC_CORNER_RRATE_BLEND_ENABLED below -- blend takes priority if both are set. Not yet live-tested; offline A/B first.
 # NMPC_ANTI_HUNT_BOOST_MAX=-1.0               # [NMPC only] -1 = inherit anti_hunt_boost_max; only read when NMPC_STEER_RATE_ANTI_HUNT_ENABLED=true
@@ -369,7 +371,7 @@ NMPC_RRATE_ZONE_BOOST_STRAIGHT=2.0    # x r_rate on a true straight
 # zone uniformly weaker than no zone at all) DNF the offline sim at k=27,
 # off-track at the tightest corner. Not a simple "too much release" effect,
 # still unexplained -- see docs/guides/tuning.md's "Three-zone rate schedule".
-NMPC_RRATE_ZONE_EASE_APPROACH=0.80    # x r_rate when a corner is AHEAD -- the turn-in release
+NMPC_RRATE_ZONE_EASE_APPROACH=0.8    # x r_rate when a corner is AHEAD -- the turn-in release
 NMPC_RRATE_ZONE_FLOOR_CORNER=0.15     # x r_rate mid-corner
 #
 # [NMPC only, EXPERIMENTAL, default off] Steering-JERK weight: penalises the
@@ -397,7 +399,7 @@ NMPC_RJERK_DELTA=150.0
 # (u_prev, not curvature/e_y/e_psi), so no double-count risk.
 # Offline-validated on the LTV-QP path (see docs/reference/control_mechanisms.md's
 # "Soft steering-reversal penalty" section); not yet live-tested.
-REVERSAL_PENALTY_ENABLED=true
+REVERSAL_PENALTY_ENABLED=false
 # REVERSAL_PENALTY_BOOST_MAX=4.0                # ceiling multiplier, applied when previous steering == 0
 # REVERSAL_PENALTY_K=8.0                        # 1/rad; half-boost at ~7.2deg of previous steering
 # NMPC-only override -- set explicitly (not -1) to enable independently of
@@ -441,7 +443,7 @@ NMPC_REVERSAL_PENALTY_ENABLED=false
 # alone; (2) if that alone doesn't fix it, ALSO set
 # steer_rate_anti_hunt_enabled=false on top; (3) compare both against
 # today's un-reverted baseline (both true) on the SAME corner.
-MPC_ADAPTIVE_Q_SCALING_ENABLED=false
+MPC_ADAPTIVE_Q_SCALING_ENABLED=true
 # MPC_STEER_RATE_ANTI_HUNT_ENABLED=false
 
 # Real-time curvature-lookahead speed cap layered under the precomputed
@@ -499,6 +501,8 @@ _append_mpc_arg nmpc_r_rate_delta "$NMPC_R_RATE_DELTA"
 _append_mpc_arg nmpc_alat_ceiling_enabled "$NMPC_ALAT_CEILING_ENABLED"
 _append_mpc_arg nmpc_v_des_filter_alpha "$NMPC_V_DES_FILTER_ALPHA"
 _append_mpc_arg nmpc_spline_reference_enabled "$NMPC_SPLINE_REFERENCE_ENABLED"
+_append_mpc_arg nmpc_cartesian_model_enabled "$NMPC_CARTESIAN_MODEL_ENABLED"
+_append_mpc_arg min_delay_compensation_steps "$MIN_DELAY_COMPENSATION_STEPS"
 _append_mpc_arg nmpc_friction_circle_enabled "$NMPC_FRICTION_CIRCLE_ENABLED"
 _append_mpc_arg nmpc_progress_enabled "$NMPC_PROGRESS_ENABLED"
 _append_mpc_arg nmpc_q_progress "$NMPC_Q_PROGRESS"
@@ -546,7 +550,12 @@ fi
 # to 'localhost' otherwise, which fails the same way). Computed once here and
 # exported so both consumers agree, without requiring a manual `export` step.
 # Skipped for the Docker path, where the container's own networking applies.
-if [ "$USE_DOCKER" != true ] && [ -z "$FSDS_HOST_IP" ]; then
+# Mirrored networking (networkingMode=mirrored in .wslconfig) is the opposite
+# case: localhost DOES reach Windows and the gateway does not, so keep the
+# default 'localhost' there. Using the gateway under mirrored mode makes the
+# RPC wait below time out and the bridge fail to connect.
+if [ "$USE_DOCKER" != true ] && [ -z "$FSDS_HOST_IP" ] \
+        && [ "$(wslinfo --networking-mode 2>/dev/null)" != "mirrored" ]; then
     export FSDS_HOST_IP="$(ip route show default 2>/dev/null | awk '{print $3; exit}')"
 fi
 
