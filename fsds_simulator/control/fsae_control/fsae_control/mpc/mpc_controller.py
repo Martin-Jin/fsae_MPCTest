@@ -402,6 +402,9 @@ class MPCControllerNode(_ControlStepMixin, _DebugPublishMixin, Node):
         self._car_vy = 0.0
         self._car_yaw_rate = 0.0
         self._pose_stamp = None
+        # This node's clock when the current pose sample first arrived; the
+        # zero point for pose_age_s (see _pose_cb).
+        self._pose_rx_time = None
         # Previous tick's speed target, for the rise-rate limiter. None = no
         # history yet (first tick after start or after a reset), so the first
         # target passes through unlimited rather than ramping up from zero.
@@ -553,6 +556,22 @@ class MPCControllerNode(_ControlStepMixin, _DebugPublishMixin, Node):
         # x,y in position; yaw (rad) is stuffed into orientation.w (upstream convention).
         self._car_pos = np.array([msg.pose.position.x, msg.pose.position.y])
         self._car_yaw = float(msg.pose.orientation.w)
+        # pose_age_s is timed on this node's clock from when a sample with a
+        # new stamp first arrived, not as now() - stamp. The stamp comes from
+        # FSDS's clock, and its offset from this node's clock drifts by up to
+        # ~0.9 s between the periodic resyncs (see fsae_MPCTest
+        # docs/logs/periodic_pose_teleport_investigation.md) while the pose
+        # itself still updates every tick. Read as staleness, that drift pins
+        # n_delay at its cap on fresh poses, and the rollforward then replays
+        # commands the pose already reflects. A repeated stamp (sim_perception
+        # re-relaying odom that has stopped updating) keeps the first receipt
+        # time, so a stale pose still ages. Age before receipt is not counted:
+        # mostly how long sim_perception held the odom sample, up to one
+        # bridge odom period (about 30-45 ms at the measured 22-36 Hz), so
+        # this under-reads by under one control step. A slower pose source
+        # would need that part added back.
+        if self._pose_stamp is None or msg.header.stamp != self._pose_stamp:
+            self._pose_rx_time = self.get_clock().now()
         self._pose_stamp = msg.header.stamp
         self._have_pose = True
 

@@ -309,7 +309,7 @@ Offline-only or live-only items with no pair:
 |---|---|---|
 | `PoseFeedHold`, `POSE_HOLD_*` | offline | models a live fault, see [architecture.md](architecture.md) |
 | SLAM and cone noise | offline | both off by default |
-| latency columns `pose_age_s`, `path_age_s`, `n_delay`, `solve_ms`, `cmd_latency_ms` | live | offline has no equivalent |
+| latency columns `pose_age_s`, `path_age_s`, `n_delay`, `solve_ms`, `cmd_latency_ms`, and the trailing `pose_stamp_age_s` | live | offline has no equivalent. `pose_age_s` is time since the pose first arrived (controller clock), which matches the offline `PoseFeedHold` tick count. `pose_stamp_age_s` is the cross-clock diagnostic |
 | lap and horizon columns `lap_idx`, `pred_err_m`, `pred_acc_pct`, `lap_score`, `lap_pred_acc_pct` | live | diagnostics, not fed back into control |
 
 ### Syncing live params to the other checkouts

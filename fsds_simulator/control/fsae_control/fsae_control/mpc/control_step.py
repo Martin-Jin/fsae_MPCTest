@@ -205,11 +205,15 @@ class _ControlStepMixin:
                 throttle_duration_sec=1.0)
         self._v_des_prev = desired_speed
 
-        # Age of the pose the MPC is about to solve against — how long ago it
-        # was actually measured, not how long ago the callback fired. Lets
-        # MPCController compensate for the real, unknown/time-varying delay
-        # instead of assuming the state is fresh (see lmpc/controller.py compute()).
-        pose_age_s = (self.get_clock().now() - Time.from_msg(self._pose_stamp)).nanoseconds * 1e-9
+        # Age of the pose the MPC is about to solve against: time since this
+        # sample first arrived, on this node's clock (see _pose_cb for why not
+        # now() - stamp). Lets MPCController compensate for a time-varying
+        # delay instead of assuming the state is fresh (see lmpc/controller.py
+        # compute()). pose_stamp_age_s is the old cross-clock figure, logged
+        # only, because its drift is the evidence for the periodic stall.
+        now = self.get_clock().now()
+        pose_age_s = (now - self._pose_rx_time).nanoseconds * 1e-9
+        pose_stamp_age_s = (now - Time.from_msg(self._pose_stamp)).nanoseconds * 1e-9
 
         # MPCController/NMPCController.compute() always returns the
         # FSDS-normalised (steering, throttle, brake) tuple regardless of
@@ -317,7 +321,7 @@ class _ControlStepMixin:
                     adaptive=tel,
                     lap_idx=self._lap_tracker.lap_idx if self._lap_tracker is not None else None,
                     pred_err_m=pred_err_m, pred_acc_pct=pred_acc_pct,
-                    lap_summary=lap_summary)
+                    lap_summary=lap_summary, pose_stamp_age_s=pose_stamp_age_s)
                 self._telemetry.log_path(t, self._path)
 
             # ── Phase 5: publish ──────────────────────────────────────────
@@ -363,7 +367,7 @@ class _ControlStepMixin:
                     adaptive=tel,
                     lap_idx=self._lap_tracker.lap_idx if self._lap_tracker is not None else None,
                     pred_err_m=pred_err_m, pred_acc_pct=pred_acc_pct,
-                    lap_summary=lap_summary)
+                    lap_summary=lap_summary, pose_stamp_age_s=pose_stamp_age_s)
                 self._telemetry.log_path(t, self._path)
 
             self.get_logger().info(

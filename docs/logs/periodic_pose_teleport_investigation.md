@@ -491,6 +491,52 @@ entry speed >~7.2 m/s into a corner with κ>0.17-ish on this track), it does
 not narrow where in the FSDS/bridge/transport stack the stall itself
 originates.
 
+## Delay-compensation fix (2026-10-21): `pose_age_s` measured on one clock, not live-validated
+
+**The spin-out path is cut at the controller, and the stall itself is not
+fixed.** `pose_age_s` used to be `now() - pose stamp`. The stamp comes from
+FSDS's clock and `now()` from the controller's clock, so their drift between
+resyncs read as pose staleness. It is now timed on the controller's clock,
+from when a pose with a new stamp first arrived
+(`mpc/mpc_controller.py` `_pose_cb`, `mpc/control_step.py`).
+
+**Evidence that the old age was clock drift, not staleness.** In
+`mpc_standalone_control_20260929-083956.csv`, the cross-clock age ramps
+linearly from -0.26 s to +0.61 s over each resync period, including negative
+values that no real delay can produce. The pose still changes on nearly
+every tick across the whole range, with the car moving above 1 m/s:
+
+| cross-clock age | ticks | pose changed since previous tick |
+|---|---|---|
+| 0 to 0.05 s | 35 | 91% |
+| 0.05 to 0.10 s | 14 | 100% |
+| 0.10 to 0.20 s | 68 | 97% |
+| 0.20 to 0.50 s | 114 | 93% |
+
+So `n_delay=3` in the crash window rolled fresh poses forward through about
+0.15 s of commands that they already reflected. That over-compensation is
+the mechanism in "Fifth capture result".
+
+**Why receipt time.** It needs only one clock, so drift cannot enter it.
+A repeated stamp (`sim_perception` re-relaying odom that has stopped
+updating) keeps the receipt time of its first arrival, so a stall that does
+freeze the pose still ages it and still triggers compensation. This matches
+the offline `PoseFeedHold` model, whose `pose_age_ticks` counts ticks since
+the data last changed.
+
+**Limitations.** Age before receipt is not counted. That is mostly how long
+`sim_perception` held the odom sample before relaying it, up to one bridge
+odom period (about 30-45 ms at the measured 22-36 Hz), so the new age
+under-reads by less than one control step. A slower pose source (camera or
+SLAM) would need that part added back. The cross-clock figure is
+still logged as `pose_stamp_age_s` (the last CSV column), so this
+investigation keeps its main trace.
+
+**To validate live.** Repeat the `comp_test_map_3` session at the same
+settings. Expect `n_delay` to sit at 0 or 1 through the resync cycle while
+`pose_stamp_age_s` still ramps, and no spin at the index ~404 hairpin above
+7.2 m/s entry. Until that run exists, this fix is offline-reasoned only.
+
 ## Next step (2026-08-20 — shared-bottleneck question answered; root cause still open)
 
 `ros2/launch_all.sh` launches, right after the bridge comes up (search for

@@ -384,7 +384,7 @@ flowchart TD
     S{"Phase 2: pose missing, path < 2 points,<br/>or live path older than 0.5 s?"}
     SB["solver.reset(), clear speed-target memory<br/>standalone: publish full brake<br/>cmd_vel mode: publish nothing (fsds_bridge times out)"]
     V["Phase 3a: speed target<br/>(see 4.4)"]
-    PA["pose_age_s = now - pose stamp"]
+    PA["pose_age_s = now - time this pose first arrived<br/>(controller clock, not the FSDS stamp)"]
     SOLVE["Phase 3b: solver.compute(path, pose, speed,<br/>desired_speed, yaw rate, pose_age_s, v_y)<br/>LTV-QP: see lmpc.md · NMPC: see nmpc.md"]
     DBG["publish nmpc_predicted_path (NMPC),<br/>debug_weights"]
     M{"standalone_output?"}
@@ -411,7 +411,7 @@ flowchart TD
 </details>
 
 - **Why reset on a lost path.** The solver warm-starts from its last plan and remembers recent commands for delay compensation. Resuming from that state after a gap would steer from a stale plan.
-- **Why `pose_age_s` is passed in.** The solver rolls the measured state forward by the commands sent since that pose was measured. A stale pose pins this compensation at its cap, which is how the periodic transport stall leads to a spin-out (see [quirk 7](#quirks-the-diagrams-encode)).
+- **Why `pose_age_s` is passed in.** The solver rolls the measured state forward by the commands sent since that pose was measured. The age is timed on the controller's clock from the pose's first arrival, because `now - stamp` mixes the FSDS and controller clocks, whose drift pinned this compensation at its cap and spun the car (see [quirk 7](#quirks-the-diagrams-encode)).
 - **Output conversion.** Both solvers return `(steering, throttle, brake)` already in FSDS units: steering is `-delta_cmd / 25°` clipped to `[-1, 1]` (the sign flips because FSDS uses +1 = right), throttle is `a_cmd / a_max` for positive `a_cmd`, otherwise brake is `-a_cmd / a_max_brake`.
 - **Offline twin:** `sim/rollout/core.py` `run_core_rollout()`, with the speed target in `sim/rollout/speed_target.py`.
 
@@ -629,5 +629,5 @@ Recording only captures something useful with the live planner in the loop (`use
 4. **Both controllers are the node `/controller`.** `ros2 node info /controller` works for either. The startup log shows which solver was built: a `use_nmpc=True: running the NONLINEAR MPC` warning for the NMPC, and `MPC controller ready [<output mode>]` for the output mode.
 5. **The MPC and the other nodes read speed from different topics.** `mpc_controller` reads `car_odom` (20 Hz, published with the pose from the same sample). Stanley, `fsds_bridge` and `skidpad_planner` read the raw 250 Hz odometry.
 6. **The pose is ground truth.** `sim_perception` copies FSDS's true pose with no noise, drift or estimation lag. Only the cone visibility is realistic.
-7. **A transport stall sits upstream of everything.** Odometry, `/clock` and IMU stall together on a period of about 31.7 to 34 s. The stall inflates `pose_age_s`, pins the solver's delay compensation at its cap, and has caused a spin-out at the tightest corner. The layer it lives in is unidentified. See [periodic_pose_teleport_investigation.md](../logs/periodic_pose_teleport_investigation.md).
+7. **A transport stall sits upstream of everything.** Odometry, `/clock` and IMU stall together on a period of about 31.7 to 34 s. The clock drift between resyncs used to inflate `pose_age_s`, pin the solver's delay compensation at its cap, and caused a spin-out at the tightest corner. `pose_age_s` is now timed on the controller's clock, so the drift only shows in the logged `pose_stamp_age_s`. This fix is not yet live-validated. The layer the stall lives in is unidentified. See [periodic_pose_teleport_investigation.md](../logs/periodic_pose_teleport_investigation.md).
 8. **After a spin the car can sit still indefinitely.** A standstill deadlock was observed after the stall-induced spin and is not yet investigated.
