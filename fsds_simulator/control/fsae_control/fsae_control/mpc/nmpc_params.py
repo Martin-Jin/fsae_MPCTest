@@ -312,7 +312,7 @@ class NMPCParams:
     # violating the boundary, so slack stays 0 and this term adds nothing).
     # Raise it to ~1000 alongside any progress-term experiment; it is
     # necessary there, just not sufficient.
-    nmpc_slack_linear_weight: float = field(default=500.0, metadata={
+    nmpc_slack_linear_weight: float = field(default=1000.0, metadata={
         "unit": "1/m",
         "desc": "LINEAR track-bound slack penalty, additional to the "
                 "quadratic nmpc_slack_weight above. 0.0 disables it. "
@@ -500,7 +500,7 @@ class NMPCParams:
                 "is IDENTICAL to before this feature existed",
         "controller": "nmpc_only",
     })
-    nmpc_progress_reach: float = field(default=3.0, metadata={
+    nmpc_progress_reach: float = field(default=2.0, metadata={
         "unit": "-",
         "desc": "s_target_N = X[0,s] + max(v_cap*N*dt*REACH, "
                 "0.5*a_max*(N*dt)^2*REACH); >1 keeps the target always out "

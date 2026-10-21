@@ -134,7 +134,7 @@ EPSI_RA_BRAKE_FLOOR = 0.5
 # lower steering saturation, no measured trade-off offline); the shipped
 # value is 2.55. See docs/logs/nmpc_progress_term_investigation.md.
 # Mirrors MPCParams.speed_target_deficit_max.
-SPEED_TARGET_DEFICIT_MAX = 2.55
+SPEED_TARGET_DEFICIT_MAX = 5.0
 
 # ------------------------------------------------------------------------------
 # Cost function weights (for simulator only)

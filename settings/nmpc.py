@@ -435,9 +435,9 @@ NMPC_FRICTION_CIRCLE_ENABLED = False
 #      with gradient everywhere, not a hard inequality that can go inert.
 NMPC_PROGRESS_ENABLED = False
 
-NMPC_Q_PROGRESS = 4.25        # weight on the progress-reward row (row 5), UNTUNED
+NMPC_Q_PROGRESS = 1.0        # weight on the progress-reward row (row 5), UNTUNED
 
-NMPC_PROGRESS_REACH = 3.0    # s_target_N = s0 + max(v_cap*N*DT*REACH,
+NMPC_PROGRESS_REACH = 2.0    # s_target_N = s0 + max(v_cap*N*DT*REACH,
 
                              # 0.5*a_max*(N*DT)^2*REACH); >1 keeps it always
                              # out of reach so minimising the residual is
@@ -460,7 +460,7 @@ NMPC_PROGRESS_V_MIN = 3.0    # hard-ish low-speed floor (hinge, same row/weight
                              # Liniger's MPCC reference uses 0.05; this repo's
                              # cars sit higher off the mark than an RC car so
                              # a slightly larger floor is a reasonable start.
-NMPC_SLACK_LINEAR_WEIGHT = 500.0   # additional LINEAR term on the soft track-
+NMPC_SLACK_LINEAR_WEIGHT = 1000.0   # additional LINEAR term on the soft track-
 
                              # boundary slack, on top of the existing
                              # quadratic NMPC_SLACK_WEIGHT. 0.0 (default) is

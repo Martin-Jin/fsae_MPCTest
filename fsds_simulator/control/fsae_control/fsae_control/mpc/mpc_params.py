@@ -94,7 +94,7 @@ class MPCParams:
     # r_a_accel or the NMPC trust region, is the binding limit on
     # acceleration for a large share of a lap (offline, 5.0 removes that).
     # The shipped default stays 2.55 because 5.0 has not been validated live.
-    speed_target_deficit_max: float = field(default=2.55, metadata={"unit": "m/s", "desc": "max the ramped speed target may lead the car's current speed by", "controller": "both"})
+    speed_target_deficit_max: float = field(default=5.0, metadata={"unit": "m/s", "desc": "max the ramped speed target may lead the car's current speed by", "controller": "both"})
 
     # ── Straight-line R_rate[0,0] (steering rate) anti-hunt boost ───────
     anti_hunt_boost_max: float = field(default=6.0, metadata={"unit": "unitless", "desc": "ceiling on the steer_rate_anti_hunt multiplier", "controller": "ltv_qp_only"})
@@ -224,7 +224,7 @@ class MPCParams:
     # breaks static friction and never launches, above ~6 it carries too
     # much speed into corners and goes off-track. See
     # fsae_MPCTest/docs/logs/nmpc_progress_term_investigation.md.
-    nmpc_q_progress: float = field(default=4.25, metadata={"unit": "1/m^2", "desc": "progress-reward weight (nmpc_progress_enabled only; no inherit)", "controller": "nmpc_only"})
+    nmpc_q_progress: float = field(default=1.0, metadata={"unit": "1/m^2", "desc": "progress-reward weight (nmpc_progress_enabled only; no inherit)", "controller": "nmpc_only"})
 
     # steer_rate_anti_hunt_enabled/anti_hunt_boost_max above are LTV-QP-only
     # in nmpc/__init__.py's own docstring ("no adaptive gain schedule ... layering
