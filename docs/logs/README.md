@@ -11,7 +11,7 @@ These logs are a historical record of past investigations. They were written bef
 
 | Old doc | Now |
 |---|---|
-| junior_project_mpc_docs.md | [guides/getting_started.md](../guides/getting_started.md) |
+| junior_project_mpc_docs.md | [guides/docs_page.md](../guides/docs_page.md) |
 | offline_guide.md | [guides/offline_guide.md](../guides/offline_guide.md) |
 | tuning.md | [guides/tuning.md](../guides/tuning.md) |
 | debugging_tools.md | [guides/debugging_tools.md](../guides/debugging_tools.md) |

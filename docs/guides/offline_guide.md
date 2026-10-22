@@ -8,7 +8,7 @@ Related docs:
 
 | Need | Doc |
 |---|---|
-| New to the project | [getting_started.md](getting_started.md) |
+| New to the project | [docs_page.md](docs_page.md) |
 | What each weight does and how to tune it | [tuning.md](tuning.md) |
 | Diagnostic tools and the launcher | [debugging_tools.md](debugging_tools.md) |
 | Design of the offline system | [architecture.md](../reference/architecture.md) |
@@ -134,7 +134,7 @@ Use them to stress recovery instead of always starting on the line.
 
 ### 5. Score it
 
-- **Show Metrics** prints the full 13-metric breakdown to the console and puts a one-line summary in the plot title. The metrics and composite score are explained in [getting_started.md](getting_started.md#53-how-a-run-gets-scored).
+- **Show Metrics** prints the full 13-metric breakdown to the console and puts a one-line summary in the plot title. The metrics and composite score are explained in [docs_page.md](docs_page.md#63-how-a-run-gets-scored).
 - **Benchmark All Paths** runs every synthetic path 3 times with the current weights and prints a per-path score table. Use it to check a weight set generalises instead of working on one path only.
 
 ### 6. Reset

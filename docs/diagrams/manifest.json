@@ -11,8 +11,8 @@
   "doc": "docs/reference/architecture.md",
   "sha1": "5f0f75e19cd3ad9a1c2624db82ccc5dec5877ef4"
  },
- "getting_started_1_1_receding_horizon_control": {
-  "doc": "docs/guides/getting_started.md",
+ "docs_page_1_1_receding_horizon_control": {
+  "doc": "docs/guides/docs_page.md",
   "sha1": "38908d4bc1f0cf9ba2c82cd46bc63b33c9f4ffa0"
  },
  "integration_guide_topic_map": {

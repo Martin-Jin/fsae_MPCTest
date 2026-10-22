@@ -16,7 +16,7 @@ record and only its README is checked):
 1. Long prose blocks: unstructured paragraphs longer than `--max` lines.
 2. References to AI-assistant instruction files.
 3. Transcript voice: first/second person and session scaffolding
-   (docs/guides/getting_started.md may address the reader as "you").
+   (docs/guides/docs_page.md may address the reader as "you").
 4. Broken relative links and heading anchors.
 5. Backticked file paths and `python -m` targets that do not exist (ROS
    message types such as `nav_msgs/Odometry` are not treated as paths).
@@ -50,7 +50,7 @@ BANNED_REFS = ('CLAUDE.md', 'claude.md')
 TRANSCRIPT = re.compile(
     r'\b(I |I\'ve |I\'d |we |we\'ve |our |you |you\'re |let\'s |as we )'
     r'|\bSession \d|\bthis session\b', re.I)
-YOU_EXEMPT = ('docs/guides/getting_started.md',)
+YOU_EXEMPT = ('docs/guides/docs_page.md',)
 INTENSIFIERS = re.compile(r'\b(genuinely|actually|really|crucially)\b', re.I)
 EM_DASH = '—'
 LINK = re.compile(r'(?<!!)\[[^\]]*\]\(([^)\s]+)\)')

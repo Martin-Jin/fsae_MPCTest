@@ -15,7 +15,7 @@ import numpy as np
 # controller/nmpc/solver.py's NMPCController, a Frenet-frame NONLINEAR MPC
 # (arc length is a state, path curvature kappa(s) is looked up from it
 # directly, instead of the linear model's e_psi_dot = yaw-rate-only). See
-# docs/guides/getting_started.md's for the plain-language explanation
+# docs/guides/docs_page.md's for the plain-language explanation
 # of why the linear model needs this at all, and docs/guides/tuning.md's NMPC
 # section for the tuning surface.
 #

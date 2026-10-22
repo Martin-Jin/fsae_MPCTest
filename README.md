@@ -85,7 +85,7 @@ The MPC and planning stack exists twice: in `ros2/src/fsae_planning/` (live) and
 
 - [docs/README.md](docs/README.md): index of every doc.
 - [docs/modules/offline_sim.md](docs/modules/offline_sim.md) and [docs/modules/fsds_ros2.md](docs/modules/fsds_ros2.md): what each module does.
-- [docs/guides/getting_started.md](docs/guides/getting_started.md): newcomer introduction to MPC, NMPC and tuning.
+- [docs/guides/docs_page.md](docs/guides/docs_page.md): newcomer introduction to MPC, NMPC and tuning.
 - [docs/fsds/integration_guide.md](docs/fsds/integration_guide.md): running against FSDS, recording and driving a track.
 - [docs/logs/README.md](docs/logs/README.md): frozen investigation logs.
 

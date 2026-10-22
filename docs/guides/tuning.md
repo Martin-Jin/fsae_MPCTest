@@ -445,4 +445,4 @@ These are not MPC weights, but they decide whether an offline result transfers t
 - [control_mechanisms.md](../reference/control_mechanisms.md): mechanism design for each adaptive gain and the NMPC.
 - [retired_mechanisms.md](../reference/retired_mechanisms.md): removed mechanisms and why.
 - [sim_to_real_investigation.md](../logs/sim_to_real_investigation.md): the history behind several constraints above. Read it for how a constraint was found. This guide states what the constraint is.
-- [getting_started.md](getting_started.md): a standalone onboarding page that explains tuning from scratch.
+- [docs_page.md](docs_page.md): a standalone onboarding page that explains tuning from scratch.

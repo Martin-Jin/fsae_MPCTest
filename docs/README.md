@@ -7,7 +7,7 @@ Files under `docs/logs/` are a frozen investigation record, see [logs/README.md]
 
 | To | Read |
 |---|---|
-| Get set up and understand the project from scratch | [guides/getting_started.md](guides/getting_started.md) |
+| Get set up and understand the project from scratch | [guides/docs_page.md](guides/docs_page.md) |
 | Run the offline simulator, the tuner or the GUI | [guides/offline_guide.md](guides/offline_guide.md) |
 | Retune MPC weights or gains | [guides/tuning.md](guides/tuning.md) |
 | Diagnose a bad run or pick a debugging tool | [guides/debugging_tools.md](guides/debugging_tools.md) |

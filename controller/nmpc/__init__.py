@@ -11,7 +11,7 @@ coordinates with the reference path's own rotation entirely absent from it
 exactly on-line and on-heading approaching a corner, that model's own N-step
 rollout predicts staying at zero forever — no cost weighting can produce
 turn-in before real tracking error exists. See `model/bicycle_model.py`'s own
-docstring and `docs/guides/getting_started.md` for the plain-language
+docstring and `docs/guides/docs_page.md` for the plain-language
 version, and `late_turn_in_investigation.md` (live repo) Parts 1-15 for the
 full investigation this is downstream of.
 
