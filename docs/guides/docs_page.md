@@ -45,6 +45,8 @@ The core idea is that every 'tick' (one control cycle), the controller asks a qu
 
 FSDS is the AirSim/UE4 (a vehicle simulator built on Unreal Engine 4) 3D simulator the MPC is currently validated in. It's the closest available stand-in for the go-kart and the car, but it isn't confirmed accurate against either, as the MPC hasn't been tested on them yet.
 
+The MPC code that runs in FSDS is a ROS 2 package written for the simulator, `fsae_control` in `ros2/src/fsae_planning/` (the live tree, see [section 7.1](#71-which-tree-is-which)). This repo keeps the same planning and control logic by hand in two places. The offline simulator and tuner (`sim/`, `controller/` and `settings/`) hold the copy that weights are tuned against, and `fsds_simulator/` holds a staging snapshot of the live tree. The two copies have to stay numerically identical, which [offline_live_parity.md](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/reference/offline_live_parity.md) maps field by field, and [fsds_ros2.md](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/modules/fsds_ros2.md) lists every file in the mirror.
+
 `fsae_MPCTest` (this repo) has its own offline tools: a 2D matplotlib GUI and a headless rollout (a simulated run with no window) used for automatic tuning. Their dynamics don't match FSDS. So treat any offline result as a rough signal, and check it in FSDS before trusting it. See [glossary.md](https://github.com/Martin-Jin/fsae_MPCTest/blob/main/docs/reference/glossary.md) for which doc covers which side.
 
 ### Which controller is better
